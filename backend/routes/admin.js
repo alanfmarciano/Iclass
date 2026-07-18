@@ -72,6 +72,7 @@ function recordAcademicAudit(req, actor, type, target, before, after) {
 const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
 const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require('../utils/studentAnalytics.js');
+const { computeNow, computeQueue, computeTrends } = require('../utils/dashboardAggregates.js');
 const attendanceUtil = require('../utils/attendance.js');
 const runtimePaths = require('../runtimePaths.js');
 const { isBlockedUploadName, validateUploadedFile } = require('../utils/uploadSecurity.js');
@@ -3514,6 +3515,73 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
             ...studentOverview(db.memory, st, { courseId, index }),
         }));
         res.json(overview);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Dashboard v3 — três endpoints especializados, não um agregado: /now muda em
+// segundos (poll de ~30s), /queue em minutos e /trends em dias. Um payload só
+// obrigaria a recarregar tudo a cada poll. Escopo de professor aplicado a todos.
+// ---------------------------------------------------------------------------
+function _dashboardScope(req, matchedAdmin) {
+    const courseId = String(req.query.courseId || '').trim();
+    const studentClass = String(req.query.studentClass || '').trim();
+    const cls = studentClass
+        ? (findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)
+            || (db.memory.classes || []).find(c => c.name === studentClass) || null)
+        : null;
+    const course = (db.memory.courses || []).find(c => String(c.id) === courseId) || null;
+    const scn = (st) => (Array.isArray(st.classes) && st.classes.length ? st.classes : (st.studentClass ? [st.studentClass] : [])).map(c => typeof c === 'string' ? c : (c && c.name)).filter(Boolean);
+    let students = filterStudentsForAdmin(db.memory.students || [], matchedAdmin);
+    if (courseId) {
+        const clsNames = new Set((db.memory.classes || []).filter(c => c.courseId === courseId).map(c => c.name));
+        students = students.filter(st => scn(st).some(nm => clsNames.has(nm)));
+    }
+    if (studentClass) students = students.filter(st => studentBelongsToClass(st, studentClass, courseId));
+    return { courseId, studentClass, cls, course, students };
+}
+
+// Faixa "Agora": aula corrente da grade, aplicação de prova ativa e presença online.
+router.get('/api/admin/dashboard/now', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const scope = _dashboardScope(req, matchedAdmin);
+        const tz = settingsUtil.getSettings().timezone;
+        res.json(computeNow({
+            memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
+            today: settingsUtil.today(), nowMin: attendanceUtil.hhmmToMin(settingsUtil.nowHHMM(tz)), now: Date.now(),
+        }));
+    });
+});
+
+// Fila "Precisa de você": pendências com destino clicável. Respeita o snooze de
+// 24h persistido em preferences (dashboard.snoozed) e esconde matrículas de professor.
+router.get('/api/admin/dashboard/queue', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const scope = _dashboardScope(req, matchedAdmin);
+        const now = Date.now();
+        // 'page.accounts' é permissão exclusiva de administrador pleno — é o
+        // proxy correto para "professor não vê matrículas" (ADMIN_ONLY_PERMISSION_SET).
+        const canSeeMatriculas = canAccessAdminPermission(matchedAdmin, 'page.accounts');
+        let items = computeQueue({
+            memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
+            today: settingsUtil.today(), now, canSeeMatriculas,
+        });
+        const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
+            && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
+        const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
+        items = items.filter(item => {
+            const ts = Number(snoozed[item.id]);
+            return !(Number.isFinite(ts) && now - ts < 86400000);
+        });
+        res.json(items);
+    });
+});
+
+// Pulso: frequência, média e engajamento em janelas móveis de 30 dias com série.
+router.get('/api/admin/dashboard/trends', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const scope = _dashboardScope(req, matchedAdmin);
+        res.json(computeTrends({ memory: db.memory, students: scope.students, course: scope.course, cls: scope.cls, now: Date.now() }));
     });
 });
 
