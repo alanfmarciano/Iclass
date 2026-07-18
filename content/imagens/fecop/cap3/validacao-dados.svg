@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">VALIDAÇÃO DE DADOS E FORMATAÇÃO CONDICIONAL</text>
+  
+  <!-- Validation rules -->
+  <text x="150" y="70" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">VALIDAÇÃO DE DADOS</text>
+  <rect x="30" y="85" width="240" height="120" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  
+  <text x="45" y="110" font-family="Arial" font-size="10" fill="#fff">📋 Lista: Cargo</text>
+  <text x="45" y="125" font-family="Arial" font-size="9" fill="#aaa">[Analista | Gerente | Diretor]</text>
+  
+  <text x="45" y="150" font-family="Arial" font-size="10" fill="#fff">🔢 Número: 0-100</text>
+  <text x="45" y="165" font-family="Arial" font-size="9" fill="#aaa">Para percentuais e notas</text>
+  
+  <text x="45" y="190" font-family="Arial" font-size="10" fill="#fff">📅 Data: range</text>
+  <text x="45" y="205" font-family="Arial" font-size="9" fill="#aaa">Entre hoje e +30 dias</text>
+  
+  <!-- Conditional formatting -->
+  <text x="450" y="70" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">FORMATAÇÃO CONDICIONAL</text>
+  <rect x="320" y="85" width="250" height="120" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  
+  <rect x="335" y="105" width="80" height="20" fill="#e94560" rx="3"/>
+  <text x="375" y="119" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Vendas < 1000</text>
+  
+  <rect x="335" y="135" width="80" height="20" fill="#ffc107" rx="3"/>
+  <text x="375" y="149" font-family="Arial" font-size="9" fill="#000" text-anchor="middle">Vendas 1000-5000</text>
+  
+  <rect x="335" y="165" width="80" height="20" fill="#4ecca3" rx="3"/>
+  <text x="375" y="179" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Vendas > 5000</text>
+  
+  <text x="465" y="115" font-family="Arial" font-size="9" fill="#aaa">🔴 Vermelho</text>
+  <text x="465" y="145" font-family="Arial" font-size="9" fill="#aaa">🟡 Amarelo</text>
+  <text x="465" y="175" font-family="Arial" font-size="9" fill="#aaa">🟢 Verde</text>
+  
+  <!-- Data Types -->
+  <text x="300" y="235" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">TIPAGEM CORRETA NO EXCEL</text>
+  
+  <rect x="30" y="250" width="250" height="80" fill="#16213e" rx="5"/>
+  <text x="155" y="275" font-family="Arial" font-size="11" fill="#e94560" text-anchor="middle">⚠️ ERRADO</text>
+  <text x="155" y="295" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">"R$ 1.234,56"</text>
+  <text x="155" y="310" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Texto → Não calcula!</text>
+  <text x="155" y="322" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Data: "25/01/2024"</text>
+  
+  <rect x="310" y="250" width="250" height="80" fill="#0f3460" stroke="#4ecca3" stroke-width="2" rx="5"/>
+  <text x="435" y="275" font-family="Arial" font-size="11" fill="#4ecca3" text-anchor="middle">✅ CORRETO</text>
+  <text x="435" y="295" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">1234.56 → Formatar como Moeda</text>
+  <text x="435" y="310" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Data: 25/01/2024 → Formato Data</text>
+  
+  <!-- Key rule -->
+  <rect x="30" y="350" width="540" height="40" fill="#16213e" stroke="#e94560" stroke-width="1" rx="5"/>
+  <text x="300" y="375" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">💡 REGRA DE OURO: Digite apenas números puros. Use formatação do menu para símbolos visuais</text>
+</svg>

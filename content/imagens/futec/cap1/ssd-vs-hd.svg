@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" width="800" height="450">
+  <rect width="800" height="450" fill="#1a1a2e"/>
+  
+  <text x="400" y="30" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="bold">SSD vs HD MECÂNICO</text>
+  <text x="400" y="50" font-family="Arial" font-size="12" fill="#888" text-anchor="middle">A Revolução do Armazenamento Sólido</text>
+  
+  <!-- HD Mechanical -->
+  <rect x="50" y="80" width="320" height="320" rx="15" fill="#2c3e50" stroke="#e74c3c" stroke-width="3"/>
+  <text x="210" y="110" font-family="Arial" font-size="18" fill="#e74c3c" text-anchor="middle" font-weight="bold">HD MECÂNICO</text>
+  
+  <!-- Platter -->
+  <circle cx="210" cy="200" r="90" fill="#34495e" stroke="#7f8c8d" stroke-width="2"/>
+  <circle cx="210" cy="200" r="70" fill="#2c3e50" stroke="#7f8c8d"/>
+  <circle cx="210" cy="200" r="50" fill="#34495e" stroke="#7f8c8d"/>
+  <circle cx="210" cy="200" r="8" fill="#95a5a6"/>
+  
+  <!-- Actuator Arm -->
+  <line x1="210" y1="200" x2="290" y2="120" stroke="#e74c3c" stroke-width="3"/>
+  <rect x="285" y="115" width="15" height="8" fill="#e74c3c" transform="rotate(-30, 290, 120)"/>
+  
+  <!-- Read/Write Head -->
+  <circle cx="290" cy="120" r="5" fill="#e74c3c"/>
+  
+  <text x="210" y="310" font-family="Arial" font-size="11" fill="#a8d8ff" text-anchor="middle">Disco Magnético Giratório</text>
+  <text x="210" y="328" font-family="Arial" font-size="10" fill="#888" text-anchor="middle">Agulha de Leitura/Gravação</text>
+  <text x="210" y="345" font-family="Arial" font-size="10" fill="#888" text-anchor="middle">Peças Móveis = Fragilidade</text>
+  <text x="210" y="365" font-family="Arial" font-size="12" fill="#e74c3c" text-anchor="middle" font-weight="bold">Velocidade: ~100 MB/s</text>
+  <text x="210" y="382" font-family="Arial" font-size="10" fill="#e74c3c" text-anchor="middle">Latência: 5-10ms</text>
+  
+  <!-- SSD -->
+  <rect x="430" y="80" width="320" height="320" rx="15" fill="#2c3e50" stroke="#27ae60" stroke-width="3"/>
+  <text x="590" y="110" font-family="Arial" font-size="18" fill="#27ae60" text-anchor="middle" font-weight="bold">SSD</text>
+  
+  <!-- NAND Chips -->
+  <rect x="460" y="140" width="80" height="50" rx="3" fill="#0f3460" stroke="#27ae60" stroke-width="1"/>
+  <text x="500" y="170" font-family="Arial" font-size="9" fill="#27ae60" text-anchor="middle">NAND</text>
+  
+  <rect x="560" y="140" width="80" height="50" rx="3" fill="#0f3460" stroke="#27ae60" stroke-width="1"/>
+  <text x="600" y="170" font-family="Arial" font-size="9" fill="#27ae60" text-anchor="middle">NAND</text>
+  
+  <rect x="460" y="200" width="80" height="50" rx="3" fill="#0f3460" stroke="#27ae60" stroke-width="1"/>
+  <text x="500" y="230" font-family="Arial" font-size="9" fill="#27ae60" text-anchor="middle">NAND</text>
+  
+  <rect x="560" y="200" width="80" height="50" rx="3" fill="#0f3460" stroke="#27ae60" stroke-width="1"/>
+  <text x="600" y="230" font-family="Arial" font-size="9" fill="#27ae60" text-anchor="middle">NAND</text>
+  
+  <rect x="460" y="260" width="80" height="50" rx="3" fill="#0f3460" stroke="#27ae60" stroke-width="1"/>
+  <text x="500" y="290" font-family="Arial" font-size="9" fill="#27ae60" text-anchor="middle">NAND</text>
+  
+  <rect x="560" y="260" width="80" height="50" rx="3" fill="#0f3460" stroke="#27ae60" stroke-width="1"/>
+  <text x="600" y="290" font-family="Arial" font-size="9" fill="#27ae60" text-anchor="middle">NAND</text>
+  
+  <!-- Controller -->
+  <rect x="500" y="320" width="180" height="35" rx="3" fill="#16213e" stroke="#e9c46a" stroke-width="2"/>
+  <text x="590" y="342" font-family="Arial" font-size="11" fill="#e9c46a" text-anchor="middle" font-weight="bold">CONTROLADOR</text>
+  
+  <text x="590" y="385" font-family="Arial" font-size="11" fill="#a8d8ff" text-anchor="middle">Memória Flash NAND</text>
+  <text x="590" y="403" font-family="Arial" font-size="10" fill="#888" text-anchor="middle">Sem partes móveis = Silêncio</text>
+  <text x="590" y="425" font-family="Arial" font-size="12" fill="#27ae60" text-anchor="middle" font-weight="bold">Velocidade: ~3.500 MB/s</text>
+  <text x="590" y="442" font-family="Arial" font-size="10" fill="#27ae60" text-anchor="middle">Latência: ~100μs</text>
+  
+  <!-- Comparison Arrow -->
+  <line x1="375" y1="240" x2="425" y2="240" stroke="#fff" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="400" y="225" font-family="Arial" font-size="14" fill="#e9c46a" text-anchor="middle" font-weight="bold">35x</text>
+  <text x="400" y="265" font-family="Arial" font-size="10" fill="#888" text-anchor="middle">MAIS RÁPIDO</text>
+</svg>

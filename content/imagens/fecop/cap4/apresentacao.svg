@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">POWERPOINT - STORYTELLING CORPORATIVO</text>
+  
+  <!-- Slide flow -->
+  <rect x="30" y="60" width="150" height="100" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="105" y="95" font-family="Arial" font-size="11" fill="#aaa">SLIDE 1</text>
+  <text x="105" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">GANCHO</text>
+  <text x="105" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">"A pergunta que</text>
+  <text x="105" y="142" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">muda tudo..."</text>
+  
+  <path d="M185 110 L215 110" stroke="#e94560" stroke-width="2" marker-end="url(#arrow)"/>
+  
+  <rect x="220" y="60" width="150" height="100" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="295" y="95" font-family="Arial" font-size="11" fill="#aaa">SLIDE 2</text>
+  <text x="295" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">PROBLEMA</text>
+  <text x="295" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Dados do problema</text>
+  
+  <path d="M375 110 L405 110" stroke="#e94560" stroke-width="2"/>
+  
+  <rect x="410" y="60" width="150" height="100" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="485" y="95" font-family="Arial" font-size="11" fill="#e94560">SLIDE 3</text>
+  <text x="485" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">SOLUÇÃO</text>
+  <text x="485" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Como resolver</text>
+  
+  <!-- Slide flow continue -->
+  <path d="M485 165 L485 190" stroke="#e94560" stroke-width="2"/>
+  <path d="M485 195 L300 195 L300 220" stroke="#e94560" stroke-width="2"/>
+  <path d="M300 225 L115 225 L115 200" stroke="#e94560" stroke-width="2"/>
+  
+  <!-- Pitch formula -->
+  <text x="300" y="260" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">FÓRMULA DO PITCH EXECUTIVO</text>
+  
+  <rect x="30" y="275" width="540" height="60" fill="#16213e" rx="5"/>
+  <text x="300" y="300" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">"Em [X] minutos, vou mostrar como [PROBLEMA] pode ser resolvido com [SOLUÇÃO]"</text>
+  <text x="300" y="320" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Resultado esperado: [BENEFÍCIO NUMÉRICO] | Timeline: [QUANDO] | Call to Action: [PRÓXIMO PASSO]</text>
+  
+  <!-- Design rules -->
+  <text x="300" y="360" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">REGRAS DE DESIGN</text>
+  
+  <rect x="30" y="370" width="120" height="25" fill="#0f3460" rx="3"/>
+  <text x="90" y="387" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">6x6 slides</text>
+  
+  <rect x="165" y="370" width="120" height="25" fill="#0f3460" rx="3"/>
+  <text x="225" y="387" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Regra 10-20-30</text>
+  
+  <rect x="300" y="370" width="120" height="25" fill="#0f3460" rx="3"/>
+  <text x="360" y="387" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Menos texto</text>
+  
+  <rect x="435" y="370" width="120" height="25" fill="#0f3460" rx="3"/>
+  <text x="495" y="387" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Mais impacto visual</text>
+</svg>

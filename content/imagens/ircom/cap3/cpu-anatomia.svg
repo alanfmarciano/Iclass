@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">ANATOMIA DO PROCESSADOR (CPU)</text>
+  
+  <!-- CPU die representation -->
+  <rect x="180" y="60" width="240" height="150" fill="#16213e" stroke="#e94560" stroke-width="3" rx="10"/>
+  <text x="300" y="85" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">DIE (Núcleo)</text>
+  
+  <!-- Cores -->
+  <rect x="200" y="100" width="60" height="40" fill="#0f3460" rx="3"/>
+  <text x="230" y="120" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Core 0</text>
+  <text x="230" y="133" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Thread 0</text>
+  
+  <rect x="270" y="100" width="60" height="40" fill="#0f3460" rx="3"/>
+  <text x="300" y="120" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Core 1</text>
+  <text x="300" y="133" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Thread 1</text>
+  
+  <rect x="200" y="150" width="60" height="40" fill="#0f3460" rx="3"/>
+  <text x="230" y="170" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Core 2</text>
+  <text x="230" y="183" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Thread 2</text>
+  
+  <rect x="270" y="150" width="60" height="40" fill="#0f3460" rx="3"/>
+  <text x="300" y="170" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Core 3</text>
+  <text x="300" y="183" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Thread 3</text>
+  
+  <!-- Cache indicator -->
+  <rect x="340" y="100" width="60" height="90" fill="#16213e" stroke="#0f3460" rx="3"/>
+  <text x="370" y="120" font-family="Arial" font-size="8" fill="#e94560" text-anchor="middle">L1</text>
+  <text x="370" y="135" font-family="Arial" font-size="7" fill="#aaa" text-anchor="middle">64KB</text>
+  <text x="370" y="155" font-family="Arial" font-size="8" fill="#e94560" text-anchor="middle">L2</text>
+  <text x="370" y="170" font-family="Arial" font-size="7" fill="#aaa" text-anchor="middle">256KB</text>
+  <text x="370" y="190" font-family="Arial" font-size="8" fill="#e94560" text-anchor="middle">L3</text>
+  <text x="370" y="205" font-family="Arial" font-size="7" fill="#aaa" text-anchor="middle">8MB</text>
+  
+  <!-- CPU specs table -->
+  <text x="80" y="240" font-family="Arial" font-size="12" fill="#e94560" text-anchor="middle" font-weight="bold">ESPECIFICAÇÕES</text>
+  
+  <rect x="30" y="255" width="250" height="120" fill="#16213e" rx="5"/>
+  <text x="45" y="278" font-family="Arial" font-size="9" fill="#fff">Clock: 3.6 GHz (base) / 5.0 GHz (boost)</text>
+  <text x="45" y="295" font-family="Arial" font-size="9" fill="#fff">Núcleos: 6 (6 cores físicos)</text>
+  <text x="45" y="312" font-family="Arial" font-size="9" fill="#fff">Threads: 12 (Hyper-Threading)</text>
+  <text x="45" y="329" font-family="Arial" font-size="9" fill="#fff">Cache L3: 12MB (compartilhado)</text>
+  <text x="45" y="346" font-family="Arial" font-size="9" fill="#fff">TDP: 65W (consumo térmico)</text>
+  <text x="45" y="363" font-family="Arial" font-size="9" fill="#fff">Soquete: LGA 1700 (Intel 12ª-14ª gen)</text>
+  
+  <!-- Brands comparison -->
+  <text x="430" y="240" font-family="Arial" font-size="12" fill="#e94560" text-anchor="middle" font-weight="bold">MARCAS E LINHAS</text>
+  
+  <rect x="310" y="255" width="260" height="60" fill="#0f3460" rx="5"/>
+  <text x="440" y="275" font-family="Arial" font-size="10" fill="#e94560" text-anchor="middle">INTEL</text>
+  <text x="440" y="292" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Celeron (básico) → i3 → i5 → i7 → i9</text>
+  <text x="440" y="305" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Líder no mercado brasileiro</text>
+  
+  <rect x="310" y="325" width="260" height="60" fill="#16213e" stroke="#0f3460" rx="5"/>
+  <text x="440" y="345" font-family="Arial" font-size="10" fill="#4ecca3" text-anchor="middle">AMD</text>
+  <text x="440" y="362" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Ryzen 3 → Ryzen 5 → Ryzen 7 → Ryzen 9</text>
+  <text x="440" y="375" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Melhor custo-benefício</text>
+</svg>

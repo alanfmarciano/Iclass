@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">PROCESSO DE MONTAGEM - PASSO A PASSO</text>
+  
+  <!-- Steps flow -->
+  <rect x="30" y="60" width="120" height="70" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="90" y="82" font-family="Arial" font-size="10" fill="#e94560" text-anchor="middle">PASSO 1</text>
+  <text x="90" y="100" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">PREPARAÇÃO</text>
+  <text x="90" y="115" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Área limpa, iluminada</text>
+  
+  <path d="M155 95 L175 95" stroke="#e94560" stroke-width="2" marker-end="url(#arrow)"/>
+  
+  <rect x="180" y="60" width="120" height="70" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="240" y="82" font-family="Arial" font-size="10" fill="#e94560" text-anchor="middle">PASSO 2</text>
+  <text x="240" y="100" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">PLACA-MÃE</text>
+  <text x="240" y="115" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">CPU, RAM, Cooler</text>
+  
+  <path d="M305 95 L325 95" stroke="#e94560" stroke-width="2"/>
+  
+  <rect x="330" y="60" width="120" height="70" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="390" y="82" font-family="Arial" font-size="10" fill="#e94560" text-anchor="middle">PASSO 3</text>
+  <text x="390" y="100" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">GABINETE</text>
+  <text x="390" y="115" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Fixar placa-mãe</text>
+  
+  <path d="M455 95 L475 95" stroke="#e94560" stroke-width="2"/>
+  
+  <rect x="480" y="60" width="100" height="70" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="530" y="82" font-family="Arial" font-size="10" fill="#e94560" text-anchor="middle">PASSO 4</text>
+  <text x="530" y="100" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">ENERGIA</text>
+  <text x="530" y="115" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">PSU, cabos</text>
+  
+  <!-- Detailed steps -->
+  <text x="300" y="160" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">DETALHES DE CADA ETAPA</text>
+  
+  <rect x="30" y="175" width="540" height="80" fill="#16213e" rx="5"/>
+  
+  <text x="45" y="195" font-family="Arial" font-size="10" fill="#fff">1. CPU:</text>
+  <text x="45" y="210" font-family="Arial" font-size="8" fill="#aaa">Abrir socket, alinhar triangulo, baixar retention arm</text>
+  
+  <text x="45" y="230" font-family="Arial" font-size="10" fill="#fff">2. Pasta Térmica:</text>
+  <text x="45" y="245" font-family="Arial" font-size="8" fill="#aaa">Gota pequena (ervilha) no centro do IHS - espalhar só se veio de fábrica</text>
+  
+  <text x="300" y="195" font-family="Arial" font-size="10" fill="#fff">3. Cooler:</text>
+  <text x="300" y="210" font-family="Arial" font-size="8" fill="#aaa">Presilhas diagonalmente, conectar fan header</text>
+  
+  <text x="300" y="230" font-family="Arial" font-size="10" fill="#fff">4. RAM:</text>
+  <text x="300" y="245" font-family="Arial" font-size="8" fill="#aaa">Abrir clipes, alinhar chanfro, pressionar até clique</text>
+  
+  <!-- Installation checklist -->
+  <text x="300" y="280" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">CHECKLIST PÓS-MONTAGEM</text>
+  
+  <rect x="30" y="295" width="250" height="90" fill="#0f3460" rx="5"/>
+  <text x="45" y="315" font-family="Arial" font-size="9" fill="#fff">✅ Cabos bem conectados?</text>
+  <text x="45" y="332" font-family="Arial" font-size="9" fill="#fff">✅ 24-pin ATX firme?</text>
+  <text x="45" y="349" font-family="Arial" font-size="9" fill="#fff">✅ CPU 8-pin conectado?</text>
+  <text x="45" y="366" font-family="Arial" font-size="9" fill="#fff">✅ Cooler girando?</text>
+  <text x="45" y="375" font-family="Arial" font-size="8" fill="#aaa">Pressão uniforme no cooler</text>
+  
+  <rect x="295" y="295" width="275" height="90" fill="#16213e" stroke="#e94560" rx="5"/>
+  <text x="310" y="315" font-family="Arial" font-size="9" fill="#fff">✅ RAM bem encaixada (clipes fechados)?</text>
+  <text x="310" y="332" font-family="Arial" font-size="9" fill="#fff">✅ Cabos do painel frontal?</text>
+  <text x="310" y="349" font-family="Arial" font-size="9" fill="#fff">✅ HD/SSD parafusado?</text>
+  <text x="310" y="366" font-family="Arial" font-size="9" fill="#fff">✅ Tampa lateral fechada?</text>
+  <text x="310" y="375" font-family="Arial" font-size="8" fill="#aaa">Verificar semua koneksi</text>
+</svg>

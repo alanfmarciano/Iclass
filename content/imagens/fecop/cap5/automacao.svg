@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">POWER AUTOMATE - AUTOMAÇÃO ROBÓTICA</text>
+  
+  <!-- Flow diagram -->
+  <rect x="30" y="60" width="540" height="150" fill="#16213e" rx="5"/>
+  
+  <!-- Trigger -->
+  <rect x="60" y="100" width="100" height="60" fill="#e94560" rx="5"/>
+  <text x="110" y="125" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">TRIGGER</text>
+  <text x="110" y="140" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Quando email</text>
+  <text x="110" y="152" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">chega com anexo</text>
+  
+  <path d="M165 130 L195 130" stroke="#e94560" stroke-width="2" marker-end="url(#arrow)"/>
+  
+  <!-- Condition -->
+  <rect x="200" y="100" width="100" height="60" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="250" y="125" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">CONDIÇÃO</text>
+  <text x="250" y="140" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">É do cliente X?</text>
+  
+  <path d="M305 130 L335 130" stroke="#e94560" stroke-width="2" marker-end="url(#arrow)"/>
+  
+  <!-- Actions -->
+  <rect x="340" y="70" width="90" height="45" fill="#16213e" rx="3"/>
+  <text x="385" y="92" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">✅ SIM</text>
+  <text x="385" y="107" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Salvar no SharePoint</text>
+  
+  <rect x="340" y="125" width="90" height="45" fill="#16213e" rx="3"/>
+  <text x="385" y="147" font-family="Arial" font-size="9" fill="#e94560" text-anchor="middle">❌ NÃO</text>
+  <text x="385" y="162" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Encaminhar p/ TI</text>
+  
+  <path d="M435 92 L465 92" stroke="#4ecca3" stroke-width="2"/>
+  <path d="M435 147 L465 147" stroke="#e94560" stroke-width="2"/>
+  
+  <!-- End -->
+  <rect x="470" y="80" width="80" height="80" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="510" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">FIM</text>
+  <text x="510" y="132" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Notificação</text>
+  <text x="510" y="145" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">enviada</text>
+  
+  <!-- Common triggers -->
+  <text x="300" y="240" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">GATILHOS COMUNS (TRIGGERS)</text>
+  
+  <rect x="30" y="255" width="130" height="50" fill="#16213e" rx="5"/>
+  <text x="95" y="278" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">📧 Email recebido</text>
+  <text x="95" y="293" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Exchange/Outlook</text>
+  
+  <rect x="170" y="255" width="130" height="50" fill="#16213e" rx="5"/>
+  <text x="235" y="278" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">📁 Arquivo criado</text>
+  <text x="235" y="293" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">SharePoint/OneDrive</text>
+  
+  <rect x="310" y="255" width="130" height="50" fill="#16213e" rx="5"/>
+  <text x="375" y="278" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">📅 Evento criado</text>
+  <text x="375" y="293" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Calendário</text>
+  
+  <rect x="450" y="255" width="130" height="50" fill="#16213e" rx="5"/>
+  <text x="515" y="278" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🔄 Manual/Botão</text>
+  <text x="515" y="293" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Acionamento</text>
+  
+  <!-- Benefits -->
+  <rect x="30" y="320" width="540" height="60" fill="#0f3460" rx="5"/>
+  <text x="300" y="345" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">💡 BENEFÍCIOS DA AUTOMAÇÃO</text>
+  <text x="300" y="362" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">✅ Elimina tarefas repetitivas ✅ Zero erros humanos ✅ Funciona 24/7 ✅ 1 automação = 8h/semanais economizadas</text>
+</svg>

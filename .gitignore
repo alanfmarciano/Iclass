@@ -1,0 +1,27 @@
+node_modules/
+web/node_modules/
+web/dist/
+data/crash.log
+*.log
+.DS_Store
+
+# Dados operacionais e pessoais
+data/database.db
+data/database.db-*
+data/uploads/
+data/alunos/
+data/lixeira/
+data/backups/
+data/*.db
+data/*.db-*
+
+# Backups, arquivos arquivados e configuracao local
+backups/
+cursos_arquivados/
+backup_path.txt
+
+# Artefatos de teste e cobertura
+coverage/
+web/coverage/
+test-results/
+playwright-report/

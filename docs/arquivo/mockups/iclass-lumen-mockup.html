@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>IClass — Lumen · Mockup HTML</title>
+  <style>
+    :root {
+      --canvas: #f2f3ed;
+      --canvas-deep: #e9ebe4;
+      --surface: #ffffff;
+      --surface-2: #f7f8f4;
+      --surface-3: #eceee8;
+      --ink: #171a24;
+      --muted: #5f655f;
+      --subtle: #626862;
+      --line: #e1e4dc;
+      --line-strong: #cfd3ca;
+      --cobalt: #3048e8;
+      --cobalt-deep: #1e2fbd;
+      --cobalt-soft: #e8ebff;
+      --lime: #c8f04b;
+      --lime-ink: #243000;
+      --mint: #42d6a4;
+      --amber: #ffbb42;
+      --danger: #ef6767;
+      --shadow-sm: 0 1px 2px rgba(23, 26, 36, .05), 0 8px 24px rgba(23, 26, 36, .045);
+      --shadow-md: 0 18px 50px rgba(23, 26, 36, .11);
+      --shadow-cobalt: 0 26px 60px rgba(48, 72, 232, .25);
+      --radius-sm: 14px;
+      --radius-md: 22px;
+      --radius-lg: 32px;
+      --ease: cubic-bezier(.22, 1, .36, 1);
+    }
+
+    html[data-theme="dark"] {
+      --canvas: #10121a;
+      --canvas-deep: #0b0d13;
+      --surface: #191c25;
+      --surface-2: #20242e;
+      --surface-3: #282d38;
+      --ink: #f4f5ef;
+      --muted: #b0b5ae;
+      --subtle: #989f97;
+      --line: #2b303b;
+      --line-strong: #3a404c;
+      --cobalt: #8d99ff;
+      --cobalt-deep: #4e60ee;
+      --cobalt-soft: #262d50;
+      --lime: #d4f768;
+      --lime-ink: #1a2500;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, .18), 0 10px 30px rgba(0, 0, 0, .15);
+      --shadow-md: 0 24px 60px rgba(0, 0, 0, .3);
+      --shadow-cobalt: 0 26px 70px rgba(69, 87, 235, .22);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--cobalt-soft) 56%, transparent), transparent 28rem),
+        var(--canvas);
+      color: var(--ink);
+      font-family: "Segoe UI Variable Text", "SF Pro Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      transition: background-color .35s ease, color .35s ease;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--cobalt) 45%, transparent);
+      outline-offset: 3px;
+    }
+    .skip-link {
+      position: fixed; left: 16px; top: -60px; z-index: 100;
+      padding: 10px 16px; border-radius: 12px; background: var(--ink); color: var(--surface);
+      transition: top .2s ease;
+    }
+    .skip-link:focus { top: 14px; }
+    .icon { width: 20px; height: 20px; display: block; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    .shell { min-height: 100vh; padding: 14px 18px 36px; }
+    .topbar {
+      position: sticky; top: 14px; z-index: 30;
+      max-width: 1460px; height: 72px; margin: 0 auto;
+      display: grid; grid-template-columns: minmax(190px, 1fr) auto minmax(190px, 1fr); align-items: center; gap: 16px;
+      padding: 0 14px 0 20px; border: 1px solid var(--line);
+      border-radius: 22px; background: color-mix(in srgb, var(--surface) 90%, transparent);
+      box-shadow: var(--shadow-sm); backdrop-filter: blur(18px) saturate(130%);
+    }
+    .brand { display: inline-flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark {
+      position: relative; width: 38px; height: 38px; flex: 0 0 auto; overflow: hidden;
+      display: grid; place-items: center; border-radius: 13px; background: var(--ink); color: var(--surface);
+    }
+    .brand-mark::after { content: ""; position: absolute; width: 18px; height: 18px; right: -5px; bottom: -4px; border-radius: 50%; background: var(--lime); }
+    .brand-mark svg { position: relative; z-index: 1; }
+    .brand-copy { min-width: 0; line-height: 1; }
+    .brand-name { display: block; font-size: 15px; font-weight: 760; letter-spacing: -.025em; }
+    .brand-concept { display: block; margin-top: 5px; color: var(--subtle); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; }
+    .main-nav { display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 16px; background: var(--surface-2); }
+    .nav-button {
+      display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px;
+      border: 0; border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer;
+      font-size: 13px; font-weight: 650; transition: color .25s ease, background .25s ease, transform .25s var(--ease), box-shadow .25s ease;
+    }
+    .nav-button:hover { color: var(--ink); transform: translateY(-1px); }
+    .nav-button.active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); }
+    .top-actions { justify-self: end; display: flex; align-items: center; gap: 7px; }
+    .icon-button {
+      position: relative; display: grid; place-items: center; width: 42px; height: 42px; padding: 0;
+      border: 1px solid transparent; border-radius: 13px; background: transparent; color: var(--muted); cursor: pointer;
+      transition: .25s var(--ease);
+    }
+    .icon-button:hover { background: var(--surface-2); color: var(--ink); transform: translateY(-2px); }
+    .notification-dot { position: absolute; width: 7px; height: 7px; right: 8px; top: 7px; border: 2px solid var(--surface); border-radius: 50%; background: var(--danger); }
+    .profile-button {
+      display: flex; align-items: center; gap: 9px; height: 46px; padding: 4px 10px 4px 5px;
+      border: 0; border-radius: 15px; background: var(--surface-2); cursor: pointer; transition: .25s var(--ease);
+    }
+    .profile-button:hover { transform: translateY(-2px); background: var(--surface-3); }
+    .avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 12px; background: var(--lime); color: var(--lime-ink); font-size: 12px; font-weight: 800; }
+    .profile-name { font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+    .page { width: min(1360px, calc(100% - 28px)); margin: 0 auto; padding-top: 54px; }
+    .page-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
+    .eyebrow { display: flex; align-items: center; gap: 8px; margin: 0 0 9px; color: var(--cobalt); font-size: 10px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+    .eyebrow::before { content: ""; width: 20px; height: 2px; border-radius: 2px; background: currentColor; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 5px; font-family: "Segoe UI Variable Display", "SF Pro Display", "Segoe UI", sans-serif; font-size: clamp(34px, 4vw, 52px); font-weight: 720; line-height: .98; letter-spacing: -.052em; }
+    .page-heading p:not(.eyebrow) { margin: 10px 0 0; color: var(--muted); font-size: 14px; }
+    .date-chip { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 12px; }
+
+    .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.74fr) minmax(310px, .72fr); align-items: start; gap: 18px; }
+    .main-column, .side-column { display: grid; gap: 18px; }
+    .card { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-sm); }
+    .reveal { opacity: 0; transform: translateY(14px); animation: reveal .65s var(--ease) forwards; }
+    .delay-1 { animation-delay: .06s; } .delay-2 { animation-delay: .12s; } .delay-3 { animation-delay: .18s; } .delay-4 { animation-delay: .24s; }
+
+    .focus-card {
+      position: relative; min-height: 316px; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 265px; align-items: center;
+      padding: 38px 40px; border: 0; border-radius: var(--radius-lg); color: #fff;
+      background: linear-gradient(135deg, #3149ec 0%, #293fd4 54%, #17268f 100%); box-shadow: var(--shadow-cobalt);
+    }
+    .focus-card::before {
+      content: ""; position: absolute; width: 440px; height: 440px; right: -170px; top: -240px;
+      border: 1px solid rgba(255,255,255,.19); border-radius: 50%; box-shadow: 0 0 0 56px rgba(255,255,255,.035), 0 0 0 112px rgba(255,255,255,.025);
+      animation: orbit 10s ease-in-out infinite;
+    }
+    .focus-card::after { content: ""; position: absolute; width: 300px; height: 180px; left: 38%; bottom: -150px; border-radius: 50%; background: rgba(200,240,75,.38); filter: blur(50px); }
+    .focus-content { position: relative; z-index: 2; max-width: 570px; }
+    .context-pill { display: inline-flex; align-items: center; gap: 7px; margin-bottom: 25px; padding: 7px 10px; border: 1px solid rgba(255,255,255,.22); border-radius: 999px; background: rgba(255,255,255,.1); font-size: 10px; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 5px rgba(200,240,75,.13); animation: pulse 2.5s ease-in-out infinite; }
+    .focus-card h2 { max-width: 540px; margin-bottom: 11px; font-family: "Segoe UI Variable Display", "SF Pro Display", sans-serif; font-size: clamp(28px, 3vw, 41px); font-weight: 680; line-height: 1.04; letter-spacing: -.045em; }
+    .focus-subtitle { margin-bottom: 25px; color: rgba(255,255,255,.73); font-size: 13px; }
+    .focus-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 25px; color: rgba(255,255,255,.84); font-size: 12px; }
+    .focus-meta span { display: inline-flex; align-items: center; gap: 6px; }
+    .primary-action {
+      display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 48px; padding: 0 18px;
+      border: 0; border-radius: 14px; background: var(--lime); color: var(--lime-ink); cursor: pointer;
+      font-size: 13px; font-weight: 800; box-shadow: 0 10px 28px rgba(0,0,0,.14); transition: transform .3s var(--ease), box-shadow .3s ease, filter .3s ease;
+    }
+    .primary-action:hover { transform: translateY(-3px) scale(1.015); box-shadow: 0 16px 36px rgba(0,0,0,.21); filter: saturate(1.1); }
+    .focus-progress { position: relative; z-index: 2; justify-self: center; }
+    .progress-ring { position: relative; width: 168px; height: 168px; display: grid; place-items: center; }
+    .progress-ring svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+    .progress-track { fill: none; stroke: rgba(255,255,255,.13); stroke-width: 9; }
+    .progress-value { fill: none; stroke: var(--lime); stroke-width: 9; stroke-linecap: round; stroke-dasharray: 433; stroke-dashoffset: 173; animation: draw-ring 1.3s .35s var(--ease) both; }
+    .progress-copy { text-align: center; }
+    .progress-copy strong { display: block; font-size: 35px; letter-spacing: -.05em; }
+    .progress-copy span { display: block; margin-top: 2px; color: rgba(255,255,255,.65); font-size: 9px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+    .progress-badge { position: absolute; right: -8px; bottom: 15px; display: grid; place-items: center; width: 38px; height: 38px; border: 5px solid #2237c2; border-radius: 50%; background: var(--lime); color: var(--lime-ink); }
+
+    .stat-strip { display: grid; grid-template-columns: repeat(4, 1fr); overflow: hidden; }
+    .stat { position: relative; min-width: 0; padding: 21px 22px; }
+    .stat + .stat::before { content: ""; position: absolute; left: 0; top: 20px; bottom: 20px; width: 1px; background: var(--line); }
+    .stat-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .stat-label { overflow: hidden; color: var(--muted); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; border-radius: 10px; background: var(--surface-2); color: var(--cobalt); }
+    .stat-icon .icon { width: 15px; height: 15px; }
+    .stat-value { display: block; margin-top: 14px; font-size: 25px; font-weight: 750; letter-spacing: -.04em; }
+    .stat-helper { display: flex; align-items: center; gap: 4px; margin-top: 5px; color: var(--subtle); font-size: 10px; }
+    .positive { color: #0c7752; }
+    html[data-theme="dark"] .positive { color: #58d6aa; }
+
+    .section-card { padding: 25px; }
+    .section-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
+    .section-title { margin: 0; font-size: 17px; font-weight: 750; letter-spacing: -.02em; }
+    .section-kicker { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+    .text-button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 3px; border: 0; background: none; color: var(--cobalt); cursor: pointer; font-size: 11px; font-weight: 750; }
+    .text-button .icon { width: 14px; height: 14px; transition: transform .2s ease; }
+    .text-button:hover .icon { transform: translateX(3px); }
+
+    .week-tabs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .day-button { min-width: 0; padding: 13px 8px 12px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface-2); cursor: pointer; text-align: center; transition: .28s var(--ease); }
+    .day-button:hover { border-color: var(--line-strong); transform: translateY(-2px); }
+    .day-button.active { border-color: var(--ink); background: var(--ink); color: var(--surface); box-shadow: var(--shadow-sm); transform: translateY(-2px); }
+    .day-label { display: block; color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+    .day-button.active .day-label { color: color-mix(in srgb, var(--surface) 66%, transparent); }
+    .day-number { display: block; margin-top: 4px; font-size: 18px; font-weight: 760; }
+    .day-event { display: block; width: 5px; height: 5px; margin: 7px auto 0; border-radius: 50%; background: var(--cobalt); }
+    .day-button.active .day-event { background: var(--lime); }
+    .today-plan { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; margin-top: 14px; padding: 15px; border-radius: 16px; background: var(--surface-2); transition: opacity .18s ease, transform .18s ease; }
+    .today-plan.switching { opacity: .3; transform: translateY(4px); }
+    .plan-time { display: grid; place-items: center; min-width: 53px; min-height: 45px; padding: 4px; border-radius: 12px; background: var(--surface); color: var(--cobalt); font-size: 11px; font-weight: 800; }
+    .plan-copy { min-width: 0; }
+    .plan-copy strong { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .plan-copy span { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+    .plan-type { padding: 6px 9px; border-radius: 999px; background: var(--cobalt-soft); color: var(--cobalt); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+
+    .module-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px; }
+    .module-card { position: relative; overflow: hidden; min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: 17px; background: var(--surface-2); cursor: pointer; transition: transform .3s var(--ease), border-color .3s ease, background .3s ease; }
+    .module-card:hover { transform: translateY(-4px); border-color: var(--line-strong); background: var(--surface); }
+    .module-number { display: flex; align-items: center; justify-content: space-between; color: var(--subtle); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+    .module-status { width: 8px; height: 8px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 4px color-mix(in srgb, var(--mint) 16%, transparent); }
+    .module-card h3 { min-height: 38px; margin: 21px 0 5px; font-size: 13px; line-height: 1.35; letter-spacing: -.01em; }
+    .module-card p { margin-bottom: 15px; color: var(--muted); font-size: 10px; }
+    .module-progress { height: 5px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
+    .module-progress span { display: block; height: 100%; border-radius: inherit; background: var(--cobalt); transform-origin: left; animation: grow 1s .35s var(--ease) both; }
+
+    .side-card { padding: 22px; }
+    .side-card .section-header { margin-bottom: 17px; }
+    .next-list { display: grid; gap: 9px; }
+    .next-item { display: grid; grid-template-columns: 43px 1fr; align-items: center; gap: 11px; padding: 11px; border: 1px solid transparent; border-radius: 14px; background: var(--surface-2); cursor: pointer; transition: .25s var(--ease); }
+    .next-item:hover { border-color: var(--line); background: var(--surface); transform: translateX(3px); }
+    .date-block { display: grid; place-items: center; align-content: center; width: 43px; height: 43px; border-radius: 12px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+    .date-block strong { font-size: 14px; line-height: 1; }
+    .date-block span { margin-top: 3px; color: var(--cobalt); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+    .next-copy { min-width: 0; }
+    .next-copy strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .next-copy span { display: flex; align-items: center; gap: 4px; margin-top: 5px; color: var(--muted); font-size: 9px; }
+    .next-copy .icon { width: 11px; height: 11px; }
+
+    .rhythm-card { overflow: hidden; padding-bottom: 0; }
+    .rhythm-card .section-header { padding: 22px 22px 0; }
+    .rhythm-score { display: flex; align-items: baseline; gap: 6px; padding: 0 22px; }
+    .rhythm-score strong { font-size: 37px; letter-spacing: -.055em; }
+    .rhythm-score span { color: var(--muted); font-size: 10px; }
+    .chart-wrap { position: relative; height: 145px; margin-top: 6px; }
+    .chart-wrap svg { width: 100%; height: 100%; overflow: visible; }
+    .chart-line { fill: none; stroke: var(--cobalt); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 420; animation: chart-draw 1.2s .3s var(--ease) both; }
+    .chart-area { fill: url(#areaGradient); opacity: .42; }
+    .chart-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 5; }
+    .chart-point { fill: var(--surface); stroke: var(--cobalt); stroke-width: 3; }
+
+    .mentor-card { position: relative; overflow: hidden; padding: 23px; background: var(--ink); color: var(--surface); border-color: transparent; }
+    .mentor-card::after { content: ""; position: absolute; right: -35px; bottom: -45px; width: 125px; height: 125px; border-radius: 50%; background: var(--lime); opacity: .13; }
+    html[data-theme="dark"] .mentor-card { background: #f2f3ed; color: #171a24; }
+    .mentor-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 10px; }
+    .mentor-avatar { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 12px; background: var(--lime); color: var(--lime-ink); font-size: 10px; font-weight: 850; }
+    .mentor-head strong { display: block; font-size: 11px; }
+    .mentor-head span { display: block; margin-top: 2px; color: currentColor; opacity: .55; font-size: 9px; }
+    .mentor-message { position: relative; z-index: 1; margin: 18px 0 0; font-size: 13px; line-height: 1.5; letter-spacing: -.012em; }
+    .mentor-link { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; margin-top: 17px; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; font-size: 10px; font-weight: 780; }
+
+    .bottom-nav { display: none; }
+    .toast {
+      position: fixed; z-index: 80; right: 24px; bottom: 24px; display: flex; align-items: center; gap: 10px;
+      max-width: min(360px, calc(100vw - 32px)); padding: 13px 16px; border: 1px solid var(--line); border-radius: 15px;
+      background: var(--ink); color: var(--surface); box-shadow: var(--shadow-md); font-size: 12px;
+      opacity: 0; transform: translateY(15px) scale(.97); pointer-events: none; transition: .3s var(--ease);
+    }
+    .toast.show { opacity: 1; transform: translateY(0) scale(1); }
+    .toast-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lime); }
+
+    @keyframes reveal { to { opacity: 1; transform: translateY(0); } }
+    @keyframes orbit { 0%,100% { transform: translate3d(0,0,0) rotate(0); } 50% { transform: translate3d(-12px,16px,0) rotate(5deg); } }
+    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(.7); opacity: .65; } }
+    @keyframes draw-ring { from { stroke-dashoffset: 433; } to { stroke-dashoffset: 173; } }
+    @keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+    @keyframes chart-draw { from { stroke-dashoffset: 420; } to { stroke-dashoffset: 0; } }
+
+    @media (max-width: 1080px) {
+      .topbar { grid-template-columns: 1fr auto; }
+      .main-nav { display: none; }
+      .dashboard-grid { grid-template-columns: minmax(0, 1fr) 300px; }
+      .focus-card { grid-template-columns: minmax(0,1fr) 190px; padding: 34px; }
+      .progress-ring { width: 145px; height: 145px; }
+      .stat-strip { grid-template-columns: repeat(2, 1fr); }
+      .stat:nth-child(3)::before { display: none; }
+      .stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    }
+    @media (max-width: 820px) {
+      .shell { padding: 10px 10px 88px; }
+      .topbar { top: 10px; height: 64px; border-radius: 18px; padding-left: 14px; }
+      .brand-concept, .profile-name, .top-actions .icon-button:first-child { display: none; }
+      .profile-button { padding-right: 5px; }
+      .page { width: calc(100% - 8px); padding-top: 38px; }
+      .page-heading { align-items: start; }
+      .date-chip { display: none; }
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .side-column { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .mentor-card { grid-column: 1 / -1; }
+      .bottom-nav {
+        position: fixed; z-index: 50; left: 50%; bottom: 12px; transform: translateX(-50%);
+        display: grid; grid-template-columns: repeat(4, 1fr); width: min(430px, calc(100% - 22px)); padding: 7px;
+        border: 1px solid var(--line); border-radius: 19px; background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: var(--shadow-md); backdrop-filter: blur(18px);
+      }
+      .bottom-nav button { display: grid; justify-items: center; gap: 3px; padding: 7px 4px 5px; border: 0; border-radius: 13px; background: none; color: var(--muted); font-size: 8px; font-weight: 750; cursor: pointer; }
+      .bottom-nav button.active { background: var(--ink); color: var(--surface); }
+      .bottom-nav .icon { width: 17px; height: 17px; }
+    }
+    @media (max-width: 620px) {
+      h1 { font-size: 36px; }
+      .page-heading p:not(.eyebrow) { font-size: 12px; }
+      .top-actions { gap: 1px; }
+      .focus-card { min-height: auto; grid-template-columns: 1fr; padding: 27px 24px 25px; }
+      .focus-card h2 { font-size: 29px; }
+      .focus-progress { position: absolute; right: 17px; top: 17px; }
+      .progress-ring { width: 82px; height: 82px; }
+      .progress-track, .progress-value { stroke-width: 7; }
+      .progress-copy strong { font-size: 20px; }
+      .progress-copy span, .progress-badge { display: none; }
+      .context-pill { margin-right: 85px; margin-bottom: 27px; }
+      .focus-meta { padding-right: 35px; }
+      .stat { padding: 17px; }
+      .stat-value { font-size: 22px; }
+      .stat-icon { display: none; }
+      .section-card, .side-card { padding: 19px; }
+      .week-tabs { gap: 5px; }
+      .day-button { padding: 11px 3px; }
+      .module-grid { grid-template-columns: 1fr; }
+      .module-card { display: grid; grid-template-columns: 42px minmax(0,1fr); align-items: center; column-gap: 10px; }
+      .module-number { grid-row: 1 / 3; display: block; font-size: 11px; }
+      .module-status { margin-top: 8px; }
+      .module-card h3 { min-height: 0; margin: 0 0 4px; }
+      .module-card p { margin: 0; }
+      .module-progress { grid-column: 1 / -1; margin-top: 12px; }
+      .side-column { grid-template-columns: 1fr; }
+      .mentor-card { grid-column: auto; }
+      .today-plan { grid-template-columns: auto 1fr; }
+      .plan-type { display: none; }
+      .toast { left: 16px; right: auto; bottom: 92px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#conteudo">Ir para o conteúdo</a>
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute">
+    <defs>
+      <symbol id="i-logo" viewBox="0 0 24 24"><path d="m3 9 9-5 9 5-9 5-9-5Z"/><path d="M7 11.2V16c2.9 2.3 7.1 2.3 10 0v-4.8"/><path d="M21 9v6"/></symbol>
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5.5 9.5V21h13V9.5"/><path d="M9.5 21v-7h5v7"/></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></symbol>
+      <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M9 19V5"/><path d="M14 19V5"/><path d="m18 5 3 14"/><path d="M2 21h20"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16 9"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></symbol>
+      <symbol id="i-note" viewBox="0 0 24 24"><path d="M5 3h14v18H5z"/><path d="M9 8h6M9 12h6M9 16h4"/></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 1.4 4.1L17 9l-3.6 1.9L12 15l-1.4-4.1L7 9l3.6-1.9L12 3Z"/><path d="m19 15 .7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7L19 15Z"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="shell">
+    <header class="topbar" aria-label="Barra principal">
+      <div class="brand">
+        <span class="brand-mark"><svg class="icon"><use href="#i-logo"/></svg></span>
+        <span class="brand-copy"><span class="brand-name">IClass</span><span class="brand-concept">Lumen · conceito 02</span></span>
+      </div>
+
+      <nav class="main-nav" aria-label="Navegação principal">
+        <button class="nav-button active" type="button" data-label="Hoje"><svg class="icon"><use href="#i-home"/></svg>Hoje</button>
+        <button class="nav-button" type="button" data-label="Trilhas"><svg class="icon"><use href="#i-book"/></svg>Trilhas</button>
+        <button class="nav-button" type="button" data-label="Biblioteca"><svg class="icon"><use href="#i-library"/></svg>Biblioteca</button>
+        <button class="nav-button" type="button" data-label="Agenda"><svg class="icon"><use href="#i-calendar"/></svg>Agenda</button>
+      </nav>
+
+      <div class="top-actions">
+        <button class="icon-button" type="button" aria-label="Buscar" data-toast="Busca global disponível neste conceito"><svg class="icon"><use href="#i-search"/></svg></button>
+        <button class="icon-button" id="themeToggle" type="button" aria-label="Ativar tema escuro"><svg class="icon theme-icon"><use href="#i-moon"/></svg></button>
+        <button class="icon-button" type="button" aria-label="Notificações" data-toast="Você tem 3 novas notificações"><svg class="icon"><use href="#i-bell"/></svg><span class="notification-dot"></span></button>
+        <button class="profile-button" type="button" data-toast="Perfil de Alice Aluna"><span class="avatar">AA</span><span class="profile-name">Alice</span></button>
+      </div>
+    </header>
+
+    <main class="page" id="conteudo">
+      <section class="page-heading reveal">
+        <div>
+          <p class="eyebrow">Seu espaço de aprendizagem</p>
+          <h1>Bom dia, Alice.</h1>
+          <p>Seu próximo avanço está mais perto do que parece.</p>
+        </div>
+        <div class="date-chip"><svg class="icon" style="width:15px;height:15px"><use href="#i-calendar"/></svg>segunda-feira, 13 de julho</div>
+      </section>
+
+      <div class="dashboard-grid">
+        <div class="main-column">
+          <section class="focus-card reveal delay-1" aria-labelledby="continue-title">
+            <div class="focus-content">
+              <span class="context-pill"><span class="live-dot"></span>Continue de onde parou</span>
+              <h2 id="continue-title">Políticas Corporativas + Auditoria/Logs</h2>
+              <p class="focus-subtitle">FECOP — Colaboração e Produtividade</p>
+              <div class="focus-meta">
+                <span><svg class="icon" style="width:14px;height:14px"><use href="#i-clock"/></svg>18 min restantes</span>
+                <span><svg class="icon" style="width:14px;height:14px"><use href="#i-note"/></svg>Tópico 9 de 15</span>
+              </div>
+              <button class="primary-action" type="button" data-toast="Mockup: o módulo seria aberto aqui">Retomar aula <svg class="icon" style="width:16px;height:16px"><use href="#i-arrow"/></svg></button>
+            </div>
+            <div class="focus-progress" aria-label="60% do curso concluído">
+              <div class="progress-ring">
+                <svg viewBox="0 0 160 160" aria-hidden="true"><circle class="progress-track" cx="80" cy="80" r="69"/><circle class="progress-value" cx="80" cy="80" r="69"/></svg>
+                <div class="progress-copy"><strong>60%</strong><span>do curso</span></div>
+                <span class="progress-badge"><svg class="icon" style="width:16px;height:16px"><use href="#i-check"/></svg></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card stat-strip reveal delay-2" aria-label="Resumo acadêmico">
+            <article class="stat"><div class="stat-top"><span class="stat-label">Nota geral</span><span class="stat-icon"><svg class="icon"><use href="#i-chart"/></svg></span></div><strong class="stat-value">7,6</strong><span class="stat-helper positive">↗ 0,4 este mês</span></article>
+            <article class="stat"><div class="stat-top"><span class="stat-label">Frequência</span><span class="stat-icon"><svg class="icon"><use href="#i-check"/></svg></span></div><strong class="stat-value">94%</strong><span class="stat-helper">Presença registrada</span></article>
+            <article class="stat"><div class="stat-top"><span class="stat-label">Tópicos</span><span class="stat-icon"><svg class="icon"><use href="#i-book"/></svg></span></div><strong class="stat-value">9/15</strong><span class="stat-helper">6 para concluir</span></article>
+            <article class="stat"><div class="stat-top"><span class="stat-label">Sequência</span><span class="stat-icon"><svg class="icon"><use href="#i-spark"/></svg></span></div><strong class="stat-value">8 dias</strong><span class="stat-helper positive">Seu melhor ritmo</span></article>
+          </section>
+
+          <section class="card section-card reveal delay-3" aria-labelledby="week-title">
+            <div class="section-header"><div><h2 class="section-title" id="week-title">Sua semana</h2><p class="section-kicker">Um panorama simples do que vem pela frente.</p></div><button class="text-button" type="button" data-toast="Abrindo agenda completa">Ver agenda <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+            <div class="week-tabs" role="tablist" aria-label="Dias da semana">
+              <button class="day-button active" type="button" role="tab" aria-selected="true" data-time="09:30" data-title="Fundamentos de Segurança da Informação" data-detail="Aula ao vivo · 50 minutos" data-kind="Aula"><span class="day-label">Seg</span><span class="day-number">13</span><span class="day-event"></span></button>
+              <button class="day-button" type="button" role="tab" aria-selected="false" data-time="14:00" data-title="Entrega: Mapa de Processos" data-detail="Atividade · prazo até 18h" data-kind="Entrega"><span class="day-label">Ter</span><span class="day-number">14</span><span class="day-event"></span></button>
+              <button class="day-button" type="button" role="tab" aria-selected="false" data-time="10:20" data-title="Revisão colaborativa — FECOP" data-detail="Encontro com sua turma" data-kind="Grupo"><span class="day-label">Qua</span><span class="day-number">15</span><span class="day-event"></span></button>
+              <button class="day-button" type="button" role="tab" aria-selected="false" data-time="15:40" data-title="Avaliação IRCOM 01" data-detail="Prova online · 60 minutos" data-kind="Prova"><span class="day-label">Qui</span><span class="day-number">16</span><span class="day-event"></span></button>
+              <button class="day-button" type="button" role="tab" aria-selected="false" data-time="Livre" data-title="Dia reservado para estudo" data-detail="Sem compromissos agendados" data-kind="Foco"><span class="day-label">Sex</span><span class="day-number">17</span><span class="day-event"></span></button>
+            </div>
+            <div class="today-plan" aria-live="polite"><span class="plan-time">09:30</span><span class="plan-copy"><strong>Fundamentos de Segurança da Informação</strong><span>Aula ao vivo · 50 minutos</span></span><span class="plan-type">Aula</span></div>
+          </section>
+
+          <section class="card section-card reveal delay-4" aria-labelledby="module-title">
+            <div class="section-header"><div><h2 class="section-title" id="module-title">Trilhas ativas</h2><p class="section-kicker">Continue no seu ritmo, sem perder o contexto.</p></div><button class="text-button" type="button" data-toast="Mostrando todas as trilhas">Ver todas <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+            <div class="module-grid">
+              <article class="module-card" tabindex="0" data-toast="FUTEC selecionado"><div class="module-number">01 <span class="module-status"></span></div><h3>Fundamentos de TI</h3><p>5 de 5 tópicos</p><div class="module-progress"><span style="width:100%"></span></div></article>
+              <article class="module-card" tabindex="0" data-toast="FECOP selecionado"><div class="module-number">02 <span class="module-status" style="background:var(--amber)"></span></div><h3>Colaboração e Produtividade</h3><p>4 de 5 tópicos</p><div class="module-progress"><span style="width:80%"></span></div></article>
+              <article class="module-card" tabindex="0" data-toast="IRCOM selecionado"><div class="module-number">03 <span class="module-status" style="background:var(--subtle)"></span></div><h3>Instalação e Redes</h3><p>0 de 5 tópicos</p><div class="module-progress"><span style="width:8%"></span></div></article>
+            </div>
+          </section>
+        </div>
+
+        <aside class="side-column" aria-label="Informações complementares">
+          <section class="card side-card reveal delay-2">
+            <div class="section-header"><div><h2 class="section-title">Próximos</h2><p class="section-kicker">Compromissos importantes</p></div><button class="icon-button" type="button" aria-label="Abrir calendário" data-toast="Abrindo calendário"><svg class="icon" style="width:16px;height:16px"><use href="#i-calendar"/></svg></button></div>
+            <div class="next-list">
+              <article class="next-item" tabindex="0" data-toast="Detalhes da aula"><span class="date-block"><strong>14</strong><span>jul</span></span><span class="next-copy"><strong>Aula ao vivo — FECOP</strong><span><svg class="icon"><use href="#i-clock"/></svg>09:30 · Teams</span></span></article>
+              <article class="next-item" tabindex="0" data-toast="Detalhes da entrega"><span class="date-block"><strong>16</strong><span>jul</span></span><span class="next-copy"><strong>Mapa de Processos</strong><span><svg class="icon"><use href="#i-clock"/></svg>Entrega até 18h</span></span></article>
+              <article class="next-item" tabindex="0" data-toast="Detalhes da avaliação"><span class="date-block"><strong>21</strong><span>jul</span></span><span class="next-copy"><strong>Avaliação IRCOM 01</strong><span><svg class="icon"><use href="#i-clock"/></svg>15:40 · 60 min</span></span></article>
+            </div>
+          </section>
+
+          <section class="card rhythm-card reveal delay-3" aria-labelledby="rhythm-title">
+            <div class="section-header"><div><h2 class="section-title" id="rhythm-title">Ritmo de estudo</h2><p class="section-kicker">Últimos 7 dias</p></div><span class="plan-type">+18%</span></div>
+            <div class="rhythm-score"><strong>6h24</strong><span>de dedicação</span></div>
+            <div class="chart-wrap">
+              <svg viewBox="0 0 360 145" role="img" aria-label="Gráfico crescente de ritmo de estudo">
+                <defs><linearGradient id="areaGradient" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--cobalt)" stop-opacity=".65"/><stop offset="1" stop-color="var(--cobalt)" stop-opacity="0"/></linearGradient></defs>
+                <path class="chart-grid" d="M0 112H360M0 72H360M0 32H360"/>
+                <path class="chart-area" d="M0 120 C38 113 47 80 85 89 S145 111 178 68 S235 87 266 50 S324 53 360 22 V145 H0Z"/>
+                <path class="chart-line" d="M0 120 C38 113 47 80 85 89 S145 111 178 68 S235 87 266 50 S324 53 360 22"/>
+                <circle class="chart-point" cx="360" cy="22" r="5"/>
+              </svg>
+            </div>
+          </section>
+
+          <section class="card mentor-card reveal delay-4">
+            <div class="mentor-head"><span class="mentor-avatar">MR</span><span><strong>Mariana Rocha</strong><span>Professora · FECOP</span></span></div>
+            <p class="mentor-message">“Alice, sua evolução nesta semana foi excelente. Continue nessa cadência.”</p>
+            <button class="mentor-link" type="button" data-toast="Abrindo conversa com Mariana">Responder mensagem <svg class="icon" style="width:14px;height:14px"><use href="#i-arrow"/></svg></button>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <nav class="bottom-nav" aria-label="Navegação móvel">
+    <button class="active" type="button" data-label="Hoje"><svg class="icon"><use href="#i-home"/></svg>Hoje</button>
+    <button type="button" data-label="Trilhas"><svg class="icon"><use href="#i-book"/></svg>Trilhas</button>
+    <button type="button" data-label="Biblioteca"><svg class="icon"><use href="#i-library"/></svg>Biblioteca</button>
+    <button type="button" data-label="Agenda"><svg class="icon"><use href="#i-calendar"/></svg>Agenda</button>
+  </nav>
+
+  <div class="toast" role="status" aria-live="polite"><span class="toast-dot"></span><span class="toast-message">Interação do mockup</span></div>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const themeToggle = document.getElementById('themeToggle');
+      const themeIcon = themeToggle.querySelector('use');
+      const toast = document.querySelector('.toast');
+      const toastMessage = document.querySelector('.toast-message');
+      let toastTimer;
+
+      function showToast(message) {
+        toastMessage.textContent = message;
+        toast.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+      }
+
+      function setTheme(theme) {
+        root.dataset.theme = theme;
+        const dark = theme === 'dark';
+        themeIcon.setAttribute('href', dark ? '#i-sun' : '#i-moon');
+        themeToggle.setAttribute('aria-label', dark ? 'Ativar tema claro' : 'Ativar tema escuro');
+      }
+
+      themeToggle.addEventListener('click', () => {
+        const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+        setTheme(next);
+        showToast(next === 'dark' ? 'Modo escuro ativado' : 'Modo claro ativado');
+      });
+
+      document.querySelectorAll('[data-toast]').forEach((element) => {
+        element.addEventListener('click', () => showToast(element.dataset.toast));
+        element.addEventListener('keydown', (event) => {
+          if ((event.key === 'Enter' || event.key === ' ') && element.tagName !== 'BUTTON') {
+            event.preventDefault();
+            showToast(element.dataset.toast);
+          }
+        });
+      });
+
+      document.querySelectorAll('.nav-button, .bottom-nav button').forEach((button) => {
+        button.addEventListener('click', () => {
+          const label = button.dataset.label;
+          document.querySelectorAll('.nav-button, .bottom-nav button').forEach((item) => item.classList.toggle('active', item.dataset.label === label));
+          showToast(label === 'Hoje' ? 'Você já está na página inicial' : `${label}: navegação demonstrativa`);
+        });
+      });
+
+      const plan = document.querySelector('.today-plan');
+      document.querySelectorAll('.day-button').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('.day-button').forEach((item) => {
+            item.classList.remove('active');
+            item.setAttribute('aria-selected', 'false');
+          });
+          button.classList.add('active');
+          button.setAttribute('aria-selected', 'true');
+          plan.classList.add('switching');
+          setTimeout(() => {
+            plan.querySelector('.plan-time').textContent = button.dataset.time;
+            plan.querySelector('.plan-copy strong').textContent = button.dataset.title;
+            plan.querySelector('.plan-copy span').textContent = button.dataset.detail;
+            plan.querySelector('.plan-type').textContent = button.dataset.kind;
+            plan.classList.remove('switching');
+          }, 150);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

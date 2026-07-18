@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">HD vs SSD - COMPARAÇÃO DE ARMAZENAMENTO</text>
+  
+  <!-- HD Anatomy -->
+  <rect x="30" y="60" width="250" height="180" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="155" y="85" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">HDD - HARD DISK</text>
+  <text x="155" y="105" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Disco Rígido Magnético</text>
+  
+  <!-- HD diagram -->
+  <circle cx="155" cy="155" r="40" fill="#0f3460" stroke="#e94560" stroke-width="2"/>
+  <circle cx="155" cy="155" r="30" fill="#16213e"/>
+  <text x="155" y="160" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">PRATO</text>
+  <line x1="155" y1="155" x2="185" y2="145" stroke="#e94560" stroke-width="2"/>
+  <rect x="175" y="140" width="30" height="10" fill="#e94560" rx="2"/>
+  <text x="190" y="165" font-family="Arial" font-size="7" fill="#aaa">CABEÇA</text>
+  
+  <text x="155" y="215" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Partes móveis = Mais lento, mais frágil</text>
+  <text x="155" y="230" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">5400/7200 RPM | 150-250 MB/s</text>
+  
+  <!-- SSD Anatomy -->
+  <rect x="320" y="60" width="250" height="180" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="445" y="85" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">SSD - SOLID STATE</text>
+  <text x="445" y="105" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Disco de Estado Sólido</text>
+  
+  <!-- SSD diagram -->
+  <rect x="380" y="125" width="130" height="70" fill="#16213e" rx="5"/>
+  <text x="445" y="150" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">💾 CHIP NAND FLASH</text>
+  <text x="445" y="165" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Sem partes móveis</text>
+  <text x="445" y="180" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Memória não-volátil</text>
+  
+  <text x="445" y="215" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">Sem partes móveis = Mais rápido, mais confiável</text>
+  <text x="445" y="230" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">NVMe: 3000-7000 MB/s</text>
+  
+  <!-- Comparison table -->
+  <text x="300" y="270" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">COMPARAÇÃO DIRETA</text>
+  
+  <rect x="30" y="285" width="540" height="100" fill="#16213e" rx="5"/>
+  
+  <text x="155" y="305" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">CARACTERÍSTICA</text>
+  <text x="300" y="305" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">HDD</text>
+  <text x="445" y="305" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">SSD</text>
+  
+  <line x1="30" y1="312" x2="570" y2="312" stroke="#0f3460"/>
+  
+  <text x="155" y="330" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Velocidade</text>
+  <text x="300" y="330" font-family="Arial" font-size="9" fill="#e94560" text-anchor="middle">150-250 MB/s</text>
+  <text x="445" y="330" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">3000-7000 MB/s</text>
+  
+  <text x="155" y="350" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Preço por GB</text>
+  <text x="300" y="350" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">R$ 0,15-0,25</text>
+  <text x="445" y="350" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">R$ 0,35-0,60</text>
+  
+  <text x="155" y="370" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Durabilidade</text>
+  <text x="300" y="370" font-family="Arial" font-size="9" fill="#e94560" text-anchor="middle">Partes móveis = frágil</text>
+  <text x="445" y="370" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">Sem moving parts</text>
+  
+  <text x="155" y="390" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Uso Ideal</text>
+  <text x="300" y="390" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Storage frio/backup</text>
+  <text x="445" y="390" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">SO, programas, jogos</text>
+</svg>

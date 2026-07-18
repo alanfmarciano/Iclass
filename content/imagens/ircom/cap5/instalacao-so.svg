@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">INSTALAÇÃO DE SISTEMA OPERACIONAL</text>
+  
+  <!-- Boot order -->
+  <text x="300" y="60" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">ORDEM DE BOOT (BIOS/UEFI)</text>
+  
+  <rect x="30" y="75" width="540" height="50" fill="#16213e" rx="5"/>
+  <text x="60" y="100" font-family="Arial" font-size="10" fill="#fff">1º: USB/DVD</text>
+  <text x="60" y="112" font-family="Arial" font-size="8" fill="#aaa">Mídia instalação</text>
+  
+  <text x="180" y="100" font-family="Arial" font-size="10" fill="#fff">2º: SSD/HD</text>
+  <text x="180" y="112" font-family="Arial" font-size="8" fill="#aaa">Sistema instalado</text>
+  
+  <text x="320" y="100" font-family="Arial" font-size="10" fill="#fff">3º: Rede (PXE)</text>
+  <text x="320" y="112" font-family="Arial" font-size="8" fill="#aaa">Boot via rede</text>
+  
+  <text x="460" y="100" font-family="Arial" font-size="10" fill="#fff">DEL para setup</text>
+  <text x="460" y="112" font-family="Arial" font-size="8" fill="#e94560">F2/F12 menus</text>
+  
+  <!-- Windows vs Linux -->
+  <text x="300" y="150" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">WINDOWS vs LINUX</text>
+  
+  <rect x="30" y="165" width="250" height="120" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="155" y="190" font-family="Arial" font-size="12" fill="#4ecca3" text-anchor="middle" font-weight="bold">🪟 WINDOWS 11</text>
+  <text x="155" y="212" font-family="Arial" font-size="9" fill="#fff">✅ Intuitivo, familiar</text>
+  <text x="155" y="228" font-family="Arial" font-size="9" fill="#fff">✅ drivers fácilmente</text>
+  <text x="155" y="244" font-family="Arial" font-size="9" fill="#fff">✅ Compatibilidade 100%</text>
+  <text x="155" y="260" font-family="Arial" font-size="9" fill="#fff">✅ Office, games, CAD</text>
+  <text x="155" y="276" font-family="Arial" font-size="8" fill="#aaa">Licença R$ 400-600</text>
+  
+  <rect x="305" y="165" width="260" height="120" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="435" y="190" font-family="Arial" font-size="12" fill="#e94560" text-anchor="middle" font-weight="bold">🐧 LINUX (Ubuntu/Debian)</text>
+  <text x="435" y="212" font-family="Arial" font-size="9" fill="#fff">✅ Gratuito (open source)</text>
+  <text x="435" y="228" font-family="Arial" font-size="9" fill="#fff">✅ Leve, rápido, seguro</text>
+  <text x="435" y="244" font-family="Arial" font-size="9" fill="#fff">✅ Ideal para servidores</text>
+  <text x="435" y="260" font-family="Arial" font-size="9" fill="#fff">✅ Terminal poderoso</text>
+  <text x="435" y="276" font-family="Arial" font-size="8" fill="#aaa">Curva de aprendizado</text>
+  
+  <!-- Partition -->
+  <text x="300" y="310" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">PARTIÇÃO DE DISCO (ESPECIALISTAS)</text>
+  
+  <rect x="30" y="325" width="540" height="65" fill="#16213e" rx="5"/>
+  
+  <text x="45" y="345" font-family="Arial" font-size="9" fill="#fff">Windows: C: (Sistema 100-200GB) + D: (Dados) | Linux: / (root 20-50GB) + /home + swap</text>
+  <text x="45" y="360" font-family="Arial" font-size="8" fill="#aaa">GPT para UEFI | MBR para BIOS legacy | EFI partition (ESP) 100-500MB necessário para UEFI</text>
+  <text x="45" y="378" font-family="Arial" font-size="9" fill="#4ecca3">💡 SSD: usar AHCI no BIOS | NVMe: drivers integrados Win 10+</text>
+</svg>

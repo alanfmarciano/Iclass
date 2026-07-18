@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <rect width="800" height="500" fill="#1a1a2e"/>
+  
+  <text x="400" y="30" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="bold">MODELO RELACIONAL DE BANCO DE DADOS</text>
+  <text x="400" y="52" font-family="Arial" font-size="11" fill="#888" text-anchor="middle">Tabelas, Chaves e Relacionamentos</text>
+  
+  <!-- Table: FUNCIONARIOS -->
+  <rect x="50" y="80" width="300" height="250" rx="5" fill="#2c3e50" stroke="#e94560" stroke-width="3"/>
+  <rect x="50" y="80" width="300" height="30" rx="5" fill="#e94560"/>
+  <text x="200" y="100" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">FUNCIONARIOS</text>
+  
+  <!-- Column Headers -->
+  <rect x="50" y="110" width="300" height="25" fill="#1a1a2e"/>
+  <text x="90" y="128" font-family="Courier" font-size="10" fill="#e94560" font-weight="bold">ID</text>
+  <text x="180" y="128" font-family="Courier" font-size="10" fill="#e94560" font-weight="bold">NOME</text>
+  <text x="280" y="128" font-family="Courier" font-size="10" fill="#e94560" font-weight="bold">SETOR_ID</text>
+  
+  <!-- Data Rows -->
+  <rect x="50" y="135" width="300" height="28" fill="#0f3460" stroke="#34495e"/>
+  <text x="90" y="155" font-family="Courier" font-size="11" fill="#fff">1</text>
+  <text x="180" y="155" font-family="Courier" font-size="11" fill="#fff">João Silva</text>
+  <text x="280" y="155" font-family="Courier" font-size="11" fill="#60a5fa">10</text>
+  
+  <rect x="50" y="163" width="300" height="28" fill="#16213e" stroke="#34495e"/>
+  <text x="90" y="183" font-family="Courier" font-size="11" fill="#fff">2</text>
+  <text x="180" y="183" font-family="Courier" font-size="11" fill="#fff">Maria Santos</text>
+  <text x="280" y="183" font-family="Courier" font-size="11" fill="#60a5fa">20</text>
+  
+  <rect x="50" y="191" width="300" height="28" fill="#0f3460" stroke="#34495e"/>
+  <text x="90" y="211" font-family="Courier" font-size="11" fill="#fff">3</text>
+  <text x="180" y="211" font-family="Courier" font-size="11" fill="#fff">Pedro Costa</text>
+  <text x="280" y="211" font-family="Courier" font-size="11" fill="#60a5fa">10</text>
+  
+  <rect x="50" y="219" width="300" height="28" fill="#16213e" stroke="#34495e"/>
+  <text x="90" y="239" font-family="Courier" font-size="11" fill="#fff">4</text>
+  <text x="180" y="239" font-family="Courier" font-size="11" fill="#fff">Ana Oliveira</text>
+  <text x="280" y="239" font-family="Courier" font-size="11" fill="#60a5fa">30</text>
+  
+  <!-- PK Indicator -->
+  <circle cx="65" cy="125" r="5" fill="#e94560"/>
+  <circle cx="65" cy="152" r="5" fill="#e94560"/>
+  <circle cx="65" cy="180" r="5" fill="#e94560"/>
+  <circle cx="65" cy="208" r="5" fill="#e94560"/>
+  <circle cx="65" cy="236" r="5" fill="#e94560"/>
+  
+  <!-- FK Indicator -->
+  <circle cx="255" cy="125" r="5" fill="#60a5fa"/>
+  <circle cx="255" cy="152" r="5" fill="#60a5fa"/>
+  <circle cx="255" cy="180" r="5" fill="#60a5fa"/>
+  <circle cx="255" cy="208" r="5" fill="#60a5fa"/>
+  <circle cx="255" cy="236" r="5" fill="#60a5fa"/>
+  
+  <!-- Table: SETORES -->
+  <rect x="450" y="180" width="250" height="150" rx="5" fill="#2c3e50" stroke="#60a5fa" stroke-width="3"/>
+  <rect x="450" y="180" width="250" height="30" rx="5" fill="#60a5fa"/>
+  <text x="575" y="200" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">SETORES</text>
+  
+  <!-- Column Headers -->
+  <rect x="450" y="210" width="250" height="25" fill="#1a1a2e"/>
+  <text x="490" y="228" font-family="Courier" font-size="10" fill="#60a5fa" font-weight="bold">ID</text>
+  <text x="575" y="228" font-family="Courier" font-size="10" fill="#60a5fa" font-weight="bold">NOME</text>
+  
+  <!-- Data Rows -->
+  <rect x="450" y="235" width="250" height="28" fill="#0f3460" stroke="#34495e"/>
+  <text x="490" y="255" font-family="Courier" font-size="11" fill="#fff">10</text>
+  <text x="575" y="255" font-family="Courier" font-size="11" fill="#fff">Manutenção</text>
+  
+  <rect x="450" y="263" width="250" height="28" fill="#16213e" stroke="#34495e"/>
+  <text x="490" y="283" font-family="Courier" font-size="11" fill="#fff">20</text>
+  <text x="575" y="283" font-family="Courier" font-size="11" fill="#fff">Produção</text>
+  
+  <rect x="450" y="291" width="250" height="28" fill="#0f3460" stroke="#34495e"/>
+  <text x="490" y="311" font-family="Courier" font-size="11" fill="#fff">30</text>
+  <text x="575" y="311" font-family="Courier" font-size="11" fill="#fff">RH</text>
+  
+  <!-- PK Indicators -->
+  <circle cx="465" cy="225" r="5" fill="#60a5fa"/>
+  <circle cx="465" cy="252" r="5" fill="#60a5fa"/>
+  <circle cx="465" cy="280" r="5" fill="#60a5fa"/>
+  <circle cx="465" cy="308" r="5" fill="#60a5fa"/>
+  
+  <!-- Relationship Line -->
+  <path d="M350 255 Q400 255 450 255" stroke="#e9c46a" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="395" y="245" font-family="Arial" font-size="9" fill="#e9c46a" text-anchor="middle">FK</text>
+  
+  <!-- Legend -->
+  <rect x="50" y="360" width="700" height="120" rx="5" fill="#16213e"/>
+  
+  <text x="70" y="385" font-family="Arial" font-size="13" fill="#fff" font-weight="bold">LEGENDA:</text>
+  
+  <circle cx="80" cy="405" r="6" fill="#e94560"/>
+  <text x="100" y="410" font-family="Arial" font-size="10" fill="#a8d8ff">PK - Chave Primária (唯一)</text>
+  
+  <circle cx="80" cy="425" r="6" fill="#60a5fa"/>
+  <text x="100" y="430" font-family="Arial" font-size="10" fill="#a8d8ff">FK - Chave Estrangeira</text>
+  
+  <circle cx="300" cy="405" r="6" fill="#27ae60"/>
+  <text x="320" y="410" font-family="Arial" font-size="10" fill="#a8d8ff">Tipo de Dados: INT, VARCHAR, DATE</text>
+  
+  <circle cx="300" cy="425" r="6" fill="#f39c12"/>
+  <text x="320" y="430" font-family="Arial" font-size="10" fill="#a8d8ff">Normalização: Elimina redundância</text>
+  
+  <text x="500" y="405" font-family="Courier" font-size="11" fill="#e94560">SELECT f.nome, s.nome</text>
+  <text x="500" y="420" font-family="Courier" font-size="11" fill="#e94560">FROM funcionarios f</text>
+  <text x="500" y="435" font-family="Courier" font-size="11" fill="#e94560">JOIN setores s ON f.setor_id = s.id</text>
+  
+  <text x="500" y="460" font-family="Arial" font-size="9" fill="#888">Resultado: João → Manutenção, Maria → Produção...</text>
+</svg>

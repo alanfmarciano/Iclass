@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup v2 — Digitação ao vivo (leitura de comandos capturados)</title>
+<style>
+  :root{
+    --bg:#10121a; --surface:#191c25; --surface-2:#20242e; --surface-3:#262b37;
+    --border:#2b303b; --border-strong:#3a404c;
+    --text:#f4f5ef; --muted:#b0b5ae; --subtle:#8b9189;
+    --primary:#6b8afd; --primary-soft:rgba(107,138,253,.14);
+    --success:#58d6aa; --success-soft:rgba(88,214,170,.12);
+    --warning:#ffca67; --warning-soft:rgba(255,202,103,.12);
+    --danger:#ff858c; --danger-soft:rgba(255,133,140,.12);
+    --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+    --sans:"Segoe UI Variable Text","SF Pro Text","Segoe UI",ui-sans-serif,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:var(--sans); color:var(--text); min-height:100vh;
+    background:
+      radial-gradient(circle at 100% 0%, rgba(107,138,253,.10), transparent 30rem),
+      radial-gradient(circle at 0% 100%, rgba(255,133,140,.06), transparent 26rem),
+      var(--bg);
+    display:flex; align-items:center; justify-content:center; padding:32px 20px;
+  }
+  .stage{width:100%; max-width:880px}
+  .caption{color:var(--subtle); font-size:12px; text-align:center; margin-bottom:14px; letter-spacing:.02em}
+  .caption b{color:var(--muted); font-weight:600}
+
+  .panel{
+    background:linear-gradient(160deg, #1b1f29, var(--surface));
+    border:1px solid var(--border); border-radius:20px; overflow:hidden;
+    box-shadow:0 26px 70px rgba(0,0,0,.45), 0 1px 0 rgba(255,255,255,.03) inset;
+  }
+
+  /* Header */
+  .head{display:flex; align-items:flex-start; gap:14px; padding:20px 22px 16px; border-bottom:1px solid var(--border)}
+  .avatar{
+    width:44px; height:44px; border-radius:13px; flex:none; display:grid; place-items:center;
+    font-weight:700; font-size:16px; color:#0d1017;
+    background:linear-gradient(140deg,#8ea6ff,#6b8afd); box-shadow:0 6px 16px rgba(107,138,253,.35)
+  }
+  .id{flex:1; min-width:0}
+  .id .name{display:flex; align-items:center; gap:10px; font-size:17px; font-weight:650; letter-spacing:-.01em}
+  .id .mail{color:var(--subtle); font-size:12.5px; margin-top:2px; font-family:var(--mono)}
+  .live{
+    display:inline-flex; align-items:center; gap:6px; font-size:10.5px; font-weight:700;
+    color:var(--danger); background:var(--danger-soft); border:1px solid rgba(255,133,140,.3);
+    padding:3px 9px; border-radius:999px; letter-spacing:.09em
+  }
+  .live .dot{width:6px; height:6px; border-radius:50%; background:var(--danger); animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1; transform:scale(1)}50%{opacity:.35; transform:scale(.75)}}
+  .head .close{
+    margin-left:auto; width:34px; height:34px; flex:none; border-radius:10px; cursor:pointer;
+    background:var(--surface-2); border:1px solid var(--border); color:var(--muted);
+    display:grid; place-items:center; font-size:16px; transition:.15s
+  }
+  .head .close:hover{border-color:var(--primary); color:var(--text)}
+  .status-pill{
+    display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600;
+    padding:3px 9px; border-radius:999px; border:1px solid;
+    color:var(--danger); background:var(--danger-soft); border-color:rgba(255,133,140,.28)
+  }
+  .status-pill .s{width:6px;height:6px;border-radius:50%;background:currentColor}
+
+  /* Stats */
+  .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border)}
+  .stat{background:var(--surface); padding:14px 18px}
+  .stat .k{font-size:11px; color:var(--subtle); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px}
+  .stat .v{font-size:22px; font-weight:700; font-family:var(--mono); letter-spacing:-.02em; line-height:1}
+  .stat .v small{font-size:12px; color:var(--subtle); font-weight:500; margin-left:3px}
+  .stat.warn .v{color:var(--danger)}
+  .stat .trend{font-size:11px; color:var(--subtle); margin-top:5px}
+  .stat.warn .trend{color:var(--danger)}
+
+  /* Toolbar */
+  .toolbar{display:flex; align-items:center; gap:10px; padding:14px 18px; border-top:1px solid var(--border); border-bottom:1px solid var(--border)}
+  .tabs{display:inline-flex; background:var(--surface-2); border:1px solid var(--border); border-radius:11px; padding:3px}
+  .tab{
+    border:0; background:transparent; color:var(--muted); font-family:var(--sans); font-size:12.5px; font-weight:600;
+    padding:7px 14px; border-radius:8px; cursor:pointer; transition:.15s; display:inline-flex; align-items:center; gap:7px
+  }
+  .tab .badge{font-family:var(--mono); font-size:10.5px; background:var(--danger); color:#1a0507; border-radius:6px; padding:0 5px; font-weight:700}
+  .tab.active{background:var(--primary); color:#0b1020; box-shadow:0 4px 12px rgba(107,138,253,.3)}
+  .tab.active .badge{background:#0b1020; color:var(--danger)}
+  .tab.disabled{opacity:.4; cursor:not-allowed}
+  .tab.disabled .lock{font-size:10px; margin-left:2px}
+  .toolbar .right{margin-left:auto; display:flex; align-items:center; gap:12px}
+  .switch{display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none}
+  .switch .track{width:34px; height:19px; border-radius:999px; background:var(--surface-3); border:1px solid var(--border-strong); position:relative; transition:.18s}
+  .switch .track::after{content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:var(--subtle); transition:.18s}
+  .switch.on .track{background:var(--danger-soft); border-color:var(--danger)}
+  .switch.on .track::after{left:16px; background:var(--danger)}
+  .refresh{font-size:11px; color:var(--subtle); font-family:var(--mono); display:inline-flex; align-items:center; gap:6px}
+  .refresh .rdot{width:5px;height:5px;border-radius:50%;background:var(--success); box-shadow:0 0 0 0 rgba(88,214,170,.5); animation:ring 2s infinite}
+  @keyframes ring{0%{box-shadow:0 0 0 0 rgba(88,214,170,.4)}70%{box-shadow:0 0 0 7px rgba(88,214,170,0)}100%{box-shadow:0 0 0 0 rgba(88,214,170,0)}}
+
+  /* Body */
+  .body{padding:18px; max-height:460px; overflow-y:auto}
+  .body::-webkit-scrollbar{width:9px}
+  .body::-webkit-scrollbar-thumb{background:var(--border-strong); border-radius:99px}
+  .view{display:none}
+  .view.active{display:block}
+
+  /* Summary chips (the "read at a glance" row) */
+  .summary{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:9px; margin-bottom:16px}
+  .sumcard{background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:12px 14px; display:flex; gap:11px; align-items:center}
+  .sumcard .ic{width:34px;height:34px;flex:none;border-radius:10px;display:grid;place-items:center;font-size:16px;background:var(--surface-3)}
+  .sumcard .n{font-size:20px; font-weight:700; font-family:var(--mono); line-height:1}
+  .sumcard .l{font-size:11.5px; color:var(--subtle); margin-top:3px}
+  .sumcard.danger{background:var(--danger-soft); border-color:rgba(255,133,140,.28)}
+  .sumcard.danger .ic{background:rgba(255,133,140,.16)} .sumcard.danger .n{color:var(--danger)}
+  .sumcard.warn{background:var(--warning-soft); border-color:rgba(255,202,103,.28)}
+  .sumcard.warn .ic{background:rgba(255,202,103,.16)} .sumcard.warn .n{color:var(--warning)}
+  .sumcard.ok{background:var(--success-soft); border-color:rgba(88,214,170,.22)}
+  .sumcard.ok .ic{background:rgba(88,214,170,.16)} .sumcard.ok .n{color:var(--success)}
+
+  .sechead{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--subtle); margin:4px 2px 10px}
+
+  /* Event rows — the core "legible captured command" list */
+  .events{display:flex; flex-direction:column; gap:8px}
+  .ev{display:flex; align-items:center; gap:13px; padding:11px 14px; border-radius:12px; background:var(--surface-2); border:1px solid var(--border)}
+  .ev .ico{width:34px; height:34px; flex:none; border-radius:10px; display:grid; place-items:center; font-size:16px; background:var(--surface-3)}
+  .ev .info{flex:1; min-width:0}
+  .ev .info .t{font-weight:640; font-size:13.5px; display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .ev .info .d{font-size:12px; color:var(--muted); margin-top:2px}
+  .ev .combo{font-family:var(--mono); font-size:11px; color:var(--subtle); background:var(--surface-3); border:1px solid var(--border); border-radius:6px; padding:1px 6px}
+  .ev .time{font-family:var(--mono); font-size:11px; color:var(--subtle); white-space:nowrap}
+  .ev.danger{background:var(--danger-soft); border-color:rgba(255,133,140,.25)}
+  .ev.danger .ico{background:rgba(255,133,140,.16)} .ev.danger .info .t{color:var(--danger)}
+  .ev.warn{background:var(--warning-soft); border-color:rgba(255,202,103,.25)}
+  .ev.warn .ico{background:rgba(255,202,103,.16)} .ev.warn .info .t{color:var(--warning)}
+  .tag{font-size:10px; font-weight:700; letter-spacing:.03em; padding:2px 7px; border-radius:999px; text-transform:uppercase}
+  .tag.block{color:var(--danger); background:rgba(255,133,140,.16); border:1px solid rgba(255,133,140,.3)}
+  .tag.flag{color:var(--warning); background:rgba(255,202,103,.16); border:1px solid rgba(255,202,103,.3)}
+  .tag.info{color:var(--primary); background:var(--primary-soft); border:1px solid rgba(107,138,253,.3)}
+
+  /* Grouped stream */
+  .streamnote{font-size:11.5px; color:var(--subtle); margin-bottom:14px; display:flex; gap:8px; align-items:center}
+  .grp{display:flex; flex-direction:column; gap:8px; position:relative; padding-left:20px}
+  .grp::before{content:""; position:absolute; left:6px; top:6px; bottom:6px; width:2px; background:var(--border)}
+  .seg{position:relative}
+  .seg .dot{position:absolute; left:-17px; top:13px; width:9px; height:9px; border-radius:50%; background:var(--border-strong); border:2px solid var(--surface)}
+  .seg.cmd .dot{background:var(--danger)}
+  .seg.focus .dot{background:var(--warning)}
+  /* typing segment */
+  .seg .row{display:flex; align-items:center; gap:11px; padding:10px 13px; border-radius:11px; background:var(--surface-2); border:1px solid var(--border)}
+  .seg .ic{width:30px; height:30px; flex:none; border-radius:9px; display:grid; place-items:center; font-size:14px; background:var(--surface-3)}
+  .seg .main{flex:1; min-width:0}
+  .seg .typedrun{font-family:var(--mono); font-size:13px; color:var(--text); word-break:break-word; line-height:1.5}
+  .seg .typedrun .del{color:var(--danger); text-decoration:line-through; opacity:.55}
+  .seg .typedrun .br{color:var(--subtle)}
+  .seg .sub{font-size:11px; color:var(--subtle); margin-top:3px}
+  .seg .time{font-family:var(--mono); font-size:11px; color:var(--subtle); white-space:nowrap}
+  /* command segment */
+  .seg.cmd .row{background:var(--danger-soft); border-color:rgba(255,133,140,.28)}
+  .seg.cmd .ic{background:rgba(255,133,140,.16)}
+  .seg.cmd .ttl{font-weight:640; font-size:13px; color:var(--danger); display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .seg.focus .row{background:var(--warning-soft); border-color:rgba(255,202,103,.28)}
+  .seg.focus .ic{background:rgba(255,202,103,.16)}
+  .seg.focus .ttl{font-weight:640; font-size:13px; color:var(--warning); display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .seg .combo{font-family:var(--mono); font-size:11px; color:var(--subtle); background:var(--surface-3); border:1px solid var(--border); border-radius:6px; padding:1px 6px}
+  .seg .xn{font-family:var(--mono); font-size:10.5px; font-weight:700; color:var(--danger); background:rgba(255,133,140,.16); border:1px solid rgba(255,133,140,.3); border-radius:999px; padding:1px 7px}
+
+  /* Timeline */
+  .tl{margin-top:16px; background:var(--surface-2); border:1px solid var(--border); border-radius:14px; padding:15px 17px}
+  .tl .th{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px}
+  .tl .th .lbl{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--subtle)}
+  .tl .th .legend{font-size:10.5px; color:var(--subtle); display:flex; gap:12px}
+  .tl .th .legend i{font-style:normal; display:inline-flex; align-items:center; gap:5px}
+  .tl .th .legend b{width:8px; height:8px; border-radius:2px; display:inline-block}
+  .bars{display:flex; align-items:flex-end; gap:3px; height:56px}
+  .bars .bar{flex:1; border-radius:3px 3px 0 0; background:var(--primary); min-height:3px; opacity:.85}
+  .bars .bar.sus{background:var(--danger)}
+  .bars .bar.gap{background:repeating-linear-gradient(45deg,var(--surface-3),var(--surface-3) 3px,transparent 3px,transparent 6px); border:1px dashed var(--border-strong); opacity:1}
+  .axis{display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px; color:var(--subtle); margin-top:7px}
+  .gaphint{margin-top:11px; font-size:11.5px; color:var(--warning); display:flex; align-items:center; gap:7px}
+
+  .foot{padding:12px 18px; border-top:1px solid var(--border); display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--subtle)}
+  .foot .ok{color:var(--success)}
+  .foot .btn{margin-left:auto; background:var(--surface-2); border:1px solid var(--border); color:var(--muted); font-size:12px; font-weight:600; padding:7px 13px; border-radius:9px; cursor:pointer; font-family:var(--sans)}
+  .foot .btn:hover{border-color:var(--primary); color:var(--text)}
+</style>
+</head>
+<body>
+<div class="stage">
+  <p class="caption">Mockup v2 — <b>Digitação ao vivo</b> · foco em <b>ler os comandos capturados</b> · dados de exemplo · <b>não implementado</b></p>
+
+  <div class="panel">
+    <!-- HEADER -->
+    <div class="head">
+      <div class="avatar">A</div>
+      <div class="id">
+        <div class="name">Alice Aluna <span class="live"><span class="dot"></span>AO VIVO</span></div>
+        <div class="mail">aluno@teste.local · Prova de Biologia · Turma 3B</div>
+        <div style="margin-top:9px; display:flex; gap:7px">
+          <span class="status-pill"><span class="s"></span>Foco bloqueado</span>
+          <span class="status-pill" style="color:var(--muted);background:var(--surface-2);border-color:var(--border)"><span class="s" style="background:var(--success)"></span>Online · 59:07 restante</span>
+        </div>
+      </div>
+      <div class="close">✕</div>
+    </div>
+
+    <!-- STATS -->
+    <div class="stats">
+      <div class="stat"><div class="k">Eventos capturados</div><div class="v">312</div><div class="trend">↑ ativo agora</div></div>
+      <div class="stat warn"><div class="k">Comandos suspeitos</div><div class="v">6</div><div class="trend">3 bloqueados · 3 sinalizados</div></div>
+      <div class="stat"><div class="k">Progresso</div><div class="v">3<small>/10</small></div><div class="trend">respondendo Q4</div></div>
+      <div class="stat warn"><div class="k">Saídas de foco</div><div class="v">2</div><div class="trend">última às 14:35</div></div>
+    </div>
+
+    <!-- TOOLBAR -->
+    <div class="toolbar">
+      <div class="tabs">
+        <button class="tab active" data-view="resumo">Resumo <span class="badge">6</span></button>
+        <button class="tab" data-view="stream">Fluxo completo</button>
+        <button class="tab disabled" title="Disponível quando houver questões dissertativas">Texto <span class="lock">🔒</span></button>
+      </div>
+      <div class="right">
+        <label class="switch" id="susOnly"><span class="track"></span>Só suspeitos</label>
+        <span class="refresh"><span class="rdot"></span>2s</span>
+      </div>
+    </div>
+
+    <!-- BODY -->
+    <div class="body">
+      <!-- VIEW: RESUMO (default) -->
+      <div class="view active" data-view="resumo">
+        <!-- read-at-a-glance counters -->
+        <div class="summary">
+          <div class="sumcard danger"><div class="ic">⧉</div><div><div class="n">3</div><div class="l">Cópia / recorte bloqueados</div></div></div>
+          <div class="sumcard warn"><div class="ic">📋</div><div><div class="n">1</div><div class="l">Colagem sinalizada</div></div></div>
+          <div class="sumcard warn"><div class="ic">⇄</div><div><div class="n">2</div><div class="l">Saídas de foco</div></div></div>
+          <div class="sumcard danger"><div class="ic">✨</div><div><div class="n">1</div><div class="l">Atalho de IA (Alt+G)</div></div></div>
+        </div>
+
+        <div class="sechead">Comandos capturados — em ordem</div>
+        <div class="events">
+          <div class="ev danger">
+            <div class="ico">⧉</div>
+            <div class="info">
+              <div class="t">Tentou copiar <span class="combo">Ctrl+C</span> <span class="tag block">bloqueado</span></div>
+              <div class="d">Cópia do enunciado impedida pelo sistema.</div>
+            </div>
+            <div class="time">14:32:07</div>
+          </div>
+          <div class="ev danger">
+            <div class="ico">☰</div>
+            <div class="info">
+              <div class="t">Abriu menu do botão direito <span class="combo">contextmenu</span> <span class="tag block">bloqueado</span></div>
+              <div class="d">Menu de contexto acionado sobre a área da prova.</div>
+            </div>
+            <div class="time">14:32:09</div>
+          </div>
+          <div class="ev danger">
+            <div class="ico">✨</div>
+            <div class="info">
+              <div class="t">Atalho de assistente de IA <span class="combo">Alt+G</span> <span class="tag block">bloqueado</span></div>
+              <div class="d">Combinação candidata do Gemini. Sinal forte de consulta externa.</div>
+            </div>
+            <div class="time">14:32:44</div>
+          </div>
+          <div class="ev warn">
+            <div class="ico">📋</div>
+            <div class="info">
+              <div class="t">Colou conteúdo <span class="combo">Ctrl+V · 38 caracteres</span> <span class="tag flag">sinalizado</span></div>
+              <div class="d">Colagem é permitida, mas registrada. Texto inserido sem digitação correspondente.</div>
+            </div>
+            <div class="time">14:33:15</div>
+          </div>
+          <div class="ev warn">
+            <div class="ico">⇄</div>
+            <div class="info">
+              <div class="t">Saiu do foco da prova <span class="combo">tab_blur</span> <span class="tag flag">pausou a prova</span></div>
+              <div class="d">Trocou de aba/janela. A prova é pausada automaticamente até o professor liberar.</div>
+            </div>
+            <div class="time">14:35:28</div>
+          </div>
+          <div class="ev warn">
+            <div class="ico">⛶</div>
+            <div class="info">
+              <div class="t">Saiu da tela cheia <span class="combo">fullscreen_exit</span> <span class="tag flag">pausou a prova</span></div>
+              <div class="d">Modo tela cheia encerrado durante a prova.</div>
+            </div>
+            <div class="time">14:35:31</div>
+          </div>
+        </div>
+
+        <!-- TIMELINE -->
+        <div class="tl">
+          <div class="th">
+            <span class="lbl">Ritmo de atividade · últimos 5 min</span>
+            <span class="legend">
+              <i><b style="background:var(--primary)"></b>teclas</i>
+              <i><b style="background:var(--danger)"></b>suspeito</i>
+              <i><b style="background:var(--border-strong)"></b>pausa/ausente</i>
+            </span>
+          </div>
+          <div class="bars" id="bars"></div>
+          <div class="axis"><span>14:31</span><span>14:32</span><span>14:33</span><span>14:34</span><span>14:35</span><span>14:36</span></div>
+          <div class="gaphint">⚠ Às 14:35 a atividade parou junto com uma saída de foco — a prova ficou pausada.</div>
+        </div>
+      </div>
+
+      <!-- VIEW: FLUXO COMPLETO (agrupado) -->
+      <div class="view" data-view="stream">
+        <div class="streamnote">Eventos agrupados na ordem em que aconteceram: digitação normal vira um bloco só; cada comando/atalho fica destacado. Use “Só suspeitos” para esconder os blocos de digitação.</div>
+        <div class="grp" id="streamWrap">
+
+          <!-- typing block -->
+          <div class="seg type" data-type>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">⌨</div>
+              <div class="main">
+                <div class="typedrun">A fotos<span class="del">ín</span><span class="del">⌫⌫</span>síntese é o processo</div>
+                <div class="sub">42 teclas · 3 correções · 14:31:40 → 14:32:05</div>
+              </div>
+              <div class="time">14:31:40</div>
+            </div>
+          </div>
+
+          <!-- command block -->
+          <div class="seg cmd" data-sus>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">⧉</div>
+              <div class="main">
+                <div class="ttl">Copiar / recortar bloqueado <span class="combo">Ctrl+C</span> <span class="xn">×2</span></div>
+                <div class="sub">2 tentativas seguidas · 14:32:07 e 14:32:12</div>
+              </div>
+              <div class="time">14:32:07</div>
+            </div>
+          </div>
+
+          <div class="seg cmd" data-sus>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">☰</div>
+              <div class="main">
+                <div class="ttl">Menu do botão direito <span class="combo">contextmenu</span></div>
+                <div class="sub">Bloqueado sobre a área da prova · 14:32:09</div>
+              </div>
+              <div class="time">14:32:09</div>
+            </div>
+          </div>
+
+          <!-- typing block -->
+          <div class="seg type" data-type>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">⌨</div>
+              <div class="main">
+                <div class="typedrun">pelo qual as plantas convertem<span class="br"> ⏎ </span>luz em energia</div>
+                <div class="sub">31 teclas · 1 quebra de linha · 14:32:20 → 14:32:41</div>
+              </div>
+              <div class="time">14:32:20</div>
+            </div>
+          </div>
+
+          <div class="seg cmd" data-sus>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">✨</div>
+              <div class="main">
+                <div class="ttl">Atalho de assistente de IA <span class="combo">Alt+G</span></div>
+                <div class="sub">Bloqueado · combinação candidata do Gemini · 14:32:44</div>
+              </div>
+              <div class="time">14:32:44</div>
+            </div>
+          </div>
+
+          <div class="seg cmd" data-sus>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">📋</div>
+              <div class="main">
+                <div class="ttl">Colagem sinalizada <span class="combo">Ctrl+V · 38 caracteres</span></div>
+                <div class="sub">Permitida, mas registrada · texto inserido sem digitação · 14:33:15</div>
+              </div>
+              <div class="time">14:33:15</div>
+            </div>
+          </div>
+
+          <!-- typing block -->
+          <div class="seg type" data-type>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">⌨</div>
+              <div class="main">
+                <div class="typedrun">A respiração celular ocorre nas mitocôndrias</div>
+                <div class="sub">44 teclas · sem correções · 14:33:30 → 14:35:20</div>
+              </div>
+              <div class="time">14:33:30</div>
+            </div>
+          </div>
+
+          <div class="seg focus" data-sus>
+            <span class="dot"></span>
+            <div class="row">
+              <div class="ic">⇄</div>
+              <div class="main">
+                <div class="ttl">Saiu do foco da prova <span class="combo">tab_blur</span></div>
+                <div class="sub">Trocou de aba/janela · prova pausada automaticamente · 14:35:28</div>
+              </div>
+              <div class="time">14:35:28</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- FOOT -->
+    <div class="foot">
+      <span class="ok">●</span> Captura ativa · sincronizado há 3s
+      <button class="btn">Exportar histórico (CSV)</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Troca de abas (ignora abas desabilitadas)
+  document.querySelectorAll('.tab').forEach(tab=>{
+    tab.addEventListener('click',()=>{
+      if(tab.classList.contains('disabled')) return;
+      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+      tab.classList.add('active');
+      const v=tab.dataset.view;
+      document.querySelectorAll('.view').forEach(view=>{
+        view.classList.toggle('active', view.dataset.view===v);
+      });
+    });
+  });
+
+  // Toggle "só suspeitos" — esconde os blocos de digitação no fluxo agrupado
+  const susBtn=document.getElementById('susOnly');
+  susBtn.addEventListener('click',()=>{
+    susBtn.classList.toggle('on');
+    const on=susBtn.classList.contains('on');
+    document.querySelectorAll('#streamWrap .seg').forEach(seg=>{
+      seg.style.display = (!on || seg.hasAttribute('data-sus')) ? '' : 'none';
+    });
+  });
+
+  // Barras da timeline (com pausa e picos suspeitos)
+  const heights=[30,55,42,60,48,70,52,65,80,58,44,62,50,72,'sus',68,40,55,'sus',60,'gap','gap',22,45,58,66,50,74,60,48];
+  const bars=document.getElementById('bars');
+  heights.forEach(h=>{
+    const b=document.createElement('div'); b.className='bar';
+    if(h==='sus'){b.classList.add('sus'); b.style.height='78%';}
+    else if(h==='gap'){b.classList.add('gap'); b.style.height='100%';}
+    else{b.style.height=h+'%';}
+    bars.appendChild(b);
+  });
+</script>
+</body>
+</html>

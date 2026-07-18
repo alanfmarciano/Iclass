@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup — Provas (reorganizada)</title>
+<style>
+  :root{
+    --bg:#0a0a0c;
+    --bg-panel:#131317;
+    --bg-panel-2:#17171c;
+    --bg-card:#1b1b21;
+    --border:#26262e;
+    --border-soft:#1f1f26;
+    --txt:#f2f2f5;
+    --txt-dim:#9a9aa6;
+    --txt-faint:#6b6b78;
+    --red:#ff4d4d;
+    --red-deep:#e03636;
+    --green:#33d69f;
+    --blue:#4d9bff;
+    --amber:#ffb020;
+    --radius:16px;
+    --radius-sm:11px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:radial-gradient(1200px 600px at 80% -10%, #1a0e10 0%, transparent 55%), var(--bg);
+    color:var(--txt);
+    font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+    padding:34px 40px 60px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+
+  /* ---------- Header ---------- */
+  .crumb{color:var(--txt-faint);font-size:13px;margin-bottom:18px}
+  .crumb b{color:var(--txt-dim);font-weight:600}
+  h1{font-size:30px;font-weight:700;letter-spacing:-.5px}
+  .sub{color:var(--txt-dim);font-size:14px;margin-top:6px}
+
+  /* ---------- Hero resumo (enxuto) ---------- */
+  .hero{
+    display:flex;align-items:center;gap:28px;flex-wrap:wrap;
+    background:linear-gradient(135deg,#1a1216 0%, var(--bg-panel) 60%);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:22px 26px;margin-top:22px;
+  }
+  .ring{position:relative;width:96px;height:96px;flex:none}
+  .ring svg{transform:rotate(-90deg)}
+  .ring .val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .ring .val b{font-size:26px;font-weight:700;line-height:1}
+  .ring .val span{font-size:10px;color:var(--txt-faint);margin-top:3px;text-transform:uppercase;letter-spacing:.5px}
+  .hero-info{flex:1;min-width:220px}
+  .hero-info .t{font-size:13px;color:var(--txt-dim)}
+  .hero-info .big{font-size:19px;font-weight:650;margin-top:2px}
+  .hero-info .big em{color:var(--red);font-style:normal}
+  .mini-stats{display:flex;gap:12px;flex-wrap:wrap;margin-left:auto}
+  .mini{
+    background:var(--bg-card);border:1px solid var(--border-soft);
+    border-radius:var(--radius-sm);padding:12px 16px;min-width:110px;
+  }
+  .mini .k{font-size:11px;color:var(--txt-faint);text-transform:uppercase;letter-spacing:.4px}
+  .mini .v{font-size:22px;font-weight:700;margin-top:4px}
+  .mini .v small{font-size:12px;color:var(--txt-dim);font-weight:500}
+  .mini.best .v{color:var(--green)}
+
+  /* ---------- Aviso compacto ---------- */
+  .notice{
+    display:flex;align-items:center;gap:12px;
+    background:var(--bg-panel);border:1px dashed var(--border);
+    border-radius:12px;padding:12px 18px;margin-top:16px;color:var(--txt-dim);font-size:13.5px;
+  }
+  .notice .dot{width:8px;height:8px;border-radius:50%;background:var(--txt-faint);flex:none}
+
+  /* ---------- Seção recolhível (gráficos) ---------- */
+  details.perf{
+    margin-top:16px;background:var(--bg-panel);border:1px solid var(--border);
+    border-radius:var(--radius);overflow:hidden;
+  }
+  details.perf summary{
+    list-style:none;cursor:pointer;padding:16px 22px;
+    display:flex;align-items:center;gap:10px;font-weight:650;font-size:15px;
+  }
+  details.perf summary::-webkit-details-marker{display:none}
+  summary .chev{margin-left:auto;color:var(--txt-faint);transition:transform .2s}
+  details[open] summary .chev{transform:rotate(180deg)}
+  .perf-body{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;padding:4px 22px 22px}
+  .panel-title{font-size:13px;color:var(--txt-dim);margin-bottom:12px}
+  .bars .row{display:flex;align-items:center;gap:12px;margin:9px 0;font-size:13px}
+  .bars .lbl{width:44px;color:var(--txt-dim)}
+  .bars .track{flex:1;height:9px;background:#242430;border-radius:6px;overflow:hidden}
+  .bars .fill{height:100%;border-radius:6px}
+  .bars .num{width:16px;text-align:right;color:var(--txt-dim)}
+  .spark{width:100%;height:150px}
+
+  /* ---------- Abas por status ---------- */
+  .sec-head{display:flex;align-items:center;gap:12px;margin:30px 0 4px}
+  .sec-head h2{font-size:19px;font-weight:700}
+  .sec-head .cnt{color:var(--txt-faint);font-size:14px;font-weight:500}
+  .tabs{display:flex;gap:8px;margin:16px 0 20px;flex-wrap:wrap}
+  .tab{
+    border:1px solid var(--border);background:var(--bg-panel);color:var(--txt-dim);
+    padding:9px 16px;border-radius:999px;font-size:13.5px;cursor:pointer;
+    display:flex;align-items:center;gap:8px;transition:.15s;
+  }
+  .tab:hover{border-color:#3a3a45;color:var(--txt)}
+  .tab .pill{background:#2a2a33;color:var(--txt-dim);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:700}
+  .tab.active{background:var(--red);border-color:var(--red);color:#fff}
+  .tab.active .pill{background:rgba(255,255,255,.22);color:#fff}
+  .tab.res.active{background:var(--blue);border-color:var(--blue)}
+  .tab.nc.active{background:#3a3a45;border-color:#4a4a55;color:#fff}
+
+  /* ---------- Grupos por disciplina ---------- */
+  .group{margin-bottom:22px}
+  .group-h{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .group-h .tag{
+    font-size:11px;font-weight:700;letter-spacing:.6px;padding:3px 9px;border-radius:6px;
+    background:#242430;color:var(--txt-dim);text-transform:uppercase;
+  }
+  .group-h .gname{font-size:13px;color:var(--txt-dim)}
+  .group-h .line{flex:1;height:1px;background:var(--border-soft)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+  .card{
+    position:relative;background:var(--bg-card);border:1px solid var(--border-soft);
+    border-radius:var(--radius-sm);padding:16px 18px;display:flex;flex-direction:column;gap:12px;
+    border-left:3px solid var(--edge, #3a3a45);transition:.15s;
+  }
+  .card:hover{border-color:#39394a;transform:translateY(-2px)}
+  .card .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+  .card .code{font-size:11px;color:var(--txt-faint);letter-spacing:.5px}
+  .card .name{font-size:15px;font-weight:650;margin-top:3px}
+  .card .att{font-size:11px;color:var(--txt-faint);margin-top:3px}
+  .grade{
+    font-size:22px;font-weight:800;line-height:1;flex:none;
+    min-width:52px;text-align:center;padding:8px 6px;border-radius:10px;background:#0e0e12;
+  }
+  .g-green{color:var(--green)} .g-blue{color:var(--blue)} .g-amber{color:var(--amber)} .g-red{color:var(--red)}
+  .card .foot{display:flex;justify-content:space-between;align-items:center}
+  .card .date{font-size:12px;color:var(--txt-faint)}
+  .badge{font-size:11px;font-weight:650;padding:4px 10px;border-radius:999px}
+  .b-res{background:rgba(77,155,255,.15);color:var(--blue)}
+  .b-nc{background:#242430;color:var(--txt-dim)}
+
+  /* tentativas agrupadas */
+  .retry{
+    background:var(--bg-panel);border:1px solid var(--border-soft);
+    border-radius:var(--radius-sm);padding:6px;grid-column:1/-1;
+    border-left:3px solid var(--amber);
+  }
+  .retry-h{display:flex;align-items:center;gap:10px;padding:10px 12px 8px;color:var(--txt-dim);font-size:13px}
+  .retry-h b{color:var(--txt)}
+  .retry-h .r-badge{margin-left:auto;font-size:11px;background:rgba(255,176,32,.14);color:var(--amber);padding:3px 9px;border-radius:999px;font-weight:650}
+  .retry-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;padding:4px 6px 6px}
+  .retry-item{display:flex;align-items:center;gap:12px;background:var(--bg-card);border:1px solid var(--border-soft);border-radius:9px;padding:10px 12px}
+  .retry-item .rg{font-size:18px;font-weight:800;min-width:38px;text-align:center}
+  .retry-item .ri{font-size:12px;color:var(--txt-faint)}
+  .retry-item .ri b{color:var(--txt-dim);font-weight:600;display:block;font-size:12.5px}
+
+  .hidden{display:none !important}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--txt-faint)}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+  @media(max-width:760px){
+    body{padding:22px 16px 50px}
+    .perf-body{grid-template-columns:1fr}
+    .mini-stats{margin-left:0;width:100%}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="crumb">Portal do Aluno / <b>Provas</b></div>
+  <h1>Provas</h1>
+  <div class="sub">Comece pelo que importa: sua nota e o que a compõe. O histórico completo fica logo abaixo.</div>
+
+  <!-- HERO RESUMO -->
+  <div class="hero">
+    <div class="ring">
+      <svg width="96" height="96" viewBox="0 0 96 96">
+        <circle cx="48" cy="48" r="40" fill="none" stroke="#242430" stroke-width="9"/>
+        <circle cx="48" cy="48" r="40" fill="none" stroke="var(--red)" stroke-width="9"
+          stroke-linecap="round" stroke-dasharray="251.2" stroke-dashoffset="155.7"/>
+      </svg>
+      <div class="val"><b>3.8</b><span>média</span></div>
+    </div>
+    <div class="hero-info">
+      <div class="t">Média das provas consideradas</div>
+      <div class="big">Sua nota vem de <em>3 de 8</em> provas concluídas</div>
+    </div>
+    <div class="mini-stats">
+      <div class="mini"><div class="k">Concluídas</div><div class="v">8</div></div>
+      <div class="mini best"><div class="k">Melhor nota</div><div class="v">9.2 <small>IRCOM 1</small></div></div>
+      <div class="mini"><div class="k">Compõem</div><div class="v">3 <small>de 8</small></div></div>
+    </div>
+  </div>
+
+  <!-- AVISO COMPACTO (antes ocupava tela inteira) -->
+  <div class="notice">
+    <span class="dot"></span>
+    Nenhuma prova disponível no momento. Quando o instrutor liberar uma aplicação, ela aparecerá aqui em destaque.
+  </div>
+
+  <!-- ANÁLISE RECOLHÍVEL -->
+  <details class="perf">
+    <summary>📈 Análise de desempenho <span class="chev">⌄</span></summary>
+    <div class="perf-body">
+      <div>
+        <div class="panel-title">Evolução das notas ao longo das avaliações</div>
+        <svg class="spark" viewBox="0 0 520 150" preserveAspectRatio="none">
+          <polyline fill="none" stroke="var(--red)" stroke-width="2.5" stroke-linejoin="round"
+            points="20,60 90,52 160,44 230,32 300,20 370,58 440,96 500,140"/>
+          <g fill="var(--red)">
+            <circle cx="20" cy="60" r="3.5"/><circle cx="90" cy="52" r="3.5"/><circle cx="160" cy="44" r="3.5"/>
+            <circle cx="230" cy="32" r="3.5"/><circle cx="300" cy="20" r="3.5"/><circle cx="370" cy="58" r="3.5"/>
+            <circle cx="440" cy="96" r="3.5"/><circle cx="500" cy="140" r="3.5"/>
+          </g>
+        </svg>
+        <div class="legend" style="justify-content:space-between">
+          <span>FUTEC 1</span><span>FECOP 3</span><span>IRCOM 1</span><span>FUTEC 1</span>
+        </div>
+      </div>
+      <div>
+        <div class="panel-title">Distribuição por faixa de nota</div>
+        <div class="bars">
+          <div class="row"><span class="lbl">9–10</span><span class="track"><span class="fill" style="width:20%;background:var(--green)"></span></span><span class="num">1</span></div>
+          <div class="row"><span class="lbl">7–8.9</span><span class="track"><span class="fill" style="width:40%;background:var(--blue)"></span></span><span class="num">2</span></div>
+          <div class="row"><span class="lbl">6–6.9</span><span class="track"><span class="fill" style="width:60%;background:var(--amber)"></span></span><span class="num">3</span></div>
+          <div class="row"><span class="lbl">0–5.9</span><span class="track"><span class="fill" style="width:40%;background:var(--red)"></span></span><span class="num">2</span></div>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <!-- HISTÓRICO -->
+  <div class="sec-head">
+    <h2>Provas concluídas</h2>
+    <span class="cnt">8 tentativas</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab res active" data-f="res">Compõem o resultado <span class="pill">3</span></button>
+    <button class="tab nc" data-f="nc">Não consideradas <span class="pill">5</span></button>
+    <button class="tab" data-f="all">Todas <span class="pill">8</span></button>
+  </div>
+
+  <!-- ===== COMPÕEM O RESULTADO ===== -->
+  <div class="view" data-view="res">
+    <div class="group">
+      <div class="group-h"><span class="tag">FECOP</span><span class="gname">Fundamentos</span><span class="line"></span></div>
+      <div class="cards">
+        <div class="card" style="--edge:var(--green)">
+          <div class="top">
+            <div><div class="code">FECOP 3</div><div class="name">Avaliação FECOP 3</div></div>
+            <div class="grade g-green">8.4</div>
+          </div>
+          <div class="foot"><span class="date">online · 22/06/2026</span><span class="badge b-res">Compõe o resultado</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-h"><span class="tag">FUTEC</span><span class="gname">Tecnologia</span><span class="line"></span></div>
+      <div class="cards">
+        <div class="retry">
+          <div class="retry-h">Avaliação <b>FUTEC 1</b> — múltiplas tentativas
+            <span class="r-badge">2 tentativas contam</span>
+          </div>
+          <div class="retry-list">
+            <div class="retry-item"><span class="rg g-red">3.0</span><span class="ri"><b>Tentativa 1</b>online · 15/07/2026</span></div>
+            <div class="retry-item"><span class="rg g-red">0.0</span><span class="ri"><b>Tentativa 1</b>online · 15/07/2026</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== NÃO CONSIDERADAS ===== -->
+  <div class="view hidden" data-view="nc">
+    <div class="group">
+      <div class="group-h"><span class="tag">FUTEC</span><span class="gname">Tecnologia</span><span class="line"></span></div>
+      <div class="cards">
+        <div class="card" style="--edge:var(--amber)">
+          <div class="top"><div><div class="code">FUTEC 1</div><div class="name">Avaliação FUTEC 1</div></div><div class="grade g-amber">6.0</div></div>
+          <div class="foot"><span class="date">online · 04/06/2026</span><span class="badge b-nc">Não considerada</span></div>
+        </div>
+        <div class="card" style="--edge:var(--amber)">
+          <div class="top"><div><div class="code">FUTEC 4</div><div class="name">Avaliação FUTEC 4</div></div><div class="grade g-amber">6.8</div></div>
+          <div class="foot"><span class="date">online · 10/06/2026</span><span class="badge b-nc">Não considerada</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-h"><span class="tag">FECOP</span><span class="gname">Fundamentos</span><span class="line"></span></div>
+      <div class="cards">
+        <div class="card" style="--edge:var(--blue)">
+          <div class="top"><div><div class="code">FECOP 1</div><div class="name">Avaliação FECOP 1</div></div><div class="grade g-blue">7.6</div></div>
+          <div class="foot"><span class="date">online · 16/06/2026</span><span class="badge b-nc">Não considerada</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-h"><span class="tag">IRCOM</span><span class="gname">Redes</span><span class="line"></span></div>
+      <div class="cards">
+        <div class="card" style="--edge:var(--green)">
+          <div class="top"><div><div class="code">IRCOM 1</div><div class="name">Avaliação IRCOM 1</div></div><div class="grade g-green">9.2</div></div>
+          <div class="foot"><span class="date">online · 28/06/2026</span><span class="badge b-nc">Não considerada</span></div>
+        </div>
+        <div class="card" style="--edge:var(--amber)">
+          <div class="top"><div><div class="code">IRCOM 3</div><div class="name">Avaliação IRCOM 3</div></div><div class="grade g-amber">6.1</div></div>
+          <div class="foot"><span class="date">online · 04/07/2026</span><span class="badge b-nc">Não considerada</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== TODAS ===== -->
+  <div class="view hidden" data-view="all">
+    <div class="cards">
+      <div class="card" style="--edge:var(--amber)"><div class="top"><div><div class="code">FUTEC 1</div><div class="name">Avaliação FUTEC 1</div></div><div class="grade g-amber">6.0</div></div><div class="foot"><span class="date">04/06/2026</span><span class="badge b-nc">Não considerada</span></div></div>
+      <div class="card" style="--edge:var(--amber)"><div class="top"><div><div class="code">FUTEC 4</div><div class="name">Avaliação FUTEC 4</div></div><div class="grade g-amber">6.8</div></div><div class="foot"><span class="date">10/06/2026</span><span class="badge b-nc">Não considerada</span></div></div>
+      <div class="card" style="--edge:var(--blue)"><div class="top"><div><div class="code">FECOP 1</div><div class="name">Avaliação FECOP 1</div></div><div class="grade g-blue">7.6</div></div><div class="foot"><span class="date">16/06/2026</span><span class="badge b-nc">Não considerada</span></div></div>
+      <div class="card" style="--edge:var(--green)"><div class="top"><div><div class="code">FECOP 3</div><div class="name">Avaliação FECOP 3</div></div><div class="grade g-green">8.4</div></div><div class="foot"><span class="date">22/06/2026</span><span class="badge b-res">Compõe o resultado</span></div></div>
+      <div class="card" style="--edge:var(--green)"><div class="top"><div><div class="code">IRCOM 1</div><div class="name">Avaliação IRCOM 1</div></div><div class="grade g-green">9.2</div></div><div class="foot"><span class="date">28/06/2026</span><span class="badge b-nc">Não considerada</span></div></div>
+      <div class="card" style="--edge:var(--amber)"><div class="top"><div><div class="code">IRCOM 3</div><div class="name">Avaliação IRCOM 3</div></div><div class="grade g-amber">6.1</div></div><div class="foot"><span class="date">04/07/2026</span><span class="badge b-nc">Não considerada</span></div></div>
+      <div class="card" style="--edge:var(--red)"><div class="top"><div><div class="code">FUTEC 1</div><div class="name">Avaliação FUTEC 1</div><div class="att">Tentativa 1</div></div><div class="grade g-red">3.0</div></div><div class="foot"><span class="date">15/07/2026</span><span class="badge b-res">Compõe o resultado</span></div></div>
+      <div class="card" style="--edge:var(--red)"><div class="top"><div><div class="code">FUTEC 1</div><div class="name">Avaliação FUTEC 1</div><div class="att">Tentativa 1</div></div><div class="grade g-red">0.0</div></div><div class="foot"><span class="date">15/07/2026</span><span class="badge b-res">Compõe o resultado</span></div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const tabs=document.querySelectorAll('.tab');
+  const views=document.querySelectorAll('.view');
+  tabs.forEach(t=>t.addEventListener('click',()=>{
+    tabs.forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    const f=t.dataset.f;
+    views.forEach(v=>v.classList.toggle('hidden', v.dataset.view!==f));
+  }));
+</script>
+</body>
+</html>

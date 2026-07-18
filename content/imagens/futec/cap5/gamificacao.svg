@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <rect width="800" height="500" fill="#1a1a2e"/>
+  
+  <text x="400" y="30" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="bold">GAMIFICAÇÃO - CICLO DE FEEDBACK</text>
+  <text x="400" y="52" font-family="Arial" font-size="11" fill="#888" text-anchor="middle">Engenharia Comportamental Aplicada</text>
+  
+  <!-- Cycle Circle -->
+  <ellipse cx="400" cy="250" rx="220" ry="150" fill="none" stroke="#60a5fa" stroke-width="3" stroke-dasharray="10,5"/>
+  
+  <!-- Step 1: Desafio -->
+  <circle cx="400" cy="110" r="50" fill="#e94560" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="100" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">1</text>
+  <text x="400" y="118" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">DESAFIO</text>
+  <text x="400" y="133" font-family="Arial" font-size="9" fill="#a8d8ff" text-anchor="middle">Tarefa proposta</text>
+  <rect x="365" y="170" width="70" height="25" rx="3" fill="#0f3460"/>
+  <text x="400" y="188" font-family="Courier" font-size="9" fill="#a8d8ff" text-anchor="middle">"Complete 5</text>
+  <text x="400" y="200" font-family="Courier" font-size="9" fill="#a8d8ff" text-anchor="middle">vistorias"</text>
+  
+  <!-- Step 2: Ação -->
+  <circle cx="550" cy="180" r="50" fill="#f39c12" stroke="#fff" stroke-width="2"/>
+  <text x="550" y="170" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">2</text>
+  <text x="550" y="188" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">AÇÃO</text>
+  <text x="550" y="203" font-family="Arial" font-size="9" fill="#a8d8ff" text-anchor="middle">Execução</text>
+  <rect x="520" y="240" width="60" height="30" rx="3" fill="#0f3460"/>
+  <text x="550" y="260" font-family="Courier" font-size="8" fill="#a8d8ff" text-anchor="middle">Usuário</text>
+  <text x="550" y="272" font-family="Courier" font-size="8" fill="#a8d8ff" text-anchor="middle">executa</text>
+  
+  <!-- Step 3: Recompensa -->
+  <circle cx="550" cy="320" r="50" fill="#27ae60" stroke="#fff" stroke-width="2"/>
+  <text x="550" y="310" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">3</text>
+  <text x="550" y="328" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">RECOMPENSA</text>
+  <text x="550" y="343" font-family="Arial" font-size="9" fill="#a8d8ff" text-anchor="middle">Pontos/XP</text>
+  <polygon points="535,360 550,380 565,360" fill="#e9c46a"/>
+  <polygon points="530,355 545,375 560,355" fill="#e9c46a" opacity="0.7"/>
+  <polygon points="525,350 540,370 555,350" fill="#e9c46a" opacity="0.4"/>
+  
+  <!-- Step 4: Feedback -->
+  <circle cx="400" cy="390" r="50" fill="#9b59b6" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="380" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">4</text>
+  <text x="400" y="398" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">FEEDBACK</text>
+  <text x="400" y="413" font-family="Arial" font-size="9" fill="#a8d8ff" text-anchor="middle">Visualização</text>
+  <rect x="370" y="430" width="60" height="20" rx="3" fill="#27ae60"/>
+  <text x="400" y="445" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">Nível 2!</text>
+  
+  <!-- Arrow to Motivation -->
+  <line x1="350" y1="110" x2="280" y2="110" stroke="#60a5fa" stroke-width="2"/>
+  <polygon points="290,100 290,120 270,110" fill="#60a5fa"/>
+  
+  <!-- Motivation Box -->
+  <rect x="80" y="75" width="180" height="90" rx="5" fill="#16213e" stroke="#e9c46a"/>
+  <text x="170" y="100" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">MOTIVAÇÃO</text>
+  <text x="170" y="120" font-family="Arial" font-size="10" fill="#a8d8ff" text-anchor="middle">Dopamina liberada</text>
+  <text x="170" y="135" font-family="Arial" font-size="10" fill="#a8d8ff" text-anchor="middle">→ Quer repetir</text>
+  <text x="170" y="150" font-family="Arial" font-size="10" fill="#27ae60" text-anchor="middle">→ Próximo ciclo</text>
+  
+  <!-- Elements Panel -->
+  <rect x="580" y="230" width="200" height="230" rx="5" fill="#16213e" stroke="#34495e"/>
+  <text x="680" y="255" font-family="Arial" font-size="13" fill="#fff" text-anchor="middle" font-weight="bold">ELEMENTOS</text>
+  
+  <!-- Leaderboard -->
+  <rect x="595" y="270" width="170" height="35" rx="3" fill="#0f3460" stroke="#e94560"/>
+  <text x="680" y="288" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🏆 Leaderboard</text>
+  <text x="680" y="302" font-family="Arial" font-size="8" fill="#888">Rankings competitivos</text>
+  
+  <!-- Points/XP -->
+  <rect x="595" y="315" width="170" height="35" rx="3" fill="#0f3460" stroke="#f39c12"/>
+  <text x="680" y="333" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">⭐ Pontos/XP</text>
+  <text x="680" y="347" font-family="Arial" font-size="8" fill="#888">Progresso visível</text>
+  
+  <!-- Badges -->
+  <rect x="595" y="360" width="170" height="35" rx="3" fill="#0f3460" stroke="#27ae60"/>
+  <text x="680" y="378" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🏅 Badges</text>
+  <text x="680" y="392" font-family="Arial" font-size="8" fill="#888">Conquistas</text>
+  
+  <!-- Daily Quests -->
+  <rect x="595" y="405" width="170" height="35" rx="3" fill="#0f3460" stroke="#9b59b6"/>
+  <text x="680" y="423" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">⚡ Daily Quests</text>
+  <text x="680" y="437" font-family="Arial" font-size="8" fill="#888">Desafios diários</text>
+</svg>

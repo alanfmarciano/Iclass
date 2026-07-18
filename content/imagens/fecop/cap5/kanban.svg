@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">QUADRO KANBAN - GESTÃO VISUAL DE TAREFAS</text>
+  
+  <!-- Kanban columns -->
+  <rect x="30" y="60" width="160" height="250" fill="#16213e" rx="5"/>
+  <text x="110" y="85" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">📋 A FAZER</text>
+  <text x="110" y="102" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">WIP: 5máx</text>
+  
+  <rect x="45" y="115" width="130" height="35" fill="#0f3460" rx="3"/>
+  <text x="110" y="135" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">📄 Redigir relatório</text>
+  
+  <rect x="45" y="155" width="130" height="35" fill="#0f3460" rx="3"/>
+  <text x="110" y="175" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">📊 Atualizar planilha</text>
+  
+  <rect x="45" y="195" width="130" height="35" fill="#0f3460" rx="3"/>
+  <text x="110" y="215" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">📧 Responder emails</text>
+  
+  <rect x="45" y="235" width="130" height="35" fill="#0f3460" rx="3"/>
+  <text x="110" y="255" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">📞 Ligar p/ cliente</text>
+  
+  <rect x="45" y="275" width="130" height="25" fill="#e94560" rx="3"/>
+  <text x="110" y="292" font-family="Arial" font-size="8" fill="#fff" text-anchor="middle">⚠️ WIP LIMITADO</text>
+  
+  <!-- Doing column -->
+  <rect x="210" y="60" width="160" height="250" fill="#16213e" rx="5"/>
+  <text x="290" y="85" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">🔨 EM ANDAMENTO</text>
+  <text x="290" y="102" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">WIP: 3máx</text>
+  
+  <rect x="225" y="115" width="130" height="35" fill="#0f3460" stroke="#4ecca3" rx="3"/>
+  <text x="290" y="135" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">⚡ Revisar proposal</text>
+  
+  <rect x="225" y="155" width="130" height="35" fill="#0f3460" stroke="#4ecca3" rx="3"/>
+  <text x="290" y="175" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">⚡ Preparar demo</text>
+  
+  <!-- Done column -->
+  <rect x="390" y="60" width="180" height="250" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="480" y="85" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">✅ CONCLUÍDO</text>
+  
+  <rect x="405" y="115" width="150" height="35" fill="#16213e" rx="3"/>
+  <text x="480" y="135" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">✅ Análise de dados</text>
+  
+  <rect x="405" y="155" width="150" height="35" fill="#16213e" rx="3"/>
+  <text x="480" y="175" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">✅ Reunião com TI</text>
+  
+  <rect x="405" y="195" width="150" height="35" fill="#16213e" rx="3"/>
+  <text x="480" y="215" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">✅佈署 sistema</text>
+  
+  <!-- Metrics -->
+  <text x="300" y="340" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">MÉTRICAS KANBAN</text>
+  
+  <rect x="30" y="355" width="170" height="40" fill="#16213e" rx="5"/>
+  <text x="115" y="375" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">⏱️ Lead Time: 2.5 dias</text>
+  <text x="115" y="388" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Tempo total da tarefa</text>
+  
+  <rect x="215" y="355" width="170" height="40" fill="#16213e" rx="5"/>
+  <text x="300" y="375" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">⚡ Cycle Time: 4h</text>
+  <text x="300" y="388" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Tempo em execução</text>
+  
+  <rect x="400" y="355" width="170" height="40" fill="#0f3460" rx="5"/>
+  <text x="485" y="375" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">📈 Throughput: 8/semana</text>
+  <text x="485" y="388" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Velocidade da equipe</text>
+</svg>

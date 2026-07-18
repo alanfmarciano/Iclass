@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">TABELA DINÂMICA - PODER ANALÍTICO</text>
+  
+  <!-- Raw data (left) -->
+  <text x="100" y="65" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">DADOS BRUTOS (40.000 linhas)</text>
+  <rect x="30" y="75" width="140" height="120" fill="#16213e" stroke="#0f3460" stroke-width="1" rx="3"/>
+  <text x="45" y="95" font-family="Arial" font-size="8" fill="#aaa">Data</text>
+  <text x="45" y="110" font-family="Arial" font-size="8" fill="#aaa">Estado</text>
+  <text x="45" y="125" font-family="Arial" font-size="8" fill="#aaa">Mecânico</text>
+  <text x="45" y="140" font-family="Arial" font-size="8" fill="#aaa">Peça</text>
+  <text x="45" y="155" font-family="Arial" font-size="8" fill="#aaa">Custo</text>
+  <text x="45" y="170" font-family="Arial" font-size="8" fill="#aaa">...</text>
+  <text x="100" y="190" font-family="Arial" font-size="8" fill="#e94560">▼ 40.000 registros</text>
+  
+  <!-- Arrow -->
+  <path d="M175 135 L215 135" stroke="#e94560" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="195" y="125" font-family="Arial" font-size="9" fill="#e94560">PIVOT</text>
+  
+  <!-- Pivot table result (right) -->
+  <text x="400" y="65" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">RESUMO INSTANTÂNEO</text>
+  <rect x="300" y="75" width="200" height="120" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="3"/>
+  <text x="320" y="95" font-family="Arial" font-size="9" fill="#fff">ESTADO</text>
+  <text x="400" y="95" font-family="Arial" font-size="9" fill="#fff">CUSTO TOTAL</text>
+  <line x1="310" y1="102" x2="490" y2="102" stroke="#e94560" stroke-width="1"/>
+  
+  <text x="320" y="120" font-family="Arial" font-size="9" fill="#aaa">MG</text>
+  <text x="420" y="120" font-family="Arial" font-size="9" fill="#e94560">R$ 847.500</text>
+  
+  <text x="320" y="140" font-family="Arial" font-size="9" fill="#aaa">SP</text>
+  <text x="420" y="140" font-family="Arial" font-size="9" fill="#fff">R$ 623.100</text>
+  
+  <text x="320" y="160" font-family="Arial" font-size="9" fill="#aaa">RJ</text>
+  <text x="420" y="160" font-family="Arial" font-size="9" fill="#fff">R$ 412.800</text>
+  
+  <text x="320" y="180" font-family="Arial" font-size="9" fill="#fff">TOTAL</text>
+  <text x="420" y="180" font-family="Arial" font-size="10" fill="#fff" font-weight="bold">R$ 1.883.400</text>
+  
+  <!-- Explanation -->
+  <rect x="30" y="220" width="540" height="40" fill="#16213e" rx="5"/>
+  <text x="300" y="240" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">Arraste campos para filtrar, agrupar e resumir milhões de linhas em segundos</text>
+  <text x="300" y="255" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Não altera os dados originais • Atualiza automaticamente • Segmentação de dados (Slicers)</text>
+  
+  <!-- Excel functions -->
+  <text x="300" y="290" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">FUNÇÕES ESSENCIAIS</text>
+  
+  <rect x="30" y="305" width="120" height="35" fill="#16213e" rx="5"/>
+  <text x="90" y="320" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">SOMASE</text>
+  <text x="90" y="333" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Soma com critério</text>
+  
+  <rect x="165" y="305" width="120" height="35" fill="#16213e" rx="5"/>
+  <text x="225" y="320" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">CONT.SE</text>
+  <text x="225" y="333" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Contar com critério</text>
+  
+  <rect x="300" y="305" width="120" height="35" fill="#16213e" rx="5"/>
+  <text x="360" y="320" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">PROCV</text>
+  <text x="360" y="333" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Buscar vertical</text>
+  
+  <rect x="435" y="305" width="120" height="35" fill="#16213e" rx="5"/>
+  <text x="495" y="320" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">ÍNDICE/CORRESP</text>
+  <text x="495" y="333" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Busca flexível</text>
+  
+  <!-- Tip -->
+  <text x="300" y="370" font-family="Arial" font-size="11" fill="#aaa" text-anchor="middle">💡 Use $ para travamento absoluto: $A$1 não muda ao copiar a fórmula</text>
+</svg>

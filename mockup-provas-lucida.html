@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Provas — Lúcida</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0c0c0e;
+    --surface:#141416;
+    --surface-2:#191a1d;
+    --hair:rgba(255,255,255,.065);
+    --hair-strong:rgba(255,255,255,.11);
+    --ivory:#f3f0e9;
+    --mute:#928e86;
+    --faint:#605c55;
+    --ember:#e2483f;
+    --ember-soft:rgba(226,72,63,.14);
+    --sage:#9db89a;
+    --sage-soft:rgba(157,184,154,.13);
+    --sand:#cbb892;
+
+    --sp-1:8px; --sp-2:16px; --sp-3:24px; --sp-4:40px; --sp-5:64px;
+    --r:20px; --r-sm:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  body{
+    background:
+      radial-gradient(1000px 520px at 78% -8%, rgba(226,72,63,.07), transparent 60%),
+      var(--ink);
+    color:var(--ivory);
+    font-family:"Inter",system-ui,sans-serif;
+    line-height:1.5;
+    padding:var(--sp-5) var(--sp-4) 96px;
+  }
+  .wrap{max-width:1060px;margin:0 auto}
+
+  .label{
+    font-size:11px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--faint);font-weight:500;
+  }
+  .serif{font-family:"Fraunces",serif;font-weight:300;letter-spacing:-.01em}
+
+  /* ---------- Cabeçalho ---------- */
+  .crumb{color:var(--faint);font-size:12px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:var(--sp-3)}
+  .crumb b{color:var(--mute);font-weight:500}
+  header h1{font-family:"Fraunces",serif;font-weight:300;font-size:52px;line-height:1;letter-spacing:-.02em}
+  header p{color:var(--mute);font-size:15px;margin-top:14px;max-width:44ch}
+
+  /* ---------- Frontispício / resumo ---------- */
+  .hero{
+    margin-top:var(--sp-5);
+    display:grid;grid-template-columns:auto 1fr;gap:var(--sp-5);align-items:center;
+    padding-bottom:var(--sp-4);border-bottom:1px solid var(--hair);
+  }
+  .focal{display:flex;align-items:center;gap:28px}
+  .ring{position:relative;width:132px;height:132px;flex:none}
+  .ring svg{transform:rotate(-90deg)}
+  .ring .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .ring .num{font-family:"Fraunces",serif;font-weight:300;font-size:50px;line-height:.9}
+  .ring .center .label{margin-top:8px}
+  .focal .caption{max-width:16ch}
+  .focal .caption .t{font-size:14px;color:var(--mute);line-height:1.45}
+  .focal .caption .t em{font-style:normal;color:var(--ivory);border-bottom:1px solid var(--ember);padding-bottom:1px}
+
+  .stats{display:flex;justify-content:flex-end;gap:var(--sp-5)}
+  .stat{text-align:right}
+  .stat .v{font-family:"Fraunces",serif;font-weight:300;font-size:38px;line-height:1}
+  .stat .v small{font-family:"Inter";font-size:13px;color:var(--mute);display:block;font-weight:400;letter-spacing:0;text-transform:none;margin-top:4px}
+  .stat .label{margin-bottom:10px}
+  .stat.hl .v{color:var(--sage)}
+
+  /* ---------- Próximas provas (antigo empty state) ---------- */
+  .upcoming{
+    margin-top:var(--sp-4);display:flex;align-items:center;gap:16px;
+    padding:18px 22px;background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-sm);
+  }
+  .upcoming .ico{width:34px;height:34px;border-radius:9px;background:var(--surface-2);border:1px solid var(--hair);display:grid;place-items:center;flex:none}
+  .upcoming .ico svg{width:16px;height:16px;stroke:var(--mute)}
+  .upcoming .txt .h{font-size:14px;font-weight:500}
+  .upcoming .txt .s{font-size:13px;color:var(--faint);margin-top:2px}
+
+  /* ---------- Análise recolhível ---------- */
+  details.perf{margin-top:var(--sp-4);border-top:1px solid var(--hair)}
+  details.perf summary{
+    list-style:none;cursor:pointer;padding:20px 2px;display:flex;align-items:center;
+    color:var(--mute);font-size:13px;letter-spacing:.18em;text-transform:uppercase;
+  }
+  details.perf summary::-webkit-details-marker{display:none}
+  summary .chev{margin-left:auto;transition:transform .25s ease;font-size:12px}
+  details[open] summary .chev{transform:rotate(180deg)}
+  .perf-body{display:grid;grid-template-columns:1.5fr 1fr;gap:var(--sp-5);padding:6px 2px 30px}
+  .panel .label{margin-bottom:20px}
+  .spark{width:100%;height:120px;overflow:visible}
+  .axis{display:flex;justify-content:space-between;margin-top:14px;font-size:11px;color:var(--faint);letter-spacing:.05em}
+  .bars .row{display:grid;grid-template-columns:46px 1fr 20px;align-items:center;gap:14px;margin:14px 0}
+  .bars .k{font-size:12px;color:var(--mute)}
+  .bars .track{height:2px;background:var(--hair-strong);position:relative}
+  .bars .fill{position:absolute;left:0;top:-2px;height:6px;border-radius:3px}
+  .bars .n{font-size:12px;color:var(--mute);text-align:right}
+
+  /* ---------- Histórico ---------- */
+  .sec{margin-top:var(--sp-5)}
+  .sec-top{display:flex;align-items:baseline;gap:14px;margin-bottom:var(--sp-3)}
+  .sec-top h2{font-family:"Fraunces",serif;font-weight:300;font-size:30px;letter-spacing:-.01em}
+  .sec-top .cnt{color:var(--faint);font-size:13px;letter-spacing:.05em}
+
+  .seg{display:inline-flex;gap:2px;padding:4px;background:var(--surface);border:1px solid var(--hair);border-radius:999px;margin-bottom:var(--sp-4)}
+  .seg button{
+    border:0;background:transparent;color:var(--mute);cursor:pointer;
+    font-family:"Inter";font-size:13px;padding:9px 18px;border-radius:999px;
+    display:inline-flex;align-items:center;gap:8px;transition:.2s;
+  }
+  .seg button:hover{color:var(--ivory)}
+  .seg button .c{font-size:11px;color:var(--faint)}
+  .seg button.active{background:var(--surface-2);color:var(--ivory);box-shadow:inset 0 0 0 1px var(--hair-strong)}
+  .seg button.active .c{color:var(--ember)}
+
+  .group{margin-bottom:var(--sp-4)}
+  .group-h{display:flex;align-items:center;gap:16px;margin-bottom:var(--sp-2)}
+  .group-h .disc{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--mute)}
+  .group-h .rule{flex:1;height:1px;background:var(--hair)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+  .card{
+    position:relative;background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-sm);
+    padding:22px 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:20px;
+    transition:border-color .25s ease, transform .25s ease;
+  }
+  .card:hover{border-color:var(--hair-strong);transform:translateY(-2px)}
+  .card .meta .code{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+  .card .meta .name{font-size:16px;font-weight:500;margin-top:6px}
+  .card .meta .date{font-size:12px;color:var(--faint);margin-top:16px;letter-spacing:.03em}
+  .card .meta .tag{
+    display:inline-block;margin-top:14px;font-size:11px;letter-spacing:.05em;
+    padding:4px 11px;border-radius:999px;
+  }
+  .tag.res{background:var(--sage-soft);color:var(--sage)}
+  .tag.nc{background:rgba(255,255,255,.04);color:var(--faint)}
+  .grade{font-family:"Fraunces",serif;font-weight:300;font-size:44px;line-height:.85;flex:none;text-align:right}
+  .grade small{font-family:"Inter";font-size:11px;letter-spacing:.05em;color:var(--faint);display:block;font-weight:400;margin-top:8px;text-align:right}
+  .g-high{color:var(--sage)} .g-mid{color:var(--ivory)} .g-low{color:var(--ember)}
+
+  /* tentativas agrupadas */
+  .retry{grid-column:1/-1;background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-sm);padding:6px}
+  .retry-h{display:flex;align-items:center;gap:12px;padding:16px 18px 10px;color:var(--mute);font-size:13px}
+  .retry-h b{color:var(--ivory);font-weight:500}
+  .retry-h .rb{margin-left:auto;font-size:11px;letter-spacing:.05em;color:var(--sage);background:var(--sage-soft);padding:4px 11px;border-radius:999px}
+  .retry-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;padding:2px 6px 8px}
+  .retry-item{display:flex;align-items:center;gap:16px;background:var(--surface-2);border:1px solid var(--hair);border-radius:11px;padding:14px 18px}
+  .retry-item .rg{font-family:"Fraunces",serif;font-weight:300;font-size:30px;line-height:1;min-width:44px}
+  .retry-item .ri{font-size:12px;color:var(--faint);letter-spacing:.03em}
+  .retry-item .ri b{display:block;color:var(--mute);font-weight:500;margin-bottom:2px}
+
+  .hidden{display:none !important}
+
+  @media(max-width:820px){
+    body{padding:var(--sp-4) 20px 72px}
+    header h1{font-size:40px}
+    .hero{grid-template-columns:1fr;gap:var(--sp-4)}
+    .focal{flex-direction:row}
+    .stats{justify-content:flex-start;gap:var(--sp-4);flex-wrap:wrap}
+    .stat{text-align:left}
+    .perf-body{grid-template-columns:1fr;gap:var(--sp-4)}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="crumb">Portal do Aluno &nbsp;·&nbsp; <b>Provas</b></div>
+
+  <header>
+    <h1>Provas</h1>
+    <p>Sua nota, com serenidade. O que importa primeiro; o histórico, logo abaixo.</p>
+  </header>
+
+  <!-- FRONTISPÍCIO -->
+  <section class="hero">
+    <div class="focal">
+      <div class="ring">
+        <svg width="132" height="132" viewBox="0 0 132 132">
+          <circle cx="66" cy="66" r="58" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="2"/>
+          <circle cx="66" cy="66" r="58" fill="none" stroke="var(--ember)" stroke-width="2"
+            stroke-linecap="round" stroke-dasharray="364.4" stroke-dashoffset="226"/>
+        </svg>
+        <div class="center">
+          <div class="num">3,8</div>
+          <div class="label">Média</div>
+        </div>
+      </div>
+      <div class="caption">
+        <div class="t">Sua nota é formada por <em>3 de 8</em> provas concluídas.</div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="label">Concluídas</div>
+        <div class="v">8</div>
+      </div>
+      <div class="stat hl">
+        <div class="label">Melhor nota</div>
+        <div class="v">9,2<small>IRCOM 1</small></div>
+      </div>
+      <div class="stat">
+        <div class="label">Compõem</div>
+        <div class="v">3<small>de 8</small></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRÓXIMAS PROVAS -->
+  <div class="upcoming">
+    <div class="ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>
+    </div>
+    <div class="txt">
+      <div class="h">Nenhuma prova a realizar no momento</div>
+      <div class="s">Quando o instrutor liberar uma aplicação, ela aparecerá aqui em destaque.</div>
+    </div>
+  </div>
+
+  <!-- ANÁLISE -->
+  <details class="perf">
+    <summary>Análise de desempenho <span class="chev">⌄</span></summary>
+    <div class="perf-body">
+      <div class="panel">
+        <div class="label">Evolução ao longo das avaliações</div>
+        <svg class="spark" viewBox="0 0 520 120" preserveAspectRatio="none">
+          <polyline fill="none" stroke="var(--ember)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"
+            points="12,58 84,50 156,42 228,28 300,16 372,56 444,92 508,112"/>
+          <g fill="var(--ember)">
+            <circle cx="12" cy="58" r="2.5"/><circle cx="84" cy="50" r="2.5"/><circle cx="156" cy="42" r="2.5"/>
+            <circle cx="228" cy="28" r="2.5"/><circle cx="300" cy="16" r="2.5"/><circle cx="372" cy="56" r="2.5"/>
+            <circle cx="444" cy="92" r="2.5"/><circle cx="508" cy="112" r="2.5"/>
+          </g>
+        </svg>
+        <div class="axis"><span>FUTEC 1</span><span>FECOP 3</span><span>IRCOM 1</span><span>FUTEC 1</span></div>
+      </div>
+      <div class="panel">
+        <div class="label">Distribuição por faixa</div>
+        <div class="bars">
+          <div class="row"><span class="k">9–10</span><span class="track"><span class="fill" style="width:33%;background:var(--sage)"></span></span><span class="n">1</span></div>
+          <div class="row"><span class="k">7–8,9</span><span class="track"><span class="fill" style="width:66%;background:var(--sage)"></span></span><span class="n">2</span></div>
+          <div class="row"><span class="k">6–6,9</span><span class="track"><span class="fill" style="width:100%;background:var(--sand)"></span></span><span class="n">3</span></div>
+          <div class="row"><span class="k">0–5,9</span><span class="track"><span class="fill" style="width:66%;background:var(--ember)"></span></span><span class="n">2</span></div>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <!-- HISTÓRICO -->
+  <section class="sec">
+    <div class="sec-top">
+      <h2>Concluídas</h2>
+      <span class="cnt">8 tentativas</span>
+    </div>
+
+    <div class="seg">
+      <button class="active" data-f="res">Compõem o resultado <span class="c">3</span></button>
+      <button data-f="nc">Não consideradas <span class="c">5</span></button>
+      <button data-f="all">Todas <span class="c">8</span></button>
+    </div>
+
+    <!-- COMPÕEM -->
+    <div class="view" data-view="res">
+      <div class="group">
+        <div class="group-h"><span class="disc">FECOP</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="card">
+            <div class="meta">
+              <div class="code">FECOP 3</div>
+              <div class="name">Avaliação FECOP 3</div>
+              <div class="date">Online · 22 jun 2026</div>
+              <span class="tag res">Compõe o resultado</span>
+            </div>
+            <div class="grade g-high">8,4</div>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-h"><span class="disc">FUTEC</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="retry">
+            <div class="retry-h">Avaliação <b>FUTEC 1</b> — duas tentativas registradas <span class="rb">Ambas contam</span></div>
+            <div class="retry-list">
+              <div class="retry-item"><span class="rg g-low">3,0</span><span class="ri"><b>Tentativa 1</b>Online · 15 jul 2026</span></div>
+              <div class="retry-item"><span class="rg g-low">0,0</span><span class="ri"><b>Tentativa 2</b>Online · 15 jul 2026</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NÃO CONSIDERADAS -->
+    <div class="view hidden" data-view="nc">
+      <div class="group">
+        <div class="group-h"><span class="disc">FUTEC</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="card"><div class="meta"><div class="code">FUTEC 1</div><div class="name">Avaliação FUTEC 1</div><div class="date">Online · 04 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-mid">6,0</div></div>
+          <div class="card"><div class="meta"><div class="code">FUTEC 4</div><div class="name">Avaliação FUTEC 4</div><div class="date">Online · 10 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-mid">6,8</div></div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-h"><span class="disc">FECOP</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="card"><div class="meta"><div class="code">FECOP 1</div><div class="name">Avaliação FECOP 1</div><div class="date">Online · 16 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-high">7,6</div></div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-h"><span class="disc">IRCOM</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="card"><div class="meta"><div class="code">IRCOM 1</div><div class="name">Avaliação IRCOM 1</div><div class="date">Online · 28 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-high">9,2</div></div>
+          <div class="card"><div class="meta"><div class="code">IRCOM 3</div><div class="name">Avaliação IRCOM 3</div><div class="date">Online · 04 jul 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-mid">6,1</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TODAS -->
+    <div class="view hidden" data-view="all">
+      <div class="group">
+        <div class="group-h"><span class="disc">FUTEC</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="card"><div class="meta"><div class="code">FUTEC 1</div><div class="name">Avaliação FUTEC 1</div><div class="date">Online · 04 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-mid">6,0</div></div>
+          <div class="card"><div class="meta"><div class="code">FUTEC 4</div><div class="name">Avaliação FUTEC 4</div><div class="date">Online · 10 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-mid">6,8</div></div>
+          <div class="retry">
+            <div class="retry-h">Avaliação <b>FUTEC 1</b> — duas tentativas registradas <span class="rb">Ambas contam</span></div>
+            <div class="retry-list">
+              <div class="retry-item"><span class="rg g-low">3,0</span><span class="ri"><b>Tentativa 1</b>Online · 15 jul 2026</span></div>
+              <div class="retry-item"><span class="rg g-low">0,0</span><span class="ri"><b>Tentativa 2</b>Online · 15 jul 2026</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-h"><span class="disc">FECOP</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="card"><div class="meta"><div class="code">FECOP 1</div><div class="name">Avaliação FECOP 1</div><div class="date">Online · 16 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-high">7,6</div></div>
+          <div class="card"><div class="meta"><div class="code">FECOP 3</div><div class="name">Avaliação FECOP 3</div><div class="date">Online · 22 jun 2026</div><span class="tag res">Compõe o resultado</span></div><div class="grade g-high">8,4</div></div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-h"><span class="disc">IRCOM</span><span class="rule"></span></div>
+        <div class="cards">
+          <div class="card"><div class="meta"><div class="code">IRCOM 1</div><div class="name">Avaliação IRCOM 1</div><div class="date">Online · 28 jun 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-high">9,2</div></div>
+          <div class="card"><div class="meta"><div class="code">IRCOM 3</div><div class="name">Avaliação IRCOM 3</div><div class="date">Online · 04 jul 2026</div><span class="tag nc">Não considerada</span></div><div class="grade g-mid">6,1</div></div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</div>
+
+<script>
+  const btns=document.querySelectorAll('.seg button');
+  const views=document.querySelectorAll('.view');
+  btns.forEach(b=>b.addEventListener('click',()=>{
+    btns.forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    views.forEach(v=>v.classList.toggle('hidden', v.dataset.view!==b.dataset.f));
+  }));
+</script>
+</body>
+</html>

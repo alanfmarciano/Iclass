@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 500" width="700" height="500">
+  <rect width="700" height="500" fill="#1a1a2e"/>
+  
+  <text x="350" y="30" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="bold">HIERARQUIA DE DIRETÓRIOS LINUX (FHS)</text>
+  <text x="350" y="50" font-family="Arial" font-size="11" fill="#888" text-anchor="middle">Filesystem Hierarchy Standard</text>
+  
+  <!-- Root -->
+  <rect x="280" y="65" width="140" height="35" rx="5" fill="#e94560" stroke="#fff" stroke-width="2"/>
+  <text x="350" y="88" font-family="Courier" font-size="16" fill="#fff" text-anchor="middle" font-weight="bold">/ (RAIZ)</text>
+  
+  <!-- Level 1 -->
+  <line x1="350" y1="100" x2="350" y2="130" stroke="#60a5fa" stroke-width="2"/>
+  <line x1="150" y1="130" x2="550" y2="130" stroke="#60a5fa" stroke-width="2"/>
+  
+  <!-- /bin -->
+  <rect x="100" y="135" width="80" height="28" rx="3" fill="#0f3460" stroke="#60a5fa"/>
+  <text x="140" y="155" font-family="Courier" font-size="12" fill="#60a5fa" text-anchor="middle">/bin</text>
+  <text x="140" y="172" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Binários</text>
+  
+  <!-- /etc -->
+  <rect x="190" y="135" width="80" height="28" rx="3" fill="#0f3460" stroke="#f39c12"/>
+  <text x="230" y="155" font-family="Courier" font-size="12" fill="#f39c12" text-anchor="middle">/etc</text>
+  <text x="230" y="172" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Configuração</text>
+  
+  <!-- /home -->
+  <rect x="280" y="135" width="80" height="28" rx="3" fill="#0f3460" stroke="#27ae60"/>
+  <text x="320" y="155" font-family="Courier" font-size="12" fill="#27ae60" text-anchor="middle">/home</text>
+  <text x="320" y="172" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Usuários</text>
+  
+  <!-- /var -->
+  <rect x="370" y="135" width="80" height="28" rx="3" fill="#0f3460" stroke="#9b59b6"/>
+  <text x="410" y="155" font-family="Courier" font-size="12" fill="#9b59b6" text-anchor="middle">/var</text>
+  <text x="410" y="172" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Logs/Dados</text>
+  
+  <!-- /tmp -->
+  <rect x="460" y="135" width="80" height="28" rx="3" fill="#0f3460" stroke="#e74c3c"/>
+  <text x="500" y="155" font-family="Courier" font-size="12" fill="#e74c3c" text-anchor="middle">/tmp</text>
+  <text x="500" y="172" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Temporário</text>
+  
+  <!-- /usr -->
+  <rect x="550" y="135" width="80" height="28" rx="3" fill="#0f3460" stroke="#3498db"/>
+  <text x="590" y="155" font-family="Courier" font-size="12" fill="#3498db" text-anchor="middle">/usr</text>
+  <text x="590" y="172" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Programas</text>
+  
+  <!-- Level 2 -->
+  <!-- /home expansion -->
+  <line x1="320" y1="180" x2="320" y2="200" stroke="#27ae60" stroke-width="1"/>
+  <line x1="280" y1="200" x2="360" y2="200" stroke="#27ae60" stroke-width="1"/>
+  <rect x="285" y="205" width="70" height="22" rx="3" fill="#16213e" stroke="#27ae60"/>
+  <text x="320" y="221" font-family="Courier" font-size="10" fill="#27ae60" text-anchor="middle">/home/alan</text>
+  
+  <!-- /var expansion -->
+  <line x1="410" y1="180" x2="410" y2="200" stroke="#9b59b6" stroke-width="1"/>
+  <line x1="380" y1="200" x2="440" y2="200" stroke="#9b59b6" stroke-width="1"/>
+  <rect x="385" y="205" width="50" height="22" rx="3" fill="#16213e" stroke="#9b59b6"/>
+  <text x="410" y="221" font-family="Courier" font-size="10" fill="#9b59b6" text-anchor="middle">/var/log</text>
+  
+  <!-- /usr expansion -->
+  <line x1="590" y1="180" x2="590" y2="200" stroke="#3498db" stroke-width="1"/>
+  <line x1="560" y1="200" x2="620" y2="200" stroke="#3498db" stroke-width="1"/>
+  <rect x="565" y="205" width="50" height="22" rx="3" fill="#16213e" stroke="#3498db"/>
+  <text x="590" y="221" font-family="Courier" font-size="10" fill="#3498db" text-anchor="middle">/usr/bin</text>
+  
+  <!-- Additional Level 1 -->
+  <line x1="150" y1="130" x2="150" y2="260" stroke="#60a5fa" stroke-width="1"/>
+  <rect x="90" y="265" width="100" height="25" rx="3" fill="#0f3460" stroke="#95a5a6"/>
+  <text x="140" y="282" font-family="Courier" font-size="11" fill="#95a5a6" text-anchor="middle">/root</text>
+  <text x="140" y="298" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Dir do root</text>
+  
+  <line x1="230" y1="130" x2="230" y2="260" stroke="#f39c12" stroke-width="1"/>
+  <rect x="190" y="265" width="80" height="25" rx="3" fill="#0f3460" stroke="#95a5a6"/>
+  <text x="230" y="282" font-family="Courier" font-size="11" fill="#95a5a6" text-anchor="middle">/dev</text>
+  <text x="230" y="298" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Dispositivos</text>
+  
+  <line x1="500" y1="130" x2="500" y2="260" stroke="#e74c3c" stroke-width="1"/>
+  <rect x="460" y="265" width="80" height="25" rx="3" fill="#0f3460" stroke="#95a5a6"/>
+  <text x="500" y="282" font-family="Courier" font-size="11" fill="#95a5a6" text-anchor="middle">/mnt</text>
+  <text x="500" y="298" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Montagem</text>
+  
+  <line x1="590" y1="200" x2="590" y2="260" stroke="#3498db" stroke-width="1"/>
+  <rect x="560" y="265" width="60" height="25" rx="3" fill="#0f3460" stroke="#95a5a6"/>
+  <text x="590" y="282" font-family="Courier" font-size="11" fill="#95a5a6" text-anchor="middle">/proc</text>
+  <text x="590" y="298" font-family="Arial" font-size="7" fill="#888" text-anchor="middle">Processos</text>
+  
+  <!-- Legend Box -->
+  <rect x="50" y="350" width="600" height="130" rx="8" fill="#16213e" stroke="#34495e"/>
+  <text x="350" y="375" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">RESUMO PRÁTICO</text>
+  
+  <text x="80" y="400" font-family="Courier" font-size="11" fill="#e94560">/etc</text>
+  <text x="120" y="400" font-family="Arial" font-size="10" fill="#a8d8ff">- Arquivos de configuração do sistema</text>
+  
+  <text x="80" y="420" font-family="Courier" font-size="11" fill="#e94560">/var/log</text>
+  <text x="140" y="420" font-family="Arial" font-size="10" fill="#a8d8ff">- Logs do sistema (syslog) - Primeiro lugar a verificar em problemas</text>
+  
+  <text x="80" y="440" font-family="Courier" font-size="11" fill="#e94560">/home</text>
+  <text x="140" y="440" font-family="Arial" font-size="10" fill="#a8d8ff">- Diretórios pessoais dos usuários</text>
+  
+  <text x="80" y="460" font-family="Courier" font-size="11" fill="#e94560">/tmp</text>
+  <text x="120" y="460" font-family="Arial" font-size="10" fill="#a8d8ff">- Arquivos temporários (apagados ao reiniciar)</text>
+</svg>

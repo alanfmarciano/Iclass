@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Resultados do aluno · IClass v10</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.34.0/tabler-icons.min.css" />
+<style>
+:root{
+  --bg:#090b10;
+  --surface:#11141c;
+  --surface-raised:#141926;
+  --surface-header:#151a24;
+  --surface-nested:#0f131b;
+  --border:rgba(255,255,255,.07);
+  --border-strong:rgba(255,255,255,.12);
+  --text:#f5f7fb;
+  --muted:#a8b0bf;
+  --subtle:#727d90;
+  --brand:#ff4d57;
+  --brand-hover:#ff6670;
+  --success:#43d99a;
+  --warning:#ffbd5c;
+  --danger:#ff6670;
+  --info:#63b3ff;
+  --shadow:0 8px 28px rgba(0,0,0,.38);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  font-size:14px;
+  line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+  padding:28px 20px 80px;
+}
+.mono{font-family:'JetBrains Mono','SFMono-Regular',ui-monospace,monospace}
+.wrap{max-width:1060px;margin:0 auto}
+
+/* ---------- Back link ---------- */
+.backlink{
+  display:inline-flex;align-items:center;gap:7px;
+  color:var(--muted);text-decoration:none;font-size:13px;font-weight:500;
+  padding:6px 2px;margin-bottom:16px;transition:color .15s;
+}
+.backlink:hover{color:var(--text)}
+.backlink i{font-size:16px}
+
+/* ---------- Student header ---------- */
+.student-head{
+  display:flex;align-items:center;gap:16px;
+  background:var(--surface-header);
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:18px 20px;
+  margin-bottom:18px;
+}
+.avatar{
+  width:52px;height:52px;flex:0 0 52px;border-radius:50%;
+  display:grid;place-items:center;
+  font-weight:700;font-size:18px;letter-spacing:.5px;
+  color:#fff;
+  background:linear-gradient(140deg,#ff4d57,#ff8a5c);
+  box-shadow:0 4px 14px rgba(255,77,87,.28);
+}
+.student-meta{display:flex;flex-direction:column;gap:2px;min-width:0}
+.student-name{font-size:19px;font-weight:700;letter-spacing:-.2px}
+.student-sub{font-size:13px;color:var(--muted)}
+.student-sub .dot{color:var(--subtle);margin:0 6px}
+.head-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---------- Buttons ---------- */
+.btn{
+  display:inline-flex;align-items:center;gap:7px;
+  font-family:inherit;font-size:12.5px;font-weight:600;
+  padding:8px 13px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--border-strong);
+  background:var(--surface-raised);color:var(--text);
+  transition:background .15s,border-color .15s,transform .05s;
+}
+.btn:hover{background:#1b2130;border-color:rgba(255,255,255,.2)}
+.btn:active{transform:translateY(1px)}
+.btn i{font-size:15px;color:var(--muted)}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover{background:var(--brand-hover);border-color:var(--brand-hover)}
+.btn.primary i{color:rgba(255,255,255,.85)}
+.btn.ghost{background:transparent}
+.btn.sm{padding:5px 10px;font-size:11.5px;border-radius:7px}
+
+/* ---------- KPI cards ---------- */
+.kpi-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;
+}
+.kpi{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:16px 18px;
+  position:relative;overflow:hidden;
+  animation:riseIn .5s cubic-bezier(.2,.7,.3,1) both;
+}
+.kpi:nth-child(1){animation-delay:.02s}
+.kpi:nth-child(2){animation-delay:.07s}
+.kpi:nth-child(3){animation-delay:.12s}
+.kpi:nth-child(4){animation-delay:.17s}
+.kpi-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.kpi-label{font-size:12px;color:var(--muted);font-weight:500}
+.kpi-ico{
+  width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+  font-size:16px;background:rgba(255,255,255,.05);color:var(--muted);
+}
+.kpi-value{font-size:28px;font-weight:800;letter-spacing:-.5px;line-height:1}
+.kpi-value small{font-size:15px;font-weight:600;color:var(--subtle)}
+.kpi.accent-red .kpi-ico{background:rgba(255,77,87,.13);color:var(--brand)}
+.kpi.accent-red .kpi-value{color:var(--brand)}
+.kpi.accent-green .kpi-ico{background:rgba(67,217,154,.13);color:var(--success)}
+.kpi.accent-green .kpi-value{color:var(--success)}
+
+/* ---------- Legend + filter bar ---------- */
+.toolbar{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:12px 16px;
+  margin-bottom:20px;
+}
+.legend{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.legend-swatch{width:11px;height:11px;border-radius:4px;display:inline-block}
+.sw-green{background:var(--success)}
+.sw-amber{background:var(--warning)}
+.sw-red{background:var(--danger)}
+.divider-v{width:1px;height:22px;background:var(--border-strong)}
+.chips{display:flex;gap:7px;flex-wrap:wrap}
+.chip{
+  font-family:inherit;font-size:12px;font-weight:600;
+  padding:6px 13px;border-radius:20px;cursor:pointer;
+  border:1px solid var(--border-strong);
+  background:transparent;color:var(--muted);
+  transition:all .15s;
+}
+.chip:hover{color:var(--text);border-color:rgba(255,255,255,.22)}
+.chip.active{background:var(--brand);border-color:var(--brand);color:#fff}
+.search{
+  margin-left:auto;position:relative;display:flex;align-items:center;
+}
+.search i{position:absolute;left:11px;font-size:15px;color:var(--subtle);pointer-events:none}
+.search input{
+  font-family:inherit;font-size:12.5px;
+  background:var(--surface-nested);
+  border:1px solid var(--border-strong);
+  color:var(--text);
+  border-radius:8px;
+  padding:8px 12px 8px 33px;
+  width:210px;outline:none;transition:border-color .15s,box-shadow .15s;
+}
+.search input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(255,77,87,.15)}
+.search input::placeholder{color:var(--subtle)}
+
+/* ---------- Module card ---------- */
+.modules{display:flex;flex-direction:column;gap:16px}
+.module{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:16px;
+  overflow:hidden;
+  animation:riseIn .5s cubic-bezier(.2,.7,.3,1) both;
+}
+.module.m1{--accent:#ff4d57;--accent-soft:rgba(255,77,87,.13);background:color-mix(in srgb,#ff4d57 7%,var(--surface));border-color:color-mix(in srgb,#ff4d57 22%,var(--border));animation-delay:.06s}
+.module.m2{--accent:#43d99a;--accent-soft:rgba(67,217,154,.13);background:color-mix(in srgb,#43d99a 7%,var(--surface));border-color:color-mix(in srgb,#43d99a 22%,var(--border));animation-delay:.13s}
+.module.m3{--accent:#63b3ff;--accent-soft:rgba(99,179,255,.13);background:color-mix(in srgb,#63b3ff 7%,var(--surface));border-color:color-mix(in srgb,#63b3ff 22%,var(--border));animation-delay:.20s}
+.module.m1 .module-head{background:color-mix(in srgb,#ff4d57 12%,var(--surface-header))}
+.module.m2 .module-head{background:color-mix(in srgb,#43d99a 12%,var(--surface-header))}
+.module.m3 .module-head{background:color-mix(in srgb,#63b3ff 12%,var(--surface-header))}
+.module::before{
+  content:"";position:absolute;left:0;top:0;bottom:0;width:5px;
+  background:var(--accent);
+}
+.module-head{
+  display:flex;align-items:center;gap:14px;
+  padding:16px 18px 16px 22px;
+  cursor:pointer;user-select:none;
+  background:var(--surface-header);
+  transition:background .15s;
+}
+.module-head:hover{background:color-mix(in srgb,var(--accent) 18%,var(--surface-header))}
+.mod-chip{
+  width:38px;height:38px;flex:0 0 38px;border-radius:11px;
+  display:grid;place-items:center;font-size:19px;
+  background:var(--accent-soft);color:var(--accent);
+}
+.mod-titles{display:flex;flex-direction:column;gap:3px;min-width:0}
+.mod-code-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.mod-code{
+  font-size:11px;font-weight:600;letter-spacing:.5px;
+  padding:2px 9px;border-radius:6px;
+  background:var(--accent-soft);color:var(--accent);
+  border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);
+}
+.mod-name{font-size:15.5px;font-weight:700;letter-spacing:-.2px}
+.mod-carga{font-size:12px;color:var(--subtle);display:flex;align-items:center;gap:5px}
+.mod-carga i{font-size:14px}
+.mod-head-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.grade-pill{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:13px;font-weight:700;
+  padding:7px 14px;border-radius:20px;white-space:nowrap;
+}
+.grade-pill .gp-label{font-size:10.5px;font-weight:600;opacity:.8;text-transform:uppercase;letter-spacing:.4px}
+.g-success{background:rgba(67,217,154,.14);color:var(--success);border:1px solid rgba(67,217,154,.28)}
+.g-warning{background:rgba(255,189,92,.14);color:var(--warning);border:1px solid rgba(255,189,92,.28)}
+.g-danger{background:rgba(255,102,112,.14);color:var(--danger);border:1px solid rgba(255,102,112,.28)}
+.g-neutral{background:rgba(255,255,255,.06);color:var(--subtle);border:1px solid var(--border-strong)}
+.chevron{
+  font-size:20px;color:var(--muted);transition:transform .28s cubic-bezier(.2,.7,.3,1);
+}
+.module.collapsed .chevron{transform:rotate(-90deg)}
+
+/* Module summary strip */
+.mod-summary{
+  display:flex;align-items:center;gap:16px;
+  padding:12px 18px 14px 22px;
+  border-top:1px solid var(--border);
+  background:var(--surface);
+}
+.meter{
+  flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;
+}
+.meter-top{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--subtle)}
+.meter-track{
+  height:8px;border-radius:6px;background:var(--surface-nested);
+  border:1px solid var(--border);overflow:hidden;position:relative;
+}
+.meter-fill{
+  height:100%;border-radius:6px;
+  transition:width .8s cubic-bezier(.2,.7,.3,1);
+}
+.mf-success{background:linear-gradient(90deg,#37c98d,var(--success))}
+.mf-warning{background:linear-gradient(90deg,#f5ad45,var(--warning))}
+.mf-danger{background:linear-gradient(90deg,#ff525f,var(--danger))}
+.mf-neutral{background:rgba(255,255,255,.14)}
+.mod-stats{
+  font-size:12px;color:var(--muted);white-space:nowrap;
+  display:flex;align-items:center;gap:7px;
+}
+.mod-stats .sep{color:var(--subtle)}
+.mod-stats b{color:var(--text);font-weight:600}
+
+/* Collapsible body */
+.mod-body{
+  display:grid;grid-template-rows:1fr;
+  transition:grid-template-rows .3s ease;
+}
+.module.collapsed .mod-body{grid-template-rows:0fr}
+.module.collapsed .mod-summary{border-bottom:none}
+.mod-body-inner{overflow:hidden}
+.mod-exams{
+  padding:6px 18px 18px 22px;
+  position:relative;
+}
+
+/* ---------- Exam sub-card + connector rail ---------- */
+.exam{
+  position:relative;
+  margin-left:20px;
+  padding-left:26px;
+}
+.exam::before{ /* vertical connector */
+  content:"";position:absolute;left:6px;top:-6px;bottom:0;width:2px;
+  background:var(--border-strong);
+}
+.exam:last-child::before{bottom:auto;height:34px}
+.exam::after{ /* node dot */
+  content:"";position:absolute;left:1px;top:28px;
+  width:12px;height:12px;border-radius:50%;
+  background:var(--surface);border:2px solid var(--accent);
+  box-shadow:0 0 0 3px var(--bg);
+}
+.exam-card{
+  background:var(--surface-raised);
+  border:1px solid var(--border);
+  border-radius:12px;
+  margin:14px 0 0;
+  overflow:hidden;
+}
+.exam-head{
+  display:flex;align-items:flex-start;gap:14px;
+  padding:14px 16px;
+}
+.exam-info{display:flex;flex-direction:column;gap:5px;min-width:0}
+.exam-tag{
+  align-self:flex-start;
+  font-size:9.5px;font-weight:700;letter-spacing:.7px;
+  color:var(--subtle);
+  padding:2px 7px;border-radius:5px;
+  background:rgba(255,255,255,.05);border:1px solid var(--border);
+}
+.exam-title{font-size:14.5px;font-weight:700;letter-spacing:-.15px}
+.exam-metaline{font-size:11.5px;color:var(--subtle);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.exam-metaline .mono{color:var(--muted)}
+.exam-metaline .sep{opacity:.5}
+.exam-consol{font-size:11.5px;color:var(--muted)}
+.exam-head-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.rule-select{
+  display:flex;flex-direction:column;gap:3px;align-items:flex-end;
+}
+.rule-select label{font-size:9.5px;color:var(--subtle);text-transform:uppercase;letter-spacing:.4px;font-weight:600}
+.rule-select select{
+  font-family:inherit;font-size:11.5px;font-weight:500;
+  background:var(--surface-nested);
+  border:1px solid var(--border-strong);
+  color:var(--text);border-radius:7px;
+  padding:5px 26px 5px 9px;cursor:pointer;outline:none;
+  appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23727d90' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center;
+  transition:border-color .15s;
+}
+.rule-select select:focus{border-color:var(--brand)}
+
+/* Attempts */
+.attempts{
+  border-top:1px solid var(--border);
+  background:var(--surface-nested);
+  padding:8px 10px 10px;
+  display:flex;flex-direction:column;gap:7px;
+}
+.attempt{
+  position:relative;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:10px 13px 10px 15px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:10px;
+}
+.attempt::before{
+  content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;
+  background:var(--brand);
+}
+.attempt.archived{opacity:.55}
+.attempt.archived::before{background:var(--subtle)}
+.att-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.badge{
+  font-size:10.5px;font-weight:600;
+  padding:3px 9px;border-radius:20px;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:4px;
+}
+.badge i{font-size:12px}
+.b-neutral{background:rgba(255,255,255,.06);color:var(--muted);border:1px solid var(--border-strong)}
+.b-online{background:rgba(99,179,255,.12);color:var(--info);border:1px solid rgba(99,179,255,.25)}
+.b-active{background:rgba(255,77,87,.12);color:var(--brand);border:1px solid rgba(255,77,87,.28)}
+.b-considered{background:rgba(67,217,154,.12);color:var(--success);border:1px solid rgba(67,217,154,.25)}
+.b-archived{background:rgba(255,255,255,.05);color:var(--subtle);border:1px solid var(--border)}
+.att-date{font-size:11px;color:var(--subtle);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.att-date .mono{color:var(--muted)}
+.att-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pub-label{font-size:10.5px;font-weight:600;display:inline-flex;align-items:center;gap:4px}
+.pub-yes{color:var(--success)}
+.pub-rev{color:var(--warning)}
+.pub-label i{font-size:13px}
+.score-pill{
+  font-size:12.5px;font-weight:700;
+  padding:5px 12px;border-radius:20px;white-space:nowrap;
+}
+.att-actions{display:flex;gap:6px;flex-wrap:wrap}
+
+/* Empty module state */
+.mod-empty{
+  padding:22px;text-align:center;color:var(--subtle);font-size:12.5px;
+}
+.module.hidden{display:none}
+.exam.hidden{display:none}
+
+/* Animations */
+@keyframes riseIn{
+  from{opacity:0;transform:translateY(14px)}
+  to{opacity:1;transform:translateY(0)}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none !important;transition:none !important}
+}
+
+/* Responsive */
+@media(max-width:760px){
+  .kpi-grid{grid-template-columns:repeat(2,1fr)}
+  .search{margin-left:0;width:100%}
+  .search input{width:100%}
+  .mod-summary{flex-direction:column;align-items:stretch;gap:10px}
+  .mod-stats{white-space:normal}
+  .exam-head{flex-wrap:wrap}
+  .exam-head-right{margin-left:0}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Back link -->
+  <a href="#" class="backlink"><i class="ti ti-arrow-left"></i> Voltar aos resultados</a>
+
+  <!-- Student header -->
+  <div class="student-head">
+    <div class="avatar">AA</div>
+    <div class="student-meta">
+      <div class="student-name">Alice Aluna</div>
+      <div class="student-sub">1DES <span class="dot">·</span> aluno@teste.local</div>
+    </div>
+    <div class="head-actions">
+      <button class="btn ghost" id="expandAll"><i class="ti ti-arrows-maximize"></i> Expandir tudo</button>
+      <button class="btn ghost" id="collapseAll"><i class="ti ti-arrows-minimize"></i> Recolher tudo</button>
+    </div>
+  </div>
+
+  <!-- KPI cards -->
+  <div class="kpi-grid">
+    <div class="kpi accent-red">
+      <div class="kpi-top">
+        <span class="kpi-label">Média geral</span>
+        <span class="kpi-ico"><i class="ti ti-chart-line"></i></span>
+      </div>
+      <div class="kpi-value" data-count="3.8" data-decimal="1">0,0</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-top">
+        <span class="kpi-label">Tentativas</span>
+        <span class="kpi-ico"><i class="ti ti-repeat"></i></span>
+      </div>
+      <div class="kpi-value" data-count="8">0</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-top">
+        <span class="kpi-label">Módulos</span>
+        <span class="kpi-ico"><i class="ti ti-stack-2"></i></span>
+      </div>
+      <div class="kpi-value" data-count="3">0</div>
+    </div>
+    <div class="kpi accent-green">
+      <div class="kpi-top">
+        <span class="kpi-label">Publicadas</span>
+        <span class="kpi-ico"><i class="ti ti-circle-check"></i></span>
+      </div>
+      <div class="kpi-value"><span data-count="8">0</span><small>/8</small></div>
+    </div>
+  </div>
+
+  <!-- Legend + filter bar -->
+  <div class="toolbar">
+    <div class="legend">
+      <span class="legend-item"><span class="legend-swatch sw-green"></span> Aprovado ≥ 6,0</span>
+      <span class="legend-item"><span class="legend-swatch sw-amber"></span> Recuperação 4,0–5,9</span>
+      <span class="legend-item"><span class="legend-swatch sw-red"></span> Reprovado &lt; 4,0</span>
+    </div>
+    <div class="divider-v"></div>
+    <div class="chips" id="chips">
+      <button class="chip active" data-filter="todos">Todos</button>
+      <button class="chip" data-filter="reprovados">Reprovados</button>
+      <button class="chip" data-filter="publicadas">Publicadas</button>
+    </div>
+    <div class="search">
+      <i class="ti ti-search"></i>
+      <input type="text" id="searchInput" placeholder="Buscar prova…" />
+    </div>
+  </div>
+
+  <!-- Modules -->
+  <div class="modules" id="modules">
+
+    <!-- ===== Module 1 — FUTEC ===== -->
+    <div class="module m1 collapsed" data-avg="1.5">
+      <div class="module-head">
+        <span class="mod-chip"><i class="ti ti-book-2"></i></span>
+        <div class="mod-titles">
+          <div class="mod-code-row">
+            <span class="mod-code mono">FUTEC</span>
+            <span class="mod-name">Fund. de TI</span>
+          </div>
+          <span class="mod-carga"><i class="ti ti-clock-hour-4"></i> 80h de carga horária</span>
+        </div>
+        <div class="mod-head-right">
+          <span class="grade-pill g-danger"><span class="gp-label">Média</span> 1,5</span>
+          <i class="ti ti-chevron-down chevron"></i>
+        </div>
+      </div>
+
+      <div class="mod-summary">
+        <div class="meter">
+          <div class="meter-top"><span>Aproveitamento do módulo</span><span>1,5 / 10</span></div>
+          <div class="meter-track"><div class="meter-fill mf-danger" style="width:15%"></div></div>
+        </div>
+        <div class="mod-stats">
+          <span><b>4</b> provas</span><span class="sep">·</span>
+          <span><b>4</b> publicadas</span><span class="sep">·</span>
+          <span>melhor <b>6,8</b></span><span class="sep">·</span>
+          <span>pior <b>0,0</b></span>
+        </div>
+      </div>
+
+      <div class="mod-body">
+        <div class="mod-body-inner">
+          <div class="mod-exams">
+
+            <!-- Exam 1.1 -->
+            <div class="exam" data-title="Sistemas Operacionais + Dispositivos" data-reproved="true" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Sistemas Operacionais + Dispositivos</span>
+                    <span class="exam-metaline"><span class="mono">app_3feabd33</span><span class="sep">·</span><span>15/07/2026 14:48</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Tentativa escolhida</option>
+                        <option>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-danger"><span class="gp-label">Nota</span> 0,0</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-active"><i class="ti ti-star"></i> Compõe a nota</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 15/07/2026 14:48 <span class="sep">·</span> <span class="mono">Versão B</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-danger">0,0</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-archive"></i> Arquivar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Exam 1.2 -->
+            <div class="exam" data-title="Sistemas Operacionais + Dispositivos" data-reproved="true" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Sistemas Operacionais + Dispositivos</span>
+                    <span class="exam-metaline"><span class="mono">app_f6740a78</span><span class="sep">·</span><span>15/07/2026 13:13</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Tentativa escolhida</option>
+                        <option>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-danger"><span class="gp-label">Nota</span> 3,0</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-active"><i class="ti ti-star"></i> Compõe a nota</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 15/07/2026 13:14 <span class="sep">·</span> <span class="mono">Versão C</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-danger">3,0</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-archive"></i> Arquivar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Exam 1.3 (legacy) -->
+            <div class="exam" data-title="Instalação de Windows Server + KMS" data-reproved="false" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Instalação de Windows Server + KMS</span>
+                    <span class="exam-metaline"><span class="mono">Registro legado</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                        <option>Tentativa escolhida</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-neutral"><span class="gp-label">Nota</span> —</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt archived">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-archived"><i class="ti ti-archive"></i> Arquivada</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 10/06/2026 <span class="sep">·</span> <span class="mono">Versão B</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-success">6,8</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-star"></i> Usar esta nota</button>
+                        <button class="btn sm ghost"><i class="ti ti-restore"></i> Restaurar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Exam 1.4 (legacy) -->
+            <div class="exam" data-title="Sistemas Operacionais + Dispositivos" data-reproved="false" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Sistemas Operacionais + Dispositivos</span>
+                    <span class="exam-metaline"><span class="mono">Registro legado</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                        <option>Tentativa escolhida</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-neutral"><span class="gp-label">Nota</span> —</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt archived">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-archived"><i class="ti ti-archive"></i> Arquivada</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 04/06/2026 <span class="sep">·</span> <span class="mono">Versão A</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-success">6,0</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-star"></i> Usar esta nota</button>
+                        <button class="btn sm ghost"><i class="ti ti-restore"></i> Restaurar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mod-empty" hidden>Nenhuma prova corresponde aos filtros.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Module 2 — FECOP ===== -->
+    <div class="module m2 collapsed" data-avg="8.4">
+      <div class="module-head">
+        <span class="mod-chip"><i class="ti ti-book-2"></i></span>
+        <div class="mod-titles">
+          <div class="mod-code-row">
+            <span class="mod-code mono">FECOP</span>
+            <span class="mod-name">Colab. e Prod.</span>
+          </div>
+          <span class="mod-carga"><i class="ti ti-clock-hour-4"></i> 120h de carga horária</span>
+        </div>
+        <div class="mod-head-right">
+          <span class="grade-pill g-success"><span class="gp-label">Média</span> 8,4</span>
+          <i class="ti ti-chevron-down chevron"></i>
+        </div>
+      </div>
+
+      <div class="mod-summary">
+        <div class="meter">
+          <div class="meter-top"><span>Aproveitamento do módulo</span><span>8,4 / 10</span></div>
+          <div class="meter-track"><div class="meter-fill mf-success" style="width:84%"></div></div>
+        </div>
+        <div class="mod-stats">
+          <span><b>2</b> provas</span><span class="sep">·</span>
+          <span><b>2</b> publicadas</span><span class="sep">·</span>
+          <span>melhor <b>8,4</b></span><span class="sep">·</span>
+          <span>pior <b>7,6</b></span>
+        </div>
+      </div>
+
+      <div class="mod-body">
+        <div class="mod-body-inner">
+          <div class="mod-exams">
+
+            <!-- Exam 2.1 -->
+            <div class="exam" data-title="Serviços em Nuvem + AWS/Azure" data-reproved="false" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Serviços em Nuvem + AWS/Azure</span>
+                    <span class="exam-metaline"><span class="mono">Registro legado</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Tentativa escolhida</option>
+                        <option>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-success"><span class="gp-label">Nota</span> 8,4</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-active"><i class="ti ti-star"></i> Compõe a nota</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 22/06/2026 <span class="sep">·</span> <span class="mono">Versão B</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-success">8,4</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-archive"></i> Arquivar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Exam 2.2 (legacy) -->
+            <div class="exam" data-title="Produtividade + Office 365" data-reproved="false" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Produtividade + Office 365</span>
+                    <span class="exam-metaline"><span class="mono">Registro legado</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                        <option>Tentativa escolhida</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-neutral"><span class="gp-label">Nota</span> —</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt archived">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-archived"><i class="ti ti-archive"></i> Arquivada</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 16/06/2026 <span class="sep">·</span> <span class="mono">Versão A</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-success">7,6</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-star"></i> Usar esta nota</button>
+                        <button class="btn sm ghost"><i class="ti ti-restore"></i> Restaurar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mod-empty" hidden>Nenhuma prova corresponde aos filtros.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Module 3 — IRCOM ===== -->
+    <div class="module m3 collapsed" data-avg="">
+      <div class="module-head">
+        <span class="mod-chip"><i class="ti ti-book-2"></i></span>
+        <div class="mod-titles">
+          <div class="mod-code-row">
+            <span class="mod-code mono">IRCOM</span>
+            <span class="mod-name">Inst. Rec. Comp.</span>
+          </div>
+          <span class="mod-carga"><i class="ti ti-clock-hour-4"></i> 120h de carga horária</span>
+        </div>
+        <div class="mod-head-right">
+          <span class="grade-pill g-neutral"><span class="gp-label">Média</span> —</span>
+          <i class="ti ti-chevron-down chevron"></i>
+        </div>
+      </div>
+
+      <div class="mod-summary">
+        <div class="meter">
+          <div class="meter-top"><span>Aproveitamento do módulo</span><span>sem consolidada</span></div>
+          <div class="meter-track"><div class="meter-fill mf-neutral" style="width:0%"></div></div>
+        </div>
+        <div class="mod-stats">
+          <span><b>2</b> provas</span><span class="sep">·</span>
+          <span><b>2</b> publicadas</span><span class="sep">·</span>
+          <span>melhor <b>9,2</b></span><span class="sep">·</span>
+          <span>pior <b>6,1</b></span>
+        </div>
+      </div>
+
+      <div class="mod-body">
+        <div class="mod-body-inner">
+          <div class="mod-exams">
+
+            <!-- Exam 3.1 (legacy) -->
+            <div class="exam" data-title="Protocolos Industriais + Modbus/OPC-UA" data-reproved="false" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Protocolos Industriais + Modbus/OPC-UA</span>
+                    <span class="exam-metaline"><span class="mono">Registro legado</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                        <option>Tentativa escolhida</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-neutral"><span class="gp-label">Nota</span> —</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt archived">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-archived"><i class="ti ti-archive"></i> Arquivada</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 04/07/2026 <span class="sep">·</span> <span class="mono">Versão B</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-success">6,1</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-star"></i> Usar esta nota</button>
+                        <button class="btn sm ghost"><i class="ti ti-restore"></i> Restaurar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Exam 3.2 (legacy) -->
+            <div class="exam" data-title="Planejamento de Instalação + Requisitos" data-reproved="false" data-published="true">
+              <div class="exam-card">
+                <div class="exam-head">
+                  <div class="exam-info">
+                    <span class="exam-tag">PROVA</span>
+                    <span class="exam-title">Planejamento de Instalação + Requisitos</span>
+                    <span class="exam-metaline"><span class="mono">Registro legado</span></span>
+                    <span class="exam-consol">1 tentativa · resultado consolidado</span>
+                  </div>
+                  <div class="exam-head-right">
+                    <div class="rule-select">
+                      <label>Regra de cálculo</label>
+                      <select>
+                        <option selected>Melhor nota</option>
+                        <option>Última tentativa</option>
+                        <option>Média</option>
+                        <option>Tentativa escolhida</option>
+                      </select>
+                    </div>
+                    <span class="grade-pill g-neutral"><span class="gp-label">Nota</span> —</span>
+                  </div>
+                </div>
+                <div class="attempts">
+                  <div class="attempt archived">
+                    <div class="att-badges">
+                      <span class="badge b-neutral">Tentativa 1</span>
+                      <span class="badge b-online"><i class="ti ti-world"></i> Online</span>
+                      <span class="badge b-archived"><i class="ti ti-archive"></i> Arquivada</span>
+                    </div>
+                    <span class="att-date"><i class="ti ti-calendar-event"></i> 28/06/2026 <span class="sep">·</span> <span class="mono">Versão A</span></span>
+                    <div class="att-right">
+                      <span class="pub-label pub-yes"><i class="ti ti-circle-check"></i> Publicada</span>
+                      <span class="score-pill g-success">9,2</span>
+                      <div class="att-actions">
+                        <button class="btn sm ghost"><i class="ti ti-eye"></i> Ver prova</button>
+                        <button class="btn sm ghost"><i class="ti ti-star"></i> Usar esta nota</button>
+                        <button class="btn sm ghost"><i class="ti ti-restore"></i> Restaurar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mod-empty" hidden>Nenhuma prova corresponde aos filtros.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---------- Count-up KPIs ----------
+  function fmt(n, dec){
+    return n.toLocaleString('pt-BR', {minimumFractionDigits:dec, maximumFractionDigits:dec});
+  }
+  document.querySelectorAll('[data-count]').forEach(function(el){
+    var target = parseFloat(el.getAttribute('data-count'));
+    var dec = parseInt(el.getAttribute('data-decimal') || '0', 10);
+    if(reduceMotion){ el.textContent = fmt(target, dec); return; }
+    var dur = 850, start = null;
+    function step(ts){
+      if(start === null) start = ts;
+      var p = Math.min((ts - start)/dur, 1);
+      var eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = fmt(target * eased, dec);
+      if(p < 1) requestAnimationFrame(step);
+      else el.textContent = fmt(target, dec);
+    }
+    requestAnimationFrame(step);
+  });
+
+  // ---------- Collapse / expand ----------
+  document.querySelectorAll('.module-head').forEach(function(head){
+    head.addEventListener('click', function(){
+      head.closest('.module').classList.toggle('collapsed');
+    });
+  });
+  document.getElementById('expandAll').addEventListener('click', function(){
+    document.querySelectorAll('.module').forEach(function(m){ m.classList.remove('collapsed'); });
+  });
+  document.getElementById('collapseAll').addEventListener('click', function(){
+    document.querySelectorAll('.module').forEach(function(m){ m.classList.add('collapsed'); });
+  });
+
+  // ---------- Filtering ----------
+  var currentFilter = 'todos';
+  var searchTerm = '';
+
+  function applyFilters(){
+    document.querySelectorAll('.module').forEach(function(mod){
+      var anyVisible = false;
+      mod.querySelectorAll('.exam').forEach(function(exam){
+        var title = (exam.getAttribute('data-title') || '').toLowerCase();
+        var reproved = exam.getAttribute('data-reproved') === 'true';
+        var published = exam.getAttribute('data-published') === 'true';
+        var matchSearch = !searchTerm || title.indexOf(searchTerm) !== -1;
+        var matchFilter = currentFilter === 'todos'
+          || (currentFilter === 'reprovados' && reproved)
+          || (currentFilter === 'publicadas' && published);
+        var show = matchSearch && matchFilter;
+        exam.classList.toggle('hidden', !show);
+        if(show) anyVisible = true;
+      });
+      var empty = mod.querySelector('.mod-empty');
+      if(empty) empty.hidden = anyVisible;
+      mod.classList.toggle('hidden', !anyVisible);
+    });
+  }
+
+  document.getElementById('chips').addEventListener('click', function(e){
+    var chip = e.target.closest('.chip');
+    if(!chip) return;
+    document.querySelectorAll('.chip').forEach(function(c){ c.classList.remove('active'); });
+    chip.classList.add('active');
+    currentFilter = chip.getAttribute('data-filter');
+    applyFilters();
+  });
+
+  document.getElementById('searchInput').addEventListener('input', function(e){
+    searchTerm = e.target.value.trim().toLowerCase();
+    applyFilters();
+  });
+})();
+</script>
+</body>
+</html>

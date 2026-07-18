@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup — Digitação ao vivo (melhorada)</title>
+<style>
+  :root{
+    --bg:#10121a; --surface:#191c25; --surface-2:#20242e; --surface-3:#262b37;
+    --border:#2b303b; --border-strong:#3a404c;
+    --text:#f4f5ef; --muted:#b0b5ae; --subtle:#8b9189;
+    --primary:#6b8afd; --primary-soft:rgba(107,138,253,.14);
+    --success:#58d6aa; --success-soft:rgba(88,214,170,.12);
+    --warning:#ffca67; --warning-soft:rgba(255,202,103,.12);
+    --danger:#ff858c; --danger-soft:rgba(255,133,140,.12);
+    --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+    --sans:"Segoe UI Variable Text","SF Pro Text","Segoe UI",ui-sans-serif,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:var(--sans); color:var(--text); min-height:100vh;
+    background:
+      radial-gradient(circle at 100% 0%, rgba(107,138,253,.10), transparent 30rem),
+      radial-gradient(circle at 0% 100%, rgba(255,133,140,.06), transparent 26rem),
+      var(--bg);
+    display:flex; align-items:center; justify-content:center; padding:32px 20px;
+  }
+
+  .stage{width:100%; max-width:860px}
+  .caption{color:var(--subtle); font-size:12px; text-align:center; margin-bottom:14px; letter-spacing:.02em}
+  .caption b{color:var(--muted); font-weight:600}
+
+  /* Panel */
+  .panel{
+    background:linear-gradient(160deg, #1b1f29, var(--surface));
+    border:1px solid var(--border); border-radius:20px; overflow:hidden;
+    box-shadow:0 26px 70px rgba(0,0,0,.45), 0 1px 0 rgba(255,255,255,.03) inset;
+  }
+
+  /* Header */
+  .head{display:flex; align-items:flex-start; gap:14px; padding:20px 22px 16px; border-bottom:1px solid var(--border)}
+  .avatar{
+    width:44px; height:44px; border-radius:13px; flex:none; display:grid; place-items:center;
+    font-weight:700; font-size:16px; color:#0d1017;
+    background:linear-gradient(140deg,#8ea6ff,#6b8afd); box-shadow:0 6px 16px rgba(107,138,253,.35)
+  }
+  .id{flex:1; min-width:0}
+  .id .name{display:flex; align-items:center; gap:10px; font-size:17px; font-weight:650; letter-spacing:-.01em}
+  .id .mail{color:var(--subtle); font-size:12.5px; margin-top:2px; font-family:var(--mono)}
+  .live{
+    display:inline-flex; align-items:center; gap:6px; font-size:10.5px; font-weight:700;
+    color:var(--danger); background:var(--danger-soft); border:1px solid rgba(255,133,140,.3);
+    padding:3px 9px; border-radius:999px; letter-spacing:.09em
+  }
+  .live .dot{width:6px; height:6px; border-radius:50%; background:var(--danger); animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1; transform:scale(1)}50%{opacity:.35; transform:scale(.75)}}
+  .head .close{
+    margin-left:auto; width:34px; height:34px; flex:none; border-radius:10px; cursor:pointer;
+    background:var(--surface-2); border:1px solid var(--border); color:var(--muted);
+    display:grid; place-items:center; font-size:16px; transition:.15s
+  }
+  .head .close:hover{border-color:var(--primary); color:var(--text)}
+  .status-pill{
+    display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600;
+    padding:3px 9px; border-radius:999px; border:1px solid;
+    color:var(--danger); background:var(--danger-soft); border-color:rgba(255,133,140,.28)
+  }
+  .status-pill .s{width:6px;height:6px;border-radius:50%;background:currentColor}
+
+  /* Stats */
+  .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border)}
+  .stat{background:var(--surface); padding:14px 18px}
+  .stat .k{font-size:11px; color:var(--subtle); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px}
+  .stat .v{font-size:22px; font-weight:700; font-family:var(--mono); letter-spacing:-.02em; line-height:1}
+  .stat .v small{font-size:12px; color:var(--subtle); font-weight:500; margin-left:3px}
+  .stat.warn .v{color:var(--danger)}
+  .stat .trend{font-size:11px; color:var(--subtle); margin-top:5px}
+  .stat.warn .trend{color:var(--danger)}
+
+  /* Toolbar */
+  .toolbar{display:flex; align-items:center; gap:10px; padding:14px 18px; border-top:1px solid var(--border); border-bottom:1px solid var(--border)}
+  .tabs{display:inline-flex; background:var(--surface-2); border:1px solid var(--border); border-radius:11px; padding:3px}
+  .tab{
+    border:0; background:transparent; color:var(--muted); font-family:var(--sans); font-size:12.5px; font-weight:600;
+    padding:7px 14px; border-radius:8px; cursor:pointer; transition:.15s; display:inline-flex; align-items:center; gap:7px
+  }
+  .tab .badge{font-family:var(--mono); font-size:10.5px; background:var(--danger); color:#1a0507; border-radius:6px; padding:0 5px; font-weight:700}
+  .tab.active{background:var(--primary); color:#0b1020; box-shadow:0 4px 12px rgba(107,138,253,.3)}
+  .tab.active .badge{background:#0b1020; color:var(--danger)}
+  .toolbar .right{margin-left:auto; display:flex; align-items:center; gap:12px}
+  .switch{display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none}
+  .switch .track{width:34px; height:19px; border-radius:999px; background:var(--surface-3); border:1px solid var(--border-strong); position:relative; transition:.18s}
+  .switch .track::after{content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:var(--subtle); transition:.18s}
+  .switch.on .track{background:var(--danger-soft); border-color:var(--danger)}
+  .switch.on .track::after{left:16px; background:var(--danger)}
+  .refresh{font-size:11px; color:var(--subtle); font-family:var(--mono); display:inline-flex; align-items:center; gap:6px}
+  .refresh .rdot{width:5px;height:5px;border-radius:50%;background:var(--success); box-shadow:0 0 0 0 rgba(88,214,170,.5); animation:ring 2s infinite}
+  @keyframes ring{0%{box-shadow:0 0 0 0 rgba(88,214,170,.4)}70%{box-shadow:0 0 0 7px rgba(88,214,170,0)}100%{box-shadow:0 0 0 0 rgba(88,214,170,0)}}
+
+  /* Body */
+  .body{padding:18px; max-height:440px; overflow-y:auto}
+  .body::-webkit-scrollbar{width:9px}
+  .body::-webkit-scrollbar-thumb{background:var(--border-strong); border-radius:99px}
+  .view{display:none}
+  .view.active{display:block}
+
+  /* Reconstructed text — per question */
+  .qcard{background:var(--surface-2); border:1px solid var(--border); border-radius:14px; padding:15px 17px; margin-bottom:12px}
+  .qcard:last-child{margin-bottom:0}
+  .qhead{display:flex; align-items:center; gap:10px; margin-bottom:10px}
+  .qtag{font-family:var(--mono); font-size:11px; font-weight:700; color:var(--primary); background:var(--primary-soft); border:1px solid rgba(107,138,253,.28); padding:2px 8px; border-radius:7px}
+  .qhead .meta{margin-left:auto; font-size:11px; color:var(--subtle); font-family:var(--mono)}
+  .typed{font-size:14.5px; line-height:1.7; color:var(--text); font-family:var(--mono); word-break:break-word}
+  .typed .del{color:var(--danger); text-decoration:line-through; opacity:.6}
+  .typed .caret{display:inline-block; width:8px; height:17px; background:var(--primary); margin-left:1px; vertical-align:-3px; animation:blink 1s step-end infinite; border-radius:1px}
+  @keyframes blink{50%{opacity:0}}
+  .qfoot{margin-top:11px; padding-top:10px; border-top:1px dashed var(--border); display:flex; gap:16px; font-size:11px; color:var(--subtle)}
+  .qfoot b{color:var(--muted); font-family:var(--mono); font-weight:600}
+  .flag{color:var(--danger); display:inline-flex; align-items:center; gap:5px}
+
+  /* Raw stream */
+  .stream{display:flex; flex-wrap:wrap; gap:6px}
+  .key{
+    font-family:var(--mono); font-size:12px; padding:5px 9px; border-radius:8px;
+    background:var(--surface-2); border:1px solid var(--border); color:var(--muted); white-space:nowrap
+  }
+  .key.char{color:var(--text); background:var(--surface-3)}
+  .key.sus{color:var(--danger); background:var(--danger-soft); border-color:rgba(255,133,140,.35); font-weight:600}
+  .key .t{color:var(--subtle); font-size:9.5px; margin-left:6px}
+
+  /* Alerts */
+  .alert{display:flex; gap:13px; padding:13px 15px; border-radius:13px; background:var(--danger-soft); border:1px solid rgba(255,133,140,.25); margin-bottom:9px}
+  .alert:last-child{margin-bottom:0}
+  .alert .ico{width:34px; height:34px; flex:none; border-radius:10px; display:grid; place-items:center; background:rgba(255,133,140,.16); font-size:16px}
+  .alert .info{flex:1}
+  .alert .info .t{font-weight:650; font-size:13.5px; color:var(--danger)}
+  .alert .info .d{font-size:12px; color:var(--muted); margin-top:2px}
+  .alert .time{font-family:var(--mono); font-size:11px; color:var(--subtle); white-space:nowrap}
+  .alert.focus{background:var(--warning-soft); border-color:rgba(255,202,103,.25)}
+  .alert.focus .ico{background:rgba(255,202,103,.16)}
+  .alert.focus .info .t{color:var(--warning)}
+
+  /* Timeline */
+  .tl{margin-top:16px; background:var(--surface-2); border:1px solid var(--border); border-radius:14px; padding:15px 17px}
+  .tl .th{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px}
+  .tl .th .lbl{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--subtle)}
+  .tl .th .legend{font-size:10.5px; color:var(--subtle); display:flex; gap:12px}
+  .tl .th .legend i{font-style:normal; display:inline-flex; align-items:center; gap:5px}
+  .tl .th .legend b{width:8px; height:8px; border-radius:2px; display:inline-block}
+  .bars{display:flex; align-items:flex-end; gap:3px; height:56px}
+  .bars .bar{flex:1; border-radius:3px 3px 0 0; background:var(--primary); min-height:3px; opacity:.85; position:relative}
+  .bars .bar.sus{background:var(--danger)}
+  .bars .bar.gap{background:repeating-linear-gradient(45deg,var(--surface-3),var(--surface-3) 3px,transparent 3px,transparent 6px); border:1px dashed var(--border-strong); opacity:1}
+  .axis{display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px; color:var(--subtle); margin-top:7px}
+  .gaphint{margin-top:11px; font-size:11.5px; color:var(--warning); display:flex; align-items:center; gap:7px}
+
+  .foot{padding:12px 18px; border-top:1px solid var(--border); display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--subtle)}
+  .foot .ok{color:var(--success)}
+  .foot .btn{margin-left:auto; background:var(--surface-2); border:1px solid var(--border); color:var(--muted); font-size:12px; font-weight:600; padding:7px 13px; border-radius:9px; cursor:pointer; font-family:var(--sans)}
+  .foot .btn:hover{border-color:var(--primary); color:var(--text)}
+</style>
+</head>
+<body>
+<div class="stage">
+  <p class="caption">Mockup — <b>Digitação ao vivo</b> repensada · dados de exemplo · <b>não implementado no sistema</b></p>
+
+  <div class="panel">
+    <!-- HEADER -->
+    <div class="head">
+      <div class="avatar">A</div>
+      <div class="id">
+        <div class="name">Alice Aluna <span class="live"><span class="dot"></span>AO VIVO</span></div>
+        <div class="mail">aluno@teste.local · Prova de Biologia · Turma 3B</div>
+        <div style="margin-top:9px; display:flex; gap:7px">
+          <span class="status-pill"><span class="s"></span>Foco bloqueado</span>
+          <span class="status-pill" style="color:var(--muted);background:var(--surface-2);border-color:var(--border)"><span class="s" style="background:var(--success)"></span>Online · 59:07 restante</span>
+        </div>
+      </div>
+      <div class="close">✕</div>
+    </div>
+
+    <!-- STATS -->
+    <div class="stats">
+      <div class="stat"><div class="k">Teclas</div><div class="v">312</div><div class="trend">↑ digitando agora</div></div>
+      <div class="stat warn"><div class="k">Suspeitos</div><div class="v">4</div><div class="trend">2 cópias · 1 colar · 1 menu</div></div>
+      <div class="stat"><div class="k">Progresso</div><div class="v">3<small>/10</small></div><div class="trend">respondendo Q4</div></div>
+      <div class="stat warn"><div class="k">Última atividade</div><div class="v">3s</div><div class="trend">gap de 12s às 14:35</div></div>
+    </div>
+
+    <!-- TOOLBAR -->
+    <div class="toolbar">
+      <div class="tabs">
+        <button class="tab active" data-view="text">Texto reconstruído</button>
+        <button class="tab" data-view="stream">Fluxo de teclas</button>
+        <button class="tab" data-view="alerts">Alertas <span class="badge">4</span></button>
+      </div>
+      <div class="right">
+        <label class="switch" id="susOnly"><span class="track"></span>Só suspeitos</label>
+        <span class="refresh"><span class="rdot"></span>2s</span>
+      </div>
+    </div>
+
+    <!-- BODY -->
+    <div class="body">
+      <!-- VIEW: TEXT RECONSTRUCTED -->
+      <div class="view active" data-view="text">
+        <div class="qcard">
+          <div class="qhead">
+            <span class="qtag">Q1 · dissertativa</span>
+            <span class="meta">14:31:40 → 14:33:02 · 142 teclas</span>
+          </div>
+          <div class="typed">A fotossíntese é o processo pelo qual as plantas convertem luz solar em energia química. Os cloroplastos captam a luz e <span class="del">produz</span>produzem glicose.</div>
+          <div class="qfoot">
+            <span>edições: <b>3</b></span><span>correções (backspace): <b>11</b></span><span>colado: <b>não</b></span>
+          </div>
+        </div>
+
+        <div class="qcard">
+          <div class="qhead">
+            <span class="qtag">Q3 · dissertativa</span>
+            <span class="meta">14:33:15 → agora · 96 teclas</span>
+          </div>
+          <div class="typed">A respiração celular ocorre nas mitocôndrias e libera energia a partir da glicose. O processo tem três etapas: glicólise, ciclo de Krebs e cadeia<span class="caret"></span></div>
+          <div class="qfoot">
+            <span>edições: <b>1</b></span>
+            <span class="flag">⧉ trecho colado às 14:33:15 · 38 caracteres</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- VIEW: RAW STREAM -->
+      <div class="view" data-view="stream">
+        <div class="stream" id="streamWrap">
+          <span class="key char">A<span class="t">31:40</span></span>
+          <span class="key char">␣</span>
+          <span class="key char">f</span><span class="key char">o</span><span class="key char">t</span><span class="key char">o</span>
+          <span class="key sus" data-sus>Ctrl+C<span class="t">32:07</span></span>
+          <span class="key sus" data-sus>☰ menu<span class="t">32:09</span></span>
+          <span class="key char">s</span><span class="key char">í</span><span class="key char">n</span>
+          <span class="key">⌫ backspace</span>
+          <span class="key char">t</span><span class="key char">e</span><span class="key char">s</span><span class="key char">e</span>
+          <span class="key sus" data-sus>Ctrl+V<span class="t">33:15</span></span>
+          <span class="key char">A</span><span class="key char">␣</span><span class="key char">r</span><span class="key char">e</span>
+          <span class="key">⏎ enter</span>
+          <span class="key sus" data-sus>Alt+Tab<span class="t">35:28</span></span>
+        </div>
+      </div>
+
+      <!-- VIEW: ALERTS -->
+      <div class="view" data-view="alerts">
+        <div class="alert"><div class="ico">⧉</div><div class="info"><div class="t">Tentativa de copiar (Ctrl+C)</div><div class="d">Bloqueado. Aluna tentou copiar o enunciado da questão.</div></div><div class="time">14:32:07</div></div>
+        <div class="alert"><div class="ico">☰</div><div class="info"><div class="t">Menu do botão direito</div><div class="d">Bloqueado. Menu de contexto acionado sobre a área da prova.</div></div><div class="time">14:32:09</div></div>
+        <div class="alert"><div class="ico">📋</div><div class="info"><div class="t">Conteúdo colado (Ctrl+V) — 38 caracteres</div><div class="d">Texto inserido na Q3 sem digitação correspondente. Possível resposta externa.</div></div><div class="time">14:33:15</div></div>
+        <div class="alert focus"><div class="ico">⇄</div><div class="info"><div class="t">Saiu do foco da prova · 12s</div><div class="d">Trocou de aba/janela (Alt+Tab) durante a prova. Prova pausada automaticamente.</div></div><div class="time">14:35:28</div></div>
+      </div>
+
+      <!-- TIMELINE (sempre visível) -->
+      <div class="tl">
+        <div class="th">
+          <span class="lbl">Ritmo de digitação · últimos 5 min</span>
+          <span class="legend">
+            <i><b style="background:var(--primary)"></b>teclas</i>
+            <i><b style="background:var(--danger)"></b>suspeito</i>
+            <i><b style="background:var(--border-strong)"></b>ausente</i>
+          </span>
+        </div>
+        <div class="bars" id="bars"></div>
+        <div class="axis"><span>14:31</span><span>14:32</span><span>14:33</span><span>14:34</span><span>14:35</span><span>14:36</span></div>
+        <div class="gaphint">⚠ Gap de 12s às 14:35 — sem digitação e foco perdido. Verifique.</div>
+      </div>
+    </div>
+
+    <!-- FOOT -->
+    <div class="foot">
+      <span class="ok">●</span> Captura ativa · sincronizado há 3s
+      <button class="btn">Exportar histórico</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Troca de abas
+  document.querySelectorAll('.tab').forEach(tab=>{
+    tab.addEventListener('click',()=>{
+      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+      tab.classList.add('active');
+      const v=tab.dataset.view;
+      document.querySelectorAll('.view').forEach(view=>{
+        view.classList.toggle('active', view.dataset.view===v);
+      });
+    });
+  });
+
+  // Toggle "só suspeitos" (afeta o fluxo de teclas)
+  const susBtn=document.getElementById('susOnly');
+  susBtn.addEventListener('click',()=>{
+    susBtn.classList.toggle('on');
+    const on=susBtn.classList.contains('on');
+    document.querySelectorAll('#streamWrap .key').forEach(k=>{
+      k.style.display = (!on || k.hasAttribute('data-sus')) ? '' : 'none';
+    });
+  });
+
+  // Gera as barras da timeline (com um gap e picos suspeitos)
+  const heights=[30,55,42,60,48,70,52,65,80,58,44,62,50,72,'sus',68,40,55,'sus',60,'gap','gap',22,45,58,66,50,74,60,48];
+  const bars=document.getElementById('bars');
+  heights.forEach(h=>{
+    const b=document.createElement('div'); b.className='bar';
+    if(h==='sus'){b.classList.add('sus'); b.style.height='78%';}
+    else if(h==='gap'){b.classList.add('gap'); b.style.height='100%';}
+    else{b.style.height=h+'%';}
+    bars.appendChild(b);
+  });
+</script>
+</body>
+</html>

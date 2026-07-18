@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">FERRAMENTAS DE ENGAJAMENTO</text>
+  
+  <!-- Breakout rooms -->
+  <rect x="30" y="60" width="250" height="150" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="155" y="85" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">BREAKOUT ROOMS</text>
+  
+  <rect x="50" y="100" width="60" height="40" fill="#0f3460" rx="3"/>
+  <text x="80" y="120" font-family="Arial" font-size="8" fill="#fff" text-anchor="middle">Sala A</text>
+  <text x="80" y="132" font-family="Arial" font-size="7" fill="#aaa" text-anchor="middle">5 pessoas</text>
+  
+  <rect x="120" y="100" width="60" height="40" fill="#0f3460" rx="3"/>
+  <text x="150" y="120" font-family="Arial" font-size="8" fill="#fff" text-anchor="middle">Sala B</text>
+  <text x="150" y="132" font-family="Arial" font-size="7" fill="#aaa" text-anchor="middle">4 pessoas</text>
+  
+  <rect x="190" y="100" width="60" height="40" fill="#0f3460" rx="3"/>
+  <text x="220" y="120" font-family="Arial" font-size="8" fill="#fff" text-anchor="middle">Sala C</text>
+  <text x="220" y="132" font-family="Arial" font-size="7" fill="#aaa" text-anchor="middle">6 pessoas</text>
+  
+  <text x="155" y="165" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Discussões em grupos menores</text>
+  <text x="155" y="180" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Reunião principal após 15min</text>
+  
+  <!-- Polls and Whiteboard -->
+  <rect x="300" y="60" width="270" height="150" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="435" y="85" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">ENGAJAMENTO INTERATIVO</text>
+  
+  <text x="320" y="115" font-family="Arial" font-size="10" fill="#fff">📊 ENQUETES</text>
+  <text x="320" y="130" font-family="Arial" font-size="9" fill="#aaa">Votações em tempo real</text>
+  
+  <text x="320" y="155" font-family="Arial" font-size="10" fill="#fff">📝 WHITEBOARD</text>
+  <text x="320" y="170" font-family="Arial" font-size="9" fill="#aaa">Quadro colaborativo</text>
+  
+  <text x="470" y="115" font-family="Arial" font-size="10" fill="#fff">🎯 QUIZZES</text>
+  <text x="470" y="130" font-family="Arial" font-size="9" fill="#aaa">Perguntas + rankings</text>
+  
+  <text x="470" y="155" font-family="Arial" font-size="10" fill="#fff">📋 SONDAJES</text>
+  <text x="470" y="170" font-family="Arial" font-size="9" fill="#aaa">Feedback anônimo</text>
+  
+  <!-- Hybrid meeting tips -->
+  <text x="300" y="240" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">REUNIÃO HÍBRIDA PERFEITA</text>
+  
+  <rect x="30" y="255" width="540" height="70" fill="#16213e" rx="5"/>
+  
+  <circle cx="70" cy="290" r="25" fill="#0f3460"/>
+  <text x="70" y="295" font-family="Arial" font-size="20" text-anchor="middle">🎥</text>
+  
+  <circle cx="170" cy="290" r="25" fill="#0f3460"/>
+  <text x="170" y="295" font-family="Arial" font-size="20" text-anchor="middle">🎤</text>
+  
+  <circle cx="270" cy="290" r="25" fill="#0f3460"/>
+  <text x="270" y="295" font-family="Arial" font-size="20" text-anchor="middle">💡</text>
+  
+  <circle cx="370" cy="290" r="25" fill="#0f3460"/>
+  <text x="370" y="295" font-family="Arial" font-size="20" text-anchor="middle">🖥️</text>
+  
+  <circle cx="470" cy="290" r="25" fill="#0f3460"/>
+  <text x="470" y="295" font-family="Arial" font-size="20" text-anchor="middle">📺</text>
+  
+  <text x="70" y="318" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Câmera</text>
+  <text x="170" y="318" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Boom mic</text>
+  <text x="270" y="318" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Iluminação</text>
+  <text x="370" y="318" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Tela</text>
+  <text x="470" y="318" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">TV grande</text>
+  
+  <!-- Accessibility -->
+  <text x="300" y="355" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">♿ Acessibilidade: Legendas automáticas | Intérprete Libras | transcripts</text>
+</svg>

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">ARQUITETURA DE CLOUD STORAGE</text>
+  
+  <!-- Cloud representation -->
+  <ellipse cx="300" cy="100" rx="120" ry="50" fill="#0f3460" stroke="#e94560" stroke-width="2"/>
+  <ellipse cx="250" cy="85" rx="60" ry="35" fill="#0f3460"/>
+  <ellipse cx="350" cy="85" rx="60" ry="35" fill="#0f3460"/>
+  <text x="300" y="105" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle">☁️ CLOUD</text>
+  
+  <!-- Local device -->
+  <rect x="50" y="150" width="100" height="60" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="100" y="175" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">💻 Seu PC</text>
+  <text x="100" y="195" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">OneDrive</text>
+  
+  <!-- Arrow sync -->
+  <path d="M150 180 L200 180" stroke="#e94560" stroke-width="3" stroke-dasharray="5,5" marker-end="url(#arrow)"/>
+  <text x="175" y="170" font-family="Arial" font-size="10" fill="#e94560">Sincroniza</text>
+  
+  <!-- Server datacenter -->
+  <rect x="200" y="150" width="200" height="60" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="300" y="175" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">🖥️ DATACENTER AZURE</text>
+  <text x="300" y="195" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Microsoft Corporation</text>
+  
+  <!-- Arrow to other devices -->
+  <path d="M400 180 L450 180" stroke="#e94560" stroke-width="3" stroke-dasharray="5,5"/>
+  <text x="425" y="170" font-family="Arial" font-size="10" fill="#e94560">Sincroniza</text>
+  
+  <!-- Other devices -->
+  <rect x="450" y="150" width="100" height="60" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="500" y="175" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">📱 Celular</text>
+  <text x="500" y="195" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">OneDrive</text>
+  
+  <!-- Block sync explanation -->
+  <text x="300" y="250" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">SINCRONIZAÇÃO EM NÍVEL DE BLOCO</text>
+  
+  <rect x="50" y="270" width="500" height="50" fill="#16213e" rx="5"/>
+  <text x="300" y="290" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">Arquivo de 1GB modificado → Apenas bloco de 4KB alterado → Transmissão instantânea</text>
+  <text x="300" y="308" font-family="Arial" font-size="11" fill="#aaa" text-anchor="middle">vs Antigo: 1GB inteiro reenviado = 20 minutos bloqueado</text>
+  
+  <!-- Features boxes -->
+  <rect x="50" y="340" width="110" height="45" fill="#0f3460" rx="5"/>
+  <text x="105" y="362" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">📁 Arquivos</text>
+  <text x="105" y="376" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Sob Demanda</text>
+  
+  <rect x="175" y="340" width="110" height="45" fill="#0f3460" rx="5"/>
+  <text x="230" y="362" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🔄 Versionamento</text>
+  <text x="230" y="376" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Histórico 30 dias</text>
+  
+  <rect x="300" y="340" width="110" height="45" fill="#0f3460" rx="5"/>
+  <text x="355" y="362" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🔗 Links</text>
+  <text x="355" y="376" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Compartilhamento</text>
+  
+  <rect x="425" y="340" width="110" height="45" fill="#0f3460" rx="5"/>
+  <text x="480" y="362" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🔒 Criptografia</text>
+  <text x="480" y="376" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">AES-256</text>
+</svg>

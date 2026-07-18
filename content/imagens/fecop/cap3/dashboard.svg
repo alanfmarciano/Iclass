@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 600 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">DASHBOARD - PAINEL DE COMANDO EXECUTIVO</text>
+  
+  <!-- KPI Cards -->
+  <rect x="30" y="60" width="120" height="80" fill="#0f3460" rx="5"/>
+  <text x="90" y="85" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Receita Mensal</text>
+  <text x="90" y="110" font-family="Arial" font-size="18" fill="#4ecca3" text-anchor="middle" font-weight="bold">R$ 2.4M</text>
+  <text x="90" y="130" font-family="Arial" font-size="9" fill="#4ecca3" text-anchor="middle">↑ 12% vs mês anterior</text>
+  
+  <rect x="165" y="60" width="120" height="80" fill="#0f3460" rx="5"/>
+  <text x="225" y="85" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Pedidos</text>
+  <text x="225" y="110" font-family="Arial" font-size="18" fill="#fff" text-anchor="middle" font-weight="bold">1.847</text>
+  <text x="225" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Últimos 30 dias</text>
+  
+  <rect x="300" y="60" width="120" height="80" fill="#0f3460" rx="5"/>
+  <text x="360" y="85" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Tickets Fechados</text>
+  <text x="360" y="110" font-family="Arial" font-size="18" fill="#4ecca3" text-anchor="middle" font-weight="bold">94%</text>
+  <text x="360" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Meta: 90%</text>
+  
+  <rect x="435" y="60" width="120" height="80" fill="#0f3460" rx="5"/>
+  <text x="495" y="85" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Churn Rate</text>
+  <text x="495" y="110" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">3.2%</text>
+  <text x="495" y="130" font-family="Arial" font-size="9" fill="#e94560" text-anchor="middle">⚠ Acima da meta (2%)</text>
+  
+  <!-- Chart area placeholder -->
+  <rect x="30" y="155" width="350" height="150" fill="#16213e" rx="5"/>
+  <text x="200" y="180" font-family="Arial" font-size="12" fill="#aaa" text-anchor="middle">📈 GRÁFICO DE LINHAS - Tendência de Vendas</text>
+  
+  <!-- Simple chart line -->
+  <polyline points="50,280 100,260 150,270 200,240 250,250 300,220 350,230" fill="none" stroke="#4ecca3" stroke-width="2"/>
+  <circle cx="50" cy="280" r="4" fill="#4ecca3"/>
+  <circle cx="100" cy="260" r="4" fill="#4ecca3"/>
+  <circle cx="150" cy="270" r="4" fill="#4ecca3"/>
+  <circle cx="200" cy="240" r="4" fill="#4ecca3"/>
+  <circle cx="250" cy="250" r="4" fill="#4ecca3"/>
+  <circle cx="300" cy="220" r="4" fill="#4ecca3"/>
+  <circle cx="350" cy="230" r="4" fill="#4ecca3"/>
+  
+  <!-- Bar chart -->
+  <rect x="30" y="155" width="350" height="150" fill="none"/>
+  <text x="200" y="180" font-family="Arial" font-size="12" fill="#aaa" text-anchor="middle">📊 Gráfico de Vendas por Região</text>
+  <rect x="60" y="250" width="40" height="45" fill="#4ecca3"/>
+  <rect x="120" y="230" width="40" height="65" fill="#4ecca3"/>
+  <rect x="180" y="260" width="40" height="35" fill="#4ecca3"/>
+  <rect x="240" y="220" width="40" height="75" fill="#4ecca3"/>
+  <rect x="300" y="245" width="40" height="50" fill="#4ecca3"/>
+  
+  <!-- Pie chart -->
+  <rect x="400" y="155" width="170" height="150" fill="#16213e" rx="5"/>
+  <text x="485" y="180" font-family="Arial" font-size="12" fill="#aaa" text-anchor="middle">🍕 Market Share</text>
+  <circle cx="485" cy="240" r="50" fill="#0f3460"/>
+  <path d="M485,240 L485,190 A50,50 0 0,1 530,240 Z" fill="#4ecca3"/>
+  <path d="M485,240 L530,240 A50,50 0 0,1 460,275 Z" fill="#e94560"/>
+  <path d="M485,240 L460,275 A50,50 0 0,1 440,220 Z" fill="#fff"/>
+  
+  <!-- Macros section -->
+  <text x="300" y="330" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">AUTOMAÇÃO COM MACROS (VBA)</text>
+  
+  <rect x="30" y="345" width="540" height="45" fill="#16213e" rx="5"/>
+  <text x="55" y="365" font-family="Arial" font-size="10" fill="#fff">Sub RelatorioDiario()</text>
+  <text x="200" y="365" font-family="Arial" font-size="10" fill="#aaa">• Abre planilha • Filtra dados • Gera gráfico • Envia email • Salva PDF</text>
+  <text x="55" y="382" font-family="Arial" font-size="10" fill="#fff">End Sub</text>
+  
+  <text x="300" y="400" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Executa em 3 segundos • Elimina 30 minutos de trabalho manual • Zero erros humanos</text>
+</svg>

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">LINHA DO TEMPO - HISTÓRIA DA COMPUTAÇÃO</text>
+  
+  <!-- Timeline -->
+  <line x1="50" y1="100" x2="550" y2="100" stroke="#e94560" stroke-width="3"/>
+  
+  <!-- Generation 1 -->
+  <circle cx="80" cy="100" r="12" fill="#e94560"/>
+  <rect x="40" y="120" width="80" height="60" fill="#16213e" rx="3"/>
+  <text x="80" y="140" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">1940-1959</text>
+  <text x="80" y="155" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">1ª Geração</text>
+  <text x="80" y="170" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Válvulas</text>
+  
+  <!-- Generation 2 -->
+  <circle cx="180" cy="100" r="12" fill="#0f3460" stroke="#e94560"/>
+  <rect x="140" y="120" width="80" height="60" fill="#16213e" rx="3"/>
+  <text x="180" y="140" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">1959-1965</text>
+  <text x="180" y="155" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">2ª Geração</text>
+  <text x="180" y="170" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Transistores</text>
+  
+  <!-- Generation 3 -->
+  <circle cx="280" cy="100" r="12" fill="#0f3460" stroke="#e94560"/>
+  <rect x="240" y="120" width="80" height="60" fill="#16213e" rx="3"/>
+  <text x="280" y="140" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">1965-1970</text>
+  <text x="280" y="155" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">3ª Geração</text>
+  <text x="280" y="170" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Circuitos Integrados</text>
+  
+  <!-- Generation 4 -->
+  <circle cx="380" cy="100" r="12" fill="#0f3460" stroke="#e94560"/>
+  <rect x="340" y="120" width="80" height="60" fill="#16213e" rx="3"/>
+  <text x="380" y="140" font-family="Arial" font-size="9" fill="#fff" text-anchor="middle">1970-atual</text>
+  <text x="380" y="155" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">4ª Geração</text>
+  <text x="380" y="170" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Microprocessadores</text>
+  
+  <!-- Generation 5 -->
+  <circle cx="480" cy="100" r="12" fill="#16213e" stroke="#e94560" stroke-width="2"/>
+  <rect x="440" y="120" width="80" height="60" fill="#0f3460" rx="3"/>
+  <text x="480" y="140" font-family="Arial" font-size="9" fill="#e94560" text-anchor="middle">Atual</text>
+  <text x="480" y="155" font-family="Arial" font-size="8" fill="#fff" text-anchor="middle">5ª Geração</text>
+  <text x="480" y="170" font-family="Arial" font-size="8" fill="#fff" text-anchor="middle">IA + Quântica</text>
+  
+  <!-- Key milestones -->
+  <text x="300" y="220" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">MARCOS HISTÓRICOS</text>
+  
+  <rect x="30" y="235" width="250" height="60" fill="#16213e" rx="5"/>
+  <text x="155" y="258" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">🧮 1837 - Máquina Analítica</text>
+  <text x="155" y="275" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Charles Babbage - Primeiro computador</text>
+  <text x="155" y="288" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">mecânico programável</text>
+  
+  <rect x="300" y="235" width="250" height="60" fill="#0f3460" rx="5"/>
+  <text x="425" y="258" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">💻 1945 - ENIAC</text>
+  <text x="425" y="275" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Primeiro computador eletrônico</text>
+  <text x="425" y="288" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">30 toneladas, 18.000 válvulas</text>
+  
+  <rect x="30" y="305" width="250" height="60" fill="#16213e" rx="5"/>
+  <text x="155" y="328" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">📊 1975 - Apple I</text>
+  <text x="155" y="345" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Primeiro PC comercial</text>
+  <text x="155" y="358" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Steve Jobs & Steve Wozniak</text>
+  
+  <rect x="300" y="305" width="250" height="60" fill="#16213e" rx="5"/>
+  <text x="425" y="328" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">🌐 1991 - WWW</text>
+  <text x="425" y="345" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Tim Berners-Lee</text>
+  <text x="425" y="358" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">World Wide Web</text>
+  
+  <!-- Binary system -->
+  <text x="300" y="385" font-family="Arial" font-size="12" fill="#aaa" text-anchor="middle">💡 Decimal: 0-9 | Binário: 0-1 (2 dígitos) | Hexadecimal: 0-9, A-F (16 dígitos)</text>
+</svg>

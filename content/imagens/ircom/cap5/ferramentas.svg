@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">FERRAMENTAS ESSENCIAIS PARA MONTAGEM</text>
+  
+  <!-- Tools grid -->
+  <rect x="30" y="60" width="120" height="90" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="90" y="90" font-family="Arial" font-size="24" text-anchor="middle">🔧</text>
+  <text x="90" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Chave Phillips</text>
+  <text x="90" y="132" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Parafusos padrão</text>
+  
+  <rect x="165" y="60" width="120" height="90" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="225" y="90" font-family="Arial" font-size="24" text-anchor="middle">🔩</text>
+  <text x="225" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Chave Torx</text>
+  <text x="225" y="132" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Parafusos segurança</text>
+  
+  <rect x="300" y="60" width="120" height="90" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="360" y="90" font-family="Arial" font-size="24" text-anchor="middle">⚡</text>
+  <text x="360" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Pulseira ESD</text>
+  <text x="360" y="132" font-family="Arial" font-size="8" fill="#4ecca3" text-anchor="middle">Antiestática (obrigatório)</text>
+  
+  <rect x="435" y="60" width="120" height="90" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="495" y="90" font-family="Arial" font-size="24" text-anchor="middle">💉</text>
+  <text x="495" y="115" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Pasta Térmica</text>
+  <text x="495" y="132" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Cooler do CPU</text>
+  
+  <!-- Second row -->
+  <rect x="30" y="165" width="120" height="90" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="90" y="195" font-family="Arial" font-size="24" text-anchor="middle">🔦</text>
+  <text x="90" y="220" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Lanterna LED</text>
+  <text x="90" y="237" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Iluminação interna</text>
+  
+  <rect x="165" y="165" width="120" height="90" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="225" y="195" font-family="Arial" font-size="24" text-anchor="middle">🪣</text>
+  <text x="225" y="220" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Organizador</text>
+  <text x="225" y="237" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Parafusos/peas</text>
+  
+  <rect x="300" y="165" width="120" height="90" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="360" y="195" font-family="Arial" font-size="24" text-anchor="middle">🧹</text>
+  <text x="360" y="220" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Limpa Contatos</text>
+  <text x="360" y="237" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Álcool isopropílico</text>
+  
+  <rect x="435" y="165" width="120" height="90" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="495" y="195" font-family="Arial" font-size="24" text-anchor="middle">📏</text>
+  <text x="495" y="220" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Alicate bico</text>
+  <text x="495" y="237" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">Pegar peças pequenas</text>
+  
+  <!-- Safety warnings -->
+  <text x="300" y="285" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">⚠️ PRECAUÇÕES DE SEGURANÇA</text>
+  
+  <rect x="30" y="300" width="540" height="85" fill="#16213e" stroke="#e94560" stroke-width="1" rx="5"/>
+  
+  <text x="45" y="320" font-family="Arial" font-size="9" fill="#e94560">ESD (Descarga Eletrostática):</text>
+  <text x="45" y="335" font-family="Arial" font-size="9" fill="#fff">• Usar pulseira antiestática sempre que tocar componentes</text>
+  <text x="45" y="348" font-family="Arial" font-size="9" fill="#fff">• Tocar metal aterrado antes de manusear peças</text>
+  <text x="45" y="361" font-family="Arial" font-size="9" fill="#fff">• Não tocar pinos/conectores diretamente</text>
+  <text x="45" y="374" font-family="Arial" font-size="9" fill="#fff">• Manter componentes na embalagem antiestática até uso</text>
+  
+  <text x="350" y="320" font-family="Arial" font-size="9" fill="#e94560">Eletricidade:</text>
+  <text x="350" y="335" font-family="Arial" font-size="9" fill="#fff">• Desligar fonte antes de mexer</text>
+  <text x="350" y="348" font-family="Arial" font-size="9" fill="#fff">• Nunca trabalhar com PC ligado</text>
+</svg>

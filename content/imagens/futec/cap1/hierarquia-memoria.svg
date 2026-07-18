@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#e94560;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0f3460;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="800" height="600" fill="#1a1a2e"/>
+  
+  <!-- Title -->
+  <text x="400" y="35" font-family="Arial" font-size="22" fill="#fff" text-anchor="middle" font-weight="bold">HIERARQUIA DE MEMÓRIA</text>
+  <text x="400" y="55" font-family="Arial" font-size="12" fill="#888" text-anchor="middle">Velocidade ↑ | Custo ↑ | Capacidade ↓</text>
+  
+  <!-- Pyramid Structure -->
+  <!-- L1 Cache -->
+  <rect x="320" y="80" width="160" height="50" fill="#e94560" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="110" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">L1 CACHE</text>
+  <text x="400" y="128" font-family="Arial" font-size="10" fill="#1a1a2e" text-anchor="middle">~1ns | 32-512KB</text>
+  
+  <!-- L2 Cache -->
+  <rect x="290" y="135" width="220" height="50" fill="#e94560" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="165" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">L2 CACHE</text>
+  <text x="400" y="183" font-family="Arial" font-size="10" fill="#1a1a2e" text-anchor="middle">~5ns | 256KB-8MB</text>
+  
+  <!-- L3 Cache -->
+  <rect x="260" y="190" width="280" height="50" fill="#e94560" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="220" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">L3 CACHE</text>
+  <text x="400" y="238" font-family="Arial" font-size="10" fill="#1a1a2e" text-anchor="middle">~20ns | 8-64MB</text>
+  
+  <!-- RAM -->
+  <rect x="220" y="250" width="360" height="60" fill="#f39c12" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="280" font-family="Arial" font-size="16" fill="#fff" text-anchor="middle" font-weight="bold">RAM - MEMÓRIA PRINCIPAL</text>
+  <text x="400" y="302" font-family="Arial" font-size="11" fill="#1a1a2e" text-anchor="middle">~60-100ns | 8-256GB | Placa-mãe (DIMM)</text>
+  
+  <!-- SSD NVMe -->
+  <rect x="180" y="320" width="440" height="55" fill="#27ae60" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="350" font-family="Arial" font-size="15" fill="#fff" text-anchor="middle" font-weight="bold">SSD NVMe</text>
+  <text x="400" y="372" font-family="Arial" font-size="11" fill="#1a1a2e" text-anchor="middle">~100μs | 256GB-4TB | Slot M.2/PCIe</text>
+  
+  <!-- SSD SATA -->
+  <rect x="150" y="385" width="500" height="55" fill="#27ae60" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="415" font-family="Arial" font-size="15" fill="#fff" text-anchor="middle" font-weight="bold">SSD SATA</text>
+  <text x="400" y="437" font-family="Arial" font-size="11" fill="#1a1a2e" text-anchor="middle">~500μs | 128GB-4TB | Conector SATA</text>
+  
+  <!-- HD Mecânico -->
+  <rect x="120" y="450" width="560" height="55" fill="#3498db" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="480" font-family="Arial" font-size="15" fill="#fff" text-anchor="middle" font-weight="bold">HD MECÂNICO</text>
+  <text x="400" y="502" font-family="Arial" font-size="11" fill="#1a1a2e" text-anchor="middle">~5-10ms | 500GB-20TB | Conector SATA</text>
+  
+  <!-- Fita Magnética -->
+  <rect x="200" y="515" width="400" height="40" fill="#95a5a6" stroke="#fff" stroke-width="2"/>
+  <text x="400" y="540" font-family="Arial" font-size="13" fill="#1a1a2e" text-anchor="middle" font-weight="bold">FITA MAGNÉTICA | Arquivo Morto | Segundos | TB</text>
+  
+  <!-- Arrow showing direction -->
+  <text x="780" y="300" font-family="Arial" font-size="12" fill="#e9c46a" text-anchor="middle" transform="rotate(90, 780, 300)">MAIS RÁPIDO ↑</text>
+  <text x="780" y="500" font-family="Arial" font-size="12" fill="#e9c46a" text-anchor="middle" transform="rotate(90, 780, 500)">MAIS LENTO ↓</text>
+</svg>

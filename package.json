@@ -1,0 +1,41 @@
+{
+  "name": "iclass-v3",
+  "version": "3.0.0",
+  "description": "IClass V3 — LMS local-first white-label para instituições de ensino. Backend Express + SQLite (regras no servidor) e nova interface React (web/). Roda 100% local.",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "start": "node backend/server.js",
+    "build": "npm --prefix web run build",
+    "dev:web": "npm --prefix web run dev",
+    "setup": "npm install && npm --prefix web install",
+    "test:setup": "node test/run-module.js setup",
+    "test:quick": "node test/run-module.js quick",
+    "test:module": "node test/run-module.js",
+    "test:visual": "node test/run-module.js layout",
+    "test:security": "node test/run-module.js security",
+    "test:attendance": "node test/run-module.js presenca",
+    "test:full": "node test/run-module.js full",
+    "test:report": "node test/run-module.js report",
+    "test:docs": "node test/validate-traceability.js",
+    "test:coverage:backend": "node --experimental-test-coverage --test test/backend/*.test.js",
+    "test:backend": "node --test test/backend/*.test.js",
+    "test:web": "npm --prefix web run test",
+    "test:e2e": "playwright test",
+    "check": "npm run test:full"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "sqlite3": "^6.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.1",
+    "axe-core": "^4.12.1",
+    "supertest": "^7.1.4"
+  }
+}

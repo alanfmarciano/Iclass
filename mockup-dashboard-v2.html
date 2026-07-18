@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup · Dashboard v2 — IClass</title>
+<style>
+  :root{
+    --bg:#0d0d0f; --surface:#141416; --surface-2:#1c1c20; --border:#26262b;
+    --text:#f2f2f4; --muted:#a1a1a8; --subtle:#6e6e76;
+    --primary:#e8443a; --primary-soft:rgba(232,68,58,.14);
+    --success:#3fb96a; --success-soft:rgba(63,185,106,.12);
+    --warning:#e0a13a; --warning-soft:rgba(224,161,58,.12);
+    --danger:#e05252;  --danger-soft:rgba(224,82,82,.12);
+    --neutral:#5b6470; --neutral-soft:rgba(110,110,118,.14);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,"Segoe UI",Inter,system-ui,sans-serif;
+       -webkit-font-smoothing:antialiased;padding:32px 24px 80px}
+  .wrap{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:22px}
+
+  /* ---------- notas do mockup ---------- */
+  .note{border-left:2px solid var(--primary);background:var(--primary-soft);padding:10px 14px;border-radius:0 8px 8px 0;
+        font-size:12.5px;line-height:1.55;color:#f6d5d2}
+  .note b{color:#fff}
+
+  /* ---------- header ---------- */
+  .head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap}
+  h1{font-size:30px;font-weight:600;letter-spacing:-.035em}
+  .head p{color:var(--muted);font-size:13.5px;margin-top:5px}
+  .actions{display:flex;gap:9px}
+  .btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);background:var(--surface);
+       color:var(--text);font-size:13px;font-weight:500;padding:9px 15px;border-radius:9px;cursor:pointer}
+  .btn:hover{background:var(--surface-2)}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+
+  /* ---------- cards ---------- */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px}
+  .card-h{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px}
+  .card-h h2{font-size:15px;font-weight:600;letter-spacing:-.015em}
+  .card-sub{font-size:12px;color:var(--subtle);margin-bottom:16px}
+  .link{font-size:12px;font-weight:500;color:var(--primary);text-decoration:none;white-space:nowrap}
+
+  /* ---------- KPIs ---------- */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  .kpi{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:17px 18px}
+  .kpi .lbl{font-size:12.5px;color:var(--muted);display:flex;align-items:center;justify-content:space-between}
+  .kpi .val{font-size:33px;font-weight:600;letter-spacing:-.04em;margin-top:8px;font-variant-numeric:tabular-nums}
+  .kpi .foot{font-size:11.5px;color:var(--subtle);margin-top:5px;line-height:1.4}
+  .kpi .foot .em{color:var(--muted)}
+  .ico{width:29px;height:29px;border-radius:8px;background:var(--primary-soft);color:var(--primary);
+       display:grid;place-items:center;font-size:13px}
+  .live{width:6px;height:6px;border-radius:50%;background:var(--subtle);display:inline-block;margin-right:6px}
+
+  /* ---------- grid principal ---------- */
+  .grid-3{display:grid;grid-template-columns:2fr 1fr;gap:18px}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+
+  /* ---------- barra de distribuição ---------- */
+  .headline{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .headline .big{font-size:32px;font-weight:600;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+  .headline .cap{font-size:13px;color:var(--muted);margin-top:3px}
+  .headline .base{font-size:11.5px;color:var(--subtle);text-align:right;line-height:1.5}
+  .bar{display:flex;height:11px;border-radius:99px;overflow:hidden;background:var(--surface-2);margin:18px 0 12px;gap:2px}
+  .bar span{display:block}
+  .seg-ok{background:var(--success)} .seg-warn{background:var(--warning)}
+  .seg-bad{background:var(--danger)} .seg-none{background:repeating-linear-gradient(45deg,#33333a,#33333a 4px,#2a2a30 4px,#2a2a30 8px)}
+  .legend{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .leg{border:1px solid var(--border);border-radius:10px;padding:11px 12px;background:var(--surface-2)}
+  .leg .dot{width:6px;height:6px;border-radius:50%;display:block;margin-bottom:8px}
+  .leg .n{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
+  .leg .t{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .leg .r{font-size:11px;color:var(--subtle);margin-top:1px}
+  .leg.ok{background:var(--success-soft);border-color:rgba(63,185,106,.22)} .leg.ok .dot{background:var(--success)}
+  .leg.warn{background:var(--warning-soft);border-color:rgba(224,161,58,.22)} .leg.warn .dot{background:var(--warning)}
+  .leg.bad{background:var(--danger-soft);border-color:rgba(224,82,82,.22)} .leg.bad .dot{background:var(--danger)}
+  .leg.none .dot{background:var(--subtle)}
+
+  /* ---------- resumo turma ---------- */
+  .mini{display:flex;flex-direction:column;gap:11px}
+  .mrow{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+        padding-bottom:11px;border-bottom:1px solid var(--border)}
+  .mrow:last-child{border:0;padding-bottom:0}
+  .mrow .k{font-size:12.5px;color:var(--muted)}
+  .mrow .k small{display:block;font-size:11px;color:var(--subtle);margin-top:2px}
+  .mrow .v{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .v.danger{color:var(--danger)} .v.success{color:var(--success)} .v.warning{color:var(--warning)}
+  .v .unit{font-size:12px;color:var(--subtle);font-weight:500;margin-left:3px}
+
+  .flag{display:flex;gap:9px;align-items:flex-start;margin-top:16px;padding:10px 12px;border-radius:9px;
+        background:var(--warning-soft);border:1px solid rgba(224,161,58,.22);font-size:11.5px;
+        color:#e9cfa0;line-height:1.5}
+  .flag b{color:var(--warning)}
+
+  /* ---------- listas ---------- */
+  .row{display:flex;align-items:center;gap:12px;padding:11px 6px;border-bottom:1px solid rgba(38,38,43,.7);cursor:pointer;border-radius:8px}
+  .row:last-child{border:0}
+  .row:hover{background:var(--surface-2)}
+  .av{width:33px;height:33px;border-radius:50%;background:var(--primary-soft);color:var(--primary);
+      display:grid;place-items:center;font-size:11.5px;font-weight:600;flex-shrink:0}
+  .row .info{flex:1;min-width:0}
+  .row .nm{font-size:13.5px}
+  .row .meta{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .row .meta .sep{color:var(--subtle);margin:0 5px}
+  .row .meta .bad{color:var(--danger)} .row .meta .nodata{color:var(--subtle);font-style:italic}
+  .metric{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
+  .metric .m1{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--danger)}
+  .metric .m2{font-size:10.5px;color:var(--subtle)}
+  .badge{font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:99px;text-transform:lowercase;flex-shrink:0}
+  .badge.alto{background:var(--danger-soft);color:var(--danger)}
+  .badge.medio{background:var(--warning-soft);color:var(--warning)}
+  .badge.dados{background:var(--neutral-soft);color:#9aa4b0}
+
+  .stepper{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .stepper button{background:none;border:0;color:var(--muted);padding:5px 9px;cursor:pointer;font-size:13px}
+  .stepper button:hover{color:var(--text);background:var(--surface-2)}
+  .stepper span{font-size:12.5px;padding:0 4px;font-variant-numeric:tabular-nums}
+
+  .empty{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:8px;padding:14px 4px}
+
+  @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}.grid-3,.grid-2{grid-template-columns:1fr}.legend{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="note">
+    <b>Mockup v2 — não implementado.</b> As mudanças abaixo resolvem as contradições da tela atual:
+    “média 0,0” para quem não tem prova, frequência sem denominador, “Em atenção” vs “Precisam de atenção”
+    medindo coisas diferentes, e a barra que dividia por 16 enquanto o título dividia por 12.
+  </div>
+
+  <!-- ============ HEADER ============ -->
+  <div class="head">
+    <div>
+      <h1>Dashboard</h1>
+      <p>Curso Técnico em TI · 1DES — Manhã · 16 alunos · dados de 18/07, 14:32</p>
+    </div>
+    <div class="actions">
+      <button class="btn">↓ Exportar CSV</button>
+      <button class="btn">🖨 Imprimir</button>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>Correção 1 —</b> “Exportar” hoje chama <code>window.print()</code>. Separei as duas ações: exportar
+    gera arquivo, imprimir imprime. E o cabeçalho passa a datar os números (“dados de 18/07, 14:32”),
+    já que a tela mistura dado ao vivo com dado acumulado.
+  </div>
+
+  <!-- ============ KPIs ============ -->
+  <div class="kpis">
+    <div class="kpi">
+      <div class="lbl">Alunos matriculados <span class="ico">👥</span></div>
+      <div class="val">16</div>
+      <div class="foot"><span class="em">12</span> com nota lançada · <span class="em">13</span> com chamada</div>
+    </div>
+    <div class="kpi">
+      <div class="lbl">Online agora <span class="ico">▶</span></div>
+      <div class="val">0</div>
+      <div class="foot"><span class="live"></span>nenhum acesso nos últimos 5 min</div>
+    </div>
+    <div class="kpi">
+      <div class="lbl">Provas realizadas <span class="ico">📄</span></div>
+      <div class="val">72</div>
+      <div class="foot"><span class="em">6,0</span> por aluno avaliado · neste curso</div>
+    </div>
+    <div class="kpi">
+      <div class="lbl">Média geral <span class="ico">📈</span></div>
+      <div class="val">7,8</div>
+      <div class="foot">base: 72 provas de <span class="em">12</span> alunos · só 1DES</div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>Correção 2 — todo número ganha sua base.</b> “Média geral 7,8” é a média das provas do curso,
+    mas a média por aluno no card de risco soma <i>todas</i> as submissões do e-mail, sem filtro de curso
+    (<code>studentAnalytics.js:189</code>). Dois escopos na mesma tela, sem aviso. Explicitar a base
+    (“só 1DES”, “de 12 alunos”) evita a leitura errada — e a divergência de escopo precisa ser corrigida no backend.
+    “Online agora: 0” sem janela de tempo também é ambíguo: 0 agora, ou 0 sempre?
+  </div>
+
+  <!-- ============ DESEMPENHO + RESUMO ============ -->
+  <div class="grid-3">
+
+    <div class="card">
+      <div class="card-h">
+        <h2>Desempenho em provas</h2>
+        <a class="link" href="#">Ver resultados →</a>
+      </div>
+      <div class="card-sub">Classificação por média de notas · não considera frequência</div>
+
+      <div class="headline">
+        <div>
+          <div class="big">11 <span style="font-size:19px;color:var(--muted);font-weight:500">de 12 avaliados</span></div>
+          <div class="cap">estão com média igual ou superior a 7,0</div>
+        </div>
+        <div class="base">92% dos avaliados<br>69% da turma inteira</div>
+      </div>
+
+      <div class="bar" title="Distribuição sobre os 16 alunos da turma">
+        <span class="seg-ok"   style="width:68.75%"></span>
+        <span class="seg-warn" style="width:6.25%"></span>
+        <span class="seg-none" style="width:25%"></span>
+      </div>
+
+      <div class="legend">
+        <div class="leg ok"><span class="dot"></span><div class="n">11</div><div class="t">Satisfatório</div><div class="r">média ≥ 7,0</div></div>
+        <div class="leg warn"><span class="dot"></span><div class="n">1</div><div class="t">Abaixo da média</div><div class="r">entre 5,0 e 6,9</div></div>
+        <div class="leg bad"><span class="dot"></span><div class="n">0</div><div class="t">Crítico</div><div class="r">abaixo de 5,0</div></div>
+        <div class="leg none"><span class="dot"></span><div class="n">4</div><div class="t">Sem prova</div><div class="r">nada a classificar</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h2>Frequência da turma</h2></div>
+      <div class="card-sub">13 de 16 alunos com chamada lançada</div>
+
+      <div class="mini">
+        <div class="mrow">
+          <div class="k">Frequência média<small>média ponderada por aula</small></div>
+          <div class="v">86<span class="unit">%</span></div>
+        </div>
+        <div class="mrow">
+          <div class="k">Faltas registradas<small>em 20 aulas do período</small></div>
+          <div class="v danger">23</div>
+        </div>
+        <div class="mrow">
+          <div class="k">Frequência integral<small>nenhuma falta</small></div>
+          <div class="v success">4<span class="unit">/13</span></div>
+        </div>
+        <div class="mrow">
+          <div class="k">Abaixo do limiar<small>menos de 75% de presença</small></div>
+          <div class="v warning">1</div>
+        </div>
+      </div>
+
+      <div class="flag">
+        <span>⚠</span>
+        <div><b>3 alunos sem chamada lançada.</b> Ficam fora de todos os números acima — não entram
+        como 0% nem como “sem faltas”.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>Correção 3 — “sem dado” deixa de virar “zero”.</b> Hoje <code>frequencia</code> é forçada a <code>0</code>
+    quando o aluno não tem aula lançada (<code>studentAnalytics.js:193</code>) e o front tira média aritmética
+    incluindo esses zeros (<code>DashboardPage.jsx:100</code>) — quem nunca teve chamada é contado como 0% de presença.
+    Pior: esse mesmo aluno entra em <b>“Sem faltas”</b>, um indicador positivo. No mockup ele sai da conta e vira um aviso explícito.
+    <br><br>
+    <b>Correção 4 — a barra e o título passam a falar a mesma língua.</b> Hoje o título divide por 12 (avaliados) e
+    a barra por 16 (total), sem o segmento “sem avaliação” — daí o vazio à direita sem legenda. Agora a barra tem
+    os 4 segmentos sobre os 16, e os dois recortes (92% dos avaliados / 69% da turma) aparecem lado a lado.
+    <br><br>
+    <b>Correção 5 — renomeei os rótulos que colidiam.</b> “Em atenção” (faixa de nota) e “Precisam de atenção”
+    (modelo de risco: frequência + nota + último acesso) são métricas diferentes com nome quase igual.
+    Viraram “Abaixo da média” e “Em risco de evasão”. E os cards passam a declarar o critério
+    (“média ≥ 7,0”, “menos de 75% de presença”) em vez de exigir que o professor adivinhe.
+  </div>
+
+  <!-- ============ LISTAS ============ -->
+  <div class="grid-2">
+
+    <div class="card">
+      <div class="card-h">
+        <h2>Alunos com mais faltas</h2>
+        <div class="stepper"><button>−</button><span>5</span><button>+</button></div>
+      </div>
+      <div class="card-sub">Ordenado por faltas · clique para abrir o aluno</div>
+
+      <div class="row">
+        <span class="av">AM</span>
+        <div class="info">
+          <div class="nm">Alan Marciano</div>
+          <div class="meta"><span class="bad">1 presença em 6 aulas</span><span class="sep">·</span>entrou em 02/07</div>
+        </div>
+        <div class="metric"><div class="m1">5 faltas</div><div class="m2">17% freq.</div></div>
+      </div>
+      <div class="row">
+        <span class="av">EF</span>
+        <div class="info">
+          <div class="nm">Elisa Ferreira</div>
+          <div class="meta">18 presenças em 20 aulas</div>
+        </div>
+        <div class="metric"><div class="m1">2 faltas</div><div class="m2">90% freq.</div></div>
+      </div>
+      <div class="row">
+        <span class="av">FS</span>
+        <div class="info">
+          <div class="nm">Felipe Santos</div>
+          <div class="meta">18 presenças em 20 aulas</div>
+        </div>
+        <div class="metric"><div class="m1">2 faltas</div><div class="m2">90% freq.</div></div>
+      </div>
+      <div class="row">
+        <span class="av">HC</span>
+        <div class="info">
+          <div class="nm">Henrique Costa</div>
+          <div class="meta">18 presenças em 20 aulas</div>
+        </div>
+        <div class="metric"><div class="m1">2 faltas</div><div class="m2">90% freq.</div></div>
+      </div>
+      <div class="row">
+        <span class="av">IR</span>
+        <div class="info">
+          <div class="nm">Isa Rocha</div>
+          <div class="meta">18 presenças em 20 aulas</div>
+        </div>
+        <div class="metric"><div class="m1">2 faltas</div><div class="m2">90% freq.</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        <h2>Em risco de evasão</h2>
+        <div class="stepper"><button>−</button><span>5</span><button>+</button></div>
+      </div>
+      <div class="card-sub">Frequência, notas e último acesso combinados</div>
+
+      <div class="row">
+        <span class="av">AM</span>
+        <div class="info">
+          <div class="nm">Alan Marciano</div>
+          <div class="meta"><span class="bad">17% de frequência</span><span class="sep">·</span><span class="nodata">nenhuma prova feita</span></div>
+        </div>
+        <span class="badge alto">alto</span>
+      </div>
+      <div class="row">
+        <span class="av">MB</span>
+        <div class="info">
+          <div class="nm">Marina Bastos</div>
+          <div class="meta">média 6,2<span class="sep">·</span>90% de frequência</div>
+        </div>
+        <span class="badge medio">médio</span>
+      </div>
+
+      <div class="empty">
+        <span style="color:var(--neutral)">◇</span>
+        3 alunos não puderam ser avaliados por falta de chamada lançada.
+        <a class="link" href="#" style="margin-left:auto">Lançar chamada →</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>Correção 6 — “média 0,0” não existe mais.</b> <code>mediaOf()</code> retorna <code>0</code> para lista vazia
+    (<code>studentAnalytics.js:29</code>), então “nunca fez prova” virava a nota mínima. Na tela atual o Alan aparece
+    como “média 0,0” no card de risco <i>e</i> é contado em “Sem avaliação: 4” no card ao lado — a tela se contradiz
+    sobre o mesmo aluno. Agora lê “nenhuma prova feita”, e o motivo real do risco (17% de frequência) vem primeiro.
+    <br><br>
+    <b>Correção 7 — frequência com denominador.</b> <code>totalAulas = presentes + faltasContam</code>, por aluno
+    (<code>attendance.js:248</code>): o Alan tem 6 aulas na base, os demais 20. A tela atual põe “17%” e “90%”
+    lado a lado como se fossem a mesma escala. Mostrando “1 presença em 6 aulas” vs “18 em 20”, o professor vê que o
+    Alan entrou depois — e que 17% não é comparável com 90%.
+    <br><br>
+    <b>Correção 8 — a falta é a ação principal.</b> Nas listas o número que importa (faltas, risco) fica à direita
+    com peso visual, e cada card sem dado oferece a ação que destrava o número (“Lançar chamada →”)
+    em vez de só mostrar vazio.
+  </div>
+
+</div>
+</body>
+</html>

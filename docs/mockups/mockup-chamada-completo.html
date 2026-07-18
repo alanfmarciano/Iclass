@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chamada · IClass — mockup completo</title>
+<style>
+/* ============================================================
+   IClass — Chamada (mockup completo)
+   Estrutura/funcionalidade: mockup-chamada-melhorada.html
+   Estilo visual: design system real do IClass (tokens.css),
+   com tema claro E escuro.
+   ============================================================ */
+:root{
+  --primary:#e54850; --primary-hover:#cc353e; --primary-fg:#fff; --primary-soft:rgba(229,72,80,.09); --primary-glow:rgba(229,72,80,.16);
+  --bg:#f4f5f7; --surface:#fff; --surface-2:#f0f2f5; --surface-glass:rgba(255,255,255,.82); --sidebar:rgba(250,250,251,.96);
+  --border:rgba(22,28,45,.085); --border-strong:rgba(22,28,45,.14);
+  --text:#171a21; --text-muted:#596273; --text-subtle:#8790a0;
+  /* status */
+  --present:#16875f; --present-soft:rgba(22,135,95,.1);  --present-line:rgba(22,135,95,.35);
+  --late:#a5650c;    --late-soft:rgba(165,101,12,.12);   --late-line:rgba(165,101,12,.35);
+  --absent:#cf3943;  --absent-soft:rgba(207,57,67,.1);   --absent-line:rgba(207,57,67,.35);
+  --just:#176fba;    --just-soft:rgba(23,111,186,.1);    --just-line:rgba(23,111,186,.35);
+  --early:#7c3aed;   --early-soft:rgba(124,58,237,.1);   --early-line:rgba(124,58,237,.35);
+  --pending:#8790a0; --pending-soft:rgba(135,144,160,.12);
+  --ink-solid:#fff;
+  --shadow-card:0 1px 0 rgba(255,255,255,.8) inset, 0 12px 32px rgba(30,38,55,.06);
+  --shadow-float:0 20px 60px rgba(30,38,55,.16);
+}
+@media (prefers-color-scheme:dark){ :root:not([data-theme='light']){
+  --primary:#ff4d57; --primary-hover:#ff6670; --primary-fg:#160507; --primary-soft:rgba(255,77,87,.14); --primary-glow:rgba(255,77,87,.22);
+  --bg:#090b10; --surface:#11141c; --surface-2:#191e29; --surface-glass:rgba(17,20,28,.78); --sidebar:rgba(13,16,23,.96);
+  --border:rgba(255,255,255,.075); --border-strong:rgba(255,255,255,.13);
+  --text:#f5f7fb; --text-muted:#a8b0bf; --text-subtle:#727d90;
+  --present:#43d99a; --present-soft:rgba(67,217,154,.14); --present-line:rgba(67,217,154,.4);
+  --late:#ffbd5c;    --late-soft:rgba(255,189,92,.14);    --late-line:rgba(255,189,92,.4);
+  --absent:#ff6670;  --absent-soft:rgba(255,102,112,.14); --absent-line:rgba(255,102,112,.4);
+  --just:#63b3ff;    --just-soft:rgba(99,179,255,.14);    --just-line:rgba(99,179,255,.4);
+  --early:#c08cff;   --early-soft:rgba(192,140,255,.14);  --early-line:rgba(192,140,255,.4);
+  --pending:#727d90; --pending-soft:rgba(114,125,144,.14);
+  --ink-solid:#0a1410;
+  --shadow-card:0 1px 0 rgba(255,255,255,.035) inset, 0 18px 44px rgba(0,0,0,.2);
+  --shadow-float:0 24px 70px rgba(0,0,0,.55);
+}}
+:root[data-theme='dark']{
+  --primary:#ff4d57; --primary-hover:#ff6670; --primary-fg:#160507; --primary-soft:rgba(255,77,87,.14); --primary-glow:rgba(255,77,87,.22);
+  --bg:#090b10; --surface:#11141c; --surface-2:#191e29; --surface-glass:rgba(17,20,28,.78); --sidebar:rgba(13,16,23,.96);
+  --border:rgba(255,255,255,.075); --border-strong:rgba(255,255,255,.13);
+  --text:#f5f7fb; --text-muted:#a8b0bf; --text-subtle:#727d90;
+  --present:#43d99a; --present-soft:rgba(67,217,154,.14); --present-line:rgba(67,217,154,.4);
+  --late:#ffbd5c;    --late-soft:rgba(255,189,92,.14);    --late-line:rgba(255,189,92,.4);
+  --absent:#ff6670;  --absent-soft:rgba(255,102,112,.14); --absent-line:rgba(255,102,112,.4);
+  --just:#63b3ff;    --just-soft:rgba(99,179,255,.14);    --just-line:rgba(99,179,255,.4);
+  --early:#c08cff;   --early-soft:rgba(192,140,255,.14);  --early-line:rgba(192,140,255,.4);
+  --pending:#727d90; --pending-soft:rgba(114,125,144,.14);
+  --ink-solid:#0a1410;
+  --shadow-card:0 1px 0 rgba(255,255,255,.035) inset, 0 18px 44px rgba(0,0,0,.2);
+  --shadow-float:0 24px 70px rgba(0,0,0,.55);
+}
+:root[data-theme='light']{
+  --primary:#e54850; --primary-hover:#cc353e; --primary-fg:#fff; --primary-soft:rgba(229,72,80,.09); --primary-glow:rgba(229,72,80,.16);
+  --bg:#f4f5f7; --surface:#fff; --surface-2:#f0f2f5; --surface-glass:rgba(255,255,255,.82); --sidebar:rgba(250,250,251,.96);
+  --border:rgba(22,28,45,.085); --border-strong:rgba(22,28,45,.14);
+  --text:#171a21; --text-muted:#596273; --text-subtle:#8790a0;
+  --present:#16875f; --present-soft:rgba(22,135,95,.1);  --present-line:rgba(22,135,95,.35);
+  --late:#a5650c;    --late-soft:rgba(165,101,12,.12);   --late-line:rgba(165,101,12,.35);
+  --absent:#cf3943;  --absent-soft:rgba(207,57,67,.1);   --absent-line:rgba(207,57,67,.35);
+  --just:#176fba;    --just-soft:rgba(23,111,186,.1);    --just-line:rgba(23,111,186,.35);
+  --early:#7c3aed;   --early-soft:rgba(124,58,237,.1);   --early-line:rgba(124,58,237,.35);
+  --pending:#8790a0; --pending-soft:rgba(135,144,160,.12);
+  --ink-solid:#fff;
+  --shadow-card:0 1px 0 rgba(255,255,255,.8) inset, 0 12px 32px rgba(30,38,55,.06);
+  --shadow-float:0 20px 60px rgba(30,38,55,.16);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{max-width:100%;overflow-x:hidden}
+body{
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);font-size:14px;line-height:1.45;
+  -webkit-font-smoothing:antialiased;min-height:100vh;
+}
+.tnum{font-variant-numeric:tabular-nums}
+button,input,textarea,select{font-family:inherit}
+button{cursor:pointer;border:none;background:none;color:inherit}
+:focus-visible{outline:2px solid var(--just);outline-offset:2px;border-radius:6px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.ic{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---------- Shell ---------- */
+.app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
+.side{background:var(--sidebar);border-right:1px solid var(--border);padding:18px 14px;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh;backdrop-filter:blur(12px)}
+.brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
+.logo{width:34px;height:34px;border-radius:10px;flex:none;background:linear-gradient(135deg,var(--primary),var(--primary-hover));display:grid;place-items:center;color:var(--primary-fg);font-weight:800;font-size:15px}
+.brand b{font-size:15.5px;letter-spacing:-.02em;display:block}
+.brand span{display:block;font-size:10px;letter-spacing:.14em;color:var(--text-subtle);font-weight:600}
+.navlabel{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-subtle);margin:14px 10px 4px;font-weight:600}
+.nav{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px;color:var(--text-muted);font-size:13.5px;font-weight:500;width:100%;text-align:left;transition:background .15s,color .15s}
+.nav:hover{background:var(--surface-2);color:var(--text)}
+.nav.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.nav .dot{margin-left:auto;width:7px;height:7px;border-radius:50%;background:var(--primary)}
+.side-foot{margin-top:auto;padding:10px 8px 0;border-top:1px solid var(--border);font-size:11px;color:var(--text-subtle);display:flex;align-items:center;gap:7px}
+.side-foot i{width:7px;height:7px;border-radius:50%;background:var(--present)}
+
+.main{display:flex;flex-direction:column;min-width:0}
+.top{display:flex;align-items:center;gap:12px;padding:11px 24px;border-bottom:1px solid var(--border);background:var(--surface-glass);backdrop-filter:blur(14px);position:sticky;top:0;z-index:50}
+.course{display:flex;align-items:center;gap:8px;border:1px solid var(--border-strong);border-radius:999px;padding:7px 14px;font-size:12.5px;color:var(--text-muted);font-weight:600}
+.topsearch{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:7px 11px;color:var(--text-subtle);font-size:13px;min-width:210px}
+.topsearch kbd{margin-left:auto;font-size:10px;border:1px solid var(--border-strong);border-radius:4px;padding:1px 5px;color:var(--text-subtle)}
+.pill{background:var(--surface-2);border:1px solid var(--border);border-radius:999px;padding:5px 11px;font-size:11.5px;color:var(--text-muted);font-weight:600}
+.iconbtn-top{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);transition:.15s}
+.iconbtn-top:hover{color:var(--text);border-color:var(--border-strong)}
+.avatar-sm{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--primary),var(--primary-hover));display:grid;place-items:center;font-size:11.5px;font-weight:700;color:var(--primary-fg)}
+
+.notice{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--text-muted);padding:9px 24px;border-bottom:1px solid var(--border);background:var(--primary-soft)}
+.notice b{color:var(--primary)}
+
+.wrap{max-width:1180px;width:100%;margin:0 auto;padding:24px}
+.head h1{font-size:23px;letter-spacing:-.025em;font-weight:750}
+.head .sub{color:var(--text-muted);font-size:13.5px;margin-top:4px}
+
+/* ---------- Barra de ação sticky ---------- */
+.actionbar{
+  position:sticky;top:57px;z-index:40;margin:18px 0 0;padding:13px 16px;
+  background:var(--surface-glass);backdrop-filter:blur(14px);
+  border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-card);
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+}
+.ab-prog{display:flex;flex-direction:column;gap:7px;flex:1;min-width:250px}
+.ab-prog .lbl{display:flex;align-items:baseline;gap:7px;font-size:12.5px;color:var(--text-muted)}
+.ab-prog .lbl b{font-size:15px;color:var(--text);font-weight:750}
+.bar{height:9px;border-radius:999px;background:var(--surface-2);display:flex;overflow:hidden;border:1px solid var(--border)}
+.bar i{display:block;height:100%;transition:width .25s ease}
+.ab-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.autosave{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--present);background:var(--present-soft);border:1px solid var(--present-line);padding:7px 11px;border-radius:9px;white-space:nowrap}
+.autosave .live{width:7px;height:7px;border-radius:50%;background:var(--present);animation:pulse 2.4s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 var(--present-soft)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.btn{display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:9px 15px;font-size:13.5px;font-weight:650;border:1px solid transparent;transition:.15s}
+.btn-ghost{background:var(--surface);border-color:var(--border-strong);color:var(--text-muted)}
+.btn-ghost:hover{background:var(--surface-2);color:var(--text)}
+.btn-primary{background:var(--primary);color:var(--primary-fg);box-shadow:0 8px 22px var(--primary-glow)}
+.btn-primary:hover{background:var(--primary-hover)}
+
+/* ---------- Board ---------- */
+.board{background:var(--surface);border:1px solid var(--border);border-radius:16px;margin-top:18px;overflow:hidden;box-shadow:var(--shadow-card)}
+.controls{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;padding:18px 20px;border-bottom:1px solid var(--border)}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:11.5px;color:var(--text-muted);font-weight:650}
+.field .box{background:var(--surface-2);border:1px solid var(--border-strong);border-radius:10px;padding:9px 12px;font-size:13.5px;color:var(--text);min-width:150px;font-weight:600;display:flex;align-items:center;gap:8px}
+.field .box .ic{margin-left:auto;color:var(--text-subtle)}
+.date-warn{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--late);background:var(--late-soft);border:1px solid var(--late-line);padding:8px 11px;border-radius:9px;align-self:center}
+
+.legend{display:flex;gap:16px;flex-wrap:wrap;padding:13px 20px;border-bottom:1px solid var(--border)}
+.legend span{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--text-muted);font-weight:600}
+.legend .sw{width:11px;height:11px;border-radius:3.5px}
+
+.toolbar{display:flex;gap:11px;align-items:center;flex-wrap:wrap;padding:13px 20px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.listsearch{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border-strong);border-radius:10px;padding:8px 12px;font-size:13px;color:var(--text-subtle);flex:1;min-width:170px;max-width:270px}
+.listsearch input{background:none;border:none;outline:none;color:var(--text);font-size:13px;width:100%}
+.listsearch input::placeholder{color:var(--text-subtle)}
+.chips{display:flex;gap:7px;flex-wrap:wrap}
+.chip{font-size:12.5px;padding:7px 13px;border-radius:999px;border:1px solid var(--border-strong);color:var(--text-muted);background:transparent;font-weight:600;transition:.15s}
+.chip:hover{color:var(--text);border-color:var(--text-subtle)}
+.chip.on{background:var(--primary);color:var(--primary-fg);border-color:var(--primary)}
+.toolbar-right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn-bulk{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:650;padding:8px 13px;border-radius:9px;background:var(--present-soft);color:var(--present);border:1px solid var(--present-line);transition:.15s}
+.btn-bulk:hover{filter:brightness(1.06)}
+.btn-bulk.sec{background:var(--surface);color:var(--text-muted);border-color:var(--border-strong)}
+.btn-bulk.sec:hover{color:var(--text)}
+.density{display:inline-flex;border:1px solid var(--border-strong);border-radius:9px;overflow:hidden;background:var(--surface)}
+.density button{padding:8px 12px;color:var(--text-subtle);font-size:12px;font-weight:600;transition:.15s}
+.density button.on{background:var(--primary-soft);color:var(--primary)}
+
+/* ---------- Linhas ---------- */
+.row{display:flex;flex-direction:column;border-bottom:1px solid var(--border)}
+.row:last-of-type{border-bottom:none}
+.row.focused .rowmain{background:var(--just-soft);box-shadow:inset 3px 0 0 var(--just)}
+.row.invalid .rowmain{box-shadow:inset 3px 0 0 var(--absent)}
+.rowmain{display:flex;align-items:center;gap:13px;padding:12px 20px;transition:background .15s}
+.row:hover .rowmain{background:var(--surface-2)}
+.compact .rowmain{padding:7px 20px}
+.av{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:14px;flex:none;color:#fff}
+.compact .av{width:30px;height:30px;font-size:12px}
+.g1{background:linear-gradient(135deg,#ff4d57,#ff8a4d)} .g2{background:linear-gradient(135deg,#6a7cff,#63b3ff)}
+.g3{background:linear-gradient(135deg,#43d99a,#2bb8c8)} .g4{background:linear-gradient(135deg,#c46bff,#7a5cff)}
+.g5{background:linear-gradient(135deg,#ffbd5c,#ff7a59)} .g6{background:linear-gradient(135deg,#2bd6c8,#3d9dff)}
+.who{min-width:0}
+.who .nm{font-size:14.5px;font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.who small{font-size:12px;color:var(--text-subtle)}
+.tags{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+.compact .tags{margin-top:2px}
+.tag{font-size:11px;padding:2.5px 9px;border-radius:999px;font-weight:650;display:inline-flex;align-items:center;gap:5px}
+.tag .ic{width:12px;height:12px;stroke-width:2.2}
+.tag.late{background:var(--late-soft);color:var(--late)}
+.tag.early{background:var(--early-soft);color:var(--early)}
+.tag.warn{background:var(--absent-soft);color:var(--absent)}
+.tag.just{background:var(--just-soft);color:var(--just)}
+.tag.note{background:var(--surface-2);color:var(--text-muted);border:1px solid var(--border)}
+
+.freq{font-size:11px;font-weight:750;padding:2.5px 9px;border-radius:999px;font-variant-numeric:tabular-nums}
+.freq.ok{background:var(--present-soft);color:var(--present)}
+.freq.warn{background:var(--late-soft);color:var(--late)}
+.freq.risk{background:var(--absent-soft);color:var(--absent)}
+
+.rightgroup{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.iconbtn{width:38px;height:38px;border-radius:10px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text-subtle);display:grid;place-items:center;transition:.15s}
+.iconbtn:hover{color:var(--text);background:var(--surface-2)}
+.iconbtn.on{background:var(--just-soft);color:var(--just);border-color:var(--just-line)}
+.earlybtn{display:inline-flex;align-items:center;gap:7px;min-height:38px;padding:0 12px;border-radius:10px;border:1px dashed var(--border-strong);background:var(--surface);color:var(--text-subtle);font-size:12.5px;font-weight:650;transition:.15s}
+.earlybtn:hover:not(:disabled){color:var(--text);border-color:var(--text-subtle)}
+.earlybtn.on{background:var(--early-soft);color:var(--early);border:1px solid var(--early-line)}
+.earlybtn:disabled{opacity:.34;cursor:not-allowed}
+
+.seg{display:flex;gap:5px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:4px}
+.seg button{display:flex;align-items:center;gap:7px;min-height:36px;padding:0 12px;border-radius:9px;border:1px solid transparent;color:var(--text-subtle);font-size:12.5px;font-weight:650;transition:.13s}
+.seg button:hover{background:var(--surface);color:var(--text)}
+.seg button .ic{width:15px;height:15px}
+.seg button[aria-pressed="true"][data-s="p"]{background:var(--present-soft);color:var(--present);border-color:var(--present-line)}
+.seg button[aria-pressed="true"][data-s="a"]{background:var(--late-soft);color:var(--late);border-color:var(--late-line)}
+.seg button[aria-pressed="true"][data-s="f"]{background:var(--absent-soft);color:var(--absent);border-color:var(--absent-line)}
+.seg button[aria-pressed="true"][data-s="j"]{background:var(--just-soft);color:var(--just);border-color:var(--just-line)}
+@media(max-width:1100px){.seg button span{display:none}.seg button{padding:0 11px}}
+
+/* ---------- Detalhes ---------- */
+.detail{padding:0 20px 14px 71px;display:flex;gap:14px;flex-wrap:wrap;animation:slide .18s ease}
+.compact .detail{padding-left:62px}
+@keyframes slide{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.dblock{display:flex;flex-direction:column;gap:9px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;min-width:250px}
+.dblock.arr{border-left:3px solid var(--late)}
+.dblock.lv{border-left:3px solid var(--early)}
+.dblock.note{border-left:3px solid var(--just);flex:1;min-width:270px}
+.dblock.just{border-left:3px solid var(--just);flex:1;min-width:340px}
+.dblock .dt{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:750;text-transform:uppercase;letter-spacing:.05em}
+.dblock.arr .dt{color:var(--late)} .dblock.lv .dt{color:var(--early)}
+.dblock.note .dt,.dblock.just .dt{color:var(--just)}
+.dfields{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.aulas{display:flex;gap:4px}
+.aulas button{min-width:34px;height:34px;border-radius:9px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text-muted);font-size:12px;font-weight:650;transition:.13s}
+.aulas button:hover{color:var(--text)}
+.aulas.arr button.on{background:var(--late-soft);color:var(--late);border-color:var(--late-line)}
+.aulas.lv button.on{background:var(--early-soft);color:var(--early);border-color:var(--early-line)}
+.timef{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-subtle)}
+.timef input,.period input{background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:8px 10px;font-size:13px;font-variant-numeric:tabular-nums}
+.sep{color:var(--text-subtle);font-size:12px}
+.miss{font-size:11px;color:var(--absent);font-weight:650;text-transform:none;letter-spacing:0}
+.dblock textarea{background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:9px 11px;font-size:13px;resize:vertical;min-height:38px;width:100%;outline:none}
+.dblock textarea:focus{border-color:var(--just)}
+.dblock textarea::placeholder{color:var(--text-subtle)}
+
+.jtipos{display:flex;gap:6px;flex-wrap:wrap}
+.jtipos button{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:9px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text-muted);font-size:12px;font-weight:650;transition:.13s}
+.jtipos button:hover{color:var(--text)}
+.jtipos button.on{background:var(--just-soft);color:var(--just);border-color:var(--just-line)}
+.jrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.attach{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;border:1px dashed var(--border-strong);background:var(--surface);color:var(--text-subtle);font-size:12.5px;font-weight:650;transition:.15s}
+.attach:hover{color:var(--text);border-color:var(--text-subtle)}
+.file{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:9px;background:var(--just-soft);border:1px solid var(--just-line);color:var(--just);font-size:12.5px;font-weight:650}
+.file .x{cursor:pointer;opacity:.75;font-weight:800}
+.file .x:hover{opacity:1}
+.period{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-subtle)}
+.valid{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:750;border:1px solid transparent}
+.valid.pend{background:var(--late-soft);color:var(--late);border-color:var(--late-line)}
+.valid.ok{background:var(--present-soft);color:var(--present);border-color:var(--present-line)}
+.abona{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:750;border:1px solid var(--border-strong);background:var(--surface);color:var(--text-subtle)}
+.abona.on{background:var(--present-soft);color:var(--present);border-color:var(--present-line)}
+.abona:disabled{opacity:.38;cursor:not-allowed}
+
+.kbdhelp{display:flex;gap:14px;flex-wrap:wrap;padding:12px 20px;border-top:1px solid var(--border);background:var(--surface-2);color:var(--text-muted);font-size:12px;align-items:center;font-weight:500}
+.kbdhelp kbd{background:var(--surface);border:1px solid var(--border-strong);border-radius:5px;padding:1.5px 6px;font-size:11px;color:var(--text);font-weight:650;font-family:inherit}
+.kbdhelp span{display:inline-flex;align-items:center;gap:5px}
+.footnote{padding:16px 4px 0;color:var(--text-subtle);font-size:12px;line-height:1.6;display:flex;gap:9px}
+.footnote .ic{margin-top:2px}
+
+/* ---------- Toast / Modal ---------- */
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(30px);background:var(--surface);border:1px solid var(--border-strong);border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:14px;font-size:13px;font-weight:600;box-shadow:var(--shadow-float);opacity:0;pointer-events:none;transition:.25s;z-index:80}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}
+.toast button{color:var(--primary);font-weight:750;font-size:13px}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:none;place-items:center;z-index:90;padding:20px}
+.overlay.show{display:grid}
+.modal{background:var(--surface);border:1px solid var(--border-strong);border-radius:16px;width:min(520px,100%);padding:24px;box-shadow:var(--shadow-float)}
+.modal h3{font-size:18px;margin-bottom:6px;font-weight:750;letter-spacing:-.02em}
+.modal p{color:var(--text-muted);font-size:13.5px;margin-bottom:14px}
+.modal .issue{display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border);margin-bottom:8px;font-size:13px;font-weight:600}
+.modal .issue.warn{border-color:var(--absent-line);color:var(--absent)}
+.modal .issue .n{margin-left:auto;font-weight:800;font-variant-numeric:tabular-nums}
+.modal .ok{display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:10px;background:var(--present-soft);border:1px solid var(--present-line);color:var(--present);font-size:13px;font-weight:650}
+.modal .mactions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{display:none}
+  .wrap{padding:16px}
+  .actionbar{top:53px}
+  .detail{padding-left:20px}
+  .rightgroup{width:100%;justify-content:flex-start;margin-left:0;padding-left:51px}
+  .topsearch{display:none}
+}
+</style>
+</head>
+<body>
+
+<div class="notice">
+  <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+  <span><b>Mockup estático</b> — chamada com atraso (aula + hora), saída antecipada, justificativa com abono, frequência/risco, validação ao concluir e navegação por teclado. Nenhum código do IClass foi alterado.</span>
+</div>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">iC</div>
+      <div><b>IClass</b><span>LEARNING OS</span></div>
+    </div>
+    <div class="navlabel">Gestão</div>
+    <button class="nav"><svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M17 8.5a3 3 0 0 1 0 5"/></svg>Alunos</button>
+    <button class="nav active"><svg class="ic" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Chamada<span class="dot"></span></button>
+    <button class="nav"><svg class="ic" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>Avisos</button>
+    <button class="nav"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>Calendário</button>
+    <div class="side-foot"><i></i>Sistema ativo · v3</div>
+  </aside>
+
+  <div class="main">
+    <div class="top">
+      <div class="course">
+        <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5z"/></svg>
+        Curso Técnico em TI · 1DES
+      </div>
+      <div class="topsearch">
+        <svg class="ic" viewBox="0 0 24 24" style="width:15px;height:15px"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+        Buscar no IClass <kbd>Ctrl K</kbd>
+      </div>
+      <div class="pill">Professor</div>
+      <button class="iconbtn-top" id="themeToggle" title="Alternar tema" aria-label="Alternar tema claro e escuro"></button>
+      <div class="avatar-sm">AM</div>
+    </div>
+
+    <div class="wrap">
+      <div class="head">
+        <h1>Chamada</h1>
+        <div class="sub">Presença por aula · Curso Técnico em TI · 1DES · 4 aulas no dia</div>
+      </div>
+
+      <!-- Barra de ação sticky -->
+      <div class="actionbar">
+        <div class="ab-prog">
+          <div class="lbl"><b id="marked" class="tnum">16</b> de <span class="tnum">16</span> alunos marcados <span id="remain" style="color:var(--present)">· pronto para concluir</span></div>
+          <div class="bar" id="bar"></div>
+        </div>
+        <div class="ab-actions">
+          <div class="autosave"><span class="live"></span> Salvo <span class="tnum">09:42</span></div>
+          <button class="btn btn-ghost"><svg class="ic" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Exportar CSV</button>
+          <button class="btn btn-primary" onclick="openConclude()"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Concluir chamada</button>
+        </div>
+      </div>
+
+      <div class="board" id="board">
+        <div class="controls">
+          <div class="field"><label>Turma</label><div class="box">1DES <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          <div class="field"><label>Data</label><div class="box"><span class="tnum">17/07/2026</span> (hoje) <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg></div></div>
+          <div class="field"><label>Aulas do dia</label><div class="box">Aula 1 · 2 · 3 · 4 <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          <div class="date-warn"><svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Confira a data e as aulas antes de concluir</div>
+        </div>
+
+        <div class="legend" id="legend"></div>
+
+        <div class="toolbar">
+          <div class="listsearch">
+            <svg class="ic" viewBox="0 0 24 24" style="width:15px;height:15px"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+            <input placeholder="Buscar aluno…" oninput="filterRows(this.value)" aria-label="Buscar aluno">
+          </div>
+          <div class="chips">
+            <button class="chip on" onclick="chip(this)">Todos</button>
+            <button class="chip" onclick="chip(this)">Só sem marcar</button>
+            <button class="chip" onclick="chip(this)">Atrasados</button>
+            <button class="chip" onclick="chip(this)">Saíram cedo</button>
+            <button class="chip" onclick="chip(this)">Em risco</button>
+          </div>
+          <div class="toolbar-right">
+            <div class="density">
+              <button class="on" onclick="setDensity('comfort',this)">Confortável</button>
+              <button onclick="setDensity('compact',this)">Compacto</button>
+            </div>
+            <button class="btn-bulk" onclick="allPresent()"><svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M20 6 9 17l-5-5"/></svg>Todos presente</button>
+            <button class="btn-bulk sec"><svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>Repetir aula</button>
+          </div>
+        </div>
+
+        <div id="list"></div>
+
+        <div class="kbdhelp">
+          <svg class="ic" viewBox="0 0 24 24" style="width:15px;height:15px"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg>
+          <span><kbd>↑</kbd><kbd>↓</kbd> navegar</span>
+          <span><kbd>P</kbd> presente</span><span><kbd>A</kbd> atrasado</span>
+          <span><kbd>F</kbd> falta</span><span><kbd>J</kbd> justificado</span>
+          <span><kbd>S</kbd> saída cedo</span><span><kbd>1</kbd>–<kbd>4</kbd> aula</span>
+          <span><kbd>N</kbd> observação</span>
+        </div>
+      </div>
+
+      <div class="footnote">
+        <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        <span>Rascunho salvo automaticamente. A porcentagem é a frequência acumulada do aluno; abaixo de 75% entra em risco de evasão. Justificar uma ausência abre o registro de atestado: tipo, documento anexo, período de cobertura e validação da secretaria. O botão “Abona falta” decide, por registro, se a ausência conta na frequência. Ao concluir, o sistema valida pendências, atrasos sem horário e justificativas incompletas.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span id="toastmsg"></span><button onclick="undo()">Desfazer</button></div>
+
+<div class="overlay" id="overlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mtitle">
+    <h3 id="mtitle">Concluir chamada?</h3>
+    <p id="mdesc"></p>
+    <div id="missues"></div>
+    <div class="mactions">
+      <button class="btn btn-ghost" onclick="closeConclude()">Revisar</button>
+      <button class="btn btn-primary" onclick="closeConclude()">Concluir mesmo assim</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- Tema ---------- */
+(function(){
+  var root=document.documentElement, b=document.getElementById('themeToggle');
+  var moon='<svg class="ic" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+  var sun='<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M4.2 4.2 6 6M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8 6 18M18 6l1.8-1.8"/></svg>';
+  function cur(){return root.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}
+  function sync(){b.innerHTML=cur()==='dark'?moon:sun;}
+  sync(); b.addEventListener('click',function(){root.setAttribute('data-theme',cur()==='dark'?'light':'dark');sync();});
+})();
+
+/* ---------- Ícones ---------- */
+const I={
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  exit:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
+  warn:'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  clip:'<path d="M21.4 11.05 12.25 20.2a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.48-8.49"/>',
+  note:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  doc:'<path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>',
+  med:'<path d="M12 8v8M8 12h8"/><rect x="3" y="3" width="18" height="18" rx="4"/>',
+  cal:'<rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>',
+  down:'<path d="M12 5v9m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>'
+};
+const svg=(p,s)=>`<svg class="ic" viewBox="0 0 24 24"${s?` style="${s}"`:''}>${p}</svg>`;
+
+/* ---------- Dados ---------- */
+const AULAS=4;
+const mk=(nome,apelido,status,freq,faltas,x={})=>({nome,apelido,status,freq,faltas,
+  aa:x.aa??null,at:x.at??"",early:x.early??false,la:x.la??null,lt:x.lt??"",note:x.note??"",showNote:false,
+  jtipo:x.jtipo??"atestado",janexo:x.janexo??"",jde:x.jde??"",jate:x.jate??"",jval:x.jval??false,jabona:x.jabona??false});
+const students=[
+  mk("Alan Marciano","","p",96,2),
+  mk("Alice Aluna","","p",99,1),
+  mk("Aluno Teste","Alune Teste","a",88,7,{aa:2,at:"08:20"}),
+  mk("Bruno Souza","","f",71,18),
+  mk("Carla Mendes","","p",93,4,{early:true,la:4,lt:"11:10",note:"Consulta médica."}),
+  mk("Diego Oliveira","","p",97,2),
+  mk("Doidim","","p",100,0),
+  mk("Elisa Ferreira","","j",84,9,{jtipo:"atestado",janexo:"atestado-elisa.pdf",jde:"2026-07-14",jate:"2026-07-16",jval:true,jabona:true,note:"Atestado médico — 3 dias."}),
+  mk("Felipe Santos","","a",68,22,{aa:1,at:"07:35",early:true,la:3,lt:"10:15"}),
+  mk("Gabriela Lima","","p",95,3),
+  mk("Henrique Costa","","f",74,16),
+  mk("Isa Rocha","Isabela Rocha","p",98,1),
+  mk("João Martins","","j",91,5,{jtipo:"responsavel",note:"Compromisso familiar (informado pelo responsável)."}),
+  mk("Karen Alves","","p",99,1),
+  mk("Lucas Ribeiro","","p",100,0),
+  mk("Sigfried","","p",90,6),
+];
+const JTIPOS={atestado:"Atestado médico",responsavel:"Justif. do responsável",declaracao:"Declaração",outro:"Outro"};
+const needsDoc=t=>t==="atestado"||t==="declaracao";
+const META={
+  p:{lbl:"Presente",ic:'<path d="M20 6 9 17l-5-5"/>'},
+  a:{lbl:"Atrasado",ic:I.clock},
+  f:{lbl:"Falta",ic:'<circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/>'},
+  j:{lbl:"Justificado",ic:I.doc},
+};
+const order=["p","a","f","j"];
+const GR=["g1","g2","g3","g4","g5","g6"];
+const ini=n=>n.trim()[0]||"?";
+let focusIdx=-1, snapshot=null;
+
+const arrMissing=s=>s.status==="a"&&!s.aa&&!s.at;
+const lvMissing =s=>s.early&&!s.la&&!s.lt;
+const jMissing  =s=>s.status==="j"&&(needsDoc(s.jtipo)?!s.janexo:(!s.janexo&&!s.note.trim()));
+const isInvalid =s=>arrMissing(s)||lvMissing(s)||jMissing(s);
+const freqClass =f=>f<75?"risk":f<85?"warn":"ok";
+const fmtD=d=>d?d.slice(8,10)+"/"+d.slice(5,7):"";
+
+function aulaBtns(kind,i,sel){
+  let h=`<div class="aulas ${kind}">`;
+  for(let a=1;a<=AULAS;a++){
+    const fn=kind==="arr"?`setArrAula(${i},${a})`:`setLvAula(${i},${a})`;
+    h+=`<button class="${sel===a?'on':''}" onclick="${fn}">${a}ª</button>`;
+  }
+  return h+"</div>";
+}
+
+function render(){
+  document.getElementById("list").innerHTML=students.map((s,i)=>{
+    const canEarly=s.status==="p"||s.status==="a";
+    const seg=order.map(k=>`
+      <button data-s="${k}" aria-pressed="${s.status===k}" aria-label="Marcar ${s.nome} como ${META[k].lbl}" onclick="setSt(${i},'${k}')">
+        ${svg(META[k].ic)}<span>${META[k].lbl}</span></button>`).join("");
+
+    const isJust=s.status==="j";
+    let tags="";
+    if(s.status==="a"&&(s.aa||s.at)) tags+=`<span class="tag late">${svg(I.clock)}chegou ${s.aa?s.aa+"ª aula":""}${s.aa&&s.at?" · ":""}${s.at||""}</span>`;
+    if(s.early&&(s.la||s.lt)) tags+=`<span class="tag early">${svg(I.exit)}saiu ${s.la?s.la+"ª aula":""}${s.la&&s.lt?" · ":""}${s.lt||""}</span>`;
+    if(arrMissing(s)) tags+=`<span class="tag warn">${svg(I.warn)}falta a hora da chegada</span>`;
+    if(lvMissing(s)) tags+=`<span class="tag warn">${svg(I.warn)}falta a hora da saída</span>`;
+    const abonoTxt=s.jval?(s.jabona?" · abona":" · não abona"):" · pendente";
+    if(isJust&&s.janexo) tags+=`<span class="tag just">${svg(I.clip)}${JTIPOS[s.jtipo]}${s.jde&&s.jate?` · ${fmtD(s.jde)}–${fmtD(s.jate)}`:""}${abonoTxt}</span>`;
+    else if(isJust&&s.note) tags+=`<span class="tag just">${svg(I.doc)}${JTIPOS[s.jtipo]}${abonoTxt}: ${s.note}</span>`;
+    if(jMissing(s)) tags+=`<span class="tag warn">${svg(I.warn)}justificativa incompleta</span>`;
+    if(!isJust&&s.note&&!s.showNote) tags+=`<span class="tag note">${svg(I.note)}${s.note}</span>`;
+
+    const freqBadge=`<span class="freq ${freqClass(s.freq)}" title="${s.faltas} faltas acumuladas">${s.freq}%</span>`;
+    const showArr=s.status==="a", showLv=s.early&&canEarly, showNote=s.showNote&&!isJust;
+
+    let detail="";
+    if(showArr||showLv||showNote||isJust){
+      detail=`<div class="detail">`;
+      if(showArr) detail+=`<div class="dblock arr"><div class="dt">${svg(I.clock,'width:13px;height:13px')}Chegada (atraso) ${arrMissing(s)?'<span class="miss">— informe aula ou hora</span>':''}</div>
+        <div class="dfields">${aulaBtns("arr",i,s.aa)}<span class="sep">ou</span><div class="timef">${svg(I.clock,'width:14px;height:14px')}<input type="time" value="${s.at}" onchange="setArrTime(${i},this.value)" aria-label="Hora de chegada"></div></div></div>`;
+      if(showLv) detail+=`<div class="dblock lv"><div class="dt">${svg(I.exit,'width:13px;height:13px')}Saída antecipada ${lvMissing(s)?'<span class="miss">— informe aula ou hora</span>':''}</div>
+        <div class="dfields">${aulaBtns("lv",i,s.la)}<span class="sep">ou</span><div class="timef">${svg(I.clock,'width:14px;height:14px')}<input type="time" value="${s.lt}" onchange="setLvTime(${i},this.value)" aria-label="Hora de saída"></div></div></div>`;
+      if(isJust){
+        const anexo=s.janexo
+          ? `<span class="file">${svg(I.clip,'width:14px;height:14px')}${s.janexo}<span class="x" onclick="removeAnexo(${i})" title="Remover">✕</span></span>`
+          : `<button class="attach" onclick="attachDoc(${i})">${svg(I.clip,'width:14px;height:14px')}Anexar ${needsDoc(s.jtipo)?"atestado/documento":"documento (opcional)"}</button>`;
+        detail+=`<div class="dblock just"><div class="dt">${svg(I.med,'width:13px;height:13px')}Justificativa de ausência ${jMissing(s)?'<span class="miss">— anexe o documento ou escreva a justificativa</span>':''}</div>
+          <div class="jtipos">${Object.keys(JTIPOS).map(t=>`<button class="${s.jtipo===t?"on":""}" onclick="setJtipo(${i},'${t}')">${JTIPOS[t]}</button>`).join("")}</div>
+          <div class="jrow">${anexo}
+            <div class="period">${svg(I.cal,'width:14px;height:14px')}<input type="date" value="${s.jde}" onchange="setJde(${i},this.value)" aria-label="Início"> até <input type="date" value="${s.jate}" onchange="setJate(${i},this.value)" aria-label="Fim"></div>
+            <button class="valid ${s.jval?"ok":"pend"}" onclick="toggleVal(${i})">${s.jval?"Validado pela secretaria":"Pendente de validação"}</button>
+            <button class="abona ${s.jabona?"on":""}" ${s.jval?"":"disabled"} onclick="toggleAbona(${i})" title="${s.jval?"Abona a falta — não conta na frequência":"Valide o atestado antes de abonar"}">${s.jabona?"Abona falta":"Não abona falta"}</button>
+          </div>
+          <textarea placeholder="Justificativa, motivo, observações…" oninput="setNote(${i},this.value)">${s.note}</textarea></div>`;
+      }
+      if(showNote) detail+=`<div class="dblock note"><div class="dt">${svg(I.note,'width:13px;height:13px')}Observação</div>
+        <textarea placeholder="Motivo, observação, contexto…" oninput="setNote(${i},this.value)">${s.note}</textarea></div>`;
+      detail+=`</div>`;
+    }
+
+    return `<div class="row ${isInvalid(s)?'invalid':''} ${i===focusIdx?'focused':''}" data-name="${s.nome.toLowerCase()}">
+      <div class="rowmain">
+        <div class="av ${GR[i%GR.length]}">${ini(s.nome)}</div>
+        <div class="who"><div class="nm">${s.nome} ${freqBadge}</div>${s.apelido?`<small>${s.apelido}</small>`:""}<div class="tags">${tags}</div></div>
+        <div class="rightgroup">
+          ${isJust?"":`<button class="iconbtn ${s.showNote||s.note?'on':''}" onclick="toggleNote(${i})" aria-label="Observação sobre ${s.nome}" title="Observação">${svg(I.note)}</button>`}
+          <button class="earlybtn ${s.early?'on':''}" ${canEarly?'':'disabled'} onclick="toggleEarly(${i})" title="Saiu mais cedo">${svg(I.exit,'width:15px;height:15px')}Saiu cedo</button>
+          <div class="seg" role="radiogroup" aria-label="Status de ${s.nome}">${seg}</div>
+        </div>
+      </div>${detail}
+    </div>`;
+  }).join("");
+  updateSummary();
+}
+
+function updateSummary(){
+  const c={p:0,a:0,f:0,j:0};let early=0,risk=0,invalid=0;
+  students.forEach(s=>{c[s.status]++;if(s.early)early++;if(s.freq<75)risk++;if(isInvalid(s))invalid++;});
+  const total=students.length;
+  document.getElementById("marked").textContent=total;
+  const rem=document.getElementById("remain");
+  if(invalid){rem.textContent=`· ${invalid} com atraso/saída sem horário`;rem.style.color="var(--absent)";}
+  else{rem.textContent="· pronto para concluir";rem.style.color="var(--present)";}
+  const seg=[["p",c.p,"--present"],["a",c.a,"--late"],["f",c.f,"--absent"],["j",c.j,"--just"]];
+  document.getElementById("bar").innerHTML=seg.map(([k,n,v])=>`<i style="width:${n/total*100}%;background:var(${v})"></i>`).join("");
+  document.getElementById("legend").innerHTML=`
+    <span><i class="sw" style="background:var(--present)"></i> <span class="tnum">${c.p}</span> presentes</span>
+    <span><i class="sw" style="background:var(--late)"></i> <span class="tnum">${c.a}</span> atrasados</span>
+    <span><i class="sw" style="background:var(--absent)"></i> <span class="tnum">${c.f}</span> ausentes</span>
+    <span><i class="sw" style="background:var(--just)"></i> <span class="tnum">${c.j}</span> justificados</span>
+    <span><i class="sw" style="background:var(--early)"></i> <span class="tnum">${early}</span> saíram cedo</span>
+    <span><i class="sw" style="background:var(--absent)"></i> <span class="tnum">${risk}</span> em risco de frequência</span>`;
+}
+
+function setSt(i,k){const s=students[i];s.status=k;if(k!=="a"){s.aa=null;s.at="";}if(k==="f"||k==="j"){s.early=false;s.la=null;s.lt="";}render();}
+function toggleEarly(i){students[i].early=!students[i].early;render();}
+function toggleNote(i){students[i].showNote=!students[i].showNote;render();}
+function setNote(i,v){students[i].note=v;}
+function setArrAula(i,a){students[i].aa=(students[i].aa===a?null:a);render();}
+function setArrTime(i,v){students[i].at=v;render();}
+function setLvAula(i,a){students[i].la=(students[i].la===a?null:a);render();}
+function setLvTime(i,v){students[i].lt=v;render();}
+function setJtipo(i,t){students[i].jtipo=t;render();}
+function attachDoc(i){students[i].janexo="documento-"+students[i].nome.split(" ")[0].toLowerCase()+".pdf";render();}
+function removeAnexo(i){students[i].janexo="";render();}
+function setJde(i,v){students[i].jde=v;render();}
+function setJate(i,v){students[i].jate=v;render();}
+function toggleVal(i){students[i].jval=!students[i].jval;if(!students[i].jval)students[i].jabona=false;render();}
+function toggleAbona(i){if(!students[i].jval)return;students[i].jabona=!students[i].jabona;render();}
+
+function allPresent(){
+  snapshot=students.map(s=>({...s}));
+  students.forEach(s=>{s.status="p";s.aa=null;s.at="";});
+  render();showToast("Todos marcados como presente.");
+}
+function undo(){if(snapshot){snapshot.forEach((v,i)=>students[i]=v);snapshot=null;render();}hideToast();}
+let toastT;
+function showToast(m){document.getElementById("toastmsg").textContent=m;document.getElementById("toast").classList.add("show");clearTimeout(toastT);toastT=setTimeout(hideToast,6000);}
+function hideToast(){document.getElementById("toast").classList.remove("show");}
+
+function filterRows(q){q=q.toLowerCase();document.querySelectorAll(".row").forEach(r=>{r.style.display=r.dataset.name.includes(q)?"":"none";});}
+function chip(el){document.querySelectorAll(".chip").forEach(c=>c.classList.remove("on"));el.classList.add("on");}
+function setDensity(d,el){document.getElementById("board").classList.toggle("compact",d==="compact");document.querySelectorAll(".density button").forEach(b=>b.classList.remove("on"));el.classList.add("on");}
+
+function openConclude(){
+  const pend=students.filter(s=>!s.status).length;
+  const timeMissing=students.filter(s=>arrMissing(s)||lvMissing(s)).length;
+  const justInc=students.filter(jMissing).length;
+  const pendVal=students.filter(s=>s.status==="j"&&!jMissing(s)&&!s.jval).length;
+  const risk=students.filter(s=>s.freq<75).length;
+  const blocking=pend||timeMissing||justInc;
+  let html="";
+  if(!blocking){
+    html=`<div class="ok">${svg('<path d="M20 6 9 17l-5-5"/>')}Nenhuma pendência bloqueante. Tudo certo para concluir.</div>`;
+    document.getElementById("mdesc").textContent="Revise o resumo antes de finalizar.";
+  }else{
+    document.getElementById("mdesc").textContent="Encontramos pontos que valem revisão antes de finalizar:";
+    if(pend) html+=`<div class="issue warn">${svg(I.warn)}Alunos sem marcar <span class="n">${pend}</span></div>`;
+    if(timeMissing) html+=`<div class="issue warn">${svg(I.warn)}Atraso/saída sem aula ou hora <span class="n">${timeMissing}</span></div>`;
+    if(justInc) html+=`<div class="issue warn">${svg(I.warn)}Justificativa/atestado incompleto <span class="n">${justInc}</span></div>`;
+  }
+  if(pendVal) html+=`<div class="issue">${svg(I.med)}Atestados aguardando validação da secretaria <span class="n">${pendVal}</span></div>`;
+  if(risk) html+=`<div class="issue">${svg(I.down)}Alunos em risco de frequência (&lt;75%) <span class="n">${risk}</span></div>`;
+  document.getElementById("missues").innerHTML=html;
+  document.getElementById("overlay").classList.add("show");
+}
+function closeConclude(){document.getElementById("overlay").classList.remove("show");}
+
+document.addEventListener("keydown",e=>{
+  if(e.target.matches("input,textarea"))return;
+  const k=e.key.toLowerCase();
+  if(k==="escape"){closeConclude();return;}
+  if(k==="arrowdown"){e.preventDefault();focusIdx=Math.min(students.length-1,focusIdx+1);render();scrollFocus();}
+  else if(k==="arrowup"){e.preventDefault();focusIdx=Math.max(0,focusIdx-1);render();scrollFocus();}
+  else if(focusIdx>=0){
+    if("pafj".includes(k)) setSt(focusIdx,k);
+    else if(k==="s"){if(students[focusIdx].status==="p"||students[focusIdx].status==="a")toggleEarly(focusIdx);}
+    else if(k==="n") toggleNote(focusIdx);
+    else if("1234".includes(k)){const a=+k;const s=students[focusIdx];if(s.status==="a")setArrAula(focusIdx,a);else if(s.early)setLvAula(focusIdx,a);}
+  }
+});
+function scrollFocus(){const el=document.querySelectorAll(".row")[focusIdx];if(el)el.scrollIntoView({block:"nearest",behavior:"smooth"});}
+
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" width="800" height="450">
+  <rect width="800" height="450" fill="#1a1a2e"/>
+  
+  <text x="400" y="30" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="bold">IIoT - SENSORES INDUSTRIAIS</text>
+  <text x="400" y="50" font-family="Arial" font-size="11" fill="#888" text-anchor="middle">Industrial Internet of Things</text>
+  
+  <!-- Central Cloud -->
+  <ellipse cx="400" cy="250" rx="80" ry="50" fill="#0f3460" stroke="#60a5fa" stroke-width="3"/>
+  <text x="400" y="240" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">NUVEM</text>
+  <text x="400" y="258" font-family="Arial" font-size="10" fill="#a8d8ff" text-anchor="middle">ERP, BI, Analytics</text>
+  <text x="400" y="273" font-family="Arial" font-size="9" fill="#888" text-anchor="middle">MQTT Broker</text>
+  
+  <!-- MQTT Protocol -->
+  <rect x="350" y="305" width="100" height="35" rx="5" fill="#27ae60" stroke="#fff"/>
+  <text x="400" y="328" font-family="Courier" font-size="10" fill="#fff" text-anchor="middle">MQTT</text>
+  
+  <!-- Sensors -->
+  <!-- Temperature -->
+  <rect x="50" y="80" width="130" height="90" rx="8" fill="#2c3e50" stroke="#e94560" stroke-width="2"/>
+  <path d="M85 130 L115 130 L115 110 L85 110 Z M100 110 L100 90" stroke="#e94560" stroke-width="3" fill="none"/>
+  <circle cx="100" cy="95" r="8" fill="#e94560"/>
+  <text x="115" y="95" font-family="Arial" font-size="9" fill="#e94560">Temp</text>
+  <text x="115" y="110" font-family="Arial" font-size="8" fill="#888">-200°C a 1700°C</text>
+  <text x="115" y="122" font-family="Arial" font-size="7" fill="#888">Termopar/RTD</text>
+  <line x1="100" y1="130" x2="150" y2="200" stroke="#e94560" stroke-width="1" stroke-dasharray="5,5"/>
+  
+  <!-- Pressure -->
+  <rect x="200" y="80" width="130" height="90" rx="8" fill="#2c3e50" stroke="#f39c12" stroke-width="2"/>
+  <circle cx="265" cy="115" r="25" fill="none" stroke="#f39c12" stroke-width="3"/>
+  <circle cx="265" cy="115" r="18" fill="none" stroke="#f39c12" stroke-width="2"/>
+  <circle cx="265" cy="115" r="10" fill="#f39c12"/>
+  <text x="290" y="100" font-family="Arial" font-size="9" fill="#f39c12">Pressão</text>
+  <text x="290" y="115" font-family="Arial" font-size="8" fill="#888">Bar/PSI</text>
+  <text x="290" y="128" font-family="Arial" font-size="7" fill="#888">Caldeiras</text>
+  <line x1="265" y1="140" x2="265" y2="200" stroke="#f39c12" stroke-width="1" stroke-dasharray="5,5"/>
+  
+  <!-- Vibration -->
+  <rect x="350" y="80" width="130" height="90" rx="8" fill="#2c3e50" stroke="#27ae60" stroke-width="2"/>
+  <rect x="375" y="100" width="80" height="50" rx="3" fill="#1a1a2e"/>
+  <path d="M385 130 Q395 110 405 130 Q415 110 425 130 Q435 110 445 130" stroke="#27ae60" stroke-width="2" fill="none"/>
+  <text x="415" y="90" font-family="Arial" font-size="9" fill="#27ae60">Vibração</text>
+  <text x="415" y="105" font-family="Arial" font-size="8" fill="#888">MEMS</text>
+  <text x="415" y="118" font-family="Arial" font-size="7" fill="#888">Manutenção Preditiva</text>
+  <line x1="415" y1="150" x2="380" y2="200" stroke="#27ae60" stroke-width="1" stroke-dasharray="5,5"/>
+  
+  <!-- RFID -->
+  <rect x="500" y="80" width="130" height="90" rx="8" fill="#2c3e50" stroke="#3498db" stroke-width="2"/>
+  <rect x="525" y="100" width="80" height="50" rx="5" fill="#34495e"/>
+  <rect x="530" y="105" width="30" height="40" fill="#3498db" opacity="0.3"/>
+  <rect x="565" y="105" width="30" height="40" fill="#3498db" opacity="0.3"/>
+  <text x="565" y="90" font-family="Arial" font-size="9" fill="#3498db">RFID</text>
+  <text x="565" y="105" font-family="Arial" font-size="8" fill="#888">UHF</text>
+  <text x="565" y="118" font-family="Arial" font-size="7" fill="#888">Rastreamento</text>
+  <line x1="565" y1="150" x2="520" y2="200" stroke="#3498db" stroke-width="1" stroke-dasharray="5,5"/>
+  
+  <!-- Vision -->
+  <rect x="650" y="80" width="130" height="90" rx="8" fill="#2c3e50" stroke="#9b59b6" stroke-width="2"/>
+  <rect x="665" y="95" width="80" height="55" rx="3" fill="#0f3460"/>
+  <circle cx="690" cy="115" r="12" fill="#9b59b6"/>
+  <circle cx="690" cy="115" r="5" fill="#fff"/>
+  <circle cx="720" cy="115" r="3" fill="#e74c3c"/>
+  <circle cx="660" cy="135" r="2" fill="#27ae60"/>
+  <circle cx="720" cy="135" r="2" fill="#e74c3c"/>
+  <text x="715" y="90" font-family="Arial" font-size="9" fill="#9b59b6">Visão</text>
+  <text x="715" y="105" font-family="Arial" font-size="8" fill="#888">Câmera + IA</text>
+  <text x="715" y="118" font-family="Arial" font-size="7" fill="#888">Controle de Qualidade</text>
+  <line x1="715" y1="150" x2="665" y2="200" stroke="#9b59b6" stroke-width="1" stroke-dasharray="5,5"/>
+  
+  <!-- Encoder -->
+  <rect x="200" y="290" width="130" height="90" rx="8" fill="#2c3e50" stroke="#e74c3c" stroke-width="2"/>
+  <circle cx="265" cy="330" r="30" fill="none" stroke="#e74c3c" stroke-width="3"/>
+  <line x1="265" y1="300" x2="265" y2="315" stroke="#e74c3c" stroke-width="2"/>
+  <line x1="265" y1="345" x2="265" y2="360" stroke="#e74c3c" stroke-width="2"/>
+  <line x1="235" y1="330" x2="250" y2="330" stroke="#e74c3c" stroke-width="2"/>
+  <line x1="280" y1="330" x2="295" y2="330" stroke="#e74c3c" stroke-width="2"/>
+  <text x="330" y="320" font-family="Arial" font-size="9" fill="#e74c3c">Encoder</text>
+  <text x="330" y="335" font-family="Arial" font-size="8" fill="#888">Rotativo</text>
+  <text x="330" y="350" font-family="Arial" font-size="7" fill="#888">Posição Angular</text>
+  <line x1="265" y1="360" x2="265" y2="380" stroke="#e74c3c" stroke-width="1" stroke-dasharray="5,5"/>
+  
+  <!-- Flow -->
+  <rect x="350" y="290" width="130" height="90" rx="8" fill="#2c3e50" stroke="#1abc9c" stroke-width="2"/>
+  <rect x="380" y="310" width="70" height="30" fill="none" stroke="#1abc9c" stroke-width="2"/>
+  <path d="M385 340 L390 320 L395 335 L400 325 L405 335 L410 320 L415 340" stroke="#1abc9c" stroke-width="2" fill="none"/>
+  <line x1="360" y1="325" x2="380" y2="325" stroke="#1abc9c" stroke-width="2"/>
+  <line x1="450" y1="325" x2="430" y2="325" stroke="#1abc9c" stroke-width="2"/>
+  <text x="415" y="360" font-family="Arial" font-size="9" fill="#1abc9c">Fluxo</text>
+  <text x="415" y="375" font-family="Arial" font-size="8" fill="#888">Vazão</text>
+  <line x1="415" y1="360" x2="415" y2="380" stroke="#1abc9c" stroke-width="1" stroke-dasharray="5,5"/>
+  
+  <!-- Arrow to Cloud -->
+  <polygon points="340,345 360,350 340,355" fill="#60a5fa"/>
+  <polygon points="440,350 460,345 460,355" fill="#60a5fa"/>
+  <line x1="350" y1="350" x2="320" y2="300" stroke="#60a5fa" stroke-width="2"/>
+  <line x1="430" y1="350" x2="480" y2="300" stroke="#60a5fa" stroke-width="2"/>
+  
+  <!-- MQTT Message Example -->
+  <rect x="500" y="320" width="200" height="60" rx="5" fill="#16213e" stroke="#27ae60"/>
+  <text x="600" y="345" font-family="Courier" font-size="9" fill="#27ae60" text-anchor="middle">{</text>
+  <text x="600" y="358" font-family="Courier" font-size="9" fill="#a8d8ff" text-anchor="middle">"temp": 87.3,</text>
+  <text x="600" y="371" font-family="Courier" font-size="9" fill="#a8d8ff" text-anchor="middle">"sensor": "forno_01"</text>
+  <text x="600" y="384" font-family="Courier" font-size="9" fill="#27ae60" text-anchor="middle">}</text>
+  <text x="600" y="410" font-family="Arial" font-size="8" fill="#888" text-anchor="middle">2 bytes overhead por mensagem</text>
+</svg>

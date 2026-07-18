@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">Fluxo de prova online</title>
+  <desc id="desc">Diagrama simples com instrutor, servidor local e aluno.</desc>
+  <rect width="960" height="420" rx="24" fill="#f8fafc"/>
+  <rect x="60" y="96" width="220" height="188" rx="18" fill="#ffffff" stroke="#0f766e" stroke-width="4"/>
+  <rect x="370" y="96" width="220" height="188" rx="18" fill="#ffffff" stroke="#2563eb" stroke-width="4"/>
+  <rect x="680" y="96" width="220" height="188" rx="18" fill="#ffffff" stroke="#7c3aed" stroke-width="4"/>
+  <circle cx="170" cy="156" r="34" fill="#ccfbf1"/>
+  <circle cx="480" cy="156" r="34" fill="#dbeafe"/>
+  <circle cx="790" cy="156" r="34" fill="#ede9fe"/>
+  <text x="170" y="164" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#0f766e">I</text>
+  <text x="480" y="164" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#2563eb">S</text>
+  <text x="790" y="164" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#7c3aed">A</text>
+  <text x="170" y="224" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Instrutor</text>
+  <text x="480" y="224" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Servidor local</text>
+  <text x="790" y="224" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Aluno</text>
+  <text x="170" y="256" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#475569">prepara material</text>
+  <text x="480" y="256" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#475569">serve conteudo</text>
+  <text x="790" y="256" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#475569">visualiza imagem</text>
+  <path d="M292 190h58" stroke="#334155" stroke-width="5" stroke-linecap="round"/>
+  <path d="M342 174l22 16-22 16" fill="none" stroke="#334155" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M602 190h58" stroke="#334155" stroke-width="5" stroke-linecap="round"/>
+  <path d="M652 174l22 16-22 16" fill="none" stroke="#334155" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="480" y="344" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#0f172a">Imagem local carregada com sucesso</text>
+</svg>

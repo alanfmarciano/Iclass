@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mockup · Monitor Online — Estado Finalizada</title>
+<style>
+  :root{
+    --bg:#10121a; --surface:#191c25; --surface-2:#20242e; --border:#2b303b; --border-strong:#3a404c;
+    --text:#f4f5ef; --text-muted:#b0b5ae; --text-subtle:#989f97;
+    --info:#9aa5ff; --info-soft:rgba(154,165,255,.13);
+    --success:#58d6aa; --success-soft:rgba(88,214,170,.12);
+    --warning:#ffca67; --warning-soft:rgba(255,202,103,.12);
+    --danger:#ff858c; --danger-soft:rgba(255,133,140,.12);
+    --primary:#ff4d57; --primary-hover:#ff6670; --primary-fg:#160507;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding:28px}
+  .wrap{max-width:1120px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px}
+  .lead{color:var(--text-muted);font-size:14px;margin:0 0 20px}
+
+  /* Toggle */
+  .switcher{display:inline-flex;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:22px}
+  .switcher button{border:0;background:transparent;color:var(--text-muted);font-size:13px;font-weight:600;padding:8px 16px;border-radius:9px;cursor:pointer;transition:.2s}
+  .switcher button.active{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.3)}
+
+  .panel{display:none}
+  .panel.active{display:block}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:18px 20px;margin-bottom:16px}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid transparent}
+  .badge .dot{width:7px;height:7px;border-radius:50%}
+  .b-info{background:var(--info-soft);color:var(--info);border-color:color-mix(in srgb,var(--info) 30%,transparent)}
+  .b-info .dot{background:var(--info)}
+  .b-neutral{background:var(--surface-2);color:var(--text-muted);border-color:var(--border)}
+  .b-neutral .dot{background:var(--text-subtle)}
+  .b-warning{background:var(--warning-soft);color:var(--warning)}
+  .b-warning .dot{background:var(--warning)}
+  .b-success{background:var(--success-soft);color:var(--success)}
+  .b-success .dot{background:var(--success)}
+
+  .title-lg{font-size:18px;font-weight:700;margin:8px 0 4px}
+  .muted{color:var(--text-muted);font-size:13px;margin:0}
+  .subtle{color:var(--text-subtle);font-size:12px}
+
+  /* header meta boxes */
+  .meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:2px}
+  .meta-box{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 16px;min-width:170px}
+  .meta-box .lbl{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-subtle)}
+  .meta-box .val{font-size:20px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
+
+  /* buttons */
+  .btns{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0 4px}
+  .btn{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;padding:10px 16px;border-radius:11px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);cursor:pointer;transition:.2s}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+  .btn.ghost{background:transparent}
+  .btn.disabled{opacity:.38;cursor:not-allowed}
+
+  /* stat cards */
+  .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px}
+  .stat .top{display:flex;justify-content:space-between;align-items:center}
+  .stat .k{font-size:12px;color:var(--text-subtle)}
+  .stat .v{font-size:26px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums}
+  .v.info{color:var(--info)} .v.success{color:var(--success)} .v.warning{color:var(--warning)} .v.danger{color:var(--danger)}
+  .stat .sub{font-size:11px;color:var(--text-subtle);margin-top:2px}
+
+  /* banner */
+  .banner{display:flex;align-items:flex-start;gap:12px;border-radius:14px;padding:14px 16px;margin-bottom:16px;font-size:14px}
+  .banner.info{background:var(--info-soft);border:1px solid color-mix(in srgb,var(--info) 35%,transparent);color:var(--info)}
+  .banner.warn{background:var(--warning-soft);border:1px solid color-mix(in srgb,var(--warning) 35%,transparent);color:var(--warning)}
+  .banner strong{color:var(--text)}
+  .banner .txt{color:var(--text)}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;padding:12px 14px;color:var(--text-subtle);font-weight:600;border-bottom:1px solid var(--border);font-size:12px}
+  td{padding:12px 14px;border-bottom:1px solid var(--border)}
+  .name{font-weight:600}
+  .email{color:var(--text-subtle);font-size:12px}
+  .act{display:inline-flex;gap:6px}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:6px 11px;border-radius:9px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);cursor:pointer}
+  .chip.disabled{opacity:.35}
+
+  .note{font-size:12px;color:var(--text-subtle);margin:10px 2px 0}
+  .callout{border-left:3px solid var(--primary);padding:2px 0 2px 14px;margin:22px 0 10px}
+  .callout h3{margin:0 0 6px;font-size:14px}
+  .callout p{margin:0;color:var(--text-muted);font-size:13px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Monitor Online — comportamento ao Finalizar</h1>
+  <p class="lead">Mockup estático (não altera o código de produção). Alterne entre o estado atual e o proposto.</p>
+
+  <div class="switcher">
+    <button id="tab-atual" class="active" onclick="show('atual')">❌ Atual (como está hoje)</button>
+    <button id="tab-proposto" onclick="show('proposto')">✅ Proposto (estado Finalizada)</button>
+  </div>
+
+  <!-- ================= ATUAL ================= -->
+  <div id="atual" class="panel active">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div>
+          <div class="row">
+            <span class="badge b-info"><span class="dot"></span>Finalizada</span>
+            <span class="badge b-neutral"><span class="dot"></span>Cronômetro por aluno</span>
+          </div>
+          <div class="title-lg">Aplicação online em acompanhamento</div>
+          <p class="muted">A prova já está visível no portal do aluno enquanto permanecer ativa.</p>
+        </div>
+        <div class="meta">
+          <div class="meta-box">
+            <div class="lbl">Menor tempo restante</div>
+            <div class="val" style="color:var(--primary)">⏱ 56:47</div>
+            <div class="subtle">1 cronômetro individual em andamento</div>
+          </div>
+        </div>
+      </div>
+      <div class="btns">
+        <button class="btn primary">▶ Iniciar prova</button>
+        <button class="btn">⏸ Pausar</button>
+        <button class="btn">⏱ Sala de espera</button>
+        <button class="btn">＋5 min</button>
+        <button class="btn">✈ Aviso turma</button>
+        <button class="btn ghost">Finalizar</button>
+      </div>
+    </div>
+    <div class="banner warn">
+      <span>⚠️</span>
+      <div class="txt"><strong>Incoerências:</strong> o status diz “Finalizada”, mas o cronômetro continua correndo, o subtítulo diz “em acompanhamento”, e <strong>“Iniciar prova / Pausar / +5 min / Finalizar” seguem ativos</strong> como se a prova estivesse viva.</div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="top"><span class="k">Alunos</span></div><div class="v">16</div></div>
+      <div class="stat"><div class="top"><span class="k">Online</span></div><div class="v success">1</div></div>
+      <div class="stat"><div class="top"><span class="k">Iniciaram</span></div><div class="v danger">1</div></div>
+      <div class="stat"><div class="top"><span class="k">Entregaram</span></div><div class="v info">0</div></div>
+      <div class="stat"><div class="top"><span class="k">Alertas</span></div><div class="v warning">0</div><div class="sub">15 ausentes</div></div>
+    </div>
+    <p class="note">→ Números ainda “ao vivo”; tabela com botões Tempo/Msg ativos; nada indica que a aplicação encerrou.</p>
+  </div>
+
+  <!-- ================= PROPOSTO ================= -->
+  <div id="proposto" class="panel">
+    <div class="banner info">
+      <span>✓</span>
+      <div class="txt"><strong>Aplicação encerrada</strong> em 16/jul/2026, 14:32 · <strong>1</strong> entregou · <strong>15</strong> não entregaram (marcados ausentes). Os cronômetros foram congelados e o portal do aluno foi bloqueado.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div>
+          <div class="row">
+            <span class="badge b-info"><span class="dot"></span>Finalizada</span>
+            <span class="badge b-neutral">Cronômetro por aluno</span>
+            <span class="badge b-neutral">Somente leitura</span>
+          </div>
+          <div class="title-lg">Aplicação encerrada — pronta para correção</div>
+          <p class="muted">A prova não está mais visível para os alunos. Nenhuma resposta pode ser enviada.</p>
+        </div>
+        <div class="meta">
+          <div class="meta-box">
+            <div class="lbl">Duração da aplicação</div>
+            <div class="val">03:13</div>
+            <div class="subtle">encerrada · cronômetros parados</div>
+          </div>
+        </div>
+      </div>
+      <!-- Ações do estado terminal: só o que faz sentido depois da prova -->
+      <div class="btns">
+        <button class="btn primary">📊 Ver resultados</button>
+        <button class="btn">✅ Liberar notas</button>
+        <button class="btn">🕘 Histórico msgs</button>
+        <button class="btn">📈 Analytics</button>
+        <button class="btn ghost">⇄ Trocar aplicação</button>
+      </div>
+      <p class="note">Controles de operação ao vivo (Iniciar, Pausar, +5 min, Sala de espera, Aviso, Finalizar) foram <strong>removidos</strong> — não fazem sentido numa prova encerrada.</p>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="top"><span class="k">Alunos</span></div><div class="v">16</div><div class="sub">total da turma</div></div>
+      <div class="stat"><div class="top"><span class="k">Iniciaram</span></div><div class="v">1</div><div class="sub">final</div></div>
+      <div class="stat"><div class="top"><span class="k">Entregaram</span></div><div class="v info">1</div><div class="sub">auto-entrega no corte</div></div>
+      <div class="stat"><div class="top"><span class="k">Não entregaram</span></div><div class="v warning">15</div><div class="sub">ausentes</div></div>
+      <div class="stat"><div class="top"><span class="k">Alertas</span></div><div class="v">0</div><div class="sub">registrados</div></div>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead>
+          <tr><th>Aluno</th><th>Versão</th><th>Progresso</th><th>Situação</th><th>Ações</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><div class="name">Alice Aluna</div><div class="email">aluno@teste.local</div></td>
+            <td>B</td><td>7/10</td>
+            <td><span class="badge b-success"><span class="dot"></span>Entregou</span></td>
+            <td><span class="act"><span class="chip">Ver respostas</span><span class="chip">Corrigir</span></span></td>
+          </tr>
+          <tr>
+            <td><div class="name">Bruno Souza</div><div class="email">bruno.souza@teste.local</div></td>
+            <td>A</td><td>0/10</td>
+            <td><span class="badge b-neutral"><span class="dot"></span>Não entregou</span></td>
+            <td><span class="act"><span class="chip disabled">Ver respostas</span></span></td>
+          </tr>
+          <tr>
+            <td><div class="name">Carla Mendes</div><div class="email">carla.mendes@teste.local</div></td>
+            <td>A</td><td>0/10</td>
+            <td><span class="badge b-neutral"><span class="dot"></span>Não entregou</span></td>
+            <td><span class="act"><span class="chip disabled">Ver respostas</span></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Tabela em modo leitura: sem “Msg” e sem “Tempo” (não há prova viva). No lugar: <strong>Ver respostas / Corrigir</strong>. Situação por aluno vira Entregou / Não entregou.</p>
+
+    <div class="callout">
+      <h3>Fluxo de estados</h3>
+      <p>Rascunho → <span style="color:var(--warning)">Preparada</span> → <span style="color:var(--success)">Em andamento</span> → (Pausada) → <span style="color:var(--info)">Finalizada (terminal, somente leitura)</span></p>
+    </div>
+  </div>
+</div>
+
+<script>
+  function show(id){
+    document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    document.getElementById('tab-atual').classList.toggle('active', id==='atual');
+    document.getElementById('tab-proposto').classList.toggle('active', id==='proposto');
+  }
+</script>
+</body>
+</html>

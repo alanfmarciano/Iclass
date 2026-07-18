@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup v3 · Dashboard — IClass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+/* ============================================================
+   TOKENS — espelham web/src/styles/tokens.css (produção)
+   Nenhum hex novo foi inventado.
+   ============================================================ */
+:root,[data-theme='dark']{
+  color-scheme:dark;
+  --primary:#ff4d57; --primary-hover:#ff6670; --primary-fg:#160507;
+  --primary-soft:rgba(255,77,87,.14); --primary-glow:rgba(255,77,87,.22);
+  --bg:#090b10; --surface:#11141c; --surface-2:#191e29; --surface-raised:#171b25;
+  --border:rgba(255,255,255,.075); --border-strong:rgba(255,255,255,.13);
+  --text:#f5f7fb; --text-muted:#a8b0bf; --text-subtle:#727d90;
+  --success:#43d99a; --success-soft:rgba(67,217,154,.12);
+  --danger:#ff6670;  --danger-soft:rgba(255,102,112,.12);
+  --warning:#ffbd5c; --warning-soft:rgba(255,189,92,.12);
+  --info:#63b3ff;    --info-soft:rgba(99,179,255,.12);
+  --early:#c08cff;   --early-soft:rgba(192,140,255,.14);
+  --shadow-card:0 1px 0 rgba(255,255,255,.035) inset,0 18px 44px rgba(0,0,0,.18);
+}
+[data-theme='light']{
+  color-scheme:light;
+  --primary:#e54850; --primary-hover:#cc353e; --primary-fg:#fff;
+  --primary-soft:rgba(229,72,80,.09); --primary-glow:rgba(229,72,80,.14);
+  --bg:#f4f5f7; --surface:#fff; --surface-2:#f0f2f5; --surface-raised:#fff;
+  --border:rgba(22,28,45,.085); --border-strong:rgba(22,28,45,.14);
+  --text:#171a21; --text-muted:#596273; --text-subtle:#8790a0;
+  --success:#16875f; --success-soft:rgba(22,135,95,.09);
+  --danger:#cf3943;  --danger-soft:rgba(207,57,67,.09);
+  --warning:#a5650c; --warning-soft:rgba(165,101,12,.10);
+  --info:#176fba;    --info-soft:rgba(23,111,186,.09);
+  --early:#7c3aed;   --early-soft:rgba(124,58,237,.10);
+  --shadow-card:0 1px 2px rgba(22,28,45,.06),0 12px 32px rgba(22,28,45,.05);
+}
+/* escala de espaçamento formalizada (de filosofia-visual / mockup-lucida) */
+:root{--sp-1:8px;--sp-2:16px;--sp-3:24px;--sp-4:40px;--sp-5:64px;
+      --r-sm:8px;--r-md:12px;--r-lg:16px;--r-xl:22px;}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-font-smoothing:antialiased}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-size:14px;line-height:1.5;padding:var(--sp-4) var(--sp-3) 96px;
+  background-image:radial-gradient(circle at 78% -10%,var(--primary-soft),transparent 28rem);
+}
+.wrap{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:var(--sp-3)}
+.tnum{font-variant-numeric:tabular-nums}
+
+/* ---------- rótulo de museu (importado de Lúcida) ---------- */
+.eyebrow{font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+         color:var(--text-subtle);display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.eyebrow .rule{flex:1;height:1px;background:var(--border)}
+.eyebrow .cta{letter-spacing:0;text-transform:none;font-size:12px;font-weight:500;
+              color:var(--primary);text-decoration:none;white-space:nowrap}
+
+/* ---------- superfícies ---------- */
+.card{background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 96%,white 4%),var(--surface));
+      border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow-card)}
+.pad{padding:var(--sp-2) 20px}
+a.card,button.card{display:block;width:100%;text-align:left;cursor:pointer;font:inherit;color:inherit;
+      text-decoration:none;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .25s}
+a.card:hover,button.card:hover{transform:translateY(-3px);border-color:var(--border-strong)}
+
+/* ---------- header ---------- */
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap}
+h1{font-size:28px;font-weight:600;letter-spacing:-.03em;line-height:1.1}
+.head .ctx{margin-top:6px;font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.head .ctx .dot{width:3px;height:3px;border-radius:50%;background:var(--text-subtle)}
+.tools{display:flex;gap:8px;align-items:center}
+.btn{display:inline-flex;align-items:center;gap:7px;height:38px;padding:0 15px;border-radius:var(--r-md);
+     border:1px solid var(--border);background:var(--surface);color:var(--text);
+     font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+.btn:hover{background:var(--surface-2);border-color:var(--border-strong)}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+.btn.primary:hover{background:var(--primary-hover)}
+.btn.icon{width:38px;padding:0;justify-content:center}
+
+/* alerta de acesso negado (obrigatório — dashboard é fallback do app) */
+.alert{border:1px solid var(--warning-soft);background:var(--warning-soft);border-radius:var(--r-md);
+       padding:12px 16px;font-size:13px;color:var(--text);display:flex;gap:10px;align-items:center}
+
+/* ---------- FAIXA AGORA ---------- */
+.now{display:grid;grid-template-columns:1.5fr 1.2fr 1fr;gap:1px;background:var(--border);
+     border:1px solid var(--border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow-card)}
+.now>*{background:var(--surface);padding:18px 20px;display:flex;flex-direction:column;gap:4px;
+       text-decoration:none;color:inherit;transition:background .15s}
+a.nowcell:hover{background:var(--surface-2)}
+.now .k{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-subtle)}
+.now .v{font-size:17px;font-weight:600;letter-spacing:-.02em;margin-top:4px}
+.now .s{font-size:12.5px;color:var(--text-muted)}
+.now .act{margin-top:10px;font-size:12.5px;font-weight:600;color:var(--primary);display:flex;align-items:center;gap:6px}
+.pulse{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
+.pulse.on{background:var(--success);animation:p 1.8s ease-in-out infinite}
+.pulse.off{background:var(--text-subtle)}
+@keyframes p{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}
+.livepill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;
+          font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+          background:var(--danger-soft);color:var(--danger);align-self:flex-start}
+
+/* ---------- fila de ação ---------- */
+.queue{display:flex;flex-direction:column}
+.qrow{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--border);
+      text-decoration:none;color:inherit;transition:background .15s;cursor:pointer}
+.qrow:last-child{border-bottom:0}
+.qrow:hover{background:var(--surface-2)}
+.qico{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none;font-size:15px}
+.qico.danger{background:var(--danger-soft);color:var(--danger)}
+.qico.warning{background:var(--warning-soft);color:var(--warning)}
+.qico.info{background:var(--info-soft);color:var(--info)}
+.qico.early{background:var(--early-soft);color:var(--early)}
+.qico.neutral{background:var(--surface-2);color:var(--text-subtle)}
+.qtxt{flex:1;min-width:0}
+.qtxt .t{font-size:13.5px;font-weight:500}
+.qtxt .d{font-size:12px;color:var(--text-subtle);margin-top:2px}
+.qn{font-size:19px;font-weight:600;letter-spacing:-.02em;flex:none}
+.qn.danger{color:var(--danger)} .qn.warning{color:var(--warning)}
+.qn.info{color:var(--info)} .qn.early{color:var(--early)} .qn.muted{color:var(--text-subtle)}
+.chev{color:var(--text-subtle);flex:none;font-size:14px}
+
+/* ---------- pulso (3 métricas com tendência) ---------- */
+.pulse-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-2)}
+.metric{padding:18px 20px}
+.metric .k{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-subtle)}
+.metric .row{display:flex;align-items:flex-end;gap:10px;margin-top:10px}
+.metric .v{font-size:34px;font-weight:600;letter-spacing:-.04em;line-height:1}
+.metric .v .u{font-size:16px;color:var(--text-muted);font-weight:500;margin-left:1px}
+.trend{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;
+       padding:3px 8px;border-radius:999px;margin-bottom:3px}
+.trend.up{background:var(--success-soft);color:var(--success)}
+.trend.down{background:var(--danger-soft);color:var(--danger)}
+.trend.flat{background:var(--surface-2);color:var(--text-subtle)}
+.metric .base{font-size:11.5px;color:var(--text-subtle);margin-top:8px;line-height:1.45}
+.spark{display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:14px}
+.spark i{flex:1;border-radius:2px;background:var(--surface-2);position:relative}
+.spark i b{position:absolute;left:0;right:0;bottom:0;border-radius:2px;display:block}
+
+/* ---------- lista de alunos com motivos ---------- */
+.srow{display:flex;align-items:flex-start;gap:14px;padding:14px 20px;border-bottom:1px solid var(--border);
+      cursor:pointer;transition:background .15s;text-decoration:none;color:inherit}
+.srow:last-child{border-bottom:0}
+.srow:hover{background:var(--surface-2)}
+.av{width:36px;height:36px;border-radius:50%;background:var(--primary-soft);color:var(--primary);
+    display:grid;place-items:center;font-size:12px;font-weight:600;flex:none;margin-top:1px}
+.sinfo{flex:1;min-width:0}
+.sname{font-size:14px;font-weight:500;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.reasons{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.reason{font-size:11.5px;padding:3px 9px;border-radius:var(--r-sm);background:var(--surface-2);
+        color:var(--text-muted);border:1px solid var(--border);white-space:nowrap}
+.reason.danger{background:var(--danger-soft);color:var(--danger);border-color:transparent}
+.reason.warning{background:var(--warning-soft);color:var(--warning);border-color:transparent}
+.reason.early{background:var(--early-soft);color:var(--early);border-color:transparent}
+.badge{font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:999px;letter-spacing:.04em;
+       text-transform:uppercase;flex:none}
+.badge.alto{background:var(--danger-soft);color:var(--danger)}
+.badge.medio{background:var(--warning-soft);color:var(--warning)}
+.stepper{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden}
+.stepper button{background:none;border:0;color:var(--text-muted);padding:4px 9px;cursor:pointer;font-size:13px}
+.stepper button:hover{color:var(--text);background:var(--surface-2)}
+.stepper span{font-size:12.5px;padding:0 5px}
+
+/* ---------- frequência por disciplina ---------- */
+.disc{display:flex;flex-direction:column;gap:14px;padding:var(--sp-2) 20px 20px}
+.dline .dtop{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:7px}
+.dline .dn{font-size:13px}
+.dline .dv{font-size:13px;font-weight:600}
+.dline .dm{font-size:11.5px;color:var(--text-subtle);margin-left:6px;font-weight:400}
+.track{height:2px;background:var(--border);border-radius:2px;position:relative}
+.track b{position:absolute;left:0;top:-2px;height:6px;border-radius:3px;display:block}
+.limiar{position:absolute;top:-5px;width:1px;height:12px;background:var(--text-subtle);opacity:.55}
+
+/* ---------- agenda ---------- */
+.ev{display:flex;gap:14px;padding:12px 20px;border-bottom:1px solid var(--border);align-items:center;
+    text-decoration:none;color:inherit;transition:background .15s}
+.ev:last-child{border-bottom:0} .ev:hover{background:var(--surface-2)}
+.evd{width:44px;flex:none;text-align:center}
+.evd .dd{font-size:17px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.evd .dw{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-subtle);margin-top:3px}
+.evb{flex:1;min-width:0;border-left:2px solid var(--border);padding-left:14px}
+.evb.prova{border-color:var(--primary)} .evb.entrega{border-color:var(--warning)}
+.evb.aula{border-color:var(--info)} .evb.reuniao{border-color:var(--early)}
+.evb .t{font-size:13.5px;font-weight:500}
+.evb .s{font-size:12px;color:var(--text-subtle);margin-top:2px}
+
+/* ---------- estado vazio (padrão Lúcida: linha, não caixa) ---------- */
+.empty{display:flex;align-items:center;gap:16px;padding:18px 20px}
+.empty .eico{width:34px;height:34px;border-radius:10px;background:var(--surface-2);
+             border:1px solid var(--border);display:grid;place-items:center;flex:none;color:var(--text-subtle)}
+.empty .h{font-size:14px;font-weight:500}
+.empty .s{font-size:12.5px;color:var(--text-subtle);margin-top:2px}
+
+/* ---------- rodapé de qualidade de dados ---------- */
+.dq{display:flex;align-items:flex-start;gap:14px;padding:16px 20px;border-radius:var(--r-lg);
+    border:1px dashed var(--border-strong);background:transparent}
+.dq .h{font-size:13px;font-weight:600;margin-bottom:6px}
+.dq ul{list-style:none;display:flex;flex-direction:column;gap:5px}
+.dq li{font-size:12.5px;color:var(--text-muted);display:flex;gap:8px;align-items:baseline}
+.dq li::before{content:'';width:4px;height:4px;border-radius:50%;background:var(--text-subtle);flex:none;transform:translateY(-2px)}
+.dq a{color:var(--primary);text-decoration:none}
+
+/* ---------- notas de design do mockup ---------- */
+.designnote{border-left:2px solid var(--primary);background:var(--primary-soft);
+            padding:12px 16px;border-radius:0 var(--r-sm) var(--r-sm) 0;font-size:12.5px;line-height:1.6;color:var(--text)}
+.designnote b{color:var(--primary)}
+.legend{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-2)}
+.legend .col .h{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px}
+.legend .col.out .h{color:var(--danger)} .legend .col.in .h{color:var(--success)}
+.legend .col.keep .h{color:var(--info)}
+.legend li{font-size:12.5px;color:var(--text-muted);list-style:none;padding:5px 0;
+           border-bottom:1px solid var(--border);line-height:1.45}
+.legend li:last-child{border:0}
+
+@media(max-width:1080px){
+  .now{grid-template-columns:1fr} .pulse-grid{grid-template-columns:1fr}
+  .split{grid-template-columns:1fr!important} .legend{grid-template-columns:1fr}
+}
+.split{display:grid;grid-template-columns:1.35fr 1fr;gap:var(--sp-2);align-items:start}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ HEADER ============ -->
+  <div class="head">
+    <div>
+      <h1>Dashboard</h1>
+      <div class="ctx">
+        <span>1DES — Manhã</span><span class="dot"></span>
+        <span>Curso Técnico em TI</span><span class="dot"></span>
+        <span>16 alunos</span><span class="dot"></span>
+        <span>sexta, 18 de julho</span>
+      </div>
+    </div>
+    <div class="tools">
+      <button class="btn icon" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'" aria-label="Alternar tema">◐</button>
+      <button class="btn">Exportar</button>
+      <button class="btn primary">Lançar chamada</button>
+    </div>
+  </div>
+
+  <div class="alert"><span>⚠</span> Sua conta não possui permissão para abrir essa tela.
+    <span style="color:var(--text-subtle);font-size:12px;margin-left:auto">(o Dashboard é o destino de acesso negado — este bloco não pode sumir)</span></div>
+
+  <!-- ============ AGORA ============ -->
+  <div>
+    <div class="eyebrow">Agora <span class="rule"></span></div>
+    <div class="now">
+      <a class="nowcell" href="#">
+        <div class="k">Aula em andamento</div>
+        <div class="v">2ª aula · Lógica de Programação</div>
+        <div class="s">08:50 – 09:40 · tolerância de 10 min</div>
+        <div class="act">Chamada ainda não lançada →</div>
+      </a>
+      <a class="nowcell" href="#">
+        <div class="k">Aplicação de prova</div>
+        <div class="empty" style="padding:0;margin-top:8px">
+          <div class="eico">○</div>
+          <div>
+            <div class="h" style="font-size:14px">Nenhuma prova em andamento</div>
+            <div class="s">A próxima está agendada para 22/07</div>
+          </div>
+        </div>
+      </a>
+      <div class="nowcell">
+        <div class="k">Alunos conectados</div>
+        <div class="v tnum"><span class="pulse off"></span> 0</div>
+        <div class="s">nos últimos 5 minutos</div>
+        <div class="s" style="margin-top:8px;color:var(--text-subtle)">Último acesso há 2 h</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="designnote">
+    <b>Por que esta faixa abre a tela.</b> Nenhuma outra tela do sistema responde “o que está acontecendo
+    agora nesta turma”. A aula corrente vem de <code>classes.attendanceConfig.grade</code>, a aplicação de
+    <code>examApplications.status</code> (FSM completa com <code>startedAt</code>/<code>endsAt</code>), e a
+    presença de <code>sessions</code>. Os três já existem no backend e nenhum aparece hoje.
+    “0 conectados” agora vem com janela (“últimos 5 min”) e com a última leitura conhecida — sem isso,
+    o zero é indistinguível de “o servidor reiniciou” (<code>sessions</code> não é persistido).
+  </div>
+
+  <!-- ============ PRECISA DE VOCÊ ============ -->
+  <div class="split">
+    <div>
+      <div class="eyebrow">Precisa de você <span class="rule"></span>
+        <a class="cta" href="#">Configurar alertas</a></div>
+      <div class="card queue">
+        <a class="qrow" href="#">
+          <div class="qico danger">◷</div>
+          <div class="qtxt"><div class="t">Chamada de hoje não concluída</div>
+            <div class="d">2 de 4 aulas do dia sem lançamento · Chamada</div></div>
+          <div class="qn danger tnum">2</div><span class="chev">→</span>
+        </a>
+        <a class="qrow" href="#">
+          <div class="qico warning">◎</div>
+          <div class="qtxt"><div class="t">Dúvidas sem resposta há mais de 24 h</div>
+            <div class="d">tempo médio atual de resposta: 9 h · Fórum</div></div>
+          <div class="qn warning tnum">4</div><span class="chev">→</span>
+        </a>
+        <a class="qrow" href="#">
+          <div class="qico info">◇</div>
+          <div class="qtxt"><div class="t">Alunos sem nenhuma avaliação</div>
+            <div class="d">nunca entregaram prova neste curso · Resultados</div></div>
+          <div class="qn info tnum">4</div><span class="chev">→</span>
+        </a>
+        <a class="qrow" href="#">
+          <div class="qico early">◈</div>
+          <div class="qtxt"><div class="t">Solicitações de matrícula pendentes</div>
+            <div class="d">visível apenas para administrador · Matrículas</div></div>
+          <div class="qn early tnum">2</div><span class="chev">→</span>
+        </a>
+        <a class="qrow" href="#">
+          <div class="qico neutral">◌</div>
+          <div class="qtxt"><div class="t">Conteúdo da unidade 4 ainda bloqueado</div>
+            <div class="d">a prova dessa unidade está agendada para 22/07 · Materiais</div></div>
+          <div class="qn muted tnum">3</div><span class="chev">→</span>
+        </a>
+      </div>
+    </div>
+
+    <div>
+      <div class="eyebrow">Próximos 7 dias <span class="rule"></span>
+        <a class="cta" href="#">Calendário</a></div>
+      <div class="card">
+        <a class="ev" href="#">
+          <div class="evd"><div class="dd tnum">21</div><div class="dw">seg</div></div>
+          <div class="evb aula"><div class="t">Entrega do projeto prático</div>
+            <div class="s">Boss Fight · unidade 3</div></div>
+        </a>
+        <a class="ev" href="#">
+          <div class="evd"><div class="dd tnum">22</div><div class="dw">ter</div></div>
+          <div class="evb prova"><div class="t">Avaliação — Unidade 4</div>
+            <div class="s">montada, ainda não aplicada · 20 questões</div></div>
+        </a>
+        <a class="ev" href="#">
+          <div class="evd"><div class="dd tnum">24</div><div class="dw">qui</div></div>
+          <div class="evb reuniao"><div class="t">Conselho de classe</div>
+            <div class="s">14:00 · sala dos professores</div></div>
+        </a>
+        <div class="empty" style="border-top:1px solid var(--border)">
+          <div class="eico">＋</div>
+          <div><div class="h">Nada mais agendado nesta semana</div>
+            <div class="s">Eventos criados no Calendário aparecem aqui</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="designnote">
+    <b>Esta é a seção que justifica a tela existir.</b> Cada linha é uma pendência com destino clicável —
+    atendendo o critério de aceite do <code>AI_CONTEXT_MELHORADO.md</code> §7 (“cards devem abrir telas
+    relacionadas”). Nada aqui é duplicata: “dúvidas &gt;24h” vem do Fórum, “matrículas” do badge do sidebar,
+    “sem avaliação” cruza <code>students</code> × <code>submissions</code>, e “conteúdo bloqueado perto da prova”
+    cruza <code>classes.releasedItems</code> com <code>examApplications.startsAt</code> — um cruzamento que
+    <b>nenhuma tela faz hoje</b>. A linha de matrícula é escondida para professor (<code>page.matriculas</code>).
+  </div>
+
+  <!-- ============ PULSO DA TURMA ============ -->
+  <div>
+    <div class="eyebrow">Pulso da turma <span class="rule"></span>
+      <a class="cta" href="#">Ver resultados</a></div>
+    <div class="pulse-grid">
+
+      <div class="card metric">
+        <div class="k">Frequência</div>
+        <div class="row"><div class="v tnum">86<span class="u">%</span></div>
+          <span class="trend down">▼ 3 p.p.</span></div>
+        <div class="base">13 de 16 alunos com chamada lançada · comparado a junho</div>
+        <div class="spark" aria-hidden="true">
+          <i><b style="height:78%;background:var(--success)"></b></i>
+          <i><b style="height:88%;background:var(--success)"></b></i>
+          <i><b style="height:92%;background:var(--success)"></b></i>
+          <i><b style="height:84%;background:var(--success)"></b></i>
+          <i><b style="height:71%;background:var(--warning)"></b></i>
+          <i><b style="height:66%;background:var(--warning)"></b></i>
+        </div>
+      </div>
+
+      <div class="card metric">
+        <div class="k">Média das provas</div>
+        <div class="row"><div class="v tnum">7,8</div>
+          <span class="trend up">▲ 0,4</span></div>
+        <div class="base">72 provas de 12 alunos avaliados · somente 1DES</div>
+        <div class="spark" aria-hidden="true">
+          <i><b style="height:60%;background:var(--info)"></b></i>
+          <i><b style="height:68%;background:var(--info)"></b></i>
+          <i><b style="height:64%;background:var(--info)"></b></i>
+          <i><b style="height:75%;background:var(--info)"></b></i>
+          <i><b style="height:79%;background:var(--info)"></b></i>
+          <i><b style="height:84%;background:var(--info)"></b></i>
+        </div>
+      </div>
+
+      <div class="card metric">
+        <div class="k">Engajamento</div>
+        <div class="row"><div class="v tnum">11<span class="u">/16</span></div>
+          <span class="trend flat">= igual</span></div>
+        <div class="base">acessaram o material nos últimos 7 dias · 3 sem acesso há +14 dias</div>
+        <div class="spark" aria-hidden="true">
+          <i><b style="height:55%;background:var(--early)"></b></i>
+          <i><b style="height:70%;background:var(--early)"></b></i>
+          <i><b style="height:62%;background:var(--early)"></b></i>
+          <i><b style="height:68%;background:var(--early)"></b></i>
+          <i><b style="height:69%;background:var(--early)"></b></i>
+          <i><b style="height:69%;background:var(--early)"></b></i>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="designnote">
+    <b>Três números, não oito — e todos com tendência.</b> A tela atual tem 4 StatCards sem contexto temporal:
+    um número solto não diz se a turma está melhorando ou piorando, que é a única pergunta que importa numa
+    visão geral. <code>studentAnalytics.js:161-173</code> <b>já calcula</b> mês atual vs. anterior
+    (<code>temporal</code>) e <code>:132-144</code> já calcula engajamento por semana — nada disso aparece hoje.
+    As 6 barras são as 6 semanas de <code>engajamento.weeks</code>.
+    Sumiram daqui: “Provas realizadas” (é da tela Provas) e a distribuição em 4 faixas (é da tela Resultados).
+  </div>
+
+  <!-- ============ ALUNOS + DISCIPLINAS ============ -->
+  <div class="split">
+    <div>
+      <div class="eyebrow">Alunos que precisam de atenção <span class="rule"></span>
+        <span class="stepper"><button>−</button><span class="tnum">5</span><button>+</button></span></div>
+      <div class="card">
+        <a class="srow" href="#">
+          <span class="av">AM</span>
+          <div class="sinfo">
+            <div class="sname">Alan Marciano <span class="badge alto">alto</span></div>
+            <div class="reasons">
+              <span class="reason danger">1 presença em 6 aulas · 17%</span>
+              <span class="reason">nenhuma prova entregue</span>
+              <span class="reason warning">sem acesso há 16 dias</span>
+            </div>
+          </div><span class="chev">→</span>
+        </a>
+        <a class="srow" href="#">
+          <span class="av">MB</span>
+          <div class="sinfo">
+            <div class="sname">Marina Bastos <span class="badge medio">médio</span></div>
+            <div class="reasons"><span class="reason warning">média 6,2 — abaixo de 6,0 em 2 módulos</span></div>
+          </div><span class="chev">→</span>
+        </a>
+        <a class="srow" href="#">
+          <span class="av">EF</span>
+          <div class="sinfo">
+            <div class="sname">Elisa Ferreira <span class="badge medio">médio</span></div>
+            <div class="reasons">
+              <span class="reason early">68% em Banco de Dados — abaixo do limiar</span>
+              <span class="reason">90% geral</span>
+            </div>
+          </div><span class="chev">→</span>
+        </a>
+        <div class="empty" style="border-top:1px solid var(--border)">
+          <div class="eico">◇</div>
+          <div><div class="h">3 alunos não puderam ser avaliados</div>
+            <div class="s">sem chamada lançada — não entram como 0%, entram como sem dado</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="eyebrow">Frequência por disciplina <span class="rule"></span>
+        <a class="cta" href="#">Chamada</a></div>
+      <div class="card">
+        <div class="disc">
+          <div class="dline">
+            <div class="dtop"><span class="dn">Lógica de Programação</span>
+              <span class="dv tnum">94%<span class="dm">17/18 aulas</span></span></div>
+            <div class="track"><b style="width:94%;background:var(--success)"></b><i class="limiar" style="left:75%"></i></div>
+          </div>
+          <div class="dline">
+            <div class="dtop"><span class="dn">Redes de Computadores</span>
+              <span class="dv tnum">89%<span class="dm">16/18 aulas</span></span></div>
+            <div class="track"><b style="width:89%;background:var(--success)"></b><i class="limiar" style="left:75%"></i></div>
+          </div>
+          <div class="dline">
+            <div class="dtop"><span class="dn">Banco de Dados</span>
+              <span class="dv tnum" style="color:var(--danger)">68%<span class="dm">12/18 aulas</span></span></div>
+            <div class="track"><b style="width:68%;background:var(--danger)"></b><i class="limiar" style="left:75%"></i></div>
+          </div>
+        </div>
+        <div class="empty" style="border-top:1px solid var(--border)">
+          <div class="eico">⚠</div>
+          <div><div class="h">207 de 223 registros sem disciplina</div>
+            <div class="s">chamadas antigas, anteriores à grade por aula — não entram neste recorte</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="designnote">
+    <b>Uma lista com motivos, não duas listas com números.</b> Hoje há dois cards separados —
+    “mais faltas” e “precisam de atenção” — e o Alan aparece nos dois. Pior: o card de risco mostra
+    <code>riscoLevel</code> mas descarta <code>risco.reasons</code>, que o backend
+    <b>já devolve em texto</b> (<code>studentAnalytics.js:119-130</code>). O professor via “alto” sem saber por quê.
+    Agora cada aluno traz seus motivos reais, e a falta aparece como motivo — não como lista própria.
+    O mesmo vale para <code>disciplinasEmRisco</code>, que chega no payload e é ignorado
+    (<code>DashboardPage.jsx:98-107</code>): virou o painel da direita, com o traço do limiar da turma marcado.
+  </div>
+
+  <!-- ============ QUALIDADE DOS DADOS ============ -->
+  <div class="dq">
+    <div class="qico neutral" style="width:34px;height:34px">◍</div>
+    <div style="flex:1">
+      <div class="h">O que está faltando lançar</div>
+      <ul>
+        <li>3 alunos sem nenhuma chamada registrada — ficam fora de todos os números acima <a href="#">Lançar chamada →</a></li>
+        <li>207 registros de presença sem disciplina — a frequência por matéria cobre só 16 registros</li>
+        <li>1 aplicação de prova finalizada sem entrega de 4 alunos <a href="#">Ver aplicação →</a></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="designnote">
+    <b>Um dashboard escolar precisa dizer no que ele não confia.</b> Este bloco existe porque o sistema
+    tem lacunas reais de preenchimento, e o critério de aceite é explícito: “nunca mostrar números falsos”.
+    É mais honesto — e mais acionável — declarar a lacuna do que diluí-la numa média.
+  </div>
+
+  <!-- ============ RESUMO DAS DECISÕES ============ -->
+  <div>
+    <div class="eyebrow">Resumo das decisões <span class="rule"></span></div>
+    <div class="card pad legend">
+      <div class="col out">
+        <div class="h">Saiu — duplicava outra tela</div>
+        <ul>
+          <li><b>Média geral</b> (StatCard) e <b>Panorama de desempenho</b> com as 4 faixas → Resultados já tem os mesmos 4 cards e o histograma</li>
+          <li><b>Provas realizadas</b> → Provas já conta total/ativas/finalizadas/não aplicadas</li>
+          <li><b>Card “Resumo da turma”</b> com 4 números soltos → virou Pulso, com tendência</li>
+          <li><b>Lista separada de faltosos</b> → falta virou motivo dentro da lista única</li>
+        </ul>
+      </div>
+      <div class="col in">
+        <div class="h">Entrou — dado que já existe e ninguém mostra</div>
+        <ul>
+          <li><b>Aula corrente + estado da chamada</b> — de <code>attendanceConfig.grade</code></li>
+          <li><b>Fila de pendências</b> com destino clicável</li>
+          <li><b>Motivos do risco</b> — <code>risco.reasons</code>, já calculado e descartado</li>
+          <li><b>Frequência por disciplina</b> — <code>disciplinasEmRisco</code> chega no payload e é ignorado</li>
+          <li><b>Tendência mês a mês</b> — <code>temporal</code> e <code>engajamento.weeks</code>, nunca exibidos</li>
+          <li><b>Agenda de 7 dias</b> — <code>announcements</code> tipo calendário + <code>examApplications</code></li>
+          <li><b>Bloco de qualidade de dados</b></li>
+        </ul>
+      </div>
+      <div class="col keep">
+        <div class="h">Ficou — funcionava</div>
+        <ul>
+          <li><b>Alerta de acesso negado</b> — obrigatório, o Dashboard é o fallback do app inteiro</li>
+          <li><b>Contexto curso · turma no header</b></li>
+          <li><b>Steppers com preferência persistida</b> (<code>dashboard.riskCount</code>)</li>
+          <li><b>Lista de alunos clicável</b> → <code>/alunos/:id</code></li>
+          <li><b>Contagem de alunos e presença online</b>, agora com janela de tempo</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

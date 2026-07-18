@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IClass — Agenda do Curso</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111f;
+      --surface: #101b2f;
+      --surface-2: #16233a;
+      --border: #263650;
+      --text: #f4f7fb;
+      --muted: #a8b4c8;
+      --subtle: #71809a;
+      --primary: #ff4655;
+      --primary-hover: #ff5b68;
+      --blue: #5b8def;
+      --green: #33c98b;
+      --yellow: #f4b740;
+      --purple: #a879f7;
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, select, input, textarea { font: inherit; }
+    button { color: inherit; }
+
+    .app { min-height: 100vh; display: grid; grid-template-columns: 236px minmax(0, 1fr); }
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: #0b1526;
+      padding: 24px 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 24px; font-size: 18px; font-weight: 800; }
+    .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--primary); }
+    .nav-label { padding: 8px 12px; color: var(--subtle); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .nav { display: grid; gap: 4px; }
+    .nav a { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 9px; color: var(--muted); text-decoration: none; }
+    .nav a:hover { background: var(--surface-2); color: var(--text); }
+    .nav a.active { background: rgba(255,70,85,.14); color: #ff8790; font-weight: 700; }
+
+    main { min-width: 0; padding: 28px; }
+    .page { max-width: 1480px; margin: 0 auto; }
+    .page-head, .toolbar, .toolbar-group, .title-row { display: flex; align-items: center; }
+    .page-head { justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
+    .subtitle { margin: 3px 0 0; color: var(--muted); }
+    .title-row { gap: 10px; }
+
+    .btn {
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--surface-2);
+      padding: 8px 13px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .btn:hover { border-color: #3b506f; }
+    .btn.primary { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .btn.primary:hover { background: var(--primary-hover); }
+    .btn.icon { min-width: 38px; padding-inline: 9px; }
+
+    .toolbar {
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: var(--radius) var(--radius) 0 0;
+      background: var(--surface);
+    }
+    .toolbar-group { gap: 8px; }
+    .month-title { min-width: 166px; margin: 0 8px; font-size: 17px; text-align: center; }
+    select {
+      height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--surface-2);
+      color: var(--text);
+      padding: 0 34px 0 11px;
+    }
+    .view-switch { display: flex; padding: 3px; border-radius: 9px; background: var(--surface-2); }
+    .view-switch button { border: 0; border-radius: 7px; background: transparent; padding: 6px 10px; color: var(--muted); cursor: pointer; }
+    .view-switch button.active { background: #263650; color: var(--text); }
+
+    .content { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 16px; }
+    .calendar-shell { min-width: 0; }
+    .calendar { border: 1px solid var(--border); border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; background: var(--surface); }
+    .weekdays, .days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+    .weekdays { border-bottom: 1px solid var(--border); background: #0e192b; }
+    .weekday { padding: 10px; color: var(--subtle); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-align: center; text-transform: uppercase; }
+    .day {
+      min-height: 128px;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 8px;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .day:nth-child(7n) { border-right: 0; }
+    .day:nth-last-child(-n+7) { border-bottom: 0; }
+    .day:hover { background: rgba(255,255,255,.025); }
+    .day.other { color: #536179; background: #0d1728; }
+    .day.today { box-shadow: inset 0 0 0 2px rgba(255,70,85,.7); }
+    .day-number { width: 26px; height: 26px; display: grid; place-items: center; margin-bottom: 6px; border-radius: 50%; font-size: 12px; font-weight: 700; }
+    .today .day-number { background: var(--primary); color: #fff; }
+    .event { display: block; width: 100%; margin-top: 4px; border: 0; border-left: 3px solid; border-radius: 5px; padding: 5px 6px; overflow: hidden; background: var(--surface-2); color: var(--text); text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-size: 11px; }
+    .event:hover { filter: brightness(1.15); }
+    .event.prova { border-color: var(--primary); background: rgba(255,70,85,.12); }
+    .event.aula { border-color: var(--blue); background: rgba(91,141,239,.13); }
+    .event.entrega { border-color: var(--yellow); background: rgba(244,183,64,.12); }
+    .event.aviso { border-color: var(--purple); background: rgba(168,121,247,.13); }
+    .event.reuniao { border-color: var(--green); background: rgba(51,201,139,.12); }
+
+    .aside { display: grid; align-content: start; gap: 14px; }
+    .panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 16px; }
+    .panel h2 { margin: 0 0 13px; font-size: 15px; }
+    .next-event { padding: 11px 0; border-top: 1px solid var(--border); }
+    .next-event:first-of-type { border-top: 0; padding-top: 0; }
+    .date-chip { display: inline-flex; margin-bottom: 5px; color: var(--primary-hover); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .next-event strong { display: block; font-size: 13px; }
+    .next-event p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .legend { display: grid; gap: 9px; }
+    .legend span { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; }
+
+    dialog { width: min(520px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: 15px; background: var(--surface); color: var(--text); padding: 0; box-shadow: 0 24px 80px rgba(0,0,0,.55); }
+    dialog::backdrop { background: rgba(0,7,18,.72); backdrop-filter: blur(3px); }
+    .dialog-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+    .dialog-head h2 { margin: 0; font-size: 18px; }
+    .dialog-body { display: grid; gap: 14px; padding: 20px; }
+    .field { display: grid; gap: 6px; }
+    .field label { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .field input, .field textarea, .field select { width: 100%; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); color: var(--text); padding: 10px 11px; }
+    .field textarea { min-height: 88px; resize: vertical; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 20px 20px; }
+
+    @media (max-width: 1050px) {
+      .app { grid-template-columns: 76px minmax(0, 1fr); }
+      .sidebar { padding-inline: 10px; }
+      .brand { justify-content: center; padding-inline: 0; }
+      .brand-name, .nav-label, .nav a span:last-child { display: none; }
+      .nav a { justify-content: center; }
+      .content { grid-template-columns: 1fr; }
+      .aside { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 700px) {
+      .app { display: block; }
+      .sidebar { display: none; }
+      main { padding: 16px; }
+      .page-head { align-items: flex-start; }
+      .content { display: block; }
+      .aside { margin-top: 14px; grid-template-columns: 1fr; }
+      .day { min-height: 90px; padding: 5px; }
+      .event { font-size: 0; height: 8px; padding: 0; border-left-width: 0; }
+      .form-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">I</span><span class="brand-name">IClass</span></div>
+      <div class="nav-label">Curso</div>
+      <nav class="nav">
+        <a href="#"><span>⌂</span><span>Visão geral</span></a>
+        <a href="#"><span>▤</span><span>Conteúdos</span></a>
+        <a class="active" href="#"><span>▦</span><span>Agenda do curso</span></a>
+        <a href="#"><span>✓</span><span>Provas</span></a>
+        <a href="#"><span>♙</span><span>Alunos</span></a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="page">
+        <header class="page-head">
+          <div>
+            <div class="title-row"><h1>Agenda do curso</h1></div>
+            <p class="subtitle">Organize aulas, provas, entregas, avisos e compromissos da turma.</p>
+          </div>
+          <button class="btn primary" id="newEvent">＋ Novo evento</button>
+        </header>
+
+        <div class="content">
+          <section class="calendar-shell">
+            <div class="toolbar">
+              <div class="toolbar-group">
+                <button class="btn" id="today">Hoje</button>
+                <button class="btn icon" id="prev" aria-label="Mês anterior">‹</button>
+                <button class="btn icon" id="next" aria-label="Próximo mês">›</button>
+                <strong class="month-title" id="monthTitle">Julho de 2026</strong>
+              </div>
+              <div class="toolbar-group">
+                <select aria-label="Turma"><option>Todas as turmas</option><option>1DES — Manhã</option><option>2DES — Tarde</option></select>
+                <div class="view-switch"><button class="active">Mês</button><button>Semana</button><button>Lista</button></div>
+              </div>
+            </div>
+
+            <div class="calendar">
+              <div class="weekdays">
+                <div class="weekday">Dom</div><div class="weekday">Seg</div><div class="weekday">Ter</div><div class="weekday">Qua</div><div class="weekday">Qui</div><div class="weekday">Sex</div><div class="weekday">Sáb</div>
+              </div>
+              <div class="days" id="days"></div>
+            </div>
+          </section>
+
+          <aside class="aside">
+            <section class="panel">
+              <h2>Próximos compromissos</h2>
+              <div class="next-event"><span class="date-chip">Hoje · 19h</span><strong>Aula — FECOP</strong><p>Laboratório 2 · 1DES</p></div>
+              <div class="next-event"><span class="date-chip">15 jul · 23h59</span><strong>Entrega do projeto integrador</strong><p>Prazo final · todas as turmas</p></div>
+              <div class="next-event"><span class="date-chip">18 jul · 09h</span><strong>Avaliação de IRCOM</strong><p>Online · duração de 60 minutos</p></div>
+              <div class="next-event"><span class="date-chip">22 jul · 14h</span><strong>Reunião de acompanhamento</strong><p>Sala de reuniões</p></div>
+            </section>
+            <section class="panel">
+              <h2>Tipos de evento</h2>
+              <div class="legend">
+                <span><i class="dot" style="background:var(--blue)"></i>Aula</span>
+                <span><i class="dot" style="background:var(--primary)"></i>Prova</span>
+                <span><i class="dot" style="background:var(--yellow)"></i>Entrega</span>
+                <span><i class="dot" style="background:var(--purple)"></i>Aviso</span>
+                <span><i class="dot" style="background:var(--green)"></i>Reunião</span>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="eventDialog">
+    <form method="dialog" id="eventForm">
+      <div class="dialog-head"><h2>Novo evento</h2><button class="btn icon" value="cancel" aria-label="Fechar">×</button></div>
+      <div class="dialog-body">
+        <div class="field"><label for="eventTitle">Título</label><input id="eventTitle" required placeholder="Ex.: Avaliação de FECOP"></div>
+        <div class="form-row">
+          <div class="field"><label for="eventDate">Data</label><input id="eventDate" type="date" required value="2026-07-13"></div>
+          <div class="field"><label for="eventTime">Horário</label><input id="eventTime" type="time" value="19:00"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label for="eventType">Tipo</label><select id="eventType"><option value="aula">Aula</option><option value="prova">Prova</option><option value="entrega">Entrega</option><option value="aviso">Aviso</option><option value="reuniao">Reunião</option></select></div>
+          <div class="field"><label for="eventClass">Turma</label><select id="eventClass"><option>Todas as turmas</option><option>1DES — Manhã</option><option>2DES — Tarde</option></select></div>
+        </div>
+        <div class="field"><label for="eventDescription">Descrição ou instruções</label><textarea id="eventDescription" placeholder="Informações que o aluno verá..."></textarea></div>
+      </div>
+      <div class="dialog-actions"><button class="btn" value="cancel">Cancelar</button><button class="btn primary" id="saveEvent" value="default">Salvar evento</button></div>
+    </form>
+  </dialog>
+
+  <script>
+    const monthTitle = document.querySelector('#monthTitle');
+    const days = document.querySelector('#days');
+    const dialog = document.querySelector('#eventDialog');
+    const dateInput = document.querySelector('#eventDate');
+    const titleInput = document.querySelector('#eventTitle');
+    const typeInput = document.querySelector('#eventType');
+    let viewDate = new Date(2026, 6, 1);
+    const events = [
+      { date: '2026-07-06', type: 'aviso', title: 'Aviso: troca de laboratório' },
+      { date: '2026-07-08', type: 'aula', title: '19h · Aula de FECOP' },
+      { date: '2026-07-13', type: 'aula', title: '19h · Aula — FECOP' },
+      { date: '2026-07-15', type: 'entrega', title: 'Entrega do projeto integrador' },
+      { date: '2026-07-18', type: 'prova', title: '09h · Avaliação de IRCOM' },
+      { date: '2026-07-22', type: 'reuniao', title: '14h · Reunião de acompanhamento' },
+      { date: '2026-07-27', type: 'aviso', title: 'Início do módulo FUTEC' },
+      { date: '2026-07-30', type: 'entrega', title: 'Prazo: atividade FUTEC' }
+    ];
+
+    const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    function render() {
+      const year = viewDate.getFullYear(), month = viewDate.getMonth();
+      monthTitle.textContent = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(viewDate).replace(/^./, c => c.toUpperCase());
+      const first = new Date(year, month, 1), start = new Date(year, month, 1 - first.getDay());
+      days.innerHTML = '';
+      for (let i = 0; i < 42; i++) {
+        const date = new Date(start); date.setDate(start.getDate() + i);
+        const key = iso(date);
+        const cell = document.createElement('div');
+        cell.className = `day${date.getMonth() !== month ? ' other' : ''}${key === '2026-07-13' ? ' today' : ''}`;
+        cell.innerHTML = `<span class="day-number">${date.getDate()}</span>`;
+        events.filter(e => e.date === key).forEach(e => {
+          const item = document.createElement('button');
+          item.className = `event ${e.type}`; item.textContent = e.title;
+          item.onclick = ev => ev.stopPropagation();
+          cell.appendChild(item);
+        });
+        cell.onclick = () => { dateInput.value = key; dialog.showModal(); titleInput.focus(); };
+        days.appendChild(cell);
+      }
+    }
+
+    document.querySelector('#prev').onclick = () => { viewDate.setMonth(viewDate.getMonth()-1); render(); };
+    document.querySelector('#next').onclick = () => { viewDate.setMonth(viewDate.getMonth()+1); render(); };
+    document.querySelector('#today').onclick = () => { viewDate = new Date(2026, 6, 1); render(); };
+    document.querySelector('#newEvent').onclick = () => dialog.showModal();
+    document.querySelector('#saveEvent').onclick = event => {
+      if (!titleInput.value.trim() || !dateInput.value) return;
+      event.preventDefault();
+      events.push({ date: dateInput.value, type: typeInput.value, title: titleInput.value.trim() });
+      viewDate = new Date(`${dateInput.value}T12:00:00`);
+      titleInput.value = '';
+      dialog.close(); render();
+    };
+    render();
+  </script>
+</body>
+</html>

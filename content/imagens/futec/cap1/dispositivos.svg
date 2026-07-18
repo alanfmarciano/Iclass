@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <rect width="800" height="500" fill="#1a1a2e"/>
+  
+  <text x="400" y="30" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="bold">TIPOS DE DISPOSITIVOS COMPUTACIONAIS</text>
+  
+  <!-- Row 1 -->
+  <!-- Servidor -->
+  <rect x="30" y="60" width="140" height="140" rx="8" fill="#2c3e50" stroke="#e94560" stroke-width="2"/>
+  <rect x="45" y="80" width="110" height="40" rx="3" fill="#0f3460"/>
+  <circle cx="65" cy="100" r="5" fill="#27ae60"/>
+  <circle cx="85" cy="100" r="5" fill="#27ae60"/>
+  <circle cx="105" cy="100" r="5" fill="#f39c12"/>
+  <rect x="45" y="130" width="110" height="8" rx="2" fill="#34495e"/>
+  <rect x="45" y="145" width="110" height="8" rx="2" fill="#34495e"/>
+  <text x="100" y="175" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle" font-weight="bold">Servidor</text>
+  <text x="100" y="190" font-family="Arial" font-size="9" fill="#888" text-anchor="middle">Datacenter</text>
+  
+  <!-- Tablet -->
+  <rect x="190" y="70" width="80" height="120" rx="8" fill="#2c3e50" stroke="#60a5fa" stroke-width="2"/>
+  <rect x="198" y="85" width="64" height="90" rx="4" fill="#0f3460"/>
+  <circle cx="230" cy="130" r="4" fill="#34495e"/>
+  <rect x="225" y="175" width="10" height="25" rx="2" fill="#34495e"/>
+  <text x="230" y="205" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle" font-weight="bold">Tablet</text>
+  <text x="230" y="220" font-family="Arial" font-size="9" fill="#888" text-anchor="middle">Industrial</text>
+  
+  <!-- E-reader -->
+  <rect x="290" y="80" width="70" height="100" rx="5" fill="#2c3e50" stroke="#f39c12" stroke-width="2"/>
+  <rect x="298" y="95" width="54" height="70" rx="3" fill="#ecf0f1"/>
+  <line x1="305" y1="110" x2="345" y2="110" stroke="#bdc3c7" stroke-width="2"/>
+  <line x1="305" y1="120" x2="340" y2="120" stroke="#bdc3c7" stroke-width="2"/>
+  <line x1="305" y1="130" x2="345" y2="130" stroke="#bdc3c7" stroke-width="2"/>
+  <rect x="315" y="150" width="20" height="20" rx="3" fill="#34495e"/>
+  <text x="325" y="195" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">E-Reader</text>
+  <text x="325" y="210" font-family="Arial" font-size="8" fill="#888" text-anchor="middle">Kindle</text>
+  
+  <!-- Smartglasses -->
+  <rect x="380" y="75" width="120" height="50" rx="25" fill="#2c3e50" stroke="#9b59b6" stroke-width="2"/>
+  <rect x="400" y="85" width="40" height="30" rx="5" fill="#0f3460"/>
+  <rect x="440" y="85" width="40" height="30" rx="5" fill="#0f3460"/>
+  <text x="440" y="145" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">Smartglasses</text>
+  <text x="440" y="160" font-family="Arial" font-size="8" fill="#888" text-anchor="middle">Realidade Aumentada</text>
+  
+  <!-- Thin Client -->
+  <rect x="520" y="80" width="100" height="80" rx="5" fill="#2c3e50" stroke="#27ae60" stroke-width="2"/>
+  <rect x="535" y="90" width="70" height="30" rx="3" fill="#34495e"/>
+  <circle cx="555" cy="105" r="3" fill="#27ae60"/>
+  <circle cx="570" cy="105" r="3" fill="#e74c3c"/>
+  <rect x="530" y="125" width="80" height="25" rx="2" fill="#0f3460"/>
+  <text x="570" y="175" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">Thin Client</text>
+  <text x="570" y="190" font-family="Arial" font-size="8" fill="#888" text-anchor="middle">Sem disco local</text>
+  
+  <!-- PLC -->
+  <rect x="640" y="65" width="130" height="140" rx="5" fill="#f39c12" stroke="#e67e22" stroke-width="2"/>
+  <rect x="650" y="75" width="110" height="30" rx="3" fill="#d35400"/>
+  <text x="705" y="95" font-family="Courier" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">PLC</text>
+  <rect x="650" y="115" width="35" height="20" rx="2" fill="#27ae60"/>
+  <text x="667" y="130" font-family="Arial" font-size="8" fill="#fff">I0</text>
+  <rect x="695" y="115" width="35" height="20" rx="2" fill="#e74c3c"/>
+  <text x="712" y="130" font-family="Arial" font-size="8" fill="#fff">Q0</text>
+  <rect x="650" y="145" width="35" height="20" rx="2" fill="#27ae60"/>
+  <text x="667" y="160" font-family="Arial" font-size="8" fill="#fff">I1</text>
+  <rect x="695" y="145" width="35" height="20" rx="2" fill="#e74c3c"/>
+  <text x="712" y="160" font-family="Arial" font-size="8" fill="#fff">Q1</text>
+  <text x="705" y="195" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">CLP Industrial</text>
+  <text x="705" y="212" font-family="Arial" font-size="8" fill="#888" text-anchor="middle">Controle de Máquinas</text>
+  
+  <!-- Row 2 - Descriptions -->
+  <rect x="30" y="220" width="740" height="260" rx="8" fill="#16213e"/>
+  
+  <text x="50" y="250" font-family="Arial" font-size="13" fill="#e94560" font-weight="bold">1. Servidor Dedicado</text>
+  <text x="180" y="250" font-family="Arial" font-size="11" fill="#a8d8ff">Robustos, operam 24/7 em datacenters. Sem interface de vídeo, focados em transações de banco de dados.</text>
+  
+  <text x="50" y="280" font-family="Arial" font-size="13" fill="#60a5fa" font-weight="bold">2. Tablet Industrial</text>
+  <text x="180" y="280" font-family="Arial" font-size="11" fill="#a8d8ff">Substituem pranchetas analógicas. Usados por fiscais e engenheiros para validação geo-referenciada.</text>
+  
+  <text x="50" y="310" font-family="Arial" font-size="13" fill="#f39c12" font-weight="bold">3. E-reader</text>
+  <text x="180" y="310" font-family="Arial" font-size="11" fill="#a8d8ff">Tela E-ink sem fadiga visual. Bateria dura meses. Perfeitos para manuais de 2.000 páginas.</text>
+  
+  <text x="50" y="340" font-family="Arial" font-size="13" fill="#9b59b6" font-weight="bold">4. Smartglasses</text>
+  <text x="180" y="340" font-family="Arial" font-size="11" fill="#a8d8ff">Realidade aumentada corporativa. Projetam hologramas sobre equipamentos para guiar reparos.</text>
+  
+  <text x="50" y="370" font-family="Arial" font-size="13" fill="#27ae60" font-weight="bold">5. Thin Client</text>
+  <text x="180" y="370" font-family="Arial" font-size="11" fill="#a8d8ff">Computação 100% em servidor remoto. Nenhum dado local - segurança máxima.</text>
+  
+  <text x="50" y="400" font-family="Arial" font-size="13" fill="#e67e22" font-weight="bold">6. PLC</text>
+  <text x="180" y="400" font-family="Arial" font-size="11" fill="#a8d8ff">Controlam máquinas diretamente. Operam em temperaturas extremas (-40°C a +70°C).</text>
+  
+  <text x="50" y="430" font-family="Arial" font-size="13" fill="#e94560" font-weight="bold">7. Smartphone</text>
+  <text x="180" y="430" font-family="Arial" font-size="11" fill="#a8d8ff">Dispositivo mais versátil. Integração com IoT, cameras, GPS, sensors biométricos.</text>
+  
+  <text x="50" y="460" font-family="Arial" font-size="13" fill="#60a5fa" font-weight="bold">8. Desktop</text>
+  <text x="180" y="460" font-family="Arial" font-size="11" fill="#a8d8ff">Estações de trabalho para escritórios. Custo-benefício e facilidade de manutenção.</text>
+</svg>

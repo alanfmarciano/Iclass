@@ -1,0 +1,70 @@
+/* ============================================================
+   ICLASS DESIGN SYSTEM — premium, calm and brandable.
+   BrandingProvider may override the semantic accent tokens.
+   ============================================================ */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --primary: #ff4d57;
+  --primary-hover: #ff6670;
+  --primary-fg: #160507;
+  --primary-soft: rgba(255, 77, 87, .14);
+  --primary-glow: rgba(255, 77, 87, .22);
+  --bg: #090b10;
+  --surface: #11141c;
+  --surface-2: #191e29;
+  --surface-raised: #171b25;
+  --surface-glass: rgba(17, 20, 28, .76);
+  --sidebar: rgba(13, 16, 23, .94);
+  --border: rgba(255, 255, 255, .075);
+  --border-strong: rgba(255, 255, 255, .13);
+  --text: #f5f7fb;
+  --text-muted: #a8b0bf;
+  --text-subtle: #727d90;
+  --success: #43d99a;
+  --success-soft: rgba(67, 217, 154, .12);
+  --danger: #ff6670;
+  --danger-soft: rgba(255, 102, 112, .12);
+  --warning: #ffbd5c;
+  --warning-soft: rgba(255, 189, 92, .12);
+  --info: #63b3ff;
+  --info-soft: rgba(99, 179, 255, .12);
+  /* Saída antecipada — status de presença sem equivalente semântico nos demais tokens. */
+  --early: #c08cff;
+  --early-soft: rgba(192, 140, 255, .14);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .035) inset, 0 18px 44px rgba(0, 0, 0, .18);
+  --shadow-float: 0 1px 0 rgba(255, 255, 255, .06) inset, 0 28px 70px rgba(0, 0, 0, .38);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --primary: #e54850;
+  --primary-hover: #cc353e;
+  --primary-fg: #ffffff;
+  --primary-soft: rgba(229, 72, 80, .09);
+  --primary-glow: rgba(229, 72, 80, .14);
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-raised: #ffffff;
+  --surface-glass: rgba(255, 255, 255, .78);
+  --sidebar: rgba(250, 250, 251, .94);
+  --border: rgba(22, 28, 45, .085);
+  --border-strong: rgba(22, 28, 45, .14);
+  --text: #171a21;
+  --text-muted: #596273;
+  --text-subtle: #8790a0;
+  --success: #16875f;
+  --success-soft: rgba(22, 135, 95, .09);
+  --danger: #cf3943;
+  --danger-soft: rgba(207, 57, 67, .09);
+  --warning: #a5650c;
+  --warning-soft: rgba(165, 101, 12, .1);
+  --info: #176fba;
+  --info-soft: rgba(23, 111, 186, .09);
+  /* Saída antecipada — status de presença sem equivalente semântico nos demais tokens. */
+  --early: #7c3aed;
+  --early-soft: rgba(124, 58, 237, .1);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .8) inset, 0 12px 32px rgba(30, 38, 55, .055);
+  --shadow-float: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 28px 70px rgba(30, 38, 55, .14);
+}

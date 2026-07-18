@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">TIPOS DE COMPUTADORES - DESKTOP, NOTEBOOK E SERVIDORES</text>
+  
+  <!-- Desktop -->
+  <rect x="30" y="60" width="170" height="180" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="115" y="85" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle">🖥️ DESKTOP</text>
+  <text x="115" y="110" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Computador de Mesa</text>
+  
+  <text x="115" y="135" font-family="Arial" font-size="9" fill="#fff">✅ Vantagens:</text>
+  <text x="115" y="150" font-family="Arial" font-size="8" fill="#aaa">• Melhor custo-benefício</text>
+  <text x="115" y="162" font-family="Arial" font-size="8" fill="#aaa">• Fácil upgrade</text>
+  <text x="115" y="174" font-family="Arial" font-size="8" fill="#aaa">• Melhor refrigeração</text>
+  <text x="115" y="186" font-family="Arial" font-size="8" fill="#aaa">• Peças fáceis de trocar</text>
+  
+  <text x="115" y="205" font-family="Arial" font-size="9" fill="#e94560">📌 Uso: Escritórios,</text>
+  <text x="115" y="218" font-family="Arial" font-size="9" fill="#e94560">estações de trabalho</text>
+  
+  <!-- Notebook -->
+  <rect x="215" y="60" width="170" height="180" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="300" y="85" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle">💻 NOTEBOOK</text>
+  <text x="300" y="110" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Laptop / Portátil</text>
+  
+  <text x="300" y="135" font-family="Arial" font-size="9" fill="#fff">✅ Vantagens:</text>
+  <text x="300" y="150" font-family="Arial" font-size="8" fill="#aaa">• Portátil (mobilidade)</text>
+  <text x="300" y="162" font-family="Arial" font-size="8" fill="#aaa">• Bateria integrada</text>
+  <text x="300" y="174" font-family="Arial" font-size="8" fill="#aaa">• Tela e teclado inclusos</text>
+  <text x="300" y="186" font-family="Arial" font-size="8" fill="#aaa">• Wi-Fi integrado</text>
+  
+  <text x="300" y="205" font-family="Arial" font-size="9" fill="#e94560">📌 Uso: Profissionais</text>
+  <text x="300" y="218" font-family="Arial" font-size="9" fill="#e94560">em trânsito, alunos</text>
+  
+  <!-- Server -->
+  <rect x="400" y="60" width="170" height="180" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="485" y="85" font-family="Arial" font-size="14" fill="#fff" text-anchor="middle">🖧 SERVIDOR</text>
+  <text x="485" y="110" font-family="Arial" font-size="10" fill="#aaa" text-anchor="middle">Servidor / Data Center</text>
+  
+  <text x="485" y="135" font-family="Arial" font-size="9" fill="#fff">✅ Vantagens:</text>
+  <text x="485" y="150" font-family="Arial" font-size="8" fill="#aaa">• Alta disponibilidade 24/7</text>
+  <text x="485" y="162" font-family="Arial" font-size="8" fill="#aaa">• redundancy (RAID)</text>
+  <text x="485" y="174" font-family="Arial" font-size="8" fill="#aaa">• Muita RAM e CPU</text>
+  <text x="485" y="186" font-family="Arial" font-size="8" fill="#aaa">• Gerenciamento remoto</text>
+  
+  <text x="485" y="205" font-family="Arial" font-size="9" fill="#e94560">📌 Uso: Hospedar sites,</text>
+  <text x="485" y="218" font-family="Arial" font-size="9" fill="#e94560">bancos de dados, clouds</text>
+  
+  <!-- Specs comparison -->
+  <text x="300" y="275" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">ESPECIFICAÇÕES TÍPICAS (2024-2025)</text>
+  
+  <rect x="30" y="290" width="540" height="90" fill="#16213e" rx="5"/>
+  
+  <text x="160" y="315" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">DESKTOP</text>
+  <text x="160" y="335" font-family="Arial" font-size="9" fill="#aaa">i5/i7 ou Ryzen 5/7</text>
+  <text x="160" y="350" font-family="Arial" font-size="9" fill="#aaa">16-32GB RAM</text>
+  <text x="160" y="365" font-family="Arial" font-size="9" fill="#aaa">SSD 512GB-1TB</text>
+  
+  <text x="300" y="315" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">NOTEBOOK</text>
+  <text x="300" y="335" font-family="Arial" font-size="9" fill="#aaa">i5 ou Ryzen 5</text>
+  <text x="300" y="350" font-family="Arial" font-size="9" fill="#aaa">8-16GB RAM</text>
+  <text x="300" y="365" font-family="Arial" font-size="9" fill="#aaa">SSD 256-512GB</text>
+  
+  <text x="440" y="315" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">SERVIDOR</text>
+  <text x="440" y="335" font-family="Arial" font-size="9" fill="#aaa">Xeon ou EPYC</text>
+  <text x="440" y="350" font-family="Arial" font-size="9" fill="#aaa">64-256GB+ RAM</text>
+  <text x="440" y="365" font-family="Arial" font-size="9" fill="#aaa">RAID de SSDs</text>
+</svg>

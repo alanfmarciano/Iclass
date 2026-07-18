@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avaliação — Visualização Completa</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #15181d;
+    --panel-2: #1b1f26;
+    --border: #262b33;
+    --text: #e7eaee;
+    --text-dim: #9aa3ad;
+    --text-faint: #6b7480;
+    --green: #22c55e;
+    --green-bg: rgba(34,197,94,.14);
+    --green-border: rgba(34,197,94,.4);
+    --red: #ef4444;
+    --red-bg: rgba(239,68,68,.14);
+    --red-border: rgba(239,68,68,.4);
+    --accent: #3b82f6;
+    --radius: 14px;
+    --shadow: 0 20px 60px rgba(0,0,0,.55);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(59,130,246,.07), transparent),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+
+  .modal {
+    width: 100%;
+    max-width: 780px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  /* ---------- Header ---------- */
+  .header {
+    padding: 22px 26px 18px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .header .title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .header h1 {
+    margin: 0;
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: .2px;
+  }
+  .header .subtitle {
+    margin-top: 6px;
+    font-size: 13.5px;
+    color: var(--text-dim);
+  }
+  .badge-archived {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #d6b25e;
+    background: rgba(214,178,94,.12);
+    border: 1px solid rgba(214,178,94,.35);
+    border-radius: 999px;
+  }
+  .close {
+    flex: none;
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: .15s;
+  }
+  .close:hover { background: var(--panel-2); color: var(--text); }
+
+  /* ---------- Summary stats ---------- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    margin: 20px 26px 4px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .stat {
+    background: var(--panel-2);
+    padding: 14px 16px;
+  }
+  .stat .label {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    color: var(--text-faint);
+  }
+  .stat .value {
+    margin-top: 6px;
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .stat .value.good { color: var(--green); }
+
+  /* ---------- Progress bar ---------- */
+  .progress-wrap {
+    margin: 16px 26px 4px;
+  }
+  .progress-info {
+    display: flex; justify-content: space-between;
+    font-size: 12.5px; color: var(--text-dim);
+    margin-bottom: 7px;
+  }
+  .progress-track {
+    height: 8px;
+    background: var(--panel-2);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 50%;
+    background: linear-gradient(90deg, #16a34a, #22c55e);
+    border-radius: 999px;
+  }
+
+  /* ---------- Legend ---------- */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin: 18px 26px 2px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  .legend .item { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .dot.green { background: var(--green); }
+  .dot.red { background: var(--red); }
+  .dot.marked { background: transparent; border: 2px solid var(--accent); }
+
+  /* ---------- Questions ---------- */
+  .questions {
+    padding: 8px 26px 26px;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    color: var(--text-faint);
+    margin: 20px 0 12px;
+  }
+  .question {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 18px 16px;
+    margin-bottom: 14px;
+  }
+  .q-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .q-num {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-dim);
+  }
+  .q-num .n {
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .status-pill {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 999px;
+  }
+  .status-pill.ok {
+    color: var(--green);
+    background: var(--green-bg);
+    border: 1px solid var(--green-border);
+  }
+  .status-pill.err {
+    color: var(--red);
+    background: var(--red-bg);
+    border: 1px solid var(--red-border);
+  }
+  .q-text {
+    font-size: 15px;
+    line-height: 1.5;
+    margin-bottom: 14px;
+    color: var(--text);
+  }
+
+  .options { display: flex; flex-direction: column; gap: 8px; }
+  .option {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 14px;
+    line-height: 1.45;
+    position: relative;
+  }
+  .option .letter {
+    flex: none;
+    width: 24px; height: 24px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12.5px; font-weight: 700;
+    color: var(--text-dim);
+  }
+  .option .opt-text { padding-top: 2px; }
+  .option .tag {
+    margin-left: auto;
+    flex: none;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 999px;
+    align-self: center;
+    white-space: nowrap;
+  }
+
+  /* correct answer */
+  .option.correct {
+    border-color: var(--green-border);
+    background: var(--green-bg);
+  }
+  .option.correct .letter {
+    background: var(--green);
+    border-color: var(--green);
+    color: #08240f;
+  }
+  .option.correct .tag {
+    color: var(--green);
+    background: rgba(34,197,94,.16);
+    border: 1px solid var(--green-border);
+  }
+
+  /* wrong answer chosen by student */
+  .option.wrong {
+    border-color: var(--red-border);
+    background: var(--red-bg);
+  }
+  .option.wrong .letter {
+    background: var(--red);
+    border-color: var(--red);
+    color: #2a0808;
+  }
+  .option.wrong .tag {
+    color: var(--red);
+    background: rgba(239,68,68,.16);
+    border: 1px solid var(--red-border);
+  }
+
+  /* footer */
+  .footer {
+    padding: 16px 26px 22px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  .btn {
+    font-size: 13.5px;
+    font-weight: 600;
+    padding: 9px 18px;
+    border-radius: 9px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    transition: .15s;
+  }
+  .btn:hover { background: #232833; }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn.primary:hover { background: #2f6fd6; }
+
+  @media (max-width: 560px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .header, .questions, .footer { padding-left: 18px; padding-right: 18px; }
+    .stats, .progress-wrap, .legend { margin-left: 18px; margin-right: 18px; }
+  }
+</style>
+</head>
+<body>
+  <div class="modal">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="title-row">
+        <div>
+          <h1>Avaliação_FUTEC_1</h1>
+          <div class="subtitle">Tentativa arquivada e fora do resultado</div>
+          <span class="badge-archived">● Arquivada</span>
+        </div>
+        <button class="close" aria-label="Fechar">✕</button>
+      </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="stats">
+      <div class="stat">
+        <div class="label">Nota</div>
+        <div class="value good">6.0</div>
+      </div>
+      <div class="stat">
+        <div class="label">Resultado</div>
+        <div class="value">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Acertos</div>
+        <div class="value">2/4</div>
+      </div>
+      <div class="stat">
+        <div class="label">Versão</div>
+        <div class="value">A</div>
+      </div>
+    </div>
+
+    <div class="progress-wrap">
+      <div class="progress-info">
+        <span>Aproveitamento</span>
+        <span>50%</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill"></div></div>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+      <span class="item"><span class="dot green"></span> Resposta correta</span>
+      <span class="item"><span class="dot red"></span> Sua resposta (errada)</span>
+    </div>
+
+    <!-- Questions -->
+    <div class="questions">
+      <div class="section-title">Questões da prova</div>
+
+      <!-- Q1 -->
+      <div class="question">
+        <div class="q-head">
+          <span class="q-num"><span class="n">1</span> Questão 1</span>
+          <span class="status-pill ok">Correta</span>
+        </div>
+        <div class="q-text">Qual é a principal função de um sistema de controle de versão como o Git?</div>
+        <div class="options">
+          <div class="option correct">
+            <span class="letter">A</span>
+            <span class="opt-text">Rastrear e gerenciar alterações no código-fonte ao longo do tempo.</span>
+            <span class="tag">Sua resposta · Correta</span>
+          </div>
+          <div class="option">
+            <span class="letter">B</span>
+            <span class="opt-text">Compilar o código automaticamente para produção.</span>
+          </div>
+          <div class="option">
+            <span class="letter">C</span>
+            <span class="opt-text">Hospedar o site em um servidor na nuvem.</span>
+          </div>
+          <div class="option">
+            <span class="letter">D</span>
+            <span class="opt-text">Substituir a necessidade de escrever testes.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Q2 -->
+      <div class="question">
+        <div class="q-head">
+          <span class="q-num"><span class="n">2</span> Questão 2</span>
+          <span class="status-pill ok">Correta</span>
+        </div>
+        <div class="q-text">Em HTML, qual tag é usada para criar um link para outra página?</div>
+        <div class="options">
+          <div class="option">
+            <span class="letter">A</span>
+            <span class="opt-text">&lt;link&gt;</span>
+          </div>
+          <div class="option correct">
+            <span class="letter">B</span>
+            <span class="opt-text">&lt;a&gt;</span>
+            <span class="tag">Sua resposta · Correta</span>
+          </div>
+          <div class="option">
+            <span class="letter">C</span>
+            <span class="opt-text">&lt;href&gt;</span>
+          </div>
+          <div class="option">
+            <span class="letter">D</span>
+            <span class="opt-text">&lt;nav&gt;</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Q3 -->
+      <div class="question">
+        <div class="q-head">
+          <span class="q-num"><span class="n">3</span> Questão 3</span>
+          <span class="status-pill err">Errada</span>
+        </div>
+        <div class="q-text">Qual estrutura de dados segue o princípio FIFO (First In, First Out)?</div>
+        <div class="options">
+          <div class="option wrong">
+            <span class="letter">A</span>
+            <span class="opt-text">Pilha (Stack)</span>
+            <span class="tag">Sua resposta</span>
+          </div>
+          <div class="option">
+            <span class="letter">B</span>
+            <span class="opt-text">Árvore (Tree)</span>
+          </div>
+          <div class="option correct">
+            <span class="letter">C</span>
+            <span class="opt-text">Fila (Queue)</span>
+            <span class="tag">Resposta correta</span>
+          </div>
+          <div class="option">
+            <span class="letter">D</span>
+            <span class="opt-text">Grafo (Graph)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Q4 -->
+      <div class="question">
+        <div class="q-head">
+          <span class="q-num"><span class="n">4</span> Questão 4</span>
+          <span class="status-pill err">Errada</span>
+        </div>
+        <div class="q-text">Em CSS, qual propriedade é usada para alterar a cor do texto de um elemento?</div>
+        <div class="options">
+          <div class="option wrong">
+            <span class="letter">A</span>
+            <span class="opt-text">background-color</span>
+            <span class="tag">Sua resposta</span>
+          </div>
+          <div class="option">
+            <span class="letter">B</span>
+            <span class="opt-text">font-style</span>
+          </div>
+          <div class="option">
+            <span class="letter">C</span>
+            <span class="opt-text">text-align</span>
+          </div>
+          <div class="option correct">
+            <span class="letter">D</span>
+            <span class="opt-text">color</span>
+            <span class="tag">Resposta correta</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <button class="btn">Fechar</button>
+      <button class="btn primary">Baixar prova (PDF)</button>
+    </div>
+
+  </div>
+</body>
+</html>

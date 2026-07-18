@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IClass — Dashboard do Aluno</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111f;
+      --surface: #101b2f;
+      --surface-2: #16233a;
+      --surface-3: #1b2a44;
+      --border: #263650;
+      --text: #f4f7fb;
+      --muted: #a8b4c8;
+      --subtle: #71809a;
+      --primary: #ff4655;
+      --primary-soft: rgba(255,70,85,.13);
+      --blue: #62a1ff;
+      --green: #38d39f;
+      --yellow: #f5bf55;
+      --purple: #a985ff;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0, 1fr); }
+
+    .sidebar { position: sticky; top: 0; height: 100vh; padding: 20px 14px; border-right: 1px solid var(--border); background: #0b1526; }
+    .brand { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; font-size: 18px; font-weight: 800; }
+    .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--primary); color: white; }
+    .profile { display: flex; align-items: center; gap: 10px; margin: 18px 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+    .avatar { width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; background: var(--primary-soft); color: #ff8690; font-weight: 800; }
+    .profile strong, .profile span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .profile span { margin-top: 2px; color: var(--subtle); font-size: 11px; }
+    .nav-label { padding: 9px 12px 7px; color: var(--subtle); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .nav { display: grid; gap: 3px; }
+    .nav a { display: flex; align-items: center; gap: 11px; min-height: 40px; padding: 9px 12px; border-radius: 9px; color: var(--muted); text-decoration: none; }
+    .nav a:hover { background: var(--surface-2); color: var(--text); }
+    .nav a.active { background: var(--primary-soft); color: #ff8992; font-weight: 700; }
+    .nav-icon { width: 18px; text-align: center; }
+    .count { margin-left: auto; min-width: 21px; padding: 2px 6px; border-radius: 99px; background: var(--surface-3); color: var(--muted); font-size: 10px; text-align: center; }
+
+    main { min-width: 0; padding: 26px; }
+    .page { max-width: 1440px; margin: 0 auto; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: 26px; letter-spacing: -.025em; }
+    .subtitle { margin: 3px 0 0; color: var(--muted); }
+    .top-actions { display: flex; align-items: center; gap: 9px; }
+    select, .icon-button { height: 38px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+    select { min-width: 210px; padding: 0 34px 0 12px; }
+    .icon-button { width: 38px; display: grid; place-items: center; }
+
+    .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: center; margin-bottom: 16px; padding: 22px; border: 1px solid var(--border); border-radius: var(--radius); background: linear-gradient(120deg, var(--surface), #121f36); }
+    .eyebrow { margin: 0 0 6px; color: #ff8992; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .hero h2 { margin: 0; font-size: 20px; }
+    .hero p { max-width: 720px; margin: 6px 0 0; color: var(--muted); }
+    .hero-side { min-width: 210px; }
+    .progress-line { display: flex; justify-content: space-between; margin-bottom: 7px; color: var(--muted); font-size: 12px; }
+    .progress { height: 8px; overflow: hidden; border-radius: 99px; background: var(--surface-3); }
+    .progress i { display: block; height: 100%; border-radius: inherit; background: var(--primary); }
+
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .metric { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+    .metric-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+    .metric-icon { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 8px; background: var(--surface-2); }
+    .metric strong { display: block; margin-top: 8px; font-size: 24px; line-height: 1; }
+    .metric small { display: block; margin-top: 6px; color: var(--subtle); }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+
+    .layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, .75fr); gap: 16px; }
+    .stack { display: grid; align-content: start; gap: 16px; }
+    .panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+    .panel-head h2 { margin: 0; font-size: 15px; }
+    .panel-head span, .text-link { color: var(--muted); font-size: 12px; }
+    .text-link { border: 0; background: transparent; }
+    .text-link:hover { color: var(--text); }
+
+    .click-card { width: 100%; border: 0; color: inherit; text-align: left; }
+    .continue { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 18px; background: transparent; }
+    .continue:hover, .module:hover, .agenda-item:hover, .notice:hover { background: rgba(255,255,255,.025); }
+    .material-icon { width: 54px; height: 54px; display: grid; place-items: center; border-radius: 12px; background: var(--primary-soft); color: #ff8992; font-size: 22px; }
+    .continue h3, .module h3 { margin: 0; font-size: 14px; }
+    .continue p, .module p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .continue-progress { margin-top: 10px; }
+    .arrow { color: var(--subtle); font-size: 20px; }
+
+    .modules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .module { min-height: 158px; padding: 17px; border-right: 1px solid var(--border); background: transparent; }
+    .module:last-child { border-right: 0; }
+    .module-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 20px; }
+    .module-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 9px; background: var(--surface-2); color: var(--blue); }
+    .status { padding: 3px 7px; border-radius: 99px; background: rgba(56,211,159,.11); color: var(--green); font-size: 10px; font-weight: 800; }
+    .module .progress { height: 5px; margin-top: 12px; }
+    .module .progress i { background: var(--blue); }
+    .module-score { text-align: right; }
+    .module-score small, .module-score strong { display: block; }
+    .module-score small { color: var(--subtle); font-size: 9px; font-weight: 600; text-transform: uppercase; }
+    .module-score strong { margin-top: 1px; font-size: 17px; }
+    .module-score.pending strong { color: var(--yellow); font-size: 11px; }
+
+    .agenda-list, .notice-list { display: grid; }
+    .agenda-item { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 11px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); background: transparent; }
+    .agenda-item:last-child, .notice:last-child { border-bottom: 0; }
+    .date-box { overflow: hidden; border: 1px solid var(--border); border-radius: 9px; text-align: center; }
+    .date-box b { display: block; padding: 2px; background: var(--primary); color: white; font-size: 9px; text-transform: uppercase; }
+    .date-box strong { display: block; padding: 3px; font-size: 15px; }
+    .agenda-item h3 { margin: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+    .agenda-item p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+    .type-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    .notice { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--border); background: transparent; }
+    .notice-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--surface-2); color: var(--purple); }
+    .notice strong { display: block; font-size: 12px; }
+    .notice p { display: -webkit-box; margin: 3px 0 0; overflow: hidden; color: var(--muted); font-size: 11px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
+    .performance { padding: 16px; }
+    .chart { height: 132px; display: flex; align-items: end; gap: 9px; padding-top: 10px; }
+    .bar-group { flex: 1; min-width: 0; text-align: center; }
+    .bar { width: 100%; max-width: 34px; margin: 0 auto; border-radius: 5px 5px 2px 2px; background: var(--blue); opacity: .85; }
+    .bar-group span { display: block; margin-top: 5px; overflow: hidden; color: var(--subtle); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .grade-summary { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; }
+    .grade-summary i { color: var(--green); font-style: normal; }
+    .subject-grades { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .subject-grade { width: 100%; min-height: 142px; padding: 16px; border: 0; border-right: 1px solid var(--border); background: transparent; color: inherit; text-align: left; }
+    .subject-grade:last-child { border-right: 0; }
+    .subject-grade:hover { background: rgba(255,255,255,.025); }
+    .subject-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .subject-grade h3 { margin: 0; font-size: 13px; }
+    .subject-grade p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+    .grade-value { font-size: 25px; font-weight: 800; line-height: 1; }
+    .grade-value small { color: var(--subtle); font-size: 11px; font-weight: 500; }
+    .grade-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 18px; color: var(--subtle); font-size: 10px; }
+    .grade-track { height: 5px; margin-top: 7px; overflow: hidden; border-radius: 99px; background: var(--surface-3); }
+    .grade-track i { display: block; height: 100%; border-radius: inherit; background: var(--green); }
+    .pending-grade { display: grid; min-height: 83px; place-items: center; margin-top: 10px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); text-align: center; }
+    .pending-grade strong { display: block; color: var(--yellow); font-size: 11px; }
+    .pending-grade span { display: block; margin-top: 3px; font-size: 10px; }
+    .privacy-note { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); color: var(--subtle); font-size: 10px; }
+
+    .toast { position: fixed; right: 22px; bottom: 22px; z-index: 10; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-3); box-shadow: 0 16px 50px rgba(0,0,0,.4); opacity: 0; transform: translateY(10px); transition: .2s; pointer-events: none; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 1120px) {
+      .app { grid-template-columns: 76px minmax(0, 1fr); }
+      .sidebar { padding-inline: 10px; }
+      .brand { justify-content: center; padding: 0; }
+      .brand-name, .profile div, .nav-label, .nav a span:not(.nav-icon), .count { display: none; }
+      .profile { justify-content: center; padding: 8px; }
+      .nav a { justify-content: center; }
+      .layout { grid-template-columns: 1fr; }
+      .stack.right { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 760px) {
+      .app { display: block; }
+      .sidebar { display: none; }
+      main { padding: 16px; }
+      .topbar { align-items: flex-start; }
+      .top-actions select { display: none; }
+      .hero { grid-template-columns: 1fr; }
+      .hero-side { min-width: 0; }
+      .metrics { grid-template-columns: 1fr 1fr; }
+      .modules, .subject-grades, .stack.right { grid-template-columns: 1fr; }
+      .module { border-right: 0; border-bottom: 1px solid var(--border); }
+      .module:last-child { border-bottom: 0; }
+      .subject-grade { border-right: 0; border-bottom: 1px solid var(--border); }
+      .subject-grade:last-child { border-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">I</span><span class="brand-name">IClass</span></div>
+      <div class="profile"><span class="avatar">AM</span><div><strong>Alan Marciano</strong><span>Curso Técnico em TI</span></div></div>
+      <div class="nav-label">Meu curso</div>
+      <nav class="nav">
+        <a class="active" href="#"><span class="nav-icon">⌂</span><span>Início</span></a>
+        <a href="#"><span class="nav-icon">▤</span><span>Módulos</span></a>
+        <a href="#"><span class="nav-icon">▣</span><span>Biblioteca</span></a>
+        <a href="#"><span class="nav-icon">✓</span><span>Provas</span><i class="count">1</i></a>
+        <a href="#"><span class="nav-icon">▧</span><span>Caderno</span></a>
+        <a href="#"><span class="nav-icon">?</span><span>Dúvidas</span></a>
+        <a href="#"><span class="nav-icon">◉</span><span>Avisos</span><i class="count">2</i></a>
+        <a href="#"><span class="nav-icon">▦</span><span>Calendário</span><i class="count">3</i></a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="page">
+        <header class="topbar">
+          <div><h1>Olá, Alan 👋</h1><p class="subtitle">Aqui está o que você precisa acompanhar hoje.</p></div>
+          <div class="top-actions">
+            <select id="courseSelect" aria-label="Curso atual"><option>Curso Técnico em TI — 1DES</option><option>Desenvolvimento Web — 2DES</option></select>
+            <button class="icon-button" aria-label="Alternar tema">☾</button>
+          </div>
+        </header>
+
+        <section class="hero">
+          <div><p class="eyebrow">Seu curso atual</p><h2>Curso Técnico em TI</h2><p>Continue avançando nos módulos FUTEC, FECOP e IRCOM. Você concluiu 17 de 25 tópicos.</p></div>
+          <div class="hero-side"><div class="progress-line"><span>Progresso geral</span><strong>68%</strong></div><div class="progress"><i style="width:68%"></i></div></div>
+        </section>
+
+        <section class="metrics">
+          <article class="metric"><div class="metric-head"><span>Nota geral</span><i class="metric-icon">↗</i></div><strong>8,4</strong><small class="good">Bom desempenho</small></article>
+          <article class="metric"><div class="metric-head"><span>Frequência</span><i class="metric-icon">✓</i></div><strong>92%</strong><small class="good">Presença em dia</small></article>
+          <article class="metric"><div class="metric-head"><span>Atividades concluídas</span><i class="metric-icon">▤</i></div><strong>17/25</strong><small>8 tópicos restantes</small></article>
+          <article class="metric"><div class="metric-head"><span>Pendências</span><i class="metric-icon">!</i></div><strong>3</strong><small class="warn">1 prazo nesta semana</small></article>
+        </section>
+
+        <div class="layout">
+          <div class="stack">
+            <section class="panel">
+              <div class="panel-head"><h2>Continue de onde parou</h2><span>Último acesso hoje, 18:42</span></div>
+              <button class="click-card continue" data-open="Sistemas Operacionais + Dispositivos">
+                <span class="material-icon">▤</span>
+                <span><h3>Sistemas Operacionais + Dispositivos</h3><p>FUTEC · Unidade 1 · Tópico 6 de 8</p><span class="continue-progress progress"><i style="width:75%"></i></span></span>
+                <span class="arrow">›</span>
+              </button>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2>Meus módulos</h2><button class="text-link">Ver todos</button></div>
+              <div class="modules">
+                <button class="click-card module" data-open="FUTEC"><span class="module-top"><i class="module-icon">▤</i><span class="module-score"><small>Nota publicada</small><strong>8,7</strong></span></span><h3>FUTEC</h3><p>8 de 10 tópicos concluídos</p><span class="progress"><i style="width:80%"></i></span></button>
+                <button class="click-card module" data-open="FECOP"><span class="module-top"><i class="module-icon">⌘</i><span class="module-score"><small>Nota publicada</small><strong>8,1</strong></span></span><h3>FECOP</h3><p>6 de 9 tópicos concluídos</p><span class="progress"><i style="width:66%"></i></span></button>
+                <button class="click-card module" data-open="IRCOM"><span class="module-top"><i class="module-icon">⌁</i><span class="module-score pending"><small>Nota</small><strong>Em revisão</strong></span></span><h3>IRCOM</h3><p>3 de 6 tópicos concluídos</p><span class="progress"><i style="width:50%"></i></span></button>
+              </div>
+              <div class="privacy-note">▣ As notas aparecem somente depois da publicação pelo professor.</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2>Seu desempenho</h2><span>Últimas avaliações</span></div>
+              <div class="performance"><div class="chart">
+                <div class="bar-group"><div class="bar" style="height:72%"></div><span>FUTEC 1</span></div>
+                <div class="bar-group"><div class="bar" style="height:84%"></div><span>FECOP 1</span></div>
+                <div class="bar-group"><div class="bar" style="height:78%"></div><span>IRCOM 1</span></div>
+                <div class="bar-group"><div class="bar" style="height:91%;background:var(--green)"></div><span>FUTEC 2</span></div>
+                <div class="bar-group"><div class="bar" style="height:86%;background:var(--green)"></div><span>FECOP 2</span></div>
+              </div></div>
+            </section>
+          </div>
+
+          <div class="stack right">
+            <section class="panel">
+              <div class="panel-head"><h2>Próximos compromissos</h2><button class="text-link">Calendário</button></div>
+              <div class="agenda-list">
+                <button class="click-card agenda-item" data-open="Aula de FECOP"><span class="date-box"><b>Jul</b><strong>13</strong></span><span><h3>Aula de FECOP</h3><p>Hoje · 19h · Laboratório 2</p></span><i class="type-dot" style="background:var(--blue)"></i></button>
+                <button class="click-card agenda-item" data-open="Projeto integrador"><span class="date-box"><b>Jul</b><strong>15</strong></span><span><h3>Entrega do projeto integrador</h3><p>Quarta-feira · até 23h59</p></span><i class="type-dot" style="background:var(--yellow)"></i></button>
+                <button class="click-card agenda-item" data-open="Avaliação de IRCOM"><span class="date-box"><b>Jul</b><strong>18</strong></span><span><h3>Avaliação de IRCOM</h3><p>Sábado · 09h · online</p></span><i class="type-dot" style="background:var(--primary)"></i></button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2>Avisos recentes</h2><button class="text-link">Ver todos</button></div>
+              <div class="notice-list">
+                <button class="click-card notice" data-open="Troca de laboratório"><i class="notice-icon">◉</i><span><strong>Troca de laboratório</strong><p>A aula de hoje acontecerá no Laboratório 2.</p></span></button>
+                <button class="click-card notice" data-open="Material complementar"><i class="notice-icon">▣</i><span><strong>Material complementar disponível</strong><p>Uma nova apostila foi adicionada ao módulo FECOP.</p></span></button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast">Abrindo…</div>
+  <script>
+    const toast = document.querySelector('#toast');
+    let timer;
+    document.querySelectorAll('[data-open]').forEach(card => card.addEventListener('click', () => {
+      toast.textContent = `Abrindo: ${card.dataset.open}`;
+      toast.classList.add('show');
+      clearTimeout(timer); timer = setTimeout(() => toast.classList.remove('show'), 1700);
+    }));
+    document.querySelector('#courseSelect').addEventListener('change', event => {
+      toast.textContent = `Curso selecionado: ${event.target.value}`;
+      toast.classList.add('show');
+      clearTimeout(timer); timer = setTimeout(() => toast.classList.remove('show'), 1700);
+    });
+  </script>
+</body>
+</html>

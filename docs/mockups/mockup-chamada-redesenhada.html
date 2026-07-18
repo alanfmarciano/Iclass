@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chamada · IClass — mockup redesenhado</title>
+<style>
+/* ===========================================================
+   IClass — Chamada por aula (mockup redesenhado)
+   Tokens = design system real do IClass (web/src/styles/tokens.css).
+   Duas visões: Matriz (dia inteiro) e Por aula (foco em sala).
+   Tema claro/escuro via prefers-color-scheme + data-theme.
+   =========================================================== */
+:root{
+  --primary:#e54850; --primary-hover:#cc353e; --primary-fg:#ffffff; --primary-soft:rgba(229,72,80,.09); --primary-glow:rgba(229,72,80,.16);
+  --bg:#f4f5f7; --surface:#ffffff; --surface-2:#f0f2f5; --surface-glass:rgba(255,255,255,.82); --sidebar:rgba(250,250,251,.96);
+  --border:rgba(22,28,45,.085); --border-strong:rgba(22,28,45,.14);
+  --text:#171a21; --text-muted:#596273; --text-subtle:#8790a0;
+  --success:#16875f; --success-soft:rgba(22,135,95,.1); --danger:#cf3943; --danger-soft:rgba(207,57,67,.1);
+  --warning:#a5650c; --warning-soft:rgba(165,101,12,.12); --info:#176fba; --info-soft:rgba(23,111,186,.1);
+  --ink-p:#fff; --ink-f:#fff;
+  --shadow-card:0 1px 0 rgba(255,255,255,.8) inset, 0 12px 32px rgba(30,38,55,.06);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme='light']){
+    --primary:#ff4d57; --primary-hover:#ff6670; --primary-fg:#160507; --primary-soft:rgba(255,77,87,.14); --primary-glow:rgba(255,77,87,.22);
+    --bg:#090b10; --surface:#11141c; --surface-2:#191e29; --surface-glass:rgba(17,20,28,.78); --sidebar:rgba(13,16,23,.96);
+    --border:rgba(255,255,255,.075); --border-strong:rgba(255,255,255,.13);
+    --text:#f5f7fb; --text-muted:#a8b0bf; --text-subtle:#727d90;
+    --success:#43d99a; --success-soft:rgba(67,217,154,.12); --danger:#ff6670; --danger-soft:rgba(255,102,112,.12);
+    --warning:#ffbd5c; --warning-soft:rgba(255,189,92,.12); --info:#63b3ff; --info-soft:rgba(99,179,255,.12);
+    --ink-p:#04140d; --ink-f:#1a0406;
+    --shadow-card:0 1px 0 rgba(255,255,255,.035) inset, 0 18px 44px rgba(0,0,0,.2);
+  }
+}
+:root[data-theme='dark']{
+  --primary:#ff4d57; --primary-hover:#ff6670; --primary-fg:#160507; --primary-soft:rgba(255,77,87,.14); --primary-glow:rgba(255,77,87,.22);
+  --bg:#090b10; --surface:#11141c; --surface-2:#191e29; --surface-glass:rgba(17,20,28,.78); --sidebar:rgba(13,16,23,.96);
+  --border:rgba(255,255,255,.075); --border-strong:rgba(255,255,255,.13);
+  --text:#f5f7fb; --text-muted:#a8b0bf; --text-subtle:#727d90;
+  --success:#43d99a; --success-soft:rgba(67,217,154,.12); --danger:#ff6670; --danger-soft:rgba(255,102,112,.12);
+  --warning:#ffbd5c; --warning-soft:rgba(255,189,92,.12); --info:#63b3ff; --info-soft:rgba(99,179,255,.12);
+  --ink-p:#04140d; --ink-f:#1a0406;
+  --shadow-card:0 1px 0 rgba(255,255,255,.035) inset, 0 18px 44px rgba(0,0,0,.2);
+}
+:root[data-theme='light']{
+  --primary:#e54850; --primary-hover:#cc353e; --primary-fg:#ffffff; --primary-soft:rgba(229,72,80,.09); --primary-glow:rgba(229,72,80,.16);
+  --bg:#f4f5f7; --surface:#ffffff; --surface-2:#f0f2f5; --surface-glass:rgba(255,255,255,.82); --sidebar:rgba(250,250,251,.96);
+  --border:rgba(22,28,45,.085); --border-strong:rgba(22,28,45,.14);
+  --text:#171a21; --text-muted:#596273; --text-subtle:#8790a0;
+  --success:#16875f; --success-soft:rgba(22,135,95,.1); --danger:#cf3943; --danger-soft:rgba(207,57,67,.1);
+  --warning:#a5650c; --warning-soft:rgba(165,101,12,.12); --info:#176fba; --info-soft:rgba(23,111,186,.1);
+  --ink-p:#fff; --ink-f:#fff;
+  --shadow-card:0 1px 0 rgba(255,255,255,.8) inset, 0 12px 32px rgba(30,38,55,.06);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{max-width:100%;overflow-x:hidden}
+body{
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased;
+  min-height:100vh;
+}
+.tnum{font-variant-numeric:tabular-nums}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px;border-radius:6px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ---------- Shell ---------- */
+.app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+.sidebar{
+  background:var(--sidebar);border-right:1px solid var(--border);position:sticky;top:0;height:100vh;
+  display:flex;flex-direction:column;padding:18px 14px;gap:4px;backdrop-filter:blur(12px);
+}
+.brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
+.brand-logo{width:34px;height:34px;border-radius:10px;flex:none;background:linear-gradient(135deg,var(--primary),var(--primary-hover));display:grid;place-items:center;color:var(--primary-fg);font-weight:800;font-size:16px}
+.brand-name{font-weight:700;font-size:16px;letter-spacing:-.02em}
+.brand-sub{font-size:11px;color:var(--text-subtle);font-weight:500}
+.nav-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-subtle);padding:14px 10px 4px;font-weight:600}
+.nav-item{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px;color:var(--text-muted);font-weight:500;font-size:13.5px;width:100%;text-align:left;transition:background .15s,color .15s}
+.nav-item svg{width:18px;height:18px;flex:none;opacity:.85}
+.nav-item:hover{background:var(--surface-2);color:var(--text)}
+.nav-item.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.nav-item.active svg{opacity:1}
+.sidebar-foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--border)}
+.user-chip{display:flex;align-items:center;gap:10px;padding:8px;border-radius:10px;width:100%;text-align:left}
+.user-chip:hover{background:var(--surface-2)}
+
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{position:sticky;top:0;z-index:40;background:var(--surface-glass);backdrop-filter:blur(14px);border-bottom:1px solid var(--border);padding:12px 22px;display:flex;align-items:center;gap:14px}
+.crumbs{font-size:12.5px;color:var(--text-subtle);display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.crumbs b{color:var(--text-muted);font-weight:600}
+.crumbs .sep{opacity:.5}
+.spacer{flex:1}
+.icon-btn{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:var(--text-muted);border:1px solid var(--border);background:var(--surface);transition:.15s}
+.icon-btn:hover{color:var(--text);border-color:var(--border-strong)}
+.icon-btn svg{width:18px;height:18px}
+
+.page{padding:22px 22px 120px;display:flex;flex-direction:column;gap:16px;min-width:0}
+
+/* ---------- Header ---------- */
+.page-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.page-title{font-size:22px;font-weight:700;letter-spacing:-.02em}
+.page-meta{margin-top:6px;color:var(--text-muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text-muted)}
+.chip svg{width:14px;height:14px}
+.chip.date{color:var(--text)}
+.pill-unsaved{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;background:var(--warning-soft);color:var(--warning);font-size:12.5px;font-weight:600}
+.pill-unsaved .dot{width:8px;height:8px;border-radius:50%;background:var(--warning);box-shadow:0 0 0 3px var(--warning-soft)}
+
+/* ---------- Summary ---------- */
+.summary{background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-card);padding:16px 18px;display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+.progress-block{flex:1;min-width:240px}
+.progress-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.progress-top .lbl{font-size:12.5px;color:var(--text-muted);font-weight:600}
+.progress-top .val{font-size:13px;font-weight:700}
+.progress-top .val b{font-size:16px}
+.bar{height:9px;border-radius:999px;background:var(--surface-2);overflow:hidden;display:flex}
+.bar span{display:block;height:100%}
+.b-p{background:var(--success)} .b-f{background:var(--danger)} .b-j{background:var(--primary)}
+.stat-grid{display:flex;gap:12px;flex-wrap:wrap}
+.stat{min-width:96px;padding:10px 14px;border-radius:12px;background:var(--surface-2);border:1px solid var(--border);display:flex;flex-direction:column;gap:2px}
+.stat .n{font-size:20px;font-weight:800;letter-spacing:-.02em;line-height:1}
+.stat .t{font-size:11.5px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:6px}
+.stat .t .mk{width:9px;height:9px;border-radius:3px}
+.stat.p .n{color:var(--success)} .stat.p .mk{background:var(--success)}
+.stat.f .n{color:var(--danger)} .stat.f .mk{background:var(--danger)}
+.stat.j .n{color:var(--primary)} .stat.j .mk{background:var(--primary)}
+.stat.z .n{color:var(--text-subtle)} .stat.z .mk{background:var(--text-subtle)}
+
+/* ---------- Toolbar ---------- */
+.toolbar{position:sticky;top:61px;z-index:30;background:var(--surface-glass);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-card);padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.tb-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tb-label{font-size:12px;color:var(--text-subtle);font-weight:600}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 13px;border-radius:10px;font-size:13px;font-weight:600;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);transition:.15s}
+.btn svg{width:15px;height:15px}
+.btn:hover{border-color:var(--primary);color:var(--primary)}
+.btn.mass-p:hover{border-color:var(--success);color:var(--success);background:var(--success-soft)}
+.btn.mass-f:hover{border-color:var(--danger);color:var(--danger);background:var(--danger-soft)}
+.btn.ghost{border-color:var(--border);color:var(--text-muted)}
+.btn.ghost:hover{color:var(--text);border-color:var(--border-strong)}
+.tb-divider{width:1px;height:24px;background:var(--border-strong);margin:0 2px}
+.search{display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:7px 11px;color:var(--text-subtle);min-width:180px}
+.search svg{width:15px;height:15px;flex:none}
+.search input{border:none;background:none;color:var(--text);font-size:13px;width:100%;outline:none}
+.search input::placeholder{color:var(--text-subtle)}
+
+/* View switch (Matriz / Por aula) */
+.view-switch{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:3px;gap:2px}
+.view-switch button{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:8px;font-size:12.5px;font-weight:700;color:var(--text-subtle);transition:.13s}
+.view-switch button svg{width:15px;height:15px}
+.view-switch button:hover{color:var(--text)}
+.view-switch button.on{background:var(--surface);color:var(--primary);box-shadow:var(--shadow-card)}
+
+/* ---------- Matriz ---------- */
+.matrix-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-card);overflow:hidden}
+.matrix-scroll{overflow-x:auto}
+table.matrix{border-collapse:separate;border-spacing:0;width:100%;min-width:760px}
+table.matrix th,table.matrix td{padding:0}
+thead th{position:sticky;top:0;z-index:12;background:var(--surface-2);border-bottom:1px solid var(--border-strong)}
+th.col-student{left:0;z-index:20;text-align:left;border-right:1px solid var(--border-strong);min-width:238px;width:238px}
+.lesson-h{padding:11px 14px;text-align:center;min-width:132px;border-right:1px solid var(--border)}
+.lesson-num{display:inline-block;font-size:10.5px;font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:6px;padding:1px 7px;margin-bottom:5px}
+.lesson-time{font-size:11px;color:var(--text-subtle);font-weight:600;margin-bottom:2px}
+.lesson-name{font-size:12.5px;font-weight:600;color:var(--text);line-height:1.25}
+.student-head{padding:12px 16px;display:flex;align-items:center;gap:8px}
+.student-head .ttl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-subtle);font-weight:700}
+tr.totals th,tr.totals td{position:sticky;top:0;z-index:11}
+tr.totals th.col-student{z-index:19;background:var(--surface-2)}
+.totals td{background:var(--surface-2);border-bottom:1px solid var(--border-strong);padding:7px 8px;text-align:center}
+.totals .col-student{padding:8px 16px}
+.tot-legend{font-size:11px;color:var(--text-subtle);font-weight:600}
+.tot-mini{display:inline-flex;gap:7px;justify-content:center}
+.tot-mini span{font-size:11px;font-weight:700;padding:2px 6px;border-radius:6px}
+.tot-mini .tp{color:var(--success);background:var(--success-soft)}
+.tot-mini .tf{color:var(--danger);background:var(--danger-soft)}
+.tot-mini .tj{color:var(--primary);background:var(--primary-soft)}
+tbody td{border-bottom:1px solid var(--border);border-right:1px solid var(--border);text-align:center;vertical-align:middle}
+tbody tr:hover td{background:var(--surface-2)}
+td.col-student{position:sticky;left:0;z-index:10;background:var(--surface);border-right:1px solid var(--border-strong);text-align:left}
+tbody tr:hover td.col-student{background:var(--surface-2)}
+.student{display:flex;align-items:center;gap:11px;padding:10px 16px}
+.avatar{width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff;letter-spacing:.02em}
+.a1{background:linear-gradient(135deg,#ff4d57,#ff8a4d)}
+.a2{background:linear-gradient(135deg,#6a7cff,#63b3ff)}
+.a3{background:linear-gradient(135deg,#43d99a,#2bb8c8)}
+.a4{background:linear-gradient(135deg,#c46bff,#7a5cff)}
+.a5{background:linear-gradient(135deg,#ffbd5c,#ff7a59)}
+.a6{background:linear-gradient(135deg,#2bd6c8,#3d9dff)}
+.student-info{min-width:0}
+.student-name{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.student-sub{display:flex;align-items:center;gap:6px;margin-top:2px}
+.mini-status{font-size:11px;font-weight:600;color:var(--text-subtle);display:inline-flex;align-items:center;gap:5px}
+.mini-status .sd{width:7px;height:7px;border-radius:50%;background:var(--text-subtle)}
+.mini-status.ok{color:var(--success)} .mini-status.ok .sd{background:var(--success)}
+.mini-status.miss{color:var(--danger)} .mini-status.miss .sd{background:var(--danger)}
+.mini-status.just{color:var(--primary)} .mini-status.just .sd{background:var(--primary)}
+.unsaved-dot{width:8px;height:8px;border-radius:50%;background:var(--warning);flex:none;box-shadow:0 0 0 3px var(--warning-soft)}
+.cell{padding:8px 10px}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:2px;gap:2px}
+.seg button{width:28px;height:28px;border-radius:7px;font-size:12px;font-weight:800;color:var(--text-subtle);transition:.12s}
+.seg button:hover{color:var(--text);background:var(--border)}
+.seg button.on.p{background:var(--success);color:var(--ink-p)}
+.seg button.on.f{background:var(--danger);color:var(--ink-f)}
+.seg button.on.j{background:var(--primary);color:var(--primary-fg)}
+.cell.dirty{box-shadow:inset 0 0 0 2px var(--warning-soft)}
+
+/* Justificativa */
+.justify-row td{background:var(--info-soft);border-bottom:1px solid var(--border-strong)}
+.justify{padding:14px 18px 16px;display:flex;flex-direction:column;gap:12px}
+.justify-head{display:flex;align-items:center;gap:10px;font-weight:700;font-size:13.5px;color:var(--primary)}
+.justify-head svg{width:17px;height:17px}
+.justify-head .who{color:var(--text-muted);font-weight:500;font-size:12.5px}
+.justify-grid{display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:12px}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-size:11.5px;font-weight:600;color:var(--text-muted)}
+.field .control{background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;padding:8px 11px;font-size:13px;color:var(--text);display:flex;align-items:center;gap:8px;min-height:38px}
+.field .control svg{width:15px;height:15px;color:var(--text-subtle);flex:none}
+.dates{display:flex;gap:8px} .dates .control{flex:1}
+.justify-foot{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.check{display:inline-flex;align-items:center;gap:9px;font-size:13px;font-weight:600;color:var(--text)}
+.check .box{width:20px;height:20px;border-radius:6px;background:var(--primary);border:1px solid var(--primary);display:grid;place-items:center;flex:none}
+.check .box svg{width:13px;height:13px;color:var(--primary-fg)}
+.attach{display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border-radius:9px;background:var(--surface);border:1px solid var(--border-strong);font-size:12.5px;font-weight:600;color:var(--text-muted)}
+.attach svg{width:15px;height:15px;color:var(--info)}
+.attach .rm{color:var(--text-subtle);margin-left:2px}
+
+/* ---------- Por aula (cards) ---------- */
+.lesson-tabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px}
+.lesson-tab{flex:1 1 0;min-width:158px;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 14px;transition:.15s;display:flex;flex-direction:column;gap:3px;box-shadow:var(--shadow-card)}
+.lesson-tab:hover{border-color:var(--border-strong)}
+.lesson-tab .lt-top{display:flex;align-items:center;gap:8px}
+.lesson-tab .ord{font-weight:750;font-size:14.5px}
+.lesson-tab .time{font-size:12px;color:var(--text-subtle);font-weight:600;margin-left:auto}
+.lesson-tab .subj{font-size:12.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lesson-tab .lt-badge{font-size:11px;font-weight:700;color:var(--text-subtle);margin-top:4px}
+.lesson-tab.active{border-color:var(--primary);background:var(--primary-soft);box-shadow:0 0 0 1px var(--primary) inset,0 10px 28px var(--primary-soft)}
+.lesson-tab.active .ord,.lesson-tab.active .lt-badge{color:var(--primary)}
+.lesson-tab.active .subj{color:var(--text)}
+.roster{display:flex;flex-direction:column;gap:10px}
+.rcard{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow-card);display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;transition:.15s}
+.rcard:hover{border-color:var(--border-strong)}
+.rcard.present{box-shadow:inset 4px 0 0 var(--success),var(--shadow-card)}
+.rcard.absent{box-shadow:inset 4px 0 0 var(--danger),var(--shadow-card)}
+.rcard.justi{box-shadow:inset 4px 0 0 var(--primary),var(--shadow-card)}
+.rcard .avatar{width:46px;height:46px;border-radius:50%;font-size:16px}
+.rname{font-weight:700;font-size:15px;letter-spacing:-.01em;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.rsub{font-size:12px;color:var(--text-subtle);margin-top:2px}
+.badge-unsaved{font-size:10.5px;font-weight:700;color:var(--warning);background:var(--warning-soft);padding:2px 9px;border-radius:999px;text-transform:uppercase;letter-spacing:.04em;display:inline-flex;align-items:center;gap:5px}
+.badge-unsaved::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--warning)}
+.rstatus{display:flex;flex-direction:column;align-items:flex-end;gap:9px}
+.rpill{display:inline-flex;align-items:center;gap:8px;padding:8px 15px;border-radius:999px;font-weight:750;font-size:13.5px;white-space:nowrap}
+.rpill svg{width:15px;height:15px}
+.rpill.present{background:var(--success-soft);color:var(--success)}
+.rpill.absent{background:var(--danger-soft);color:var(--danger)}
+.rpill.justi{background:var(--primary-soft);color:var(--primary)}
+.rseg{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:3px;gap:2px}
+.rseg button{font-weight:800;font-size:12.5px;color:var(--text-subtle);padding:8px 14px;border-radius:7px;min-width:42px;transition:.12s}
+.rseg button:hover{color:var(--text)}
+.rseg button.on.p{background:var(--success);color:var(--ink-p)}
+.rseg button.on.f{background:var(--danger);color:var(--ink-f)}
+.rseg button.on.j{background:var(--primary);color:var(--primary-fg)}
+.rcard .just-inline{grid-column:1/-1;margin-top:4px;padding:14px;border-radius:12px;background:var(--info-soft);border:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
+
+/* ---------- Legenda / Savebar ---------- */
+.legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:2px 4px;font-size:12.5px;color:var(--text-muted)}
+.legend .item{display:inline-flex;align-items:center;gap:8px;font-weight:600}
+.legend .k{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-size:11px;font-weight:800}
+.legend .k.p{background:var(--success);color:var(--ink-p)}
+.legend .k.f{background:var(--danger);color:var(--ink-f)}
+.legend .k.j{background:var(--primary);color:var(--primary-fg)}
+.legend .sep{color:var(--text-subtle)}
+
+.savebar{position:sticky;bottom:0;z-index:35;margin:0 -22px -120px;padding:13px 26px;background:var(--surface-glass);backdrop-filter:blur(16px);border-top:1px solid var(--border-strong);display:flex;align-items:center;gap:16px;flex-wrap:wrap;box-shadow:0 -8px 30px rgba(0,0,0,.08)}
+.save-counts{display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:13px;font-weight:600}
+.save-counts .sc{display:inline-flex;align-items:center;gap:7px;color:var(--text-muted)}
+.save-counts .sc b{color:var(--text);font-size:15px}
+.save-counts .dt{width:9px;height:9px;border-radius:3px}
+.save-counts .sc.p .dt{background:var(--success)} .save-counts .sc.f .dt{background:var(--danger)} .save-counts .sc.j .dt{background:var(--primary)}
+.save-status{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--warning)}
+.save-status::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--warning);box-shadow:0 0 0 4px var(--warning-soft)}
+.btn-save{background:var(--primary);color:var(--primary-fg);font-weight:750;font-size:14.5px;padding:12px 24px;border-radius:11px;display:inline-flex;align-items:center;gap:9px;box-shadow:0 8px 22px var(--primary-glow);transition:.15s}
+.btn-save:hover{background:var(--primary-hover)}
+.btn-save svg{width:17px;height:17px}
+
+.hidden{display:none!important}
+.menu-btn{display:none}
+
+/* ---------- Responsivo ---------- */
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .menu-btn{display:grid}
+  th.col-student,td.col-student{min-width:172px;width:172px}
+  .student-name{max-width:104px}
+  .savebar{margin:0 -16px -120px;padding:12px 16px}
+}
+@media (max-width:640px){
+  .page{padding:14px 16px 120px}
+  .topbar{padding:10px 14px}
+  .justify-grid{grid-template-columns:1fr}
+  .rcard{grid-template-columns:auto 1fr;gap:12px}
+  .rstatus{grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between;width:100%}
+  .save-counts{order:2;width:100%;justify-content:space-between}
+  .btn-save{order:1;flex:1;justify-content:center}
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">iC</div>
+      <div><div class="brand-name">IClass</div><div class="brand-sub">Portal do Professor</div></div>
+    </div>
+    <div class="nav-label">Ensino</div>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Dashboard</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Provas</button>
+    <button class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Chamada</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M17 8.5a3 3 0 0 1 0 5"/><path d="M18.5 20a5.5 5.5 0 0 0-3-4.9"/></svg>Alunos</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>Avisos</button>
+    <div class="sidebar-foot">
+      <button class="user-chip">
+        <div class="avatar a1" style="width:32px;height:32px;border-radius:9px;font-size:12px">AM</div>
+        <div style="min-width:0"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Prof. Alan Marciano</div><div style="font-size:11px;color:var(--text-subtle)">Técnico em TI</div></div>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" aria-label="Abrir menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg></button>
+      <nav class="crumbs"><span>Chamada</span><span class="sep">/</span><b>Curso Técnico em TI (Legado)</b><span class="sep">/</span><b>1DES</b></nav>
+      <div class="spacer"></div>
+      <button class="icon-btn" id="themeToggle" title="Alternar tema" aria-label="Alternar tema claro e escuro"></button>
+    </header>
+
+    <main class="page">
+
+      <!-- Header -->
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">Chamada do dia</h1>
+          <div class="page-meta">
+            <span class="chip date"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 2.5v4M16 2.5v4"/></svg>17/07/2026 · Terça</span>
+            <span class="chip">Turma 1DES</span>
+            <span class="chip">12 alunos</span>
+            <span class="chip">4 aulas</span>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <span class="pill-unsaved"><span class="dot"></span>1 alteração não salva</span>
+      </div>
+
+      <!-- Resumo -->
+      <section class="summary">
+        <div class="progress-block">
+          <div class="progress-top"><span class="lbl">Progresso da chamada</span><span class="val tnum"><b>44</b> / 48 registros · 92%</span></div>
+          <div class="bar" role="img" aria-label="73% presenças, 12,5% faltas, 6,5% justificadas">
+            <span class="b-p" style="width:73%"></span><span class="b-f" style="width:12.5%"></span><span class="b-j" style="width:6.5%"></span>
+          </div>
+        </div>
+        <div class="stat-grid">
+          <div class="stat p"><span class="n tnum">35</span><span class="t"><span class="mk"></span>Presenças</span></div>
+          <div class="stat f"><span class="n tnum">6</span><span class="t"><span class="mk"></span>Faltas</span></div>
+          <div class="stat j"><span class="n tnum">3</span><span class="t"><span class="mk"></span>Justificadas</span></div>
+          <div class="stat z"><span class="n tnum">4</span><span class="t"><span class="mk"></span>Pendentes</span></div>
+        </div>
+      </section>
+
+      <!-- Toolbar -->
+      <section class="toolbar">
+        <div class="view-switch" role="tablist" aria-label="Modo de visualização">
+          <button id="vw-matrix" class="on" role="tab" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>Matriz</button>
+          <button id="vw-lesson" role="tab" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="4" rx="1.5"/><rect x="3" y="10" width="18" height="4" rx="1.5"/><rect x="3" y="16" width="18" height="4" rx="1.5"/></svg>Por aula</button>
+        </div>
+        <div class="tb-divider"></div>
+        <div class="tb-group">
+          <span class="tb-label">Marcar todos:</span>
+          <button class="btn mass-p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>Presente</button>
+          <button class="btn mass-f"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6 6 18M6 6l12 12"/></svg>Falta</button>
+        </div>
+        <div class="tb-divider"></div>
+        <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg><input type="text" placeholder="Buscar aluno..." aria-label="Buscar aluno"></label>
+        <div class="spacer"></div>
+        <button class="btn ghost"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Exportar CSV</button>
+      </section>
+
+      <!-- ============ VISÃO: MATRIZ ============ -->
+      <section id="view-matrix">
+        <div class="matrix-card">
+          <div class="matrix-scroll">
+            <table class="matrix">
+              <thead>
+                <tr>
+                  <th class="col-student"><div class="student-head"><span class="ttl">Aluno</span></div></th>
+                  <th class="lesson-h"><span class="lesson-num">1ª aula</span><div class="lesson-time tnum">08:00</div><div class="lesson-name">Instalação de Rec. Comp.</div></th>
+                  <th class="lesson-h"><span class="lesson-num">2ª aula</span><div class="lesson-time tnum">08:50</div><div class="lesson-name">Fundamentos de TI</div></th>
+                  <th class="lesson-h"><span class="lesson-num">3ª aula</span><div class="lesson-time tnum">09:50</div><div class="lesson-name">Colaboração e Produtividade</div></th>
+                  <th class="lesson-h"><span class="lesson-num">4ª aula</span><div class="lesson-time tnum">10:40</div><div class="lesson-name">Instalação de Rec. Comp.</div></th>
+                </tr>
+                <tr class="totals">
+                  <th class="col-student"><span class="tot-legend">Totais por aula (P / F / J)</span></th>
+                  <td><div class="tot-mini tnum"><span class="tp">10</span><span class="tf">2</span><span class="tj">0</span></div></td>
+                  <td><div class="tot-mini tnum"><span class="tp">9</span><span class="tf">1</span><span class="tj">2</span></div></td>
+                  <td><div class="tot-mini tnum"><span class="tp">8</span><span class="tf">3</span><span class="tj">1</span></div></td>
+                  <td><div class="tot-mini tnum"><span class="tp">8</span><span class="tf">0</span><span class="tj">0</span></div></td>
+                </tr>
+              </thead>
+              <tbody id="matrix-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ VISÃO: POR AULA ============ -->
+      <section id="view-lesson" class="hidden" style="display:flex;flex-direction:column;gap:16px">
+        <div class="lesson-tabs" role="tablist" aria-label="Aulas do dia">
+          <button class="lesson-tab active" role="tab" aria-selected="true"><div class="lt-top"><span class="ord">1ª aula</span><span class="time tnum">08:00</span></div><div class="subj">Instalação de Rec. Comp.</div><div class="lt-badge">Em andamento · 9P 2F 1J</div></button>
+          <button class="lesson-tab" role="tab" aria-selected="false"><div class="lt-top"><span class="ord">2ª aula</span><span class="time tnum">08:50</span></div><div class="subj">Fundamentos de TI</div><div class="lt-badge">Pendente</div></button>
+          <button class="lesson-tab" role="tab" aria-selected="false"><div class="lt-top"><span class="ord">3ª aula</span><span class="time tnum">09:50</span></div><div class="subj">Colaboração e Produtividade</div><div class="lt-badge">Pendente</div></button>
+          <button class="lesson-tab" role="tab" aria-selected="false"><div class="lt-top"><span class="ord">4ª aula</span><span class="time tnum">10:40</span></div><div class="subj">Instalação de Rec. Comp.</div><div class="lt-badge">Pendente</div></button>
+        </div>
+        <div class="roster" id="lesson-roster"></div>
+      </section>
+
+      <!-- Legenda -->
+      <footer class="legend">
+        <span class="item"><span class="k p">P</span>Presente</span>
+        <span class="item"><span class="k f">F</span>Falta</span>
+        <span class="item"><span class="k j">J</span>Justificada</span>
+        <span class="sep">·</span>
+        <span class="item"><span class="unsaved-dot"></span>Alteração não salva</span>
+        <span class="sep">·</span>
+        <span style="color:var(--text-subtle)">Chegou atrasado? marque F nas aulas iniciais e P nas seguintes — o atraso é derivado.</span>
+      </footer>
+
+      <!-- Barra de salvar fixa -->
+      <div class="savebar">
+        <div class="save-counts">
+          <span class="sc p"><i class="dt"></i>Presenças <b class="tnum">35</b></span>
+          <span class="sc f"><i class="dt"></i>Faltas <b class="tnum">6</b></span>
+          <span class="sc j"><i class="dt"></i>Justificadas <b class="tnum">3</b></span>
+        </div>
+        <span class="save-status">Alterações não salvas</span>
+        <div class="spacer"></div>
+        <button class="btn-save"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Salvar chamada</button>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<script>
+(function(){
+  var root = document.documentElement;
+
+  /* ---- Alternador de tema ---- */
+  var moon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+  var sun  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8 6 18M18 6l1.8-1.8"/></svg>';
+  var tbtn = document.getElementById('themeToggle');
+  function curTheme(){
+    return root.getAttribute('data-theme') ||
+      (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  }
+  function syncIcon(){ tbtn.innerHTML = curTheme() === 'dark' ? moon : sun; }
+  syncIcon();
+  tbtn.addEventListener('click', function(){
+    root.setAttribute('data-theme', curTheme() === 'dark' ? 'light' : 'dark');
+    syncIcon();
+  });
+
+  /* ---- Dados de exemplo ---- */
+  var GRAD = ['a1','a2','a3','a4','a5','a6'];
+  var A = [
+    {n:'Alan Marciano',   au:['p','p','p','p'], sum:['ok','Presente'],     u:false},
+    {n:'Alice Aluna',     au:['p','p','p','p'], sum:['ok','Presente'],     u:true, dirty:1},
+    {n:'Bruno Souza',     au:['f','f','p','p'], sum:['miss','2 faltas'],   u:false},
+    {n:'Carla Nogueira',  au:['j','j','p','p'], sum:['just','Justificada'],u:false,
+      just:{who:'1ª e 2ª aula', obs:'Consulta médica agendada no período da manhã.', file:'atestado-carla.pdf'}},
+    {n:'Diego Ramos',     au:['p','p','f','p'], sum:['miss','1 falta'],    u:false},
+    {n:'Eduarda Lima',    au:['p','p','p','p'], sum:['ok','Presente'],     u:false},
+    {n:'Felipe Torres',   au:['p','p','f','p'], sum:['miss','1 falta'],    u:false},
+    {n:'Gabriela Rocha',  au:['p','p','p','p'], sum:['ok','Presente'],     u:false},
+    {n:'Heitor Alves',    au:['p','p','j','p'], sum:['just','Justificada'],u:false},
+    {n:'Isabela Martins', au:['p','p','p','p'], sum:['ok','Presente'],     u:false},
+    {n:'João Pedro Dias', au:['p','p','',''  ], sum:['','2 pendentes'],    u:false},
+    {n:'Larissa Campos',  au:['p','p','p','p'], sum:['ok','Presente'],     u:false}
+  ];
+  function initials(n){
+    var p = n.trim().split(/\s+/);
+    return ((p[0][0]||'') + (p[p.length-1][0]||'')).toUpperCase();
+  }
+
+  function segCell(st, dirty){
+    function b(k){ return '<button class="'+(st===k?'on ':'')+k+'">'+k.toUpperCase()+'</button>'; }
+    return '<td class="cell'+(dirty?' dirty':'')+'"><div class="seg">'+b('p')+b('f')+b('j')+'</div></td>';
+  }
+
+  /* ---- Corpo da matriz ---- */
+  var mb = document.getElementById('matrix-body'), html = '';
+  A.forEach(function(s, i){
+    var g = GRAD[i % GRAD.length];
+    var msCls = s.sum[0] ? ('mini-status ' + s.sum[0]) : 'mini-status';
+    html += '<tr>' +
+      '<td class="col-student"><div class="student">' +
+        '<div class="avatar ' + g + '">' + initials(s.n) + '</div>' +
+        '<div class="student-info"><div class="student-name">' + s.n + '</div>' +
+        '<div class="student-sub"><span class="' + msCls + '"><span class="sd"></span>' + s.sum[1] + '</span>' +
+        (s.u ? '<span class="unsaved-dot" title="Não salvo"></span>' : '') + '</div></div>' +
+      '</div></td>';
+    for (var k = 0; k < 4; k++){ html += segCell(s.au[k], s.dirty === k); }
+    html += '</tr>';
+    if (s.just){
+      html += '<tr class="justify-row"><td colspan="5"><div class="justify">' +
+        '<div class="justify-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>Justificativa de falta<span class="who">— ' + s.n + ' · ' + s.just.who + '</span></div>' +
+        '<div class="justify-grid">' +
+          '<div class="field"><label>Tipo de justificativa</label><div class="control"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>Atestado médico</div></div>' +
+          '<div class="field"><label>Período (de / até)</label><div class="dates"><div class="control tnum">17/07/2026</div><div class="control tnum">17/07/2026</div></div></div>' +
+          '<div class="field"><label>Observação</label><div class="control">' + s.just.obs + '</div></div>' +
+        '</div>' +
+        '<div class="justify-foot"><label class="check"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span>Abona falta (não conta como ausência)</label>' +
+        '<span class="attach"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.4 11.05 12.25 20.2a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.48-8.49"/></svg>' + s.just.file + ' <span class="rm">×</span></span></div>' +
+      '</div></td></tr>';
+    }
+  });
+  mb.innerHTML = html;
+
+  /* ---- Visão "Por aula" (1ª aula) ---- */
+  var PILL = {
+    p:['present','Presente','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M20 6 9 17l-5-5"/></svg>'],
+    f:['absent','Falta','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M18 6 6 18M6 6l12 12"/></svg>'],
+    j:['justi','Justificada','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>']
+  };
+  var lr = document.getElementById('lesson-roster'), rhtml = '';
+  A.forEach(function(s, i){
+    var g = GRAD[i % GRAD.length];
+    var st = s.au[0] || 'p';
+    var pill = PILL[st];
+    var cardCls = st === 'p' ? 'present' : st === 'f' ? 'absent' : 'justi';
+    function rb(k){ return '<button class="'+(st===k?'on ':'')+k+'">'+k.toUpperCase()+'</button>'; }
+    rhtml += '<div class="rcard ' + cardCls + '">' +
+      '<div class="avatar ' + g + '">' + initials(s.n) + '</div>' +
+      '<div><div class="rname">' + s.n + (s.u ? ' <span class="badge-unsaved">Não salvo</span>' : '') + '</div>' +
+      '<div class="rsub tnum">Nº ' + (i + 1 < 10 ? '0' : '') + (i + 1) + ' · Matrícula 2026-0' + (140 - i * 7) + '</div></div>' +
+      '<div class="rstatus"><span class="rpill ' + pill[0] + '">' + pill[2] + pill[1] + '</span>' +
+      '<div class="rseg" role="group" aria-label="Status de ' + s.n + '">' + rb('p') + rb('f') + rb('j') + '</div></div>' +
+      (s.just ? '<div class="just-inline"><div class="justify-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>Detalhes da justificativa</div>' +
+        '<div class="justify-grid"><div class="field"><label>Tipo</label><div class="control">Atestado médico</div></div>' +
+        '<div class="field"><label>Período</label><div class="dates"><div class="control tnum">17/07/2026</div><div class="control tnum">17/07/2026</div></div></div>' +
+        '<div class="field"><label>Comprovante</label><div class="control"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.4 11.05 12.25 20.2a5 5 0 0 1-7.07-7.07l9.19-9.19"/></svg>' + s.just.file + '</div></div></div>' +
+        '<label class="check"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span>Abona falta (não conta como ausência)</label></div>' : '') +
+      '</div>';
+  });
+  lr.innerHTML = rhtml;
+
+  /* ---- Alternador de visão ---- */
+  var vM = document.getElementById('vw-matrix'), vL = document.getElementById('vw-lesson');
+  var secM = document.getElementById('view-matrix'), secL = document.getElementById('view-lesson');
+  function setView(isMatrix){
+    vM.classList.toggle('on', isMatrix);
+    vL.classList.toggle('on', !isMatrix);
+    vM.setAttribute('aria-selected', String(isMatrix));
+    vL.setAttribute('aria-selected', String(!isMatrix));
+    secM.classList.toggle('hidden', !isMatrix);
+    secL.classList.toggle('hidden', isMatrix);
+  }
+  vM.addEventListener('click', function(){ setView(true); });
+  vL.addEventListener('click', function(){ setView(false); });
+
+  /* ---- Abas de aula ---- */
+  Array.prototype.forEach.call(document.querySelectorAll('.lesson-tab'), function(t){
+    t.addEventListener('click', function(){
+      Array.prototype.forEach.call(document.querySelectorAll('.lesson-tab'), function(x){
+        x.classList.remove('active'); x.setAttribute('aria-selected','false');
+      });
+      t.classList.add('active'); t.setAttribute('aria-selected','true');
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">MICROSOFT TEAMS - ESTÚDIO DE BROADCAST</text>
+  
+  <!-- Teams interface mockup -->
+  <rect x="30" y="55" width="540" height="200" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  
+  <!-- Video grid -->
+  <rect x="45" y="70" width="250" height="130" fill="#0f3460" rx="3"/>
+  <text x="170" y="130" font-family="Arial" font-size="24" fill="#fff" text-anchor="middle">👤</text>
+  <text x="170" y="155" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Instrutor Alan</text>
+  <text x="170" y="168" font-family="Arial" font-size="8" fill="#4ecca3" text-anchor="middle">🎤 Microfone On</text>
+  
+  <rect x="305" y="70" width="250" height="130" fill="#0f3460" rx="3"/>
+  <text x="430" y="130" font-family="Arial" font-size="24" fill="#fff" text-anchor="middle">👤</text>
+  <text x="430" y="155" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Participante 1</text>
+  <text x="430" y="168" font-family="Arial" font-size="8" fill="#aaa" text-anchor="middle">🔇 Mudo</text>
+  
+  <!-- Controls bar -->
+  <rect x="200" y="210" width="200" height="35" fill="#0f3460" rx="5"/>
+  <text x="230" y="233" font-family="Arial" font-size="16">🎤</text>
+  <text x="270" y="233" font-family="Arial" font-size="16">📹</text>
+  <text x="310" y="233" font-family="Arial" font-size="16">🖥️</text>
+  <text x="350" y="233" font-family="Arial" font-size="16">💬</text>
+  <text x="380" y="233" font-family="Arial" font-size="16">📌</text>
+  
+  <!-- QoS indicator -->
+  <rect x="30" y="265" width="540" height="50" fill="#0f3460" rx="5"/>
+  <text x="50" y="290" font-family="Arial" font-size="11" fill="#fff">📶 Largura de Banda:</text>
+  <text x="170" y="290" font-family="Arial" font-size="11" fill="#4ecca3">2.4 Mbps (Boa)</text>
+  
+  <text x="240" y="290" font-family="Arial" font-size="11" fill="#fff">⏱️ Latência:</text>
+  <text x="320" y="290" font-family="Arial" font-size="11" fill="#4ecca3">45ms</text>
+  
+  <text x="370" y="290" font-family="Arial" font-size="11" fill="#fff">🎯 QoS:</text>
+  <text x="430" y="290" font-family="Arial" font-size="11" fill="#e94560">Alta Prioridade</text>
+  
+  <!-- Best practices -->
+  <text x="300" y="340" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">REGRAS DE OURO DA REUNIÃO</text>
+  
+  <rect x="30" y="355" width="180" height="35" fill="#16213e" rx="3"/>
+  <text x="120" y="378" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🔇 Hard Mute Ativado</text>
+  
+  <rect x="220" y="355" width="180" height="35" fill="#16213e" rx="3"/>
+  <text x="310" y="378" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🚪 Lobby Habilitado</text>
+  
+  <rect x="410" y="355" width="160" height="35" fill="#16213e" rx="3"/>
+  <text x="490" y="378" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">🎥 Gravação Automática</text>
+</svg>

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#1a1a2e"/>
+  <text x="300" y="35" font-family="Arial" font-size="18" fill="#e94560" text-anchor="middle" font-weight="bold">WORKFLOW DE ARQUIVOS - VERSIONS & LINKS</text>
+  
+  <!-- File versions timeline -->
+  <line x1="50" y1="100" x2="550" y2="100" stroke="#0f3460" stroke-width="3"/>
+  
+  <circle cx="100" cy="100" r="15" fill="#e94560"/>
+  <text x="100" y="105" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">v1</text>
+  
+  <circle cx="200" cy="100" r="15" fill="#0f3460" stroke="#e94560"/>
+  <text x="200" y="105" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">v2</text>
+  
+  <circle cx="300" cy="100" r="15" fill="#0f3460" stroke="#e94560"/>
+  <text x="300" y="105" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">v3</text>
+  
+  <circle cx="400" cy="100" r="15" fill="#0f3460" stroke="#e94560"/>
+  <text x="400" y="105" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">v4</text>
+  
+  <circle cx="500" cy="100" r="18" fill="#16213e" stroke="#e94560" stroke-width="3"/>
+  <text x="500" y="105" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">ATUAL</text>
+  
+  <!-- Labels -->
+  <text x="100" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">25/01 09:00</text>
+  <text x="200" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">26/01 14:30</text>
+  <text x="300" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">27/01 11:00</text>
+  <text x="400" y="130" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">28/01 16:45</text>
+  <text x="500" y="130" font-family="Arial" font-size="9" fill="#e94560" text-anchor="middle">29/01 08:00</text>
+  
+  <!-- Recovery arrow -->
+  <path d="M510 100 Q 550 100 550 140" stroke="#e94560" stroke-width="2" fill="none"/>
+  <rect x="520" y="140" width="80" height="30" fill="#0f3460" rx="5"/>
+  <text x="560" y="160" font-family="Arial" font-size="10" fill="#fff" text-anchor="middle">Restaurar v2</text>
+  
+  <!-- Sharing methods -->
+  <text x="300" y="200" font-family="Arial" font-size="14" fill="#e94560" text-anchor="middle" font-weight="bold">COMPARTILHAMENTO SEGURO</text>
+  
+  <rect x="50" y="220" width="170" height="70" fill="#16213e" stroke="#0f3460" stroke-width="2" rx="5"/>
+  <text x="135" y="245" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">🔗 Link Interno</text>
+  <text x="135" y="265" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Apenas funcionários</text>
+  <text x="135" y="280" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">da empresa</text>
+  
+  <rect x="230" y="220" width="170" height="70" fill="#0f3460" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="315" y="245" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">🌐 Link Externo</text>
+  <text x="315" y="265" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Parceiros/fornecedores</text>
+  <text x="315" y="280" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">com autenticação</text>
+  
+  <rect x="410" y="220" width="150" height="70" fill="#16213e" stroke="#e94560" stroke-width="2" rx="5"/>
+  <text x="485" y="245" font-family="Arial" font-size="11" fill="#fff" text-anchor="middle">📎 Anexo</text>
+  <text x="485" y="265" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">Download direto</text>
+  <text x="485" y="280" font-family="Arial" font-size="9" fill="#aaa" text-anchor="middle">(não recomendado)</text>
+  
+  <!-- Best practices -->
+  <text x="300" y="330" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">✅ Usar links ao invés de anexos ✅ Definir expiração de links ✅ Controlar permissões</text>
+  <text x="300" y="350" font-family="Arial" font-size="12" fill="#fff" text-anchor="middle">✅ Auditoria de acessos ✅ Versionamento automático ✅ Criptografia E2E</text>
+</svg>
