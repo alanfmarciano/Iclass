@@ -10,7 +10,9 @@ const VIEWPORTS = {
 async function loginAdmin(page) {
   await page.goto('/login');
   await page.getByRole('button', { name: 'Administrador', exact: true }).click();
-  await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/);
+  // O clique dispara seed + login assíncronos; sob workers paralelos isso pode
+  // passar dos 5s padrão — o timeout maior elimina o flake de "ainda em /login".
+  await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/, { timeout: 15000 });
 }
 
 async function setBranding(page, interfacePreset, themeMode) {

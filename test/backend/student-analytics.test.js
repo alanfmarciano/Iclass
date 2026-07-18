@@ -82,3 +82,77 @@ test('studentOverview: frequência, faltas e risco por disciplina', () => {
     assert.equal(ov.disciplinasEmRisco, 1); // HIS
     assert.equal(studentOverview({ attendance: [], submissions: [], classes: [], courses: [] }, student).faltas, 0);
 });
+
+// ---------------------------------------------------------------------------
+// "Sem dado" não é zero — um aluno que nunca fez prova não tem média 0,0, e um
+// aluno sem chamada lançada não tem 0% de frequência. Distinguir os dois casos
+// é o que permite ao Dashboard somar e comparar sem mentir.
+// ---------------------------------------------------------------------------
+
+const sub = (id, email, courseId, score, timestamp) => ({
+    id, examKey: 'Avaliacao_X_1', score, timestamp,
+    student: { name: 'Aluno', email, studentClass: 'Turma 1', courseId },
+});
+
+test('media é null para aluno sem prova — nunca 0', () => {
+    const memory = memoryWithAttendance();
+    const ov = studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' });
+    assert.equal(ov.media, null, 'aluno sem submissão deve ter media null, não 0');
+});
+
+test('studentOverview restringe a média ao curso pedido', () => {
+    const memory = memoryWithAttendance();
+    const email = 'aluno@teste.local';
+    memory.submissions = [
+        sub('s1', email, 'CURSO-A', 80, '2026-07-01T10:00:00.000Z'),
+        sub('s2', email, 'CURSO-A', 60, '2026-07-02T10:00:00.000Z'),
+        sub('s3', email, 'CURSO-B', 10, '2026-07-03T10:00:00.000Z'), // outro curso: não entra
+    ];
+    const a = studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' });
+    assert.equal(a.media, 7, 'média de CURSO-A é (80+60)/2/10 = 7,0');
+    const b = studentOverview(memory, memory.students[0], { courseId: 'CURSO-B' });
+    assert.equal(b.media, 1, 'média de CURSO-B é 10/10 = 1,0');
+    const todos = studentOverview(memory, memory.students[0], {});
+    assert.equal(todos.media, 5, 'sem curso informado, considera tudo: (80+60+10)/3/10 = 5,0');
+});
+
+test('frequencia é null quando não há aula lançada — nunca 0', () => {
+    const memory = memoryWithAttendance();
+    memory.attendance = [];
+    const ov = studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' });
+    assert.equal(ov.frequencia, null, 'sem aula lançada, frequência é desconhecida, não zero');
+    assert.equal(ov.faltas, 0);
+    assert.equal(ov.totalAulas, 0);
+});
+
+test('studentOverview expõe o denominador da frequência', () => {
+    const memory = memoryWithAttendance();
+    const ov = studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' });
+    // 4 presenças e 3 faltas que contam → 4/7 = 57%
+    assert.equal(ov.presentes, 4);
+    assert.equal(ov.totalAulas, 7);
+    assert.equal(ov.frequencia, 57);
+});
+
+test('computeStudentDashboard mantém frequencia null sem chamada lançada', () => {
+    const memory = memoryWithAttendance();
+    memory.attendance = [];
+    const dash = computeStudentDashboard(memory, 'aluno@teste.local');
+    assert.equal(dash.kpis.frequencia, null);
+    assert.equal(dash.kpis.media, null);
+});
+
+test('temporal compara janelas móveis de 30 dias, não meses de calendário', () => {
+    const memory = memoryWithAttendance();
+    const email = 'aluno@teste.local';
+    const dias = (n) => new Date(Date.now() - n * 86400000).toISOString();
+    memory.submissions = [
+        sub('r1', email, 'CURSO-A', 90, dias(5)),   // janela atual (0-30d)
+        sub('r2', email, 'CURSO-A', 70, dias(20)),  // janela atual
+        sub('r3', email, 'CURSO-A', 50, dias(40)),  // janela anterior (30-60d)
+        sub('r4', email, 'CURSO-A', 30, dias(55)),  // janela anterior
+    ];
+    const dash = computeStudentDashboard(memory, email);
+    assert.equal(dash.temporal.mediaAtual, 8, 'últimos 30 dias: (90+70)/2/10 = 8,0');
+    assert.equal(dash.temporal.mediaAnterior, 4, '30 dias anteriores: (50+30)/2/10 = 4,0');
+});

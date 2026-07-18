@@ -35,6 +35,7 @@
   .note{max-width:1180px;margin:0 auto;padding:32px 28px 8px}
   .note h1{font-size:22px;font-weight:600;letter-spacing:-.01em}
   .note p{color:var(--muted);margin-top:6px;max-width:70ch}
+  .note p + p{margin-top:10px}
   .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
   .legend span{font-size:11px;color:var(--muted);background:var(--surface-2);border:1px solid var(--hair);
     padding:4px 10px;border-radius:99px}
@@ -120,26 +121,25 @@
     border:solid #fff;border-width:0 2px 2px 0;transform:rotate(42deg)}
 
   .who{display:flex;align-items:center;gap:10px;min-width:0}
-  .av{width:30px;height:30px;border-radius:50%;background:var(--primary-soft);color:var(--primary);
+  .av{position:relative;width:30px;height:30px;border-radius:50%;background:var(--primary-soft);color:var(--primary);
     display:grid;place-items:center;font-size:11px;font-weight:600;flex-shrink:0}
+  .av .live{position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;
+    background:var(--ok);border:2px solid var(--surface)}
   .who .nm{font-weight:500;display:block}
   .who .em{font-size:12px;color:var(--subtle);display:block}
 
   .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:6px;
     font-size:11.5px;font-weight:500;white-space:nowrap}
+  .badge .dot{width:5px;height:5px;border-radius:50%;background:currentColor}
   .b-info{background:var(--info-soft);color:#8fb8f8}
   .b-ok{background:var(--ok-soft);color:#6fcfa2}
   .b-neu{background:rgba(255,255,255,.06);color:var(--muted)}
   .b-warn{background:var(--warn-soft);color:#e2bb70}
+  .b-dan{background:rgba(229,52,42,.16);color:#f08a83}
   .more{color:var(--subtle);font-size:11.5px;margin-left:4px}
 
-  .prog{display:flex;align-items:center;gap:9px}
-  .track{width:64px;height:5px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}
-  .fill{height:100%;border-radius:99px;background:var(--info)}
-  .fill.ok{background:var(--ok)}
-  .fill.low{background:var(--warn)}
-  .prog span{font-size:12px;color:var(--muted);min-width:30px}
-
+  .num{font-variant-numeric:tabular-nums}
+  .nodata{color:var(--subtle);font-size:12.5px;font-style:normal}
   .when{font-size:12.5px;color:var(--muted)}
   .when.cold{color:var(--warn)}
   .kebab{color:var(--subtle);cursor:pointer;padding:2px 6px;border-radius:6px}
@@ -168,13 +168,14 @@
 
 <div class="note">
   <h1>Alunos — proposta de redesenho</h1>
-  <p>A tela atual lista todos os alunos da instituição de uma vez, sem recorte. Isso funciona com 16 alunos e quebra com 800. A proposta abaixo mantém a mesma estrutura visual do IClass e acrescenta as camadas que faltam: <b>recorte</b>, <b>ação em lote</b> e <b>sinal de risco</b>.</p>
+  <p>A tela atual lista todos os alunos da instituição de uma vez, sem recorte. Isso funciona com 16 alunos e quebra com 800. A proposta abaixo mantém a estrutura visual do IClass e acrescenta as camadas que faltam: <b>recorte</b>, <b>ação em lote</b> e <b>sinal de risco</b>.</p>
+  <p>Nada aqui é métrica inventada: <b>risco</b>, <b>frequência</b> e <b>último acesso</b> já são calculados pelo backend (<code>studentOverview</code>) e simplesmente não chegavam nesta tela.</p>
   <div class="legend">
     <span><b>1</b> cards viram filtros</span>
     <span><b>2</b> filtros por escola / curso / turma</span>
     <span><b>3</b> seleção múltipla + lote</span>
     <span><b>4</b> agrupamento por turma</span>
-    <span><b>5</b> progresso e último acesso</span>
+    <span><b>5</b> risco, frequência e último acesso</span>
     <span><b>6</b> paginação</span>
   </div>
 </div>
@@ -192,10 +193,6 @@
         <button class="btn">
           <svg class="ico" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
           Exportar
-        </button>
-        <button class="btn">
-          <svg class="ico" viewBox="0 0 24 24"><path d="M12 21v-12m0 0 4 4m-4-4-4 4M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>
-          Importar CSV
         </button>
         <button class="btn primary">
           <svg class="ico" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M19 8v6M22 11h-6"/></svg>
@@ -223,9 +220,9 @@
       <div class="d">precisam de turma →</div>
     </button>
     <button class="card alert">
-      <div class="k">Sem acesso há 30d</div>
-      <div class="v">14</div>
-      <div class="d">risco de evasão →</div>
+      <div class="k">Sem acesso há 14d</div>
+      <div class="v">21</div>
+      <div class="d">limiar de risco do sistema →</div>
     </button>
   </div>
 
@@ -260,7 +257,6 @@
     <span class="n">3 alunos selecionados</span>
     <button class="btn">Matricular em turma</button>
     <button class="btn">Alterar situação</button>
-    <button class="btn">Enviar comunicado</button>
     <button class="btn">Exportar seleção</button>
     <span class="sep"></span>
     <span class="pin" style="margin:0">3</span>
@@ -274,7 +270,8 @@
         <th style="width:34px"><span class="cb"></span></th>
         <th>Aluno ⇅</th>
         <th>Matrículas</th>
-        <th>Progresso <span class="pin">5</span></th>
+        <th>Risco <span class="pin">5</span></th>
+        <th>Frequência</th>
         <th>Último acesso ⇅</th>
         <th>Situação ⇅</th>
         <th style="width:40px"></th>
@@ -282,13 +279,14 @@
     </thead>
     <tbody>
 
-      <tr class="group"><td colspan="7">Curso Técnico em TI · 1DES <span class="qt">14 alunos</span></td></tr>
+      <tr class="group"><td colspan="8">Curso Técnico em TI · 1DES <span class="qt">14 alunos</span></td></tr>
 
       <tr class="sel">
         <td><span class="cb on"></span></td>
         <td><div class="who"><span class="av">AM</span><span><span class="nm">Alan Marciano</span><span class="em">alan@alan.com</span></span></div></td>
         <td><span class="badge b-info">TI · 1DES</span><span class="badge b-info">Turma Teste</span></td>
-        <td><div class="prog"><span class="track"><span class="fill low" style="width:22%"></span></span><span>22%</span></div></td>
+        <td><span class="badge b-dan"><span class="dot"></span>Alto</span></td>
+        <td><span class="num" style="color:#f08a83">41%</span></td>
         <td><span class="when cold">há 62 dias</span></td>
         <td><span class="badge b-neu">Inativo</span></td>
         <td><span class="kebab">⋮</span></td>
@@ -296,9 +294,10 @@
 
       <tr class="sel">
         <td><span class="cb on"></span></td>
-        <td><div class="who"><span class="av">AT</span><span><span class="nm">Alune Teste</span><span class="em">aluno@teste.senai</span></span></div></td>
+        <td><div class="who"><span class="av">AT<span class="live"></span></span><span><span class="nm">Alune Teste</span><span class="em">aluno@teste.senai</span></span></div></td>
         <td><span class="badge b-info">TI · 1DES</span></td>
-        <td><div class="prog"><span class="track"><span class="fill" style="width:58%"></span></span><span>58%</span></div></td>
+        <td><span class="badge b-warn"><span class="dot"></span>Médio</span></td>
+        <td><span class="num">72%</span></td>
         <td><span class="when">ontem</span></td>
         <td><span class="badge b-ok">Ativo</span></td>
         <td><span class="kebab">⋮</span></td>
@@ -306,9 +305,10 @@
 
       <tr class="sel">
         <td><span class="cb on"></span></td>
-        <td><div class="who"><span class="av">S</span><span><span class="nm">Sigfried</span><span class="em">sig@sig.com</span></span></div></td>
+        <td><div class="who"><span class="av">S<span class="live"></span></span><span><span class="nm">Sigfried</span><span class="em">sig@sig.com</span></span></div></td>
         <td><span class="badge b-info">TI · 1DES</span></td>
-        <td><div class="prog"><span class="track"><span class="fill ok" style="width:87%"></span></span><span>87%</span></div></td>
+        <td><span class="badge b-ok"><span class="dot"></span>Baixo</span></td>
+        <td><span class="num">94%</span></td>
         <td><span class="when">há 2 h</span></td>
         <td><span class="badge b-ok">Ativo</span></td>
         <td><span class="kebab">⋮</span></td>
@@ -318,7 +318,8 @@
         <td><span class="cb"></span></td>
         <td><div class="who"><span class="av">AA</span><span><span class="nm">Alice Aluna</span><span class="em">aluno@teste.local</span></span></div></td>
         <td><span class="badge b-info">TI · 1DES</span></td>
-        <td><div class="prog"><span class="track"><span class="fill ok" style="width:74%"></span></span><span>74%</span></div></td>
+        <td><span class="badge b-ok"><span class="dot"></span>Baixo</span></td>
+        <td><span class="num">88%</span></td>
         <td><span class="when">há 3 dias</span></td>
         <td><span class="badge b-ok">Ativo</span></td>
         <td><span class="kebab">⋮</span></td>
@@ -328,29 +329,34 @@
         <td><span class="cb"></span></td>
         <td><div class="who"><span class="av">BS</span><span><span class="nm">Bruno Souza</span><span class="em">bruno.souza@teste.local</span></span></div></td>
         <td><span class="badge b-info">TI · 1DES</span><span class="more">+2</span></td>
-        <td><div class="prog"><span class="track"><span class="fill" style="width:41%"></span></span><span>41%</span></div></td>
+        <td><span class="badge b-warn"><span class="dot"></span>Médio</span></td>
+        <td><span class="num">69%</span></td>
         <td><span class="when">há 5 dias</span></td>
         <td><span class="badge b-ok">Ativo</span></td>
         <td><span class="kebab">⋮</span></td>
       </tr>
 
+      <tr class="group"><td colspan="8">Curso Técnico em TI · 2DES <span class="qt">turma sem chamada lançada</span></td></tr>
+
       <tr>
         <td><span class="cb"></span></td>
         <td><div class="who"><span class="av">CM</span><span><span class="nm">Carla Mendes</span><span class="em">carla.mendes@teste.local</span></span></div></td>
-        <td><span class="badge b-info">TI · 1DES</span></td>
-        <td><div class="prog"><span class="track"><span class="fill ok" style="width:92%"></span></span><span>92%</span></div></td>
+        <td><span class="badge b-info">TI · 2DES</span></td>
+        <td><span class="badge b-ok"><span class="dot"></span>Baixo</span></td>
+        <td><span class="nodata" title="Nenhuma aula lançada nesta turma">sem aulas</span></td>
         <td><span class="when">hoje</span></td>
         <td><span class="badge b-ok">Ativo</span></td>
         <td><span class="kebab">⋮</span></td>
       </tr>
 
-      <tr class="group"><td colspan="7">Sem matrícula <span class="qt">4 alunos · pendente de turma</span></td></tr>
+      <tr class="group"><td colspan="8">Sem matrícula <span class="qt">4 alunos · pendente de turma</span></td></tr>
 
       <tr>
         <td><span class="cb"></span></td>
         <td><div class="who"><span class="av">DO</span><span><span class="nm">Diego Oliveira</span><span class="em">diego.oliveira@teste.local</span></span></div></td>
         <td><span class="badge b-warn">sem matrícula</span></td>
-        <td><div class="prog"><span class="track"><span class="fill low" style="width:0%"></span></span><span>—</span></div></td>
+        <td><span class="nodata">—</span></td>
+        <td><span class="nodata">sem aulas</span></td>
         <td><span class="when cold">nunca acessou</span></td>
         <td><span class="badge b-ok">Ativo</span></td>
         <td><span class="kebab">⋮</span></td>
@@ -360,7 +366,8 @@
         <td><span class="cb"></span></td>
         <td><div class="who"><span class="av">EF</span><span><span class="nm">Elisa Ferreira</span><span class="em">elisa.ferreira@teste.local</span></span></div></td>
         <td><span class="badge b-warn">sem matrícula</span></td>
-        <td><div class="prog"><span class="track"><span class="fill low" style="width:0%"></span></span><span>—</span></div></td>
+        <td><span class="nodata">—</span></td>
+        <td><span class="nodata">sem aulas</span></td>
         <td><span class="when cold">há 41 dias</span></td>
         <td><span class="badge b-ok">Ativo</span></td>
         <td><span class="kebab">⋮</span></td>
@@ -389,22 +396,22 @@
   <h3>Por que cada mudança</h3>
   <ol>
     <li><div class="t"><span class="pin" style="margin:0 8px 0 0">1</span>Cards viram filtros</div>
-      <div class="x">Hoje os três cards de cima são só números — informam e param aí. Clicáveis, viram o caminho mais rápido para o trabalho real: "quem está sem turma?" em um clique. Acrescentei um quarto card de <b>alunos sem acesso há 30 dias</b>, que é o sinal de evasão que a tela não mostra hoje.</div></li>
+      <div class="x">Hoje os três cards de cima são só números — informam e param aí. Clicáveis, viram o caminho mais rápido para o trabalho real: "quem está sem turma?" em um clique. O quarto card usa <b>14 dias</b> sem acesso, que é exatamente o limiar que o backend já aplica no cálculo de risco — não um número novo inventado.</div></li>
 
     <li><div class="t"><span class="pin" style="margin:0 8px 0 0">2</span>Filtro por escola, curso, turma e situação</div>
-      <div class="x">A busca por texto só ajuda quem já sabe o nome do aluno. O administrador quase sempre chega pela hierarquia (escola → curso → turma). Os filtros ativos aparecem como chips removíveis, e o contador mostra o recorte atual ("18 de 247").</div></li>
+      <div class="x">A busca por texto só ajuda quem já sabe o nome do aluno. O administrador quase sempre chega pela hierarquia (escola → curso → turma). Curso e turma já eram aceitos pelo endpoint e ninguém usava. Os filtros ficam na URL, então o recorte é compartilhável e o botão "voltar" funciona.</div></li>
 
     <li><div class="t"><span class="pin" style="margin:0 8px 0 0">3</span>Seleção múltipla e ações em lote</div>
-      <div class="x">Matricular 30 alunos numa turma um a um é a dor mais cara dessa tela. Com seleção, matrícula/situação/comunicado/exportação viram uma ação só. Combina com o filtro: filtre "sem matrícula" → selecione tudo → matricule.</div></li>
+      <div class="x">Matricular 30 alunos numa turma um a um é a dor mais cara dessa tela. Com seleção, matrícula e situação viram uma ação só. Combina com o filtro: filtre "sem matrícula" → selecione tudo → matricule. Cada aluno alterado gera entrada de auditoria, igual à edição individual.</div></li>
 
     <li><div class="t"><span class="pin" style="margin:0 8px 0 0">4</span>Agrupamento por turma</div>
       <div class="x">Opcional, mas transforma a lista plana em algo que espelha a estrutura da instituição. O grupo "Sem matrícula" no fim funciona como fila de pendências.</div></li>
 
-    <li><div class="t"><span class="pin" style="margin:0 8px 0 0">5</span>Progresso e último acesso</div>
-      <div class="x">As colunas atuais (nome, e-mail, matrículas, situação) são cadastrais: dizem quem existe, não quem está indo bem. Progresso e recência de acesso são o que faz o administrador agir. "Situação" continua, mas deixa de ser o único sinal.</div></li>
+    <li><div class="t"><span class="pin" style="margin:0 8px 0 0">5</span>Risco, frequência e último acesso</div>
+      <div class="x">As colunas atuais são cadastrais: dizem quem existe, não quem está indo bem. O <b>risco</b> vem do modelo que o sistema já calibra por turma (frequência abaixo do limiar, média abaixo de 6, disciplinas em risco, dias sem acesso). Repare em Carla: a turma dela ainda não teve chamada lançada, então a coluna diz <b>"sem aulas"</b> — nunca "0%", que acusaria a aluna de faltar a tudo.</div></li>
 
     <li><div class="t"><span class="pin" style="margin:0 8px 0 0">6</span>Paginação</div>
-      <div class="x">Renderizar 800 linhas de uma vez trava o navegador. 25 por página com controle de densidade resolve, e o total continua visível no rodapé.</div></li>
+      <div class="x">Renderizar 800 linhas de uma vez trava o navegador. 25 por página resolve, e o total continua visível no rodapé.</div></li>
   </ol>
 </div>
 

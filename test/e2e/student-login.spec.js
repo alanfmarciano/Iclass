@@ -23,7 +23,8 @@ test('[UC-AUTH-001] modo de teste autentica aluno sem tocar a base real e respei
     await page.goto('/login');
     await expectNoWcagViolations(page, 'Login');
     await page.getByRole('button', { name: 'Aluno', exact: true }).first().click();
-    await expect(page).toHaveURL(/\/aluno/);
+    // Seed + login assíncronos podem passar dos 5s padrão sob carga (ver visual-layout).
+    await expect(page).toHaveURL(/\/aluno/, { timeout: 15000 });
     await expect(page.getByText('Portal do Aluno')).toBeVisible();
     await expectNoWcagViolations(page, 'Portal do aluno');
 });

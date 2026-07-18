@@ -97,11 +97,19 @@ export default function DashboardPage() {
 
   const classSummary = useMemo(() => {
     const rows = overview.data || []
-    const frequencies = rows.map((row) => Number(row.frequencia)).filter(Number.isFinite)
+    // frequencia é null quando a turma não tem aula lançada. Number(null) é 0 e passaria
+    // pelo isFinite, puxando a média da turma para baixo com um dado que não existe.
+    // Média ponderada por aula (Σ presentes / Σ aulas): quem tem 2 aulas não pesa
+    // o mesmo que quem tem 40 — a média aritmética das porcentagens distorcia isso.
+    const comChamada = rows.filter((row) => Number(row.totalAulas) > 0)
+    const somaPresentes = comChamada.reduce((sum, row) => sum + (Number(row.presentes) || 0), 0)
+    const somaAulas = comChamada.reduce((sum, row) => sum + (Number(row.totalAulas) || 0), 0)
     return {
-      averageFrequency: frequencies.length ? Math.round(frequencies.reduce((sum, value) => sum + value, 0) / frequencies.length) : null,
+      averageFrequency: somaAulas ? Math.round((somaPresentes / somaAulas) * 100) : null,
       totalAbsences: rows.reduce((sum, row) => sum + (Number(row.faltas) || 0), 0),
-      withoutAbsences: rows.filter((row) => !(Number(row.faltas) > 0)).length,
+      // "Sem faltas" exige chamada lançada: aluno sem nenhuma aula registrada não é
+      // "sem faltas", é "sem dado" — contá-lo inflaria o indicador.
+      withoutAbsences: comChamada.filter((row) => !(Number(row.faltas) > 0)).length,
       attention: rows.filter((row) => row.riscoLevel !== 'baixo').length,
     }
   }, [overview.data])
@@ -112,7 +120,12 @@ export default function DashboardPage() {
     : `${courseClasses.length} turmas · ${filteredStudents.length} alunos`
 
   const faltosos = useMemo(() => [...(overview.data || [])].filter((o) => o.faltas > 0).sort((a, b) => b.faltas - a.faltas).slice(0, absCount), [overview.data, absCount])
-  const emRisco = useMemo(() => [...(overview.data || [])].filter((o) => o.riscoLevel !== 'baixo').sort((a, b) => (a.riscoLevel === 'alto' ? -1 : 1) - (b.riscoLevel === 'alto' ? -1 : 1) || a.frequencia - b.frequencia).slice(0, riskCount), [overview.data, riskCount])
+  // Sem frequência apurada o aluno vai para o fim do desempate, não para o topo da lista.
+  const freqOrd = (o) => o.frequencia == null ? Infinity : o.frequencia
+  // media/frequencia vêm null quando não há prova ou aula lançada — "sem dado" não é zero.
+  const fmtMedia = (v) => v == null ? 'sem prova' : v.toFixed(1).replace('.', ',')
+  const fmtFreq = (v) => v == null ? 'sem aulas' : `${v}%`
+  const emRisco = useMemo(() => [...(overview.data || [])].filter((o) => o.riscoLevel !== 'baixo').sort((a, b) => (a.riscoLevel === 'alto' ? -1 : 1) - (b.riscoLevel === 'alto' ? -1 : 1) || freqOrd(a) - freqOrd(b)).slice(0, riskCount), [overview.data, riskCount])
 
   const open = (email) => nav('/alunos/' + encodeURIComponent(email))
 
@@ -215,7 +228,7 @@ export default function DashboardPage() {
                 {faltosos.map((o) => (
                   <button key={o.email} onClick={() => open(o.email)} className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0 text-left hover:bg-surface-2/60 rounded-md px-1 -mx-1">
                     <span className="w-8 h-8 rounded-full bg-primary-soft text-primary grid place-items-center text-xs font-semibold shrink-0">{initials(o.name)}</span>
-                    <div className="flex-1 min-w-0"><p className="text-sm text-text truncate">{o.name}</p><p className="text-xs text-muted">{o.className || '—'} · frequência {o.frequencia}%</p></div>
+                    <div className="flex-1 min-w-0"><p className="text-sm text-text truncate">{o.name}</p><p className="text-xs text-muted">{o.className || '—'} · frequência {fmtFreq(o.frequencia)}</p></div>
                     <span className="inline-flex items-center gap-1 text-xs text-danger" aria-label={`${o.faltas} ${o.faltas === 1 ? 'falta registrada no total' : 'faltas registradas no total'}`} title={`${o.faltas} ${o.faltas === 1 ? 'falta registrada' : 'faltas registradas'} no total`}><CalendarX size={13} aria-hidden="true" />{o.faltas}</span>
                   </button>
                 ))}
@@ -229,7 +242,7 @@ export default function DashboardPage() {
                 {emRisco.map((o) => (
                   <button key={o.email} onClick={() => open(o.email)} className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0 text-left hover:bg-surface-2/60 rounded-md px-1 -mx-1">
                     <span className="w-8 h-8 rounded-full bg-primary-soft text-primary grid place-items-center text-xs font-semibold shrink-0">{initials(o.name)}</span>
-                    <div className="flex-1 min-w-0"><p className="text-sm text-text truncate">{o.name}</p><p className="text-xs text-muted">{o.className || '—'} · média {o.media.toFixed(1).replace('.', ',')} · freq {o.frequencia}%</p></div>
+                    <div className="flex-1 min-w-0"><p className="text-sm text-text truncate">{o.name}</p><p className="text-xs text-muted">{o.className || '—'} · média {fmtMedia(o.media)} · freq {fmtFreq(o.frequencia)}</p></div>
                     <Badge tone={RISK_TONE[o.riscoLevel]}>{o.riscoLevel}</Badge>
                   </button>
                 ))}

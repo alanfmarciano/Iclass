@@ -20,7 +20,8 @@ test('[UC-CURSO-001] central gerencia heranças por escola e curso sem perder a 
 
     await page.goto('/login');
     await page.getByRole('button', { name: 'Administrador', exact: true }).click();
-    await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/);
+    // Seed + login assíncronos podem passar dos 5s padrão sob carga (ver visual-layout).
+    await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/, { timeout: 15000 });
     await page.getByRole('link', { name: 'Cursos e turmas', exact: true }).click();
 
     await expect(page.getByRole('heading', { name: 'Cursos e turmas', exact: true })).toBeVisible();
@@ -107,7 +108,7 @@ test('[UC-CURSO-001] central gerencia heranças por escola e curso sem perder a 
     const professorPage = await professorContext.newPage();
     await professorPage.goto('/login');
     await professorPage.getByRole('button', { name: 'Professor', exact: true }).click();
-    await expect(professorPage.getByRole('heading', { name: 'Selecione o curso e a turma', exact: true })).toBeVisible();
+    await expect(professorPage.getByRole('heading', { name: 'Selecione o curso e a turma', exact: true })).toBeVisible({ timeout: 15000 });
     await expect(professorPage.getByRole('heading', { name: LEGACY_COURSE, exact: true })).toBeVisible();
     await expect(professorPage.getByRole('button', { name: `Entrar em ${LEGACY_COURSE}, turma 1DES`, exact: true })).toHaveCount(1);
     await professorPage.goto('/turmas');

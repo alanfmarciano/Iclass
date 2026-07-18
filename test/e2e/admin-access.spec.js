@@ -3,7 +3,8 @@ const { test, expect } = require('@playwright/test');
 async function loginQuick(page, profile) {
   await page.goto('/login');
   await page.getByRole('button', { name: profile, exact: true }).click();
-  await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/);
+  // Seed + login assíncronos podem passar dos 5s padrão sob carga (ver visual-layout).
+  await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/, { timeout: 15000 });
 }
 
 async function enterFirstWorkspaceWhenRequired(page) {

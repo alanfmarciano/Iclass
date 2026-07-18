@@ -129,7 +129,8 @@ export default function AlunoDetailPage() {
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <Kpi label="Frequência">
-                <p className="text-2xl font-semibold text-text">{dash?.kpis?.frequencia ?? 0}%</p>
+                {/* null = turma sem chamada lançada. "0%" acusaria o aluno de faltar a tudo. */}
+                <p className="text-2xl font-semibold text-text">{dash?.kpis?.frequencia == null ? <span className="text-base text-muted">sem aulas</span> : `${dash.kpis.frequencia}%`}</p>
                 <div className="h-1.5 rounded bg-surface overflow-hidden mt-1.5"><div className="h-full bg-primary" style={{ width: (dash?.kpis?.frequencia ?? 0) + '%' }} /></div>
               </Kpi>
               <Kpi label="Média geral" value={(dash?.kpis?.media ?? media).toFixed(1)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />

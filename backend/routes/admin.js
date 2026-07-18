@@ -29,6 +29,7 @@ const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
 const {
     DEFAULT_STATUS,
+    STUDENT_STATUSES,
     extractStudentFields,
     validateStudentFields,
     diffStudentForAudit,
@@ -70,7 +71,7 @@ function recordAcademicAudit(req, actor, type, target, before, after) {
 }
 const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
-const { computeStudentDashboard, studentOverview } = require('../utils/studentAnalytics.js');
+const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require('../utils/studentAnalytics.js');
 const attendanceUtil = require('../utils/attendance.js');
 const runtimePaths = require('../runtimePaths.js');
 const { isBlockedUploadName, validateUploadedFile } = require('../utils/uploadSecurity.js');
@@ -864,6 +865,123 @@ router.post('/api/admin/student/update', (req, res) => {
         }
 
         res.json({ success: true });
+    });
+});
+
+// ---- Ações em lote (tela de Alunos) ----
+// A lista de e-mails vem do cliente, então o escopo do professor é reaplicado aqui:
+// nunca confiar na seleção recebida. Alunos fora do escopo viram 'skipped', não erro.
+function resolveBulkTargets(emails, matchedAdmin) {
+    const wanted = [...new Set((Array.isArray(emails) ? emails : [])
+        .map(e => String(e || '').trim().toLowerCase())
+        .filter(Boolean))];
+    const students = db.memory.students;
+    const allowed = new Set(filterStudentsForAdmin(students, matchedAdmin)
+        .map(s => (s.email || '').toLowerCase()));
+    const targets = [];
+    const skipped = [];
+    wanted.forEach(email => {
+        const index = students.findIndex(s => s.email && s.email.toLowerCase() === email);
+        if (index === -1) skipped.push({ email, reason: 'Aluno não encontrado.' });
+        else if (!allowed.has(email)) skipped.push({ email, reason: 'Fora do seu escopo.' });
+        else targets.push(index);
+    });
+    return { targets, skipped };
+}
+
+// Matricula vários alunos de uma vez numa turma (adiciona, não substitui as demais).
+router.post('/api/admin/student/bulk-enroll', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const { emails, className } = req.body;
+        const name = String(className || '').trim();
+        if (!name) return res.status(400).json({ error: 'Informe a turma.' });
+
+        const cls = (db.memory.classes || []).find(c => c.name === name);
+        if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
+        if (!adminCanAccessClass(matchedAdmin, cls.name, cls.courseId)) {
+            return res.status(403).json({ error: 'Turma fora do seu escopo.' });
+        }
+
+        const { targets, skipped } = resolveBulkTargets(emails, matchedAdmin);
+        if (!targets.length && !skipped.length) {
+            return res.status(400).json({ error: 'Selecione ao menos um aluno.' });
+        }
+
+        const students = db.memory.students;
+        let updated = 0;
+        targets.forEach(index => {
+            const before = students[index];
+            const current = Array.isArray(before.classes) && before.classes.length
+                ? before.classes
+                : (before.studentClass ? [before.studentClass] : []);
+            const alreadyIn = current.some(c => (typeof c === 'string' ? c : c && c.name) === name);
+            if (alreadyIn) {
+                skipped.push({ email: before.email, reason: 'Já matriculado nesta turma.' });
+                return;
+            }
+            const nextClasses = [...current, name];
+            const changes = diffStudentForAudit(before, { classes: nextClasses });
+            students[index] = {
+                ...before,
+                classes: nextClasses,
+                studentClass: nextClasses[0], // Compatibilidade
+                updatedAt: Date.now(),
+            };
+            if (changes.length) {
+                recordStudentAudit(db.memory, {
+                    actor: (matchedAdmin && matchedAdmin.email) || 'admin',
+                    studentEmail: before.email,
+                    action: 'bulk_enroll',
+                    changes,
+                    req,
+                });
+            }
+            updated++;
+        });
+
+        if (updated) db.save();
+        res.json({ success: true, updated, skipped });
+    });
+});
+
+// Altera a situação (Ativo, Inativo, ...) de vários alunos de uma vez.
+router.post('/api/admin/student/bulk-status', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const { emails, status } = req.body;
+        const nextStatus = String(status || '').trim();
+        if (!STUDENT_STATUSES.includes(nextStatus)) {
+            return res.status(400).json({ error: `Situação inválida. Use uma de: ${STUDENT_STATUSES.join(', ')}.` });
+        }
+
+        const { targets, skipped } = resolveBulkTargets(emails, matchedAdmin);
+        if (!targets.length && !skipped.length) {
+            return res.status(400).json({ error: 'Selecione ao menos um aluno.' });
+        }
+
+        const students = db.memory.students;
+        let updated = 0;
+        targets.forEach(index => {
+            const before = students[index];
+            if ((before.status || DEFAULT_STATUS) === nextStatus) {
+                skipped.push({ email: before.email, reason: 'Já está nesta situação.' });
+                return;
+            }
+            const changes = diffStudentForAudit(before, { status: nextStatus });
+            students[index] = { ...before, status: nextStatus, updatedAt: Date.now() };
+            if (changes.length) {
+                recordStudentAudit(db.memory, {
+                    actor: (matchedAdmin && matchedAdmin.email) || 'admin',
+                    studentEmail: before.email,
+                    action: 'bulk_status',
+                    changes,
+                    req,
+                });
+            }
+            updated++;
+        });
+
+        if (updated) db.save();
+        res.json({ success: true, updated, skipped });
     });
 });
 
@@ -3386,11 +3504,14 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
             list = list.filter(st => scn(st).some(nm => clsNames.has(nm)));
         }
         if (studentClass) list = list.filter(st => studentBelongsToClass(st, studentClass, courseId));
+        // Índice montado uma vez por requisição: a tela de Alunos chama esta rota sem
+        // filtro de curso, então sem ele o custo seria alunos × (presenças + submissões).
+        const index = buildOverviewIndex(db.memory);
         const overview = list.map(st => ({
             email: st.email,
             name: (st.nomeSocial && st.nomeSocial.trim()) || st.name || st.email,
             className: studentClass || scn(st)[0] || '',
-            ...studentOverview(db.memory, st, { courseId }),
+            ...studentOverview(db.memory, st, { courseId, index }),
         }));
         res.json(overview);
     });

@@ -26,10 +26,13 @@ function courseUnitStats(memory, courseId) {
     return { units, exams };
 }
 
+// Média (0–10) das provas. null quando não há prova — "sem avaliação" não é nota zero.
 function mediaOf(subs) {
-    if (!subs.length) return 0;
+    if (!subs.length) return null;
     return subs.reduce((a, s) => a + (Number(s.score) || 0), 0) / subs.length / 10;
 }
+// Arredonda para 1 casa preservando null (sem dado continua sem dado).
+const round1 = (v) => v == null ? null : Math.round(v * 10) / 10;
 
 // Um dia conta como presença (streak/dias ativos) se tiver ao menos 1 aula presente.
 function isPresentAtt(a) {
@@ -37,14 +40,36 @@ function isPresentAtt(a) {
     return attendanceUtil.recordHasPresence(a);
 }
 
+// Índice por e-mail de presenças e submissões. Sem ele, calcular a visão geral de N
+// alunos custa N × (presenças + submissões) — 800 alunos levavam ~17s e bloqueavam o
+// event loop. Construir uma vez por requisição torna o custo linear.
+function buildOverviewIndex(memory) {
+    const att = new Map();
+    (memory.attendance || []).forEach(a => {
+        const e = String(a.studentEmail || '').trim().toLowerCase();
+        if (!e) return;
+        if (!att.has(e)) att.set(e, []);
+        att.get(e).push(a);
+    });
+    const subs = new Map();
+    (memory.submissions || []).forEach(s => {
+        const e = s && s.student && s.student.email ? String(s.student.email).trim().toLowerCase() : '';
+        if (!e) return;
+        if (!subs.has(e)) subs.set(e, []);
+        subs.get(e).push(s);
+    });
+    return { att, subs };
+}
+
 // Registros de presença de um aluno, opcionalmente restritos a um curso.
 // Deduplicados por data (chamada > manual > login) para não contar em dobro.
-function attendanceRecordsFor(memory, email, courseId = '') {
+function attendanceRecordsFor(memory, email, courseId = '', index = null) {
     const e = String(email || '').trim().toLowerCase();
     const cid = String(courseId || '').trim();
-    const filtered = (memory.attendance || []).filter(a =>
-        String(a.studentEmail || '').trim().toLowerCase() === e
-        && (!cid || !a.courseId || String(a.courseId) === cid));
+    const doAluno = index
+        ? (index.att.get(e) || [])
+        : (memory.attendance || []).filter(a => String(a.studentEmail || '').trim().toLowerCase() === e);
+    const filtered = doAluno.filter(a => (!cid || !a.courseId || String(a.courseId) === cid));
     return attendanceUtil.dedupeByDate(filtered);
 }
 
@@ -75,14 +100,17 @@ function computeStudentDashboard(memory, email) {
     const unitStats = courseUnitStats(memory, courseId);
 
     const progressMap = (memory.progress && memory.progress[email]) || {};
-    const completed = Object.keys(progressMap).filter(k => progressMap[k]).length;
+    // Uma unidade só conta como concluída se tiver progresso real: array vazio não é "feito".
+    const isDone = (v) => Array.isArray(v) ? v.length > 0 : !!v;
+    const completed = Object.keys(progressMap).filter(k => isDone(progressMap[k])).length;
     const media = mediaOf(subs);
     const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId));
     const limiar = riskThreshold(memory, student, courseId);
-    const frequencia = stats.frequenciaGeral == null ? 0 : stats.frequenciaGeral;
+    // null = sem chamada lançada (desconhecido), distinto de 0% de presença.
+    const frequencia = stats.frequenciaGeral;
     const kpis = {
         frequencia,
-        media: Math.round(media * 10) / 10,
+        media: round1(media),
         progresso: unitStats.units ? Math.round((completed / unitStats.units) * 100) : 0,
         provasFeitas: subs.length,
         provasTotais: unitStats.exams,
@@ -158,18 +186,22 @@ function computeStudentDashboard(memory, email) {
     }
     const streak = { atual, recorde };
 
-    // Comparação temporal (mês atual vs anterior)
-    const now = new Date();
-    const curKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
-    const prevD = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const prevKey = `${prevD.getFullYear()}-${pad(prevD.getMonth() + 1)}`;
-    const subsMonth = (k) => subs.filter(s => (s.timestamp || '').slice(0, 7) === k);
-    const attMonth = (k) => new Set((memory.attendance || []).filter(a => a.studentEmail === email && (a.date || '').slice(0, 7) === k && isPresentAtt(a)).map(a => a.date)).size;
+    // Comparação temporal: janelas móveis de 30 dias (últimos 30 x 30 anteriores).
+    // Meses de calendário enviesam o comparativo — no dia 5, "mês atual" teria 5 dias contra 30.
+    const nowMs = Date.now();
+    const inWindow = (t, startDaysAgo, endDaysAgo) =>
+        t > nowMs - startDaysAgo * 86400000 && t <= nowMs - endDaysAgo * 86400000;
+    const subsWindow = (startDaysAgo, endDaysAgo) =>
+        subs.filter(s => inWindow(new Date(s.timestamp || 0).getTime(), startDaysAgo, endDaysAgo));
+    const attWindow = (startDaysAgo, endDaysAgo) =>
+        new Set((memory.attendance || [])
+            .filter(a => a.studentEmail === email && isPresentAtt(a) && inWindow(new Date(a.date || 0).getTime(), startDaysAgo, endDaysAgo))
+            .map(a => a.date)).size;
     const temporal = {
-        mediaAtual: Math.round(mediaOf(subsMonth(curKey)) * 10) / 10,
-        mediaAnterior: Math.round(mediaOf(subsMonth(prevKey)) * 10) / 10,
-        presencaAtual: attMonth(curKey),
-        presencaAnterior: attMonth(prevKey),
+        mediaAtual: round1(mediaOf(subsWindow(30, 0))),
+        mediaAnterior: round1(mediaOf(subsWindow(60, 30))),
+        presencaAtual: attWindow(30, 0),
+        presencaAnterior: attWindow(60, 30),
     };
 
     // Notas e módulos
@@ -186,25 +218,35 @@ function computeStudentDashboard(memory, email) {
 function studentOverview(memory, student, options = {}) {
     const email = String(student.email || '').toLowerCase();
     const courseId = options.courseId || '';
-    const subs = (memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === email);
-    const media = Math.round(mediaOf(subs) * 10) / 10;
-    const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId));
+    // options.index (buildOverviewIndex) evita varrer submissions/attendance por aluno.
+    const index = options.index || null;
+    const todasSubs = index
+        ? (index.subs.get(email) || [])
+        : (memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === email);
+    // A média segue o mesmo recorte da frequência: prova de outro curso não entra.
+    const subs = courseId
+        ? todasSubs.filter(x => String(x.student && x.student.courseId || '') === String(courseId))
+        : todasSubs;
+    const media = round1(mediaOf(subs));
+    const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId, index));
     const limiar = riskThreshold(memory, student, courseId);
-    const frequencia = stats.frequenciaGeral == null ? 0 : stats.frequenciaGeral;
+    // null = "sem aula lançada". Nunca 0: isso acusaria o aluno de faltar a tudo.
+    const frequencia = stats.frequenciaGeral;
     const faltas = stats.faltasContam;
-    const temFreq = stats.totalAulas > 0 && stats.frequenciaGeral != null;
     const disciplinasEmRisco = Object.values(stats.porDisciplina).filter(v => v.frequencia != null && v.frequencia < limiar).length;
+    // Cada motivo só pesa quando existe dado que o sustente — ausência não é sinal ruim.
     const reasons = [];
-    if (temFreq && stats.frequenciaGeral < limiar) reasons.push('freq');
+    if (frequencia != null && frequencia < limiar) reasons.push('freq');
     if (disciplinasEmRisco) reasons.push('disciplina');
-    if (subs.length && media < 6) reasons.push('media');
+    if (media != null && media < 6) reasons.push('media');
     const lastAccess = student.lastLoginAt || student.lastSeenAt;
     const daysSince = lastAccess ? Math.floor((Date.now() - lastAccess) / 86400000) : null;
     if (daysSince !== null && daysSince > 14) reasons.push('acesso');
     let riscoLevel = 'baixo';
-    if ((temFreq && stats.frequenciaGeral < Math.max(0, limiar - 25)) || reasons.length >= 2) riscoLevel = 'alto';
+    if ((frequencia != null && frequencia < Math.max(0, limiar - 25)) || reasons.length >= 2) riscoLevel = 'alto';
     else if (reasons.length === 1) riscoLevel = 'medio';
-    return { frequencia, faltas, media, riscoLevel, disciplinasEmRisco };
+    // presentes/totalAulas expõem o denominador: 90% de 10 aulas não é 90% de 100.
+    return { frequencia, presentes: stats.presentes, totalAulas: stats.totalAulas, faltas, media, riscoLevel, disciplinasEmRisco };
 }
 
-module.exports = { computeStudentDashboard, studentOverview, absenceCount };
+module.exports = { computeStudentDashboard, studentOverview, absenceCount, buildOverviewIndex };

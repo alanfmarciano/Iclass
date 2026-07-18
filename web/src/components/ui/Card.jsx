@@ -1,6 +1,8 @@
 import { cn } from '../../lib/cn'
-export function Card({ className, children, ...p }) {
-  return <div className={cn('premium-card rounded-xl', className)} {...p}>{children}</div>
+// `as` permite renderizar o card como <button> quando ele for interativo,
+// mantendo semântica e foco por teclado. Sem `as`, continua sendo uma <div>.
+export function Card({ className, children, as: Tag = 'div', ...p }) {
+  return <Tag className={cn('premium-card rounded-xl', className)} {...p}>{children}</Tag>
 }
 export function CardHeader({ title, subtitle, action }) {
   return (
