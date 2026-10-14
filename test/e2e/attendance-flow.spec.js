@@ -49,22 +49,29 @@ test('[UC-PRESENCA-002] chamada por aula salva justificativa abonada e a restaur
     await expect(page.getByText('Aulas do dia:')).toBeVisible();
     await expect(page.getByText('Fundamentos de TI', { exact: false }).first()).toBeVisible();
 
-    const alice = page.locator('div.p-3.flex.flex-col.gap-2').filter({ hasText: 'Alice Aluna' });
+    // A linha do aluno é o bloco que contém o grupo de status dele (independe do espaçamento da lista).
+    const alice = page.locator('div.flex.flex-col.gap-2').filter({ has: page.getByRole('radiogroup', { name: 'Status de Alice Aluna' }) });
     await expect(alice).toHaveCount(1);
-    await alice.getByTitle('Justificada').first().click();
-    await alice.getByPlaceholder('Justificativa / observações…').fill('Atestado conferido pela secretaria');
-    await alice.getByRole('checkbox', { name: /Abona falta/ }).check();
+    // UI atual: status é um grupo de rádios; "abonar" é um botão que alterna o texto.
+    await alice.getByRole('radio', { name: 'Justificado' }).click();
+    await alice.getByPlaceholder('Justificativa, motivo, observações…').fill('Atestado conferido pela secretaria');
+    await alice.getByRole('button', { name: 'Não abona falta' }).click();
+    await expect(alice.getByRole('button', { name: 'Abona falta', exact: true })).toBeVisible();
 
     const saved = page.waitForResponse(response => (
         response.request().method() === 'POST'
         && new URL(response.url()).pathname === '/api/admin/attendance/bulk'
     ));
-    await page.getByRole('button', { name: 'Salvar chamada', exact: true }).click();
+    // UI atual: "Concluir chamada" abre um resumo e confirma no diálogo.
+    await page.getByRole('button', { name: 'Concluir chamada', exact: true }).click();
+    const conclusao = page.getByRole('dialog', { name: 'Concluir chamada?' });
+    await expect(conclusao).toBeVisible();
+    await conclusao.getByRole('button', { name: 'Concluir chamada', exact: true }).click();
     const response = await saved;
     expect(response.status()).toBe(200);
     expect((await response.json()).saved).toBeGreaterThanOrEqual(12);
 
-    await expect(alice.getByPlaceholder('Justificativa / observações…')).toHaveValue('Atestado conferido pela secretaria');
-    await expect(alice.getByRole('checkbox', { name: /Abona falta/ })).toBeChecked();
-    await expect(alice.getByTitle('Justificada').first()).toHaveClass(/bg-primary-soft/);
+    await expect(alice.getByPlaceholder('Justificativa, motivo, observações…')).toHaveValue('Atestado conferido pela secretaria');
+    await expect(alice.getByRole('button', { name: 'Abona falta', exact: true })).toBeVisible();
+    await expect(alice.getByRole('radio', { name: 'Justificado' })).toHaveAttribute('aria-checked', 'true');
 });

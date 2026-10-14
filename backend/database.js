@@ -156,6 +156,13 @@ let memoryDB = {
 let isSaving = false;
 let hasPendingSave = false;
 let saveWaiters = [];
+// Último conteúdo gravado por tabela ({ tabela: Map(chave -> json) }); null força reescrita completa.
+let lastWrittenRows = null;
+
+function classStorageKey(cls) {
+    if (!cls || !cls.name) return '';
+    return `${String(cls.courseId || '').trim()}::${String(cls.name).trim()}`;
+}
 
 // Criação de Tabelas se não existirem
 function createTables() {
@@ -777,36 +784,58 @@ function saveToDisk() {
         sqliteDb.serialize(() => {
             sqliteDb.run("BEGIN TRANSACTION");
             
+            // Gravação incremental: cada tabela guarda o JSON da última escrita por chave
+            // e só as linhas que mudaram são gravadas. Antes, cada save apagava e regravava
+            // TODAS as tabelas (inclusive milhares de teclas e logs), o que pesava durante
+            // uma prova com muitos alunos. Na primeira gravação (ou após falha) a tabela
+            // inteira é reescrita para garantir consistência.
+            const writtenThisCycle = {};
+            const writeTable = (tableName, next) => {
+                const previous = lastWrittenRows && lastWrittenRows[tableName];
+                if (!previous) {
+                    sqliteDb.run(`DELETE FROM ${tableName}`);
+                    const insert = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
+                    next.forEach((json, key) => insert.run(key, json));
+                    insert.finalize();
+                } else {
+                    const remove = sqliteDb.prepare(`DELETE FROM ${tableName} WHERE key = ?`);
+                    previous.forEach((_, key) => { if (!next.has(key)) remove.run(key); });
+                    remove.finalize();
+                    const upsert = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
+                    next.forEach((json, key) => { if (previous.get(key) !== json) upsert.run(key, json); });
+                    upsert.finalize();
+                }
+                writtenThisCycle[tableName] = next;
+            };
+
             const syncArrayTable = (tableName, arr, keyField) => {
-                sqliteDb.run(`DELETE FROM ${tableName}`);
-                const stmt = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
+                const next = new Map();
                 (arr || []).forEach((item, idx) => {
                     if (!item) return;
-                    let keyVal = item[keyField];
+                    let keyVal = typeof keyField === 'function' ? keyField(item) : item[keyField];
                     if (keyVal === undefined || keyVal === null || keyVal === '') {
                         // NUNCA descarta um registro por falta da chave (era isso que apagava as
                         // notas: submissões sem 'id' eram puladas). Gera uma chave estável e a
                         // grava de volta no objeto em memória para mantê-la consistente.
                         keyVal = `${tableName}_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 8)}`;
-                        try { item[keyField] = keyVal; } catch (e) {}
+                        if (typeof keyField === 'string') { try { item[keyField] = keyVal; } catch (e) {} }
                     }
-                    stmt.run(keyVal, JSON.stringify(item));
+                    next.set(String(keyVal), JSON.stringify(item));
                 });
-                stmt.finalize();
+                writeTable(tableName, next);
             };
 
             const syncObjectTable = (tableName, obj) => {
-                sqliteDb.run(`DELETE FROM ${tableName}`);
-                const stmt = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
-                for (const key in obj) {
-                    stmt.run(key, JSON.stringify(obj[key]));
-                }
-                stmt.finalize();
+                const next = new Map();
+                for (const key in obj) next.set(String(key), JSON.stringify(obj[key]));
+                writeTable(tableName, next);
             };
 
             try {
                 syncArrayTable('students', memoryDB.students, 'email');
-                syncArrayTable('classes', memoryDB.classes, 'name');
+                // Turma é identificada por curso + nome: "TURMA A" pode existir em dois cursos.
+                // Com a chave só pelo nome, uma delas era apagada a cada gravação.
+                syncArrayTable('classes', memoryDB.classes, classStorageKey);
                 syncArrayTable('courses', memoryDB.courses, 'id');
                 syncArrayTable('submissions', memoryDB.submissions, 'id');
                 syncArrayTable('exam_applications', memoryDB.examApplications, 'id');
@@ -846,6 +875,9 @@ function saveToDisk() {
                     if (err) {
                         console.error("Erro ao comitar alterações no SQLite:", err);
                     }
+                    // Só confia no diff incremental se o COMMIT deu certo; caso contrário a
+                    // próxima gravação reescreve tudo.
+                    lastWrittenRows = err ? null : writtenThisCycle;
                     if (err) cycleWaiters.forEach(waiter => waiter.reject(err));
                     else cycleWaiters.forEach(waiter => waiter.resolve());
                     isSaving = false;
@@ -855,6 +887,7 @@ function saveToDisk() {
                 });
             } catch (err) {
                 console.error("Falha ao salvar dados no SQLite:", err);
+                lastWrittenRows = null;
                 sqliteDb.run("ROLLBACK");
                 cycleWaiters.forEach(waiter => waiter.reject(err));
                 isSaving = false;
@@ -890,5 +923,6 @@ module.exports = {
     needsPasswordRehash,
     allClassAssignments,
     syncAdminClassAssignments,
+    classStorageKey,
     isHashed
 };

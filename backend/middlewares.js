@@ -98,11 +98,6 @@ function validateStudentSession(req, res, next) {
     const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
     const sessionIp = normalizeIp(session.ip);
     
-    if (sessionIp && sessionIp !== clientIp) {
-        console.warn(`[IDOR BLOCK] Tentativa de acesso bloqueada para e-mail ${normalizedEmail}. IP da sessão: ${sessionIp}, IP da requisição: ${clientIp}`);
-        return res.status(403).json({ error: 'Acesso negado. Sessão inválida ou IP não autorizado.' });
-    }
-    
     // Sessão única: se a sessão tem um token (login recente), exige que a requisição
     // apresente o mesmo token. Um novo login gera token novo e invalida o dispositivo antigo.
     const sessionObj = db.memory.sessions[normalizedEmail];
@@ -113,6 +108,14 @@ function validateStudentSession(req, res, next) {
                 sessionRevoked: true
             });
         }
+    }
+
+    // O token (UUID por login) já prova a identidade. Um IP diferente é registrado,
+    // mas não derruba a sessão: celular que troca de Wi-Fi para 4G ou recebe outro
+    // IP do roteador perdia a prova no meio.
+    if (sessionIp && sessionIp !== clientIp) {
+        console.warn(`[SESSÃO] IP mudou para ${normalizedEmail}: ${sessionIp} -> ${clientIp}`);
+        session.ip = clientIp;
     }
 
     const nowTs = Date.now();
@@ -142,6 +145,32 @@ function validateStudentSession(req, res, next) {
     req.studentEmail = normalizedEmail;
     req.studentAccount = student;
 
+    next();
+}
+
+// Identifica quem faz a requisição por token: instrutor (x-admin-session) ou aluno
+// (x-session-token). Usado nas rotas que servem conteúdo de prova a qualquer perfil
+// autenticado; sem token válido a rota responde 401.
+function resolveRequester(req) {
+    const adminToken = String(req.get('x-admin-session') || '');
+    if (adminToken && db.memory.adminSessions && db.memory.adminSessions[adminToken]) {
+        return { role: 'admin', email: db.memory.adminSessions[adminToken].email };
+    }
+    const studentToken = String(req.get('x-session-token') || (req.query && req.query.sessionToken) || '');
+    if (studentToken) {
+        const match = Object.entries(db.memory.sessions || {})
+            .find(([, value]) => value && typeof value === 'object' && value.token === studentToken);
+        if (match) return { role: 'student', email: match[0] };
+    }
+    return null;
+}
+
+function validateAnySession(req, res, next) {
+    const requester = resolveRequester(req);
+    if (!requester) {
+        return res.status(401).json({ error: 'Autenticação necessária.', sessionRevoked: true });
+    }
+    req.requester = requester;
     next();
 }
 
@@ -442,6 +471,9 @@ function findScopedStudentEmail(pathName, req) {
     if (/^\/(student(?:\/.*)?|reset-password|delete-student|submissions(?:\/.*)?)$/.test(pathName)) {
         return body.originalEmail || body.email || query.email;
     }
+    if (/^\/(monitor-review|exam-keystrokes)\//.test(pathName)) {
+        return query.studentEmail || query.email;
+    }
     return null;
 }
 
@@ -461,7 +493,7 @@ function validateProfessorRequestScope(req, account) {
     if (/^\/class\/(toggle-registration|delete)$/.test(pathName) && body.name) {
         classNames.push(String(body.name).trim());
     }
-    const pathClass = pathName.match(/^\/(?:monitor-status|export-grades|exam-analytics|proctoring-logs|exam-keystrokes)\/([^/]+)/);
+    const pathClass = pathName.match(/^\/(?:monitor-status|monitor-review|export-grades|exam-analytics|proctoring-logs|exam-keystrokes)\/([^/]+)/);
     if (pathClass) classNames.push(safeDecode(pathClass[1]));
     const applicationPath = pathName.match(/^\/exam-applications\/([^/]+)/);
     if (applicationPath) {
@@ -795,6 +827,15 @@ function initializeExamState(state, onlineConfig) {
             state.startedAt = configuredStart;
             changed = true;
         }
+        // "Cronômetro ativo" desligado: a prova não tem prazo, mesmo com duração configurada.
+        if (onlineConfig.timerEnabled === false) {
+            if (state.deadlineAt !== null || state.timerRemaining !== null) {
+                state.deadlineAt = null;
+                state.timerRemaining = null;
+                changed = true;
+            }
+            return changed;
+        }
         const duration = Number(onlineConfig.durationMinutes || 0);
         if (duration > 0) {
             const adjustment = Number(onlineConfig.globalTimeAdjustment || 0)
@@ -820,6 +861,8 @@ module.exports = {
     localIpAddresses,
     normalizeIp,
     validateStudentSession,
+    resolveRequester,
+    validateAnySession,
     validateAdmin,
     issueAdminSession,
     SERVER_INSTANCE_ID,

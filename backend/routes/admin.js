@@ -26,6 +26,7 @@ const {
     adminCanAccessStudent
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
+const { gradeAttempt } = require('../utils/examGrading.js');
 const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
 const {
     DEFAULT_STATUS,
@@ -307,6 +308,15 @@ router.post('/api/admin/delete-student', (req, res) => {
         if (db.memory.notes) delete db.memory.notes[normalizedEmail];
         if (db.memory.annotations) delete db.memory.annotations[normalizedEmail];
         if (db.memory.sessions) delete db.memory.sessions[normalizedEmail];
+        // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
+        // certificados, logs de prova e de login). O log de auditoria é mantido como histórico.
+        const ownedBy = item => item && String(item.studentEmail || item.email || '').toLowerCase() === normalizedEmail;
+        ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs', 'forum']
+            .forEach(collection => { if (Array.isArray(db.memory[collection])) db.memory[collection] = db.memory[collection].filter(item => !ownedBy(item)); });
+        Object.keys(db.memory.studentExamState || {}).forEach(key => {
+            const state = db.memory.studentExamState[key];
+            if (state && String(state.studentEmail || '').toLowerCase() === normalizedEmail) delete db.memory.studentExamState[key];
+        });
 
         const classes = readJSON(DB_CLASSES_FILE);
         classes.forEach(cls => {
@@ -732,12 +742,15 @@ router.post('/api/admin/student/create', (req, res) => {
         }
 
         const allClasses = db.memory.classes;
+        const requestedCourseId = String(req.body.courseId || '').trim();
 
-        // Valida se as turmas existem
+        // Valida se as turmas existem (no curso informado, quando houver: o nome pode repetir entre cursos)
         for (let c of studentClasses) {
-            const matchedClass = allClasses.find(cls => cls.name === c);
+            const className = typeof c === 'string' ? c : (c && (c.name || c.className));
+            const classCourse = (c && typeof c === 'object' && c.courseId) || requestedCourseId;
+            const matchedClass = allClasses.find(cls => cls.name === className && (!classCourse || String(cls.courseId) === String(classCourse)));
             if (!matchedClass) {
-                return res.status(400).json({ error: `A turma ${c} não está pré-cadastrada no sistema.` });
+                return res.status(400).json({ error: `A turma ${className} não está pré-cadastrada no sistema.` });
             }
         }
 
@@ -864,10 +877,64 @@ router.post('/api/admin/student/update', (req, res) => {
         if (submissionsUpdated) {
             db.save();
         }
+        // As demais coleções (progresso, caderno, presença, acessos, observações...) são
+        // indexadas pelo e-mail; sem esta cascata o aluno "perdia" tudo ao trocar o login.
+        if (newEmailNormalized !== originalEmailNorm) {
+            renameStudentEmailEverywhere(originalEmailNorm, newEmailNormalized);
+            db.save();
+        }
 
         res.json({ success: true });
     });
 });
+
+// Propaga a troca de e-mail do aluno para todas as coleções indexadas por e-mail.
+function renameStudentEmailEverywhere(oldEmail, newEmail) {
+    const same = value => String(value || '').toLowerCase() === oldEmail;
+    const memory = db.memory;
+    ['progress', 'notes', 'annotations'].forEach(collection => {
+        const map = memory[collection];
+        if (map && Object.prototype.hasOwnProperty.call(map, oldEmail)) {
+            map[newEmail] = map[oldEmail];
+            delete map[oldEmail];
+        }
+    });
+    if (memory.sessions) delete memory.sessions[oldEmail];
+    ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'forum', 'auditLogs']
+        .forEach(collection => (memory[collection] || []).forEach(item => { if (item && same(item.studentEmail)) item.studentEmail = newEmail; }));
+    (memory.broadcastMessages || []).forEach(message => {
+        if (!message) return;
+        if (same(message.targetEmail)) message.targetEmail = newEmail;
+        ['acknowledgedBy', 'deletedFor'].forEach(field => {
+            if (Array.isArray(message[field])) message[field] = message[field].map(value => same(value) ? newEmail : value);
+        });
+    });
+    (memory.announcements || []).forEach(item => {
+        if (!item) return;
+        if (item.target === 'aluno' && same(item.targetValue)) item.targetValue = newEmail;
+        if (Array.isArray(item.readBy)) item.readBy = item.readBy.map(value => same(value) ? newEmail : value);
+    });
+    (memory.classes || []).forEach(cls => {
+        if (cls && cls.studentReleasedItems && cls.studentReleasedItems[oldEmail]) {
+            cls.studentReleasedItems[newEmail] = cls.studentReleasedItems[oldEmail];
+            delete cls.studentReleasedItems[oldEmail];
+        }
+    });
+    const examState = memory.studentExamState || {};
+    Object.keys(examState).forEach(key => {
+        const state = examState[key];
+        if (!state || !same(state.studentEmail)) return;
+        state.studentEmail = newEmail;
+        const renamedKey = key.includes('::') ? key.replace(`::${oldEmail}::`, `::${newEmail}::`) : key.replace(`${oldEmail}_`, `${newEmail}_`);
+        if (renamedKey !== key) { examState[renamedKey] = state; delete examState[key]; }
+    });
+    (memory.examApplications || []).forEach(application => {
+        ['studentAdjustments', 'studentVersions'].forEach(field => {
+            const map = application && application[field];
+            if (map && Object.prototype.hasOwnProperty.call(map, oldEmail)) { map[newEmail] = map[oldEmail]; delete map[oldEmail]; }
+        });
+    });
+}
 
 // ---- Ações em lote (tela de Alunos) ----
 // A lista de e-mails vem do cliente, então o escopo do professor é reaplicado aqui:
@@ -3018,7 +3085,7 @@ router.post('/api/admin/send-broadcast-message', (req, res) => {
             messageText: messageText.trim(),
             timestamp: Date.now(),
             createdAt: new Date().toISOString(),
-            senderEmail: req.headers.authorization ? String(req.headers.authorization).split(':')[0] : null,
+            senderEmail: (req.adminAccount && req.adminAccount.email) || null,
             acknowledgedBy: [],
             deletedFor: [],
             adminDeleted: false,
@@ -3198,6 +3265,151 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         });
 
         res.json(monitorList);
+    });
+});
+
+// 5b. Retorna a prova corrente de UM aluno com respostas + gabarito (correção ao vivo).
+// Funciona tanto para prova em andamento (state.answers) quanto finalizada (submission.gradedAnswers).
+router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
+    validateAdmin(req, res, () => {
+        const studentClass = req.params.class.trim();
+        const examKey = req.params.examKey.trim();
+        const courseId = req.query.courseId;
+        const studentEmail = String(req.query.studentEmail || '').trim().toLowerCase();
+        if (!studentEmail) return res.status(400).json({ error: 'studentEmail é obrigatório.' });
+
+        const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)
+            || (db.memory.classes || []).find(c => c.name && c.name.toLowerCase() === studentClass.toLowerCase());
+        const currentConfig = (cls && cls.onlineExamConfigs && cls.onlineExamConfigs[examKey]) || {};
+        const application = findExamApplication(db.memory.examApplications, req.query.applicationId || currentConfig.applicationId);
+        if (req.query.applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+
+        const student = db.memory.students.find(s => s.email && s.email.toLowerCase() === studentEmail);
+        if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
+        // Escopo do professor: além da turma da URL, o aluno pedido precisa estar nas turmas dele.
+        if (!adminCanAccessStudent(req.adminAccount, student) || (cls && !adminCanAccessClass(req.adminAccount, cls.name, cls.courseId))) {
+            return res.status(403).json({ error: 'O aluno solicitado não pertence às turmas atribuídas a esta conta.' });
+        }
+
+        const openAttempt = application
+            ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail })
+            : null;
+        const stateKey = openAttempt?.key || examStateKey({ studentEmail, examKey });
+        const state = openAttempt?.state || db.memory.studentExamState[stateKey] || { answers: {}, assignedVersion: 'A' };
+
+        const submission = db.memory.submissions.find(sub =>
+            (sub.studentEmail ? sub.studentEmail.toLowerCase() : ((sub.student && sub.student.email) ? sub.student.email.toLowerCase() : '')) === studentEmail &&
+            sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase() &&
+            (application ? sub.applicationId === application.id : true)
+        );
+
+        const assignedVersion = String((submission && submission.assignedVersion) || state.assignedVersion || 'A').toUpperCase();
+
+        // Prova em andamento: usa o MESMO motor da nota final (questões atribuídas,
+        // anulações e substituições), para que "certa/errada" aqui bata com a correção.
+        const liveGrade = !submission
+            ? gradeAttempt({ application, onlineConfig: currentConfig, state, evaluation: db.memory.evaluations?.[examKey], answers: state.answers || {} })
+            : null;
+
+        // Resolve o snapshot da versão do aluno (questões + alternativas).
+        const versionSnapshots = Array.isArray(currentConfig.versionSnapshots) ? currentConfig.versionSnapshots : [];
+        let snapshot = null;
+        if (submission && submission.examSnapshot && Array.isArray(submission.examSnapshot.questions)) {
+            snapshot = submission.examSnapshot;
+        } else if (liveGrade && liveGrade.examSnapshot && Array.isArray(liveGrade.examSnapshot.questions) && liveGrade.examSnapshot.questions.length) {
+            snapshot = liveGrade.examSnapshot;
+        } else {
+            snapshot = versionSnapshots.find(s => String(s.version || 'A').toUpperCase() === assignedVersion) || versionSnapshots[0] || null;
+        }
+        let questions = snapshot && Array.isArray(snapshot.questions) ? snapshot.questions : [];
+
+        // Fallback: prova finalizada sem snapshot — sintetiza a partir das respostas corrigidas.
+        if (questions.length === 0 && submission && Array.isArray(submission.gradedAnswers)) {
+            questions = submission.gradedAnswers.map(a => ({
+                originalNumber: a.questionNumber, number: a.questionNumber,
+                text: `Questão ${a.questionNumber}`, alternatives: []
+            }));
+        }
+
+        function getCorrectAnswer(question) {
+            if (question.correctAnswer) return String(question.correctAnswer).toUpperCase();
+            const correctAlt = (question.alternatives || []).find(alt => alt.isCorrect);
+            return correctAlt && correctAlt.letter ? String(correctAlt.letter).toUpperCase() : '';
+        }
+
+        const gradedByNumber = new Map(
+            (submission ? (submission.gradedAnswers || []) : (liveGrade ? liveGrade.gradedAnswers : []))
+                .map(a => [Number(a.questionNumber), a])
+        );
+        const answers = state.answers || {};
+
+        const reviewQuestions = questions.map((question, index) => {
+            const questionNumber = Number(question.originalNumber || question.number || index + 1);
+            let studentChoice = null;
+            let correctAnswer = null;
+            let isCorrect = false;
+
+            const graded = gradedByNumber.get(questionNumber);
+            if (graded) {
+                studentChoice = graded.studentChoice ? String(graded.studentChoice).toUpperCase() : null;
+                correctAnswer = graded.correctAnswer ? String(graded.correctAnswer).toUpperCase() : null;
+                isCorrect = graded.isCorrect === true;
+            } else if (submission) {
+                correctAnswer = getCorrectAnswer(question) || null;
+            } else {
+                const rawChoice = answers[question.number] != null ? answers[question.number]
+                    : (answers[questionNumber] != null ? answers[questionNumber] : null);
+                studentChoice = rawChoice != null ? String(rawChoice).toUpperCase() : null;
+                correctAnswer = getCorrectAnswer(question) || null;
+                isCorrect = !!studentChoice && studentChoice === correctAnswer;
+            }
+
+            const rawAlternatives = Array.isArray(question.alternatives)
+                ? question.alternatives
+                : Object.entries(question.alternatives || {}).map(([letter, text]) => ({ letter, text }));
+
+            return {
+                position: index + 1,
+                questionNumber,
+                text: question.questionText || question.text || `Questão ${questionNumber}`,
+                studentChoice,
+                correctAnswer,
+                isCorrect,
+                annulled: !!(graded && graded.annulled),
+                annulmentMode: (graded && graded.annulmentMode) || null,
+                answered: !!studentChoice,
+                alternatives: rawAlternatives.map((alternative, alternativeIndex) => {
+                    const canonicalLetter = String(alternative.letter || String.fromCharCode(65 + alternativeIndex)).toUpperCase();
+                    return {
+                        letter: String(alternative.displayLetter || canonicalLetter).toUpperCase(),
+                        canonicalLetter,
+                        text: alternative.text ?? alternative.label ?? String(alternative),
+                        selectedByStudent: canonicalLetter === studentChoice,
+                        correct: canonicalLetter === correctAnswer || alternative.isCorrect === true,
+                    };
+                }),
+            };
+        });
+
+        const answeredCount = reviewQuestions.filter(q => q.answered).length;
+        const correctCount = reviewQuestions.filter(q => q.isCorrect).length;
+        const totalCount = Number(currentConfig.questionCount) || reviewQuestions.length;
+        // Quem já iniciou a tentativa (startedAt) está "em andamento" mesmo sem resposta.
+        const status = submission ? 'finished' : ((answeredCount > 0 || state.startedAt) ? 'in_progress' : 'not_started');
+
+        res.json({
+            success: true,
+            studentName: student.name,
+            studentEmail: student.email,
+            assignedVersion,
+            examCode: (submission && submission.examSnapshot && submission.examSnapshot.examCode) || (snapshot && snapshot.examCode) || null,
+            status,
+            answeredCount,
+            correctCount,
+            totalCount,
+            hasSnapshot: !!(snapshot && Array.isArray(snapshot.questions) && snapshot.questions.length > 0),
+            questions: reviewQuestions,
+        });
     });
 });
 

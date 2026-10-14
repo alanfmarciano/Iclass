@@ -2,6 +2,9 @@ const { test, expect } = require('@playwright/test');
 const axeSource = require('axe-core').source;
 
 async function expectNoWcagViolations(page, context) {
+    // O tema vem da identidade visual (themeMode "auto") depois do primeiro paint;
+    // auditar antes disso media as cores do tema escuro inicial.
+    await page.waitForLoadState('networkidle');
     if (!(await page.evaluate(() => !!window.axe))) await page.addScriptTag({ content: axeSource });
     const results = await page.evaluate(async () => window.axe.run(document, {
         runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] },

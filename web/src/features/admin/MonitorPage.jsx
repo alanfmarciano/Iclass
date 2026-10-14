@@ -16,6 +16,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { resolveMonitorTimer } from './monitorTimer'
 import { FinishApplicationModal } from './FinishApplicationModal'
+import { StudentAnswersModal } from './StudentAnswersModal'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -437,6 +438,7 @@ export default function MonitorPage() {
   const [analytics, setAnalytics] = useState(null)
   const [messageHistory, setMessageHistory] = useState([])
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [answersFor, setAnswersFor] = useState(null) // aluno cuja prova/respostas está aberta
   const [keystrokeWatch, setKeystrokeWatch] = useState(null) // { email, name }
   const [keystrokeEvents, setKeystrokeEvents] = useState([])
   const [keystrokeLoading, setKeystrokeLoading] = useState(false)
@@ -1248,9 +1250,10 @@ export default function MonitorPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {applicationFinished ? (
-                            <Button size="sm" variant="secondary" icon={Eye} onClick={goToResults}>Ver respostas</Button>
+                            <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
                           ) : (
                             <>
+                              <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
                               {r.focusLocked && <Button size="sm" variant="secondary" icon={Unlock} onClick={() => unlock(r.email)}>Foco</Button>}
                               <Button size="sm" variant="secondary" icon={Clock} onClick={() => adjustOne(r.email)}>Tempo</Button>
                               <Button size="sm" variant="secondary" icon={Send} onClick={() => broadcast(r.email)}>Msg</Button>
@@ -1419,6 +1422,16 @@ export default function MonitorPage() {
         busy={finishBusy}
         onSubmit={() => finishApplication('submit')}
         onDiscard={() => finishApplication('discard')}
+      />
+      <StudentAnswersModal
+        open={!!answersFor}
+        onClose={() => setAnswersFor(null)}
+        student={answersFor}
+        className={className}
+        courseId={courseId}
+        examKey={examKey}
+        applicationId={applicationId}
+        onOpenResults={() => { setAnswersFor(null); goToResults() }}
       />
     </div>
   )

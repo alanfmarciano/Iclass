@@ -222,7 +222,10 @@ test('[UC-PROVA-001][UC-PROVA-002] fluxo completo de prova pela interface preser
     student = await studentContext.newPage();
     await loginCreatedStudent(student);
     await student.getByText('Liberada', { exact: true }).first().click();
+    // Ao retomar a tentativa a tela pode pedir tela cheia de novo; espera a prova
+    // sincronizar (um dos dois botões) em vez de checar uma única vez.
     const resumeFullscreen = student.getByRole('button', { name: 'Voltar à tela cheia', exact: true });
+    await expect(student.getByRole('button', { name: /^(Enviar|Voltar à tela cheia)$/ }).first()).toBeVisible({ timeout: 15000 });
     if (await resumeFullscreen.isVisible().catch(() => false)) await resumeFullscreen.click();
     await expect(student.getByRole('button', { name: 'Enviar', exact: true })).toBeVisible({ timeout: 15000 });
     await expect(student.getByText(/1\/3 respondidas/)).toBeVisible();

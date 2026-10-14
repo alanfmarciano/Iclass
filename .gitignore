@@ -20,6 +20,11 @@ backups/
 cursos_arquivados/
 backup_path.txt
 
+# Ambiente de demonstracao (recriado do zero pela opcao 6 do ligarIclassV3.bat)
+data-demo/
+content-demo/
+cursos_arquivados-demo/
+
 # Artefatos de teste e cobertura
 coverage/
 web/coverage/

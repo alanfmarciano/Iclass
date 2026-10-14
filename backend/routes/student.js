@@ -13,6 +13,7 @@ const {
     writeJSON,
     normalizeIp,
     validateStudentSession,
+    validateAnySession,
     sanitizeSubmissionForStudent,
     sanitizeOnlineExamConfigsForStudent,
     canStudentViewAnswerKey,
@@ -195,26 +196,17 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
     res.json({ success: true });
 });
 
-// Beacon de saída do aluno
-router.post('/api/student/leave', express.text({type: 'text/plain'}), (req, res) => {
-    try {
-        let email;
-        if (typeof req.body === 'string') {
-            if (req.body.trim().startsWith('{')) {
-                try {
-                    email = JSON.parse(req.body).email;
-                } catch (jsonErr) {}
-            }
-            if (!email) {
-                email = req.body;
-            }
-        } else if (req.body && typeof req.body === 'object') {
-            email = req.body.email;
-        }
-        if (email) {
-            delete db.memory.sessions[email.toLowerCase()];
-        }
-    } catch(e) {}
+// Beacon de saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer
+// pessoa na rede derrubava a sessão de um aluno pelo e-mail, inclusive durante a prova.
+router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, res, next) => {
+    if (typeof req.body === 'string') {
+        let parsed = null;
+        try { parsed = req.body.trim().startsWith('{') ? JSON.parse(req.body) : null; } catch (jsonErr) {}
+        req.body = parsed && typeof parsed === 'object' ? parsed : { email: req.body.trim() };
+    }
+    next();
+}, validateStudentSession, (req, res) => {
+    delete db.memory.sessions[req.studentEmail];
     res.json({ success: true });
 });
 
@@ -248,8 +240,9 @@ router.get('/api/classes', (req, res) => {
     res.json(activeClasses);
 });
 
-// Retorna o status da prova ativa e itens liberados (específicos por turma)
-router.get('/api/status', (req, res) => {
+// Retorna o status da prova ativa e itens liberados (específicos por turma).
+// Exige sessão (aluno ou instrutor): a resposta inclui os enunciados da prova preparada.
+router.get('/api/status', validateAnySession, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     const studentClass = req.query.studentClass;
     const courseId = req.query.courseId;
@@ -510,6 +503,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
 
 // Cadastro de Aluno
 router.post('/api/student/register', (req, res) => {
+    const { rateLimit } = require('../utils/rateLimit.js');
+    const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    if (!_rl.allowed) {
+        return res.status(429).json({ error: 'Muitos cadastros seguidos. Aguarde um instante e tente novamente.' });
+    }
     const { password, studentClass, courseId } = req.body;
     const fields = extractStudentFields(req.body);
 
@@ -695,7 +693,7 @@ router.get('/api/student/announcements', validateStudentSession, (req, res) => {
     if (!student) return res.json([]);
     const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = settingsUtil.today(); // fuso configurado, como no restante do sistema
     let list = (db.memory.announcements || []).filter(a => {
         if (a.kind === 'calendar') return false;
         if (a.expiresAt && a.expiresAt < today) return false;
@@ -881,18 +879,23 @@ router.post('/api/student/recover', (req, res) => {
         return res.status(400).json({ error: 'E-mail é obrigatório.' });
     }
 
-    const students = readJSON(DB_STUDENTS_FILE);
-    const normalizedEmail = email.trim().toLowerCase();
-    const student = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
-
-    if (!student) {
-        return res.status(404).json({ error: 'E-mail não cadastrado.' });
+    const { rateLimit } = require('../utils/rateLimit.js');
+    const _rl = rateLimit(`student-recover:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    if (!_rl.allowed) {
+        return res.status(429).json({ error: 'Muitas solicitações seguidas. Aguarde um instante e tente novamente.' });
     }
 
-    student.recoveryRequested = true;
-    writeJSON(DB_STUDENTS_FILE, students);
+    const students = readJSON(DB_STUDENTS_FILE);
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const student = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
 
-    res.json({ success: true, message: 'Solicitação de recuperação enviada ao instrutor.' });
+    // Resposta igual com ou sem cadastro: não revela quais e-mails existem.
+    if (student) {
+        student.recoveryRequested = true;
+        writeJSON(DB_STUDENTS_FILE, students);
+    }
+
+    res.json({ success: true, message: 'Se o e-mail estiver cadastrado, o instrutor receberá a solicitação.' });
 });
 
 

@@ -20,7 +20,7 @@
   --border-strong: rgba(255, 255, 255, .13);
   --text: #f5f7fb;
   --text-muted: #a8b0bf;
-  --text-subtle: #727d90;
+  --text-subtle: #8b95a8; /* 4.5:1 sobre --surface-2 (WCAG AA) */
   --success: #43d99a;
   --success-soft: rgba(67, 217, 154, .12);
   --danger: #ff6670;

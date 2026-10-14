@@ -144,7 +144,7 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET', 'POST'], pattern: /^\/message-history(?:\/.*)?$/, permission: 'page.monitor' },
     { methods: ['GET', 'POST'], pattern: /^\/question-reports(?:\/.*)?$/, permission: 'page.monitor' },
     { methods: ['POST'], pattern: /^\/(correct-live-question|annul-question|replace-question)$/, permission: 'page.monitor' },
-    { methods: ['GET'], pattern: /^\/(monitor-status|proctoring-logs|exam-keystrokes)\/.*$/, permission: 'page.monitor' },
+    { methods: ['GET'], pattern: /^\/(monitor-status|monitor-review|proctoring-logs|exam-keystrokes)\/.*$/, permission: 'page.monitor' },
     { methods: ['GET'], pattern: /^\/export-grades\/.*$/, permission: 'page.results' },
     { methods: ['GET'], pattern: /^\/exam-analytics\/.*$/, permission: 'page.results' },
     { methods: ['GET', 'POST'], pattern: /^\/question-bank(?:\/.*)?$/, permission: 'page.exams' },

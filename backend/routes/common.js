@@ -10,7 +10,8 @@ const { effectiveStructure } = require('../utils/classContent.js');
 const {
     sanitizeEvaluationForStudent,
     localIpAddresses,
-    validateAdminPermission
+    validateAdminPermission,
+    validateAnySession
 } = require('../middlewares.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
@@ -33,7 +34,9 @@ router.get('/api/session/status', (req, res) => {
 
 
 // Rota dinamica para servir data.js com conteudo atualizado em tempo real.
-router.get(['/data.js', '/api/data.js'], async (req, res) => {
+// Exige sessão (aluno ou instrutor): o arquivo carrega os enunciados das avaliações
+// do curso e ficava aberto a qualquer um na rede.
+router.get(['/data.js', '/api/data.js'], validateAnySession, async (req, res) => {
     res.set('Content-Type', 'application/javascript');
     const courseId = String(req.query.courseId || '').trim();
     const studentClass = String(req.query.studentClass || '').trim();

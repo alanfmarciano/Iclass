@@ -63,8 +63,8 @@ export default function ModulosPage() {
 
   useEffect(() => {
     if (!courseId) return
-    fetch(`/api/data.js?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`)
-      .then((r) => r.text())
+    // Passa pelo cliente de API para enviar o token do aluno (a rota agora exige sessão).
+    api.get(`/api/data.js?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`, { raw: true })
       .then((text) => setCourseData(parseDataJs(text)))
       .catch((e) => setDataError(e))
   }, [courseId, studentClass])
