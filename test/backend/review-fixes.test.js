@@ -103,6 +103,50 @@ test('prova com cronômetro desativado não recebe prazo nem contagem regressiva
     assert.ok(Number(timed.deadlineAt) > Date.now(), 'com cronômetro ativo o prazo continua sendo calculado');
 });
 
+test('tempo adicional de acessibilidade estende o prazo da prova', () => {
+    db.memory.students[0].accessibility = { tempoAdicional: true, tempoAdicionalPercent: 50 };
+    const config = { onlineActive: true, startTime: Date.now() - 1000, durationMinutes: 40, timerEnabled: true, updatedAt: 'v1', versionSnapshots: [] };
+    const startedAt = Date.now() - 1000;
+    const withExtra = { answers: {}, studentEmail: 'ana@review.local', applicationId: 'app_a', examConfigVersion: 'v1', startedAt, deadlineAt: null, timerRemaining: null };
+    initializeExamState(withExtra, config);
+    assert.equal(withExtra.accessibilityExtraMinutes, 20);
+    assert.equal(withExtra.deadlineAt, startedAt + 60 * 60000);
+
+    const regular = { answers: {}, studentEmail: 'celia@review.local', applicationId: 'app_b', examConfigVersion: 'v1', startedAt, deadlineAt: null, timerRemaining: null };
+    initializeExamState(regular, config);
+    assert.equal(regular.accessibilityExtraMinutes, 0);
+    assert.equal(regular.deadlineAt, startedAt + 40 * 60000);
+});
+
+test('backup automático guarda só os mais recentes', () => {
+    const backupUtil = require('../../backend/utils/backup.js');
+    const { BACKUPS_DIR } = require('../../backend/runtimePaths.js');
+    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    for (let i = 1; i <= 4; i += 1) fs.writeFileSync(path.join(BACKUPS_DIR, `teste-auto_2026-01-0${i}T00-00-00-000Z.json`), '{}');
+    const file = backupUtil.runAutomaticBackup({ prefix: 'teste-auto', keep: 3 });
+    const kept = fs.readdirSync(BACKUPS_DIR).filter(name => name.startsWith('teste-auto_')).sort();
+    assert.equal(kept.length, 3);
+    assert.ok(kept.includes(path.basename(file)), 'o backup novo é mantido');
+    assert.ok(!kept.includes('teste-auto_2026-01-01T00-00-00-000Z.json'), 'o mais antigo é apagado');
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).type, 'iclass-backup-data');
+    assert.ok(backupUtil.lastAutomaticBackupAt('teste-auto') > 0);
+});
+
+test('modo demonstração gera apostilas, biblioteca e uma prova preparada', async () => {
+    const res = await request(app).post('/api/test/seed');
+    assert.equal(res.status, 200);
+    const { CONTENT_DIR } = require('../../backend/runtimePaths.js');
+    assert.ok(fs.existsSync(path.join(CONTENT_DIR, 'Apostila_FUTEC_1.md')));
+    assert.ok((db.memory.library || []).filter(item => String(item.id).startsWith('seed_lib_')).length >= 3);
+    const application = db.memory.examApplications.find(item => item.seedDemo === true);
+    assert.equal(application.status, 'prepared');
+    const cls = db.memory.classes.find(item => item.name === '1DES' && item.courseId === 'curso_legacy_01');
+    assert.equal(cls.onlineExamConfigs[application.examKey].applicationId, application.id);
+    // Rodar de novo não duplica a aplicação de demonstração.
+    await request(app).post('/api/test/seed');
+    assert.equal(db.memory.examApplications.filter(item => item.seedDemo === true).length, 1);
+});
+
 test('/api/student/leave exige sessão e só encerra a própria sessão', async () => {
     const anaToken = await loginStudent('ana@review.local');
     const celiaToken = await loginStudent('celia@review.local');

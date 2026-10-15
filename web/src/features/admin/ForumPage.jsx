@@ -17,10 +17,10 @@ import { useToast } from '../../context/ToastProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 
 const EVENT_LABEL = {
-  reply: 'respondeu', edit_comment: 'editou a duvida', edit_reply: 'editou uma resposta',
+  reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
   delete_reply: 'excluiu uma resposta', resolved: 'resolveu', reopened: 'reabriu',
   faq_added: 'marcou como FAQ', faq_removed: 'removeu do FAQ',
-  delete_comment: 'excluiu a duvida', restore_comment: 'restaurou a duvida', restore_reply: 'restaurou uma resposta',
+  delete_comment: 'excluiu a dúvida', restore_comment: 'restaurou a dúvida', restore_reply: 'restaurou uma resposta',
 }
 const STATUS_TONE = { aberta: 'warning', respondida: 'info', resolvida: 'success' }
 const STATUS_LABEL = { aberta: 'Pendente', respondida: 'Respondida', resolvida: 'Resolvida' }
@@ -196,7 +196,7 @@ export default function ForumPage() {
         </div>
         {keys.length > 0 && (
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant={!filter ? 'primary' : 'secondary'} onClick={() => setFilter('')}>Todos os modulos</Button>
+            <Button size="sm" variant={!filter ? 'primary' : 'secondary'} onClick={() => setFilter('')}>Todos os módulos</Button>
             {keys.map((k) => <Button key={k} size="sm" variant={filter === k ? 'primary' : 'secondary'} onClick={() => setFilter(k)}>{k}</Button>)}
           </div>
         )}
@@ -204,7 +204,7 @@ export default function ForumPage() {
 
       <PageState loading={loading} error={error} onRetry={load}>
         {comments.length === 0 ? (
-          <Card><EmptyState icon={MessagesSquare} title="Nenhuma duvida" description="Ajuste os filtros ou aguarde os alunos postarem." /></Card>
+          <Card><EmptyState icon={MessagesSquare} title="Nenhuma dúvida" description="Ajuste os filtros ou aguarde os alunos postarem." /></Card>
         ) : comments.map((c) => {
           const status = effectiveStatus(c)
           const overdue = status === 'aberta' && hoursSince(c.timestamp) > 24
@@ -222,7 +222,7 @@ export default function ForumPage() {
                 <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>
                 <div className="ml-auto flex items-center gap-1">
                   <button aria-label="FAQ" className={`w-7 h-7 grid place-items-center rounded-md hover:bg-surface-2 ${c.isFaq ? 'text-warning' : 'text-subtle'}`} onClick={() => faqToggle(c)}><Star size={15} className={c.isFaq ? 'fill-warning' : ''} /></button>
-                  <button aria-label="Historico" className="w-7 h-7 grid place-items-center rounded-md text-subtle hover:bg-surface-2 hover:text-text" onClick={() => setHistoryTarget(c)}><History size={15} /></button>
+                  <button aria-label="Histórico" className="w-7 h-7 grid place-items-center rounded-md text-subtle hover:bg-surface-2 hover:text-text" onClick={() => setHistoryTarget(c)}><History size={15} /></button>
                   <button aria-label="Editar" className="text-xs text-subtle hover:text-text px-1" onClick={() => editText({ commentId: c.id, text: c.text })}>Editar</button>
                   <button aria-label="Excluir" className="w-7 h-7 grid place-items-center rounded-md text-subtle hover:text-danger" onClick={() => setDel({ commentId: c.id })}><Trash2 size={15} /></button>
                 </div>
@@ -276,7 +276,7 @@ export default function ForumPage() {
               {trashComments.map((c) => (
                 <div key={c.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
                   <div className="flex-1 min-w-[220px]">
-                    <p className="text-sm text-text"><span className="font-medium">{c.studentName || 'Aluno'}</span> <span className="text-subtle">- duvida excluida {relTime(c.deletedAt)}</span></p>
+                    <p className="text-sm text-text"><span className="font-medium">{c.studentName || 'Aluno'}</span> <span className="text-subtle">- dúvida excluída {relTime(c.deletedAt)}</span></p>
                     <p className="text-xs text-muted line-clamp-2">{c.text}</p>
                   </div>
                   <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restoreItem({ commentId: c.id })}>Restaurar</Button>
@@ -286,7 +286,7 @@ export default function ForumPage() {
               {trashReplies.map(({ comment, reply }) => (
                 <div key={reply.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
                   <div className="flex-1 min-w-[220px]">
-                    <p className="text-sm text-text"><span className="font-medium">{reply.authorName || reply.authorRole}</span> <span className="text-subtle">- resposta excluida {relTime(reply.deletedAt)}</span></p>
+                    <p className="text-sm text-text"><span className="font-medium">{reply.authorName || reply.authorRole}</span> <span className="text-subtle">- resposta excluída {relTime(reply.deletedAt)}</span></p>
                     <p className="text-xs text-muted line-clamp-2">{reply.text}</p>
                   </div>
                   <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restoreItem({ commentId: comment.id, replyId: reply.id })}>Restaurar</Button>
@@ -298,7 +298,7 @@ export default function ForumPage() {
         </div>
       )}
 
-      <Modal open={!!historyTarget} onClose={() => setHistoryTarget(null)} title="Historico da duvida" description={historyTarget?.studentName}>
+      <Modal open={!!historyTarget} onClose={() => setHistoryTarget(null)} title="Histórico da dúvida" description={historyTarget?.studentName}>
         <div className="space-y-3">
           <div className="text-xs text-muted">Criada por {historyTarget?.studentName} {relTime(historyTarget?.timestamp)}</div>
           {(historyTarget?.events || []).length === 0 ? (
@@ -340,7 +340,7 @@ export default function ForumPage() {
       </Modal>
 
       <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger title="Excluir mensagem?" description="A mensagem vai para Excluidas e pode ser restaurada." confirmLabel="Excluir" />
-      <ConfirmDialog open={!!purgeTarget} onClose={() => setPurgeTarget(null)} onConfirm={purgeItem} danger title="Apagar definitivamente?" description="Remove a mensagem para sempre. Nao sera possivel restaurar." confirmLabel="Apagar de vez" />
+      <ConfirmDialog open={!!purgeTarget} onClose={() => setPurgeTarget(null)} onConfirm={purgeItem} danger title="Apagar definitivamente?" description="Remove a mensagem para sempre. Não será possível restaurar." confirmLabel="Apagar de vez" />
     </div>
   )
 }

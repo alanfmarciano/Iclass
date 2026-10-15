@@ -26,7 +26,7 @@ const shortLabel = (key = '') => key.replace(/^Avaliacao_?/i, '').replace(/_/g, 
 const materiaOf = (key = '') => (String(key).replace(/^Avaliacao_?/i, '').match(/^[A-Za-z]+/) || ['—'])[0].toUpperCase()
 // Chave do grupo de tentativas: mesma aplicacao = mesmo grupo (espelha attemptGroupKey do backend).
 const groupKeyOf = (s) => String(s.applicationId || s.examKey || '')
-const POLICY_LABEL = { highest: 'Maior nota', latest: 'Ultima tentativa', average: 'Media das tentativas', selected: 'Selecionada pelo professor' }
+const POLICY_LABEL = { highest: 'Maior nota', latest: 'Última tentativa', average: 'Média das tentativas', selected: 'Selecionada pelo professor' }
 const MOD_ACCENTS = ['var(--info)', 'var(--success)', 'var(--warning)', 'var(--primary)', 'var(--danger)']
 const fmtGrade = (n) => (n == null ? '—' : Number(n).toFixed(1).replace('.', ','))
 const gradeBand = (g) => (g == null ? '' : g >= 9 ? 'g-success' : g >= 7 ? 'g-info' : g >= 6 ? 'g-warning' : 'g-danger')
@@ -41,13 +41,13 @@ function ExamCard({ s, onOpen }) {
   return (
     <button type="button" onClick={() => onOpen(s)} className="pvb-exam">
       <div>
-        <div className="pvb-ename">{s.examKey}{s.attemptNumber ? ` · Tentativa ${s.attemptNumber}` : ''}</div>
+        <div className="pvb-ename">{s.examTitle || s.examKey}{s.attemptNumber ? ` · Tentativa ${s.attemptNumber}` : ''}</div>
         <div className="pvb-ecode">{(s.type || 'online')}{s.timestamp ? ` · ${fmtDate(s.timestamp)}` : ''}</div>
       </div>
       <div className={`pvb-egrade ${gradeBand(g)}`}>{fmtGrade(g)}</div>
       <div className="pvb-etail">
         {archived
-          ? <span className="pvb-st neutral"><span className="pvb-sdot" />Nao considerada</span>
+          ? <span className="pvb-st neutral"><span className="pvb-sdot" />Não considerada</span>
           : counts
             ? <span className="pvb-st info"><span className="pvb-sdot" />Compoe o resultado</span>
             : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />Em revisao</span> : null}
@@ -60,11 +60,11 @@ function ExamCard({ s, onOpen }) {
 function AttemptFormula({ policy, considered, consolidated }) {
   if (policy === 'average') {
     const parts = considered.map((a) => fmtGrade(toGrade(a.score))).join(' + ')
-    return <><b>Como entra na sua media:</b> politica de <b>media</b> — ({parts}) ÷ {considered.length} = <b>{fmtGrade(consolidated)}</b>. Cada tentativa conta individualmente entre as que compoem sua media.</>
+    return <><b>Como entra na sua média:</b> politica de <b>media</b> — ({parts}) ÷ {considered.length} = <b>{fmtGrade(consolidated)}</b>. Cada tentativa conta individualmente entre as que compoem sua média.</>
   }
-  if (policy === 'latest') return <><b>Como entra na sua media:</b> vale a <b>ultima tentativa</b>. As anteriores ficam registradas, mas nao entram no calculo.</>
-  if (policy === 'selected') return <><b>Como entra na sua media:</b> o professor <b>selecionou</b> a tentativa que vale. As demais ficam descartadas.</>
-  return <><b>Como entra na sua media:</b> vale a <b>maior nota</b> entre as tentativas. As menores ficam registradas, mas nao entram no calculo.</>
+  if (policy === 'latest') return <><b>Como entra na sua média:</b> vale a <b>ultima tentativa</b>. As anteriores ficam registradas, mas não entram no cálculo.</>
+  if (policy === 'selected') return <><b>Como entra na sua média:</b> o professor <b>selecionou</b> a tentativa que vale. As demais ficam descartadas.</>
+  return <><b>Como entra na sua média:</b> vale a <b>maior nota</b> entre as tentativas. As menores ficam registradas, mas não entram no cálculo.</>
 }
 
 // Bloco de multiplas tentativas da mesma prova, mostrando a composicao da nota.
@@ -81,7 +81,7 @@ function AttemptGroup({ attempts, onOpen }) {
       <div className="ag-top">
         <span className="ag-icon"><RotateCcw size={17} /></span>
         <span className="ag-ttl">
-          <span className="n">{attempts[0].examKey}</span>
+          <span className="n">{attempts[0].examTitle || attempts[0].examKey}</span>
           <span className="m">{attempts.length} tentativas{last?.timestamp ? ` · ${fmtDate(last.timestamp)}` : ''}</span>
         </span>
         <span className="ag-policy">{POLICY_LABEL[policy]}</span>
@@ -103,7 +103,7 @@ function AttemptGroup({ attempts, onOpen }) {
         <span className="ag-arrow"><ArrowRight size={22} /></span>
         <div className="ag-result">
           <span className={`rn ${gradeBand(consolidated)}`}>{fmtGrade(consolidated)}</span>
-          <span className="rl">{policy === 'average' ? `Media das ${attempts.length} tentativas` : POLICY_LABEL[policy]}</span>
+          <span className="rl">{policy === 'average' ? `Média das ${attempts.length} tentativas` : POLICY_LABEL[policy]}</span>
         </div>
       </div>
       <div className="ag-formula"><AttemptFormula policy={policy} considered={considered} consolidated={consolidated} /></div>
@@ -167,7 +167,7 @@ function StatValue({ target, decimals = 0, className = '' }) {
 const FILTERS = [
   { key: 'all', label: 'Todas' },
   { key: 'compoe', label: 'Compoem resultado' },
-  { key: 'nao', label: 'Nao consideradas' },
+  { key: 'nao', label: 'Não consideradas' },
 ]
 
 // Escapa texto para montagem segura do HTML de impressao (PDF).
@@ -179,7 +179,7 @@ function buildExamPrintHtml(detail, questions, answerByNumber) {
   const nota = detail?.gradePublished === true ? (Number(detail.score || 0) / 10).toFixed(1) : '—'
   const acertos = detail?.gradePublished === true ? `${detail.correctCount ?? '-'}/${detail.totalCount ?? '-'}` : '-'
   const versao = detail?.assignedVersion || '-'
-  const titulo = detail?.examKey || 'Prova'
+  const titulo = detail?.examTitle || detail?.examKey || 'Prova'
 
   const questoesHtml = (questions || []).map((q) => {
     const a = answerByNumber.get(Number(q.number)) || {}
@@ -193,7 +193,7 @@ function buildExamPrintHtml(detail, questions, answerByNumber) {
       const tag = correct ? (sc === letter ? ' &middot; Sua resposta / Correta' : ' &middot; Resposta correta') : (wrong ? ' &middot; Sua resposta' : '')
       return `<div class="${cls}"><span class="ltr">${letter}</span><span>${escapeHtml(alt.text)}${tag ? `<i>${tag}</i>` : ''}</span></div>`
     }).join('')
-    return `<div class="q"><div class="qh"><b>Questao ${escapeHtml(q.number)}</b><span class="${a.isCorrect ? 'ok' : 'err'}">${a.isCorrect ? 'Correta' : 'Errada'}</span></div>${q.text ? `<p>${escapeHtml(q.text)}</p>` : ''}${alts}</div>`
+    return `<div class="q"><div class="qh"><b>Questão ${escapeHtml(q.number)}</b><span class="${a.isCorrect ? 'ok' : 'err'}">${a.isCorrect ? 'Correta' : 'Errada'}</span></div>${q.text ? `<p>${escapeHtml(q.text)}</p>` : ''}${alts}</div>`
   }).join('')
 
   const resumoRows = (questions || []).map((q) => {
@@ -220,11 +220,11 @@ function buildExamPrintHtml(detail, questions, answerByNumber) {
     @media print{body{margin:14mm}}
   </style></head><body>
     <h1>${escapeHtml(titulo)}</h1>
-    <div class="meta">Gabarito liberado &middot; Versao ${escapeHtml(versao)}</div>
-    <div class="stats"><div><span>Nota</span><b>${nota}</b></div><div><span>Acertos</span><b>${acertos}</b></div><div><span>Versao</span><b>${escapeHtml(versao)}</b></div></div>
+    <div class="meta">Gabarito liberado &middot; Versão ${escapeHtml(versao)}</div>
+    <div class="stats"><div><span>Nota</span><b>${nota}</b></div><div><span>Acertos</span><b>${acertos}</b></div><div><span>Versão</span><b>${escapeHtml(versao)}</b></div></div>
     ${questoesHtml}
     <h2>Gabarito &middot; resumo</h2>
-    <table><thead><tr><th>Questao</th><th>Sua resposta</th><th>Correta</th><th>Status</th></tr></thead><tbody>${resumoRows}</tbody></table>
+    <table><thead><tr><th>Questão</th><th>Sua resposta</th><th>Correta</th><th>Status</th></tr></thead><tbody>${resumoRows}</tbody></table>
     <script>window.onload=function(){setTimeout(function(){window.print()},150)}</script>
   </body></html>`
 }
@@ -314,7 +314,7 @@ function FullExamView({ detail, questions, answers }) {
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-subtle">Gabarito · resumo</p>
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-sm">
-            <thead><tr className="bg-surface-2 text-muted"><th className="px-3 py-2 text-left">Questao</th><th className="px-3 py-2 text-left">Sua resposta</th><th className="px-3 py-2 text-left">Correta</th><th className="px-3 py-2 text-left">Status</th></tr></thead>
+            <thead><tr className="bg-surface-2 text-muted"><th className="px-3 py-2 text-left">Questão</th><th className="px-3 py-2 text-left">Sua resposta</th><th className="px-3 py-2 text-left">Correta</th><th className="px-3 py-2 text-left">Status</th></tr></thead>
             <tbody>
               {questions.map((q, i) => {
                 const a = answerByNumber.get(Number(q.number)) || {}
@@ -410,7 +410,7 @@ export default function ProvasPage() {
     const t = query.trim().toLowerCase()
     return statusFiltered.filter((s) => {
       if (mat !== 'all' && materiaOf(s.examKey) !== mat) return false
-      if (t && !String(s.examKey || '').toLowerCase().includes(t)) return false
+      if (t && !`${s.examTitle || ''} ${s.examKey || ''}`.toLowerCase().includes(t)) return false
       return true
     })
   }, [statusFiltered, mat, query])
@@ -433,7 +433,7 @@ export default function ProvasPage() {
     <div className="app-enter mx-auto max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-text">Provas</h1>
-        <p className="text-sm text-muted">Sua visao geral de desempenho, avaliacoes liberadas e historico de resultados.</p>
+        <p className="text-sm text-muted">Sua visão geral de desempenho, avaliações liberadas e histórico de resultados.</p>
       </div>
 
       <PageState loading={status.loading || applications.loading} error={status.error || applications.error} onRetry={() => { status.refetch(); applications.refetch() }}>
@@ -447,12 +447,12 @@ export default function ProvasPage() {
                   <MetricRing value={metrics.avg} />
                   <div>
                     <StatValue target={metrics.avg} decimals={1} className={metrics.avg != null ? gradeText(metrics.avg) : ''} />
-                    <p className="mt-2 text-xs text-subtle">Media das consideradas</p>
+                    <p className="mt-2 text-xs text-subtle">Média das consideradas</p>
                   </div>
                 </div>
               </Card>
 
-              <MetricCard label="Provas concluidas" icon={ClipboardList} tone="text-primary" badge={<Badge tone="neutral">{metrics.total} tentativas</Badge>}>
+              <MetricCard label="Provas concluídas" icon={ClipboardList} tone="text-primary" badge={<Badge tone="neutral">{metrics.total} tentativas</Badge>}>
                 <StatValue target={metrics.total} />
               </MetricCard>
 
@@ -467,15 +467,15 @@ export default function ProvasPage() {
 
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
               <Card className="p-5 lg:col-span-3">
-                <h2 className="flex items-center gap-2 font-semibold text-text"><TrendingUp size={17} className="text-primary" /> Evolucao das notas</h2>
-                <p className="mt-0.5 text-xs text-muted">Desempenho ao longo das avaliacoes</p>
+                <h2 className="flex items-center gap-2 font-semibold text-text"><TrendingUp size={17} className="text-primary" /> Evolução das notas</h2>
+                <p className="mt-0.5 text-xs text-muted">Desempenho ao longo das avaliações</p>
                 <div className="mt-3">
                   {metrics.chartPoints.length ? <MiniLineChart points={metrics.chartPoints} min={0} max={10} height={170} /> : <p className="grid h-[170px] place-items-center text-sm text-muted">Notas ainda em revisao.</p>}
                 </div>
               </Card>
 
               <Card className="p-5 lg:col-span-2">
-                <h2 className="flex items-center gap-2 font-semibold text-text"><BarChart3 size={17} className="text-primary" /> Distribuicao</h2>
+                <h2 className="flex items-center gap-2 font-semibold text-text"><BarChart3 size={17} className="text-primary" /> Distribuição</h2>
                 <p className="mt-0.5 text-xs text-muted">Por faixa de nota</p>
                 <div className="mt-4 space-y-3.5">
                   {metrics.buckets.map((b) => (
@@ -494,7 +494,7 @@ export default function ProvasPage() {
         )}
 
         <div className="mt-6 space-y-3">
-          {availableApplications.length === 0 && <Card><EmptyState icon={ClipboardList} title="Nenhuma prova disponivel" description="Quando o instrutor iniciar uma aplicacao, ela aparecera aqui em destaque." /></Card>}
+          {availableApplications.length === 0 && <Card><EmptyState icon={ClipboardList} title="Nenhuma prova disponível" description="Quando o instrutor iniciar uma aplicação, ela aparecerá aqui em destaque." /></Card>}
           {availableApplications.map((application) => {
             const k = application.examKey
             const cfg = application.config || {}
@@ -531,7 +531,7 @@ export default function ProvasPage() {
         {mine.length > 0 && (
           <div className="mt-6 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="flex items-center gap-2 text-lg font-semibold text-text"><CheckCircle2 size={18} className="text-success" /> Provas concluidas</h2>
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-text"><CheckCircle2 size={18} className="text-success" /> Provas concluídas</h2>
               <div className="flex flex-wrap gap-2">
                 {FILTERS.map((f) => (
                   <button key={f.key} type="button" onClick={() => setFilter(f.key)}
@@ -546,7 +546,7 @@ export default function ProvasPage() {
               <div className="pvb-toolbar">
                 <label className="pvb-search">
                   <Search size={15} />
-                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar avaliacao..." aria-label="Buscar avaliacao" />
+                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar avaliação..." aria-label="Buscar avaliação" />
                 </label>
                 <div className="pvb-filter">
                   <span className="pvb-flabel">Materia</span>
@@ -566,7 +566,7 @@ export default function ProvasPage() {
               <div className="pvb-resultmeta">Mostrando <b>{visible.length}</b> tentativa{visible.length !== 1 ? 's' : ''} em <b>{board.length}</b> materia{board.length !== 1 ? 's' : ''}</div>
 
               {board.length === 0 ? (
-                <Card><EmptyState icon={ClipboardList} title="Nenhuma prova nesta categoria" description="Ajuste os filtros para ver outras avaliacoes." /></Card>
+                <Card><EmptyState icon={ClipboardList} title="Nenhuma prova nesta categoria" description="Ajuste os filtros para ver outras avaliações." /></Card>
               ) : (
                 <div className={`pvb-board ${view}`}>
                   {board.map((sec) => (
@@ -597,7 +597,7 @@ export default function ProvasPage() {
         )}
       </PageState>
 
-      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.examKey || 'Resultado'} description={detail?.resultStatus === 'archived' ? 'Tentativa arquivada e fora do resultado' : detail?.answerKeyReleased ? 'Gabarito liberado pelo instrutor' : 'Resumo da tentativa'}>
+      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.examTitle || detail?.examKey || 'Resultado'} description={detail?.resultStatus === 'archived' ? 'Tentativa arquivada e fora do resultado' : detail?.answerKeyReleased ? 'Gabarito liberado pelo instrutor' : 'Resumo da tentativa'}>
         {detail && (
           <div className="space-y-4">
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-3 sm:grid-cols-4">
@@ -614,7 +614,7 @@ export default function ProvasPage() {
                 <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? `${detail.correctCount ?? '-'}/${detail.totalCount ?? '-'}` : '-'}</dd>
               </div>
               <div>
-                <dt className="text-xs text-muted">Versao</dt>
+                <dt className="text-xs text-muted">Versão</dt>
                 <dd className="mt-0.5 text-lg font-semibold text-text">{detail.assignedVersion || '-'}</dd>
               </div>
             </dl>
@@ -624,7 +624,7 @@ export default function ProvasPage() {
               ) : (
                 <div className="overflow-x-auto border border-border rounded-lg">
                   <table className="w-full text-sm">
-                    <thead><tr className="bg-surface-2 text-muted"><th className="text-left px-3 py-2">Questao</th><th className="text-left px-3 py-2">Sua resposta</th>{detail.answerKeyReleased && <><th className="text-left px-3 py-2">Correta</th><th className="text-left px-3 py-2">Status</th></>}</tr></thead>
+                    <thead><tr className="bg-surface-2 text-muted"><th className="text-left px-3 py-2">Questão</th><th className="text-left px-3 py-2">Sua resposta</th>{detail.answerKeyReleased && <><th className="text-left px-3 py-2">Correta</th><th className="text-left px-3 py-2">Status</th></>}</tr></thead>
                     <tbody>
                       {detail.gradedAnswers.map((a, i) => (
                         <tr key={i} className="border-t border-border">
@@ -637,7 +637,7 @@ export default function ProvasPage() {
                   </table>
                 </div>
               )
-            ) : <p className="text-sm text-muted">O detalhamento do gabarito ainda nao esta liberado.</p>}
+            ) : <p className="text-sm text-muted">O detalhamento do gabarito ainda não está liberado.</p>}
           </div>
         )}
       </Modal>

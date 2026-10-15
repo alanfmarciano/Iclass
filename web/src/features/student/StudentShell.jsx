@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Search, Sparkles } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
@@ -67,7 +67,7 @@ export function StudentShell() {
           } : null}
           onLogout={() => { logout(); nav('/login') }}
         >
-          <div key={pathname} className="app-enter"><StudentCourseGate><Outlet /></StudentCourseGate></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><StudentCourseGate><Outlet /></StudentCourseGate></div>
         </LumenShell>
         <StudentExamAvailability />
       </>
@@ -121,11 +121,9 @@ export function StudentShell() {
           <button onClick={() => setOpen((o) => !o)} className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-surface-2 md:hidden" aria-label="Menu"><Menu size={21} /></button>
           <div className="flex items-center gap-2 text-[13px]"><Sparkles size={14} className="text-primary" /><span className="text-subtle">Portal do Aluno</span><span className="text-subtle">/</span><strong className="font-semibold text-text">{pageTitle}</strong></div>
           <div className="flex-1" />
-          <button className="hidden h-10 min-w-[220px] items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 text-[13px] text-muted transition-all duration-300 hover:border-[var(--border-strong)] hover:text-text lg:flex" aria-label="Buscar"><Search size={15} /> Buscar no curso <kbd className="ml-auto rounded-md border border-border bg-surface px-1.5 py-0.5 font-mono text-[9px] text-muted">Ctrl K</kbd></button>
-          <button className="relative grid h-10 w-10 place-items-center rounded-lg text-muted transition-all duration-300 hover:bg-surface-2 hover:text-text" aria-label="Notificações"><Bell size={17} /><span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-primary ring-2 ring-surface" /></button>
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
-          <div key={pathname} className="app-enter"><StudentCourseGate><Outlet /></StudentCourseGate></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><StudentCourseGate><Outlet /></StudentCourseGate></div>
         </main>
       </div>
       <StudentExamAvailability />

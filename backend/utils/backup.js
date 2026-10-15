@@ -55,6 +55,26 @@ function saveServerBackup(prefix) {
     return file;
 }
 
+// Backup automático dos dados (JSON) com retenção: guarda os `keep` mais recentes
+// do prefixo informado e apaga os mais antigos. Não inclui uploads (use o completo).
+function runAutomaticBackup({ prefix = 'automatico', keep = 14 } = {}) {
+    const file = saveServerBackup(prefix);
+    const own = fs.readdirSync(BACKUPS_DIR)
+        .filter(name => name.startsWith(`${prefix}_`) && name.endsWith('.json'))
+        .sort()
+        .reverse();
+    own.slice(keep).forEach(name => { try { fs.rmSync(path.join(BACKUPS_DIR, name), { force: true }); } catch (e) {} });
+    return file;
+}
+
+function lastAutomaticBackupAt(prefix = 'automatico') {
+    if (!fs.existsSync(BACKUPS_DIR)) return null;
+    const times = fs.readdirSync(BACKUPS_DIR)
+        .filter(name => name.startsWith(`${prefix}_`) && name.endsWith('.json'))
+        .map(name => { try { return fs.statSync(path.join(BACKUPS_DIR, name)).mtimeMs; } catch (e) { return 0; } });
+    return times.length ? Math.max(...times) : null;
+}
+
 function buildFullZipBuffer() {
     const AdmZip = getZipLib();
     if (!AdmZip) return null;
@@ -210,5 +230,6 @@ async function restoreFromFile(absPath, originalName) {
 
 module.exports = {
     COLLECTIONS, buildDataSnapshot, validateDataSnapshot, restoreDataSnapshot, saveServerBackup,
+    runAutomaticBackup, lastAutomaticBackupAt,
     buildFullZipBuffer, streamFullZip, saveServerFullBackup, restoreFullZip, restoreFromFile, getZipLib, validateZip,
 };

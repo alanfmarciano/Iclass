@@ -8,7 +8,7 @@ export const ADMIN_PERMISSIONS = Object.freeze({
   PAGE_CLASSES: 'page.classes',
   PAGE_STUDENTS: 'page.students',
   PAGE_ACCOUNTS: 'page.accounts',
-  PAGE_FORUM: 'page.forum',
+  PAGE_FORUM: 'page.fórum',
   PAGE_BRANDING: 'page.branding',
   PAGE_SYSTEM: 'page.system',
   COURSE_MANAGE: 'course.manage',

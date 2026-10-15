@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Bell, GraduationCap, LogOut, Menu, Search, X } from 'lucide-react'
+import { GraduationCap, LogOut, Menu, X } from 'lucide-react'
 import { ThemeToggle } from '../ui/ThemeToggle'
 import { cn } from '../../lib/cn'
 
@@ -108,12 +108,7 @@ export function LumenShell({
               <span>{contextAction.label}</span>
             </button>
           )}
-          <button type="button" className="lumen-icon-button lumen-search-button" aria-label="Buscar"><Search size={18} /></button>
           <ThemeToggle />
-          <button type="button" className="lumen-icon-button" aria-label="Notificações">
-            <Bell size={18} />
-            <span className="lumen-notification-dot" aria-hidden="true" />
-          </button>
           <div className="lumen-profile" title={userDetail || userName}>
             <span className="lumen-avatar">{initials(userName || userDetail)}</span>
             <span className="lumen-profile-copy"><strong>{userName || 'Usuário'}</strong><span>{userDetail}</span></span>

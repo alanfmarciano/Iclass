@@ -354,7 +354,7 @@ export default function ProvasPage() {
 
   async function addHistory(type, snapshots, extra = {}) {
     const questionNumbers = [...new Set(snapshots.flatMap((snapshot) => (snapshot.questions || []).map((q) => Number(q.originalNumber)).filter(Number.isFinite)))]
-    if (questionNumbers.length === 0) throw new Error('Nenhuma questao selecionada')
+    if (questionNumbers.length === 0) throw new Error('Nenhuma questão selecionada')
     const existingOfType = history.filter((entry) => entry.type === type).length
     return api.post('/api/admin/exam-history/add', {
       studentClass: className,
@@ -379,7 +379,7 @@ export default function ProvasPage() {
 
   async function saveOnline(prepare) {
     if (!className || !courseId || !examKey || !normalizedEval) return toast.error('Selecione turma, curso e prova')
-    if (currentVersions.length === 0) return toast.error('Esta avaliacao nao tem questoes')
+    if (currentVersions.length === 0) return toast.error('Esta avaliação não tem questões')
     if (form.tokenEnabled && !/^[A-Z]{5}$/.test(form.accessToken)) return toast.error('O token deve ter exatamente 5 letras maiúsculas')
     const parsedMaxAttempts = parseMaxAttemptsInput(form.maxAttempts)
     if (!parsedMaxAttempts.valid) return toast.error('Tentativas deve ser um número entre 1 e 10.')
@@ -409,7 +409,7 @@ export default function ProvasPage() {
         const params = new URLSearchParams({ courseId, className, examKey, applicationId: prepared.application.id })
         navigate(`/monitor?${params.toString()}`)
       } else {
-        toast.success('Configuracao online salva no historico')
+        toast.success('Configuração online salva no histórico')
         await loadExamState()
       }
     } catch (e) {
@@ -507,14 +507,14 @@ export default function ProvasPage() {
 
   function reprintHistory(entry) {
     const snapshots = snapshotsFromHistory(entry)
-    if (snapshots.length === 0) return toast.error('Historico sem snapshot para reimpressao')
+    if (snapshots.length === 0) return toast.error('Histórico sem snapshot para reimpressão')
     openPrintWindow({ title: evaluation?.title || examKey, snapshots, includeAnswerKey: true })
   }
 
   async function removeHistory() {
     try {
       await api.post('/api/admin/exam-history/delete', { studentClass: className, courseId, examKey, entryId: deleteHistory.id })
-      toast.success('Historico removido')
+      toast.success('Histórico removido')
       setDeleteHistory(null)
       loadExamState()
     } catch (e) {
@@ -767,7 +767,7 @@ export default function ProvasPage() {
 
       <PageState loading={loading} error={error} onRetry={() => { courses.refetch(); classes.refetch() }}>
         <Card>
-          {!examKey && <CardHeader title="Escolha a prova" subtitle="Defina a turma e a avaliacao antes de montar a aplicacao" action={onlineConfig && <Badge tone={statusTone(onlineConfig.status)}>{onlineConfig.status || 'nao aplicada'}</Badge>} />}
+          {!examKey && <CardHeader title="Escolha a prova" subtitle="Defina a turma e a avaliação antes de montar a aplicação" action={onlineConfig && <Badge tone={statusTone(onlineConfig.status)}>{onlineConfig.status || 'não aplicada'}</Badge>} />}
           <CardBody className="space-y-4">
             {!examKey && (
               <div className="pvb">
@@ -939,11 +939,11 @@ export default function ProvasPage() {
                           <p className="text-xs text-muted">Quantidade, tempo e embaralhamento</p>
                         </div>
                       </div>
-                      <Input label="Quantidade de questoes" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponiveis`} />
+                      <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponiveis`} />
                       {mode === 'online' ? (
                         <div className="grid grid-cols-2 gap-3">
                           <Input label="Versoes online" type="number" min="1" max="5" value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
-                          <Input label="Duracao (min)" type="number" min="1" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} />
+                          <Input label="Duração (min)" type="number" min="1" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} />
                           <Input label="Sala de espera (min)" type="number" min="0" value={form.waitingRoomMinutes} onChange={(e) => setForm({ ...form, waitingRoomMinutes: e.target.value })} helper="Padrão: 10 minutos." />
                           <Select label="Início do cronômetro" value={form.timerMode} onChange={(e) => setForm({ ...form, timerMode: e.target.value })}>
                             <option value="per_attempt">Quando cada aluno iniciar</option>
@@ -967,14 +967,14 @@ export default function ProvasPage() {
                           </div>}
                         </div>
                       ) : (
-                        <Input label="Versoes impressas" type="number" min="1" max="10" value={form.printVersions} onChange={(e) => setForm({ ...form, printVersions: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} helper="Cada versao recebe codigo proprio." />
+                        <Input label="Versoes impressas" type="number" min="1" max="10" value={form.printVersions} onChange={(e) => setForm({ ...form, printVersions: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} helper="Cada versão recebe codigo proprio." />
                       )}
                       <div className="grid grid-cols-1 gap-2">
-                        <Switch label="Embaralhar questoes" checked={form.shuffleQuestions} onChange={(v) => setForm({ ...form, shuffleQuestions: v })} />
+                        <Switch label="Embaralhar questões" checked={form.shuffleQuestions} onChange={(v) => setForm({ ...form, shuffleQuestions: v })} />
                         <Switch label="Embaralhar alternativas" checked={form.shuffleAnswers} onChange={(v) => setForm({ ...form, shuffleAnswers: v })} />
                         {mode === 'online' && <Switch label="Cronometro ativo" checked={form.timerEnabled} onChange={(v) => setForm({ ...form, timerEnabled: v })} />}
                         {mode === 'online' && <Switch label="Exigir token de acesso" checked={form.tokenEnabled} onChange={(v) => setForm({ ...form, tokenEnabled: v, accessToken: form.accessToken || generateExamToken() })} />}
-                        <Switch label="Usar apenas questoes ineditas" checked={unusedOnly} onChange={setUnusedOnly} />
+                        <Switch label="Usar apenas questões inéditas" checked={unusedOnly} onChange={setUnusedOnly} />
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button size="sm" variant="secondary" icon={Shuffle} onClick={() => setShuffleSeed((seed) => seed + 1)}>Sortear novamente</Button>
@@ -1012,13 +1012,13 @@ export default function ProvasPage() {
                           </div>
                         </div>
                         <Button icon={Printer} loading={busy === 'print'} onClick={printAndRegister}>Gerar prova + gabarito</Button>
-                        <p className="text-xs text-subtle mt-2">A aplicacao impressa sera salva no historico para reimpressao e correcao por versao.</p>
+                        <p className="text-xs text-subtle mt-2">A aplicação impressa será salva no histórico para reimpressão e correção por versão.</p>
                       </Card>
                     )}
                   </div>
 
                   <Card>
-                    <CardHeader title="Previa da prova" subtitle={`Versao ${currentVersions[0]?.version || 'A'} - ${selectedCount} questoes`} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
+                    <CardHeader title="Prévia da prova" subtitle={`Versão ${currentVersions[0]?.version || 'A'} - ${selectedCount} questoes`} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
                     <CardBody className="space-y-3">
                       {previewQuestions.map((q, index) => {
                         const usages = usage[q.originalNumber] || []
@@ -1042,7 +1042,7 @@ export default function ProvasPage() {
                           </div>
                         )
                       })}
-                      {previewQuestions.length === 0 && <EmptyState icon={ClipboardList} title="Nenhuma questao selecionada" description="Ajuste filtros ou quantidade para montar a prova." />}
+                      {previewQuestions.length === 0 && <EmptyState icon={ClipboardList} title="Nenhuma questão selecionada" description="Ajuste filtros ou quantidade para montar a prova." />}
                       {excluded.length > 0 && (
                         <div className="border-t border-border pt-3">
                           <p className="text-xs font-semibold text-muted mb-2">Removidas manualmente</p>
@@ -1058,7 +1058,7 @@ export default function ProvasPage() {
                 </div>
 
                 <Card>
-                  <CardHeader title="Aplicacoes anteriores" subtitle="Preparacoes salvas, reimpressoes e questoes ja usadas" action={<Badge tone="neutral">{history.length}</Badge>} />
+                  <CardHeader title="Aplicacoes anteriores" subtitle="Preparações salvas, reimpressões e questões já usadas" action={<Badge tone="neutral">{history.length}</Badge>} />
                   <CardBody className="space-y-2">
                     {history.map((entry, index) => {
                       const prepared = onlineConfig?.activeHistoryId === entry.id
@@ -1076,16 +1076,16 @@ export default function ProvasPage() {
                           <Button size="sm" variant="secondary" icon={Printer} onClick={() => reprintHistory(entry)}>{entry.type === 'impressa' ? 'Reimprimir' : 'Imprimir'}</Button>
                           <Button size="sm" icon={Play} onClick={() => openHistoryApplication(entry)}>Aplicar online</Button>
                           {prepared && <Button size="sm" variant="secondary" icon={Lock} onClick={blockPrepared}>Bloquear</Button>}
-                          <button className="text-subtle hover:text-danger" onClick={() => setDeleteHistory(entry)} aria-label="Excluir historico"><Trash2 size={16} /></button>
+                          <button className="text-subtle hover:text-danger" onClick={() => setDeleteHistory(entry)} aria-label="Excluir histórico"><Trash2 size={16} /></button>
                         </div>
                       )
                     })}
-                    {history.length === 0 && <p className="text-sm text-muted">Nenhuma aplicacao registrada para esta turma.</p>}
+                    {history.length === 0 && <p className="text-sm text-muted">Nenhuma aplicação registrada para esta turma.</p>}
                   </CardBody>
                 </Card>
               </>
             ) : examKey ? (
-              <p className="text-sm text-muted pt-2">Carregando avaliacao...</p>
+              <p className="text-sm text-muted pt-2">Carregando avaliação...</p>
             ) : null}
           </CardBody>
         </Card>
@@ -1235,7 +1235,7 @@ export default function ProvasPage() {
         )}
       </Modal>
 
-      <ConfirmDialog open={!!deleteHistory} onClose={() => setDeleteHistory(null)} onConfirm={removeHistory} danger title="Excluir historico?" description={deleteHistory?.label || deleteHistory?.id} confirmLabel="Excluir" />
+      <ConfirmDialog open={!!deleteHistory} onClose={() => setDeleteHistory(null)} onConfirm={removeHistory} danger title="Excluir histórico?" description={deleteHistory?.label || deleteHistory?.id} confirmLabel="Excluir" />
       <FinishApplicationModal
         open={!!finishApplication}
         onClose={() => setFinishApplication(null)}

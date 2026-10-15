@@ -20,6 +20,7 @@ const {
     getReleasedItemsForClass,
     findClassByNameAndCourse,
     initializeExamState,
+    accessibilityExtraMinutes,
     getCourseForClass,
     getCourseItemKeys,
     validateAdmin,
@@ -493,7 +494,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             attemptId,
             tokenAccepted,
             questionReports,
-            finishOutcome
+            finishOutcome,
+            examTitle: examKey ? studentApplicationLabel({ examKey }, cls) : null,
+            accessibilityExtraMinutes: examKey && cls.onlineExamConfigs?.[examKey]?.timerEnabled !== false
+                ? accessibilityExtraMinutes(email, cls.onlineExamConfigs?.[examKey]?.durationMinutes)
+                : 0
         });
     } catch (err) {
         console.error('Erro no sync unificado do estudante:', err);
@@ -966,9 +971,11 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
             ? now
             : Math.min(now, Number(application.startsAt || now));
         state.status = 'active';
+        state.accessibilityExtraMinutes = accessibilityExtraMinutes(req.studentEmail, application.durationMinutes);
         const totalMinutes = Number(application.durationMinutes || 0)
             + Number(application.globalTimeAdjustment || 0)
-            + Number(state.individualTimeAdjustment || 0);
+            + Number(state.individualTimeAdjustment || 0)
+            + state.accessibilityExtraMinutes;
         state.deadlineAt = application.timerEnabled === false || totalMinutes <= 0
             ? null
             : state.startedAt + totalMinutes * 60000;
@@ -1304,7 +1311,9 @@ router.post('/api/student/my-submissions', validateStudentSession, (req, res) =>
             const canViewAnswerKey = canStudentViewAnswerKey(s, normalizedEmail);
             const sanitized = {
                 ...sanitizeSubmissionForStudent(s, canViewAnswerKey),
-                answerKeyReleased: canViewAnswerKey
+                answerKeyReleased: canViewAnswerKey,
+                // Nome legível da prova (o aluno via a chave técnica "Avaliacao_FUTEC_1").
+                examTitle: studentApplicationLabel({ examKey: s.examKey }, cls)
             };
             // Fallback para a visualizacao completa da prova: quando o gabarito esta
             // liberado mas a submissao nao guardou o examSnapshot (submissoes antigas),

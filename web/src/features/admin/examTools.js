@@ -49,8 +49,8 @@ export function normalizeQuestion(question, index = 0) {
   return {
     ...question,
     originalNumber: Number.isFinite(originalNumber) ? originalNumber : index + 1,
-    text: question?.text || question?.questionText || `Questao ${index + 1}`,
-    questionText: question?.questionText || question?.text || `Questao ${index + 1}`,
+    text: question?.text || question?.questionText || `Questão ${index + 1}`,
+    questionText: question?.questionText || question?.text || `Questão ${index + 1}`,
     correctAnswer: correctAlt?.letter || correct,
     alternatives,
   }

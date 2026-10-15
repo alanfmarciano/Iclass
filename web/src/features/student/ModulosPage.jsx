@@ -201,18 +201,18 @@ export default function ModulosPage() {
   if (openUnit) return (
     <div className="max-w-6xl mx-auto space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" icon={ArrowLeft} onClick={() => setOpenUnit(null)}>Voltar aos modulos</Button>
+        <Button variant="ghost" icon={ArrowLeft} onClick={() => setOpenUnit(null)}>Voltar aos módulos</Button>
         <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluida' : 'Em estudo'}</Badge>
         <Button size="sm" variant="secondary" icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
         <Card className="p-6">
-          <article ref={articleRef} className="prose-iclass cursor-text" dangerouslySetInnerHTML={{ __html: html || '<p>Conteudo indisponivel.</p>' }} />
+          <article ref={articleRef} className="prose-iclass cursor-text" dangerouslySetInnerHTML={{ __html: html || '<p>Conteúdo indisponível.</p>' }} />
           <div className="mt-8 pt-5 border-t border-border">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-text">Progresso deste modulo</p>
+                <p className="text-sm font-semibold text-text">Progresso deste módulo</p>
                 <p className="text-xs text-muted">{openModuleDone} de {openModuleTotal} topicos concluidos em {openUnit.moduleTitle}</p>
               </div>
               <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{openModulePct}%</Badge>
@@ -226,18 +226,18 @@ export default function ModulosPage() {
               </Button>
             </div>
           </div>
-          <p className="mt-6 text-xs text-subtle flex items-center gap-1"><Highlighter size={14} /> Clique em um paragrafo para criar ou revisar uma anotacao.</p>
+          <p className="mt-6 text-xs text-subtle flex items-center gap-1"><Highlighter size={14} /> Clique em um parágrafo para criar ou revisar uma anotação.</p>
         </Card>
 
         <div className="space-y-4">
           <Card>
             <CardHeader title="Caderno desta unidade" action={<Button size="sm" icon={Save} loading={saving} onClick={saveNote}>Salvar</Button>} />
-            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} className="min-h-[180px]" placeholder="Suas anotacoes..." /></CardBody>
+            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} className="min-h-[180px]" placeholder="Suas anotações..." /></CardBody>
           </Card>
           <Card>
-            <CardHeader title="Forum da unidade" />
+            <CardHeader title="Fórum da unidade" />
             <CardBody className="space-y-3">
-              <Textarea id="unit-comment" value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="Escreva sua duvida..." />
+              <Textarea id="unit-comment" value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="Escreva sua dúvida..." />
               <Button size="sm" icon={MessageSquare} onClick={postComment}>Postar</Button>
               {comments.map((c) => (
                 <div key={c.id} className="rounded-md border border-border p-3 text-sm">
@@ -272,24 +272,24 @@ export default function ModulosPage() {
           <Button icon={NotebookPen} onClick={saveAnnotation}>Salvar</Button>
         </div>
       </Modal>
-      <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={removeForumItem} danger title="Excluir mensagem?" description="A mensagem sera removida do forum desta unidade." confirmLabel="Excluir" />
+      <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={removeForumItem} danger title="Excluir mensagem?" description="A mensagem será removida do fórum desta unidade." confirmLabel="Excluir" />
     </div>
   )
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text">Modulos</h1>
+        <h1 className="text-2xl font-bold text-text">Módulos</h1>
         <p className="text-sm text-muted">Apostilas, progresso e atividades liberadas para sua turma.</p>
       </div>
       <PageState loading={status.loading} error={status.error || dataError} onRetry={() => { status.refetch(); progress.refetch() }}>
         {modules.length === 0 ? (
-          <Card><EmptyState icon={BookOpen} title="Curso sem estrutura" description="Nenhum modulo foi encontrado para seu curso." /></Card>
+          <Card><EmptyState icon={BookOpen} title="Curso sem estrutura" description="Nenhum módulo foi encontrado para seu curso." /></Card>
         ) : modules.map((mod, mi) => {
           const modProgress = moduleProgress(mod, completed)
           return (
             <Card key={mod.id || mi}>
-              <CardHeader title={mod.title || mod.name || `Modulo ${mi + 1}`} subtitle={`${modProgress.done} de ${modProgress.total} topicos concluidos`} action={<Badge tone={modProgress.pct === 100 ? 'success' : 'neutral'}>{modProgress.pct}%</Badge>} />
+              <CardHeader title={mod.title || mod.name || `Módulo ${mi + 1}`} subtitle={`${modProgress.done} de ${modProgress.total} tópicos concluídos`} action={<Badge tone={modProgress.pct === 100 ? 'success' : 'neutral'}>{modProgress.pct}%</Badge>} />
               <CardBody>
                 <div className="mb-4 h-2 rounded-full bg-surface-2 overflow-hidden">
                   <div className="h-full bg-primary transition-all" style={{ width: `${modProgress.pct}%` }} />
@@ -298,15 +298,16 @@ export default function ModulosPage() {
                   {(mod.units || mod.items || []).map((unit, ui) => {
                     const u = normalizeUnit(mod, unit, ui)
                     const on = !!released[u.key]
+                    const done = !!completed[u.key]
                     return (
-                      <button type="button" key={u.key} disabled={!on} onClick={() => openReader(u)} className="w-full flex items-center gap-3 p-3 rounded-lg border border-border text-left transition hover:border-primary/50 disabled:cursor-default disabled:hover:border-border">
-                        <span className={`w-10 h-10 grid place-items-center rounded-md ${on ? 'bg-primary-soft text-primary' : 'bg-surface-2 text-subtle'}`}>{on ? <BookOpen size={18} /> : <Lock size={18} />}</span>
+                      // Título em até duas linhas: o nome do tópico era cortado ("Sistemas Opera…")
+                      // e a chave técnica (Apostila_FUTEC_1) ocupava o lugar do status.
+                      <button type="button" key={u.key} disabled={!on} onClick={() => openReader(u)} title={u.title} className="w-full flex items-center gap-3 p-3 rounded-lg border border-border text-left transition hover:border-primary/50 disabled:cursor-default disabled:hover:border-border">
+                        <span className={`w-10 h-10 shrink-0 grid place-items-center rounded-md ${done ? 'bg-success-soft text-success' : on ? 'bg-primary-soft text-primary' : 'bg-surface-2 text-subtle'}`}>{done ? <CheckCircle2 size={18} /> : on ? <BookOpen size={18} /> : <Lock size={18} />}</span>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-text truncate">{u.title}</p>
-                          <p className="text-xs text-subtle truncate">{u.key}</p>
+                          <p className="text-sm font-medium leading-snug text-text line-clamp-2">{u.title}</p>
+                          <p className={`mt-0.5 text-xs ${done ? 'text-success' : 'text-subtle'}`}>{done ? 'Concluído' : on ? 'Disponível' : 'Bloqueado pelo instrutor'}</p>
                         </div>
-                        {completed[u.key] && <Badge tone="success">ok</Badge>}
-                        <Badge tone={on ? 'success' : 'neutral'}>{on ? 'Liberado' : 'Bloqueado'}</Badge>
                       </button>
                     )
                   })}
@@ -315,7 +316,7 @@ export default function ModulosPage() {
             </Card>
           )
         })}
-        {units.length === 0 && <Card><EmptyState icon={BookOpen} title="Sem unidades" description="A estrutura do curso nao possui apostilas." /></Card>}
+        {units.length === 0 && <Card><EmptyState icon={BookOpen} title="Sem unidades" description="A estrutura do curso não possui apostilas." /></Card>}
       </PageState>
     </div>
   )

@@ -69,7 +69,7 @@ function RequireAdministrator({ children }) {
 function SessionLoading() {
   return (
     <div className="min-h-screen grid place-items-center bg-bg text-text">
-      <div className="text-sm text-muted">Validando sessao...</div>
+      <div className="text-sm text-muted">Validando sessão...</div>
     </div>
   )
 }

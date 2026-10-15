@@ -132,7 +132,7 @@ export default function MateriaisPage() {
       ) : (
         <PageState loading={loading} error={error} onRetry={load}>
           {modules.length === 0 ? (
-            <div className="bg-surface border border-border rounded-xl p-6"><EmptyState title="Curso sem estrutura" description="Cadastre modulos no Editor de Conteudo." /></div>
+            <div className="bg-surface border border-border rounded-xl p-6"><EmptyState title="Curso sem estrutura" description="Cadastre módulos no Editor de Conteúdo." /></div>
           ) : (
             <div className="space-y-5">
               <div className="flex items-center gap-5 bg-surface border border-border rounded-xl p-4 sm:p-5">
@@ -145,7 +145,7 @@ export default function MateriaisPage() {
 
               <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-4 items-start">
                 <div className="bg-surface border border-border rounded-xl overflow-hidden">
-                  <div className="px-4 py-2.5 border-b border-border text-xs text-subtle">Modulos</div>
+                  <div className="px-4 py-2.5 border-b border-border text-xs text-subtle">Módulos</div>
                   {modules.map((m, i) => {
                     const c = counts[i]; const active = i === selIdx
                     return (
@@ -175,7 +175,7 @@ export default function MateriaisPage() {
                     )}
                   </div>
                   {selUnits.length === 0 ? (
-                    <div className="p-6"><EmptyState icon={PackageOpen} title="Sem unidades" description="Este modulo ainda nao possui materiais cadastrados." /></div>
+                    <div className="p-6"><EmptyState icon={PackageOpen} title="Sem unidades" description="Este módulo ainda não possui materiais cadastrados." /></div>
                   ) : selUnits.map((unit, ui) => {
                     const uon = unit.items.filter((i) => released[i.key]).length
                     return (

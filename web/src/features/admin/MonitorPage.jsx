@@ -836,7 +836,7 @@ export default function MonitorPage() {
   async function deleteMessageHistory(messageId = null) {
     try {
       await api.post('/api/admin/message-history/delete', { messageId, studentClass: className, courseId, examKey, applicationId })
-      toast.success(messageId ? 'Mensagem removida do historico' : 'Historico limpo')
+      toast.success(messageId ? 'Mensagem removida do histórico' : 'Histórico limpo')
       loadMessageHistory()
     } catch (e) {
       toast.error(e.message)
@@ -898,7 +898,7 @@ export default function MonitorPage() {
     const token = applicationId ? sessionStorage.getItem(`exam-token:${applicationId}`) || '' : selectedConfig.accessToken || ''
     if (!token) return toast.info('O token está desativado nesta prova')
     try { await navigator.clipboard.writeText(token); toast.success('Token copiado') }
-    catch { toast.error('Nao foi possivel copiar') }
+    catch { toast.error('Não foi possível copiar') }
   }
 
   async function unlock(email) {
@@ -913,9 +913,9 @@ export default function MonitorPage() {
   }
 
   async function assignVersion(email) {
-    const version = prompt('Versao do aluno:', 'A')
+    const version = prompt('Versão do aluno:', 'A')
     if (!version) return
-    try { await api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() }); toast.success('Versao atribuida'); poll() }
+    try { await api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() }); toast.success('Versão atribuída'); poll() }
     catch (e) { toast.error(e.message) }
   }
 
@@ -1078,7 +1078,7 @@ export default function MonitorPage() {
       </div>
 
       {!className || !examKey ? (
-        <Card><EmptyState icon={Play} title={!className ? 'Selecione uma turma' : 'Nenhuma prova ativa selecionada'} description={!className ? 'Escolha a turma para ver somente as provas ativas dela.' : 'Prepare uma prova em Provas ou escolha uma avaliacao ativa para monitorar.'} /></Card>
+        <Card><EmptyState icon={Play} title={!className ? 'Selecione uma turma' : 'Nenhuma prova ativa selecionada'} description={!className ? 'Escolha a turma para ver somente as provas ativas dela.' : 'Prepare uma prova em Provas ou escolha uma avaliação ativa para monitorar.'} /></Card>
       ) : (
         <>
           <Card className={`p-4 ${applicationPrepared ? 'border-warning/55 bg-warning-soft/20' : ''} ${applicationFinished ? 'border-info/45 bg-info-soft/15' : ''}`}>
@@ -1151,7 +1151,7 @@ export default function MonitorPage() {
               <>
                 <Button icon={CheckCircle2} loading={releaseBusy} onClick={releaseGrades}>Liberar nota para o aluno</Button>
                 <Button variant="secondary" icon={ArrowRight} onClick={goToResults}>Ver resultados</Button>
-                <Button variant="secondary" icon={History} onClick={openMessageHistory}>Historico msgs</Button>
+                <Button variant="secondary" icon={History} onClick={openMessageHistory}>Histórico msgs</Button>
                 <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>
               </>
             ) : (
@@ -1161,7 +1161,7 @@ export default function MonitorPage() {
                 <Button variant="secondary" icon={Clock} onClick={waitingRoom}>{selectedConfig.status === 'waiting' ? 'Redefinir espera' : 'Sala de espera'}</Button>
                 <Button variant="secondary" icon={Clock} onClick={() => addTime()}>+5 min</Button>
                 <Button variant="secondary" icon={Send} onClick={() => broadcast()}>Aviso turma</Button>
-                <Button variant="secondary" icon={History} onClick={openMessageHistory}>Historico msgs</Button>
+                <Button variant="secondary" icon={History} onClick={openMessageHistory}>Histórico msgs</Button>
                 <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>
                 <Button variant="destructive" icon={Square} onClick={openFinishDecision}>Finalizar</Button>
               </>
@@ -1219,7 +1219,7 @@ export default function MonitorPage() {
           <Card className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-muted border-b border-border bg-surface-2">
-                <th className="px-4 py-3 font-semibold">Aluno</th><th className="px-4 py-3 font-semibold">IP</th><th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 font-semibold">Versao</th><th className="px-4 py-3 font-semibold">Tempo</th><th className="px-4 py-3 font-semibold">Progresso</th><th className="px-4 py-3 font-semibold">Digitação</th><th className="px-4 py-3 font-semibold">Foco</th><th className="px-4 py-3 font-semibold">Acoes</th>
+                <th className="px-4 py-3 font-semibold">Aluno</th><th className="px-4 py-3 font-semibold">IP</th><th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 font-semibold">Versão</th><th className="px-4 py-3 font-semibold">Tempo</th><th className="px-4 py-3 font-semibold">Progresso</th><th className="px-4 py-3 font-semibold">Digitação</th><th className="px-4 py-3 font-semibold">Foco</th><th className="px-4 py-3 font-semibold">Ações</th>
               </tr></thead>
               <tbody>
                 {rows.map((r, i) => {
@@ -1384,18 +1384,18 @@ export default function MonitorPage() {
         {analytics && <div className="space-y-4">
           <div className="grid grid-cols-3 gap-3">
             <Card className="p-3"><span className="text-xs text-muted">Entregas</span><div className="text-2xl font-bold text-text">{analytics.totalSubmissions}</div></Card>
-            <Card className="p-3"><span className="text-xs text-muted">Media</span><div className="text-2xl font-bold text-text">{analytics.averageScore}</div></Card>
+            <Card className="p-3"><span className="text-xs text-muted">Média</span><div className="text-2xl font-bold text-text">{analytics.averageScore}</div></Card>
             <Card className="p-3"><span className="text-xs text-muted">Perdas de foco</span><div className="text-2xl font-bold text-text">{analytics.proctoringSummary?.totalFocusLosses || 0}</div></Card>
           </div>
           <div className="space-y-2">
-            {(analytics.questions || []).map((q) => <div key={q.questionNumber} className="flex items-center justify-between rounded-md border border-border p-3 text-sm"><span>Questao {q.questionNumber}</span><Badge tone={q.difficulty === 'alta' ? 'danger' : q.difficulty === 'media' ? 'warning' : 'success'}>{q.accuracyPercent}%</Badge></div>)}
+            {(analytics.questions || []).map((q) => <div key={q.questionNumber} className="flex items-center justify-between rounded-md border border-border p-3 text-sm"><span>Questão {q.questionNumber}</span><Badge tone={q.difficulty === 'alta' ? 'danger' : q.difficulty === 'media' ? 'warning' : 'success'}>{q.accuracyPercent}%</Badge></div>)}
           </div>
         </div>}
       </Modal>
-      <Modal open={historyOpen} onClose={() => setHistoryOpen(false)} title="Historico de mensagens" description={`${className || '-'} - ${examKey || '-'}`}>
+      <Modal open={historyOpen} onClose={() => setHistoryOpen(false)} title="Histórico de mensagens" description={`${className || '-'} - ${examKey || '-'}`}>
         <div className="space-y-3">
           <div className="flex justify-end">
-            <Button size="sm" variant="secondary" icon={Trash2} onClick={() => deleteMessageHistory(null)} disabled={messageHistory.length === 0}>Limpar historico</Button>
+            <Button size="sm" variant="secondary" icon={Trash2} onClick={() => deleteMessageHistory(null)} disabled={messageHistory.length === 0}>Limpar histórico</Button>
           </div>
           <div className="space-y-2 max-h-[420px] overflow-auto">
             {messageHistory.map((m) => (
@@ -1411,7 +1411,7 @@ export default function MonitorPage() {
                 </div>
               </div>
             ))}
-            {messageHistory.length === 0 && <p className="text-sm text-muted text-center py-6">Nenhuma mensagem no historico.</p>}
+            {messageHistory.length === 0 && <p className="text-sm text-muted text-center py-6">Nenhuma mensagem no histórico.</p>}
           </div>
         </div>
       </Modal>

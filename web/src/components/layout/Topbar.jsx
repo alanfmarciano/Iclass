@@ -1,4 +1,4 @@
-import { BookOpen, Bell, ChevronRight, LogOut, Menu, Search } from 'lucide-react'
+import { BookOpen, ChevronRight, LogOut, Menu } from 'lucide-react'
 import { ThemeToggle } from '../ui/ThemeToggle'
 import { Badge } from '../ui/Badge'
 import { useAuth } from '../../context/AuthProvider'
@@ -34,12 +34,6 @@ export function Topbar({ onMenu, breadcrumb }) {
           <span className="max-w-[180px] truncate">{courseLabel}</span>
         </button>
       )}
-      <button className="hidden h-10 min-w-[235px] items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 text-[13px] text-muted transition-all duration-300 hover:border-[var(--border-strong)] hover:text-text lg:flex" aria-label="Buscar">
-        <Search size={15} /> <span>Buscar no IClass</span> <kbd className="ml-auto rounded-md border border-border bg-surface px-1.5 py-0.5 font-mono text-[9px] text-muted">Ctrl K</kbd>
-      </button>
-      <button className="relative grid h-10 w-10 place-items-center rounded-lg text-muted transition-all duration-300 hover:bg-surface-2 hover:text-text" aria-label="Notificações">
-        <Bell size={17} /><span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-primary ring-2 ring-surface" />
-      </button>
       <ThemeToggle />
       <Badge className="hidden lg:inline-flex" tone={auth.accountRole === 'professor' ? 'info' : 'neutral'}>
         {auth.accountRole === 'professor' ? 'Professor' : 'Administrador'}

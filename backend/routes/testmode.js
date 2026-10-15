@@ -2,9 +2,13 @@
 // O seed é idempotente: atualiza os registros seed_* sem criar duplicatas.
 const express = require('express');
 const router = express.Router();
+const fs = require('fs');
+const path = require('path');
 const db = require('../database.js');
 const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const attendanceUtil = require('../utils/attendance.js');
+const { CONTENT_DIR } = require('../runtimePaths.js');
+const { applicationToOnlineConfig, createExamApplication } = require('../utils/examApplications.js');
 
 const TEST = process.env.TEST_MODE === '1';
 const TEST_ADMIN = DEMO_ACCOUNTS.admin;
@@ -376,13 +380,105 @@ function seedAdditionalData() {
   ]);
 }
 
+// Apostila de demonstração gerada para cada unidade. Só é escrita quando o arquivo
+// não existe, então nunca sobrescreve conteúdo real (o modo demonstração usa content-demo/).
+function demoApostila(module, unit) {
+  return [
+    `# ${unit.name}`,
+    '',
+    `> **Módulo:** ${module.name} · **Unidade ${unit.id}** · material de demonstração do IClass.`,
+    '',
+    '## Objetivos da aula',
+    '',
+    `- Entender os conceitos centrais de **${unit.name}**.`,
+    '- Relacionar a teoria com situações reais do ambiente de TI.',
+    '- Praticar com um roteiro curto e registrar o resultado.',
+    '',
+    '## Conceitos principais',
+    '',
+    `Nesta unidade estudamos ${unit.name.toLowerCase()} a partir de três perguntas: o que é, para que serve e como verificar se está funcionando. Cada conceito vem acompanhado de um exemplo do dia a dia de um técnico.`,
+    '',
+    '| Conceito | Para que serve | Como verificar |',
+    '| --- | --- | --- |',
+    '| Planejamento | Evitar retrabalho e falhas | Checklist antes de começar |',
+    '| Execução | Aplicar o procedimento correto | Registro de cada etapa |',
+    '| Validação | Confirmar o resultado | Teste e documentação |',
+    '',
+    '## Atividade prática',
+    '',
+    '1. Leia o roteiro completo antes de começar.',
+    '2. Execute cada etapa e anote o que observou.',
+    '3. Compare o resultado com o esperado e registre as diferenças.',
+    '4. Compartilhe uma dúvida no fórum da unidade.',
+    '',
+    '## Para revisar',
+    '',
+    '- Quais etapas são obrigatórias antes de uma alteração?',
+    '- Como você comprovaria que a atividade foi concluída?',
+    '',
+  ].join('\n');
+}
+
+function seedDemoContent() {
+  try {
+    fs.mkdirSync(CONTENT_DIR, { recursive: true });
+    TECH_STRUCTURE.forEach(module => module.units.forEach(unit => {
+      const file = path.join(CONTENT_DIR, `${unit.apostilaKey}.md`);
+      if (!fs.existsSync(file)) fs.writeFileSync(file, demoApostila(module, unit), 'utf8');
+    }));
+  } catch (error) {
+    console.error('Seed: não foi possível gerar as apostilas de demonstração:', error.message);
+  }
+
+  const now = Date.now();
+  const link = (id, moduleId, name, url, type, description, tags, ageDays) => ({
+    id, kind: 'link', courseId: TEST_COURSE, studentClass: '', moduleId, name, url, type, size: 0,
+    description, tags, author: TEST_PROFESSOR.email, createdAt: now - ageDays * 86400000, updatedAt: now - ageDays * 86400000,
+  });
+  db.memory.library = replaceSeedRows(db.memory.library, 'seed_lib_', [
+    link('seed_lib_1', 'FUTEC', 'Documentação do Windows Server', 'https://learn.microsoft.com/pt-br/windows-server/', 'link', 'Referência oficial para instalação e administração.', ['windows', 'servidor'], 6),
+    link('seed_lib_2', 'FUTEC', 'Guia de comandos do Linux', 'https://www.debian.org/doc/manuals/debian-reference/', 'link', 'Manual de referência do Debian com comandos e permissões.', ['linux', 'cli'], 5),
+    link('seed_lib_3', 'FECOP', 'Introdução ao Active Directory', 'https://learn.microsoft.com/pt-br/windows-server/identity/ad-ds/get-started/virtual-dc/active-directory-domain-services-overview', 'link', 'Visão geral de domínios, grupos e políticas.', ['ad', 'gpo'], 4),
+    link('seed_lib_4', 'IRCOM', 'Protocolo Modbus — visão geral', 'https://modbus.org/faq.php', 'link', 'Perguntas frequentes sobre o protocolo Modbus.', ['industrial', 'redes'], 2),
+  ]);
+}
+
+// Deixa uma aplicação de prova PREPARADA (não iniciada) para o Monitor não abrir vazio.
+// Fica em "prepared" para o apresentador iniciá-la ao vivo e para não aparecer aos alunos.
+function seedDemoApplication(cls) {
+  const evaluation = db.memory.evaluations[ACTIVE_EXAM];
+  if (!cls || !evaluation) return;
+  db.memory.examApplications = db.memory.examApplications || [];
+  let application = db.memory.examApplications.find(item => item && item.seedDemo === true && item.examKey === ACTIVE_EXAM);
+  if (!application || ['finished', 'cancelled'].includes(application.status)) {
+    db.memory.examApplications = db.memory.examApplications.filter(item => !(item && item.seedDemo === true && item.examKey === ACTIVE_EXAM));
+    const questions = evaluation.questions.map((question, index) => ({ ...question, examNumber: index + 1, questionText: question.text }));
+    application = createExamApplication({
+      examKey: ACTIVE_EXAM, courseId: TEST_COURSE, studentClass: TEST_CLASS,
+      historyId: 'seed_history_futec_5',
+      config: {
+        durationMinutes: 40, timerEnabled: true, waitingRoomDuration: 0, maxAttempts: 1,
+        questionCount: questions.length, shuffleQuestions: false, shuffleAnswers: false,
+        versionSnapshots: [{ version: 'A', examCode: 'DEMO-FUTEC5', questions }],
+      },
+      actor: TEST_PROFESSOR.email,
+      status: 'prepared',
+    });
+    application.seedDemo = true;
+    db.memory.examApplications.push(application);
+  }
+  cls.onlineExamConfigs[ACTIVE_EXAM] = applicationToOnlineConfig(application, cls.onlineExamConfigs[ACTIVE_EXAM] || {});
+  cls.releasedItems[ACTIVE_EXAM] = false;
+  if (cls.activeExamKey === ACTIVE_EXAM) cls.activeExamKey = null;
+}
+
 function ensureSeed() {
   // Limpa somente os artefatos criados pelo seed antigo, sem tocar em dados reais.
   db.memory.courses = (db.memory.courses || []).filter(item => !(item.id === 'TESTE' && item.name === 'Curso de Teste'));
   db.memory.classes = (db.memory.classes || []).filter(item => !(item.courseId === 'TESTE' && item.name === 'Turma Teste'));
   db.memory.submissions = (db.memory.submissions || []).filter(item => !(item.student && item.student.courseId === 'TESTE' && String(item.id || '').startsWith('sub_test_')));
 
-  ensureCourseAndClass();
+  const { cls } = ensureCourseAndClass();
   ensureAccount(TEST_ADMIN, 'admin', { assignedSchoolIds: [], assignedCourseIds: [], assignedClasses: [], additionalPermissions: [] });
   ensureAccount(TEST_PROFESSOR, 'professor', { assignedSchoolIds: [], assignedCourseIds: [], assignedClasses: [{ courseId: TEST_COURSE, className: TEST_CLASS }], additionalPermissions: [] });
   ensureStudents();
@@ -395,6 +491,8 @@ function ensureSeed() {
   seedAcademicData();
   seedCommunicationData();
   seedAdditionalData();
+  seedDemoContent();
+  seedDemoApplication(cls);
   db.save();
 }
 

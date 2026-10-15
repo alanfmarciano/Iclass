@@ -192,7 +192,7 @@ export default function EditorPage() {
   }
 
   async function createMaterial() {
-    if (!courseId || !newUnit.moduleId || !newUnit.unitName) return toast.error('Selecione modulo e nome da unidade')
+    if (!courseId || !newUnit.moduleId || !newUnit.unitName) return toast.error('Selecione módulo e nome da unidade')
     if (!confirmScope()) return
     try {
       const r = await api.post('/api/admin/material/create', { courseId, studentClass: className, scope, moduleId: newUnit.moduleId, unitName: newUnit.unitName })
@@ -241,7 +241,7 @@ export default function EditorPage() {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text">Editor de Conteudo</h1>
+        <h1 className="text-2xl font-bold text-text">Editor de Conteúdo</h1>
         <p className="text-sm text-muted">Edite apostilas em modo visual e salve em Markdown.</p>
       </div>
 
@@ -322,7 +322,7 @@ export default function EditorPage() {
 
             {mode === 'markdown' && (
               <div>
-                <div className="flex items-center gap-2 text-sm font-semibold text-muted mb-2"><Eye size={16} /> Previa</div>
+                <div className="flex items-center gap-2 text-sm font-semibold text-muted mb-2"><Eye size={16} /> Prévia</div>
                 <article className="prose-iclass rounded-md border border-border bg-surface px-5 py-4" dangerouslySetInnerHTML={{ __html: html }} />
               </div>
             )}
@@ -335,7 +335,7 @@ export default function EditorPage() {
         </Card>
       )}
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Novo material" description="Cria uma apostila e avaliacao vazia vinculadas ao modulo."
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Novo material" description="Cria uma apostila e avaliação vazia vinculadas ao módulo."
         footer={<><Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancelar</Button><Button onClick={createMaterial}>Criar</Button></>}>
         <div className="space-y-3">
           <Select label="Modulo" value={newUnit.moduleId} onChange={(e) => setNewUnit({ ...newUnit, moduleId: e.target.value })} disabled={!courseId}>

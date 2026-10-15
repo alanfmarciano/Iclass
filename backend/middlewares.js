@@ -781,6 +781,20 @@ function assignRandomExamVersion(state, onlineConfig) {
     return true;
 }
 
+// Tempo adicional de acessibilidade (cadastro do aluno: 25/50/100% da duração).
+// Calculado sobre a duração base da prova, arredondado para cima em minutos.
+function accessibilityExtraMinutes(studentEmail, durationMinutes) {
+    const email = String(studentEmail || '').trim().toLowerCase();
+    const duration = Number(durationMinutes || 0);
+    if (!email || duration <= 0) return 0;
+    const student = (db.memory.students || []).find(item => item && String(item.email || '').toLowerCase() === email);
+    const access = student && student.accessibility;
+    if (!access || access.tempoAdicional !== true) return 0;
+    const percent = Number(access.tempoAdicionalPercent);
+    if (!Number.isFinite(percent) || percent <= 0) return 0;
+    return Math.ceil(duration * Math.min(percent, 200) / 100);
+}
+
 function initializeExamState(state, onlineConfig) {
     if (!state || !onlineConfig) return false;
     let changed = false;
@@ -838,8 +852,14 @@ function initializeExamState(state, onlineConfig) {
         }
         const duration = Number(onlineConfig.durationMinutes || 0);
         if (duration > 0) {
+            const extra = accessibilityExtraMinutes(state.studentEmail, duration);
+            if (state.accessibilityExtraMinutes !== extra) {
+                state.accessibilityExtraMinutes = extra;
+                changed = true;
+            }
             const adjustment = Number(onlineConfig.globalTimeAdjustment || 0)
-                + Number(state.individualTimeAdjustment || 0);
+                + Number(state.individualTimeAdjustment || 0)
+                + extra;
             const deadlineAt = Number(state.startedAt) + Math.max(0, duration + adjustment) * 60000;
             if (state.deadlineAt !== deadlineAt) {
                 state.deadlineAt = deadlineAt;
@@ -894,6 +914,7 @@ module.exports = {
     normalizeIdentifier,
     findClassByNameAndCourse,
     assignRandomExamVersion,
+    accessibilityExtraMinutes,
     initializeExamState,
     getCourseForClass,
     getCourseItemKeys,

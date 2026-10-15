@@ -52,6 +52,7 @@ export default function ExamRunner() {
   const [answers, setAnswers] = useState({})
   const [assignedVersion, setAssignedVersion] = useState('A')
   const [examConfigVersion, setExamConfigVersion] = useState(null)
+  const [examTitle, setExamTitle] = useState('')
   const [remaining, setRemaining] = useState(null)
   const [waitingRemaining, setWaitingRemaining] = useState(null)
   const [tokenInput, setTokenInput] = useState('')
@@ -65,6 +66,7 @@ export default function ExamRunner() {
   const [saveState, setSaveState] = useState({ status: 'idle', at: null })
   const [attemptLimit, setAttemptLimit] = useState(null)
   const [attemptId, setAttemptId] = useState(null)
+  const [extraMinutes, setExtraMinutes] = useState(0) // tempo adicional de acessibilidade
   const [instructionsAccepted, setInstructionsAccepted] = useState(false)
   const [submitConfirm, setSubmitConfirm] = useState(false)
   const [exitConfirm, setExitConfirm] = useState(false)
@@ -270,13 +272,15 @@ export default function ExamRunner() {
       const r = await api.get(`/api/student/sync?${qs()}`)
       const c = (r.onlineExamConfigs || {})[examKey]
       if (!c) {
-        setFatal('Esta prova nao esta mais disponivel para sua turma.')
+        setFatal('Esta prova não está mais disponível para sua turma.')
         setPhase('error')
         return
       }
       setCfg(c)
       setExamConfigVersion(r.examConfigVersion || null)
       if (r.attemptId) setAttemptId(r.attemptId)
+      setExtraMinutes(Number(r.accessibilityExtraMinutes) || 0)
+      if (r.examTitle) setExamTitle(r.examTitle)
       if (r.tokenAccepted === true) setTokenOk(true)
 
       const st = r.state || {}
@@ -386,7 +390,7 @@ export default function ExamRunner() {
   async function deleteMessageHistory(messageId = null) {
     try {
       await api.post('/api/student/message-history/delete', { email, messageId, studentClass, courseId, examKey, applicationId })
-      toast.success(messageId ? 'Mensagem removida do historico' : 'Historico limpo')
+      toast.success(messageId ? 'Mensagem removida do histórico' : 'Histórico limpo')
       loadMessageHistory()
     } catch (e) {
       toast.error(e.message)
@@ -415,7 +419,7 @@ export default function ExamRunner() {
       if (r.valid) {
         setTokenOk(true)
         if (r.attemptId) setAttemptId(r.attemptId)
-        toast.success('Token valido')
+        toast.success('Token válido')
         sync()
       } else {
         toast.error('Token incorreto')
@@ -506,10 +510,10 @@ export default function ExamRunner() {
     <Button className="fixed bottom-4 left-4 z-[9000]" size="sm" variant="secondary" icon={History} onClick={openMessageHistory}>Mensagens</Button>
   )
   const messageHistoryModal = (
-    <Modal open={historyOpen} onClose={() => setHistoryOpen(false)} title="Historico de mensagens" description={examKey.replace(/_/g, ' ')}>
+    <Modal open={historyOpen} onClose={() => setHistoryOpen(false)} title="Histórico de mensagens" description={examTitle || examKey.replace(/_/g, ' ')}>
       <div className="space-y-3">
         <div className="flex justify-end">
-          <Button size="sm" variant="secondary" icon={Trash2} onClick={() => deleteMessageHistory(null)} disabled={messageHistory.length === 0}>Limpar historico</Button>
+          <Button size="sm" variant="secondary" icon={Trash2} onClick={() => deleteMessageHistory(null)} disabled={messageHistory.length === 0}>Limpar histórico</Button>
         </div>
         <div className="space-y-2 max-h-[420px] overflow-auto">
           {messageHistory.map((m) => (
@@ -521,7 +525,7 @@ export default function ExamRunner() {
               </div>
             </div>
           ))}
-          {messageHistory.length === 0 && <p className="text-sm text-muted text-center py-6">Nenhuma mensagem no historico.</p>}
+          {messageHistory.length === 0 && <p className="text-sm text-muted text-center py-6">Nenhuma mensagem no histórico.</p>}
         </div>
       </div>
     </Modal>
@@ -538,7 +542,7 @@ export default function ExamRunner() {
   if (phase === 'error') return withInstructorMessage(
     <Center>
       <div className="w-14 h-14 grid place-items-center rounded-full bg-danger-soft text-danger mb-3"><AlertTriangle size={26} /></div>
-      <h2 className="text-lg font-semibold text-text">Nao foi possivel abrir a prova</h2>
+      <h2 className="text-lg font-semibold text-text">Não foi possível abrir a prova</h2>
       <p className="text-sm text-muted mt-1 max-w-sm text-center">{fatal}</p>
       <Button className="mt-4" variant="secondary" icon={ArrowLeft} onClick={() => nav('/aluno/provas')}>Voltar</Button>
     </Center>
@@ -584,11 +588,12 @@ export default function ExamRunner() {
           <div className="w-12 h-12 grid place-items-center rounded-full bg-primary-soft text-primary shrink-0"><ShieldAlert size={24} /></div>
           <div>
             <h2 className="text-xl font-bold text-text">Instruções da prova</h2>
+            {examTitle && <p className="mt-0.5 text-sm font-medium text-text">{examTitle}</p>}
             <p className="text-sm text-muted mt-1">Leia antes de iniciar. O cronômetro só começa depois da sua confirmação.</p>
           </div>
         </div>
         <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Duração</p><p className="font-semibold text-text">{cfg?.durationMinutes || '-'} min</p></div>
+          <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Duração</p><p className="font-semibold text-text">{cfg?.durationMinutes || '-'} min</p>{extraMinutes > 0 && <p className="text-xs font-medium text-success">+{extraMinutes} min de tempo adicional</p>}</div>
           <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Cronômetro</p><p className="font-semibold text-text">{cfg?.timerMode === 'per_attempt' ? 'Ao iniciar' : 'Coletivo'}</p></div>
           <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Tentativas</p><p className="font-semibold text-text">{cfg?.maxAttempts || 'Sem limite'}</p></div>
         </div>
@@ -721,8 +726,8 @@ export default function ExamRunner() {
       </Modal>
       <div className="sticky top-0 z-10 -mx-4 md:-mx-6 px-4 md:px-6 py-3 bg-surface/95 backdrop-blur border-b border-border flex items-center gap-3">
         <div>
-          <h1 className="text-base font-bold text-text">{examKey.replace(/_/g, ' ')}</h1>
-          <p className="text-xs text-subtle">Versao {assignedVersion} - {answeredCount}/{questions.length} respondidas</p>
+          <h1 className="text-base font-bold text-text">{examTitle || examKey.replace(/_/g, ' ')}</h1>
+          <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
           <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
             {saveState.status === 'saving' && 'Salvando respostas...'}
             {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
@@ -780,7 +785,7 @@ export default function ExamRunner() {
             </div>
           </Card>
         ))}
-        {questions.length === 0 && <Card className="p-8 text-center text-muted">As questoes aparecerao quando a prova iniciar.</Card>}
+        {questions.length === 0 && <Card className="p-8 text-center text-muted">As questões aparecerão quando a prova iniciar.</Card>}
       </div>
 
       <div className="pb-8 flex justify-end">

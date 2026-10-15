@@ -359,8 +359,8 @@ export default function ResultadosPage() {
   const snapshots = useMemo(() => snapshotOptions(history), [history])
   const selectedSnapshot = snapshots.find((item) => item.id === manual.snapshotId)?.snapshot || null
   const cardRows = selectedSnapshot
-    ? selectedSnapshot.questions.map((q, index) => ({ key: `pos-${index + 1}`, title: `Questao ${index + 1}`, question: q, letters: (q.alternatives || []).map((alt) => alt.displayLetter || alt.letter).filter(Boolean) }))
-    : (normalizedEval?.questions || []).map((q) => ({ key: `orig-${q.originalNumber}`, title: `Questao ${q.originalNumber}`, question: q, letters: (q.alternatives || []).map((alt) => alt.letter).filter(Boolean) }))
+    ? selectedSnapshot.questions.map((q, index) => ({ key: `pos-${index + 1}`, title: `Questão ${index + 1}`, question: q, letters: (q.alternatives || []).map((alt) => alt.displayLetter || alt.letter).filter(Boolean) }))
+    : (normalizedEval?.questions || []).map((q) => ({ key: `orig-${q.originalNumber}`, title: `Questão ${q.originalNumber}`, question: q, letters: (q.alternatives || []).map((alt) => alt.letter).filter(Boolean) }))
 
   useEffect(() => {
     if (!activeCourseId) {
@@ -979,7 +979,7 @@ export default function ResultadosPage() {
           {!reviewLoading && (!review?.questions || review.questions.length === 0) && Array.isArray(detail.gradedAnswers) && detail.gradedAnswers.length > 0 && (
             <div className="overflow-x-auto border-y border-border">
               <table className="w-full text-sm">
-                <thead><tr className="bg-surface-2 text-muted"><th className="text-left px-3 py-2">Questao</th><th className="text-left px-3 py-2">Aluno</th><th className="text-left px-3 py-2">Correta</th><th className="text-left px-3 py-2">Status</th></tr></thead>
+                <thead><tr className="bg-surface-2 text-muted"><th className="text-left px-3 py-2">Questão</th><th className="text-left px-3 py-2">Aluno</th><th className="text-left px-3 py-2">Correta</th><th className="text-left px-3 py-2">Status</th></tr></thead>
                 <tbody>{detail.gradedAnswers.map((a, i) => <tr key={i} className="border-t border-border"><td className="px-3 py-2">{a.questionNumber}</td><td className="px-3 py-2">{a.studentChoice || '-'}</td><td className="px-3 py-2">{a.correctAnswer || '-'}</td><td className="px-3 py-2"><Badge tone={a.isCorrect ? 'success' : 'danger'}>{a.isCorrect ? 'Correta' : 'Errada'}</Badge></td></tr>)}</tbody>
               </table>
             </div>
@@ -1038,11 +1038,11 @@ export default function ResultadosPage() {
             </>
           ) : (
             <div className="space-y-3">
-              <Select label="Versao aplicada" value={manual.snapshotId} onChange={(e) => setManual({ ...manual, snapshotId: e.target.value, answers: {} })}>
+              <Select label="Versão aplicada" value={manual.snapshotId} onChange={(e) => setManual({ ...manual, snapshotId: e.target.value, answers: {} })}>
                 <option value="">Banco original sem embaralhamento</option>
                 {snapshots.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
               </Select>
-              <p className="text-xs text-subtle">{selectedSnapshot ? `Corrigindo pela ordem impressa do codigo ${selectedSnapshot.examCode || '-'}.` : 'Sem versao, as respostas seguem o banco original da avaliacao.'}</p>
+              <p className="text-xs text-subtle">{selectedSnapshot ? `Corrigindo pela ordem impressa do codigo ${selectedSnapshot.examCode || '-'}.` : 'Sem versão, as respostas seguem o banco original da avaliação.'}</p>
               <div className="max-h-[340px] divide-y divide-border overflow-auto border-y border-border">
                 {cardRows.map((row) => (
                   <div key={row.key} className="flex items-center justify-between gap-3 py-2">

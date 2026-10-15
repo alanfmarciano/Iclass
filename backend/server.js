@@ -206,6 +206,25 @@ async function startServer() {
     const trashInterval = setInterval(sweepTrash, 6 * 3600000);
     trashInterval.unref();
 
+    // Backup automático diário dos dados em data/backups (guarda os 14 mais recentes).
+    // Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios do servidor.
+    // Desligado em TEST_MODE (demonstração e testes usam dados descartáveis).
+    if (process.env.TEST_MODE !== '1') {
+        const backupUtil = require('./utils/backup.js');
+        const backupIfDue = async () => {
+            try {
+                const last = backupUtil.lastAutomaticBackupAt();
+                if (last && Date.now() - last < 24 * 3600000) return;
+                await db.save();
+                const file = backupUtil.runAutomaticBackup();
+                console.log('💾 Backup automático criado: ' + path.basename(file));
+            } catch (e) { logCrash('backup automático', e); }
+        };
+        backupIfDue();
+        const backupInterval = setInterval(backupIfDue, 3600000);
+        backupInterval.unref();
+    }
+
     const app = createApp();
     serverInstance = app.listen(PORT, '0.0.0.0', () => {
         app.set('serverInstance', serverInstance);

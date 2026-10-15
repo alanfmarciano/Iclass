@@ -122,9 +122,9 @@ async function createAndEditExamFromUi(page) {
 }
 
 async function prepareAndStartFromUi(page) {
-    await page.getByLabel('Quantidade de questoes').fill('3');
+    await page.getByLabel('Quantidade de questões').fill('3');
     await page.getByLabel('Tentativas permitidas').fill('2');
-    await page.getByLabel('Duracao (min)').fill('15');
+    await page.getByLabel('Duração (min)').fill('15');
     const historySaved = page.waitForResponse(response => (
         response.request().method() === 'POST'
         && response.url().includes('/api/admin/exam-history/add')

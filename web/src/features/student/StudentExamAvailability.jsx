@@ -31,38 +31,36 @@ export function ExamAvailabilityPopup({ application, count = 1, now = Date.now()
       : 'A aplicação já foi iniciada e está disponível para você.'
   const actionLabel = paused ? 'Ver status' : waiting ? 'Entrar na sala' : 'Abrir prova'
 
+  // Faixa compacta (uma linha) em vez de cartão flutuante: continua sempre visível,
+  // mas não cobre o conteúdo — o portal reserva o espaço via --exam-banner-space.
   return (
     <aside
-      className={`fixed inset-x-4 bottom-20 z-[70] mx-auto max-w-md overflow-hidden rounded-2xl border bg-surface-raised/95 shadow-[0_24px_70px_rgba(0,0,0,.42)] backdrop-blur-xl md:bottom-6 md:left-auto md:right-6 md:mx-0 ${paused ? 'border-warning/55' : 'border-primary/55'}`}
+      className={`fixed inset-x-0 bottom-0 z-[70] border-t bg-surface-raised/95 shadow-[0_-12px_40px_rgba(0,0,0,.28)] backdrop-blur-xl md:inset-x-auto md:bottom-5 md:right-6 md:w-[min(560px,calc(100vw-320px))] md:rounded-xl md:border ${paused ? 'border-warning/55' : 'border-primary/55'}`}
       role="status"
       aria-live="polite"
       aria-label="Aviso de prova disponível"
     >
-      <div className={`h-1 w-full ${paused ? 'bg-warning' : 'bg-primary'}`} />
-      <div className="p-4 sm:p-5">
-        <div className="flex items-start gap-3">
-          <span className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-xl ${paused ? 'bg-warning-soft text-warning' : 'bg-primary-soft text-primary'}`}>
-            <Icon size={21} aria-hidden="true" />
-            {!paused && <span className="absolute -right-0.5 -top-0.5 h-3 w-3 animate-pulse rounded-full border-2 border-surface-raised bg-primary" aria-hidden="true" />}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className={`text-[10px] font-bold uppercase tracking-[.18em] ${paused ? 'text-warning' : 'text-primary'}`}>{eyebrow}</p>
-            <h2 className="mt-1 truncate text-base font-bold text-text">{application.examTitle || String(application.examKey || 'Prova').replace(/_/g, ' ')}</h2>
-            <p className="mt-0.5 text-xs text-muted">{application.studentClass}{application.courseName ? ` · ${application.courseName}` : ''}</p>
-          </div>
-          {count > 1 && <span className="rounded-full bg-primary-soft px-2 py-1 text-[11px] font-bold text-primary">+{count - 1}</span>}
+      <div className="flex items-center gap-3 px-4 py-3">
+        <span className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-lg ${paused ? 'bg-warning-soft text-warning' : 'bg-primary-soft text-primary'}`}>
+          <Icon size={18} aria-hidden="true" />
+          {!paused && <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 animate-pulse rounded-full border-2 border-surface-raised bg-primary" aria-hidden="true" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className={`text-[10px] font-bold uppercase tracking-[.16em] ${paused ? 'text-warning' : 'text-primary'}`}>
+            {eyebrow}{count > 1 && <span className="ml-2 normal-case tracking-normal text-subtle">+{count - 1} {count === 2 ? 'prova' : 'provas'}</span>}
+          </p>
+          <h2 className="truncate text-sm font-bold text-text" title={statusText}>{application.examTitle || String(application.examKey || 'Prova').replace(/_/g, ' ')}</h2>
+          <p className="truncate text-xs text-muted">{statusText}</p>
         </div>
-        <p className="mt-3 text-sm leading-5 text-muted">{statusText}</p>
         <button
           type="button"
           onClick={() => onOpen?.(application)}
-          className={`mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold transition active:translate-y-px ${paused ? 'bg-warning text-white hover:brightness-105' : 'bg-primary text-primary-fg hover:bg-primary-hover'}`}
+          className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm font-bold transition active:translate-y-px ${paused ? 'bg-warning text-white hover:brightness-105' : 'bg-primary text-primary-fg hover:bg-primary-hover'}`}
         >
-          <ClipboardList size={17} aria-hidden="true" />
+          <ClipboardList size={16} aria-hidden="true" className="hidden sm:block" />
           {actionLabel}
-          <ArrowRight size={16} aria-hidden="true" />
+          <ArrowRight size={15} aria-hidden="true" />
         </button>
-        {count > 1 && <p className="mt-2 text-center text-[11px] text-subtle">Há mais {count - 1} {count === 2 ? 'prova disponível' : 'provas disponíveis'}.</p>}
       </div>
     </aside>
   )
@@ -105,7 +103,16 @@ export function StudentExamAvailability() {
     }
   }, [applications.refetch])
 
-  if (!application || insideCurrentExam) return null
+  const showBanner = !!application && !insideCurrentExam
+  useEffect(() => {
+    // Reserva espaço no fim do conteúdo para a faixa não cobrir a última linha.
+    const root = document.documentElement
+    if (showBanner) root.style.setProperty('--exam-banner-space', '88px')
+    else root.style.removeProperty('--exam-banner-space')
+    return () => root.style.removeProperty('--exam-banner-space')
+  }, [showBanner])
+
+  if (!showBanner) return null
 
   const openApplication = (target) => {
     const memberships = auth.student?.classes || []
