@@ -34,10 +34,11 @@ echo   !AMARELO![5]!RESET! - Instalar, Compilar e abrir Modo Administrativo !BRA
 echo   !CIANO![6]!RESET! - Modo Demonstracao !BRANCO!(para apresentar ao cliente - nada e salvo)!RESET!
 echo   !VERDE![7]!RESET! - Fazer Backup !BRANCO!(zip do projeto em backups\)!RESET!
 echo   !CIANO![8]!RESET! - Central de Testes e Qualidade !BRANCO!(dados temporarios)!RESET!
+echo   !AMARELO![S]!RESET! - Redefinir Senha do Administrador !BRANCO!(gera senha temporaria)!RESET!
 echo   !BRANCO![9]!RESET! - Sair
 echo.
 echo !AZUL!======================================================!RESET!
-set /p opcao="!AMARELO!Escolha uma opcao (1-9): !RESET!"
+set /p opcao="!AMARELO!Escolha uma opcao (1-9 ou S): !RESET!"
 
 if "%opcao%"=="1" goto iniciar
 if "%opcao%"=="2" goto parar
@@ -48,6 +49,7 @@ if "%opcao%"=="6" goto testar
 if "%opcao%"=="7" goto backup
 if "%opcao%"=="8" goto central_testes
 if "%opcao%"=="9" goto sair
+if /I "%opcao%"=="S" goto senha_admin
 
 goto menu
 
@@ -324,6 +326,24 @@ if not exist "%~dp0VALIDAR_ICLASS.bat" (
     goto menu
 )
 call "%~dp0VALIDAR_ICLASS.bat"
+goto menu
+
+:senha_admin
+cls
+echo !AMARELO!!NEGRITO! REDEFINIR SENHA DO ADMINISTRADOR...!RESET!
+echo.
+echo !CIANO!Gera uma senha temporaria para uma conta administrativa, sem precisar da senha atual.!RESET!
+echo !CIANO!A conta sera obrigada a trocar a senha no proximo login. O servidor e parado antes.!RESET!
+echo.
+set "ADMIN_EMAIL="
+set /p ADMIN_EMAIL="E-mail da conta (vazio = primeiro administrador): "
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr /r /c:":3000 "') do taskkill /f /pid %%a >nul 2>&1
+timeout /t 1 /nobreak >nul
+node backendscriptseset-admin-password.js "!ADMIN_EMAIL!"
+set "ADMIN_EMAIL="
+echo.
+echo !CIANO!Servidor parado. Use a opcao [1] para religar e entrar com a senha temporaria.!RESET!
+pause
 goto menu
 
 :sair

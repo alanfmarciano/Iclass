@@ -118,6 +118,51 @@ test('tempo adicional de acessibilidade estende o prazo da prova', () => {
     assert.equal(regular.deadlineAt, startedAt + 40 * 60000);
 });
 
+test('redefinição local de senha gera senha temporária e obriga a troca', async () => {
+    const { resetAdminPassword } = require('../../backend/scripts/reset-admin-password.js');
+    const result = await resetAdminPassword();
+    assert.equal(result.email, 'admin@review.local', 'sem e-mail usa o primeiro administrador, nunca um professor');
+    assert.ok(result.temporaryPassword.length >= 10);
+    const account = db.memory.admins.find(item => item.email === 'admin@review.local');
+    assert.equal(db.verifyPassword(account.password, result.temporaryPassword), true);
+    assert.equal(account.mustChangePassword, true);
+    await assert.rejects(resetAdminPassword('ninguem@review.local'), /não encontrada/);
+});
+
+test('minhas dúvidas, notificações e boletim respondem com os dados do aluno', async () => {
+    db.memory.forum = [
+        { id: 'f1', key: 'geral', studentEmail: 'ana@review.local', studentName: 'Ana', text: 'Dúvida geral', courseId: courseA, studentClass: 'TURMA A', timestamp: new Date().toISOString(),
+          replies: [{ id: 'r1', authorRole: 'Instrutor', authorName: 'Prof', text: 'Resposta', timestamp: new Date().toISOString() }] },
+        { id: 'f2', key: 'Apostila_X_1', studentEmail: 'celia@review.local', studentName: 'Celia', text: 'De outra', courseId: courseB, studentClass: 'TURMA A', timestamp: new Date().toISOString(), replies: [] },
+    ];
+    db.memory.announcements = [{ id: 'a1', title: 'Aviso', message: 'm', target: 'turma', targetValue: 'TURMA A', courseId: courseA, createdAt: Date.now(), readBy: [] }];
+    db.memory.submissions = [{ id: 's1', examKey: 'Avaliacao_X_1', score: 80, gradePublished: true, gradePublishedAt: Date.now(), timestamp: new Date().toISOString(), student: { email: 'ana@review.local', courseId: courseA, studentClass: 'TURMA A' } }];
+    const token = await loginStudent('ana@review.local');
+    const forum = await request(app).get(`/api/student/my-forum?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', token);
+    assert.equal(forum.status, 200);
+    assert.deepEqual(forum.body.comments.map(c => c.id), ['f1'], 'só as dúvidas da própria aluna');
+    assert.equal(forum.body.comments[0].status, 'respondida');
+
+    const notifications = await request(app).get(`/api/student/notifications?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', token);
+    assert.equal(notifications.status, 200);
+    assert.deepEqual(notifications.body.items.map(i => i.type).sort(), ['aviso', 'duvida', 'nota']);
+    assert.equal(notifications.body.unread, 3);
+    await request(app).post('/api/student/notifications/seen').set('x-session-token', token).send({});
+    const after = await request(app).get(`/api/student/notifications?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', token);
+    assert.equal(after.body.unread, 1, 'o aviso continua não lido até ser aberto; dúvida e nota ficam vistas');
+
+    const adminNotifications = await request(app).get(`/api/admin/notifications?courseId=${courseA}&studentClass=TURMA%20A`).set('x-admin-session', adminToken);
+    assert.equal(adminNotifications.status, 200);
+    assert.ok(Array.isArray(adminNotifications.body.items));
+
+    const report = await request(app).get('/api/admin/student/report?email=ana@review.local').set('x-admin-session', adminToken);
+    assert.equal(report.status, 200);
+    assert.equal(report.body.student.email, 'ana@review.local');
+    assert.equal(report.body.className, 'TURMA A');
+    const forbidden = await request(app).get('/api/admin/student/report?email=celia@review.local').set('x-admin-session', professorToken);
+    assert.equal(forbidden.status, 403);
+});
+
 test('backup automático guarda só os mais recentes', () => {
     const backupUtil = require('../../backend/utils/backup.js');
     const { BACKUPS_DIR } = require('../../backend/runtimePaths.js');

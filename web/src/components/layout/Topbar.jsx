@@ -2,6 +2,7 @@ import { BookOpen, ChevronRight, LogOut, Menu } from 'lucide-react'
 import { ThemeToggle } from '../ui/ThemeToggle'
 import { Badge } from '../ui/Badge'
 import { useAuth } from '../../context/AuthProvider'
+import { NotificationBell } from '../ui/NotificationBell'
 
 function initials(s = '') {
   return s.split(/[ @.]/).filter(Boolean).slice(0, 2).map((x) => x[0]?.toUpperCase()).join('')
@@ -34,6 +35,10 @@ export function Topbar({ onMenu, breadcrumb }) {
           <span className="max-w-[180px] truncate">{courseLabel}</span>
         </button>
       )}
+      <NotificationBell
+        endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'}
+        seenEndpoint="/api/admin/notifications/seen"
+      />
       <ThemeToggle />
       <Badge className="hidden lg:inline-flex" tone={auth.accountRole === 'professor' ? 'info' : 'neutral'}>
         {auth.accountRole === 'professor' ? 'Professor' : 'Administrador'}

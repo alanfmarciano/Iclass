@@ -9,6 +9,7 @@ import { StudentCourseGate } from './StudentCourseGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
+import { NotificationBell } from '../../components/ui/NotificationBell'
 const NAV = [
   { to: '/aluno', icon: Home, text: 'Início', end: true },
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
@@ -33,6 +34,8 @@ export function StudentShell() {
   const logo = branding?.logoLightUrl || branding?.logoDarkUrl || ''
   const brandName = branding?.displayName || 'IClass'
   const pageTitle = NAV.find((item) => item.to === pathname)?.text || 'Portal do Aluno'
+  const notificationsEndpoint = cls && activeClass.courseId ? `/api/student/notifications?courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : null
+  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint="/api/student/notifications/seen" />
   useEffect(() => {
     if (!auth.email) return
     const ping = () => api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`).catch((err) => {
@@ -66,6 +69,7 @@ export function StudentShell() {
             onClick: () => { setActiveClass(null); nav('/aluno') },
           } : null}
           onLogout={() => { logout(); nav('/login') }}
+          notifications={notifications}
         >
           <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><StudentCourseGate><Outlet /></StudentCourseGate></div>
         </LumenShell>
@@ -121,6 +125,7 @@ export function StudentShell() {
           <button onClick={() => setOpen((o) => !o)} className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-surface-2 md:hidden" aria-label="Menu"><Menu size={21} /></button>
           <div className="flex items-center gap-2 text-[13px]"><Sparkles size={14} className="text-primary" /><span className="text-subtle">Portal do Aluno</span><span className="text-subtle">/</span><strong className="font-semibold text-text">{pageTitle}</strong></div>
           <div className="flex-1" />
+          {notifications}
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
           <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><StudentCourseGate><Outlet /></StudentCourseGate></div>

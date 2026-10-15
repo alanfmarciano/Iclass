@@ -1192,6 +1192,90 @@ router.get('/api/admin/student/academic', (req, res) => {
     });
 });
 
+// Boletim consolidado do aluno (provas por módulo + frequência por disciplina),
+// pronto para o frontend imprimir/salvar em PDF. Só notas publicadas entram na média.
+router.get('/api/admin/student/report', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const email = (req.query.email || '').trim().toLowerCase();
+        if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
+        const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+        if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
+        if (!adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Aluno fora do seu escopo.' });
+
+        const requestedCourseId = String(req.query.courseId || '').trim();
+        const memberships = (Array.isArray(student.classes) && student.classes.length ? student.classes : (student.studentClass ? [student.studentClass] : []))
+            .map(item => typeof item === 'string' ? { name: item, courseId: '' } : { name: item?.name || item?.className || '', courseId: item?.courseId || '' })
+            .filter(item => item.name);
+        const membership = memberships.find(item => !requestedCourseId || String(item.courseId) === requestedCourseId) || memberships[0] || { name: student.studentClass || '', courseId: '' };
+        const cls = findClassByNameAndCourse(db.memory.classes || [], membership.name, membership.courseId)
+            || (db.memory.classes || []).find(c => c.name === membership.name) || null;
+        const courseId = String((cls && cls.courseId) || membership.courseId || '');
+        const course = (db.memory.courses || []).find(c => String(c.id) === courseId) || null;
+        const structure = effectiveStructure(courseId, cls?.name)?.structure || course?.structure || [];
+
+        const subs = (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email
+            && (!courseId || !s.student.courseId || String(s.student.courseId) === courseId));
+        const published = enrichSubmissionsWithAttemptResult(subs.filter(s => s.gradePublished === true));
+        const byExam = new Map();
+        published.forEach(s => {
+            const list = byExam.get(s.examKey) || [];
+            list.push(s);
+            byExam.set(s.examKey, list);
+        });
+        const modules = structure.map(module => {
+            const exams = (module.units || module.items || []).filter(unit => unit.avaliacaoKey).map(unit => {
+                const attempts = byExam.get(unit.avaliacaoKey) || [];
+                const counted = attempts.filter(item => item.countsTowardResult !== false);
+                const consolidated = attempts.find(item => item.consolidatedScore != null)?.consolidatedScore;
+                const score = consolidated != null ? consolidated : (counted.length ? counted.reduce((sum, item) => sum + Number(item.score || 0), 0) / counted.length : null);
+                const evaluation = db.memory.evaluations?.[unit.avaliacaoKey];
+                const pendingAttempts = subs.filter(s => s.examKey === unit.avaliacaoKey && s.gradePublished !== true).length;
+                return {
+                    examKey: unit.avaliacaoKey,
+                    title: (evaluation && (evaluation.title || evaluation.name)) || unit.name || unit.avaliacaoKey,
+                    attempts: attempts.length,
+                    pendingAttempts,
+                    grade: score == null ? null : Math.round(score) / 10,
+                    lastAt: attempts.map(item => Date.parse(item.timestamp) || 0).sort((a, b) => b - a)[0] || null,
+                };
+            });
+            const graded = exams.filter(exam => exam.grade != null);
+            return {
+                id: module.id || module.key || module.name,
+                name: module.name || module.title || module.id,
+                exams,
+                average: graded.length ? Math.round(graded.reduce((sum, exam) => sum + exam.grade, 0) / graded.length * 10) / 10 : null,
+            };
+        });
+        const allGraded = modules.flatMap(module => module.exams).filter(exam => exam.grade != null);
+
+        const attendanceRows = attendanceUtil.dedupeByDate((db.memory.attendance || []).filter(a => a.studentEmail === email
+            && (!courseId || !a.courseId || String(a.courseId) === courseId) && (!cls || !a.studentClass || a.studentClass === cls.name)));
+        const stats = attendanceUtil.computeAttendanceStats(attendanceRows);
+        const discNome = {};
+        ((course && course.disciplinas) || []).forEach(d => { discNome[d.id] = d.nome; });
+        const disciplines = Object.entries(stats.porDisciplina).map(([id, value]) => ({ id, name: discNome[id] || id || 'Sem disciplina', ...value }));
+        const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
+        const unitKeys = structure.flatMap(module => (module.units || module.items || []).map(unit => unit.apostilaKey).filter(Boolean));
+        const completedUnits = unitKeys.filter(key => Array.isArray(progressMap[key]) ? progressMap[key].length > 0 : !!progressMap[key]).length;
+        const school = (db.memory.schools || []).find(s => s.id === (course && course.schoolId)) || null;
+
+        res.json({
+            generatedAt: Date.now(),
+            institution: (school && (school.name || school.info?.tradeName)) || db.memory.branding?.displayName || db.memory.branding?.institutionName || 'IClass',
+            student: { name: student.name, nomeSocial: student.nomeSocial || '', email: student.email, matricula: student.matricula || '', status: student.status || '' },
+            course: { id: courseId, name: course?.name || courseId || '' },
+            className: cls?.name || membership.name || '',
+            period: cls?.period || student.period || '',
+            modules,
+            overallAverage: allGraded.length ? Math.round(allGraded.reduce((sum, exam) => sum + exam.grade, 0) / allGraded.length * 10) / 10 : null,
+            attendance: { frequency: stats.frequenciaGeral, presentes: stats.presentes, faltas: stats.faltasContam, totalAulas: stats.totalAulas, days: attendanceRows.length, disciplines, riskThreshold: attendanceUtil.effectiveAttendanceConfig(cls).limiarRiscoPct },
+            progress: { completedUnits, totalUnits: unitKeys.length },
+            issuedBy: (matchedAdmin && (matchedAdmin.name || matchedAdmin.email)) || 'Instrutor',
+        });
+    });
+});
+
 // Painel do aluno — Etapa 1: indicadores consolidados. Somente admin (escopo aplicado pelo guard).
 router.get('/api/admin/student/dashboard', (req, res) => {
     validateAdmin(req, res, () => {
@@ -3790,6 +3874,38 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
 });
 
 // Pulso: frequência, média e engajamento em janelas móveis de 30 dias com série.
+// Sino do instrutor: reaproveita a fila "Precisa de você". Um item conta como
+// novo até ser visto com o mesmo contador (id:count guardado nas preferências).
+router.get('/api/admin/notifications', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const scope = _dashboardScope(req, matchedAdmin);
+        const canSeeMatriculas = canAccessAdminPermission(matchedAdmin, 'page.accounts');
+        const queue = computeQueue({
+            memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
+            today: settingsUtil.today(), now: Date.now(), canSeeMatriculas,
+        }).filter(item => canAccessAdminPermission(matchedAdmin, item.permissao));
+        const account = (db.memory.admins || []).find(a => a.email && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
+        const seen = new Set((account && account.preferences && account.preferences['notifications.seen']) || []);
+        const items = queue.map(item => ({
+            id: item.id, type: item.tipo, title: item.titulo, text: item.descricao || '', count: item.count || 0,
+            tone: item.tone, href: item.href, unread: !seen.has(`${item.id}:${item.count || 0}`),
+        }));
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, items, unread: items.filter(item => item.unread).length });
+    });
+});
+
+router.post('/api/admin/notifications/seen', (req, res) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
+        const account = (db.memory.admins || []).find(a => a.email && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
+        if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
+        const keys = Array.isArray(req.body.keys) ? req.body.keys.map(String).slice(0, 100) : [];
+        account.preferences = { ...(account.preferences || {}), 'notifications.seen': keys };
+        await db.save();
+        res.json({ success: true });
+    });
+});
+
 router.get('/api/admin/dashboard/trends', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const scope = _dashboardScope(req, matchedAdmin);

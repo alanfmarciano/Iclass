@@ -152,6 +152,7 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET', 'POST'], pattern: /^\/preferences$/, permission: 'page.dashboard' },
     { methods: ['GET'], pattern: /^\/dashboard\/students-overview$/, permission: 'page.dashboard' },
     { methods: ['GET'], pattern: /^\/dashboard\/(now|queue|trends)$/, permission: 'page.dashboard' },
+    { methods: ['GET', 'POST'], pattern: /^\/notifications(?:\/seen)?$/, permission: 'page.dashboard' },
     { methods: ['GET'], pattern: /^\/schools$/, permission: 'schools.scope' },
     { methods: ['POST'], pattern: /^\/schools\/update$/, permission: 'schools.scope' },
     { methods: ['POST'], pattern: /^\/schools\/(create|delete)$/, permission: 'branding.manage' },

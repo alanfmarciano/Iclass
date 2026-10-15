@@ -12,6 +12,7 @@ import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { printBoletim } from './boletimPrint'
 import { useToast } from '../../context/ToastProvider'
 import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -90,7 +91,7 @@ function formulaText(policy, attempts) {
   return 'Maior nota — entre as tentativas que contam, vale a maior.'
 }
 
-function ResultPageFrame({ title, subtitle, backLabel, onBack, children }) {
+function ResultPageFrame({ title, subtitle, backLabel, onBack, action = null, children }) {
   return (
     <section className="space-y-5">
       <header>
@@ -102,9 +103,12 @@ function ResultPageFrame({ title, subtitle, backLabel, onBack, children }) {
           <ArrowLeft size={16} />
           {backLabel}
         </button>
-        <div className="min-w-0">
-          <h1 className="truncate text-2xl font-bold text-text">{title}</h1>
-          {subtitle && <p className="mt-1 text-sm text-muted">{subtitle}</p>}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="truncate text-2xl font-bold text-text">{title}</h1>
+            {subtitle && <p className="mt-1 text-sm text-muted">{subtitle}</p>}
+          </div>
+          {action}
         </div>
       </header>
       <div>{children}</div>
@@ -175,6 +179,13 @@ export default function ResultadosPage() {
   const navigate = useNavigate()
   const { studentId = '', submissionId = '' } = useParams()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
+  // Boletim consolidado (provas + frequência) do aluno, pela caixa de impressão.
+  async function openBoletim(email) {
+    try {
+      const report = await api.get(`/api/admin/student/report?email=${encodeURIComponent(email)}&courseId=${encodeURIComponent(activeCourseId || '')}`)
+      if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
+    } catch (e) { toast.error(e.message) }
+  }
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data, loading, error, refetch } = useApi(`/api/admin/submissions?${contextQuery}`)
   const { data: students } = useApi(`/api/admin/students?${contextQuery}`)
@@ -790,6 +801,7 @@ export default function ResultadosPage() {
           subtitle={`${selectedStudent.studentClass} · ${selectedStudent.studentEmail}`}
           backLabel="Voltar aos resultados"
           onBack={() => navigate('/resultados')}
+          action={<Button variant="secondary" icon={Download} onClick={() => openBoletim(selectedStudent.studentEmail)}>Boletim (PDF)</Button>}
         >
           <div className="space-y-5">
             <dl className="stagger-grid grid grid-cols-2 gap-3 sm:grid-cols-4">

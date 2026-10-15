@@ -1358,6 +1358,73 @@ router.get('/api/student/progress', validateStudentSession, (req, res) => {
     res.json({ success: true, completedUnits });
 });
 
+// Sino do aluno: avisos não lidos, dúvidas respondidas, notas publicadas e prova
+// liberada na turma ativa. "Visto" é um carimbo de tempo gravado no cadastro.
+router.get('/api/student/notifications', validateStudentSession, (req, res) => {
+    const email = req.studentEmail;
+    const courseId = String(req.query.courseId || '').trim();
+    const className = String(req.query.studentClass || '').trim();
+    const student = req.studentAccount;
+    const cls = findClassByNameAndCourse(db.memory.classes || [], className, courseId);
+    if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
+    const seenAt = Number(student.notificationsSeenAt || 0);
+    const today = settingsUtil.today();
+    const items = [];
+
+    const visibleTarget = item => item.target === 'todos'
+        || (item.target === 'curso' && String(item.targetValue || '') === courseId)
+        || (item.target === 'turma' && String(item.targetValue || '') === className && (!item.courseId || String(item.courseId) === courseId))
+        || (item.target === 'aluno' && String(item.targetValue || '').toLowerCase() === email
+            && (!item.courseId || String(item.courseId) === courseId)
+            && (!item.studentClass || String(item.studentClass) === className));
+    (db.memory.announcements || [])
+        .filter(item => item.kind !== 'calendar' && visibleTarget(item) && (!item.expiresAt || item.expiresAt >= today))
+        .forEach(item => items.push({
+            id: `aviso:${item.id}`, type: 'aviso', title: item.title || 'Aviso', text: String(item.message || '').slice(0, 140),
+            at: Number(item.createdAt || 0), href: '/aluno/avisos', unread: !(item.readBy || []).includes(email),
+        }));
+
+    (db.memory.forum || [])
+        .filter(c => c && !c.deleted && String(c.studentEmail || '').toLowerCase() === email)
+        .forEach(c => {
+            const context = inferLegacyForumContext(c);
+            if (!context || context.courseId !== courseId || context.studentClass !== className) return;
+            (c.replies || []).filter(r => !r.deleted && r.authorRole === 'Instrutor').forEach(r => {
+                const at = Date.parse(r.timestamp) || 0;
+                items.push({ id: `duvida:${r.id || at}`, type: 'duvida', title: 'Sua dúvida foi respondida', text: String(c.text || '').slice(0, 140), at, href: '/aluno/duvidas', unread: at > seenAt });
+            });
+        });
+
+    (db.memory.submissions || [])
+        .filter(s => s && s.gradePublished === true && String(s.student?.email || '').toLowerCase() === email
+            && (!s.student?.courseId || String(s.student.courseId) === courseId) && (!s.student?.studentClass || String(s.student.studentClass) === className))
+        .forEach(s => {
+            const at = Number(s.gradePublishedAt || Date.parse(s.timestamp) || 0);
+            items.push({ id: `nota:${s.id}`, type: 'nota', title: 'Nota publicada', text: studentApplicationLabel({ examKey: s.examKey }, cls), at, href: '/aluno/provas', unread: at > seenAt });
+        });
+
+    listExamApplications(db.memory.examApplications, { studentClass: cls.name, courseId: cls.courseId, statuses: ['waiting', 'running', 'paused'] })
+        .forEach(application => {
+            const at = Date.parse(application.startedAt || application.updatedAt || application.createdAt) || 0;
+            items.push({
+                id: `prova:${application.id}`, type: 'prova', title: application.status === 'waiting' ? 'Sala de espera aberta' : 'Prova disponível',
+                text: studentApplicationLabel(application, cls), at, unread: at > seenAt,
+                href: `/aluno/prova/${encodeURIComponent(application.examKey)}?applicationId=${encodeURIComponent(application.id)}`,
+            });
+        });
+
+    items.sort((a, b) => b.at - a.at);
+    const limited = items.slice(0, 30);
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length });
+});
+
+router.post('/api/student/notifications/seen', validateStudentSession, async (req, res) => {
+    req.studentAccount.notificationsSeenAt = Date.now();
+    await db.save();
+    res.json({ success: true });
+});
+
 router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.query.courseId || '').trim();
@@ -1642,6 +1709,46 @@ router.get('/api/forum', (req, res) => {
     });
     if (migrated) db.save();
     res.json({ success: true, comments });
+});
+
+// Todas as dúvidas do aluno na turma ativa (gerais e por unidade), com o nome da
+// unidade e a lista de tópicos para abrir uma dúvida nova. A tela "Dúvidas" só
+// mostrava o tópico "geral", então as perguntas feitas dentro das apostilas sumiam.
+router.get('/api/student/my-forum', validateStudentSession, (req, res) => {
+    const email = req.studentEmail;
+    const courseId = String(req.query.courseId || '').trim();
+    const studentClass = String(req.query.studentClass || '').trim();
+    const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
+    if (!cls || !studentBelongsToClass(req.studentAccount, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
+
+    const unitTitle = { geral: 'Dúvida geral' };
+    const topics = [{ key: 'geral', title: 'Dúvida geral', module: '' }];
+    (effectiveStructure(courseId, studentClass)?.structure || []).forEach(module => {
+        (module.units || module.items || []).forEach(unit => {
+            if (!unit.apostilaKey) return;
+            unitTitle[unit.apostilaKey] = unit.name || unit.title || unit.apostilaKey;
+            topics.push({ key: unit.apostilaKey, title: unitTitle[unit.apostilaKey], module: module.name || module.title || module.id || '' });
+        });
+    });
+
+    const comments = (db.memory.forum || [])
+        .filter(c => c && !c.deleted && String(c.studentEmail || '').toLowerCase() === email)
+        .filter(c => {
+            const context = inferLegacyForumContext(c);
+            return !!context && context.courseId === courseId && context.studentClass === studentClass;
+        })
+        .map(c => ({
+            id: c.id,
+            key: c.key,
+            unitTitle: unitTitle[c.key] || String(c.key || '').replace(/_/g, ' '),
+            text: c.text,
+            timestamp: c.timestamp,
+            status: c.status || ((c.replies || []).some(r => !r.deleted && r.authorRole === 'Instrutor') ? 'respondida' : 'aberta'),
+            isFaq: c.isFaq === true,
+            replies: (c.replies || []).filter(r => !r.deleted).map(r => ({ id: r.id, authorName: r.authorName, authorRole: r.authorRole, text: r.text, timestamp: r.timestamp })),
+        }))
+        .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+    res.json({ success: true, comments, topics });
 });
 
 function adminActor(a) { return { name: (a && (a.name || a.email)) || 'Instrutor', email: (a && a.email) || db.defaultAdminEmail(), role: 'Instrutor' }; }

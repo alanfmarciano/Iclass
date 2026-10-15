@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, BookOpen, CheckCircle2, LogIn } from 'lucide-react'
+import { ArrowLeft, Pencil, BookOpen, CheckCircle2, LogIn, FileText } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -11,6 +11,8 @@ import { MonthCalendar } from '../../components/ui/MonthCalendar'
 import { Timeline } from '../../components/ui/Timeline'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { useToast } from '../../context/ToastProvider'
+import { printBoletim } from './boletimPrint'
 import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
 
@@ -59,7 +61,14 @@ export default function AlunoDetailPage() {
   const { id } = useParams()
   const email = decodeURIComponent(id || '')
   const nav = useNavigate()
+  const toast = useToast()
   const { auth } = useAuth()
+  async function openBoletim() {
+    try {
+      const report = await api.get(`/api/admin/student/report?email=${encodeURIComponent(email)}`)
+      if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
+    } catch (e) { toast.error(e.message) }
+  }
   const isProfessor = auth.accountRole === 'professor'
   const { data: students, loading, error } = useApi('/api/admin/students')
   const [academic, setAcademic] = useState(null)
@@ -124,6 +133,7 @@ export default function AlunoDetailPage() {
                 </div>
                 <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {student.email}</p>
               </div>
+              <Button variant="secondary" icon={FileText} onClick={openBoletim}>Boletim (PDF)</Button>
               <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>
             </div>
 

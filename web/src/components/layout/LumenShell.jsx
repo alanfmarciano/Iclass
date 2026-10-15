@@ -21,6 +21,7 @@ export function LumenShell({
   userName = '',
   userDetail = '',
   contextAction = null,
+  notifications = null,
   pathname,
   onLogout,
   children,
@@ -108,6 +109,7 @@ export function LumenShell({
               <span>{contextAction.label}</span>
             </button>
           )}
+          {notifications}
           <ThemeToggle />
           <div className="lumen-profile" title={userDetail || userName}>
             <span className="lumen-avatar">{initials(userName || userDetail)}</span>
