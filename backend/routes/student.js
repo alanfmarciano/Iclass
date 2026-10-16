@@ -16,6 +16,9 @@ const {
     validateAnySession,
     sanitizeSubmissionForStudent,
     sanitizeOnlineExamConfigsForStudent,
+    studentExamConfigSummary,
+    studentExamConfigsSummary,
+    studentBelongsToClass,
     canStudentViewAnswerKey,
     getReleasedItemsForClass,
     findClassByNameAndCourse,
@@ -55,6 +58,7 @@ const {
     createSubmissionFromAttempt,
     questionsForAttempt,
 } = require('../utils/examGrading.js');
+const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 
 // Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
 // a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
@@ -242,7 +246,9 @@ router.get('/api/classes', (req, res) => {
 });
 
 // Retorna o status da prova ativa e itens liberados (específicos por turma).
-// Exige sessão (aluno ou instrutor): a resposta inclui os enunciados da prova preparada.
+// Exige sessão (aluno ou instrutor). O aluno precisa ter matrícula aprovada na turma
+// e recebe só metadados das provas (estado, horários); enunciados e alternativas
+// nunca vão por aqui. O instrutor continua recebendo a configuração completa (sem gabarito).
 router.get('/api/status', validateAnySession, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     const studentClass = req.query.studentClass;
@@ -263,6 +269,18 @@ router.get('/api/status', validateAnySession, (req, res) => {
             activeExamKey: null,
             activeExamQuestionCount: 0,
             releasedItems: {}
+        });
+    }
+
+    if (req.requester.role === 'student') {
+        if (!studentBelongsToClass(req.studentAccount, cls)) {
+            return res.status(403).json({ error: 'Turma não autorizada para este estudante.' });
+        }
+        return res.json({
+            examConfigs: cls.examConfigs || {},
+            onlineExamConfigs: studentExamConfigsSummary(cls.onlineExamConfigs),
+            releasedItems: getReleasedItemsForClass(cls, req.studentEmail),
+            releaseMeta: cls.releaseMeta || {}
         });
     }
 
@@ -287,9 +305,32 @@ function studentApplicationLabel(application, cls) {
     return String(application.examKey || 'Prova').replace(/_/g, ' ');
 }
 
+// Campos da aplicação que o aluno pode ver. Lista branca: versionSnapshots (com o
+// gabarito), versões sorteadas, ajustes e contestações de outros alunos ficam no servidor.
+const STUDENT_APPLICATION_FIELDS = [
+    'id',
+    'examKey',
+    'courseId',
+    'studentClass',
+    'status',
+    'timerMode',
+    'durationMinutes',
+    'timerEnabled',
+    'waitingRoomDuration',
+    'startsAt',
+    'endsAt',
+    'maxAttempts',
+    'questionCount',
+    'tokenEnabled',
+    'globalTimeAdjustment',
+    'createdAt',
+    'startedAt',
+    'finishedAt',
+    'updatedAt',
+];
+
 function applicationForStudent(application, cls, studentEmail) {
-    const safeConfigs = sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs || {});
-    const config = safeConfigs[application.examKey] || null;
+    const config = studentExamConfigSummary(cls.onlineExamConfigs?.[application.examKey]);
     const maxAttempts = normalizeMaxAttempts(application.maxAttempts ?? config?.maxAttempts);
     const attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
         studentEmail,
@@ -301,7 +342,10 @@ function applicationForStudent(application, cls, studentEmail) {
         applicationId: application.id,
         studentEmail,
     });
-    const { accessTokenHash, ...safeApplication } = application;
+    const safeApplication = {};
+    STUDENT_APPLICATION_FIELDS.forEach(field => {
+        if (application[field] !== undefined) safeApplication[field] = application[field];
+    });
     const course = getCourseForClass(cls);
     return {
         ...safeApplication,
@@ -379,7 +423,13 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             });
         }
 
-        const sanitizedConfigs = sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs);
+        // Só aluno com matrícula aprovada na turma sincroniza (e cria tentativa) nela.
+        if (!studentBelongsToClass(req.studentAccount, cls)) {
+            return res.status(403).json({ error: 'Turma não autorizada para este estudante.' });
+        }
+
+        // Só a configuração (metadados) da prova pedida; nada das outras provas da turma.
+        const studentConfigs = examKey ? studentExamConfigsSummary(cls.onlineExamConfigs, examKey) : {};
         const releasedItems = getReleasedItemsForClass(cls, email);
 
         let state = null;
@@ -392,6 +442,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         let tokenAccepted = false;
         let questionReports = [];
         let finishOutcome = null;
+        let questions = null;
+        let questionsVersion = null;
 
         if (examKey) {
             const onlineCfg = cls.onlineExamConfigs && cls.onlineExamConfigs[examKey];
@@ -443,6 +495,19 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             attemptId = rawState.attemptId || null;
             tokenAccepted = rawState.tokenValidated === true;
 
+            // Questões só da tentativa iniciada (aplicação em andamento, token validado)
+            // e só quando o cliente ainda não tem esta versão delas.
+            if (attemptQuestionsAvailable({ application, onlineConfig: onlineCfg, state: rawState })) {
+                const delivered = questionsForStudentAttempt({
+                    application,
+                    onlineConfig: onlineCfg,
+                    state: rawState,
+                    evaluation: db.memory.evaluations?.[examKey],
+                });
+                questionsVersion = delivered.questionsVersion;
+                if (String(req.query.questionsVersion || '') !== questionsVersion) questions = delivered.questions;
+            }
+
             messages = (db.memory.broadcastMessages || []).filter(m =>
                 !m.adminDeleted &&
                 m.studentClass &&
@@ -483,9 +548,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
 
         res.json({
             success: true,
-            onlineExamConfigs: sanitizedConfigs,
+            onlineExamConfigs: studentConfigs,
             releasedItems,
             state,
+            questions,
+            questionsVersion,
             messages,
             examConfigVersion,
             attemptsUsed,
@@ -904,25 +971,6 @@ router.post('/api/student/recover', (req, res) => {
 });
 
 
-function studentBelongsToClass(studentRecord, cls) {
-    if (!studentRecord || !cls || !cls.name) return false;
-
-    const memberships = studentRecord.classes || (studentRecord.studentClass ? [studentRecord.studentClass] : []);
-    return memberships.some(item => {
-        if (typeof item === 'string') {
-            return item === cls.name;
-        }
-
-        if (!item || typeof item !== 'object') {
-            return false;
-        }
-
-        const sameClass = item.name === cls.name;
-        const sameCourse = !cls.courseId || !item.courseId || item.courseId === cls.courseId;
-        return sameClass && sameCourse;
-    });
-}
-
 router.post('/api/student/exam-applications/:applicationId/start-attempt', validateStudentSession, async (req, res) => {
     const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
     if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
@@ -984,6 +1032,10 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     db.memory.studentExamState[context.key] = state;
     await db.save();
     const { tokenValidated, ...safeState } = state;
+    // A tentativa acabou de começar: as questões da versão do aluno já vão na resposta.
+    const delivered = attemptQuestionsAvailable({ application, onlineConfig: config, state })
+        ? questionsForStudentAttempt({ application, onlineConfig: config, state, evaluation: db.memory.evaluations?.[application.examKey] })
+        : null;
     res.json({
         success: true,
         applicationId: application.id,
@@ -991,6 +1043,8 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         attemptNumber: state.attemptNumber,
         state: safeState,
         examConfigVersion: state.examConfigVersion,
+        questions: delivered ? delivered.questions : null,
+        questionsVersion: delivered ? delivered.questionsVersion : null,
     });
 });
 

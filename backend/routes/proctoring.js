@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const db = require('../database.js');
-const { validateStudentSession, validateAdmin, findClassByNameAndCourse, initializeExamState } = require('../middlewares.js');
+const { validateStudentSession, validateAdmin, findClassByNameAndCourse, initializeExamState, studentBelongsToClass } = require('../middlewares.js');
 const { countStudentExamAttempts, normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { normalizeExamToken, verifyExamToken } = require('../utils/examToken.js');
 const {
@@ -18,6 +18,16 @@ function applicationForClass(cls, examKey, applicationId) {
     if (!application || !cls || application.examKey !== examKey || application.studentClass !== cls.name) return null;
     if (application.courseId && cls.courseId && application.courseId !== cls.courseId) return null;
     return application;
+}
+
+// O aluno só registra eventos, rascunhos e token em turma onde tem matrícula aprovada
+// (sem isso, qualquer conta criava tentativas e travas em provas de outras turmas).
+function rejectForeignClass(req, res, cls) {
+    if (cls && !studentBelongsToClass(req.studentAccount, cls)) {
+        res.status(403).json({ error: 'Turma não autorizada para este estudante.' });
+        return true;
+    }
+    return false;
 }
 
 function stateContext({ application, studentEmail, examKey, attemptId, create = false, cls } = {}) {
@@ -57,6 +67,7 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
         const normalizedExamKey = examKey.trim();
         const normalizedEventType = eventType.trim();
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
+        if (rejectForeignClass(req, res, cls)) return;
         const application = applicationForClass(cls, normalizedExamKey, applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
@@ -121,6 +132,7 @@ router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) =>
         const normalizedEmail = req.studentEmail;
         const normalizedExamKey = examKey.trim();
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
+        if (rejectForeignClass(req, res, cls)) return;
         const application = applicationForClass(cls, normalizedExamKey, applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
@@ -211,6 +223,7 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
         
         const normalizedEmail = req.studentEmail;
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
+        if (rejectForeignClass(req, res, cls)) return;
         const application = applicationForClass(cls, examKey.trim(), applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
         const context = stateContext({ application, studentEmail: normalizedEmail, examKey: examKey.trim(), attemptId, cls });
@@ -311,6 +324,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
             const classes = db.memory.classes || [];
             const cls = findClassByNameAndCourse(classes, studentClass, courseId)
                 || classes.find(c => c.name && c.name.toLowerCase() === studentClass.trim().toLowerCase());
+            if (rejectForeignClass(req, res, cls)) return;
             const onlineCfg = cls && cls.onlineExamConfigs && cls.onlineExamConfigs[examKey.trim()];
             if (onlineCfg) {
                 examConfigVersion = onlineCfg.updatedAt || null;
@@ -439,6 +453,7 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
 
         const normalizedEmail = req.studentEmail;
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
+        if (rejectForeignClass(req, res, cls)) return;
         const cfg = cls && cls.onlineExamConfigs ? cls.onlineExamConfigs[examKey.trim()] : null;
         const application = applicationForClass(cls, examKey.trim(), applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });

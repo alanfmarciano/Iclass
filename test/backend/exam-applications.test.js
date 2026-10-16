@@ -526,9 +526,13 @@ test('aluno contesta e professor corrige a questao ao vivo antes do envio', asyn
     assert.equal(corrected.body.question.correctAnswer, 'B');
 
     const afterCorrection = await syncApplication(application.id);
-    const studentQuestion = afterCorrection.body.onlineExamConfigs[examKey].versionSnapshots[0].questions[0];
+    // As questões da tentativa vêm em `questions` (a config da turma não leva mais snapshots).
+    assert.equal(afterCorrection.body.onlineExamConfigs[examKey].versionSnapshots, undefined);
+    const studentQuestion = afterCorrection.body.questions[0];
     assert.equal(studentQuestion.text, 'Questao corrigida durante a prova');
     assert.equal(Object.prototype.hasOwnProperty.call(studentQuestion, 'correctAnswer'), false);
+    assert.equal(studentQuestion.alternatives.some(alternative => Object.prototype.hasOwnProperty.call(alternative, 'isCorrect')), false);
+    assert.notEqual(afterCorrection.body.questionsVersion, started.body.questionsVersion, 'a correção ao vivo muda a versão das questões');
     assert.equal(afterCorrection.body.questionReports[0].status, 'reviewed');
 
     await request(app).post('/api/student/submit').set('x-session-token', studentToken).send({
@@ -565,8 +569,9 @@ test('anula e substitui questao para tentativas ativas com tempo extra', async (
 
     const sync = await syncApplication(application.id);
     const cfg = sync.body.onlineExamConfigs[examKey];
-    assert.equal(cfg.versionSnapshots[0].questions.length, 2);
-    assert.equal(cfg.versionSnapshots[0].questions[1].isAdditional, true);
+    assert.equal(sync.body.questions.length, 2);
+    assert.equal(sync.body.questions[1].isAdditional, true);
+    assert.equal(sync.body.questions[1].replacedQuestionNumber, 1);
     assert.equal(cfg.annulledQuestions[0].questionNumber, 1);
     await request(app).post('/api/student/submit').set('x-session-token', studentToken).send({
         studentClass, courseId, examKey, applicationId: application.id,

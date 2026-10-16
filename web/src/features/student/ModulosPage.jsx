@@ -85,7 +85,14 @@ export default function ModulosPage() {
 
   async function openReader(unit) {
     setOpenUnit(unit)
-    setHtml(markdownToHtml(courseData[unit.key] || ''))
+    let text = courseData[unit.key]
+    if (typeof text !== 'string') {
+      // O data.js só traz apostilas já liberadas; se o professor liberou esta unidade
+      // depois que a página abriu, busca só ela (o servidor confere a liberação).
+      text = await api.get(`/${encodeURIComponent(unit.key)}.md`, { raw: true }).catch(() => '')
+      if (text) setCourseData((current) => ({ ...current, [unit.key]: text }))
+    }
+    setHtml(markdownToHtml(text || ''))
     api.post('/api/student/track-access', { email, key: unit.key, moduleKey: unit.moduleKey || '', courseId }).catch(() => {})
     await Promise.all([loadNote(unit.key), loadComments(unit.key), loadAnnotations(unit.key)])
   }

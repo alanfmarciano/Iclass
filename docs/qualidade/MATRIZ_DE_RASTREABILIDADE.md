@@ -11,6 +11,7 @@
 | UC-PRESENCA-002 | Automatizado | `/chamada` | chamada por aula, justificativa, abono e frequência | `attendance-flow.spec.js`, `student-analytics.test.js`, `attendance-utils.test.js` |
 | UC-LAYOUT-001 | Automatizado | login e shells | Premium/Lumen | `visual-layout.spec.js`, `branding-interface-preset.test.js` |
 | UC-SEC-001 | Automatizado | arquivos | upload e path traversal | `upload-security.test.js`, `safe-path.test.js` |
+| UC-SIGILO-001 | Automatizado | `/aluno/prova/:key`, `/aluno/modulos` | sigilo da prova: questões só da tentativa iniciada e da versão do aluno, gabarito nunca vai ao aluno, apostilas e estrutura só com sessão e liberação da turma | `exam-secrecy.test.js`, `ExamRunner.test.jsx` |
 | UC-DASH-001 | Automatizado | `/` (Dashboard) | faixa "Agora": aula corrente, aplicação e presença online | `dashboard-aggregates.test.js` |
 | UC-DASH-002 | Automatizado | `/` (Dashboard) | fila "Precisa de você" com snooze de 24h | `dashboard-aggregates.test.js` |
 | UC-DASH-003 | Automatizado | `/` (Dashboard) | Pulso: janelas móveis de 30 dias, sem dado ≠ zero | `dashboard-aggregates.test.js` |

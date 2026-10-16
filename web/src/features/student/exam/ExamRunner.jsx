@@ -11,7 +11,7 @@ import { ConfirmDialog, Modal } from '../../../components/ui/Modal'
 import { api } from '../../../lib/api'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
-import { pickSnapshot, normQuestion, fmtTime } from './examUtils'
+import { normQuestion, fmtTime } from './examUtils'
 
 const SYNC_MS = 4000
 const AUTOSAVE_MS = 15000
@@ -80,7 +80,16 @@ export default function ExamRunner() {
   const timeoutHandledRef = useRef(false)
   const keyBufferRef = useRef([])
   const keySeqRef = useRef(0)
+  // Impressão digital das questões já recebidas: o servidor só reenvia quando mudam.
+  const questionsVersionRef = useRef('')
   answersRef.current = answers
+
+  // As questões chegam só da tentativa iniciada (sync ou start-attempt), nunca da config da turma.
+  const applyAttemptQuestions = useCallback((payload) => {
+    if (!payload || !Array.isArray(payload.questions)) return
+    setQuestions(payload.questions.map(normQuestion))
+    questionsVersionRef.current = payload.questionsVersion || ''
+  }, [])
 
   const qs = (v = '') => `email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&examKey=${encodeURIComponent(examKey)}&applicationId=${encodeURIComponent(applicationId)}${v}`
   const submit = useCallback(async (auto = false) => {
@@ -269,7 +278,7 @@ export default function ExamRunner() {
 
   const sync = useCallback(async () => {
     try {
-      const r = await api.get(`/api/student/sync?${qs()}`)
+      const r = await api.get(`/api/student/sync?${qs(`&questionsVersion=${encodeURIComponent(questionsVersionRef.current)}`)}`)
       const c = (r.onlineExamConfigs || {})[examKey]
       if (!c) {
         setFatal('Esta prova não está mais disponível para sua turma.')
@@ -287,8 +296,7 @@ export default function ExamRunner() {
       if (st.assignedVersion) setAssignedVersion(st.assignedVersion)
       if (st.answers && Object.keys(st.answers).length && Object.keys(answersRef.current).length === 0) setAnswers(st.answers)
 
-      const snap = pickSnapshot(c, st.assignedVersion)
-      if (snap && Array.isArray(snap.questions)) setQuestions(snap.questions.map(normQuestion))
+      applyAttemptQuestions(r)
 
       if (Array.isArray(r.messages)) {
         const nextMessage = r.messages.find((m) => m && m.messageText)
@@ -439,6 +447,7 @@ export default function ExamRunner() {
       setExamConfigVersion(response.examConfigVersion || examConfigVersion)
       if (response.state?.assignedVersion) setAssignedVersion(response.state.assignedVersion)
       if (Number.isFinite(Number(response.state?.timerRemaining))) setRemaining(Number(response.state.timerRemaining))
+      applyAttemptQuestions(response)
       setPhase('active')
       toast.success('Tentativa iniciada')
     } catch (error) {

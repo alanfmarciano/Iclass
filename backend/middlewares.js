@@ -165,13 +165,97 @@ function resolveRequester(req) {
     return null;
 }
 
+// Instrutor segue direto. Aluno passa pela validação completa de sessão (token único,
+// prazo absoluto, conta ativa), que também preenche req.studentAccount para as rotas
+// conferirem a matrícula na turma antes de devolver qualquer dado de prova.
 function validateAnySession(req, res, next) {
     const requester = resolveRequester(req);
+    if (!requester && req.headers.authorization) {
+        // Instrutor no login legado (Authorization "email:senha").
+        return validateAdmin(req, res, (config, account) => {
+            req.requester = { role: 'admin', email: String(account.email || '').toLowerCase() };
+            next();
+        });
+    }
     if (!requester) {
         return res.status(401).json({ error: 'Autenticação necessária.', sessionRevoked: true });
     }
-    req.requester = requester;
-    next();
+    if (requester.role !== 'student') {
+        req.requester = requester;
+        return next();
+    }
+    return validateStudentSession(req, res, () => {
+        req.requester = { role: 'student', email: req.studentEmail };
+        next();
+    });
+}
+
+// Matrícula aprovada: a turma precisa estar em `classes` do aluno. O autocadastro
+// nasce com `classes` vazio e só ganha a turma quando o instrutor aprova a matrícula.
+function studentBelongsToClass(studentRecord, cls) {
+    if (!studentRecord || !cls || !cls.name) return false;
+
+    const memberships = studentRecord.classes || (studentRecord.studentClass ? [studentRecord.studentClass] : []);
+    return memberships.some(item => {
+        if (typeof item === 'string') {
+            return item === cls.name;
+        }
+
+        if (!item || typeof item !== 'object') {
+            return false;
+        }
+
+        const sameClass = item.name === cls.name;
+        const sameCourse = !cls.courseId || !item.courseId || item.courseId === cls.courseId;
+        return sameClass && sameCourse;
+    });
+}
+
+// Campos da configuração de prova online que o aluno pode receber: só metadados
+// (estado, horários, duração). Enunciados e alternativas (versionSnapshots) nunca vão
+// por aqui; as questões da tentativa saem apenas por questionsForStudentAttempt.
+const STUDENT_EXAM_CONFIG_FIELDS = [
+    'applicationId',
+    'questionCount',
+    'durationMinutes',
+    'timerEnabled',
+    'timerMode',
+    'waitingRoomDuration',
+    'onlineActive',
+    'status',
+    'startTime',
+    'waitingRoomStartTimestamp',
+    'globalTimeAdjustment',
+    'maxAttempts',
+    'shuffleQuestions',
+    'shuffleAnswers',
+    'preparedAt',
+    'updatedAt',
+];
+
+function studentExamConfigSummary(cfg) {
+    if (!cfg || typeof cfg !== 'object') return null;
+    const summary = {};
+    STUDENT_EXAM_CONFIG_FIELDS.forEach(field => {
+        if (cfg[field] !== undefined) summary[field] = cfg[field];
+    });
+    summary.requiresToken = !!cfg.accessToken || !!cfg.accessTokenHash || cfg.tokenEnabled === true;
+    summary.annulledQuestions = (Array.isArray(cfg.annulledQuestions) ? cfg.annulledQuestions : [])
+        .map(item => ({ questionNumber: Number(item && item.questionNumber), mode: item && item.mode ? String(item.mode) : null }))
+        .filter(item => Number.isFinite(item.questionNumber));
+    return summary;
+}
+
+// Resumo das configurações da turma para o aluno; com examKey, só a da prova pedida.
+function studentExamConfigsSummary(onlineExamConfigs, examKey) {
+    const result = {};
+    if (!onlineExamConfigs || typeof onlineExamConfigs !== 'object') return result;
+    const keys = examKey ? [examKey] : Object.keys(onlineExamConfigs);
+    keys.forEach(key => {
+        const summary = studentExamConfigSummary(onlineExamConfigs[key]);
+        if (summary) result[key] = summary;
+    });
+    return result;
 }
 
 // Remove dados sensíveis (token de acesso e gabarito embutido nos snapshots de versão)
@@ -909,6 +993,9 @@ module.exports = {
     sanitizeEvaluationForStudent,
     sanitizeSubmissionForStudent,
     sanitizeOnlineExamConfigsForStudent,
+    studentExamConfigSummary,
+    studentExamConfigsSummary,
+    studentBelongsToClass,
     canStudentViewAnswerKey,
     getReleasedItemsForClass,
     normalizeIdentifier,

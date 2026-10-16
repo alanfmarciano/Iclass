@@ -126,13 +126,15 @@ export default function EditorPage() {
 
     setLoading(true)
     try {
-      const res = await fetch(`/${nextKey}.md`)
-      const text = res.ok ? await res.text() : ''
-      setMarkdown(text)
-      setHtml(markdownToHtml(text))
-    } catch {
+      // A rota de apostilas exige sessão: passa pelo cliente de API (envia o token do instrutor).
+      const text = await api.get(`/${encodeURIComponent(nextKey)}.md`, { raw: true })
+      setMarkdown(text || '')
+      setHtml(markdownToHtml(text || ''))
+    } catch (error) {
       setMarkdown('')
       setHtml('')
+      // 404 = apostila nova (arquivo ainda não existe); outro erro não pode parecer apostila vazia.
+      if (error?.status !== 404) toast.error(error?.message || 'Não foi possível carregar a apostila.')
     } finally {
       setLoading(false)
     }

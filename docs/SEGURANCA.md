@@ -8,12 +8,14 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 
 ## Regras invioláveis
 
-1. **Gabarito nunca vai ao cliente.** Configs de prova passam por `sanitizeOnlineExamConfigsForStudent` (`middlewares.js`) antes de qualquer resposta ao aluno. A correção acontece só em `/api/student/submit`.
+1. **Gabarito nunca vai ao cliente; questões só da tentativa iniciada.** O aluno recebe da configuração da prova apenas metadados (`studentExamConfigSummary` em `middlewares.js`). Enunciados e alternativas saem só por `utils/attemptQuestions.js` (sync e start-attempt), da versão sorteada para o aluno, depois que a tentativa começou de fato (aplicação em andamento, token validado, tentativa iniciada) e sem `correctAnswer`/`isCorrect`. A correção acontece só em `/api/student/submit`.
 2. **Token de prova com hash.** Armazenado via `utils/examToken.js`, exibido ao professor apenas na preparação, validado no servidor e nunca ecoado ao cliente.
 3. **Sessão de aluno = token único + trava por IP.** Impede sequestro de sessão na LAN (`validateStudentSession`).
 4. **Liberação decidida no servidor.** O aluno só acessa conteúdo/prova liberados para sua turma; o servidor decide, não o frontend.
 5. **Senhas com scrypt.** `hashPassword`/`verifyPassword` em `database.js`; comparação com `timingSafeEqual`. Hash legado sha256 é reidratado.
 6. **RBAC do admin.** Permissões sensíveis (ex.: `accounts.manage`) são exclusivas de administrador; professor não pode se auto-promover (defesa em camadas em `adminAccounts.js` + `adminPermissions.js`).
+7. **Matrícula aprovada antes de qualquer dado de prova.** `/api/status`, `/api/student/sync`, `/data.js` e as rotas de proctoring conferem `studentBelongsToClass`; autocadastro pendente não vê nada de prova.
+8. **Material por lista do que é permitido.** `/:key.md` e o `data.js` do aluno comparam a chave pedida (sem diferenciar maiúsculas, como o Windows) com as apostilas liberadas para a turma e abrem o arquivo pelo nome canônico (`utils/contentAccess.js`). `Avaliacao_*` e `Gabarito_*` nunca são servidos por essas rotas.
 
 ## Controles implementados
 
@@ -39,6 +41,14 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 
 ## Histórico de correções
 
+### 2026-10-16 — sigilo da prova (fase 1, G3)
+
+- `/:key.md` exige sessão; aluno só lê apostila liberada para a sua turma; avaliações bloqueadas em qualquer grafia do nome (antes `/avaliacao_X.md` abria o gabarito no Windows). (SEG-01, SEG-18)
+- `/data.js` do aluno exige curso e matrícula, traz só apostilas liberadas e nunca avaliações. (AVA-01, UXA-07)
+- `/api/status`, `/api/student/sync`, `/api/student/exam-applications` não enviam mais `versionSnapshots` nem dados internos da aplicação ao aluno; as questões vêm só da tentativa iniciada e só quando o cliente ainda não as tem (`questionsVersion`). (AVA-02, DES-X1)
+- Status, sync e proctoring exigem matrícula aprovada na turma. (SEG-02)
+- `/api/courses` completo só para instrutor; sem sessão de instrutor devolve só id e nome dos cursos com cadastro aberto. (SEG-18)
+
 ### 2026-07-14 — passe de segurança
 
 Correções aplicadas (backup pré-correção registrado em `data/backups/`):
@@ -63,7 +73,7 @@ Correções aplicadas (backup pré-correção registrado em `data/backups/`):
 
 ### Pendências conhecidas (não corrigidas — com motivo)
 
-- Endpoints GET pós-login sem sessão na área de material/leitura: adiada porque a área será reescrita.
+- ~~Endpoints GET pós-login sem sessão na área de material/leitura~~: corrigido em 2026-10-16 (ver acima).
 - Mojibake de encoding (`nÃ£o`, `AvaliaÃ§Ã£o`): exige passe deliberado de re-gravação em UTF-8.
 - `localStorage` → cookie HttpOnly e modularização de `admin.js`: mudanças arquiteturais fora do escopo daquele passe.
 
