@@ -55,6 +55,19 @@ const {
     createSubmissionFromAttempt,
     questionsForAttempt,
 } = require('../utils/examGrading.js');
+const {
+    SERVER_DEADLINE_SOURCE,
+    SERVER_FINALIZE_DELAY_MS,
+    attemptOverdueMs,
+    canReplaceServerFinalization,
+    computeAttemptDeadline,
+    countAnswers,
+    finalizeAttemptState,
+    lateSubmitDecision,
+    markLateSubmission,
+    replaceServerFinalization,
+    settleExpiredAttempts,
+} = require('../utils/examDeadline.js');
 
 // Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
 // a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
@@ -163,6 +176,56 @@ function attemptContextForStudent({ application, studentEmail, examKey, create =
     const key = examStateKey({ applicationId: application.id, studentEmail, attemptNumber: state.attemptNumber });
     db.memory.studentExamState[key] = state;
     return { key, state };
+}
+
+// Finaliza a tentativa vencida do aluno nesta aplicação (nunca a recria). Com
+// graceMs 0 finaliza na hora; no sync espera o atraso normal do envio automático.
+function settleStudentAttempt(application, studentEmail, graceMs = SERVER_FINALIZE_DELAY_MS) {
+    if (!application) return [];
+    const { finalized, changed } = settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail, graceMs });
+    if (changed) db.save().catch(() => {});
+    return finalized;
+}
+
+// Cronômetro coletivo: uma tentativa nova começa no início da aplicação. Depois que
+// o tempo coletivo acabou, ela já nasceria vencida, então não é criada.
+function collectiveTimeOverForNewAttempt(application, studentEmail, now = Date.now()) {
+    if (!application || application.timerMode === 'per_attempt' || application.timerEnabled === false) return false;
+    const startsAt = Number(application.startsAt);
+    if (!(startsAt > 0) || startsAt > now) return false;
+    const email = String(studentEmail || '').trim().toLowerCase();
+    const deadlineAt = computeAttemptDeadline({
+        application,
+        state: {
+            startedAt: startsAt,
+            individualTimeAdjustment: Number(application.studentAdjustments?.[email] || 0),
+            accessibilityExtraMinutes: accessibilityExtraMinutes(email, application.durationMinutes),
+        },
+        now,
+    });
+    return deadlineAt !== null && deadlineAt <= now;
+}
+
+// Resultado de uma tentativa que o navegador conhece (inclusive a guardada antes de
+// recarregar a página): diz se ela já virou entrega e de que forma.
+function attemptOutcomeFor(application, studentEmail, attemptId) {
+    if (!application || !attemptId) return null;
+    const submission = (db.memory.submissions || []).find(item => item
+        && item.attemptId === attemptId
+        && item.applicationId === application.id
+        && String(item.student?.email || '').toLowerCase() === studentEmail);
+    if (!submission) return null;
+    return {
+        attemptId,
+        submissionId: submission.id,
+        source: submission.submissionSource || 'student',
+        finalizedByServer: submission.submissionSource === SERVER_DEADLINE_SOURCE,
+        submittedAt: submission.timestamp || null,
+        answeredCount: Number.isFinite(Number(submission.answeredCount))
+            ? Number(submission.answeredCount)
+            : (submission.gradedAnswers || []).filter(item => item?.studentChoice).length,
+        lateBySeconds: Number(submission.lateBySeconds || 0),
+    };
 }
 
 // ----------------------------------------------------
@@ -360,6 +423,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         const studentClass = req.query.studentClass;
         const courseId = req.query.courseId;
         const examKey = (req.query.examKey || '').trim();
+        const knownAttemptId = String(req.query.attemptId || '').trim();
         if (!email || !studentClass) {
             return res.status(400).json({ error: 'email e studentClass são obrigatórios.' });
         }
@@ -392,6 +456,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         let tokenAccepted = false;
         let questionReports = [];
         let finishOutcome = null;
+        let attemptOutcome = null;
+        let timeOver = false;
 
         if (examKey) {
             const onlineCfg = cls.onlineExamConfigs && cls.onlineExamConfigs[examKey];
@@ -399,6 +465,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             if (req.query.applicationId && !application) {
                 return res.status(404).json({ error: 'Aplicação de prova não encontrada para esta turma.' });
             }
+            // Tentativa vencida vira entrega (com as respostas salvas) antes de qualquer
+            // outra decisão: assim ela conta como usada e nunca é recriada vazia.
+            settleStudentAttempt(application, email);
             maxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? onlineCfg?.maxAttempts);
             attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
                 studentEmail: email,
@@ -407,6 +476,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 applicationId: application?.id,
             });
             const attemptsExhausted = maxAttempts !== null && attemptsUsed >= maxAttempts;
+            const hasOpenAttempt = !!(application && findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email }));
+            timeOver = !!application && !hasOpenAttempt && collectiveTimeOverForNewAttempt(application, email);
             const context = application
                 ? attemptContextForStudent({
                     application,
@@ -414,7 +485,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                     examKey,
                     studentClass: cls.name,
                     courseId: cls.courseId,
-                    create: !attemptsExhausted && ['waiting', 'running', 'paused'].includes(application.status),
+                    create: !attemptsExhausted && !timeOver && ['waiting', 'running', 'paused'].includes(application.status),
                 })
                 : attemptContextForStudent({ studentEmail: email, examKey });
             const stateKey = context.key || examStateKey({ studentEmail: email, examKey });
@@ -427,7 +498,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 individualTimeAdjustment: 0
             };
             // Sorteia a versão da prova (uma vez) quando ela está ativa e tem múltiplas versões.
-            if (onlineCfg && !attemptsExhausted && initializeExamState(rawState, onlineCfg)) {
+            // Com aplicação, só uma tentativa de verdade é gravada (nunca um estado avulso).
+            if (onlineCfg && !attemptsExhausted && (!application || context.state) && initializeExamState(rawState, onlineCfg)) {
                 rawState.studentEmail = email;
                 rawState.examKey = examKey;
                 rawState.studentClass = cls.name;
@@ -470,6 +542,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                         resolvedAt: report.resolvedAt || null,
                     }))
                 : [];
+            attemptOutcome = attemptOutcomeFor(application, email, knownAttemptId);
             if (application?.status === 'finished') {
                 const savedByInstructor = (db.memory.submissions || []).some(submission =>
                     submission?.applicationId === application.id
@@ -495,6 +568,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             tokenAccepted,
             questionReports,
             finishOutcome,
+            attemptOutcome,
+            timeOver,
             examTitle: examKey ? studentApplicationLabel({ examKey }, cls) : null,
             accessibilityExtraMinutes: examKey && cls.onlineExamConfigs?.[examKey]?.timerEnabled !== false
                 ? accessibilityExtraMinutes(email, cls.onlineExamConfigs?.[examKey]?.durationMinutes)
@@ -932,6 +1007,16 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     }
     const config = cls.onlineExamConfigs?.[application.examKey];
     const now = Date.now();
+    // Uma tentativa vencida nunca ganha prazo novo: vira entrega com as respostas salvas.
+    const finalizedNow = settleStudentAttempt(application, req.studentEmail, 0);
+    if (finalizedNow.length) {
+        await db.save();
+        return res.status(409).json({
+            error: 'O tempo da sua tentativa terminou. Ela foi entregue automaticamente com as respostas salvas.',
+            attemptFinalized: true,
+            attemptOutcome: attemptOutcomeFor(application, req.studentEmail, finalizedNow[0].attemptId),
+        });
+    }
     const mayStart = application.status === 'running'
         || (application.status === 'waiting' && Number(application.startsAt || 0) <= now);
     if (!mayStart || !config?.onlineActive) {
@@ -967,18 +1052,23 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         return res.status(403).json({ error: 'Valide o token antes de iniciar a tentativa.', tokenRequired: true });
     }
     if (!state.startedAt) {
-        state.startedAt = application.timerMode === 'per_attempt'
+        const startedAt = application.timerMode === 'per_attempt'
             ? now
             : Math.min(now, Number(application.startsAt || now));
+        const extraMinutes = accessibilityExtraMinutes(req.studentEmail, application.durationMinutes);
+        const deadlineAt = computeAttemptDeadline({
+            application,
+            state: { ...state, startedAt, accessibilityExtraMinutes: extraMinutes },
+            now,
+        });
+        // Cronômetro coletivo já esgotado: a tentativa nasceria vencida (e vazia).
+        if (deadlineAt !== null && deadlineAt <= now) {
+            return res.status(409).json({ error: 'O tempo desta aplicação já terminou.', timeOver: true });
+        }
+        state.startedAt = startedAt;
         state.status = 'active';
-        state.accessibilityExtraMinutes = accessibilityExtraMinutes(req.studentEmail, application.durationMinutes);
-        const totalMinutes = Number(application.durationMinutes || 0)
-            + Number(application.globalTimeAdjustment || 0)
-            + Number(state.individualTimeAdjustment || 0)
-            + state.accessibilityExtraMinutes;
-        state.deadlineAt = application.timerEnabled === false || totalMinutes <= 0
-            ? null
-            : state.startedAt + totalMinutes * 60000;
+        state.accessibilityExtraMinutes = extraMinutes;
+        state.deadlineAt = deadlineAt;
     }
     initializeExamState(state, config);
     db.memory.studentExamState[context.key] = state;
@@ -1119,19 +1209,11 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         return res.status(404).json({ error: 'Aplicação de prova não encontrada para esta turma.' });
     }
     const onlineConfig = (cls.onlineExamConfigs && cls.onlineExamConfigs[examKey]) || {};
-    if (application && onlineConfig.applicationId !== application.id) {
-        return res.status(409).json({ error: 'Esta aplicação não é mais a aplicação ativa da prova.' });
-    }
-    // A prova aceita envio quando está liberada e em andamento: status 'running', ou
-    // 'waiting' cuja sala de espera já terminou (o horário de início já passou).
     const nowTs = Date.now();
-    const examStatus = onlineConfig.status || 'not_applied';
-    const emAndamento = examStatus === 'running'
-        || (examStatus === 'waiting' && onlineConfig.startTime && nowTs >= onlineConfig.startTime);
-    if (onlineConfig.onlineActive !== true || !emAndamento) {
-        return res.status(403).json({ error: 'Esta prova online ainda não está em andamento para a sua turma.' });
-    }
 
+    // Envio idempotente: a mesma tentativa nunca gera duas entregas. Vem antes das
+    // checagens de aplicação ativa para que o reenvio automático (rede instável)
+    // receba a confirmação mesmo depois que o professor encerrou a aplicação.
     const previousAttempts = filterStudentExamAttempts(db.memory.submissions, {
         studentEmail,
         examKey,
@@ -1142,14 +1224,57 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         ? previousAttempts.find(item => item.attemptId === attemptId)
         : null;
     if (previousSameAttempt) {
+        // O servidor já tinha entregue no fim do tempo com as respostas salvas; o envio
+        // automático do navegador (respostas congeladas no zero) ainda vale dentro da
+        // janela de tolerância e fica marcado com o atraso.
+        if (application && canReplaceServerFinalization(previousSameAttempt, { auto: auto === true, answers, now: nowTs })) {
+            replaceServerFinalization(previousSameAttempt, {
+                application,
+                onlineConfig,
+                evaluation: db.memory.evaluations?.[examKey],
+                answers,
+                now: nowTs,
+            });
+            await db.save();
+            return res.json({
+                success: true,
+                replacedServerFinalization: true,
+                submissionId: previousSameAttempt.id,
+                applicationId: application.id,
+                attemptId: previousSameAttempt.attemptId,
+                gradePublished: false,
+                answeredCount: previousSameAttempt.answeredCount,
+                lateBySeconds: Number(previousSameAttempt.lateBySeconds || 0),
+                message: 'Prova enviada após o fim do tempo. O atraso fica registrado para o professor.',
+                examConfigVersion: previousSameAttempt.examConfigVersion || null,
+            });
+        }
         return res.json({
             success: true,
             duplicate: true,
             submissionId: previousSameAttempt.id,
             gradePublished: previousSameAttempt.gradePublished === true,
+            finalizedByServer: previousSameAttempt.submissionSource === SERVER_DEADLINE_SOURCE,
+            answeredCount: Number.isFinite(Number(previousSameAttempt.answeredCount))
+                ? Number(previousSameAttempt.answeredCount)
+                : (previousSameAttempt.gradedAnswers || []).filter(item => item?.studentChoice).length,
             message: 'Esta tentativa já havia sido enviada.',
             examConfigVersion: previousSameAttempt.examConfigVersion || null,
         });
+    }
+
+    if (application && onlineConfig.applicationId !== application.id) {
+        return res.status(409).json({ error: 'Esta aplicação não é mais a aplicação ativa da prova.' });
+    }
+    // A prova aceita envio quando está liberada e em andamento: status 'running', ou
+    // 'waiting' cuja sala de espera já terminou (o horário de início já passou). Com a
+    // aplicação pausada só passa o envio de quem já estava sem tempo antes da pausa.
+    const examStatus = onlineConfig.status || 'not_applied';
+    const emAndamento = examStatus === 'running'
+        || (examStatus === 'waiting' && onlineConfig.startTime && nowTs >= onlineConfig.startTime);
+    const applicationPaused = examStatus === 'paused';
+    if (onlineConfig.onlineActive !== true || (!emAndamento && !applicationPaused)) {
+        return res.status(403).json({ error: 'Esta prova online ainda não está em andamento para a sua turma.' });
     }
     const maxAttempts = normalizeMaxAttempts(onlineConfig.maxAttempts);
     if (maxAttempts !== null && previousAttempts.length >= maxAttempts) {
@@ -1174,10 +1299,32 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
     if (attemptId && lockedState.attemptId && lockedState.attemptId !== attemptId) {
         return res.status(409).json({ error: 'A tentativa enviada não corresponde à tentativa ativa.' });
     }
-    const deadlineExceededBy = lockedState.deadlineAt ? Date.now() - Number(lockedState.deadlineAt) : 0;
-    const autoSubmitGrace = auto === true && deadlineExceededBy >= 0 && deadlineExceededBy <= 30000;
-    if (lockedState.deadlineAt && deadlineExceededBy > 0 && !autoSubmitGrace) {
-        return res.status(408).json({ error: 'O prazo da prova terminou.', deadlineExceeded: true });
+    const timing = application
+        ? attemptOverdueMs(lockedState, application, nowTs)
+        : {
+            deadlineAt: Number(lockedState.deadlineAt) || null,
+            overdueMs: lockedState.deadlineAt ? nowTs - Number(lockedState.deadlineAt) : null,
+        };
+    const pastDeadline = timing.overdueMs !== null && timing.overdueMs >= 0;
+    if (applicationPaused && !pastDeadline) {
+        return res.status(403).json({ error: 'A aplicação está pausada pelo professor. Aguarde a retomada para enviar.', applicationPaused: true });
+    }
+    const lateDecision = lateSubmitDecision({ overdueMs: timing.overdueMs, auto: auto === true });
+    if (!lateDecision.accept) {
+        // Fora da tolerância vale a finalização do servidor com as últimas respostas salvas.
+        const finalized = application
+            ? finalizeAttemptState(db.memory, { key: stateKey, state: lockedState, application, now: nowTs, deadlineAt: timing.deadlineAt })
+            : null;
+        if (finalized) await db.save();
+        return res.status(408).json({
+            error: finalized
+                ? 'O prazo da prova terminou. As respostas salvas no servidor foram entregues automaticamente.'
+                : 'O prazo da prova terminou.',
+            deadlineExceeded: true,
+            finalizedByServer: !!finalized,
+            submissionId: finalized?.id || null,
+            answeredCount: finalized ? finalized.answeredCount : null,
+        });
     }
 
     const requiredExamToken = normalizeExamToken(onlineConfig.accessToken);
@@ -1191,7 +1338,9 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         });
     }
 
-    if (lockedState.focusLocked === true) {
+    // Depois do fim do tempo o bloqueio por foco não impede a entrega: as questões
+    // ficaram ocultas durante o bloqueio, então o que chega é o que havia antes dele.
+    if (lockedState.focusLocked === true && !pastDeadline) {
         return res.status(423).json({
             error: 'Sua prova foi bloqueada por perda de foco. Aguarde o professor desbloquear pelo monitor.',
             focusLocked: true
@@ -1259,6 +1408,8 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         previousAttempts,
         source: auto === true ? 'timer_auto_submit' : 'student',
     });
+    submissionObj.answeredCount = countAnswers(answers);
+    markLateSubmission(submissionObj, { deadlineAt: timing.deadlineAt, lateMs: lateDecision.lateMs });
     
     const submissions = db.memory.submissions;
     submissions.push(submissionObj);
@@ -1277,6 +1428,8 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         submissionId: submissionObj.id,
         applicationId: application?.id || null,
         attemptId: submissionObj.attemptId,
+        answeredCount: submissionObj.answeredCount,
+        lateBySeconds: Number(submissionObj.lateBySeconds || 0),
         message: 'Prova enviada. A nota sera exibida apos a publicacao do professor.',
         examConfigVersion: currentExamConfigVersion
     });

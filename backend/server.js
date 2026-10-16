@@ -206,6 +206,21 @@ async function startServer() {
     const trashInterval = setInterval(sweepTrash, 6 * 3600000);
     trashInterval.unref();
 
+    // Fim do tempo das provas: tentativa vencida sem envio vira entrega com as últimas
+    // respostas salvas, mesmo que o aluno nunca mais sincronize (sem rede, sem bateria).
+    // No boot também recupera tentativas 'expired' deixadas por versões antigas.
+    const { settleExpiredAttempts } = require('./utils/examDeadline.js');
+    function sweepExpiredAttempts() {
+        try {
+            const { finalized, changed } = settleExpiredAttempts(db.memory);
+            if (finalized.length) console.log('⏱️  Fim do tempo: ' + finalized.length + ' tentativa(s) entregue(s) automaticamente.');
+            if (changed) db.save().catch(err => logCrash('finalização de tentativas vencidas', err));
+        } catch (e) { logCrash('finalização de tentativas vencidas', e); }
+    }
+    sweepExpiredAttempts();
+    const examDeadlineInterval = setInterval(sweepExpiredAttempts, 10000);
+    examDeadlineInterval.unref();
+
     // Backup automático diário dos dados em data/backups (guarda os 14 mais recentes).
     // Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios do servidor.
     // Desligado em TEST_MODE (demonstração e testes usam dados descartáveis).

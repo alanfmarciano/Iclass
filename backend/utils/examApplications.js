@@ -174,10 +174,65 @@ function attemptStatesForApplication(studentExamState, { applicationId, studentE
         .sort((a, b) => Number(b[1].attemptNumber || 0) - Number(a[1].attemptNumber || 0));
 }
 
+// Tentativa "em aberto" é a que ainda não virou entrega. Uma tentativa vencida
+// ('expired', gravada por versões antigas) continua sendo a tentativa atual até o
+// servidor finalizá-la: ela nunca é recriada nem sobrescrita por uma nova.
+const CLOSED_ATTEMPT_STATUSES = new Set(['submitted', 'invalidated']);
+
 function findOpenAttemptState(studentExamState, scope = {}) {
     const match = attemptStatesForApplication(studentExamState, scope)
-        .find(([, state]) => !['submitted', 'expired', 'invalidated'].includes(state.status));
+        .find(([, state]) => !CLOSED_ATTEMPT_STATUSES.has(state.status));
     return match ? { key: match[0], state: match[1] } : null;
+}
+
+// Pausas da aplicação ({ pausedAt, resumedAt }). Pausar congela o cronômetro: o
+// prazo de cada tentativa é empurrado pelo tempo em que a aplicação ficou pausada.
+function applicationPauses(application) {
+    return (Array.isArray(application?.pauses) ? application.pauses : [])
+        .filter(pause => pause && Number(pause.pausedAt) > 0)
+        .map(pause => ({ pausedAt: Number(pause.pausedAt), resumedAt: Number(pause.resumedAt) > 0 ? Number(pause.resumedAt) : null }))
+        .sort((a, b) => a.pausedAt - b.pausedAt);
+}
+
+function openApplicationPause(application, now = Date.now()) {
+    if (!Array.isArray(application.pauses)) application.pauses = [];
+    const open = application.pauses.find(pause => pause && !pause.resumedAt);
+    if (!open) application.pauses.push({ pausedAt: now, resumedAt: null });
+    application.pausedAt = open ? Number(open.pausedAt) : now;
+}
+
+function closeApplicationPause(application, now = Date.now()) {
+    (Array.isArray(application.pauses) ? application.pauses : []).forEach(pause => {
+        if (pause && !pause.resumedAt) pause.resumedAt = Math.max(Number(pause.pausedAt) || now, now);
+    });
+    application.pausedAt = null;
+}
+
+// Aplicações pausadas por versões antigas não registravam o início da pausa. Usa o
+// último updatedAt (gravado na transição) como melhor estimativa. Idempotente.
+function normalizeLegacyApplicationPause(application, now = Date.now()) {
+    if (!application || application.status !== 'paused') return false;
+    if (applicationPauses(application).some(pause => !pause.resumedAt)) return false;
+    const updatedAt = Date.parse(application.updatedAt || '');
+    openApplicationPause(application, Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= now ? updatedAt : now);
+    return true;
+}
+
+// Empurra o prazo base de uma tentativa pelas pausas que aconteceram enquanto ela
+// ainda tinha tempo. Uma pausa que começou depois do fim do tempo não ressuscita a
+// tentativa; a pausa em curso conta até "agora" (cronômetro congelado).
+function extendDeadlineByPauses(application, startedAt, baseDeadline, now = Date.now()) {
+    let deadline = Number(baseDeadline);
+    const start = Number(startedAt);
+    if (!Number.isFinite(deadline) || !Number.isFinite(start)) return baseDeadline;
+    for (const pause of applicationPauses(application)) {
+        const from = Math.max(pause.pausedAt, start);
+        const until = pause.resumedAt || now;
+        if (!(until > from)) continue;
+        if (from >= deadline) break;
+        deadline += until - from;
+    }
+    return deadline;
 }
 
 function createAttemptState({ application, studentEmail, attemptNumber, studentClass, courseId, now = Date.now() } = {}) {
@@ -249,15 +304,29 @@ function transitionExamApplication(application, action, options = {}) {
         application.waitingRoomDuration = waitingSeconds;
         application.startsAt = now + waitingSeconds * 1000;
     }
+    if (target === 'paused') openApplicationPause(application, now);
     if (target === 'running') {
-        if (current !== 'paused' || application.timerMode === 'collective') application.startsAt = now;
+        if (current === 'paused') {
+            // Retomar não reinicia o relógio: o início original fica e o tempo pausado é
+            // somado ao prazo de cada tentativa. Só uma pausa ainda na sala de espera
+            // (início no futuro) começa a prova agora, como antes.
+            closeApplicationPause(application, now);
+            const startsAt = Number(application.startsAt);
+            if (!(startsAt > 0) || startsAt > now) application.startsAt = now;
+        } else {
+            application.startsAt = now;
+        }
         if (!application.startedAt) application.startedAt = timestamp;
     }
     if (target === 'finished') {
+        if (current === 'paused') closeApplicationPause(application, now);
         application.endsAt = now;
         application.finishedAt = timestamp;
     }
-    if (target === 'cancelled') application.cancelledAt = timestamp;
+    if (target === 'cancelled') {
+        if (current === 'paused') closeApplicationPause(application, now);
+        application.cancelledAt = timestamp;
+    }
     application.status = target;
     application.updatedAt = timestamp;
     if (options.actor) application.updatedBy = options.actor;
@@ -267,8 +336,12 @@ function transitionExamApplication(application, action, options = {}) {
 module.exports = {
     ACTIVE_APPLICATION_STATUSES,
     APPLICATION_STATUSES,
+    CLOSED_ATTEMPT_STATUSES,
+    applicationPauses,
     applicationToOnlineConfig,
     attemptStatesForApplication,
+    closeApplicationPause,
+    extendDeadlineByPauses,
     createAttemptState,
     createExamApplication,
     examStateKey,
@@ -276,7 +349,9 @@ module.exports = {
     findOpenAttemptState,
     listExamApplications,
     normalizeApplicationStatus,
+    normalizeLegacyApplicationPause,
     normalizeTimerMode,
+    openApplicationPause,
     resolveExamApplication,
     transitionExamApplication,
 };

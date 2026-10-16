@@ -11,12 +11,14 @@ const {
 } = require('../utils/examGrading.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
+    CLOSED_ATTEMPT_STATUSES,
     applicationToOnlineConfig,
     createExamApplication,
     findExamApplication,
     listExamApplications,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
+const { isAttemptPastDeadline, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const {
     validateAdmin,
     adminCanAccessClass,
@@ -143,20 +145,26 @@ function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOp
     return { application, accessToken: rawToken || null };
 }
 
+// Tentativas ainda sem entrega (inclui as vencidas: elas nunca ficam de fora).
 function applicationStateEntries(applicationId) {
     return Object.entries(db.memory.studentExamState || {}).filter(([, state]) =>
-        state && state.applicationId === applicationId && !['submitted', 'expired', 'invalidated'].includes(state.status));
+        state && state.applicationId === applicationId && !CLOSED_ATTEMPT_STATUSES.has(state.status));
 }
 
 function finishSummary(application) {
+    const now = Date.now();
     const entries = applicationStateEntries(application.id);
     const started = entries.filter(([, state]) => !!state.startedAt);
+    // Tempo esgotado: a entrega é automática com as respostas salvas, em qualquer escolha.
+    const timeOver = started.filter(([, state]) => isAttemptPastDeadline(state, application, now));
+    const inProgress = started.filter(entry => !timeOver.includes(entry));
     return {
         applicationId: application.id,
-        inProgressAttempts: started.length,
-        answeredQuestions: started.reduce((total, [, state]) => total + Object.keys(state.answers || {}).length, 0),
+        inProgressAttempts: inProgress.length,
+        answeredQuestions: inProgress.reduce((total, [, state]) => total + Object.keys(state.answers || {}).length, 0),
         waitingToStart: entries.length - started.length,
-        students: started.map(([, state]) => ({
+        timeOverAttempts: timeOver.length,
+        students: inProgress.map(([, state]) => ({
             email: state.studentEmail,
             answeredQuestions: Object.keys(state.answers || {}).length,
             attemptNumber: state.attemptNumber || 1,
@@ -343,6 +351,9 @@ function createAdminExamConfigRouter() {
                         summary,
                     });
                 }
+                // Quem já estava sem tempo recebe a entrega automática do fim do tempo
+                // (respostas salvas), qualquer que seja a escolha para quem está em andamento.
+                const deliveredAtDeadline = settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 }).finalized.length;
                 const entries = applicationStateEntries(application.id);
                 let submitted = 0;
                 let discarded = 0;
@@ -379,11 +390,12 @@ function createAdminExamConfigRouter() {
                     discarded = summary.inProgressAttempts;
                 }
                 entries.forEach(([key]) => { delete db.memory.studentExamState[key]; });
-                processedFinish = { policy: policy || 'none', submitted, discarded, summary };
+                processedFinish = { policy: policy || 'none', submitted, discarded, deliveredAtDeadline, summary };
                 application.finishResolution = {
                     policy: processedFinish.policy,
                     submitted,
                     discarded,
+                    deliveredAtDeadline,
                     at: new Date().toISOString(),
                     by: adminActor(req),
                 };
@@ -418,9 +430,18 @@ function createAdminExamConfigRouter() {
             const adjustmentMinutes = Number(req.body.adjustmentMinutes);
             if (!Number.isFinite(adjustmentMinutes)) return res.status(400).json({ error: 'Ajuste de tempo inválido.' });
             const targetEmail = String(req.body.targetEmail || '').trim().toLowerCase();
+            // Tempo extra nunca ressuscita tentativa vencida: ela é entregue antes do ajuste.
+            const settled = settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: targetEmail || null, graceMs: 0 });
+            if (targetEmail && settled.finalized.length) {
+                await db.save();
+                return res.status(409).json({
+                    error: 'O tempo deste aluno já tinha terminado. A tentativa foi entregue automaticamente com as respostas salvas.',
+                    attemptFinalized: true,
+                });
+            }
             if (targetEmail) {
                 Object.values(db.memory.studentExamState || {}).forEach(state => {
-                    if (state && state.applicationId === application.id && state.studentEmail === targetEmail && !['submitted', 'expired'].includes(state.status)) {
+                    if (state && state.applicationId === application.id && state.studentEmail === targetEmail && !CLOSED_ATTEMPT_STATUSES.has(state.status)) {
                         state.individualTimeAdjustment = Number(state.individualTimeAdjustment || 0) + adjustmentMinutes;
                         if (state.deadlineAt) state.deadlineAt = Number(state.deadlineAt) + adjustmentMinutes * 60000;
                     }
@@ -592,6 +613,8 @@ function createAdminExamConfigRouter() {
                 if (application.status !== 'running') {
                     return res.status(409).json({ error: 'A prova precisa estar em andamento para substituir uma questao.' });
                 }
+                // Tentativas já vencidas são entregues antes: o tempo extra não as reabre.
+                settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 });
                 const activeStates = applicationStateEntries(application.id).map(([, state]) => state).filter(state => state.startedAt);
                 const remainingValues = activeStates
                     .filter(state => Number(state.deadlineAt) > 0)

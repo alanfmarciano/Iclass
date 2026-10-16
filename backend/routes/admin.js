@@ -49,6 +49,7 @@ const {
     findOpenAttemptState,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
+const { attemptOverdueMs, settleExpiredAttempts } = require('../utils/examDeadline.js');
 
 function rejectInvalidBranding(res, body) {
     const validationError = validateBrandingPatch(body);
@@ -2914,6 +2915,8 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
         }
         if (application) {
+            // Encerrar entrega antes quem já estava sem tempo (respostas salvas).
+            if (action === 'finished') settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 });
             try {
                 transitionExamApplication(application, action, {
                     actor: req.adminAccount?.email || 'Administrador',
@@ -3012,6 +3015,21 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
         const scopedClass = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
         const application = findExamApplication(db.memory.examApplications, applicationId || scopedClass?.onlineExamConfigs?.[examKey]?.applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+        // Tempo extra nunca reabre tentativa vencida: ela é entregue (respostas salvas) antes do ajuste.
+        if (application) {
+            const settled = settleExpiredAttempts(db.memory, {
+                applicationId: application.id,
+                studentEmail: targetEmail ? targetEmail.trim().toLowerCase() : null,
+                graceMs: 0,
+            });
+            if (targetEmail && settled.finalized.length) {
+                db.save();
+                return res.status(409).json({
+                    error: 'O tempo deste aluno já tinha terminado. A tentativa foi entregue automaticamente com as respostas salvas.',
+                    attemptFinalized: true,
+                });
+            }
+        }
 
         if (targetEmail) {
             const email = targetEmail.trim().toLowerCase();
@@ -3234,6 +3252,9 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         const currentConfig = (cls && cls.onlineExamConfigs && cls.onlineExamConfigs[examKey]) || {};
         const application = findExamApplication(db.memory.examApplications, req.query.applicationId || currentConfig.applicationId);
         if (req.query.applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+        // Mesma varredura do servidor: tentativa vencida há mais que o atraso normal vira entrega.
+        if (application && settleExpiredAttempts(db.memory, { applicationId: application.id }).changed) db.save();
+        const monitorNow = Date.now();
 
         const students = db.memory.students.filter(s => {
             const hasClass = s.classes && s.classes.some(c => 
@@ -3260,11 +3281,15 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             const session = db.memory.sessions[email];
             const isOnline = isStudentSessionOnline(session);
             
-            const submission = db.memory.submissions.find(sub => 
+            // Entrega mais recente do aluno nesta aplicação (a que o professor precisa ver).
+            const submission = db.memory.submissions.filter(sub =>
                 (sub.studentEmail ? sub.studentEmail.toLowerCase() : ((sub.student && sub.student.email) ? sub.student.email.toLowerCase() : '')) === email && 
                 sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase() &&
                 (application ? sub.applicationId === application.id : true)
-            );
+            ).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
+            const timing = application && state.startedAt && !submission
+                ? attemptOverdueMs(state, application, monitorNow)
+                : null;
 
             const studentLogs = db.memory.proctoringLogs.filter(l =>
                 l.studentEmail.toLowerCase() === email &&
@@ -3286,6 +3311,9 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             let status = 'absent';
             if (submission) {
                 status = 'finished';
+            } else if (timing && timing.overdueMs !== null && timing.overdueMs >= 0) {
+                // Prazo esgotado: a entrega automática chega em instantes (navegador ou servidor).
+                status = 'time_over';
             } else if (state.focusLocked === true) {
                 status = 'focus_locked';
             } else if (isOnline) {
@@ -3312,7 +3340,10 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             }
 
             let timerRemaining = state.timerRemaining;
-            if (status !== 'finished' && Number(state.deadlineAt) > 0) {
+            if (timing && timing.deadlineAt !== null) {
+                // Prazo efetivo: durante a pausa da aplicação o tempo fica congelado.
+                timerRemaining = Math.max(0, Math.ceil((timing.deadlineAt - monitorNow) / 1000));
+            } else if (status !== 'finished' && Number(state.deadlineAt) > 0) {
                 timerRemaining = Math.max(0, Math.ceil((Number(state.deadlineAt) - Date.now()) / 1000));
             } else if (
                 timerRemaining === null
@@ -3341,6 +3372,8 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 focusLockReason: state.focusLockReason || '',
                 applicationId: application?.id || null,
                 attemptId: state.attemptId || submission?.attemptId || null,
+                submissionSource: submission?.submissionSource || null,
+                lateBySeconds: Number(submission?.lateBySeconds || 0),
                 logs: studentLogs,
                 keystrokeCount,
                 suspiciousCount,

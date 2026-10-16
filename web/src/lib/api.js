@@ -10,7 +10,9 @@ function getStoredAuth() {
   try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) || {} } catch { return {} }
 }
 
-async function request(path, { method = 'GET', body, auth = true, raw } = {}) {
+// keepalive: a requisição sobrevive ao fechamento/recarga da página (pagehide).
+// Diferente do sendBeacon, leva os cabeçalhos de sessão.
+async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false } = {}) {
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const providedAuth = authProvider() || {}
@@ -24,6 +26,7 @@ async function request(path, { method = 'GET', body, auth = true, raw } = {}) {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    ...(keepalive ? { keepalive: true } : {}),
   })
   let data = null
   const ct = res.headers.get('content-type') || ''

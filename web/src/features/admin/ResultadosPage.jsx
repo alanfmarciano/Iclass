@@ -16,6 +16,7 @@ import { printBoletim } from './boletimPrint'
 import { useToast } from '../../context/ToastProvider'
 import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { deliveryLabel } from './attemptDelivery'
 
 function useCountUp(value, durationMs = 900) {
   const [display, setDisplay] = useState(0)
@@ -645,7 +646,7 @@ export default function ResultadosPage() {
                         <span className="rb-tn">Tentativa {submission.displayAttempt}</span>
                         <span className={`rb-tag ${st}`}>{STATE_LABEL[st]}</span>
                       </div>
-                      <div className="meta">{submission.timestamp ? new Date(submission.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {submission.type || 'online'} · Versão {submission.assignedVersion || '-'} · {submission.gradePublished === true ? 'Publicada' : 'Em revisão'}</div>
+                      <div className="meta">{submission.timestamp ? new Date(submission.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {submission.type || 'online'} · Versão {submission.assignedVersion || '-'} · {submission.gradePublished === true ? 'Publicada' : 'Em revisão'}{deliveryLabel(submission) ? ` · ${deliveryLabel(submission)}` : ''}</div>
                     </div>
                     <span className={`rb-as ${gradeBandClass(submission.score)}`}>{Number.isFinite(Number(submission.score)) ? fmtNota(submission.score) : '-'}</span>
                     <div className="rb-acts">

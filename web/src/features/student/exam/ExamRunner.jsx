@@ -12,9 +12,12 @@ import { api } from '../../../lib/api'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { pickSnapshot, normQuestion, fmtTime } from './examUtils'
+import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, wait } from './examAutoSubmit'
+import { clearExamDraft, examDraftKey, readExamDraft, sameExamAnswers, writeExamDraft } from '../../../lib/examDrafts'
 
+// A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
+// junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
 const SYNC_MS = 4000
-const AUTOSAVE_MS = 15000
 const KEYSTROKE_FLUSH_MS = 2000
 const KEYSTROKE_FLUSH_SIZE = 20
 
@@ -75,12 +78,42 @@ export default function ExamRunner() {
   const [reportForm, setReportForm] = useState({ reason: 'sem_resposta_correta', text: '' })
   const [reportBusy, setReportBusy] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [timeupInfo, setTimeupInfo] = useState(null)
   const answersRef = useRef(answers)
   const submittedRef = useRef(false)
-  const timeoutHandledRef = useRef(false)
   const keyBufferRef = useRef([])
   const keySeqRef = useRef(0)
+  const phaseRef = useRef(phase)
+  const attemptIdRef = useRef(attemptId)
+  const examConfigVersionRef = useRef(examConfigVersion)
+  const lastSavedRef = useRef(null) // respostas que o servidor já confirmou
+  const savingRef = useRef(false)
+  const loadedAttemptRef = useRef(null)
+  const timeupRef = useRef(null) // respostas congeladas no fim do tempo, até a entrega
+  const mountedRef = useRef(true)
+  const saveRef = useRef(null)
+  const startTimeUpRef = useRef(null)
   answersRef.current = answers
+  phaseRef.current = phase
+  attemptIdRef.current = attemptId
+  examConfigVersionRef.current = examConfigVersion
+  const draftKey = examDraftKey({ email, applicationId, examKey })
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  // Entrega confirmada (pelo aluno, pelo fim do tempo, pelo servidor ou pelo professor).
+  const finishDelivered = useCallback((delivered) => {
+    timeupRef.current = null
+    submittedRef.current = true
+    clearExamDraft(draftKey)
+    setResult(delivered)
+    setSubmitConfirm(false)
+    setTimeupInfo(null)
+    setPhase('done')
+  }, [draftKey])
 
   const qs = (v = '') => `email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&examKey=${encodeURIComponent(examKey)}&applicationId=${encodeURIComponent(applicationId)}${v}`
   const submit = useCallback(async (auto = false) => {
@@ -99,9 +132,7 @@ export default function ExamRunner() {
         examConfigVersion,
         auto,
       })
-      setResult(r)
-      setSubmitConfirm(false)
-      setPhase('done')
+      finishDelivered({ ...r, auto })
       if (auto) toast.info('Tempo esgotado - prova enviada automaticamente.')
       else toast.success('Prova enviada!')
     } catch (e) {
@@ -109,6 +140,8 @@ export default function ExamRunner() {
       if (e.status === 403 && e.data?.attemptsExhausted) {
         setAttemptLimit(Number(e.data.maxAttempts) || null)
         setPhase('exhausted')
+      } else if (e.status === 408 && e.data?.finalizedByServer) {
+        finishDelivered({ finalizedByServer: true, answeredCount: e.data.answeredCount, gradePublished: false })
       } else {
         toast.error(e.message || 'Falha ao enviar a prova')
       }
@@ -116,19 +149,112 @@ export default function ExamRunner() {
       setSubmitting(false)
     }
     // eslint-disable-next-line
-  }, [email, studentClass, courseId, examKey, applicationId, attemptId, examConfigVersion, toast])
+  }, [email, studentClass, courseId, examKey, applicationId, attemptId, examConfigVersion, toast, finishDelivered])
+
+  // Salva as respostas que mudaram desde o último salvamento confirmado. keepalive:
+  // usado ao sair/recarregar/esconder a aba, a requisição sobrevive à página.
+  const saveAnswersIfDirty = useCallback(async ({ keepalive = false } = {}) => {
+    const currentAttemptId = attemptIdRef.current
+    if (!currentAttemptId || timeupRef.current || submittedRef.current) return
+    if (!['active', 'paused', 'server_paused'].includes(phaseRef.current)) return
+    const snapshot = answersRef.current
+    if (lastSavedRef.current ? sameExamAnswers(lastSavedRef.current, snapshot) : countAnswered(snapshot) === 0) return
+    if (savingRef.current && !keepalive) return
+    savingRef.current = true
+    if (!keepalive) setSaveState((current) => ({ ...current, status: 'saving' }))
+    try {
+      await api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }, keepalive ? { keepalive: true } : undefined)
+      lastSavedRef.current = snapshot
+      writeExamDraft(draftKey, { attemptId: currentAttemptId, answers: answersRef.current, saved: sameExamAnswers(snapshot, answersRef.current) })
+      if (!keepalive) setSaveState({ status: 'saved', at: new Date() })
+    } catch (e) {
+      if (!keepalive) setSaveState((current) => ({ ...current, status: 'error' }))
+      // O servidor já considera o tempo esgotado: entrega o que está na tela agora.
+      if (e.status === 408 && phaseRef.current === 'active') startTimeUpRef.current?.()
+    } finally {
+      savingRef.current = false
+    }
+  }, [email, studentClass, courseId, examKey, applicationId, draftKey])
+  saveRef.current = saveAnswersIfDirty
+
+  // Fim do tempo: congela as respostas no zero e envia até o servidor confirmar.
+  const runAutoSubmit = useCallback(async () => {
+    let retry = 0
+    while (mountedRef.current && timeupRef.current) {
+      const frozen = timeupRef.current
+      try {
+        const r = await api.post('/api/student/submit', {
+          email,
+          studentClass,
+          courseId,
+          examKey,
+          applicationId,
+          attemptId: frozen.attemptId,
+          answers: frozen.answers,
+          examConfigVersion: frozen.examConfigVersion,
+          auto: true,
+        })
+        if (!mountedRef.current) return
+        finishDelivered({ ...r, auto: true, answeredCount: r?.answeredCount ?? countAnswered(frozen.answers) })
+        toast.info('Tempo esgotado - prova enviada automaticamente.')
+        return
+      } catch (e) {
+        if (!mountedRef.current) return
+        const kind = classifyAutoSubmitError(e)
+        if (kind === 'retry') {
+          const delay = autoSubmitRetryDelay(retry)
+          retry += 1
+          setTimeupInfo({ retrying: true, attempt: retry, nextRetryMs: delay })
+          await wait(delay)
+          continue
+        }
+        if (kind === 'finalized') {
+          finishDelivered({ finalizedByServer: true, answeredCount: e.data?.answeredCount, gradePublished: false })
+          return
+        }
+        if (kind === 'locked' || kind === 'paused') {
+          timeupRef.current = null
+          submittedRef.current = false
+          setTimeupInfo(null)
+          setPhase(kind === 'locked' ? 'paused' : 'server_paused')
+          return
+        }
+        // Erro definitivo: não insiste. O servidor entrega as respostas salvas no fim
+        // da tolerância e a próxima sincronização mostra a entrega.
+        timeupRef.current = { ...frozen, failed: true }
+        setTimeupInfo({ failed: true, message: e.message || 'Falha ao enviar a prova.' })
+        return
+      }
+    }
+  }, [email, studentClass, courseId, examKey, applicationId, finishDelivered, toast])
+
+  const startTimeUp = useCallback((override = {}) => {
+    if (timeupRef.current || submittedRef.current) return
+    const frozen = {
+      attemptId: override.attemptId || attemptIdRef.current,
+      answers: { ...(override.answers || answersRef.current) },
+      examConfigVersion: override.examConfigVersion ?? examConfigVersionRef.current,
+    }
+    if (!frozen.attemptId) return
+    timeupRef.current = frozen
+    submittedRef.current = true
+    writeExamDraft(draftKey, { attemptId: frozen.attemptId, answers: frozen.answers, saved: false })
+    setTimeupInfo({ retrying: false, attempt: 0 })
+    setPhase('timeup')
+    runAutoSubmit()
+  }, [draftKey, runAutoSubmit])
+  startTimeUpRef.current = startTimeUp
 
   const flushKeystrokes = useCallback((useBeacon = false) => {
     const events = keyBufferRef.current
     if (!events.length) return
     keyBufferRef.current = []
     const payload = { email, studentClass, courseId, examKey, applicationId, attemptId, events }
-    if (useBeacon && navigator.sendBeacon) {
-      try {
-        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
-        navigator.sendBeacon('/api/student/log-keystrokes', blob)
-        return
-      } catch (err) { /* cai no fetch abaixo */ }
+    if (useBeacon) {
+      // Saída da página: fetch com keepalive leva o token de sessão (o sendBeacon não
+      // levava e o servidor recusava com 401).
+      api.post('/api/student/log-keystrokes', payload, { keepalive: true }).catch(() => {})
+      return
     }
     api.post('/api/student/log-keystrokes', payload).catch(() => {
       // Reenvia no próximo flush se falhar (não perde a cauda).
@@ -231,9 +357,7 @@ export default function ExamRunner() {
       event.returnValue = ''
     }
     const onPageHide = () => {
-      flushKeystrokes(true)
-      api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId, answers: answersRef.current }).catch(() => {})
-      api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details: 'Página da prova foi fechada ou recarregada' }).catch(() => {})
+      api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details: 'Página da prova foi fechada ou recarregada' }, { keepalive: true }).catch(() => {})
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     window.addEventListener('pagehide', onPageHide)
@@ -243,33 +367,43 @@ export default function ExamRunner() {
     }
   }, [phase, email, studentClass, courseId, examKey, applicationId, attemptId])
 
+  // Ao sair, recarregar ou esconder a aba, as respostas pendentes vão com keepalive.
   useEffect(() => {
-    if (phase !== 'active') return
-    const id = setInterval(() => {
-      setSaveState((current) => ({ ...current, status: 'saving' }))
-      api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId, answers: answersRef.current })
-        .then(() => setSaveState({ status: 'saved', at: new Date() }))
-        .catch(() => setSaveState((current) => ({ ...current, status: 'error' })))
-    }, AUTOSAVE_MS)
-    return () => clearInterval(id)
-  }, [phase, email, studentClass, courseId, examKey, applicationId, attemptId])
+    if (!['active', 'paused', 'server_paused'].includes(phase)) return
+    const flush = () => {
+      flushKeystrokes(true)
+      saveRef.current?.({ keepalive: true })
+    }
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [phase, flushKeystrokes])
+
+  // Cópia local das respostas (sobrevive à recarga da página).
+  useEffect(() => {
+    if (phase !== 'active' || !attemptId || timeupRef.current) return
+    writeExamDraft(draftKey, { attemptId, answers, saved: !!lastSavedRef.current && sameExamAnswers(lastSavedRef.current, answers) })
+  }, [answers, attemptId, phase, draftKey])
 
   useEffect(() => {
     if (phase !== 'active' || remaining == null) return
     if (remaining <= 0) {
-      if (timeoutHandledRef.current) return
-      timeoutHandledRef.current = true
-      submit(true)
+      startTimeUp()
       return
     }
-    timeoutHandledRef.current = false
     const id = setInterval(() => setRemaining((r) => (r == null ? r : r - 1)), 1000)
     return () => clearInterval(id)
-  }, [phase, remaining, submit])
+  }, [phase, remaining, startTimeUp])
 
   const sync = useCallback(async () => {
     try {
-      const r = await api.get(`/api/student/sync?${qs()}`)
+      await saveRef.current?.()
+      const knownAttemptId = timeupRef.current?.attemptId || attemptIdRef.current || readExamDraft(draftKey)?.attemptId || ''
+      const r = await api.get(`/api/student/sync?${qs(`&attemptId=${encodeURIComponent(knownAttemptId)}`)}`)
       const c = (r.onlineExamConfigs || {})[examKey]
       if (!c) {
         setFatal('Esta prova não está mais disponível para sua turma.')
@@ -278,14 +412,55 @@ export default function ExamRunner() {
       }
       setCfg(c)
       setExamConfigVersion(r.examConfigVersion || null)
-      if (r.attemptId) setAttemptId(r.attemptId)
       setExtraMinutes(Number(r.accessibilityExtraMinutes) || 0)
       if (r.examTitle) setExamTitle(r.examTitle)
       if (r.tokenAccepted === true) setTokenOk(true)
 
+      // A tentativa que este navegador conhece já virou entrega (fim do tempo no
+      // servidor, professor ou outra aba). Se aqui há respostas que o servidor não
+      // tinha, elas ainda vão como envio automático dentro da tolerância.
+      const outcome = r.attemptOutcome
+      if (outcome && knownAttemptId && outcome.attemptId === knownAttemptId && phaseRef.current !== 'done') {
+        if (timeupRef.current && !timeupRef.current.failed) return
+        const draft = readExamDraft(draftKey)
+        const draftForAttempt = draft && draft.attemptId === outcome.attemptId ? draft : null
+        const localAnswers = countAnswered(answersRef.current) ? answersRef.current : (draftForAttempt?.answers || {})
+        const unsaved = (draftForAttempt && draftForAttempt.saved === false)
+          || (!!lastSavedRef.current && !sameExamAnswers(lastSavedRef.current, answersRef.current))
+        if (outcome.finalizedByServer && unsaved && !timeupRef.current) {
+          startTimeUpRef.current?.({ attemptId: outcome.attemptId, answers: localAnswers })
+          return
+        }
+        finishDelivered({
+          gradePublished: false,
+          finalizedByServer: outcome.finalizedByServer === true,
+          submittedByInstructor: outcome.source === 'instructor_finish',
+          answeredCount: outcome.answeredCount,
+          lateBySeconds: outcome.lateBySeconds,
+        })
+        return
+      }
+      if (r.attemptId && !timeupRef.current) setAttemptId(r.attemptId)
+
       const st = r.state || {}
       if (st.assignedVersion) setAssignedVersion(st.assignedVersion)
-      if (st.answers && Object.keys(st.answers).length && Object.keys(answersRef.current).length === 0) setAnswers(st.answers)
+      const stateAttemptId = r.attemptId || st.attemptId || null
+      if (st.startedAt && stateAttemptId && !timeupRef.current) {
+        const serverAnswers = st.answers || {}
+        if (loadedAttemptRef.current !== stateAttemptId) {
+          // Primeira leitura desta tentativa (abertura ou recarga): o servidor mais a
+          // cópia local do que ainda não tinha sido salvo.
+          loadedAttemptRef.current = stateAttemptId
+          const draft = readExamDraft(draftKey)
+          let restored = serverAnswers
+          if (draft && draft.attemptId === stateAttemptId && draft.saved === false) restored = { ...serverAnswers, ...draft.answers }
+          else if (draft && draft.attemptId !== stateAttemptId) clearExamDraft(draftKey)
+          lastSavedRef.current = serverAnswers
+          setAnswers((current) => ({ ...restored, ...current }))
+        } else {
+          lastSavedRef.current = serverAnswers
+        }
+      }
 
       const snap = pickSnapshot(c, st.assignedVersion)
       if (snap && Array.isArray(snap.questions)) setQuestions(snap.questions.map(normQuestion))
@@ -319,6 +494,11 @@ export default function ExamRunner() {
         setRemaining(null)
         setWaitingRemaining(null)
         setPhase('exhausted')
+        return
+      }
+      if (r.timeOver && !st.startedAt) {
+        setFatal('O tempo desta aplicação já terminou. Procure o professor se precisar de uma nova oportunidade.')
+        setPhase('error')
         return
       }
       if (st.focusLocked === true) {
@@ -435,6 +615,9 @@ export default function ExamRunner() {
     await enterFullscreen()
     try {
       const response = await api.post(`/api/student/exam-applications/${encodeURIComponent(applicationId)}/start-attempt`, {})
+      attemptIdRef.current = response.attemptId
+      loadedAttemptRef.current = response.attemptId
+      lastSavedRef.current = response.state?.answers || {}
       setAttemptId(response.attemptId)
       setExamConfigVersion(response.examConfigVersion || examConfigVersion)
       if (response.state?.assignedVersion) setAssignedVersion(response.state.assignedVersion)
@@ -454,8 +637,14 @@ export default function ExamRunner() {
 
   async function leaveExam() {
     setExitConfirm(false)
-    await api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId, answers: answersRef.current }).catch(() => {})
+    await saveAnswersIfDirty()
     await api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details: 'Aluno saiu usando o botão da prova' }).catch(() => {})
+    nav('/aluno/provas')
+  }
+
+  // Saída pelas telas de pausa: salva antes o que ainda não chegou ao servidor.
+  async function leaveToExamList() {
+    await saveAnswersIfDirty()
     nav('/aluno/provas')
   }
 
@@ -560,11 +749,41 @@ export default function ExamRunner() {
   if (phase === 'done') return withInstructorMessage(
     <Center>
       <div className="w-16 h-16 grid place-items-center rounded-full bg-success-soft text-success mb-3"><CheckCircle2 size={32} /></div>
-      <h2 className="text-xl font-bold text-text">{result?.submittedByInstructor ? 'Respostas salvas e entregues' : 'Prova enviada!'}</h2>
+      <h2 className="text-xl font-bold text-text">{result?.submittedByInstructor ? 'Respostas salvas e entregues' : result?.finalizedByServer ? 'Tempo esgotado: prova entregue' : 'Prova enviada!'}</h2>
       {result?.gradePublished === true
         ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{(Number(result.score) / 10).toFixed(1)}</p>
-        : <p className="text-sm text-muted mt-3">{result?.submittedByInstructor ? 'O professor encerrou a aplicação e salvou o que você havia respondido.' : 'Sua nota será exibida depois da publicação pelo professor.'}</p>}
+        : <p className="text-sm text-muted mt-3 max-w-sm text-center">{result?.submittedByInstructor
+          ? 'O professor encerrou a aplicação e salvou o que você havia respondido.'
+          : result?.finalizedByServer
+            ? 'O tempo acabou e as respostas salvas no servidor foram entregues automaticamente. Sua nota será exibida depois da publicação pelo professor.'
+            : `${result?.auto ? 'O tempo acabou e suas respostas foram enviadas automaticamente. ' : ''}Sua nota será exibida depois da publicação pelo professor.`}</p>}
+      {Number.isFinite(Number(result?.answeredCount)) && result?.answeredCount !== null && (
+        <p className="text-sm text-text mt-2">{Number(result.answeredCount) === 1 ? '1 resposta registrada.' : `${Number(result.answeredCount)} respostas registradas.`}</p>
+      )}
+      {Number(result?.lateBySeconds) > 0 && (
+        <p className="text-xs text-warning mt-1 max-w-sm text-center">O envio chegou {Number(result.lateBySeconds)} s depois do fim do tempo. O professor verá esse atraso.</p>
+      )}
       <Button className="mt-5" onClick={() => nav('/aluno')}>Voltar ao inicio</Button>
+    </Center>
+  )
+
+  if (phase === 'timeup') return withInstructorMessage(
+    <Center>
+      <div className="w-14 h-14 grid place-items-center rounded-full bg-warning-soft text-warning mb-3"><Clock size={26} /></div>
+      <h2 className="text-lg font-semibold text-text">Tempo esgotado</h2>
+      <p className="text-sm text-muted mt-1 max-w-sm text-center">Suas respostas foram registradas no fim do tempo e estão sendo enviadas. Não feche esta página.</p>
+      <div className="mt-4 max-w-sm text-center" role="status" aria-live="polite">
+        {timeupInfo?.failed ? (
+          <>
+            <p className="text-sm text-danger">{timeupInfo.message} As respostas salvas no servidor serão entregues automaticamente.</p>
+            <Button className="mt-4" variant="secondary" icon={ArrowLeft} onClick={() => nav('/aluno/provas')}>Voltar às provas</Button>
+          </>
+        ) : timeupInfo?.retrying ? (
+          <p className="text-sm text-warning">Sem conexão com o servidor. Nova tentativa de envio em {Math.max(1, Math.ceil(Number(timeupInfo.nextRetryMs || 0) / 1000))} s.</p>
+        ) : (
+          <p className="flex items-center justify-center gap-2 text-sm text-muted"><Loader2 className="w-4 h-4 animate-spin" /> Enviando respostas...</p>
+        )}
+      </div>
     </Center>
   )
 
@@ -639,7 +858,7 @@ export default function ExamRunner() {
       <h2 className="text-lg font-semibold text-text">Aplicação pausada pelo professor</h2>
       <p className="text-sm text-muted mt-2 text-center max-w-sm">Suas respostas continuam salvas. Aguarde o professor retomar a aplicação.</p>
       <div className="mt-4 flex items-center gap-2 text-warning"><Loader2 className="w-4 h-4 animate-spin" /><span className="text-sm">Aguardando retomada...</span></div>
-      <Button className="mt-6" variant="secondary" icon={ArrowLeft} onClick={() => nav('/aluno/provas')}>Sair e voltar depois</Button>
+      <Button className="mt-6" variant="secondary" icon={ArrowLeft} onClick={leaveToExamList}>Sair e voltar depois</Button>
     </Center>
   )
 
@@ -651,7 +870,7 @@ export default function ExamRunner() {
         <p className="text-sm text-muted mt-2">Detectamos que você saiu da tela cheia, da aba ou da janela da prova. Por segurança, a prova foi pausada e o instrutor foi notificado.</p>
         <p className="text-sm text-muted mt-2">Aguarde a liberação do instrutor para continuar. Suas respostas foram salvas.</p>
         <div className="mt-4 flex items-center justify-center gap-2 text-warning"><Loader2 className="w-4 h-4 animate-spin" /> <span className="text-sm">Aguardando liberação...</span></div>
-        <Button className="mt-6" variant="secondary" icon={ArrowLeft} onClick={() => nav('/aluno/provas')}>Sair e voltar às provas</Button>
+        <Button className="mt-6" variant="secondary" icon={ArrowLeft} onClick={leaveToExamList}>Sair e voltar às provas</Button>
       </div>
     </div>
   )
@@ -773,7 +992,7 @@ export default function ExamRunner() {
                 return (
                   <button
                     key={alt.letter}
-                    disabled={(cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number))}
+                    disabled={(remaining != null && remaining <= 0) || (cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number))}
                     onClick={() => setAnswers((a) => ({ ...a, [q.number]: alt.letter }))}
                     className={`w-full text-left flex items-center gap-3 p-3 rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-60 ${sel ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}
                   >

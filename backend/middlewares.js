@@ -11,6 +11,7 @@ const { SERVER_INSTANCE_ID, ABSOLUTE_TTL_MS } = require('./utils/sessionConfig.j
 const settingsUtil = require('./utils/settings.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
+const { computeAttemptDeadline } = require('./utils/examDeadline.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -857,16 +858,19 @@ function initializeExamState(state, onlineConfig) {
                 state.accessibilityExtraMinutes = extra;
                 changed = true;
             }
-            const adjustment = Number(onlineConfig.globalTimeAdjustment || 0)
-                + Number(state.individualTimeAdjustment || 0)
-                + extra;
-            const deadlineAt = Number(state.startedAt) + Math.max(0, duration + adjustment) * 60000;
+            // Mesma conta do servidor inteiro (inclui as pausas da aplicação). O fim do
+            // tempo NÃO muda o status aqui: quem finaliza a tentativa vencida é
+            // utils/examDeadline.js, sem nunca recriá-la.
+            const application = state.applicationId
+                ? (db.memory.examApplications || []).find(item => item && item.id === state.applicationId) || null
+                : null;
+            const now = Date.now();
+            const deadlineAt = computeAttemptDeadline({ application, onlineConfig, state, now });
             if (state.deadlineAt !== deadlineAt) {
                 state.deadlineAt = deadlineAt;
                 changed = true;
             }
-            state.timerRemaining = Math.max(0, Math.ceil((deadlineAt - Date.now()) / 1000));
-            if (state.timerRemaining === 0 && state.applicationId) state.status = 'expired';
+            state.timerRemaining = deadlineAt == null ? null : Math.max(0, Math.ceil((deadlineAt - now) / 1000));
         }
     }
     return changed;

@@ -11,6 +11,7 @@ const {
     findExamApplication,
     findOpenAttemptState,
 } = require('../utils/examApplications.js');
+const { attemptOverdueMs } = require('../utils/examDeadline.js');
 
 function applicationForClass(cls, examKey, applicationId) {
     const id = applicationId || cls?.onlineExamConfigs?.[examKey]?.applicationId;
@@ -221,8 +222,13 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
         if (!existing || !existing.startedAt) {
             return res.status(409).json({ error: 'A prova ainda não foi iniciada no servidor.' });
         }
-        if (existing.deadlineAt && Date.now() > Number(existing.deadlineAt)) {
-            return res.status(408).json({ error: 'O prazo da prova terminou.' });
+        // Prazo efetivo (com as pausas da aplicação): durante a pausa o relógio está
+        // congelado e o rascunho continua sendo aceito.
+        const overdueMs = application
+            ? attemptOverdueMs(existing, application).overdueMs
+            : (existing.deadlineAt ? Date.now() - Number(existing.deadlineAt) : null);
+        if (overdueMs !== null && overdueMs > 0) {
+            return res.status(408).json({ error: 'O prazo da prova terminou.', deadlineExceeded: true });
         }
         db.memory.studentExamState[key] = {
             ...existing,

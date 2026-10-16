@@ -34,4 +34,12 @@ describe('cronometro do monitor', () => {
     expect(timer.started).toBe(false)
     expect(timer.remaining).toBe(3600)
   })
+
+  it('[UC-TENTATIVA-001] pausar congela o cronometro coletivo e a retomada nao devolve tempo cheio (AVA-10)', () => {
+    const config = { timerMode: 'collective', timerEnabled: true, onlineActive: true, startTime: 1000, durationMinutes: 60 }
+    const duringPause = resolveMonitorTimer({ config: { ...config, pauses: [{ pausedAt: 61000, resumedAt: null }] }, now: 301000 })
+    expect(duringPause.remaining).toBe(3540)
+    const afterResume = resolveMonitorTimer({ config: { ...config, pauses: [{ pausedAt: 61000, resumedAt: 301000 }] }, now: 361000 })
+    expect(afterResume.remaining).toBe(3480)
+  })
 })

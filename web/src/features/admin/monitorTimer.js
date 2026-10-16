@@ -1,3 +1,23 @@
+// Tempo pausado que conta para um relógio iniciado em startTime: só pausas que
+// começaram enquanto ainda havia tempo (mesma regra do servidor).
+export function pausedMsWithinTimer(pauses, startTime, baseDeadline, now = Date.now()) {
+  let deadline = Number(baseDeadline)
+  const start = Number(startTime)
+  if (!Number.isFinite(deadline) || !Number.isFinite(start)) return 0
+  const ordered = (Array.isArray(pauses) ? pauses : [])
+    .filter((pause) => pause && Number(pause.pausedAt) > 0)
+    .map((pause) => ({ pausedAt: Number(pause.pausedAt), resumedAt: Number(pause.resumedAt) > 0 ? Number(pause.resumedAt) : null }))
+    .sort((a, b) => a.pausedAt - b.pausedAt)
+  for (const pause of ordered) {
+    const from = Math.max(pause.pausedAt, start)
+    const until = pause.resumedAt || now
+    if (!(until > from)) continue
+    if (from >= deadline) break
+    deadline += until - from
+  }
+  return deadline - Number(baseDeadline)
+}
+
 export function resolveMonitorTimer({ config = {}, rows = [], now = Date.now(), rowsSyncedAt = now } = {}) {
   const enabled = config.timerEnabled !== false
   const configuredSeconds = Math.max(0, (Number(config.durationMinutes) + Number(config.globalTimeAdjustment || 0)) * 60)
@@ -10,12 +30,14 @@ export function resolveMonitorTimer({ config = {}, rows = [], now = Date.now(), 
   if (collective) {
     const startTime = Number(config.startTime || 0)
     const started = config.onlineActive === true && startTime > 0 && now >= startTime
+    // Pausar congela o relógio coletivo: o tempo pausado não é descontado.
+    const pausedMs = started ? pausedMsWithinTimer(config.pauses, startTime, startTime + configuredSeconds * 1000, now) : 0
     return {
       enabled: true,
       collective: true,
       started,
       remaining: started
-        ? Math.max(0, configuredSeconds - Math.floor((now - startTime) / 1000))
+        ? Math.max(0, configuredSeconds - Math.floor((now - startTime - pausedMs) / 1000))
         : configuredSeconds,
       activeCount: 0,
     }

@@ -41,4 +41,15 @@ describe('FinishApplicationModal', () => {
     await user.click(screen.getByRole('button', { name: 'Finalizar aplicação' }))
     expect(onDiscard).toHaveBeenCalledOnce()
   })
+
+  it('[UC-TENTATIVA-001] avisa que quem está com o tempo esgotado será entregue automaticamente (CONF-02)', () => {
+    render(<FinishApplicationModal
+      open
+      onClose={() => {}}
+      summary={{ inProgressAttempts: 0, answeredQuestions: 0, waitingToStart: 0, timeOverAttempts: 2 }}
+      onSubmit={() => {}}
+      onDiscard={() => {}}
+    />)
+    expect(screen.getByText(/2 alunos estão com o tempo esgotado/)).toBeVisible()
+  })
 })

@@ -329,6 +329,9 @@ test('monitor calcula o tempo individual pelo prazo do aluno sem depender do hea
         .expect(200);
 
     const state = Object.values(db.memory.studentExamState).find(item => item?.attemptId === started.body.attemptId);
+    // O prazo é sempre início + duração (30 min) + ajustes: começou há 30 min - 125 s.
+    // timerRemaining guardado fica velho de propósito (heartbeat atrasado).
+    state.startedAt = Date.now() - (30 * 60000 - 125000);
     state.deadlineAt = Date.now() + 125000;
     state.timerRemaining = 1800;
 

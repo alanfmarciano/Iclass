@@ -9,6 +9,7 @@ const {
     applicationToOnlineConfig,
     createExamApplication,
     findExamApplication,
+    normalizeLegacyApplicationPause,
 } = require('./utils/examApplications.js');
 const { hashExamToken } = require('./utils/examToken.js');
 const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
@@ -456,6 +457,11 @@ function populateDefaultsIfEmpty() {
 function migrateLegacyExamApplications() {
     if (!Array.isArray(memoryDB.examApplications)) memoryDB.examApplications = [];
     let changed = false;
+    // Aplicações pausadas por versões antigas passam a registrar o início da pausa
+    // (o cronômetro fica congelado a partir dele). Idempotente.
+    memoryDB.examApplications.forEach(application => {
+        if (normalizeLegacyApplicationPause(application)) changed = true;
+    });
     (memoryDB.classes || []).forEach(cls => {
         if (!cls.onlineExamConfigs) return;
         Object.keys(cls.onlineExamConfigs).forEach(examKey => {

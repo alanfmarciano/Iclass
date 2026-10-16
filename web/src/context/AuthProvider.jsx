@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { api, setAuthProvider } from '../lib/api'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
+import { clearAllExamDrafts } from '../lib/examDrafts'
 
 const AuthCtx = createContext()
 const LS = 'iclass-v3-auth'
@@ -43,6 +44,7 @@ export function AuthProvider({ children }) {
   const doLogout = useCallback((reason) => {
     try { if (reason) sessionStorage.setItem('iclass-logout-reason', reason) } catch {}
     try { sessionStorage.removeItem('iclass-workspace-switch') } catch {}
+    clearAllExamDrafts() // cópia local das respostas da prova não fica para o próximo usuário
     try {
       const cur = JSON.parse(localStorage.getItem(LS)) || {}
       if (cur.role === 'admin' && cur.adminSession) {

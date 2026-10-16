@@ -15,13 +15,14 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { resolveMonitorTimer } from './monitorTimer'
+import { deliveryLabel, deliveryTone } from './attemptDelivery'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { StudentAnswersModal } from './StudentAnswersModal'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
 const DEFAULT_WAITING_ROOM_MINUTES = 10
-const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'] }
+const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'], time_over: ['warning', 'Tempo esgotado'] }
 const EXAM_STATUS = {
   prepared: ['neutral', 'Preparada'],
   running: ['success', 'Em andamento'],
@@ -470,6 +471,7 @@ export default function MonitorPage() {
       timerMode: selectedApplication.timerMode,
       globalTimeAdjustment: selectedApplication.globalTimeAdjustment,
       waitingRoomDuration: selectedApplication.waitingRoomDuration,
+      pauses: selectedApplication.pauses || [],
       maxAttempts: selectedApplication.maxAttempts,
       requiresToken: selectedApplication.tokenEnabled === true,
     }
@@ -1229,7 +1231,11 @@ export default function MonitorPage() {
                     <tr key={r.email || i} className="border-b border-border last:border-0">
                       <td className="px-4 py-3"><div className="font-medium text-text">{r.name || r.email}</div><div className="text-xs text-muted">{r.email}</div></td>
                       <td className="px-4 py-3 font-mono text-xs text-muted">{r.ip || '-'}</td>
-                      <td className="px-4 py-3"><Badge tone={st[0]} dot>{st[1]}</Badge></td>
+                      <td className="px-4 py-3">
+                        <Badge tone={st[0]} dot>{st[1]}</Badge>
+                        {r.status === 'time_over' && <p className="mt-1 text-[11px] text-subtle">Entrega automática em instantes</p>}
+                        {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
+                      </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email)}>{r.assignedVersion || 'A'}</Button></td>
                       <td className="px-4 py-3 font-mono text-muted">{fmt(r.timerRemaining)}</td>
                       <td className="px-4 py-3 font-mono text-muted">{r.progress || '-'}</td>
