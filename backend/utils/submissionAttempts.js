@@ -1,5 +1,22 @@
 const VALID_POLICIES = new Set(['highest', 'latest', 'average', 'selected']);
 
+// Escala interna da nota: 0 a 100 (a correção online grava inteiros). As telas
+// mostram 0 a 10 com uma casa decimal. Registros antigos podem ter valores fora
+// da faixa ou vazios (lançamento manual sem validação): devolve null para que
+// nunca entrem em média nem apareçam como nota (ex.: 150 virando "15,0").
+const SCORE_MAX = 100;
+function normalizeScore(value) {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
+    const number = typeof value === 'number' ? value : Number(String(value).trim().replace(',', '.'));
+    if (!Number.isFinite(number) || number < 0 || number > SCORE_MAX) return null;
+    return number;
+}
+
+// Toda entrega deveria ter nota: vazia, texto ou fora de 0 a 100 é registro inválido.
+function isScoreInvalid(submission) {
+    return normalizeScore(submission?.score) === null;
+}
+
 function submissionEmail(submission) {
     return String(submission?.student?.email || submission?.studentEmail || submission?.email || '').trim().toLowerCase();
 }
@@ -31,7 +48,7 @@ function policyFor(attempts) {
 
 function calculateAttemptResult(attempts) {
     const policy = policyFor(attempts);
-    const considered = attempts.filter(item => !isArchived(item) && Number.isFinite(Number(item.score)));
+    const considered = attempts.filter(item => !isArchived(item) && normalizeScore(item.score) !== null);
     if (considered.length === 0) {
         return { policy, score: null, selectedSubmissionId: null, contributingIds: [] };
     }
@@ -49,11 +66,11 @@ function calculateAttemptResult(attempts) {
         selected = considered.find(item => item.selectedForResult === true) || latest[0];
         contributing = [selected];
     } else {
-        selected = [...considered].sort((a, b) => Number(b.score) - Number(a.score) || new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
+        selected = [...considered].sort((a, b) => normalizeScore(b.score) - normalizeScore(a.score) || new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
         contributing = [selected];
     }
 
-    const score = contributing.reduce((sum, item) => sum + Number(item.score), 0) / contributing.length;
+    const score = contributing.reduce((sum, item) => sum + normalizeScore(item.score), 0) / contributing.length;
     return {
         policy,
         score,
@@ -82,17 +99,21 @@ function enrichSubmissionsWithAttemptResult(submissions) {
             consolidatedScore: group.score,
             countsTowardResult: contributing.has(String(attempt.id)),
             selectedSubmissionId: group.selectedSubmissionId,
+            scoreInvalid: isScoreInvalid(attempt),
         }));
     });
     return (submissions || []).map(submission => ({ ...submission, ...(resultById.get(String(submission.id)) || {}) }));
 }
 
 module.exports = {
+    SCORE_MAX,
     VALID_POLICIES,
     attemptGroupKey,
     calculateAttemptResult,
     consolidateSubmissions,
     enrichSubmissionsWithAttemptResult,
     isArchived,
+    isScoreInvalid,
+    normalizeScore,
     submissionEmail,
 };

@@ -17,6 +17,7 @@ const {
     listExamApplications,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
+const { describeSubmissionGrade, examTitle, recordGradeAudit } = require('../utils/gradebook.js');
 const {
     validateAdmin,
     adminCanAccessClass,
@@ -215,14 +216,32 @@ function markQuestionReports(application, question, action, actor, reportIds = n
     return updated;
 }
 
-function regradeApplicationSubmissions(application, cls) {
+// Recorrige as entregas da aplicação. Nota que mudou vai para o scoreHistory da
+// entrega e para a auditoria do aluno, com o motivo (AVA-08).
+function regradeApplicationSubmissions(application, cls, { req = null, reason = '' } = {}) {
     const onlineConfig = cls.onlineExamConfigs?.[application.examKey] || applicationToOnlineConfig(application, {});
     const evaluation = db.memory.evaluations?.[application.examKey] || null;
+    const by = req ? adminActor(req) : 'sistema';
     let updated = 0;
     (db.memory.submissions || []).forEach(submission => {
         if (submission?.applicationId !== application.id) return;
-        regradeSubmission({ submission, application, onlineConfig, evaluation });
+        const before = { score: submission.score, correctCount: submission.correctCount, totalCount: submission.totalCount };
+        regradeSubmission({ submission, application, onlineConfig, evaluation, reason, by });
         updated += 1;
+        if (before.score !== submission.score || before.correctCount !== submission.correctCount || before.totalCount !== submission.totalCount) {
+            const title = examTitle(submission.examKey, { evaluations: db.memory.evaluations });
+            const audit = recordGradeAudit(db.memory, {
+                req,
+                actor: by,
+                submission,
+                action: 'grade_regrade',
+                field: 'Nota',
+                oldValue: describeSubmissionGrade({ ...submission, ...before }, title),
+                newValue: `${describeSubmissionGrade(submission, title)} · ${reason || 'recorreção da prova'}`,
+            });
+            const last = Array.isArray(submission.scoreHistory) ? submission.scoreHistory[submission.scoreHistory.length - 1] : null;
+            if (last && audit) last.auditId = audit.id;
+        }
     });
     return updated;
 }
@@ -536,7 +555,7 @@ function createAdminExamConfigRouter() {
                 application.updatedAt = new Date().toISOString();
                 markQuestionReports(application, number, 'corrected', adminActor(req));
                 const onlineConfig = syncApplicationConfig(cls, application);
-                const regraded = regradeApplicationSubmissions(application, cls);
+                const regraded = regradeApplicationSubmissions(application, cls, { req, reason: `correção da questão ${number} durante a aplicação` });
                 pushExamMessage(application, adminActor(req), `A questao ${number} foi corrigida pelo professor. Revise o enunciado e as alternativas antes de enviar.`);
                 recordExamAudit('exam_question_corrected_live', application, adminActor(req), { questionNumber: number, regraded });
                 await db.save();
@@ -571,7 +590,7 @@ function createAdminExamConfigRouter() {
                 application.updatedAt = entry.at;
                 markQuestionReports(application, number, 'annulled', adminActor(req));
                 const onlineConfig = syncApplicationConfig(cls, application);
-                const regraded = regradeApplicationSubmissions(application, cls);
+                const regraded = regradeApplicationSubmissions(application, cls, { req, reason: `anulação da questão ${number}` });
                 pushExamMessage(application, adminActor(req), `A questao ${number} foi anulada pelo professor e nao prejudicara sua nota.`);
                 recordExamAudit('exam_question_annulled', application, adminActor(req), { ...entry, regraded });
                 await db.save();
@@ -644,7 +663,7 @@ function createAdminExamConfigRouter() {
                 application.updatedAt = new Date().toISOString();
                 markQuestionReports(application, originalNumber, 'replaced', adminActor(req));
                 const onlineConfig = syncApplicationConfig(cls, application);
-                const regraded = regradeApplicationSubmissions(application, cls);
+                const regraded = regradeApplicationSubmissions(application, cls, { req, reason: `troca da questão ${originalNumber}` });
                 pushExamMessage(application, adminActor(req), `A questao ${originalNumber} foi anulada e uma questao adicional foi inserida no final da prova.${extraMinutes ? ` Foram acrescentados ${extraMinutes} minutos.` : ''}`);
                 recordExamAudit('exam_question_replaced', application, adminActor(req), {
                     questionNumber: originalNumber,

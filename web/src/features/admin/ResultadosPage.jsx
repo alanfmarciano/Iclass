@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, BarChart3, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, EyeOff, FilePlus2, FileStack, Info, Layers3, Loader2, RotateCcw, Target, Trash2, TrendingUp, XCircle } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, BarChart3, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, EyeOff, FilePlus2, FileStack, History, Info, Layers3, Loader2, RotateCcw, Table2, Target, Trash2, TrendingUp, Users, XCircle } from 'lucide-react'
 import '../../styles/resultados-board.css'
 import { DataTable } from '../../components/ui/Table'
 import { Badge } from '../../components/ui/Badge'
@@ -11,7 +11,9 @@ import { Modal, ConfirmDialog } from '../../components/ui/Modal'
 import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
+import { fmtGrade, gradeOf, isValidScore, previewQuickGrade, validateQuickGrade } from '../../lib/grades'
+import { GradebookPanel } from './GradebookPanel'
 import { printBoletim } from './boletimPrint'
 import { useToast } from '../../context/ToastProvider'
 import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
@@ -45,7 +47,7 @@ const EMPTY_MANUAL = {
   className: '',
   courseId: '',
   examKey: '',
-  score: '',
+  grade: '',
   correctCount: '',
   totalCount: '',
   type: 'impressa',
@@ -66,9 +68,10 @@ const MODULE_ACCENTS = ['#d9776b', '#6fa294', '#6f88b0', '#c6a35b', '#9b7fa6', '
 const POLICY_SHORT = { highest: 'Maior nota', latest: 'Última', average: 'Média', selected: 'Escolhida' }
 
 // Faixa de cor da nota (escala 0-100) — gradação quente "Brasa", não arco-íris.
+// Nota inválida de registro antigo (vazia ou fora de 0 a 10) fica neutra.
 const gradeBandClass = (score) => {
-  const g = Number(score) / 10
-  if (!Number.isFinite(g)) return 'rb-gmuted'
+  const g = gradeOf(score)
+  if (g === null) return 'rb-gmuted'
   return g >= 9 ? 'rb-g9' : g >= 7 ? 'rb-g7' : g >= 6 ? 'rb-g6' : 'rb-g0'
 }
 
@@ -76,7 +79,7 @@ const gradeBandClass = (score) => {
 // 'count' = compõe a nota · 'off' = desconsiderada (arquivada) · 'disc' = ativa mas a regra não usa.
 const attemptState = (s) => (s.resultStatus === 'archived' ? 'off' : (s.countsTowardResult === true ? 'count' : 'disc'))
 const STATE_LABEL = { count: 'Compõe a nota', disc: 'Descartada', off: 'Desconsiderada' }
-const fmtNota = (s) => (Number(s) / 10).toFixed(1).replace('.', ',')
+const fmtNota = (s) => fmtGrade(s, '-')
 
 // Explica em uma linha como a nota da prova foi formada, conforme a política.
 function formulaText(policy, attempts) {
@@ -117,7 +120,7 @@ function ResultPageFrame({ title, subtitle, backLabel, onBack, action = null, ch
 }
 
 function resultForAttempts(attempts) {
-  const considered = attempts.filter((item) => item.resultStatus !== 'archived' && Number.isFinite(Number(item.score)))
+  const considered = attempts.filter((item) => item.resultStatus !== 'archived' && isValidScore(item.score))
   const policy = attempts.find((item) => item.aggregationPolicy)?.aggregationPolicy || 'highest'
   if (considered.length === 0) return { policy, score: null }
   if (policy === 'average') return { policy, score: considered.reduce((sum, item) => sum + Number(item.score), 0) / considered.length }
@@ -168,7 +171,7 @@ function snapshotOptions(history) {
         id: `${entry.id || entryIndex}:${snapshotIndex}`,
         entry,
         snapshot,
-        label: `${entry.type === 'impressa' ? 'Impressa' : 'Online'} ${entry.label || `#${entryIndex + 1}`} - ${snapshot.version || 'A'} - codigo ${snapshot.examCode || '-'}`,
+        label: `${entry.type === 'impressa' ? 'Impressa' : 'Online'} ${entry.label || `#${entryIndex + 1}`} - ${snapshot.version || 'A'} - código ${snapshot.examCode || '-'}`,
       })
     })
   })
@@ -182,7 +185,7 @@ export default function ResultadosPage() {
   // Boletim consolidado (provas + frequência) do aluno, pela caixa de impressão.
   async function openBoletim(email) {
     try {
-      const report = await api.get(`/api/admin/student/report?email=${encodeURIComponent(email)}&courseId=${encodeURIComponent(activeCourseId || '')}`)
+      const report = await api.get(`/api/admin/student/report?email=${encodeURIComponent(email)}&courseId=${encodeURIComponent(activeCourseId || '')}&studentClass=${encodeURIComponent(activeClassName || '')}`)
       if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
     } catch (e) { toast.error(e.message) }
   }
@@ -208,6 +211,9 @@ export default function ResultadosPage() {
   const [resultActionId, setResultActionId] = useState(null)
   const [openModules, setOpenModules] = useState(() => new Set())
   const [openExams, setOpenExams] = useState(() => new Set())
+  const [manualErrors, setManualErrors] = useState({})
+  const [savingManual, setSavingManual] = useState(false)
+  const [view, setView] = useState('alunos')
   const toast = useToast()
 
   const courseClasses = useMemo(() => (classes || []).filter((c) => c.courseId === activeCourseId && c.name === activeClassName), [classes, activeCourseId, activeClassName])
@@ -367,6 +373,9 @@ export default function ResultadosPage() {
   const fallbackExams = [...new Set(rows.map((r) => r.examKey).filter(Boolean))].map((key) => ({ key, label: key }))
   const exams = examsFromStructure.length > 0 ? examsFromStructure : fallbackExams
   const normalizedEval = useMemo(() => evaluation ? normalizeEvaluation(evaluation) : null, [evaluation])
+  const manualQuestionCount = normalizedEval?.questions?.length || null
+  const manualQuick = manual.mode === 'quick' ? validateQuickGrade(manual, { maxQuestions: manualQuestionCount }) : null
+  const manualPreview = manualQuick && !Object.keys(manualQuick.errors).length ? previewQuickGrade(manualQuick.payload, manualQuestionCount) : null
   const snapshots = useMemo(() => snapshotOptions(history), [history])
   const selectedSnapshot = snapshots.find((item) => item.id === manual.snapshotId)?.snapshot || null
   const cardRows = selectedSnapshot
@@ -434,6 +443,7 @@ export default function ResultadosPage() {
 
   function openManual() {
     setManual({ ...EMPTY_MANUAL, courseId: activeCourseId, className: activeClassName })
+    setManualErrors({})
     setManualOpen(true)
   }
 
@@ -453,7 +463,7 @@ export default function ResultadosPage() {
         studentEmail: del.studentEmail || del.email || del.student?.email,
         examKey: del.examKey,
       })
-      toast.success('Registro excluido')
+      toast.success('Registro excluído')
       setDel(null)
       if (submissionId) navigate(selectedStudentPath)
       else await refetch()
@@ -474,51 +484,55 @@ export default function ResultadosPage() {
   }
 
   async function createManual() {
-    if (!manual.studentEmail || !manual.examKey) return toast.error('Informe aluno e prova')
-    try {
-      if (manual.mode === 'card') {
-        const answers = {}
-        const questionNumbers = []
-        let blanks = 0
-        if (selectedSnapshot) {
-          selectedSnapshot.questions.forEach((question, index) => {
-            questionNumbers.push(Number(question.originalNumber))
-            const picked = manual.answers[`pos-${index + 1}`]
-            if (!picked) { blanks++; return }
-            const alt = (question.alternatives || []).find((item) => String(item.displayLetter || item.letter).toUpperCase() === String(picked).toUpperCase())
-            if (alt?.letter) answers[question.originalNumber] = alt.letter
-          })
-        } else {
-          ;(normalizedEval?.questions || []).forEach((question) => {
-            questionNumbers.push(Number(question.originalNumber))
-            const picked = manual.answers[`orig-${question.originalNumber}`]
-            if (!picked) { blanks++; return }
-            answers[question.originalNumber] = picked
-          })
-        }
-        if (Object.keys(answers).length === 0) return toast.error('Marque ao menos uma resposta')
-        if (blanks > 0 && !window.confirm(`${blanks} questao(oes) em branco serao contadas como erradas. Continuar?`)) return
-        await api.post('/api/admin/submissions/create', {
-          studentEmail: manual.studentEmail,
-          examKey: manual.examKey,
-          type: 'impressa',
-          answers,
-          questionNumbers,
+    const errors = {}
+    if (!manual.studentEmail) errors.studentEmail = 'Selecione o aluno.'
+    if (!manual.examKey) errors.examKey = 'Selecione a prova.'
+    // Contexto do workspace: o servidor grava a nota na turma/curso certos
+    // mesmo quando o aluno tem mais de uma matrícula.
+    const context = { studentEmail: manual.studentEmail, examKey: manual.examKey, courseId: activeCourseId, studentClass: activeClassName }
+    let body
+    if (manual.mode === 'card') {
+      if (Object.keys(errors).length) { setManualErrors(errors); return }
+      const answers = {}
+      const questionNumbers = []
+      let blanks = 0
+      if (selectedSnapshot) {
+        selectedSnapshot.questions.forEach((question, index) => {
+          questionNumbers.push(Number(question.originalNumber))
+          const picked = manual.answers[`pos-${index + 1}`]
+          if (!picked) { blanks++; return }
+          const alt = (question.alternatives || []).find((item) => String(item.displayLetter || item.letter).toUpperCase() === String(picked).toUpperCase())
+          if (alt?.letter) answers[question.originalNumber] = alt.letter
         })
       } else {
-        await api.post('/api/admin/submissions/create', {
-          studentEmail: manual.studentEmail,
-          examKey: manual.examKey,
-          type: manual.type || 'impressa',
-          score: manual.score === '' ? undefined : Number(manual.score),
-          correctCount: manual.correctCount === '' ? undefined : Number(manual.correctCount),
-          totalCount: manual.totalCount === '' ? undefined : Number(manual.totalCount),
+        ;(normalizedEval?.questions || []).forEach((question) => {
+          questionNumbers.push(Number(question.originalNumber))
+          const picked = manual.answers[`orig-${question.originalNumber}`]
+          if (!picked) { blanks++; return }
+          answers[question.originalNumber] = picked
         })
       }
-      toast.success('Nota lancada')
+      if (Object.keys(answers).length === 0) return toast.error('Marque ao menos uma resposta')
+      if (blanks > 0 && !window.confirm(`${blanks} questão(ões) em branco serão contadas como erradas. Continuar?`)) return
+      body = { ...context, type: 'impressa', mode: 'card', answers, questionNumbers }
+    } else {
+      const quick = validateQuickGrade(manual, { maxQuestions: manualQuestionCount })
+      Object.assign(errors, quick.errors)
+      if (Object.keys(errors).length) { setManualErrors(errors); return }
+      body = { ...context, type: manual.type || 'impressa', ...quick.payload }
+    }
+    setManualErrors({})
+    setSavingManual(true)
+    try {
+      const result = await api.post('/api/admin/submissions/create', body)
+      toast.success(result?.message || 'Nota lançada')
       setManualOpen(false)
       refetch()
-    } catch (e) { toast.error(e.message) }
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setSavingManual(false)
+    }
   }
 
   async function publishGrades(items, published) {
@@ -526,8 +540,9 @@ export default function ResultadosPage() {
     if (ids.length === 0) return toast.error('Nenhuma nota selecionada')
     if (!window.confirm(`${published ? 'Publicar' : 'Ocultar'} ${ids.length} nota(s) para os alunos?`)) return
     try {
-      await api.post('/api/admin/submissions/publish', { ids, published })
+      const result = await api.post('/api/admin/submissions/publish', { ids, published })
       toast.success(published ? 'Notas publicadas' : 'Notas ocultadas')
+      if (result?.skippedInvalid) toast.error(`${result.skippedInvalid} nota(s) inválida(s) não foram publicadas. Exclua e lance de novo.`)
       if (submissionId) navigate(selectedStudentPath)
       else {
         setDetail(null)
@@ -537,11 +552,22 @@ export default function ResultadosPage() {
     } catch (e) { toast.error(e.message) }
   }
 
-  function exportCsv(row) {
+  // Download autenticado (window.open não enviava a sessão e abria "Acesso não autorizado.").
+  async function exportCsv(row) {
     const studentClass = row.studentClass || row.student?.studentClass
     if (!studentClass || !row.examKey) return toast.error('Registro sem turma/prova para exportar')
-    const query = row.applicationId ? `?applicationId=${encodeURIComponent(row.applicationId)}` : ''
-    window.open(`/api/admin/export-grades/${encodeURIComponent(studentClass)}/${encodeURIComponent(row.examKey)}${query}`, '_blank')
+    const query = new URLSearchParams({ courseId: activeCourseId || '' })
+    if (row.applicationId) query.set('applicationId', row.applicationId)
+    try {
+      await downloadFile(`/api/admin/export-grades/${encodeURIComponent(studentClass)}/${encodeURIComponent(row.examKey)}?${query}`, `notas_${studentClass}_${row.examKey}.csv`)
+    } catch (e) { toast.error(e.message || 'Não foi possível exportar as notas') }
+  }
+
+  // Planilha da turma: uma linha por aluno, uma coluna por prova e a média.
+  async function exportGradebook() {
+    try {
+      await downloadFile(`/api/admin/gradebook?${contextQuery}&format=csv`, `planilha_notas_${activeClassName}.csv`)
+    } catch (e) { toast.error(e.message || 'Não foi possível exportar a planilha') }
   }
 
   async function loadSubmissionReview(submission) {
@@ -614,7 +640,7 @@ export default function ResultadosPage() {
           <span className="rb-mini">
             {attempts.map((a) => {
               const st = attemptState(a)
-              return <span key={a.id} className={`rb-mc ${st}`}><span className="d" /><span className="g">{Number.isFinite(Number(a.score)) ? fmtNota(a.score) : '-'}</span></span>
+              return <span key={a.id} className={`rb-mc ${st}`}><span className="d" /><span className="g">{fmtNota(a.score)}</span></span>
             })}
           </span>
           <span className="rb-rule">Regra: <b>{POLICY_SHORT[policy] || 'Maior nota'}</b></span>
@@ -644,10 +670,11 @@ export default function ResultadosPage() {
                       <div className="top">
                         <span className="rb-tn">Tentativa {submission.displayAttempt}</span>
                         <span className={`rb-tag ${st}`}>{STATE_LABEL[st]}</span>
+                        {submission.scoreInvalid && <span className="rb-tag off" title="Registro antigo com nota vazia ou fora de 0 a 10. Não entra na média nem é publicado. Exclua e lance de novo.">Nota inválida</span>}
                       </div>
                       <div className="meta">{submission.timestamp ? new Date(submission.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {submission.type || 'online'} · Versão {submission.assignedVersion || '-'} · {submission.gradePublished === true ? 'Publicada' : 'Em revisão'}</div>
                     </div>
-                    <span className={`rb-as ${gradeBandClass(submission.score)}`}>{Number.isFinite(Number(submission.score)) ? fmtNota(submission.score) : '-'}</span>
+                    <span className={`rb-as ${gradeBandClass(submission.score)}`}>{fmtNota(submission.score)}</span>
                     <div className="rb-acts">
                       {!archived && (
                         <button type="button" className="rb-btn pri" disabled={busy} title="Fixar esta tentativa como a nota" onClick={() => controlAttempt(submission, 'select')}><Target size={13} /><span>Usar esta nota</span></button>
@@ -698,7 +725,7 @@ export default function ResultadosPage() {
       const color = score >= 60 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--danger)'
       return (
         <div className="flex flex-col gap-1.5">
-          <Badge tone={tone} className="w-fit tabular-nums">{Number.isFinite(score) ? (score / 10).toFixed(1) : '-'}</Badge>
+          <Badge tone={tone} className="w-fit tabular-nums">{fmtGrade(student.average, '-')}</Badge>
           {Number.isFinite(score) && (
             <div className="h-1 w-16 overflow-hidden rounded-full bg-surface-2">
               <div className="meter-fill h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, score))}%`, background: color }} />
@@ -717,6 +744,7 @@ export default function ResultadosPage() {
       <PageHeader title="Resultados" subtitle={`${courseName || activeCourseId} · ${activeClassName} · ${studentRows.length} alunos · ${filteredRows.length} entregas`}>
         <Button variant="secondary" icon={Eye} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished !== true), true)}>Publicar notas</Button>
         <Button variant="secondary" icon={EyeOff} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished === true), false)}>Ocultar notas</Button>
+        <Button variant="secondary" icon={Download} onClick={exportGradebook}>Exportar planilha (CSV)</Button>
         <Button icon={FilePlus2} onClick={openManual}>Lançar nota</Button>
       </PageHeader>
 
@@ -781,7 +809,16 @@ export default function ResultadosPage() {
           </div>
         </div>
       </div>
-      <div className="app-enter">
+      <div className="flex gap-2" role="tablist" aria-label="Visualização dos resultados">
+        <Button size="sm" variant={view === 'alunos' ? 'primary' : 'secondary'} icon={Users} role="tab" aria-selected={view === 'alunos'} onClick={() => setView('alunos')}>Alunos</Button>
+        <Button size="sm" variant={view === 'quadro' ? 'primary' : 'secondary'} icon={Table2} role="tab" aria-selected={view === 'quadro'} onClick={() => setView('quadro')}>Quadro de notas</Button>
+      </div>
+
+      {view === 'quadro' && (
+        <GradebookPanel courseId={activeCourseId} studentClass={activeClassName} refreshKey={data} onExport={exportGradebook} onOpenStudent={(email) => openStudentResults({ studentEmail: email })} />
+      )}
+
+      {view === 'alunos' && <div className="app-enter">
         <PageState loading={loading} error={error} onRetry={refetch}>
           <DataTable
             columns={studentColumns}
@@ -792,7 +829,7 @@ export default function ResultadosPage() {
             emptyDesc="Os alunos aparecerão aqui depois da primeira entrega."
           />
         </PageState>
-      </div>
+      </div>}
       </>}
 
       {selectedStudent && !submissionId && (
@@ -807,7 +844,7 @@ export default function ResultadosPage() {
             <dl className="stagger-grid grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div className="rounded-xl bg-surface-2 p-3">
                 <dt className="text-[11px] font-medium uppercase tracking-wider text-subtle">Média geral</dt>
-                <dd className="mt-1 text-2xl font-semibold tabular-nums text-text">{selectedStudent.average == null ? '-' : (selectedStudent.average / 10).toFixed(1)}</dd>
+                <dd className="mt-1 text-2xl font-semibold tabular-nums text-text">{fmtGrade(selectedStudent.average, '-')}</dd>
               </div>
               <div className="rounded-xl bg-surface-2 p-3">
                 <dt className="text-[11px] font-medium uppercase tracking-wider text-subtle">Tentativas</dt>
@@ -855,7 +892,7 @@ export default function ResultadosPage() {
                       </div>
                       <p className="mt-1 text-[11px] text-subtle">{module.submissions.length} {module.submissions.length === 1 ? 'prova' : 'provas'} · {publishedCount} publicadas</p>
                     </div>
-                    <Badge tone={avgTone} className="shrink-0">Média {module.average == null ? '-' : (module.average / 10).toFixed(1)}</Badge>
+                    <Badge tone={avgTone} className="shrink-0">Média {fmtGrade(module.average, '-')}</Badge>
                     <ChevronDown size={18} className="shrink-0 text-muted transition-transform" style={{ transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }} aria-hidden />
                   </button>
 
@@ -863,15 +900,15 @@ export default function ResultadosPage() {
                     <div className="min-w-0 flex-1">
                       <div className="mb-1 flex items-center justify-between text-[11px] text-subtle">
                         <span>Aproveitamento do módulo</span>
-                        <span className="tabular-nums">{module.average == null ? '-' : (module.average / 10).toFixed(1)} / 10</span>
+                        <span className="tabular-nums">{fmtGrade(module.average, '-')} / 10</span>
                       </div>
                       <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
                         <div className="meter-fill h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, Number(module.average) || 0))}%`, background: meterColor }} />
                       </div>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted sm:justify-end">
-                      <span>melhor <b className="font-semibold tabular-nums text-text">{best == null ? '-' : (best / 10).toFixed(1)}</b></span><span className="text-subtle">·</span>
-                      <span>pior <b className="font-semibold tabular-nums text-text">{worst == null ? '-' : (worst / 10).toFixed(1)}</b></span>
+                      <span>melhor <b className="font-semibold tabular-nums text-text">{fmtGrade(best, '-')}</b></span><span className="text-subtle">·</span>
+                      <span>pior <b className="font-semibold tabular-nums text-text">{fmtGrade(worst, '-')}</b></span>
                     </div>
                   </div>
 
@@ -921,10 +958,16 @@ export default function ResultadosPage() {
         >
         <div className="space-y-4">
           <dl className="grid grid-cols-3 gap-3">
-            <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Nota</dt><dd className="mt-1 text-2xl font-semibold text-text">{(Number(detail.score || 0) / 10).toFixed(1)}</dd></div>
+            <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Nota</dt><dd className="mt-1 text-2xl font-semibold text-text">{fmtGrade(detail.score)}</dd></div>
             <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Acertos</dt><dd className="mt-1 text-2xl font-semibold text-text">{detail.correctCount ?? '-'}/{detail.totalCount ?? '-'}</dd></div>
             <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Versão</dt><dd className="mt-1 text-2xl font-semibold text-text">{detail.assignedVersion || '-'}</dd></div>
           </dl>
+          {!isValidScore(detail.score) && (
+            <p className="flex items-start gap-2 rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning" role="alert">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              Este registro antigo tem nota vazia ou fora da escala de 0 a 10 ({String(detail.score ?? 'vazia')}). Ele não entra na média e não pode ser publicado. Exclua e lance a nota de novo.
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" icon={detail.gradePublished === true ? EyeOff : Eye} onClick={() => publishGrades([detail], detail.gradePublished !== true)}>{detail.gradePublished === true ? 'Ocultar do aluno' : 'Publicar para o aluno'}</Button>
             <Button variant="secondary" icon={Download} onClick={() => exportCsv(detail)}>Exportar CSV da turma</Button>
@@ -998,8 +1041,34 @@ export default function ResultadosPage() {
           )}
           {!reviewLoading && (!review?.questions || review.questions.length === 0) && (!detail.gradedAnswers || detail.gradedAnswers.length === 0) && (
             <div className="border-y border-border py-6 text-center text-sm text-muted">
-              Não foi possível reconstruir as questões desta entrega antiga.
+              {detail.entryMode === 'quick' || ((detail.type === 'impressa' || detail.type === 'manual') && !detail.applicationId)
+                ? 'Nota lançada manualmente, sem cartão-resposta.'
+                : 'Não foi possível reconstruir as questões desta entrega antiga.'}
             </div>
+          )}
+          {!reviewLoading && Array.isArray(review?.history) && (
+            <section className="space-y-2" aria-label="Histórico da nota">
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><History size={15} /> Histórico da nota</h2>
+              {review.history.length === 0 ? (
+                <p className="text-sm text-muted">Nenhuma alteração registrada para esta entrega.</p>
+              ) : (
+                <ol className="divide-y divide-border border-y border-border">
+                  {review.history.map((entry) => (
+                    <li key={entry.id} className="py-2.5 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-medium text-text">{entry.field}</span>
+                        <span className="text-xs text-subtle">{entry.at ? new Date(entry.at).toLocaleString('pt-BR') : ''}</span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted">
+                        {entry.oldValue && <><span className="text-subtle line-through">{entry.oldValue}</span>{' → '}</>}
+                        <span className="text-text">{entry.newValue}</span>
+                      </p>
+                      <p className="mt-0.5 text-xs text-subtle">por {entry.actor}</p>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
           )}
         </div>
         </ResultPageFrame>
@@ -1019,29 +1088,38 @@ export default function ResultadosPage() {
       )}
 
       {/* Lançamento manual de notas */}
-      <Modal open={manualOpen} onClose={() => setManualOpen(false)} title="Lancamento manual" description="Use nota rapida ou corrija uma prova impressa pelo cartao-resposta."
-        footer={<><Button variant="ghost" onClick={() => setManualOpen(false)}>Cancelar</Button><Button loading={loadingManual} onClick={createManual}>Salvar nota</Button></>}>
+      <Modal open={manualOpen} onClose={() => setManualOpen(false)} title="Lançamento manual" description="Use a nota rápida ou corrija uma prova impressa pelo cartão-resposta."
+        footer={<><Button variant="ghost" onClick={() => setManualOpen(false)}>Cancelar</Button><Button loading={loadingManual || savingManual} onClick={createManual}>Salvar nota</Button></>}>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-2">
-            <Button variant={manual.mode === 'quick' ? 'primary' : 'secondary'} onClick={() => setManual({ ...manual, mode: 'quick' })}>Rapido</Button>
-            <Button variant={manual.mode === 'card' ? 'primary' : 'secondary'} onClick={() => setManual({ ...manual, mode: 'card' })}>Cartao-resposta</Button>
+            <Button variant={manual.mode === 'quick' ? 'primary' : 'secondary'} onClick={() => setManual({ ...manual, mode: 'quick' })}>Rápido</Button>
+            <Button variant={manual.mode === 'card' ? 'primary' : 'secondary'} onClick={() => setManual({ ...manual, mode: 'card' })}>Cartão-resposta</Button>
           </div>
           <div><p className="mb-1 text-sm font-medium text-text">Turma</p><div className="h-[38px] rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-text">{activeClassName}</div></div>
-          <Select label="Aluno" value={manual.studentEmail} onChange={(e) => setManual({ ...manual, studentEmail: e.target.value })}>
+          <Select label="Aluno" value={manual.studentEmail} error={manualErrors.studentEmail} onChange={(e) => setManual({ ...manual, studentEmail: e.target.value })}>
+            <option value="">Selecione...</option>
             {classStudents.map((s) => <option key={s.email} value={s.email}>{s.name} - {s.email}</option>)}
           </Select>
-          <Select label="Prova" value={manual.examKey} onChange={(e) => setManual({ ...manual, examKey: e.target.value, answers: {}, snapshotId: '' })}>
+          <Select label="Prova" value={manual.examKey} error={manualErrors.examKey} onChange={(e) => setManual({ ...manual, examKey: e.target.value, answers: {}, snapshotId: '' })}>
             <option value="">Selecione...</option>
             {exams.map((e) => <option key={e.key} value={e.key}>{e.label}</option>)}
           </Select>
 
           {manual.mode === 'quick' ? (
             <>
-              <div className="grid grid-cols-3 gap-3">
-                <Input label="Nota (%)" type="number" min="0" max="100" value={manual.score} onChange={(e) => setManual({ ...manual, score: e.target.value })} />
-                <Input label="Acertos" type="number" min="0" value={manual.correctCount} onChange={(e) => setManual({ ...manual, correctCount: e.target.value })} />
-                <Input label="Total" type="number" min="1" value={manual.totalCount} onChange={(e) => setManual({ ...manual, totalCount: e.target.value })} />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <Input label="Nota (0 a 10)" inputMode="decimal" placeholder="ex.: 8,5" value={manual.grade} error={manualErrors.grade}
+                  onChange={(e) => { setManual({ ...manual, grade: e.target.value }); setManualErrors((err) => ({ ...err, grade: undefined })) }} />
+                <Input label="Acertos" inputMode="numeric" value={manual.correctCount} error={manualErrors.correctCount}
+                  onChange={(e) => { setManual({ ...manual, correctCount: e.target.value }); setManualErrors((err) => ({ ...err, correctCount: undefined })) }} />
+                <Input label="Total de questões" inputMode="numeric" placeholder={manualQuestionCount ? String(manualQuestionCount) : ''} value={manual.totalCount} error={manualErrors.totalCount}
+                  onChange={(e) => { setManual({ ...manual, totalCount: e.target.value }); setManualErrors((err) => ({ ...err, totalCount: undefined })) }} />
               </div>
+              <p className="text-xs text-subtle" aria-live="polite">
+                {manualPreview != null
+                  ? `Nota que será gravada: ${manualPreview.toFixed(1).replace('.', ',')}${manual.grade.trim() ? '' : ' (calculada pelos acertos)'}.`
+                  : 'Informe a nota de 0 a 10 ou só os acertos (a nota é calculada pelos acertos).'}
+              </p>
               <Select label="Tipo" value={manual.type} onChange={(e) => setManual({ ...manual, type: e.target.value })}>
                 <option value="manual">Manual</option>
                 <option value="impressa">Impressa</option>
@@ -1054,7 +1132,7 @@ export default function ResultadosPage() {
                 <option value="">Banco original sem embaralhamento</option>
                 {snapshots.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
               </Select>
-              <p className="text-xs text-subtle">{selectedSnapshot ? `Corrigindo pela ordem impressa do codigo ${selectedSnapshot.examCode || '-'}.` : 'Sem versão, as respostas seguem o banco original da avaliação.'}</p>
+              <p className="text-xs text-subtle">{selectedSnapshot ? `Corrigindo pela ordem impressa do código ${selectedSnapshot.examCode || '-'}.` : 'Sem versão, as respostas seguem o banco original da avaliação.'}</p>
               <div className="max-h-[340px] divide-y divide-border overflow-auto border-y border-border">
                 {cardRows.map((row) => (
                   <div key={row.key} className="flex items-center justify-between gap-3 py-2">
@@ -1069,7 +1147,7 @@ export default function ResultadosPage() {
                     </div>
                   </div>
                 ))}
-                {cardRows.length === 0 && <p className="text-sm text-muted text-center py-6">Selecione uma prova para desenhar o cartao-resposta.</p>}
+                {cardRows.length === 0 && <p className="text-sm text-muted text-center py-6">Selecione uma prova para desenhar o cartão-resposta.</p>}
               </div>
             </div>
           )}
@@ -1078,7 +1156,7 @@ export default function ResultadosPage() {
       </Modal>
 
       <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir registro"
-        title="Excluir submissao?" description={`${del?.studentName || del?.studentEmail || del?.student?.email} - ${del?.examKey}`} />
+        title="Excluir esta entrega?" description={`${del?.studentName || del?.studentEmail || del?.student?.email} - ${del?.examKey} · nota ${fmtGrade(del?.score)}. A exclusão fica registrada na auditoria do aluno, com uma cópia do registro.`} />
     </div>
   )
 }

@@ -12,6 +12,7 @@ import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { fmtGrade, gradeOf } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -308,7 +309,7 @@ export default function AlunosPage() {
           {filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).map((s, i) => (
             <div key={s.id || i} className="flex items-center justify-between rounded-md border border-border p-3 text-sm">
               <span className="text-text">{s.examKey}</span>
-              <Badge tone={Number(s.score) >= 60 ? 'success' : 'warning'}>{Number(s.score || 0).toFixed(1)}</Badge>
+              <Badge tone={gradeOf(s.score) >= 6 ? 'success' : 'warning'}>{fmtGrade(s.score)}</Badge>
             </div>
           ))}
           {!submissions.loading && filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).length === 0 && <p className="text-sm text-muted">Nenhum resultado encontrado.</p>}
@@ -397,8 +398,8 @@ export default function AlunosPage() {
                       {academic.submissions.map((sb) => (
                         <div key={sb.id} className="flex items-center justify-between gap-2 text-xs rounded-md border border-border p-2">
                           <span className="text-text truncate">{sb.examKey}</span>
-                          <span className="text-subtle whitespace-nowrap">{sb.correctCount}/{sb.totalCount} · {sb.timestamp ? new Date(sb.timestamp).toLocaleDateString('pt-BR') : ''}</span>
-                          <Badge tone={Number(sb.score) >= 60 ? 'success' : 'warning'}>{Number(sb.score || 0).toFixed(0)}</Badge>
+                          <span className="text-subtle whitespace-nowrap">{Number.isInteger(sb.correctCount) && Number.isInteger(sb.totalCount) ? `${sb.correctCount}/${sb.totalCount} · ` : ''}{sb.timestamp ? new Date(sb.timestamp).toLocaleDateString('pt-BR') : ''}</span>
+                          <Badge tone={gradeOf(sb.score) >= 6 ? 'success' : 'warning'}>{fmtGrade(sb.score)}</Badge>
                         </div>
                       ))}
                     </div>

@@ -23,10 +23,11 @@ const {
     filterStudentsForAdmin,
     filterSubmissionsForAdmin,
     filterSchoolsForAdmin,
-    adminCanAccessStudent
+    adminCanAccessStudent,
+    isCourseExamKey
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
-const { gradeAttempt } = require('../utils/examGrading.js');
+const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
 const {
     DEFAULT_STATUS,
@@ -39,7 +40,28 @@ const {
     OBSERVATION_VISIBILITY,
 } = require('../utils/students.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
-const { VALID_POLICIES, attemptGroupKey, enrichSubmissionsWithAttemptResult } = require('../utils/submissionAttempts.js');
+const { VALID_POLICIES, attemptGroupKey, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
+const {
+    MANUAL_TYPES,
+    buildClassGradebook,
+    buildCsv,
+    buildStudentReportModules,
+    describeSubmissionGrade,
+    examTitle,
+    formatDateTimeBR,
+    formatGradeBR,
+    gradeFromScore,
+    gradebookCsv,
+    isEmptyInput,
+    parseCountInput,
+    parseGradeInput,
+    recordGradeAudit,
+    safeFilePart,
+    scopeLabel,
+    scopeSubmissionsToContext,
+    scoreFromCounts,
+    structureExamIndex,
+} = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -285,8 +307,8 @@ router.post('/api/admin/reset-password', (req, res) => {
 // Excluir conta do aluno e dados pessoais associados
 router.post('/api/admin/delete-student', (req, res) => {
     validateAdmin(req, res, () => {
-        const { email } = req.body;
-        if (!email || email.trim() === '') {
+        const { email } = req.body || {};
+        if (typeof email !== 'string' || email.trim() === '') {
             return res.status(400).json({ error: 'E-mail do estudante nao informado.' });
         }
 
@@ -340,16 +362,17 @@ router.get('/api/admin/submissions', (req, res) => {
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
-        const scoped = filterSubmissionsForAdmin(submissions, matchedAdmin).filter(submission => {
-            const rowCourseId = String(submission.courseId || submission.student?.courseId || '').trim();
-            const rowClass = String(submission.studentClass || submission.student?.studentClass || '').trim();
-            return (!courseId || rowCourseId === courseId) && (!studentClass || rowClass === studentClass);
-        });
+        // Mesmo recorte do boletim e da planilha (registros antigos sem curso ou
+        // turma entram pelo campo que confere).
+        const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(submissions, matchedAdmin), { courseId, studentClass });
         res.json(enrichSubmissionsWithAttemptResult(scoped));
     });
 });
 
+const RESULT_POLICY_LABELS = { highest: 'Melhor nota', latest: 'Última tentativa', average: 'Média das consideradas', selected: 'Tentativa escolhida' };
+
 // Controla quais tentativas entram no resultado e como a nota consolidada é calculada.
+// Cada mudança fica na auditoria do aluno com a nota antes e depois (AVA-08).
 router.post('/api/admin/submissions/result-control', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { submissionId, action, policy } = req.body || {};
@@ -361,6 +384,7 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
         const groupKey = attemptGroupKey(target);
         const group = submissions.filter(item => attemptGroupKey(item) === groupKey && allowedIds.has(String(item.id)));
         if (group.length === 0) return res.status(404).json({ error: 'Tentativas não encontradas.' });
+        const before = enrichSubmissionsWithAttemptResult(group).find(item => String(item.id) === String(target.id));
 
         if (action === 'archive') {
             target.resultStatus = 'archived';
@@ -390,8 +414,27 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
             return res.status(400).json({ error: 'Ação de resultado inválida.' });
         }
 
-        writeJSON(DB_SUBMISSIONS_FILE, submissions);
         const refreshed = enrichSubmissionsWithAttemptResult(group);
+        const after = refreshed.find(item => String(item.id) === String(target.id));
+        const title = examTitle(target.examKey, { evaluations: db.memory.evaluations });
+        const policyLabel = value => RESULT_POLICY_LABELS[value] || value || 'Melhor nota';
+        const consolidated = item => (item && item.consolidatedScore != null ? formatGradeBR(item.consolidatedScore) : 'sem nota');
+        const actionLabel = {
+            archive: `tentativa ${target.attemptNumber || 1} desconsiderada`,
+            restore: `tentativa ${target.attemptNumber || 1} reconsiderada`,
+            select: `tentativa ${target.attemptNumber || 1} escolhida para a nota`,
+            policy: `regra: ${policyLabel(policy)}`,
+        }[action];
+        recordGradeAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            submission: target,
+            action: `grade_result_${action}`,
+            field: 'Composição da nota',
+            oldValue: `${title}: ${consolidated(before)} (regra: ${policyLabel(before?.aggregationPolicy)})`,
+            newValue: `${title}: ${consolidated(after)} · ${actionLabel}`,
+        });
+        writeJSON(DB_SUBMISSIONS_FILE, submissions);
         res.json({ success: true, submissions: refreshed });
     });
 });
@@ -478,94 +521,169 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
             })
             .filter(Boolean);
 
+        // Histórico da nota: auditoria desta entrega (lançamento, publicação,
+        // composição) e recorreções por anulação/troca de questão (scoreHistory).
+        const history = [
+            ...(db.memory.auditLogs || [])
+                .filter(entry => entry && entry.submissionId != null && String(entry.submissionId) === String(submission.id))
+                .map(entry => ({ id: entry.id, at: entry.timestamp, actor: entry.actor, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue })),
+            ...(Array.isArray(submission.scoreHistory) ? submission.scoreHistory : [])
+                .filter(entry => !entry.auditId)
+                .map((entry, index) => ({ id: `score_${index}`, at: Date.parse(entry.at) || entry.at, actor: entry.by || 'sistema', field: 'Nota recalculada', oldValue: formatGradeBR(entry.from), newValue: `${formatGradeBR(entry.to)}${entry.reason ? ` · ${entry.reason}` : ''}` })),
+        ].sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
+
         res.json({
             success: true,
             source,
             submissionId: submission.id,
             assignedVersion: submission.assignedVersion || snapshot?.version || 'A',
             examCode: submission.examSnapshot?.examCode || snapshot?.examCode || null,
-            questions: reviewQuestions
+            questions: reviewQuestions,
+            history
         });
     });
 });
 
 router.post('/api/admin/submissions/publish', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        const ids = new Set(Array.isArray(req.body?.ids) ? req.body.ids.map(String) : []);
+        const rawIds = req.body?.ids;
+        if (!Array.isArray(rawIds) || rawIds.some(id => !['string', 'number'].includes(typeof id))) {
+            return res.status(400).json({ error: 'Selecione ao menos uma nota.' });
+        }
+        if (req.body?.published !== undefined && typeof req.body.published !== 'boolean') {
+            return res.status(400).json({ error: 'Informe se a nota deve ser publicada ou ocultada.' });
+        }
+        const ids = new Set(rawIds.map(String));
         const published = req.body?.published !== false;
         if (ids.size === 0) return res.status(400).json({ error: 'Selecione ao menos uma nota.' });
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const allowedIds = new Set(filterSubmissionsForAdmin(submissions, matchedAdmin).map(item => String(item.id)));
         let updated = 0;
+        let skippedInvalid = 0;
         submissions.forEach(item => {
             if (!ids.has(String(item.id)) || !allowedIds.has(String(item.id))) return;
+            // Nota inválida (vazia ou fora de 0 a 10, de registros antigos) nunca é publicada.
+            if (published && normalizeScore(item.score) === null) { skippedInvalid++; return; }
+            const wasPublished = item.gradePublished === true;
             item.gradePublished = published;
             item.gradePublishedAt = published ? Date.now() : null;
             item.gradePublishedBy = published ? (matchedAdmin?.email || 'admin') : null;
             updated++;
+            if (wasPublished !== published) {
+                recordGradeAudit(db.memory, {
+                    req,
+                    actor: matchedAdmin,
+                    submission: item,
+                    action: published ? 'grade_publish' : 'grade_unpublish',
+                    field: 'Publicação da nota',
+                    oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
+                    newValue: published ? 'publicada para o aluno' : 'oculta do aluno',
+                });
+            }
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
-        res.json({ success: true, updated, published });
+        res.json({ success: true, updated, published, skippedInvalid });
     });
 });
 
-// Excluir registro de submissão
+// Excluir registro de submissão. A exclusão é definitiva, mas fica registrada na
+// auditoria do aluno com uma cópia completa do registro removido (AVA-08).
 router.post('/api/admin/submissions/delete', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        const { id, studentEmail, examKey } = req.body;
+        const { id, studentEmail, examKey } = req.body || {};
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const allowedIds = new Set(filterSubmissionsForAdmin(submissions, matchedAdmin).map(item => String(item.id)));
-        let filteredSubmissions;
-        if (id !== undefined && id !== null) {
+        let removed;
+        if (id !== undefined && id !== null && id !== '') {
+            if (!['string', 'number'].includes(typeof id)) return res.status(400).json({ error: 'Identificador da tentativa inválido.' });
             if (!allowedIds.has(String(id))) return res.status(404).json({ error: 'Tentativa não encontrada.' });
-            filteredSubmissions = submissions.filter(item => String(item.id) !== String(id));
+            removed = submissions.filter(item => String(item.id) === String(id));
         } else {
-            if (!studentEmail || !examKey) return res.status(400).json({ error: 'Dados insuficientes para exclusão.' });
+            if (typeof studentEmail !== 'string' || !studentEmail.trim() || typeof examKey !== 'string' || !examKey.trim()) {
+                return res.status(400).json({ error: 'Dados insuficientes para exclusão.' });
+            }
             const normalizedEmail = studentEmail.trim().toLowerCase();
-            filteredSubmissions = submissions.filter(item => !(
+            removed = submissions.filter(item => (
                 allowedIds.has(String(item.id)) &&
                 item.student?.email?.toLowerCase() === normalizedEmail &&
-                item.examKey === examKey
+                item.examKey === examKey.trim()
             ));
         }
+        if (removed.length === 0) return res.status(404).json({ error: 'Tentativa não encontrada.' });
 
-        writeJSON(DB_SUBMISSIONS_FILE, filteredSubmissions);
-        res.json({ success: true, message: 'Registro de prova excluído com sucesso!' });
+        const removedSet = new Set(removed);
+        removed.forEach(item => {
+            recordGradeAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                submission: item,
+                action: 'grade_delete',
+                field: 'Nota',
+                oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
+                newValue: 'registro excluído',
+                details: { deletedSubmission: item },
+            });
+        });
+        writeJSON(DB_SUBMISSIONS_FILE, submissions.filter(item => !removedSet.has(item)));
+        res.json({ success: true, removed: removed.length, message: 'Registro de prova excluído com sucesso!' });
     });
 });
 
-// Criar/Lançar registro de submissão manualmente pelo administrador
+// Criar/Lançar registro de submissão manualmente pelo administrador.
+// Modo rápido: nota de 0 a 10 (aceita vírgula) e/ou acertos e total; sem nota,
+// ela é calculada pelos acertos. Modo cartão-resposta: corrige as letras marcadas
+// pelo gabarito da prova. Tudo validado no servidor (ENG-01, CONF-14, AVA-08).
 router.post('/api/admin/submissions/create', (req, res) => {
-    validateAdmin(req, res, () => {
-        const { studentEmail, examKey, score, correctCount: reqCorrectCount, totalCount: reqTotalCount, answers, type, questionNumbers: reqQuestionNumbers } = req.body;
-        
-        if (!studentEmail || !examKey) {
-            return res.status(400).json({ error: 'E-mail do estudante e chave da prova são obrigatórios.' });
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const body = req.body || {};
+        const { answers, questionNumbers: reqQuestionNumbers } = body;
+        const studentEmail = typeof body.studentEmail === 'string' ? body.studentEmail.trim().toLowerCase() : '';
+        const examKey = typeof body.examKey === 'string' ? body.examKey.trim() : '';
+        if (!studentEmail) return res.status(400).json({ error: 'Selecione o aluno.' });
+        if (!examKey) return res.status(400).json({ error: 'Selecione a prova.' });
+        const type = isEmptyInput(body.type) ? 'impressa' : body.type;
+        if (!MANUAL_TYPES.includes(type)) return res.status(400).json({ error: 'Tipo de lançamento inválido. Use impressa, manual ou online.' });
+        if (body.score !== undefined && body.grade === undefined) {
+            return res.status(400).json({ error: 'A nota agora é informada de 0 a 10 no campo "grade". Atualize a página e lance de novo.' });
         }
 
-        const normalizedEmail = studentEmail.trim().toLowerCase();
         const students = readJSON(DB_STUDENTS_FILE);
-        const registeredStudent = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
-        
+        const registeredStudent = students.find(s => s.email && s.email.toLowerCase() === studentEmail);
         if (!registeredStudent) {
             return res.status(404).json({ error: 'Estudante não encontrado no cadastro.' });
         }
+        if (!adminCanAccessStudent(matchedAdmin, registeredStudent)) {
+            return res.status(403).json({ error: 'Aluno fora do seu escopo.' });
+        }
 
-        // Recupera a turma do estudante
-        const studentClass = registeredStudent.classes && registeredStudent.classes.length > 0
-            ? (typeof registeredStudent.classes[0] === 'object' ? registeredStudent.classes[0].name : registeredStudent.classes[0])
-            : (registeredStudent.studentClass || "");
-            
-        const studentCourseId = registeredStudent.classes && registeredStudent.classes.length > 0 && typeof registeredStudent.classes[0] === 'object'
-            ? registeredStudent.classes[0].courseId
-            : (registeredStudent.courseId || null);
+        // Turma/curso: os do workspace quando enviados (aluno em mais de uma turma),
+        // senão a primeira matrícula do aluno.
+        const requestedClass = typeof body.studentClass === 'string' ? body.studentClass.trim() : '';
+        const requestedCourse = typeof body.courseId === 'string' ? body.courseId.trim() : '';
+        const memberships = (Array.isArray(registeredStudent.classes) && registeredStudent.classes.length
+            ? registeredStudent.classes
+            : (registeredStudent.studentClass ? [registeredStudent.studentClass] : []))
+            .map(item => typeof item === 'string'
+                ? { name: item, courseId: String(registeredStudent.courseId || '') }
+                : { name: String(item?.name || item?.className || ''), courseId: String(item?.courseId || registeredStudent.courseId || '') })
+            .filter(item => item.name);
+        let membership;
+        if (requestedClass || requestedCourse) {
+            membership = memberships.find(item => (!requestedClass || item.name === requestedClass)
+                && (!requestedCourse || !item.courseId || item.courseId === requestedCourse));
+            if (!membership) return res.status(400).json({ error: 'O aluno não está matriculado nesta turma.' });
+        } else {
+            membership = memberships[0] || { name: '', courseId: '' };
+        }
+        const studentClass = membership.name || '';
+        const studentCourseId = membership.courseId || requestedCourse || registeredStudent.courseId || null;
 
         // Busca informações sobre a avaliação para correção ou contagem
         let questions = [];
         const evaluation = db.memory.evaluations[examKey];
         if (evaluation) {
             questions = evaluation.questions;
-        } else {
+        } else if (/^[A-Za-z0-9_-]+$/.test(examKey)) {
             const filePath = path.join(runtimePaths.CONTENT_DIR, `${examKey}.md`);
             if (fs.existsSync(filePath)) {
                 const mdContent = fs.readFileSync(filePath, 'utf8');
@@ -574,7 +692,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
             }
         }
 
-        if (!questions || questions.length === 0) {
+        if (!Array.isArray(questions) || questions.length === 0) {
             return res.status(400).json({ error: 'Avaliação não encontrada ou sem questões cadastradas.' });
         }
 
@@ -582,43 +700,76 @@ router.post('/api/admin/submissions/create', (req, res) => {
             ...question,
             originalNumber: Number(question.originalNumber || question.number || index + 1)
         }));
+        const questionByNumber = new Map(questions.map(question => [question.originalNumber, question]));
 
         // Verifica configurações da prova para a turma
         const classes = readJSON(DB_CLASSES_FILE);
-        const cls = classes.find(c => c.name === studentClass);
+        const cls = findClassByNameAndCourse(classes, studentClass, studentCourseId) || classes.find(c => c.name === studentClass);
+        if (cls) {
+            const course = getCourseForClass(cls);
+            const structure = effectiveStructure(course?.id || cls.courseId, cls.name)?.structure || course?.structure || [];
+            const courseHasExams = structure.some(mod => (mod.units || mod.items || []).some(unit => unit.avaliacaoKey));
+            if (courseHasExams && !isCourseExamKey(cls, examKey)) {
+                return res.status(400).json({ error: 'Esta prova não faz parte do curso da turma do aluno.' });
+            }
+        }
         const examConfig = (cls && cls.examConfigs && cls.examConfigs[examKey]) || {};
         const excludedQuestions = new Set((examConfig.excludedQuestions || []).map(Number));
         const availableQuestions = questions.filter(q => !excludedQuestions.has(Number(q.originalNumber)));
-        
+
         const configuredCount = parseInt(examConfig.questionCount, 10) || availableQuestions.length;
         const totalCount = Math.min(configuredCount, availableQuestions.length) || questions.length;
 
         let finalScore = 0;
-        let finalCorrectCount = 0;
-        let finalTotalCount = totalCount;
+        let finalCorrectCount = null;
+        let finalTotalCount = null;
         let gradedAnswers = [];
+        let entryMode = 'quick';
 
-        function getCorrectAnswer(question) {
-            if (question.correctAnswer) return String(question.correctAnswer).toUpperCase();
-            const correctAlt = (question.alternatives || []).find(alt => alt.isCorrect);
-            return correctAlt && correctAlt.letter ? String(correctAlt.letter).toUpperCase() : '';
+        if (answers !== undefined && answers !== null && (typeof answers !== 'object' || Array.isArray(answers))) {
+            return res.status(400).json({ error: 'Respostas do cartão em formato inválido.' });
+        }
+        const answeredEntries = answers ? Object.entries(answers).filter(([, letter]) => !isEmptyInput(letter)) : [];
+        if (body.mode === 'card' && answeredEntries.length === 0) {
+            return res.status(400).json({ error: 'Marque ao menos uma resposta no cartão.' });
         }
 
-        if (answers && typeof answers === 'object' && Object.keys(answers).length > 0) {
+        if (answeredEntries.length > 0) {
             // Correção baseada no cartão-resposta (respostas fornecidas)
+            entryMode = 'card';
+            const normalizedAnswers = {};
+            for (const [rawNumber, letter] of answeredEntries) {
+                const number = Number(rawNumber);
+                if (!Number.isInteger(number) || !questionByNumber.has(number)) {
+                    return res.status(400).json({ error: `A questão ${rawNumber} não existe nesta prova.` });
+                }
+                if (typeof letter !== 'string' || !/^[A-Za-z]$/.test(letter.trim())) {
+                    return res.status(400).json({ error: `Resposta inválida na questão ${number}. Use uma letra (A, B, C...).` });
+                }
+                normalizedAnswers[number] = letter.trim().toUpperCase();
+            }
+            if (reqQuestionNumbers !== undefined && reqQuestionNumbers !== null && !Array.isArray(reqQuestionNumbers)) {
+                return res.status(400).json({ error: 'Lista de questões da versão em formato inválido.' });
+            }
             const providedNumbers = Array.isArray(reqQuestionNumbers)
-                ? [...new Set(reqQuestionNumbers.map(Number).filter(Number.isFinite))]
+                ? [...new Set(reqQuestionNumbers.map(Number))]
                 : [];
+            if (providedNumbers.some(number => !Number.isInteger(number) || !questionByNumber.has(number))) {
+                return res.status(400).json({ error: 'A versão informada tem questões que não existem nesta prova.' });
+            }
 
             let selectedQuestions;
             if (providedNumbers.length > 0) {
                 // O frontend informou exatamente quais questões compuseram a prova aplicada
                 // (versão impressa do histórico) — a nota é calculada sobre esse conjunto,
                 // mesmo que a configuração atual da turma tenha mudado desde a impressão.
+                const outside = Object.keys(normalizedAnswers).map(Number).find(number => !providedNumbers.includes(number));
+                if (outside !== undefined) {
+                    return res.status(400).json({ error: `A questão ${outside} não faz parte da versão informada.` });
+                }
                 selectedQuestions = questions.filter(q => providedNumbers.includes(Number(q.originalNumber)));
-                finalTotalCount = selectedQuestions.length || totalCount;
             } else {
-                const submittedNumbers = Object.keys(answers).map(Number).filter(n => availableQuestions.some(q => q.originalNumber === n));
+                const submittedNumbers = Object.keys(normalizedAnswers).map(Number);
                 selectedQuestions = availableQuestions.filter(q => submittedNumbers.includes(q.originalNumber));
 
                 // Preenche com o restante das questões disponíveis caso não chegue no total esperado
@@ -628,48 +779,63 @@ router.post('/api/admin/submissions/create', (req, res) => {
                         selectedQuestions.push(q);
                     }
                 });
-                finalTotalCount = totalCount;
             }
+            finalTotalCount = selectedQuestions.length;
+            finalCorrectCount = 0;
 
             selectedQuestions.forEach(q => {
-                const correctAnswer = getCorrectAnswer(q);
-                const studentChoice = answers[q.originalNumber] ? String(answers[q.originalNumber]).toUpperCase() : null;
-                const isCorrect = studentChoice === correctAnswer;
+                const correctAnswer = correctAnswerFor(q);
+                const studentChoice = normalizedAnswers[q.originalNumber] || null;
+                const isCorrect = !!correctAnswer && studentChoice === correctAnswer;
                 if (isCorrect) {
                     finalCorrectCount++;
                 }
                 gradedAnswers.push({
                     questionNumber: q.originalNumber,
-                    studentChoice: studentChoice || null,
+                    studentChoice,
                     correctAnswer,
                     isCorrect
                 });
             });
 
-            finalScore = Math.round((finalCorrectCount / finalTotalCount) * 100);
+            finalScore = scoreFromCounts(finalCorrectCount, finalTotalCount);
         } else {
-            // Lançamento rápido (nota/acertos direta)
-            finalScore = score !== undefined ? Math.round(Number(score)) : 0;
-            const tempTotal = reqTotalCount !== undefined ? parseInt(reqTotalCount, 10) : totalCount;
-            finalCorrectCount = reqCorrectCount !== undefined
-                ? parseInt(reqCorrectCount, 10)
-                : Math.round((finalScore / 100) * tempTotal);
-            finalTotalCount = tempTotal || totalCount;
-
-            // Graded answers vazios ou mapeando apenas os índices simulados
+            // Lançamento rápido: nota (0 a 10) e/ou acertos e total.
+            const gradeInput = parseGradeInput(body.grade);
+            if (gradeInput.error) return res.status(400).json({ error: gradeInput.error });
+            const correctInput = parseCountInput(body.correctCount);
+            if (correctInput.error) return res.status(400).json({ error: 'Acertos deve ser um número inteiro, de 0 até o total de questões.' });
+            const totalInput = parseCountInput(body.totalCount);
+            if (totalInput.error || totalInput.value === 0) return res.status(400).json({ error: 'O total de questões deve ser um número inteiro maior que zero.' });
+            if (!totalInput.empty && totalInput.value > questions.length) {
+                return res.status(400).json({ error: `O total não pode passar de ${questions.length} questões, que é o tamanho desta prova.` });
+            }
+            if (gradeInput.empty && correctInput.empty) {
+                return res.status(400).json({ error: 'Informe a nota (0 a 10) ou os acertos.' });
+            }
+            const effectiveTotal = totalInput.empty ? totalCount : totalInput.value;
+            if (!correctInput.empty && correctInput.value > effectiveTotal) {
+                return res.status(400).json({ error: `Os acertos (${correctInput.value}) não podem passar do total de questões (${effectiveTotal}).` });
+            }
+            finalScore = gradeInput.empty
+                ? scoreFromCounts(correctInput.value, effectiveTotal)
+                : Math.round(gradeInput.value * 10);
+            // Sem acertos informados, não inventa acertos a partir da nota.
+            finalCorrectCount = correctInput.empty ? null : correctInput.value;
+            finalTotalCount = correctInput.empty && totalInput.empty ? null : effectiveTotal;
             gradedAnswers = [];
         }
 
         const normalizedStudent = {
             name: registeredStudent.name,
-            email: normalizedEmail,
+            email: studentEmail,
             studentClass: studentClass,
             courseId: studentCourseId
         };
 
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const previousAttempts = submissions.filter(item =>
-            item.student?.email?.toLowerCase() === normalizedEmail &&
+            item.student?.email?.toLowerCase() === studentEmail &&
             item.examKey === examKey &&
             (!item.student?.courseId || !studentCourseId || String(item.student.courseId) === String(studentCourseId))
         );
@@ -683,7 +849,9 @@ router.post('/api/admin/submissions/create', (req, res) => {
             correctCount: finalCorrectCount,
             totalCount: finalTotalCount,
             gradedAnswers,
-            type: type || "impressa",
+            type,
+            entryMode,
+            launchedBy: matchedAdmin?.email || 'admin',
             attemptNumber: previousAttempts.length + 1,
             resultStatus: 'considered',
             aggregationPolicy: previousPolicy,
@@ -693,12 +861,23 @@ router.post('/api/admin/submissions/create', (req, res) => {
         };
 
         submissions.push(submissionObj);
+        recordGradeAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            submission: submissionObj,
+            action: 'grade_create',
+            field: 'Nota',
+            oldValue: '',
+            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})`,
+        });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
 
         res.json({
             success: true,
-            message: 'Nota lançada e corrigida com sucesso!',
+            message: `Nota ${formatGradeBR(finalScore)} lançada para ${registeredStudent.name || studentEmail}.`,
+            submissionId: submissionObj.id,
             score: finalScore,
+            grade: gradeFromScore(finalScore),
             correctCount: finalCorrectCount,
             totalCount: finalTotalCount
         });
@@ -1175,7 +1354,8 @@ router.get('/api/admin/student/academic', (req, res) => {
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
         const submissions = (db.memory.submissions || [])
             .filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email)
-            .map(s => ({ id: s.id, examKey: s.examKey, score: s.score, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, timestamp: s.timestamp }))
+            // Nota inválida de registro antigo (vazia ou fora de 0 a 10) vai como null + aviso.
+            .map(s => ({ id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp }))
             .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
         const completedUnits = Object.keys(progressMap).filter(k => progressMap[k]);
@@ -1194,60 +1374,48 @@ router.get('/api/admin/student/academic', (req, res) => {
 
 // Boletim consolidado do aluno (provas por módulo + frequência por disciplina),
 // pronto para o frontend imprimir/salvar em PDF. Só notas publicadas entram na média.
+// As notas usam a mesma consolidação da tela Resultados: cada aplicação da prova é
+// um grupo com a regra escolhida pelo professor, e a média é a dos grupos (UXI-X1, FUN-X1).
 router.get('/api/admin/student/report', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        const email = (req.query.email || '').trim().toLowerCase();
+        const email = String(req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
         const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
         if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
         if (!adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Aluno fora do seu escopo.' });
 
         const requestedCourseId = String(req.query.courseId || '').trim();
+        const requestedClass = String(req.query.studentClass || '').trim();
         const memberships = (Array.isArray(student.classes) && student.classes.length ? student.classes : (student.studentClass ? [student.studentClass] : []))
-            .map(item => typeof item === 'string' ? { name: item, courseId: '' } : { name: item?.name || item?.className || '', courseId: item?.courseId || '' })
+            .map(item => typeof item === 'string'
+                ? { name: item, courseId: String(student.courseId || '') }
+                : { name: item?.name || item?.className || '', courseId: String(item?.courseId || student.courseId || '') })
             .filter(item => item.name);
-        const membership = memberships.find(item => !requestedCourseId || String(item.courseId) === requestedCourseId) || memberships[0] || { name: student.studentClass || '', courseId: '' };
-        const cls = findClassByNameAndCourse(db.memory.classes || [], membership.name, membership.courseId)
+        const inCourse = item => !requestedCourseId || !item.courseId || item.courseId === requestedCourseId;
+        let membership;
+        if (requestedCourseId || requestedClass) {
+            membership = memberships.find(item => inCourse(item) && (!requestedClass || item.name === requestedClass))
+                || memberships.find(inCourse);
+            if (!membership) return res.status(400).json({ error: 'O aluno não tem matrícula no curso selecionado.' });
+        } else {
+            membership = memberships[0] || { name: student.studentClass || '', courseId: '' };
+        }
+        const cls = findClassByNameAndCourse(db.memory.classes || [], membership.name, membership.courseId || requestedCourseId)
             || (db.memory.classes || []).find(c => c.name === membership.name) || null;
-        const courseId = String((cls && cls.courseId) || membership.courseId || '');
+        const courseId = String((cls && cls.courseId) || membership.courseId || requestedCourseId || '');
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId) || null;
+        const className = cls?.name || membership.name || '';
         const structure = effectiveStructure(courseId, cls?.name)?.structure || course?.structure || [];
 
-        const subs = (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email
-            && (!courseId || !s.student.courseId || String(s.student.courseId) === courseId));
-        const published = enrichSubmissionsWithAttemptResult(subs.filter(s => s.gradePublished === true));
-        const byExam = new Map();
-        published.forEach(s => {
-            const list = byExam.get(s.examKey) || [];
-            list.push(s);
-            byExam.set(s.examKey, list);
+        const ownSubmissions = (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
+        const contextSubmissions = scopeSubmissionsToContext(ownSubmissions, { courseId, studentClass: className });
+        const { modules, overallAverage } = buildStudentReportModules({
+            submissions: contextSubmissions.filter(s => s.gradePublished === true),
+            allSubmissions: contextSubmissions,
+            structure,
+            evaluations: db.memory.evaluations || {},
+            applications: db.memory.examApplications || [],
         });
-        const modules = structure.map(module => {
-            const exams = (module.units || module.items || []).filter(unit => unit.avaliacaoKey).map(unit => {
-                const attempts = byExam.get(unit.avaliacaoKey) || [];
-                const counted = attempts.filter(item => item.countsTowardResult !== false);
-                const consolidated = attempts.find(item => item.consolidatedScore != null)?.consolidatedScore;
-                const score = consolidated != null ? consolidated : (counted.length ? counted.reduce((sum, item) => sum + Number(item.score || 0), 0) / counted.length : null);
-                const evaluation = db.memory.evaluations?.[unit.avaliacaoKey];
-                const pendingAttempts = subs.filter(s => s.examKey === unit.avaliacaoKey && s.gradePublished !== true).length;
-                return {
-                    examKey: unit.avaliacaoKey,
-                    title: (evaluation && (evaluation.title || evaluation.name)) || unit.name || unit.avaliacaoKey,
-                    attempts: attempts.length,
-                    pendingAttempts,
-                    grade: score == null ? null : Math.round(score) / 10,
-                    lastAt: attempts.map(item => Date.parse(item.timestamp) || 0).sort((a, b) => b - a)[0] || null,
-                };
-            });
-            const graded = exams.filter(exam => exam.grade != null);
-            return {
-                id: module.id || module.key || module.name,
-                name: module.name || module.title || module.id,
-                exams,
-                average: graded.length ? Math.round(graded.reduce((sum, exam) => sum + exam.grade, 0) / graded.length * 10) / 10 : null,
-            };
-        });
-        const allGraded = modules.flatMap(module => module.exams).filter(exam => exam.grade != null);
 
         const attendanceRows = attendanceUtil.dedupeByDate((db.memory.attendance || []).filter(a => a.studentEmail === email
             && (!courseId || !a.courseId || String(a.courseId) === courseId) && (!cls || !a.studentClass || a.studentClass === cls.name)));
@@ -1265,10 +1433,10 @@ router.get('/api/admin/student/report', (req, res) => {
             institution: (school && (school.name || school.info?.tradeName)) || db.memory.branding?.displayName || db.memory.branding?.institutionName || 'IClass',
             student: { name: student.name, nomeSocial: student.nomeSocial || '', email: student.email, matricula: student.matricula || '', status: student.status || '' },
             course: { id: courseId, name: course?.name || courseId || '' },
-            className: cls?.name || membership.name || '',
+            className,
             period: cls?.period || student.period || '',
             modules,
-            overallAverage: allGraded.length ? Math.round(allGraded.reduce((sum, exam) => sum + exam.grade, 0) / allGraded.length * 10) / 10 : null,
+            overallAverage,
             attendance: { frequency: stats.frequenciaGeral, presentes: stats.presentes, faltas: stats.faltasContam, totalAulas: stats.totalAulas, days: attendanceRows.length, disciplines, riskThreshold: attendanceUtil.effectiveAttendanceConfig(cls).limiarRiscoPct },
             progress: { completedUnits, totalUnits: unitKeys.length },
             issuedBy: (matchedAdmin && (matchedAdmin.name || matchedAdmin.email)) || 'Instrutor',
@@ -1285,16 +1453,43 @@ router.get('/api/admin/student/dashboard', (req, res) => {
     });
 });
 
-// Marcar presença manualmente (Fase 4)
+// Data real no formato AAAA-MM-DD (recusa 2026-02-31, 31/02/2026 etc.).
+function isValidIsoDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+// Marcar presença manualmente (Fase 4). Valida e-mail, data e matrícula (CONF-14).
 router.post('/api/admin/student/attendance/mark', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        const email = (req.body.email || '').trim().toLowerCase();
-        if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        const date = (req.body.date || new Date().toISOString().slice(0, 10));
+        const body = req.body || {};
+        if (typeof body.email !== 'string' || !body.email.trim()) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
+        const email = body.email.trim().toLowerCase();
+        let date = settingsUtil.today();
+        if (!isEmptyInput(body.date)) {
+            if (!isValidIsoDate(body.date)) return res.status(400).json({ error: 'Data inválida. Informe uma data real no formato AAAA-MM-DD.' });
+            date = body.date;
+        }
+        if (body.studentClass !== undefined && body.studentClass !== null && typeof body.studentClass !== 'string') {
+            return res.status(400).json({ error: 'Turma inválida.' });
+        }
+        if (body.courseId !== undefined && body.courseId !== null && typeof body.courseId !== 'string') {
+            return res.status(400).json({ error: 'Curso inválido.' });
+        }
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
         const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
-        const studentClass = (req.body.studentClass || (student && student.studentClass) || '');
-        const courseId = String(req.body.courseId || '');
+        if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
+        if (!adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Aluno fora do seu escopo.' });
+        const requestedClass = String(body.studentClass || '').trim();
+        const requestedCourse = String(body.courseId || '').trim();
+        const studentClass = requestedClass || studentClassNames(student)[0] || '';
+        if (!studentClass) return res.status(400).json({ error: 'O aluno não está matriculado em nenhuma turma.' });
+        if (!studentBelongsToClass(student, studentClass, requestedCourse)) return res.status(400).json({ error: 'O aluno não está matriculado nesta turma.' });
+        const membershipCourse = (Array.isArray(student.classes) ? student.classes : [])
+            .find(entry => entry && typeof entry === 'object' && (entry.name || entry.className) === studentClass && (!requestedCourse || !entry.courseId || entry.courseId === requestedCourse));
+        const courseId = requestedCourse || String(membershipCourse?.courseId || student.courseId || '');
         // Marca presente em todas as aulas da grade do dia (fallback: 1 aula).
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)
             || (db.memory.classes || []).find(c => c.name === studentClass);
@@ -1314,7 +1509,7 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
             timestamp: Date.now(),
         });
         db.save();
-        res.json({ success: true });
+        res.json({ success: true, date });
     });
 });
 
@@ -1417,7 +1612,7 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.body.studentClass || '').trim();
         const courseId = String(req.body.courseId || '').trim();
-        const date = /^\d{4}-\d{2}-\d{2}$/.test(req.body.date || '') ? req.body.date : null;
+        const date = isValidIsoDate(req.body.date) ? req.body.date : null;
         const entries = Array.isArray(req.body.entries) ? req.body.entries : null;
         // Rascunho (autosave) x chamada concluída. Ambos contam na frequência —
         // `concluida` é só o marcador de workflow que a tela de chamada exibe.
@@ -3497,48 +3692,82 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
     });
 });
 
-// 6. Exporta notas de uma turma em formato CSV
+// 6. Exporta as notas de uma prova da turma em CSV (Excel pt-BR: ";", BOM e nota
+// 0 a 10 com vírgula). Escopo por curso/turma e pelas turmas do professor (UXI-01).
 router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
-    validateAdmin(req, res, () => {
-        const studentClass = req.params.class.trim();
-        const examKey = req.params.examKey.trim();
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const studentClass = String(req.params.class || '').trim();
+        const examKey = String(req.params.examKey || '').trim();
+        const courseId = String(req.query.courseId || '').trim();
         const applicationId = String(req.query.applicationId || '').trim();
+        if (!studentClass || !examKey) return res.status(400).json({ error: 'Turma e prova são obrigatórias.' });
+        if (!adminCanAccessClass(matchedAdmin, studentClass, courseId)) return res.status(403).json({ error: 'Turma não autorizada para esta conta.' });
 
-        const submissions = db.memory.submissions.filter(sub => {
-            const examMatch = sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase();
-            // Suporte a sub.studentClass (legado) e sub.student.studentClass (atual)
-            const subClass = sub.studentClass || (sub.student && sub.student.studentClass) || '';
-            const classMatch = subClass.toLowerCase() === studentClass.toLowerCase();
-            return examMatch && classMatch && (!applicationId || sub.applicationId === applicationId);
-        });
+        const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), { courseId, studentClass })
+            .filter(sub => String(sub.examKey || '') === examKey && (!applicationId || sub.applicationId === applicationId));
+        const submissions = enrichSubmissionsWithAttemptResult(scoped).sort((a, b) =>
+            String(a.student?.name || a.studentName || '').localeCompare(String(b.student?.name || b.studentName || ''), 'pt-BR')
+            || new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+        const title = examTitle(examKey, { evaluations: db.memory.evaluations, examIndex: structureExamIndex(effectiveStructure(courseId, studentClass)?.structure || []) });
+        const applicationsById = new Map((db.memory.examApplications || []).map(item => [String(item.id), item]));
 
-        let csvContent = '\uFEFF';
-        csvContent += 'Nome;E-mail;Turma;Avaliação;Aplicação;Tentativa;Versão;Acertos;Nota Final;Data de Envio\n';
-
-        // Neutraliza CSV/formula injection: nome e e-mail são controlados pelo aluno.
-        const csvSafe = (value) => {
-            let s = String(value == null ? '' : value);
-            if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-            if (/[";\r\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
-            return s;
-        };
-        submissions.forEach(sub => {
-            // Suporte a estrutura legada e atual (sub.student.name vs sub.studentName)
-            const name = sub.studentName || (sub.student && sub.student.name) || 'N/A';
-            const email = sub.studentEmail || (sub.student && sub.student.email) || 'N/A';
-            const subClass = sub.studentClass || (sub.student && sub.student.studentClass) || studentClass;
-            const version = sub.assignedVersion || sub.version || (sub.state && sub.state.assignedVersion) || 'A';
-            const correct = typeof sub.correctCount === 'number' ? sub.correctCount : (sub.score || 0);
-            const total = typeof sub.totalCount === 'number' ? sub.totalCount : (typeof sub.totalQuestions === 'number' ? sub.totalQuestions : 20);
-            const finalGrade = typeof sub.score === 'number' ? sub.score : (typeof sub.finalGrade === 'number' ? sub.finalGrade : 0);
-            const dateStr = sub.timestamp ? new Date(sub.timestamp).toLocaleString('pt-BR') : (sub.submittedAt ? new Date(sub.submittedAt).toLocaleString('pt-BR') : 'N/A');
-
-            csvContent += `${csvSafe(name)};${csvSafe(email)};${csvSafe(subClass)};${csvSafe(examKey)};${csvSafe(sub.applicationId || 'legado')};${csvSafe(sub.attemptNumber || 1)};${csvSafe(version)};${csvSafe(`${correct}/${total}`)};${csvSafe(finalGrade.toFixed(2))};${csvSafe(dateStr)}\n`;
-        });
+        const header = ['Aluno', 'E-mail', 'Turma', 'Avaliação', 'Aplicação', 'Tentativa', 'Versão', 'Acertos', 'Questões', 'Nota da tentativa', 'Compõe a nota', 'Nota da aplicação', 'Publicada', 'Data de envio'];
+        const rows = submissions.map(sub => [
+            sub.studentName || sub.student?.name || '',
+            sub.studentEmail || sub.student?.email || '',
+            sub.studentClass || sub.student?.studentClass || studentClass,
+            title,
+            scopeLabel({ attempts: [sub] }, applicationsById),
+            sub.attemptNumber || 1,
+            sub.assignedVersion || sub.version || '',
+            Number.isInteger(sub.correctCount) ? sub.correctCount : '',
+            Number.isInteger(sub.totalCount) ? sub.totalCount : '',
+            sub.scoreInvalid ? 'nota inválida' : formatGradeBR(sub.score),
+            sub.resultStatus === 'archived' ? 'Desconsiderada' : (sub.countsTowardResult ? 'Sim' : 'Não'),
+            formatGradeBR(sub.consolidatedScore),
+            sub.gradePublished === true ? 'Sim' : 'Não',
+            formatDateTimeBR(sub.timestamp || sub.submittedAt),
+        ]);
 
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename=notas_${studentClass}_${examKey}.csv`);
-        res.status(200).send(csvContent);
+        res.setHeader('Content-Disposition', `attachment; filename="notas_${safeFilePart(studentClass)}_${safeFilePart(examKey)}.csv"`);
+        res.status(200).send(buildCsv([header, ...rows]));
+    });
+});
+
+// Planilha de notas da turma (UXI-01, FUN-06): uma linha por aluno, uma coluna por
+// prova e a média, com a mesma consolidação da tela Resultados. JSON para a tela
+// e CSV (?format=csv) no padrão do Excel brasileiro.
+router.get('/api/admin/gradebook', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const courseId = String(req.query.courseId || '').trim();
+        const studentClass = String(req.query.studentClass || '').trim();
+        if (!courseId || !studentClass) return res.status(400).json({ error: 'Curso e turma são obrigatórios.' });
+        const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
+        if (!cls) return res.status(404).json({ error: 'Turma não encontrada neste curso.' });
+        if (!adminCanAccessClass(matchedAdmin, studentClass, courseId)) return res.status(403).json({ error: 'Turma não autorizada para esta conta.' });
+
+        const course = (db.memory.courses || []).find(item => String(item.id) === courseId) || null;
+        const structure = effectiveStructure(courseId, studentClass)?.structure || course?.structure || [];
+        const submissions = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), { courseId, studentClass });
+        const students = filterStudentsForAdmin(db.memory.students || [], matchedAdmin)
+            .filter(student => studentBelongsToClass(student, studentClass, courseId));
+        const gradebook = buildClassGradebook({
+            students,
+            submissions,
+            structure,
+            evaluations: db.memory.evaluations || {},
+            applications: db.memory.examApplications || [],
+        });
+
+        if (String(req.query.format || '').toLowerCase() === 'csv') {
+            const today = new Date();
+            const stamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="planilha_notas_${safeFilePart(course?.name || courseId)}_${safeFilePart(studentClass)}_${stamp}.csv"`);
+            return res.status(200).send(gradebookCsv(gradebook));
+        }
+        res.json({ courseId, courseName: course?.name || courseId, studentClass, generatedAt: Date.now(), ...gradebook });
     });
 });
 
@@ -3566,9 +3795,12 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
         const byQuestion = {};
         const gradeBuckets = { baixo: 0, medio: 0, alto: 0 };
 
+        // Nota inválida de registro antigo (vazia ou fora de 0 a 100) não entra nas faixas nem na média.
+        const validScores = submissions.map(sub => normalizeScore(sub.score)).filter(score => score !== null);
         submissions.forEach(sub => {
-            const score = Number(sub.score || 0);
-            if (score < 60) gradeBuckets.baixo++;
+            const score = normalizeScore(sub.score);
+            if (score === null) { /* sem nota válida */ }
+            else if (score < 60) gradeBuckets.baixo++;
             else if (score < 85) gradeBuckets.medio++;
             else gradeBuckets.alto++;
 
@@ -3605,8 +3837,8 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
             examKey,
             applicationId: applicationId || null,
             totalSubmissions: submissions.length,
-            averageScore: submissions.length
-                ? Math.round(submissions.reduce((sum, sub) => sum + Number(sub.score || 0), 0) / submissions.length)
+            averageScore: validScores.length
+                ? Math.round(validScores.reduce((sum, score) => sum + score, 0) / validScores.length)
                 : 0,
             gradeBuckets,
             proctoringSummary: {

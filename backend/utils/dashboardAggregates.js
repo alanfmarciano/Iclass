@@ -8,6 +8,7 @@
 // em ms. Toda normalização acontece AQUI, na entrada — nunca no consumidor.
 
 const attendanceUtil = require('./attendance.js');
+const { normalizeScore } = require('./submissionAttempts.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -282,9 +283,11 @@ function computeTrends({ memory, students, course, cls, now }) {
     // ---- Média das provas (timestamp ISO normalizado na entrada) ----
     const subsScoped = (memory.submissions || []).filter(s => s.student && emails.has(lower(s.student.email))
         && (!courseId || !s.student.courseId || String(s.student.courseId) === courseId));
+    // Nota inválida de registro antigo (vazia ou fora de 0 a 100) não entra na média.
     const mediaOf = (subs) => {
-        if (!subs.length) return null;
-        return Math.round(subs.reduce((a, s) => a + (Number(s.score) || 0), 0) / subs.length / 10 * 10) / 10;
+        const scores = subs.map(s => normalizeScore(s.score)).filter(score => score !== null);
+        if (!scores.length) return null;
+        return Math.round(scores.reduce((a, score) => a + score, 0) / scores.length / 10 * 10) / 10;
     };
     const subsIn = (startDaysAgo, endDaysAgo) => subsScoped.filter(s => inWin(tsOf(s.timestamp), startDaysAgo, endDaysAgo));
     const mediaAtual = mediaOf(subsIn(30, 0));

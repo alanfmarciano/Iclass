@@ -1573,14 +1573,29 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         continueItem,
         announcements,
         calendar,
-        performance: publishedSubmissions.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).slice(-5).map(item => ({ id: item.id, examKey: item.examKey, note: Number((Number(item.score) / 10).toFixed(1)) })),
+        // Cada item é um grupo consolidado (prova/aplicação): id, prova e data vêm da tentativa mais recente.
+        performance: publishedSubmissions
+            .map(group => {
+                const latest = [...group.attempts].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0] || {};
+                return { id: latest.id, examKey: latest.examKey, timestamp: latest.timestamp, note: Number((Number(group.score) / 10).toFixed(1)) };
+            })
+            .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
+            .slice(-5)
+            .map(({ timestamp, ...item }) => item),
     });
 });
 
 // Atualizar progresso do aluno (POST)
+// completedUnits: { [chaveDaUnidade]: true/false } (registros antigos podem ter listas).
 router.post('/api/student/progress', validateStudentSession, (req, res) => {
-    const { email, completedUnits } = req.body;
+    const { completedUnits } = req.body || {};
+    const email = req.studentEmail;
     if (!email || !completedUnits) return res.status(400).json({ error: 'Dados incompletos.' });
+    const entries = typeof completedUnits === 'object' && !Array.isArray(completedUnits) ? Object.entries(completedUnits) : null;
+    if (!entries || entries.length > 2000 || entries.some(([key, value]) => !key || key.length > 200
+        || !(typeof value === 'boolean' || (Array.isArray(value) && value.every(item => typeof item === 'string' || typeof item === 'number'))))) {
+        return res.status(400).json({ error: 'Progresso em formato inválido.' });
+    }
 
     db.memory.progress[email.toLowerCase()] = completedUnits;
     db.save();

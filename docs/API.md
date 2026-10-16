@@ -79,6 +79,14 @@ res.json(questao);
 - **Correção** acontece em `/api/student/submit` (nunca no cliente); limite de tentativas conferido antes de corrigir.
 - **Aplicações** têm `applicationId` imutável e ciclo `waiting → running → paused → finished` isolado por aplicação (`utils/examApplications.js`).
 
+## Notas — escala, lançamento e exportação
+
+- **Escala**: `submission.score` é guardado de 0 a 100 (inteiro, como a correção online); toda tela, boletim e planilha mostra 0 a 10 com uma casa e vírgula. Nota vazia, texto ou fora de 0 a 100 (registros antigos) é tratada como inválida por `normalizeScore` (`utils/submissionAttempts.js`): não entra em média, não é publicada e não chega ao aluno.
+- **`POST /api/admin/submissions/create`**: modo rápido recebe `grade` (0 a 10, aceita `"8,5"`) e/ou `correctCount`/`totalCount` (inteiros, acertos ≤ total ≤ questões da prova); sem `grade`, a nota vem dos acertos. O campo antigo `score` é recusado com 400 (evita gravar 8,5 como 9%). Modo cartão-resposta: `answers` `{ número: letra }` e `questionNumbers` da versão aplicada. `courseId`/`studentClass` do workspace definem a turma da nota. Erros sempre 400 com mensagem em pt-BR.
+- **Auditoria**: lançar, publicar/ocultar, excluir, mudar a composição (`result-control`) e recorrigir (anulação/troca de questão) gravam em `auditLogs` (`recordGradeAudit` em `utils/gradebook.js`), visíveis na ficha do aluno (aba Auditoria) e no "Histórico da nota" de `GET /api/admin/submissions/:id/review` (`history`). A exclusão guarda uma cópia do registro em `details.deletedSubmission`; a recorreção guarda a nota anterior em `submission.scoreHistory`.
+- **Consolidação única** (`utils/gradebook.js`): cada aplicação da prova é um grupo com a regra do professor; a média é a dos grupos. A tela Resultados, o boletim (`GET /api/admin/student/report?email&courseId&studentClass`, só notas publicadas) e a planilha usam esse mesmo cálculo. Prova aplicada mais de uma vez vira uma linha (boletim) ou coluna (planilha) por aplicação, rotulada "Nª aplicação, dd/mm/aaaa" pela ordem de criação das aplicações da turma.
+- **Exportação**: `GET /api/admin/gradebook?courseId&studentClass` (JSON do quadro de notas; `&format=csv` para a planilha aluno × prova + média) e `GET /api/admin/export-grades/:turma/:prova?courseId` (tentativas de uma prova). CSV com `;`, BOM UTF-8, nota com vírgula e células que começam com `= + - @` neutralizadas. O navegador baixa com `downloadFile` (`lib/api.js`), que envia a sessão; `window.open` não envia o cabeçalho e não funciona.
+
 ## Arquivos controlados
 
 `/uploads/:filename` e `/imagens/:filename` passam por `sendControlledFile` com resolução segura de caminho (`utils/safePath.js`) — nunca sirva arquivo por concatenação direta de path.

@@ -795,7 +795,12 @@ function sanitizeEvaluationForStudent(evaluation) {
 
 // Sanitização de Submissão para Aluno
 function sanitizeSubmissionForStudent(submission, canViewAnswerKey) {
-    const gradePublished = submission && submission.gradePublished === true;
+    // Nota inválida de registro antigo (vazia ou fora de 0 a 100) nunca chega ao
+    // aluno: para ele a entrega fica como não publicada (em revisão).
+    const rawScore = submission && submission.score;
+    const scoreValue = typeof rawScore === 'number' ? rawScore : Number(rawScore);
+    const scoreValid = rawScore !== null && rawScore !== undefined && rawScore !== '' && Number.isFinite(scoreValue) && scoreValue >= 0 && scoreValue <= 100;
+    const gradePublished = submission && submission.gradePublished === true && scoreValid;
     const { examSnapshot, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };
     if (!gradePublished) {
@@ -880,10 +885,16 @@ function getReleasedItemsForClass(cls, studentEmail) {
 // Middleware centralizado de tratamento de erros
 function errorHandler(err, req, res, next) {
     console.error('🔴 [SERVER ERROR]:', err);
-    const status = err.status || 500;
+    const status = Number(err && (err.status || err.statusCode)) || 500;
+    // Erro interno (500+) não expõe a mensagem do código (ex.: "email.trim is not
+    // a function"); JSON malformado ganha mensagem em português (CONF-14).
+    let message = 'Ocorreu um erro interno no servidor.';
+    if (err && err.type === 'entity.parse.failed') message = 'Dados enviados em formato inválido (JSON).';
+    else if (err && err.type === 'entity.too.large') message = 'Os dados enviados são grandes demais.';
+    else if (status < 500 && err && err.message) message = err.message;
     res.status(status).json({
         success: false,
-        error: err.message || 'Ocorreu um erro interno no servidor.'
+        error: message
     });
 }
 

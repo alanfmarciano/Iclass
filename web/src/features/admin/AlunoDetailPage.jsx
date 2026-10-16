@@ -15,6 +15,9 @@ import { useToast } from '../../context/ToastProvider'
 import { printBoletim } from './boletimPrint'
 import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
+import { Modal } from '../../components/ui/Modal'
+import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { boletimContext, fmtGrade, gradeOf } from '../../lib/grades'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -63,9 +66,17 @@ export default function AlunoDetailPage() {
   const nav = useNavigate()
   const toast = useToast()
   const { auth } = useAuth()
-  async function openBoletim() {
+  const workspace = useAdminWorkspace()
+  const [boletimChoices, setBoletimChoices] = useState(null)
+  // Boletim do curso/turma ativos (UXI-X1, FUN-X1). Aluno em vários cursos e fora
+  // do curso ativo: o professor escolhe a matrícula.
+  async function openBoletim(context) {
+    const ctx = context || boletimContext(student, { courseId: workspace.courseId, className: workspace.className })
+    if (ctx.choose) { setBoletimChoices(ctx.choose); return }
+    setBoletimChoices(null)
     try {
-      const report = await api.get(`/api/admin/student/report?email=${encodeURIComponent(email)}`)
+      const query = new URLSearchParams({ email, courseId: ctx.courseId || '', studentClass: ctx.studentClass || '' })
+      const report = await api.get(`/api/admin/student/report?${query}`)
       if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
     } catch (e) { toast.error(e.message) }
   }
@@ -88,19 +99,21 @@ export default function AlunoDetailPage() {
   }, [email])
 
   const subs = academic?.submissions || []
-  const media = subs.length ? (subs.reduce((a, s) => a + (Number(s.score) || 0), 0) / subs.length / 10) : 0
+  // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
+  const validSubs = useMemo(() => subs.filter((s) => gradeOf(s.score) !== null), [subs])
+  const media = validSubs.length ? (validSubs.reduce((a, s) => a + gradeOf(s.score), 0) / validSubs.length) : 0
   const modules = useMemo(() => [...new Set(subs.map((s) => moduleOf(s.examKey)))].filter((m) => m !== '—'), [subs])
   const semesters = useMemo(() => [...new Set(subs.map((s) => semesterOf(s.timestamp)))].sort(), [subs])
-  const filteredSubs = useMemo(() => subs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [subs, filterModule, filterSemester])
-  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''), value: (Number(s.score) || 0) / 10 })), [filteredSubs])
+  const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [validSubs, filterModule, filterSemester])
+  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''), value: gradeOf(s.score) })), [filteredSubs])
   const modulos = useMemo(() => {
     const g = {}
-    subs.forEach((s) => { const m = moduleOf(s.examKey); (g[m] = g[m] || []).push(Number(s.score) || 0) })
-    return Object.entries(g).map(([m, arr]) => ({ m, media: arr.reduce((a, b) => a + b, 0) / arr.length / 10 }))
-  }, [subs])
+    validSubs.forEach((s) => { const m = moduleOf(s.examKey); (g[m] = g[m] || []).push(gradeOf(s.score)) })
+    return Object.entries(g).map(([m, arr]) => ({ m, media: arr.reduce((a, b) => a + b, 0) / arr.length }))
+  }, [validSubs])
   const timeline = useMemo(() => {
     const ev = []
-    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${(Number(s.score) || 0) / 10}`, time: fmtDate(s.timestamp) }))
+    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${fmtGrade(s.score)}`, time: fmtDate(s.timestamp) }))
     ;(academic?.moduleAccess || []).forEach((m) => ev.push({ id: 'a' + m.id, t: m.timestamp, tone: 'bg-primary', title: `Abriu ${String(m.key).replace(/_/g, ' ')}`, time: fmtDateTime(m.timestamp) }))
     ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? 'login' : 'manual'})`, time: a.date }))
     return ev.sort((x, y) => y.t - x.t).slice(0, 8)
@@ -133,7 +146,7 @@ export default function AlunoDetailPage() {
                 </div>
                 <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {student.email}</p>
               </div>
-              <Button variant="secondary" icon={FileText} onClick={openBoletim}>Boletim (PDF)</Button>
+              <Button variant="secondary" icon={FileText} onClick={() => openBoletim()}>Boletim (PDF)</Button>
               <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>
             </div>
 
@@ -143,7 +156,7 @@ export default function AlunoDetailPage() {
                 <p className="text-2xl font-semibold text-text">{dash?.kpis?.frequencia == null ? <span className="text-base text-muted">sem aulas</span> : `${dash.kpis.frequencia}%`}</p>
                 <div className="h-1.5 rounded bg-surface overflow-hidden mt-1.5"><div className="h-full bg-primary" style={{ width: (dash?.kpis?.frequencia ?? 0) + '%' }} /></div>
               </Kpi>
-              <Kpi label="Média geral" value={(dash?.kpis?.media ?? media).toFixed(1)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
+              <Kpi label="Média geral" value={(dash?.kpis?.media ?? media).toFixed(1).replace('.', ',')} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
               <Kpi label="Progresso"><div className="flex items-center gap-2.5"><ProgressRing value={dash?.kpis?.progresso ?? 0}>{(dash?.kpis?.progresso ?? 0)}%</ProgressRing></div></Kpi>
               <Kpi label="Provas" value={`${dash?.kpis?.provasFeitas ?? subs.length}/${dash?.kpis?.provasTotais ?? 0}`} sub={`${Math.max(0, (dash?.kpis?.provasTotais ?? 0) - (dash?.kpis?.provasFeitas ?? subs.length))} pendentes`} />
             </div>
@@ -235,8 +248,10 @@ export default function AlunoDetailPage() {
                   <div className="divide-y divide-border">
                     {[...subs].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0)).map((s) => (
                       <div key={s.id} className="flex items-center justify-between py-2.5 text-sm">
-                        <div><p className="text-text">{s.examKey}</p><p className="text-xs text-subtle">{s.correctCount}/{s.totalCount} acertos · {fmtDate(s.timestamp)}</p></div>
-                        <Badge tone={Number(s.score) >= 60 ? 'success' : 'warning'}>{((Number(s.score) || 0) / 10).toFixed(1)}</Badge>
+                        <div><p className="text-text">{s.examKey}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
+                        {gradeOf(s.score) === null
+                          ? <Badge tone="neutral" title="Registro antigo com nota vazia ou fora de 0 a 10">nota inválida</Badge>
+                          : <Badge tone={gradeOf(s.score) >= 6 ? 'success' : 'warning'}>{fmtGrade(s.score)}</Badge>}
                       </div>
                     ))}
                   </div>
@@ -267,6 +282,16 @@ export default function AlunoDetailPage() {
                 <Card title="Calendário de frequência"><MonthCalendar email={student.email} /></Card>
               </div>
             )}
+
+            <Modal open={!!boletimChoices} onClose={() => setBoletimChoices(null)} title="Boletim de qual curso?" description="O aluno tem matrícula em mais de um curso. Escolha a turma do boletim.">
+              <div className="grid gap-2">
+                {(boletimChoices || []).map((m) => (
+                  <Button key={`${m.courseId}:${m.name}`} variant="secondary" onClick={() => openBoletim({ courseId: m.courseId, studentClass: m.name })}>
+                    Turma {m.name}{m.courseId ? ` · ${m.courseId}` : ''}
+                  </Button>
+                ))}
+              </div>
+            </Modal>
 
             {tab === 'auditoria' && (
               <Card title="Auditoria do cadastro">
