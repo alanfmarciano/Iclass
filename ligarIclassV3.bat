@@ -339,7 +339,14 @@ set "ADMIN_EMAIL="
 set /p ADMIN_EMAIL="E-mail da conta (vazio = primeiro administrador): "
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr /r /c:":3000 "') do taskkill /f /pid %%a >nul 2>&1
 timeout /t 1 /nobreak >nul
-node backendscriptseset-admin-password.js "!ADMIN_EMAIL!"
+node "%~dp0backend\scripts\reset-admin-password.js" "!ADMIN_EMAIL!"
+if errorlevel 1 (
+    echo.
+    echo !VERMELHO![ERRO] Nao foi possivel redefinir a senha. Veja a mensagem acima.!RESET!
+    set "ADMIN_EMAIL="
+    pause
+    goto menu
+)
 set "ADMIN_EMAIL="
 echo.
 echo !CIANO!Servidor parado. Use a opcao [1] para religar e entrar com a senha temporaria.!RESET!
