@@ -238,6 +238,25 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
         }
     }
 
+    // 6. Provas com tempo esgotado recuperadas depois do encerramento da aplicação
+    // (tentativas que versões antigas deixavam sem entrega). Entram "em revisão" e
+    // podem passar despercebidas quando as notas da aplicação já foram publicadas.
+    const recuperadas = (memory.submissions || []).filter(s => s
+        && s.recoveredAfterFinish === true
+        && s.gradePublished !== true
+        && !['archived', 'invalidated'].includes(s.resultStatus)
+        && s.student && emails.has(lower(s.student.email))
+        && (!course || !s.student.courseId || String(s.student.courseId) === String(course.id))
+        && (!cls || !s.student.studentClass || s.student.studentClass === cls.name));
+    if (recuperadas.length) {
+        items.push({
+            id: 'provas_recuperadas', tipo: 'provas_recuperadas',
+            titulo: 'Provas recuperadas depois do encerramento',
+            detalhe: 'entregues com as respostas salvas no fim do tempo, aguardando revisão · Resultados',
+            count: recuperadas.length, tone: 'warning', href: '/resultados', permissao: 'page.results',
+        });
+    }
+
     return items;
 }
 

@@ -4,7 +4,7 @@
 // respostas salvas ("entregue automaticamente no fim do tempo"). O envio automático
 // do navegador que chega atrasado (celular sem rede, por exemplo) ainda é aceito
 // dentro de uma janela de tolerância, com o atraso registrado para o professor.
-const { filterStudentExamAttempts } = require('./examAttempts.js');
+const { filterStudentExamAttempts, normalizeMaxAttempts } = require('./examAttempts.js');
 const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -13,15 +13,16 @@ const {
     findExamApplication,
 } = require('./examApplications.js');
 
-// Atraso normal de rede/relógio no envio do fim do tempo: aceito sem marcação.
+// Atraso normal de rede/relógio no envio do fim do tempo: aceito sem marcação. É
+// também o único atraso aceito no envio MANUAL (o aluno apertou "Enviar" antes do
+// zero e a requisição chegou um pouco depois).
 const LATE_FLAG_THRESHOLD_MS = 5 * 1000;
-// Envio do aluno (manual ou automático) aceito sem condição até este atraso.
+// Tempo que o servidor espera depois do prazo antes de finalizar sozinho a tentativa:
+// no caso comum o próprio navegador entrega as respostas congeladas no zero.
 const AUTO_SUBMIT_GRACE_MS = 30 * 1000;
 // Janela para o envio AUTOMÁTICO do navegador que chega depois do prazo. Depois dela
 // vale a finalização do servidor com as últimas respostas salvas.
 const LATE_AUTO_SUBMIT_TOLERANCE_MS = 10 * 60 * 1000;
-// O servidor espera o atraso normal antes de finalizar sozinho: no caso comum o
-// próprio navegador entrega as respostas congeladas no zero.
 const SERVER_FINALIZE_DELAY_MS = AUTO_SUBMIT_GRACE_MS;
 const SERVER_DEADLINE_SOURCE = 'deadline_server_auto_submit';
 const CLIENT_TIMER_SOURCE = 'timer_auto_submit';
@@ -100,10 +101,46 @@ function finalizeAttemptState(memory, { key, state, application, now = Date.now(
     submission.deadlineAt = deadlineAt;
     submission.finalizedByServerAt = new Date(now).toISOString();
     submission.answeredCount = countAnswers(state.answers);
+    // Travado por perda de foco no fim do tempo: vale o que estava salvo antes do
+    // bloqueio, e o professor vê que a prova terminou bloqueada.
+    if (state.focusLocked === true) {
+        submission.focusLockedAtDeadline = true;
+        submission.focusLockedAt = Number(state.focusLockedAt) || null;
+        submission.focusLockReason = state.focusLockReason || '';
+    }
     if (state.status === 'expired') submission.recoveredFromExpiredState = true;
+    if (!ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+        // Tentativa que versões antigas deixaram sem entrega numa aplicação já encerrada:
+        // a entrega leva a hora do fim do tempo (não a da recuperação) e fica marcada
+        // para o professor conferir em Resultados e no "Precisa de você".
+        submission.recoveredAfterFinish = true;
+        if (Number(deadlineAt) > 0 && Number(deadlineAt) < now) submission.timestamp = new Date(Number(deadlineAt)).toISOString();
+        recordRecoveredAttempt(memory, application, submission, now);
+    }
     memory.submissions.push(submission);
     if (key && memory.studentExamState) delete memory.studentExamState[key];
     return submission;
+}
+
+function recordRecoveredAttempt(memory, application, submission, now) {
+    if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
+    memory.auditLogs.push({
+        id: `audit_exam_${now}_${Math.random().toString(36).slice(2, 10)}`,
+        type: 'exam_attempt_recovered_after_finish',
+        actor: 'sistema',
+        applicationId: application.id,
+        examKey: application.examKey,
+        studentClass: application.studentClass,
+        courseId: application.courseId || null,
+        details: {
+            studentEmail: submission.student?.email || null,
+            attemptId: submission.attemptId || null,
+            submissionId: submission.id,
+            answeredCount: submission.answeredCount,
+            deadlineAt: submission.deadlineAt || null,
+        },
+        timestamp: new Date(now).toISOString(),
+    });
 }
 
 function finalizableApplication(application, state) {
@@ -149,12 +186,34 @@ function settleExpiredAttempts(memory, { applicationId = null, studentEmail = nu
     return result;
 }
 
-// Decide se um envio do aluno que chega depois do prazo ainda vale.
+// Aluno sem tentativa aberta que já entregou todas as tentativas desta aplicação:
+// tempo extra para ele não tem efeito nenhum (o professor precisa saber disso).
+function deliveredWithoutAttemptsLeft(memory, application, studentEmail) {
+    if (!application) return false;
+    const email = normalizedEmail(studentEmail);
+    const hasOpenAttempt = Object.values(memory?.studentExamState || {}).some(state => state
+        && state.applicationId === application.id
+        && normalizedEmail(state.studentEmail) === email
+        && !CLOSED_ATTEMPT_STATUSES.has(state.status));
+    if (hasOpenAttempt) return false;
+    const delivered = filterStudentExamAttempts(memory?.submissions, {
+        studentEmail: email,
+        examKey: application.examKey,
+        courseId: application.courseId,
+        applicationId: application.id,
+    }).length;
+    if (!delivered) return false;
+    const maxAttempts = normalizeMaxAttempts(application.maxAttempts);
+    return maxAttempts !== null && delivered >= maxAttempts;
+}
+
+// Decide se um envio do aluno que chega depois do prazo ainda vale. Manual: só o
+// atraso normal de rede/relógio. Automático (respostas congeladas no zero): sem
+// marcação até 5 s, marcado com o atraso até a janela de tolerância.
 function lateSubmitDecision({ overdueMs, auto = false } = {}) {
     if (overdueMs === null || overdueMs === undefined || overdueMs < 0) return { accept: true, lateMs: 0 };
-    const flagged = overdueMs > LATE_FLAG_THRESHOLD_MS ? overdueMs : 0;
-    if (overdueMs <= AUTO_SUBMIT_GRACE_MS) return { accept: true, lateMs: flagged };
-    if (auto === true && overdueMs <= LATE_AUTO_SUBMIT_TOLERANCE_MS) return { accept: true, lateMs: flagged };
+    if (overdueMs <= LATE_FLAG_THRESHOLD_MS) return { accept: true, lateMs: 0 };
+    if (auto === true && overdueMs <= LATE_AUTO_SUBMIT_TOLERANCE_MS) return { accept: true, lateMs: overdueMs };
     return { accept: false, lateMs: overdueMs };
 }
 
@@ -185,6 +244,8 @@ function sameAnswers(gradedAnswers, answers) {
 function canReplaceServerFinalization(submission, { auto = false, answers, now = Date.now() } = {}) {
     if (!submission || submission.submissionSource !== SERVER_DEADLINE_SOURCE) return false;
     if (auto !== true || submission.gradePublished === true || submission.resultStatus === 'archived') return false;
+    // Prova bloqueada por foco no fim do tempo: vale o que estava salvo antes do bloqueio.
+    if (submission.focusLockedAtDeadline === true || submission.recoveredAfterFinish === true) return false;
     const deadlineAt = Number(submission.deadlineAt);
     if (!(deadlineAt > 0) || now - deadlineAt > LATE_AUTO_SUBMIT_TOLERANCE_MS) return false;
     return !sameAnswers(submission.gradedAnswers, answers);
@@ -230,6 +291,7 @@ module.exports = {
     canReplaceServerFinalization,
     computeAttemptDeadline,
     countAnswers,
+    deliveredWithoutAttemptsLeft,
     finalizeAttemptState,
     isAttemptPastDeadline,
     lateSubmitDecision,

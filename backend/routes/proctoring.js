@@ -12,6 +12,12 @@ const {
     findOpenAttemptState,
 } = require('../utils/examApplications.js');
 const { attemptOverdueMs } = require('../utils/examDeadline.js');
+const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
+
+// Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
+// aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
+// caminho). Depois disso só volta a salvar quando o professor libera.
+const FOCUS_LOCK_SAVE_GRACE_MS = 15 * 1000;
 
 function applicationForClass(cls, examKey, applicationId) {
     const id = applicationId || cls?.onlineExamConfigs?.[examKey]?.applicationId;
@@ -230,6 +236,12 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
         if (overdueMs !== null && overdueMs > 0) {
             return res.status(408).json({ error: 'O prazo da prova terminou.', deadlineExceeded: true });
         }
+        if (existing.focusLocked === true && Date.now() - Number(existing.focusLockedAt || 0) > FOCUS_LOCK_SAVE_GRACE_MS) {
+            return res.status(423).json({
+                error: 'Sua prova está bloqueada por perda de foco. Aguarde o professor desbloquear pelo monitor.',
+                focusLocked: true,
+            });
+        }
         db.memory.studentExamState[key] = {
             ...existing,
             studentEmail: normalizedEmail,
@@ -338,11 +350,9 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
             }
         }
         
-        const { tokenValidated, ...safeState } = state;
-
         res.json({
             success: true,
-            state: safeState,
+            state: stateWithoutSecrets(state),
             messages,
             examConfigVersion,
             attemptsUsed,

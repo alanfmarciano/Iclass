@@ -1,10 +1,10 @@
-import { ArrowRight, CheckCircle2, Clock3, FileQuestion, Inbox, Lock, UserPlus } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Clock3, FileQuestion, History, Inbox, Lock, UserPlus } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { EmptyLine } from '../../../components/ui/EmptyLine'
 
 const ICONE = {
   chamada_pendente: Clock3, duvidas_paradas: FileQuestion, sem_avaliacao: Inbox,
-  matriculas: UserPlus, conteudo_bloqueado: Lock,
+  matriculas: UserPlus, conteudo_bloqueado: Lock, provas_recuperadas: History,
 }
 const TONE_ICO = {
   danger: 'bg-danger-soft text-danger', warning: 'bg-warning-soft text-warning',

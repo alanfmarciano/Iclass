@@ -801,8 +801,9 @@ export default function MonitorPage() {
 
   async function addTime(targetEmail = null, adjustmentMinutes = 5) {
     try {
-      await api.post('/api/admin/adjust-student-time', { studentClass: className, courseId, examKey, applicationId, targetEmail, adjustmentMinutes })
-      toast.success(targetEmail ? 'Tempo do aluno ajustado' : '+5 min para a turma')
+      const r = await api.post('/api/admin/adjust-student-time', { studentClass: className, courseId, examKey, applicationId, targetEmail, adjustmentMinutes })
+      if (r?.appliesToNextAttempt) toast.info('Ajuste registrado: vale quando o aluno iniciar a tentativa.')
+      else toast.success(targetEmail ? 'Tempo do aluno ajustado' : '+5 min para a turma')
       if (!targetEmail) await refetchClasses(true)
       poll()
     } catch (e) { toast.error(e.message) }

@@ -213,7 +213,11 @@ async function startServer() {
     function sweepExpiredAttempts() {
         try {
             const { finalized, changed } = settleExpiredAttempts(db.memory);
-            if (finalized.length) console.log('⏱️  Fim do tempo: ' + finalized.length + ' tentativa(s) entregue(s) automaticamente.');
+            const recovered = finalized.filter(item => item.recoveredAfterFinish).length;
+            if (finalized.length > recovered) console.log('⏱️  Fim do tempo: ' + (finalized.length - recovered) + ' tentativa(s) entregue(s) automaticamente.');
+            // Tentativas sem entrega deixadas por versões antigas em aplicações já encerradas:
+            // viram entregas "em revisão", avisadas no "Precisa de você" e no sino.
+            if (recovered) console.log('⏱️  Recuperada(s) ' + recovered + ' tentativa(s) com tempo esgotado de aplicação já encerrada. Confira em Resultados (em revisão).');
             if (changed) db.save().catch(err => logCrash('finalização de tentativas vencidas', err));
         } catch (e) { logCrash('finalização de tentativas vencidas', e); }
     }

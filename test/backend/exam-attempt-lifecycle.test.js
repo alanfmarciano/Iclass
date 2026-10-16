@@ -20,7 +20,7 @@ const {
     normalizeLegacyApplicationPause,
     transitionExamApplication,
 } = require('../../backend/utils/examApplications.js');
-const { lateSubmitDecision, LATE_AUTO_SUBMIT_TOLERANCE_MS } = require('../../backend/utils/examDeadline.js');
+const { lateSubmitDecision, LATE_AUTO_SUBMIT_TOLERANCE_MS, settleExpiredAttempts } = require('../../backend/utils/examDeadline.js');
 
 let app;
 const adminToken = 'admin-token-lifecycle';
@@ -380,6 +380,18 @@ test('[UC-TENTATIVA-001] encerrar entrega quem estava com tempo esgotado em qual
     assert.equal(deliveredAna.correctCount, 1);
     assert.equal(submissionsOf(bruno, application.id).length, 0);
     assert.equal(Object.values(db.memory.studentExamState).some(state => state?.applicationId === application.id), false);
+
+    // Quem foi entregue no fim do tempo vê a própria entrega, mesmo abrindo a prova em
+    // outro aparelho (sem a tentativa conhecida), e não "o professor desconsiderou".
+    const anaElsewhere = await sync(ana, application.id);
+    assert.equal(anaElsewhere.body.finishOutcome, 'delivered');
+    assert.equal(anaElsewhere.body.attemptOutcome.attemptId, startedAna.attemptId);
+    assert.equal(anaElsewhere.body.attemptOutcome.finalizedByServer, true);
+    assert.equal(anaElsewhere.body.attemptOutcome.answeredCount, 1);
+    const brunoKnown = await sync(bruno, application.id, startedBruno.attemptId);
+    assert.equal(brunoKnown.body.finishOutcome, 'discarded');
+    const brunoElsewhere = await sync(bruno, application.id);
+    assert.equal(brunoElsewhere.body.finishOutcome, 'discarded');
 });
 
 test('[UC-TENTATIVA-001] aluno travado por perda de foco no fim do tempo tem as respostas salvas entregues (AVA-03)', async () => {
@@ -407,7 +419,78 @@ test('[UC-TENTATIVA-001] aluno travado por perda de foco no fim do tempo tem as 
         .expect(200);
     await submit(bruno, application.id, startedBruno, { 1: 'A' }).expect(423);
     expireAttempt(startedBruno.attemptId, 2000);
-    await submit(bruno, application.id, startedBruno, { 1: 'A' }).expect(200);
+    // O tempo acabou bloqueado: a entrega é a do servidor, com o que estava salvo.
+    const lockedAtDeadline = await submit(bruno, application.id, startedBruno, { 1: 'A' }).expect(408);
+    assert.equal(lockedAtDeadline.body.focusLocked, true);
+    assert.equal(lockedAtDeadline.body.finalizedByServer, true);
+    assert.equal(submissionsOf(bruno, application.id)[0].answeredCount, 0);
+    await control(application.id, 'finish');
+});
+
+test('[UC-TENTATIVA-001] prova bloqueada por foco: respostas mudadas durante o bloqueio não entram na nota (AVA-03)', async () => {
+    const { carla } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const started = await startAttempt(carla, application.id);
+    await autosave(carla, application.id, started.attemptId, { 1: 'A' }).expect(200);
+    await request(app)
+        .post('/api/student/log-activity')
+        .set('x-session-token', carla.token)
+        .send({ email: carla.email, studentClass, courseId, examKey, applicationId: application.id, attemptId: started.attemptId, eventType: 'fullscreen_exit', details: 'Saiu da tela cheia' })
+        .expect(200);
+    // O que ela marcou logo antes do bloqueio ainda chega (estava a caminho).
+    await autosave(carla, application.id, started.attemptId, { 1: 'A', 2: 'B' }).expect(200);
+    // Depois disso, com as questões ocultas, o rascunho é recusado até o professor liberar.
+    stateOf(started.attemptId).focusLockedAt = Date.now() - 20000;
+    const refused = await autosave(carla, application.id, started.attemptId, { 1: 'C', 2: 'C', 3: 'C' }).expect(423);
+    assert.equal(refused.body.focusLocked, true);
+    assert.deepEqual(stateOf(started.attemptId).answers, { 1: 'A', 2: 'B' });
+
+    expireAttempt(started.attemptId, 2000);
+    const atDeadline = await submit(carla, application.id, started, { 1: 'C', 2: 'C', 3: 'C' }).expect(408);
+    assert.equal(atDeadline.body.focusLocked, true);
+    assert.equal(atDeadline.body.finalizedByServer, true);
+    assert.equal(atDeadline.body.answeredCount, 2);
+    let [delivered] = submissionsOf(carla, application.id);
+    assert.equal(delivered.submissionSource, 'deadline_server_auto_submit');
+    assert.equal(delivered.focusLockedAtDeadline, true);
+    assert.equal(delivered.correctCount, 2);
+
+    // O envio automático atrasado não substitui a entrega de quem terminou bloqueado.
+    const retry = await submit(carla, application.id, started, { 1: 'C', 2: 'C', 3: 'C' }).expect(200);
+    assert.equal(retry.body.duplicate, true);
+    [delivered] = submissionsOf(carla, application.id);
+    assert.equal(submissionsOf(carla, application.id).length, 1);
+    assert.equal(delivered.correctCount, 2);
+
+    const monitor = await request(app)
+        .get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
+        .set('x-admin-session', adminToken)
+        .query({ courseId, applicationId: application.id })
+        .expect(200);
+    const row = monitor.body.find(item => item.email === carla.email);
+    assert.equal(row.focusLockedAtDeadline, true);
+    assert.equal(row.progress, '2/3');
+    await control(application.id, 'finish');
+});
+
+test('[UC-TENTATIVA-001] envio manual depois do prazo só vale dentro do atraso normal de rede (5 s)', async () => {
+    const { ana, bruno } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const startedAna = await startAttempt(ana, application.id);
+    await autosave(ana, application.id, startedAna.attemptId, { 1: 'A' }).expect(200);
+    expireAttempt(startedAna.attemptId, 3000);
+    const onTime = await submit(ana, application.id, startedAna, { 1: 'A', 2: 'B' }, false).expect(200);
+    assert.equal(onTime.body.lateBySeconds, 0);
+    assert.equal(submissionsOf(ana, application.id)[0].submissionSource, 'student');
+
+    const startedBruno = await startAttempt(bruno, application.id);
+    await autosave(bruno, application.id, startedBruno.attemptId, { 2: 'B' }).expect(200);
+    expireAttempt(startedBruno.attemptId, 8000);
+    const late = await submit(bruno, application.id, startedBruno, { 1: 'A', 2: 'B', 3: 'C' }, false).expect(408);
+    assert.equal(late.body.finalizedByServer, true);
+    const [deliveredBruno] = submissionsOf(bruno, application.id);
+    assert.equal(deliveredBruno.submissionSource, 'deadline_server_auto_submit');
+    assert.equal(deliveredBruno.correctCount, 1);
     await control(application.id, 'finish');
 });
 
@@ -537,8 +620,193 @@ test('[UC-TENTATIVA-001] regras puras de pausa e tolerância', () => {
     assert.equal(legacyPaused.pauses[0].resumedAt, 5 * MIN);
 
     assert.deepEqual(lateSubmitDecision({ overdueMs: 2000, auto: true }), { accept: true, lateMs: 0 });
-    assert.deepEqual(lateSubmitDecision({ overdueMs: 20000, auto: false }), { accept: true, lateMs: 20000 });
+    assert.deepEqual(lateSubmitDecision({ overdueMs: 3000, auto: false }), { accept: true, lateMs: 0 });
+    assert.deepEqual(lateSubmitDecision({ overdueMs: 20000, auto: true }), { accept: true, lateMs: 20000 });
+    assert.equal(lateSubmitDecision({ overdueMs: 20000, auto: false }).accept, false, 'envio manual não ganha a tolerância do automático');
     assert.equal(lateSubmitDecision({ overdueMs: 5 * MIN, auto: true }).accept, true);
     assert.equal(lateSubmitDecision({ overdueMs: 5 * MIN, auto: false }).accept, false);
     assert.equal(lateSubmitDecision({ overdueMs: LATE_AUTO_SUBMIT_TOLERANCE_MS + 1, auto: true }).accept, false);
+});
+
+test('[UC-TENTATIVA-001] chave da cópia local: 32 bytes por tentativa, guardada no servidor e entregue só ao dono enquanto a tentativa está aberta (AVA-11)', async () => {
+    const { ana, bruno } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const startedAna = await startAttempt(ana, application.id);
+    const key = startedAna.localCopyKey;
+    assert.match(key, /^[A-Za-z0-9+/]{43}=$/);
+    assert.equal(Buffer.from(key, 'base64').length, 32);
+    assert.equal(startedAna.state.localCopyKey, undefined, 'a chave não vai dentro do estado');
+    assert.equal(stateOf(startedAna.attemptId).localCopyKey, key, 'a chave fica guardada com a tentativa');
+
+    const anaSync = await sync(ana, application.id, startedAna.attemptId);
+    assert.equal(anaSync.body.localCopyKey, key);
+    assert.equal(anaSync.body.state.localCopyKey, undefined);
+
+    const startedBruno = await startAttempt(bruno, application.id);
+    assert.notEqual(startedBruno.localCopyKey, key, 'cada tentativa tem a sua chave');
+    // A sincronização de um aluno nunca traz a chave de outro.
+    const brunoSync = await sync(bruno, application.id, startedAna.attemptId);
+    assert.equal(brunoSync.body.localCopyKey, startedBruno.localCopyKey);
+    assert.equal(brunoSync.body.attemptOutcome, null);
+
+    // Tentativa iniciada antes desta versão ganha a chave na primeira sincronização.
+    delete stateOf(startedBruno.attemptId).localCopyKey;
+    const upgraded = await sync(bruno, application.id, startedBruno.attemptId);
+    assert.match(upgraded.body.localCopyKey, /^[A-Za-z0-9+/]{43}=$/);
+    assert.equal(stateOf(startedBruno.attemptId).localCopyKey, upgraded.body.localCopyKey);
+
+    // Telas do professor não recebem a chave.
+    const monitor = await request(app)
+        .get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
+        .set('x-admin-session', adminToken)
+        .query({ courseId, applicationId: application.id })
+        .expect(200);
+    assert.equal(JSON.stringify(monitor.body).includes(key), false);
+    const unlocked = await request(app)
+        .post('/api/admin/unlock-student-focus')
+        .set('x-admin-session', adminToken)
+        .send({ studentEmail: ana.email, studentClass, courseId, examKey, applicationId: application.id })
+        .expect(200);
+    assert.equal(unlocked.body.state.localCopyKey, undefined);
+
+    // Entregue: a tentativa (e a chave) some do servidor e a sincronização não traz chave.
+    await submit(ana, application.id, startedAna, { 1: 'A' }, false).expect(200);
+    const afterSubmit = await sync(ana, application.id, startedAna.attemptId);
+    assert.equal(afterSubmit.body.localCopyKey, null);
+    assert.equal(afterSubmit.body.attemptOutcome.attemptId, startedAna.attemptId);
+    assert.equal(JSON.stringify(db.memory.submissions).includes(key), false, 'a chave não vai para a entrega');
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] tempo coletivo acaba com o aluno nas instruções: a sincronização já avisa que o tempo terminou', async () => {
+    const { bruno } = students;
+    const application = await createApplication({ timerMode: 'collective' });
+    const before = await sync(bruno, application.id);
+    assert.equal(before.body.timeOver, false);
+    assert.equal(before.body.state.status, 'instructions');
+
+    applicationOf(application.id).startsAt -= DURATION_MIN * MIN + 40000;
+    const after = await sync(bruno, application.id);
+    assert.equal(after.body.timeOver, true);
+    assert.ok(!after.body.state.startedAt);
+    assert.equal(after.body.localCopyKey, null);
+    const late = await request(app)
+        .post(`/api/student/exam-applications/${application.id}/start-attempt`)
+        .set('x-session-token', bruno.token)
+        .send({})
+        .expect(409);
+    assert.equal(late.body.timeOver, true);
+    await control(application.id, 'finish');
+});
+
+test('[UC-TENTATIVA-001] Monitor mostra quantas questões a entrega do fim do tempo de fato tem', async () => {
+    const { ana } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const started = await startAttempt(ana, application.id);
+    await autosave(ana, application.id, started.attemptId, { 1: 'A', 3: 'C' }).expect(200);
+    expireAttempt(started.attemptId, 45000);
+    const monitor = await request(app)
+        .get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
+        .set('x-admin-session', adminToken)
+        .query({ courseId, applicationId: application.id })
+        .expect(200);
+    const row = monitor.body.find(item => item.email === ana.email);
+    assert.equal(row.status, 'finished');
+    assert.equal(row.submissionSource, 'deadline_server_auto_submit');
+    assert.equal(row.progress, '2/3');
+    await control(application.id, 'finish');
+});
+
+test('[UC-TENTATIVA-001] tempo extra para quem já entregou avisa que não tem efeito; para quem não começou vale na tentativa (AVA-03)', async () => {
+    const { ana, bruno } = students;
+    const application = await createApplication({ timerMode: 'per_attempt', maxAttempts: 1 });
+    const startedAna = await startAttempt(ana, application.id);
+    await submit(ana, application.id, startedAna, { 1: 'A' }, false).expect(200);
+    const legacyKeyOf = student => `${student.email}_${examKey}`;
+
+    const refused = await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, targetEmail: ana.email, adjustmentMinutes: 5 })
+        .expect(409);
+    assert.equal(refused.body.alreadyDelivered, true);
+    assert.equal(db.memory.studentExamState[legacyKeyOf(ana)], undefined, 'nenhum estado avulso é criado');
+    assert.equal(openStatesOf(ana, application.id).length, 0);
+    await request(app)
+        .post(`/api/admin/exam-applications/${application.id}/time-adjustment`)
+        .set('x-admin-session', adminToken)
+        .send({ targetEmail: ana.email, adjustmentMinutes: 5 })
+        .expect(409);
+    const anaAfter = await sync(ana, application.id);
+    assert.ok(!anaAfter.body.state?.status || anaAfter.body.state.status !== 'instructions');
+
+    const pending = await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, targetEmail: bruno.email, adjustmentMinutes: 5 })
+        .expect(200);
+    assert.equal(pending.body.appliesToNextAttempt, true);
+    assert.equal(db.memory.studentExamState[legacyKeyOf(bruno)], undefined);
+    const startedBruno = await startAttempt(bruno, application.id);
+    const remaining = Number(startedBruno.state.timerRemaining);
+    assert.ok(remaining >= (DURATION_MIN + 5) * 60 - 3, `prazo com o ajuste: ${remaining}`);
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] tentativa vencida deixada por versão antiga em aplicação já encerrada: entrega com a hora do fim do tempo e aviso ao professor', async () => {
+    const { carla } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    await control(application.id, 'finish');
+    const startedAt = Date.now() - (DURATION_MIN + 20) * MIN;
+    db.memory.studentExamState[`${application.id}::${carla.email}::1`] = {
+        id: 'attempt_legacy_carla',
+        attemptId: 'attempt_legacy_carla',
+        applicationId: application.id,
+        studentEmail: carla.email,
+        studentClass,
+        courseId,
+        examKey,
+        attemptNumber: 1,
+        status: 'expired',
+        answers: { 1: 'A', 2: 'C' },
+        assignedVersion: 'A',
+        startedAt,
+        individualTimeAdjustment: 0,
+    };
+
+    const { finalized } = settleExpiredAttempts(db.memory);
+    assert.equal(finalized.length, 1);
+    const [delivered] = submissionsOf(carla, application.id);
+    assert.equal(delivered.recoveredAfterFinish, true);
+    assert.equal(delivered.recoveredFromExpiredState, true);
+    assert.equal(delivered.gradePublished, false);
+    assert.equal(delivered.correctCount, 1);
+    assert.equal(Date.parse(delivered.timestamp), startedAt + DURATION_MIN * MIN, 'a entrega leva a hora do fim do tempo');
+    assert.ok(Date.parse(delivered.finalizedByServerAt) > Date.parse(delivered.timestamp));
+    assert.ok(db.memory.auditLogs.some(log => log.type === 'exam_attempt_recovered_after_finish' && log.details.submissionId === delivered.id));
+
+    const queue = await request(app)
+        .get('/api/admin/dashboard/queue')
+        .set('x-admin-session', adminToken)
+        .query({ courseId, studentClass })
+        .expect(200);
+    const item = queue.body.find(entry => entry.id === 'provas_recuperadas');
+    assert.ok(item, 'aparece no "Precisa de você"');
+    assert.equal(item.count, 1);
+    assert.equal(item.href, '/resultados');
+    const bell = await request(app)
+        .get('/api/admin/notifications')
+        .set('x-admin-session', adminToken)
+        .query({ courseId, studentClass })
+        .expect(200);
+    assert.ok(bell.body.items.some(entry => entry.id === 'provas_recuperadas' && entry.unread));
+
+    // Publicada a nota, o aviso sai da fila.
+    delivered.gradePublished = true;
+    const cleared = await request(app)
+        .get('/api/admin/dashboard/queue')
+        .set('x-admin-session', adminToken)
+        .query({ courseId, studentClass })
+        .expect(200);
+    assert.equal(cleared.body.some(entry => entry.id === 'provas_recuperadas'), false);
 });

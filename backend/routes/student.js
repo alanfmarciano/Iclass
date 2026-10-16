@@ -68,6 +68,7 @@ const {
     replaceServerFinalization,
     settleExpiredAttempts,
 } = require('../utils/examDeadline.js');
+const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 
 // Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
 // a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
@@ -458,6 +459,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         let finishOutcome = null;
         let attemptOutcome = null;
         let timeOver = false;
+        let localCopyKey = null;
 
         if (examKey) {
             const onlineCfg = cls.onlineExamConfigs && cls.onlineExamConfigs[examKey];
@@ -476,8 +478,12 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 applicationId: application?.id,
             });
             const attemptsExhausted = maxAttempts !== null && attemptsUsed >= maxAttempts;
-            const hasOpenAttempt = !!(application && findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email }));
-            timeOver = !!application && !hasOpenAttempt && collectiveTimeOverForNewAttempt(application, email);
+            // Cronômetro coletivo esgotado para quem ainda não começou (sem tentativa ou
+            // parado nas instruções): não há o que iniciar, e a tela diz isso na hora.
+            const openAttempt = application
+                ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
+                : null;
+            timeOver = !!application && !openAttempt?.state?.startedAt && collectiveTimeOverForNewAttempt(application, email);
             const context = application
                 ? attemptContextForStudent({
                     application,
@@ -508,10 +514,13 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 db.memory.studentExamState[stateKey] = rawState;
                 db.save();
             }
+            // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
+            // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
+            if (application && context.state && ensureLocalCopyKey(rawState)) db.save();
+            localCopyKey = application && context.state ? localCopyKeyFor(rawState) : null;
 
-            // Não expõe a flag interna de validação de token ao cliente.
-            const { tokenValidated, ...safeState } = rawState;
-            state = safeState;
+            // Não expõe a flag interna de validação de token nem a chave dentro do estado.
+            state = stateWithoutSecrets(rawState);
             attemptId = rawState.attemptId || null;
             tokenAccepted = rawState.tokenValidated === true;
 
@@ -544,13 +553,26 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 : [];
             attemptOutcome = attemptOutcomeFor(application, email, knownAttemptId);
             if (application?.status === 'finished') {
-                const savedByInstructor = (db.memory.submissions || []).some(submission =>
-                    submission?.applicationId === application.id
-                    && String(submission.student?.email || '').toLowerCase() === email
-                    && submission.submissionSource === 'instructor_finish');
-                finishOutcome = savedByInstructor
-                    ? 'submitted'
-                    : (application.finishResolution?.policy === 'discard' ? 'discarded' : null);
+                const ownDeliveries = (db.memory.submissions || [])
+                    .filter(submission => submission?.applicationId === application.id
+                        && String(submission.student?.email || '').toLowerCase() === email
+                        && submission.resultStatus !== 'invalidated')
+                    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+                const savedByInstructor = ownDeliveries.some(submission => submission.submissionSource === 'instructor_finish');
+                // A tentativa que este navegador conhecia não virou entrega: foi ela que o
+                // professor desconsiderou ao encerrar.
+                const knownAttemptDiscarded = !!knownAttemptId && !attemptOutcome
+                    && application.finishResolution?.policy === 'discard';
+                if (savedByInstructor) {
+                    finishOutcome = 'submitted';
+                } else if (ownDeliveries.length && !knownAttemptDiscarded) {
+                    // O aluno tem entrega que conta (enviou, ou foi entregue no fim do tempo),
+                    // mesmo que o professor tenha desconsiderado quem ainda estava fazendo.
+                    finishOutcome = 'delivered';
+                    if (!attemptOutcome) attemptOutcome = attemptOutcomeFor(application, email, ownDeliveries[0].attemptId);
+                } else {
+                    finishOutcome = application.finishResolution?.policy === 'discard' ? 'discarded' : null;
+                }
             }
         }
 
@@ -570,6 +592,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             finishOutcome,
             attemptOutcome,
             timeOver,
+            localCopyKey,
             examTitle: examKey ? studentApplicationLabel({ examKey }, cls) : null,
             accessibilityExtraMinutes: examKey && cls.onlineExamConfigs?.[examKey]?.timerEnabled !== false
                 ? accessibilityExtraMinutes(email, cls.onlineExamConfigs?.[examKey]?.durationMinutes)
@@ -1071,15 +1094,16 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         state.deadlineAt = deadlineAt;
     }
     initializeExamState(state, config);
+    ensureLocalCopyKey(state);
     db.memory.studentExamState[context.key] = state;
     await db.save();
-    const { tokenValidated, ...safeState } = state;
     res.json({
         success: true,
         applicationId: application.id,
         attemptId: state.attemptId,
         attemptNumber: state.attemptNumber,
-        state: safeState,
+        state: stateWithoutSecrets(state),
+        localCopyKey: localCopyKeyFor(state),
         examConfigVersion: state.examConfigVersion,
     });
 });
@@ -1309,6 +1333,24 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
     if (applicationPaused && !pastDeadline) {
         return res.status(403).json({ error: 'A aplicação está pausada pelo professor. Aguarde a retomada para enviar.', applicationPaused: true });
     }
+    // Fim do tempo com a prova bloqueada por perda de foco: vale o que estava salvo
+    // antes do bloqueio (as questões ficaram ocultas), nunca as respostas deste envio.
+    if (lockedState.focusLocked === true && pastDeadline) {
+        const finalized = application
+            ? finalizeAttemptState(db.memory, { key: stateKey, state: lockedState, application, now: nowTs, deadlineAt: timing.deadlineAt })
+            : null;
+        if (finalized) await db.save();
+        return res.status(408).json({
+            error: finalized
+                ? 'O tempo acabou com a prova bloqueada por perda de foco. As respostas salvas antes do bloqueio foram entregues automaticamente.'
+                : 'O prazo da prova terminou.',
+            deadlineExceeded: true,
+            focusLocked: true,
+            finalizedByServer: !!finalized,
+            submissionId: finalized?.id || null,
+            answeredCount: finalized ? finalized.answeredCount : null,
+        });
+    }
     const lateDecision = lateSubmitDecision({ overdueMs: timing.overdueMs, auto: auto === true });
     if (!lateDecision.accept) {
         // Fora da tolerância vale a finalização do servidor com as últimas respostas salvas.
@@ -1338,9 +1380,7 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         });
     }
 
-    // Depois do fim do tempo o bloqueio por foco não impede a entrega: as questões
-    // ficaram ocultas durante o bloqueio, então o que chega é o que havia antes dele.
-    if (lockedState.focusLocked === true && !pastDeadline) {
+    if (lockedState.focusLocked === true) {
         return res.status(423).json({
             error: 'Sua prova foi bloqueada por perda de foco. Aguarde o professor desbloquear pelo monitor.',
             focusLocked: true

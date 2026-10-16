@@ -14,6 +14,7 @@ const TONE = {
   sem_avaliacao: 'bg-info-soft text-info',
   matriculas: 'bg-early-soft text-early',
   conteudo_bloqueado: 'bg-surface-2 text-subtle',
+  provas_recuperadas: 'bg-warning-soft text-warning',
 }
 
 function timeAgo(at) {

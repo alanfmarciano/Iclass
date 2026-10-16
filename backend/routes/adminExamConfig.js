@@ -18,7 +18,7 @@ const {
     listExamApplications,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
-const { isAttemptPastDeadline, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { deliveredWithoutAttemptsLeft, isAttemptPastDeadline, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const {
     validateAdmin,
     adminCanAccessClass,
@@ -437,6 +437,12 @@ function createAdminExamConfigRouter() {
                 return res.status(409).json({
                     error: 'O tempo deste aluno já tinha terminado. A tentativa foi entregue automaticamente com as respostas salvas.',
                     attemptFinalized: true,
+                });
+            }
+            if (targetEmail && deliveredWithoutAttemptsLeft(db.memory, application, targetEmail)) {
+                return res.status(409).json({
+                    error: 'Este aluno já entregou a prova. O tempo extra não tem efeito.',
+                    alreadyDelivered: true,
                 });
             }
             if (targetEmail) {

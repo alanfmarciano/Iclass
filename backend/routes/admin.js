@@ -49,7 +49,7 @@ const {
     findOpenAttemptState,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
-const { attemptOverdueMs, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, settleExpiredAttempts } = require('../utils/examDeadline.js');
 
 function rejectInvalidBranding(res, body) {
     const validationError = validateBrandingPatch(body);
@@ -3033,6 +3033,13 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
 
         if (targetEmail) {
             const email = targetEmail.trim().toLowerCase();
+            // Aluno que já entregou todas as tentativas: o ajuste não teria efeito nenhum.
+            if (application && deliveredWithoutAttemptsLeft(db.memory, application, email)) {
+                return res.status(409).json({
+                    error: 'Este aluno já entregou a prova. O tempo extra não tem efeito.',
+                    alreadyDelivered: true,
+                });
+            }
             const openAttempt = application
                 ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
                 : null;
@@ -3040,6 +3047,12 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
             if (application) {
                 if (!application.studentAdjustments) application.studentAdjustments = {};
                 application.studentAdjustments[email] = Number(application.studentAdjustments[email] || 0) + adjustmentMinutes;
+            }
+            if (application && !openAttempt) {
+                // Ainda sem tentativa aberta: o ajuste fica na aplicação e entra na
+                // tentativa quando ela for criada (sem estado avulso fora da aplicação).
+                db.save();
+                return res.json({ success: true, appliesToNextAttempt: true });
             }
             if (!db.memory.studentExamState[key]) {
                 db.memory.studentExamState[key] = {
@@ -3165,7 +3178,8 @@ router.post('/api/admin/unlock-student-focus', (req, res) => {
         });
 
         db.save();
-        res.json({ success: true, state: db.memory.studentExamState[key] });
+        const { localCopyKey, ...unlockedState } = db.memory.studentExamState[key];
+        res.json({ success: true, state: unlockedState });
     });
 });
 
@@ -3333,10 +3347,17 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     ? currentConfig.versionSnapshots[0].questions.length
                     : 0;
                 const totalQuestions = Number(currentConfig.questionCount) || snapshotCount || evaluation.questions.length;
+                // Entregue: quantas questões o aluno de fato respondeu (a entrega do fim do
+                // tempo pode ter menos respostas que questões).
                 const answeredQuestions = submission
-                    ? (Number(submission.totalCount) || (Array.isArray(submission.gradedAnswers) ? submission.gradedAnswers.length : totalQuestions))
+                    ? (Number.isFinite(Number(submission.answeredCount)) && submission.answeredCount !== null
+                        ? Number(submission.answeredCount)
+                        : (Array.isArray(submission.gradedAnswers)
+                            ? countAnswers(Object.fromEntries(submission.gradedAnswers.map(item => [item.questionNumber, item.studentChoice])))
+                            : 0))
                     : Object.keys(state.answers || {}).length;
-                progress = `${answeredQuestions}/${totalQuestions}`;
+                const questionsInAttempt = submission ? (Number(submission.totalCount) || totalQuestions) : totalQuestions;
+                progress = `${answeredQuestions}/${questionsInAttempt}`;
             }
 
             let timerRemaining = state.timerRemaining;
@@ -3374,6 +3395,8 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 attemptId: state.attemptId || submission?.attemptId || null,
                 submissionSource: submission?.submissionSource || null,
                 lateBySeconds: Number(submission?.lateBySeconds || 0),
+                focusLockedAtDeadline: submission?.focusLockedAtDeadline === true,
+                recoveredAfterFinish: submission?.recoveredAfterFinish === true,
                 logs: studentLogs,
                 keystrokeCount,
                 suspiciousCount,

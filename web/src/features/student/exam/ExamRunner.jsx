@@ -13,7 +13,16 @@ import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { pickSnapshot, normQuestion, fmtTime } from './examUtils'
 import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, wait } from './examAutoSubmit'
-import { clearExamDraft, examDraftKey, readExamDraft, sameExamAnswers, writeExamDraft } from '../../../lib/examDrafts'
+import {
+  clearExamDraft,
+  clearExamDraftsForApplication,
+  clearOtherExamDrafts,
+  findExamDraftAttempt,
+  importExamDraftKey,
+  readExamDraft,
+  sameExamAnswers,
+  writeExamDraft,
+} from '../../../lib/examDrafts'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
@@ -93,27 +102,66 @@ export default function ExamRunner() {
   const mountedRef = useRef(true)
   const saveRef = useRef(null)
   const startTimeUpRef = useRef(null)
+  // Cópia local cifrada (AVA-11): a chave da tentativa fica só em memória.
+  const draftCryptoRef = useRef(null) // { attemptId, rawKey, cryptoKey }
+  const draftReadyRef = useRef(null) // tentativa cuja cópia anterior já foi lida
   answersRef.current = answers
   phaseRef.current = phase
   attemptIdRef.current = attemptId
   examConfigVersionRef.current = examConfigVersion
-  const draftKey = examDraftKey({ email, applicationId, examKey })
 
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
 
+  // Chave da cópia local da tentativa: importada uma vez e mantida só em memória.
+  const ensureDraftKey = useCallback(async (forAttemptId, rawKey) => {
+    const current = draftCryptoRef.current
+    if (current && current.attemptId === forAttemptId && (!rawKey || current.rawKey === rawKey)) return current.cryptoKey
+    if (!forAttemptId || !rawKey) return null
+    const cryptoKey = await importExamDraftKey(rawKey)
+    draftCryptoRef.current = cryptoKey ? { attemptId: forAttemptId, rawKey, cryptoKey } : null
+    return cryptoKey
+  }, [])
+
+  // Grava a cópia cifrada da tentativa (sem chave ou sem WebCrypto, não grava nada).
+  const saveLocalCopy = useCallback((forAttemptId, answersToSave, saved) => {
+    const current = draftCryptoRef.current
+    if (!forAttemptId || !current || current.attemptId !== forAttemptId) return
+    if (draftReadyRef.current !== forAttemptId) return // a cópia anterior ainda não foi lida
+    writeExamDraft({ attemptId: forAttemptId, applicationId, cryptoKey: current.cryptoKey, answers: answersToSave, saved }).catch(() => {})
+  }, [applicationId])
+
+  // Primeira leitura de uma tentativa (abertura, recarga ou início): as respostas do
+  // servidor mais o que só a cópia local tinha, que vai no próximo salvamento. As cópias
+  // de outras tentativas ou alunos neste aparelho são apagadas.
+  const loadAttemptAnswers = useCallback(async (forAttemptId, rawKey, serverAnswers) => {
+    loadedAttemptRef.current = forAttemptId
+    lastSavedRef.current = serverAnswers
+    const cryptoKey = await ensureDraftKey(forAttemptId, rawKey)
+    const draft = cryptoKey ? await readExamDraft({ attemptId: forAttemptId, cryptoKey }) : null
+    clearOtherExamDrafts(forAttemptId)
+    draftReadyRef.current = forAttemptId
+    if (!mountedRef.current || loadedAttemptRef.current !== forAttemptId) return
+    const restored = draft && draft.saved === false ? { ...serverAnswers, ...draft.answers } : serverAnswers
+    setAnswers((current) => ({ ...restored, ...current }))
+  }, [ensureDraftKey])
+
   // Entrega confirmada (pelo aluno, pelo fim do tempo, pelo servidor ou pelo professor).
   const finishDelivered = useCallback((delivered) => {
+    const deliveredAttemptId = timeupRef.current?.attemptId || attemptIdRef.current
     timeupRef.current = null
     submittedRef.current = true
-    clearExamDraft(draftKey)
+    if (deliveredAttemptId) clearExamDraft(deliveredAttemptId)
+    clearExamDraftsForApplication(applicationId)
+    draftCryptoRef.current = null
+    draftReadyRef.current = null
     setResult(delivered)
     setSubmitConfirm(false)
     setTimeupInfo(null)
     setPhase('done')
-  }, [draftKey])
+  }, [applicationId])
 
   const qs = (v = '') => `email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&examKey=${encodeURIComponent(examKey)}&applicationId=${encodeURIComponent(applicationId)}${v}`
   const submit = useCallback(async (auto = false) => {
@@ -165,7 +213,7 @@ export default function ExamRunner() {
     try {
       await api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }, keepalive ? { keepalive: true } : undefined)
       lastSavedRef.current = snapshot
-      writeExamDraft(draftKey, { attemptId: currentAttemptId, answers: answersRef.current, saved: sameExamAnswers(snapshot, answersRef.current) })
+      saveLocalCopy(currentAttemptId, answersRef.current, sameExamAnswers(snapshot, answersRef.current))
       if (!keepalive) setSaveState({ status: 'saved', at: new Date() })
     } catch (e) {
       if (!keepalive) setSaveState((current) => ({ ...current, status: 'error' }))
@@ -174,7 +222,7 @@ export default function ExamRunner() {
     } finally {
       savingRef.current = false
     }
-  }, [email, studentClass, courseId, examKey, applicationId, draftKey])
+  }, [email, studentClass, courseId, examKey, applicationId, saveLocalCopy])
   saveRef.current = saveAnswersIfDirty
 
   // Fim do tempo: congela as respostas no zero e envia até o servidor confirmar.
@@ -238,11 +286,11 @@ export default function ExamRunner() {
     if (!frozen.attemptId) return
     timeupRef.current = frozen
     submittedRef.current = true
-    writeExamDraft(draftKey, { attemptId: frozen.attemptId, answers: frozen.answers, saved: false })
+    saveLocalCopy(frozen.attemptId, frozen.answers, false)
     setTimeupInfo({ retrying: false, attempt: 0 })
     setPhase('timeup')
     runAutoSubmit()
-  }, [draftKey, runAutoSubmit])
+  }, [saveLocalCopy, runAutoSubmit])
   startTimeUpRef.current = startTimeUp
 
   const flushKeystrokes = useCallback((useBeacon = false) => {
@@ -383,11 +431,11 @@ export default function ExamRunner() {
     }
   }, [phase, flushKeystrokes])
 
-  // Cópia local das respostas (sobrevive à recarga da página).
+  // Cópia local cifrada das respostas (sobrevive à queda da rede e à recarga da página).
   useEffect(() => {
     if (phase !== 'active' || !attemptId || timeupRef.current) return
-    writeExamDraft(draftKey, { attemptId, answers, saved: !!lastSavedRef.current && sameExamAnswers(lastSavedRef.current, answers) })
-  }, [answers, attemptId, phase, draftKey])
+    saveLocalCopy(attemptId, answers, !!lastSavedRef.current && sameExamAnswers(lastSavedRef.current, answers))
+  }, [answers, attemptId, phase, saveLocalCopy])
 
   useEffect(() => {
     if (phase !== 'active' || remaining == null) return
@@ -402,7 +450,7 @@ export default function ExamRunner() {
   const sync = useCallback(async () => {
     try {
       await saveRef.current?.()
-      const knownAttemptId = timeupRef.current?.attemptId || attemptIdRef.current || readExamDraft(draftKey)?.attemptId || ''
+      const knownAttemptId = timeupRef.current?.attemptId || attemptIdRef.current || findExamDraftAttempt(applicationId) || ''
       const r = await api.get(`/api/student/sync?${qs(`&attemptId=${encodeURIComponent(knownAttemptId)}`)}`)
       const c = (r.onlineExamConfigs || {})[examKey]
       if (!c) {
@@ -417,18 +465,18 @@ export default function ExamRunner() {
       if (r.tokenAccepted === true) setTokenOk(true)
 
       // A tentativa que este navegador conhece já virou entrega (fim do tempo no
-      // servidor, professor ou outra aba). Se aqui há respostas que o servidor não
-      // tinha, elas ainda vão como envio automático dentro da tolerância.
+      // servidor, professor ou outra aba). Se esta página tem respostas que o servidor
+      // não tinha, elas ainda vão como envio automático dentro da tolerância. Depois de
+      // recarregar, a cópia local de uma tentativa finalizada não é mais legível (a
+      // chave sumiu com ela) e é apagada.
       const outcome = r.attemptOutcome
       if (outcome && knownAttemptId && outcome.attemptId === knownAttemptId && phaseRef.current !== 'done') {
         if (timeupRef.current && !timeupRef.current.failed) return
-        const draft = readExamDraft(draftKey)
-        const draftForAttempt = draft && draft.attemptId === outcome.attemptId ? draft : null
-        const localAnswers = countAnswered(answersRef.current) ? answersRef.current : (draftForAttempt?.answers || {})
-        const unsaved = (draftForAttempt && draftForAttempt.saved === false)
-          || (!!lastSavedRef.current && !sameExamAnswers(lastSavedRef.current, answersRef.current))
+        const unsaved = loadedAttemptRef.current === outcome.attemptId
+          && !!lastSavedRef.current
+          && !sameExamAnswers(lastSavedRef.current, answersRef.current)
         if (outcome.finalizedByServer && unsaved && !timeupRef.current) {
-          startTimeUpRef.current?.({ attemptId: outcome.attemptId, answers: localAnswers })
+          startTimeUpRef.current?.({ attemptId: outcome.attemptId, answers: answersRef.current })
           return
         }
         finishDelivered({
@@ -448,18 +496,13 @@ export default function ExamRunner() {
       if (st.startedAt && stateAttemptId && !timeupRef.current) {
         const serverAnswers = st.answers || {}
         if (loadedAttemptRef.current !== stateAttemptId) {
-          // Primeira leitura desta tentativa (abertura ou recarga): o servidor mais a
-          // cópia local do que ainda não tinha sido salvo.
-          loadedAttemptRef.current = stateAttemptId
-          const draft = readExamDraft(draftKey)
-          let restored = serverAnswers
-          if (draft && draft.attemptId === stateAttemptId && draft.saved === false) restored = { ...serverAnswers, ...draft.answers }
-          else if (draft && draft.attemptId !== stateAttemptId) clearExamDraft(draftKey)
-          lastSavedRef.current = serverAnswers
-          setAnswers((current) => ({ ...restored, ...current }))
+          await loadAttemptAnswers(stateAttemptId, r.localCopyKey, serverAnswers)
         } else {
           lastSavedRef.current = serverAnswers
         }
+      } else if (!st.startedAt && !timeupRef.current) {
+        // Nenhuma tentativa em andamento nesta aplicação: cópia guardada aqui é velha.
+        clearExamDraftsForApplication(applicationId)
       }
 
       const snap = pickSnapshot(c, st.assignedVersion)
@@ -475,11 +518,18 @@ export default function ExamRunner() {
 
       if (submittedRef.current) return
       if (['finished', 'cancelled'].includes(c.status)) {
-        if (r.finishOutcome === 'submitted') {
-          submittedRef.current = true
-          setResult({ gradePublished: false, submittedByInstructor: true })
-          setPhase('done')
+        if (r.finishOutcome === 'submitted' || r.finishOutcome === 'delivered') {
+          // Salva pelo professor ao encerrar, ou entrega do próprio aluno que conta.
+          const delivered = r.attemptOutcome
+          finishDelivered({
+            gradePublished: false,
+            submittedByInstructor: delivered ? delivered.source === 'instructor_finish' : r.finishOutcome === 'submitted',
+            finalizedByServer: delivered?.finalizedByServer === true,
+            answeredCount: delivered?.answeredCount ?? null,
+            lateBySeconds: delivered?.lateBySeconds || 0,
+          })
         } else {
+          clearExamDraftsForApplication(applicationId)
           setFatal(r.finishOutcome === 'discarded'
             ? 'A aplicação foi encerrada e o professor desconsiderou as tentativas que estavam em andamento.'
             : 'Esta aplicação foi encerrada pelo professor.')
@@ -616,15 +666,25 @@ export default function ExamRunner() {
     try {
       const response = await api.post(`/api/student/exam-applications/${encodeURIComponent(applicationId)}/start-attempt`, {})
       attemptIdRef.current = response.attemptId
-      loadedAttemptRef.current = response.attemptId
-      lastSavedRef.current = response.state?.answers || {}
       setAttemptId(response.attemptId)
       setExamConfigVersion(response.examConfigVersion || examConfigVersion)
       if (response.state?.assignedVersion) setAssignedVersion(response.state.assignedVersion)
       if (Number.isFinite(Number(response.state?.timerRemaining))) setRemaining(Number(response.state.timerRemaining))
+      await loadAttemptAnswers(response.attemptId, response.localCopyKey, response.state?.answers || {})
       setPhase('active')
       toast.success('Tentativa iniciada')
     } catch (error) {
+      if (error.data?.timeOver) {
+        // O cronômetro coletivo acabou enquanto o aluno lia as instruções.
+        setFatal('O tempo desta aplicação já terminou. Procure o professor se precisar de uma nova oportunidade.')
+        setPhase('error')
+        return
+      }
+      if (error.data?.attemptFinalized) {
+        const delivered = error.data.attemptOutcome || {}
+        finishDelivered({ gradePublished: false, finalizedByServer: true, answeredCount: delivered.answeredCount ?? null, lateBySeconds: delivered.lateBySeconds || 0 })
+        return
+      }
       toast.error(error.message)
     }
   }

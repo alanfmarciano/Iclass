@@ -6,7 +6,7 @@
 | UC-ADMIN-001 | Automatizado | `/admins` | RBAC administrativo | `admin-access.spec.js`, `admin-rbac-catalog.test.js` |
 | UC-PROVA-001 | Automatizado | `/provas`, `/monitor`, `/aluno/prova/:key` | aplicação e submissão | `exam-flow.spec.js`, `exam-applications.test.js` |
 | UC-PROVA-002 | Automatizado | `/aluno/provas` | tentativas e retomada | `exam-flow.spec.js`, `exam-attempts.test.js` |
-| UC-TENTATIVA-001 | Automatizado | `/aluno/prova/:key`, `/monitor` | fim do tempo, envio atrasado, pausa, encerramento e recarga da tentativa | `exam-attempt-lifecycle.test.js`, `ExamRunner.test.jsx`, `examDrafts.test.js`, `examAutoSubmit.test.js`, `attemptDelivery.test.js`, `monitorTimer.test.js`, `FinishApplicationModal.test.jsx` |
+| UC-TENTATIVA-001 | Automatizado | `/aluno/prova/:key`, `/monitor` | fim do tempo, envio atrasado, pausa, encerramento, bloqueio por foco no fim do tempo, recarga e cópia local cifrada das respostas | `exam-attempt-lifecycle.test.js`, `ExamRunner.test.jsx`, `examDrafts.test.js`, `examAutoSubmit.test.js`, `attemptDelivery.test.js`, `monitorTimer.test.js`, `FinishApplicationModal.test.jsx` |
 | UC-CURSO-001 | Automatizado | `/turmas` | herança Escola → Curso → Turma | `course-management.spec.js` |
 | UC-PRESENCA-001 | Automatizado | `/turmas` | disciplinas e grade horária por turma | `attendance-flow.spec.js`, `TurmaPresencaConfig.test.jsx`, `attendance-utils.test.js` |
 | UC-PRESENCA-002 | Automatizado | `/chamada` | chamada por aula, justificativa, abono e frequência | `attendance-flow.spec.js`, `student-analytics.test.js`, `attendance-utils.test.js` |

@@ -11,6 +11,8 @@ export function formatLateness(seconds) {
 export function deliveryLabel(item) {
   const source = item?.submissionSource
   const late = Number(item?.lateBySeconds || 0)
+  if (item?.recoveredAfterFinish === true) return 'Recuperada depois do encerramento: entregue com as respostas salvas no fim do tempo'
+  if (item?.focusLockedAtDeadline === true) return 'Tempo esgotado com a prova bloqueada por perda de foco: entregue com as respostas salvas antes do bloqueio'
   if (source === 'deadline_server_auto_submit') return 'Tempo esgotado: entregue automaticamente com as respostas salvas'
   if (late > 0) return `Enviada após o prazo (${formatLateness(late)})`
   if (source === 'timer_auto_submit') return 'Enviada automaticamente no fim do tempo'
@@ -19,6 +21,7 @@ export function deliveryLabel(item) {
 }
 
 export function deliveryTone(item) {
+  if (item?.recoveredAfterFinish === true || item?.focusLockedAtDeadline === true) return 'warning'
   if (Number(item?.lateBySeconds || 0) > 0) return 'warning'
   return item?.submissionSource === 'deadline_server_auto_submit' ? 'warning' : 'muted'
 }
