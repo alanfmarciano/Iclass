@@ -14,7 +14,7 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 4. **Liberação decidida no servidor.** O aluno só acessa conteúdo/prova liberados para sua turma; o servidor decide, não o frontend.
 5. **Senhas com scrypt.** `hashPassword`/`verifyPassword` em `database.js`; comparação com `timingSafeEqual`. Hash legado sha256 é reidratado.
 6. **RBAC do admin.** Permissões sensíveis (ex.: `accounts.manage`) são exclusivas de administrador; professor não pode se auto-promover (defesa em camadas em `adminAccounts.js` + `adminPermissions.js`).
-7. **Matrícula aprovada antes de qualquer dado de prova.** `/api/status`, `/api/student/sync`, `/data.js` e as rotas de proctoring conferem `studentBelongsToClass`; autocadastro pendente não vê nada de prova.
+7. **Matrícula aprovada antes de qualquer dado de prova.** `/api/status`, `/api/student/sync`, `/data.js` e as rotas de proctoring conferem `studentBelongsToClass`; autocadastro pendente não vê nada de prova. As mensagens do professor (estado da prova, histórico, confirmação e exclusão) passam por `studentCanSeeBroadcastMessage` e chegam ao aluno sem a lista de quem já confirmou a leitura (`sanitizeBroadcastMessageForStudent`).
 8. **Material por lista do que é permitido.** `/:key.md` e o `data.js` do aluno comparam a chave pedida (sem diferenciar maiúsculas, como o Windows) com as apostilas liberadas para a turma e abrem o arquivo pelo nome canônico (`utils/contentAccess.js`). `Avaliacao_*` e `Gabarito_*` nunca são servidos por essas rotas.
 
 ## Controles implementados

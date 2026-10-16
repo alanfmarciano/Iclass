@@ -407,3 +407,91 @@ test('[UC-SIGILO-001] sync só manda a config da prova pedida e as questões só
     assert.equal(JSON.stringify(status.body).includes('questão antiga'), false, 'status não reenvia provas antigas');
     await control(application.id, 'finish', { inProgressPolicy: 'discard' }).expect(200);
 });
+
+test('[UC-SIGILO-001] mensagens da prova só para aluno da turma, sem os e-mails de quem já leu (SEG-02)', async () => {
+    const sendMessage = body => request(app).post('/api/admin/send-broadcast-message').set('x-admin-session', adminToken)
+        .send({ studentClass: classA, courseId: courseA, examKey, ...body }).expect(200);
+    const toClass = (await sendMessage({ messageText: 'Questão 2 anulada, sigam para a 3.' })).body.message;
+    const toAna = (await sendMessage({ messageText: 'Ana, confira a folha.', targetEmail: 'ana@sigilo.local' })).body.message;
+    db.memory.broadcastMessages.find(m => m.id === toClass.id).acknowledgedBy = ['colega@sigilo.local'];
+
+    await request(app).post('/api/student/register').send({
+        name: 'Intruso', email: 'intruso@sigilo.local', password: '1', studentClass: classA, courseId: courseA, acceptedTerms: true,
+    }).expect(200);
+    const intruder = await loginStudent('intruso@sigilo.local', '1');
+    const outsider = await loginStudent('bia@sigilo.local');
+
+    for (const [label, email, token] of [['autocadastro pendente', 'intruso@sigilo.local', intruder], ['aluno de outra turma', 'bia@sigilo.local', outsider]]) {
+        const all = await request(app).get('/api/student/message-history').set('x-session-token', token).expect(200);
+        assert.deepEqual(all.body.messages, [], `${label}: histórico sem turma não traz mensagens de outras turmas`);
+        const withClass = await request(app).get('/api/student/message-history').set('x-session-token', token)
+            .query({ studentClass: classA, courseId: courseA, examKey });
+        assert.equal(withClass.status, 403, `${label}: histórico da turma alheia`);
+        for (const body of [all.body, withClass.body]) {
+            const raw = JSON.stringify(body);
+            assert.equal(raw.includes('anulada'), false, `${label}: texto da mensagem não vaza`);
+            assert.equal(raw.includes('colega@sigilo.local'), false, `${label}: e-mails de colegas não vazam`);
+        }
+        const state = await request(app).get('/api/student/exam-state').set('x-session-token', token)
+            .query({ email, studentClass: classA, courseId: courseA, examKey });
+        assert.equal(state.status, 403, `${label}: exam-state`);
+
+        const ack = await request(app).post('/api/student/acknowledge-message').set('x-session-token', token).send({ email, messageId: toAna.id });
+        assert.equal(ack.status, 404, `${label}: não confirma mensagem que não pode ver`);
+        const hidden = await request(app).post('/api/student/message-history/delete').set('x-session-token', token).send({ email }).expect(200);
+        assert.equal(hidden.body.deleted, 0, `${label}: não mexe em mensagens de outras turmas`);
+        const hiddenClass = await request(app).post('/api/student/message-history/delete').set('x-session-token', token)
+            .send({ email, studentClass: classA, courseId: courseA });
+        assert.equal(hiddenClass.status, 403);
+    }
+    const storedToAna = db.memory.broadcastMessages.find(m => m.id === toAna.id);
+    assert.equal(storedToAna.status, 'pending', 'mensagem individual da Ana continua não lida');
+    assert.deepEqual(storedToAna.acknowledgedBy, []);
+    assert.equal(db.memory.broadcastMessages.some(m => (m.deletedFor || []).length > 0), false);
+
+    // A aluna da turma continua recebendo as mensagens, sem a lista de quem já confirmou.
+    const ana = await loginStudent('ana@sigilo.local');
+    const history = await request(app).get('/api/student/message-history').set('x-session-token', ana)
+        .query({ studentClass: classA, courseId: courseA, examKey }).expect(200);
+    assert.deepEqual(history.body.messages.map(m => m.messageText).sort(), ['Ana, confira a folha.', 'Questão 2 anulada, sigam para a 3.']);
+    assert.equal(JSON.stringify(history.body).includes('colega@sigilo.local'), false);
+    assert.equal(JSON.stringify(history.body).includes('acknowledgedBy'), false);
+    const anaState = await request(app).get('/api/student/exam-state').set('x-session-token', ana)
+        .query({ email: 'ana@sigilo.local', studentClass: classA, courseId: courseA, examKey }).expect(200);
+    assert.equal(anaState.body.messages.length, 2);
+    assert.equal(JSON.stringify(anaState.body.messages).includes('colega@sigilo.local'), false);
+    await request(app).post('/api/student/acknowledge-message').set('x-session-token', ana)
+        .send({ email: 'ana@sigilo.local', messageId: toAna.id }).expect(200);
+    assert.equal(storedToAna.status, 'read');
+    const removed = await request(app).post('/api/student/message-history/delete').set('x-session-token', ana)
+        .send({ email: 'ana@sigilo.local', studentClass: classA, courseId: courseA, examKey }).expect(200);
+    assert.equal(removed.body.deleted, 2);
+});
+
+test('[UC-SIGILO-001] apostila perde só o gabarito do professor; autocorreção do aluno fica (SEG-01)', async () => {
+    const file = path.join(CONTENT_DIR, 'Apostila_SIG_1.md');
+    const original = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, [
+        '# Apostila liberada',
+        '<details>\n<summary>Gabarito dos exercícios</summary>\n\n1. Resposta para o aluno conferir\n</details>',
+        '<details>\n<summary>👀 Ver Resposta</summary>\n\nExplicação para o aluno\n</details>',
+        `<details>\n<summary><b>👀 ${GABARITO}</b></summary>\n\n1. **B** (segredo do professor)\n</details>`,
+        '<details>\n<summary><b>GABARITO</b></summary>\n\n1. **C** (segredo da prova)\n</details>',
+        '<details>\n<summary><b>GABARITO OFICIAL</b></summary>\n\n1. **D** (segredo oficial)\n</details>',
+    ].join('\n\n'));
+    try {
+        const token = await loginStudent('ana@sigilo.local');
+        const asStudent = await request(app).get('/Apostila_SIG_1.md').set('x-session-token', token).expect(200);
+        const data = await request(app).get(`/api/data.js?courseId=${courseA}`).set('x-session-token', token).expect(200);
+        for (const [label, text] of [['apostila .md', asStudent.text], ['data.js', data.text]]) {
+            assert.match(text, /Resposta para o aluno conferir/, `${label}: bloco de autocorreção continua`);
+            assert.match(text, /Explicação para o aluno/, label);
+            assert.equal(/segredo (do professor|da prova|oficial)/.test(text), false, `${label}: gabarito do professor sai`);
+            assert.equal(text.includes(GABARITO), false, label);
+        }
+        const asAdmin = await request(app).get('/Apostila_SIG_1.md').set('x-admin-session', adminToken).expect(200);
+        assert.match(asAdmin.text, /segredo do professor/, 'o editor do instrutor vê o arquivo como está');
+    } finally {
+        fs.writeFileSync(file, original);
+    }
+});

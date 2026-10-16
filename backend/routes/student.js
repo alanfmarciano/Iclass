@@ -19,6 +19,7 @@ const {
     studentExamConfigSummary,
     studentExamConfigsSummary,
     studentBelongsToClass,
+    sanitizeBroadcastMessageForStudent,
     canStudentViewAnswerKey,
     getReleasedItemsForClass,
     findClassByNameAndCourse,
@@ -519,7 +520,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 !(m.acknowledgedBy || []).includes(email) &&
                 !(m.deletedFor || []).includes(email) &&
                 m.status !== 'read'
-            );
+            ).map(m => sanitizeBroadcastMessageForStudent(m, email));
 
             const cfg = cls.onlineExamConfigs && cls.onlineExamConfigs[examKey];
             examConfigVersion = cfg ? (cfg.updatedAt || null) : null;

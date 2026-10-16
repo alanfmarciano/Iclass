@@ -211,6 +211,42 @@ function studentBelongsToClass(studentRecord, cls) {
     });
 }
 
+// Mensagem do professor (broadcastMessages) que o aluno pode ver: a turma da mensagem
+// precisa ser uma em que ele tem matrícula aprovada e, se a mensagem for individual, ela
+// precisa ser para ele. Sem isso, uma conta autocadastrada pendente lia as mensagens de
+// prova de todas as turmas.
+function studentCanSeeBroadcastMessage(studentRecord, studentEmail, message, classes = db.memory.classes) {
+    if (!studentRecord || !message || message.adminDeleted || !message.studentClass) return false;
+    const email = String(studentEmail || studentRecord.email || '').trim().toLowerCase();
+    if (message.targetEmail && String(message.targetEmail).trim().toLowerCase() !== email) return false;
+    const className = String(message.studentClass).trim().toLowerCase();
+    return (classes || []).some(cls =>
+        cls && cls.name &&
+        String(cls.name).trim().toLowerCase() === className &&
+        (!message.courseId || !cls.courseId || String(message.courseId) === String(cls.courseId)) &&
+        studentBelongsToClass(studentRecord, cls)
+    );
+}
+
+// O que o aluno recebe de uma mensagem: o texto e o contexto da prova. Quem já confirmou
+// a leitura (e-mails de colegas) e quem excluiu do histórico ficam só com o instrutor.
+function sanitizeBroadcastMessageForStudent(message, studentEmail) {
+    const email = String(studentEmail || '').trim().toLowerCase();
+    return {
+        id: message.id,
+        studentClass: message.studentClass || null,
+        courseId: message.courseId || null,
+        examKey: message.examKey || null,
+        applicationId: message.applicationId || null,
+        targetEmail: message.targetEmail ? email : null,
+        messageText: message.messageText || '',
+        timestamp: message.timestamp || null,
+        createdAt: message.createdAt || null,
+        status: message.status || 'pending',
+        acknowledged: (message.acknowledgedBy || []).includes(email),
+    };
+}
+
 // Campos da configuração de prova online que o aluno pode receber: só metadados
 // (estado, horários, duração). Enunciados e alternativas (versionSnapshots) nunca vão
 // por aqui; as questões da tentativa saem apenas por questionsForStudentAttempt.
@@ -996,6 +1032,8 @@ module.exports = {
     studentExamConfigSummary,
     studentExamConfigsSummary,
     studentBelongsToClass,
+    studentCanSeeBroadcastMessage,
+    sanitizeBroadcastMessageForStudent,
     canStudentViewAnswerKey,
     getReleasedItemsForClass,
     normalizeIdentifier,

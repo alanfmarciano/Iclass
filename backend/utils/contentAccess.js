@@ -22,12 +22,29 @@ function isRestrictedContentKey(key) {
     return normalized.startsWith('avaliacao_') || normalized.startsWith('gabarito_');
 }
 
-// Remove blocos de gabarito (<details><summary>...GABARITO...</summary>...) que por
-// engano tenham ido parar numa apostila. Defesa extra: o material do aluno nunca
+const DETAILS_BLOCK = /<details[^>]*>\s*<summary[^>]*>((?:(?!<\/summary>)[\s\S])*)<\/summary>[\s\S]*?(?:<\/details>|$)/gi;
+
+// Título de bloco que marca o gabarito do professor, nos formatos dos arquivos de
+// avaliação: "GABARITO EXCLUSIVO DO PROFESSOR", "GABARITO OFICIAL" ou só "GABARITO".
+// Um bloco de autocorreção escrito para o aluno ("Gabarito dos exercícios",
+// "Ver resposta") não casa e continua na apostila.
+function isTeacherAnswerKeySummary(summaryHtml) {
+    const text = String(summaryHtml || '')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+    if (!text.includes('gabarito')) return false;
+    return text === 'gabarito' || text.includes('gabarito oficial') || text.includes('professor');
+}
+
+// Remove blocos de gabarito do professor (<details><summary>GABARITO ...</summary>...) que
+// por engano tenham ido parar numa apostila. Defesa extra: o material do aluno nunca
 // carrega o bloco "GABARITO EXCLUSIVO DO PROFESSOR".
 function stripAnswerKeyBlocks(markdown) {
     return String(markdown || '')
-        .replace(/<details[^>]*>\s*<summary[^>]*>(?:(?!<\/summary>)[\s\S])*?gabarito(?:(?!<\/summary>)[\s\S])*<\/summary>[\s\S]*?(?:<\/details>|$)/gi, '');
+        .replace(DETAILS_BLOCK, (block, summary) => (isTeacherAnswerKeySummary(summary) ? '' : block));
 }
 
 function classStructure(cls) {

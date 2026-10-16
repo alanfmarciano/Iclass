@@ -2,7 +2,15 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const db = require('../database.js');
-const { validateStudentSession, validateAdmin, findClassByNameAndCourse, initializeExamState, studentBelongsToClass } = require('../middlewares.js');
+const {
+    validateStudentSession,
+    validateAdmin,
+    findClassByNameAndCourse,
+    initializeExamState,
+    studentBelongsToClass,
+    studentCanSeeBroadcastMessage,
+    sanitizeBroadcastMessageForStudent,
+} = require('../middlewares.js');
 const { countStudentExamAttempts, normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { normalizeExamToken, verifyExamToken } = require('../utils/examToken.js');
 const {
@@ -28,6 +36,24 @@ function rejectForeignClass(req, res, cls) {
         return true;
     }
     return false;
+}
+
+// Mensagens do professor que este aluno pode ver (turma com matrícula aprovada e, se
+// individual, endereçada a ele). Base de exam-state, histórico, confirmação e exclusão.
+function visibleMessagesForStudent(req) {
+    const classes = db.memory.classes || [];
+    return (db.memory.broadcastMessages || [])
+        .filter(m => studentCanSeeBroadcastMessage(req.studentAccount, req.studentEmail, m, classes));
+}
+
+// Turma informada pelo aluno nas rotas de mensagem: se existe e ele não é aluno dela, 403.
+function rejectForeignMessageClass(req, res, studentClass, courseId) {
+    const name = String(studentClass || '').trim();
+    if (!name) return false;
+    const classes = db.memory.classes || [];
+    const cls = findClassByNameAndCourse(classes, name, courseId)
+        || classes.find(c => c.name && c.name.toLowerCase() === name.toLowerCase());
+    return rejectForeignClass(req, res, cls);
 }
 
 function stateContext({ application, studentEmail, examKey, attemptId, create = false, cls } = {}) {
@@ -304,8 +330,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
         };
         
         // Buscar mensagens pendentes de broadcast para esta turma/aluno
-        const messages = db.memory.broadcastMessages.filter(m => 
-            !m.adminDeleted &&
+        const messages = visibleMessagesForStudent(req).filter(m => 
             m.studentClass && studentClass &&
             m.studentClass.toLowerCase() === studentClass.trim().toLowerCase() &&
             (!m.courseId || String(m.courseId) === String(courseId || '')) &&
@@ -314,7 +339,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
             !(m.acknowledgedBy || []).includes(normalizedEmail) &&
             !(m.deletedFor || []).includes(normalizedEmail) &&
             m.status !== 'read'
-        );
+        ).map(m => sanitizeBroadcastMessageForStudent(m, normalizedEmail));
 
         // Obter a versão atual da configuração da prova (necessária para validação no submit)
         let examConfigVersion = null;
@@ -370,15 +395,18 @@ router.post('/api/student/acknowledge-message', validateStudentSession, (req, re
         if (!messageId) {
             return res.status(400).json({ error: 'ID da mensagem é obrigatório.' });
         }
-        const msg = db.memory.broadcastMessages.find(m => m.id === messageId);
-        if (msg) {
-            msg.acknowledgedBy = Array.isArray(msg.acknowledgedBy) ? msg.acknowledgedBy : [];
-            if (!msg.acknowledgedBy.includes(req.studentEmail)) {
-                msg.acknowledgedBy.push(req.studentEmail);
-            }
-            if (msg.targetEmail) msg.status = 'read';
-            db.save();
+        // Só confirma mensagem que o aluno pode ver: antes qualquer conta marcava como
+        // lida a mensagem individual de outro aluno, que deixava de aparecer para ele.
+        const msg = visibleMessagesForStudent(req).find(m => m.id === messageId);
+        if (!msg) {
+            return res.status(404).json({ error: 'Mensagem não encontrada.' });
         }
+        msg.acknowledgedBy = Array.isArray(msg.acknowledgedBy) ? msg.acknowledgedBy : [];
+        if (!msg.acknowledgedBy.includes(req.studentEmail)) {
+            msg.acknowledgedBy.push(req.studentEmail);
+        }
+        if (msg.targetEmail) msg.status = 'read';
+        db.save();
         res.json({ success: true });
     } catch (err) {
         console.error('Erro ao acusar recebimento de mensagem:', err);
@@ -393,15 +421,17 @@ router.get('/api/student/message-history', validateStudentSession, (req, res) =>
         const courseId = String(req.query.courseId || '').trim();
         const examKey = String(req.query.examKey || '').trim();
         const applicationId = String(req.query.applicationId || '').trim();
-        const messages = (db.memory.broadcastMessages || [])
-            .filter(m => !m.adminDeleted)
-            .filter(m => m.studentClass && (!studentClass || m.studentClass.toLowerCase() === studentClass.toLowerCase()))
+        if (rejectForeignMessageClass(req, res, studentClass, courseId)) return;
+        // Só mensagens das turmas em que o aluno tem matrícula aprovada (conta pendente
+        // não vê nada), sem a lista de quem já confirmou a leitura.
+        const messages = visibleMessagesForStudent(req)
+            .filter(m => !studentClass || m.studentClass.toLowerCase() === studentClass.toLowerCase())
             .filter(m => !courseId || !m.courseId || String(m.courseId) === courseId)
             .filter(m => !examKey || !m.examKey || String(m.examKey) === examKey)
             .filter(m => !applicationId || m.applicationId === applicationId)
-            .filter(m => m.targetEmail === null || (m.targetEmail && m.targetEmail.toLowerCase() === email))
             .filter(m => !(m.deletedFor || []).includes(email))
-            .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+            .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+            .map(m => sanitizeBroadcastMessageForStudent(m, email));
         res.json({ success: true, messages });
     } catch (err) {
         console.error('Erro ao carregar historico de mensagens:', err);
@@ -413,8 +443,9 @@ router.post('/api/student/message-history/delete', validateStudentSession, (req,
     try {
         const email = req.studentEmail;
         const { messageId, studentClass, courseId, examKey, applicationId } = req.body || {};
+        if (rejectForeignMessageClass(req, res, studentClass, courseId)) return;
         let count = 0;
-        (db.memory.broadcastMessages || []).forEach(m => {
+        visibleMessagesForStudent(req).forEach(m => {
             const match = messageId
                 ? m.id === messageId
                 : (!studentClass || String(m.studentClass || '').toLowerCase() === String(studentClass).trim().toLowerCase())
