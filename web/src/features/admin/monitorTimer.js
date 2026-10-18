@@ -61,19 +61,30 @@ export function resolveMonitorTimer({ config = {}, rows = [], now = Date.now(), 
 
 // Retorno do "+N min" para a turma. Logo depois do fim do tempo (até 2 min), quem foi
 // entregue automaticamente no fim do tempo volta para a prova com o tempo extra; o
-// professor fica sabendo quantos voltaram e quantos já tinham entregue e ficaram sem o
-// extra (envio pelo próprio aluno, nota publicada ou fim do tempo há mais de 2 min),
-// não só "sucesso".
+// professor fica sabendo quantos voltaram (e quem voltou ainda bloqueado por perda de
+// foco, que só continua depois do desbloqueio) e quantos já tinham entregue e ficaram
+// sem o extra (envio pelo próprio aluno com o tempo dele já acabado, nota publicada ou
+// fim do tempo há mais de 2 min), não só "sucesso". No meio da prova, quem já enviou
+// não entra no aviso: o servidor só conta quem estava com o tempo acabado.
 export function classTimeExtraFeedback(response, minutes = 5) {
   const count = (value) => Math.max(0, Math.floor(Number(value) || 0))
   const reopened = count(response?.reopenedAtDeadline)
+  const reopenedLocked = Math.min(reopened, count(response?.reopenedLocked))
   const keptAtDeadline = count(response?.deliveredAtDeadline)
   const keptByStudent = count(response?.deliveredByStudent)
   const parts = [`+${minutes} min para a turma`]
   if (reopened) {
-    parts.push(reopened === 1
+    const back = reopened === 1
       ? '1 aluno entregue automaticamente no fim do tempo voltou para a prova com o tempo extra'
-      : `${reopened} alunos entregues automaticamente no fim do tempo voltaram para a prova com o tempo extra`)
+      : `${reopened} alunos entregues automaticamente no fim do tempo voltaram para a prova com o tempo extra`
+    if (!reopenedLocked) parts.push(back)
+    else if (reopenedLocked === reopened) {
+      parts.push(reopened === 1
+        ? `${back}, mas continua bloqueado por perda de foco: desbloqueie no Monitor para ele continuar`
+        : `${back}, mas continuam bloqueados por perda de foco: desbloqueie no Monitor para eles continuarem`)
+    } else {
+      parts.push(`${back} (${reopenedLocked === 1 ? '1 continua bloqueado' : `${reopenedLocked} continuam bloqueados`} por perda de foco: desbloqueie no Monitor para continuar)`)
+    }
   }
   const kept = keptAtDeadline + keptByStudent
   if (kept) {
@@ -87,5 +98,5 @@ export function classTimeExtraFeedback(response, minutes = 5) {
     const who = kept === 1 ? '1 aluno que já tinha entregue ficou sem o tempo extra' : `${kept} alunos que já tinham entregue ficaram sem o tempo extra`
     parts.push(`${who}: ${reasons.join('; ')}`)
   }
-  return { tone: kept ? 'warning' : 'success', message: parts.length > 1 ? `${parts.join('. ')}.` : parts[0] }
+  return { tone: kept || reopenedLocked ? 'warning' : 'success', message: parts.length > 1 ? `${parts.join('. ')}.` : parts[0] }
 }

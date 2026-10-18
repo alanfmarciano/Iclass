@@ -52,4 +52,16 @@ describe('FinishApplicationModal', () => {
     />)
     expect(screen.getByText(/2 alunos estão com o tempo esgotado/)).toBeVisible()
   })
+
+  it('[UC-TENTATIVA-001] avisa que a tentativa reaberta pelo tempo extra mantém a entrega do fim do tempo ao desconsiderar (G1-mais5)', () => {
+    render(<FinishApplicationModal
+      open
+      onClose={() => {}}
+      summary={{ inProgressAttempts: 2, answeredQuestions: 4, waitingToStart: 0, reopenedAttempts: 1 }}
+      onSubmit={() => {}}
+      onDiscard={() => {}}
+    />)
+    expect(screen.getByText('Entregas já concluídas permanecem preservadas.', { exact: false })).toBeVisible()
+    expect(screen.getByRole('note')).toHaveTextContent('1 dessas tentativas foi reaberta com o tempo extra da turma depois da entrega do fim do tempo: ao desconsiderar, vale a entrega que o aluno já tinha.')
+  })
 })

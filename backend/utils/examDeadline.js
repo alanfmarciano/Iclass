@@ -51,7 +51,7 @@ function countAnswers(answers) {
 // Estado da tentativa guardado na entrega automática do fim do tempo, para o "+N min"
 // da turma poder reabri-la (sem as respostas, que ficam na própria entrega, e sem a
 // chave da cópia local, que é do navegador do aluno).
-const REOPEN_STATE_OMITTED_FIELDS = new Set(['answers', 'localCopyKey', 'status', 'timerRemaining', 'submittedAt', 'reopenableState', 'pageExit']);
+const REOPEN_STATE_OMITTED_FIELDS = new Set(['answers', 'localCopyKey', 'status', 'timerRemaining', 'submittedAt', 'reopenableState', 'pageExit', 'reopenedDelivery']);
 
 function attemptStateForReopen(state) {
     if (!state || typeof state !== 'object' || !state.startedAt) return null;
@@ -286,21 +286,50 @@ function answersFromDelivery(submission) {
     return answers;
 }
 
+// A entrega manual (o aluno apertou "Enviar") só conta como "ficou sem o tempo extra"
+// quando o tempo dele já tinha acabado antes do "+N min": no meio da prova, quem já
+// enviou não perdeu nada e o professor não precisa de aviso.
+function timeEndedBeforeExtra(application, submission, email, { now, extraMinutes }) {
+    const collective = application.timerMode !== 'per_attempt' && Number(application.startsAt) > 0;
+    if (collective) {
+        const before = computeAttemptDeadline({
+            application: { ...application, globalTimeAdjustment: Number(application.globalTimeAdjustment || 0) - Number(extraMinutes || 0) },
+            state: { startedAt: Number(application.startsAt), individualTimeAdjustment: Number(application.studentAdjustments?.[email] || 0) },
+            now,
+        });
+        if (before !== null) return before <= now;
+    }
+    const stored = Number(submission?.deadlineAt);
+    return stored > 0 && stored <= now;
+}
+
+// Cópia da entrega do fim do tempo que a reabertura tira da lista: fica guardada na
+// tentativa reaberta para voltar se ela terminar sem entrega nova (o professor
+// desconsidera o que estava em andamento ao encerrar). Nunca vai para o aluno.
+function archivedDelivery(submission) {
+    const copy = JSON.parse(JSON.stringify(submission));
+    delete copy.reopenableState;
+    return copy;
+}
+
 // "+N min" para a turma logo depois do fim do tempo (AVA-03). Chamado depois de somar
 // o tempo extra na aplicação: quem foi entregue AUTOMATICAMENTE no fim do tempo (pelo
 // navegador ou pelo servidor) há até 2 min volta para a mesma tentativa, com as mesmas
-// respostas e o prazo novo, e a entrega sai da lista (fica no registro de auditoria e
-// na própria tentativa). Nunca reabre o envio feito pelo próprio aluno, entrega com
-// nota publicada ou arquivada, entrega mais antiga que a janela ou tentativa que o
-// tempo extra não alcança. Devolve as tentativas reabertas e quantos ficaram de fora.
-function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor = null, windowMs = CLASS_EXTRA_TIME_REOPEN_WINDOW_MS } = {}) {
-    const result = { reopened: [], deadlineKept: 0, manualKept: 0 };
+// respostas e o prazo novo. A entrega sai da lista e fica guardada na tentativa
+// (reopenedDelivery): uma entrega nova da tentativa a substitui, e o descarte no
+// encerramento a devolve (restoreReopenedDelivery), então a entrega que o aluno já tinha
+// nunca se perde. Nunca reabre o envio feito pelo próprio aluno, entrega com nota
+// publicada ou arquivada, entrega mais antiga que a janela ou tentativa que o tempo
+// extra não alcança. Devolve as tentativas reabertas (e quantas voltaram bloqueadas por
+// perda de foco) e quantos ficaram de fora.
+function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor = null, windowMs = CLASS_EXTRA_TIME_REOPEN_WINDOW_MS, extraMinutes = 0 } = {}) {
+    const result = { reopened: [], reopenedLocked: 0, deadlineKept: 0, manualKept: 0 };
     if (!application || !ACTIVE_APPLICATION_STATUSES.has(application.status)) return result;
     if (!memory.studentExamState || typeof memory.studentExamState !== 'object') memory.studentExamState = {};
     for (const [email, submission] of latestDeliveryByStudent(memory, application.id)) {
         if (hasOpenAttemptInApplication(memory, application.id, email)) continue;
         if (!DEADLINE_DELIVERY_SOURCES.has(submission.submissionSource)) {
-            result.manualKept += 1;
+            if (timeEndedBeforeExtra(application, submission, email, { now, extraMinutes })) result.manualKept += 1;
             continue;
         }
         const snapshot = submission.reopenableState;
@@ -329,7 +358,8 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
         state.savedAt = state.savedAt || submission.timestamp || null;
         state.reopenedAt = now;
         state.reopenedBy = actor || null;
-        // A entrega que a reabertura substituiu: vai junto na próxima entrega da tentativa.
+        // A entrega que a reabertura substituiu: o resumo vai junto na próxima entrega da
+        // tentativa (o professor vê em Resultados) e a cópia completa fica guardada.
         state.reopenedFrom = [
             ...(Array.isArray(snapshot.reopenedFrom) ? snapshot.reopenedFrom : []),
             {
@@ -339,16 +369,58 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
                 deadlineAt,
                 answeredCount: countAnswers(state.answers),
                 lateBySeconds: Number(submission.lateBySeconds || 0),
+                score: submission.score ?? null,
             },
         ];
+        state.reopenedDelivery = archivedDelivery(submission);
         const key = examStateKey({ applicationId: application.id, studentEmail: email, attemptNumber: state.attemptNumber });
         const index = memory.submissions.indexOf(submission);
         if (index >= 0) memory.submissions.splice(index, 1);
         memory.studentExamState[key] = state;
         recordReopenedAttempt(memory, application, submission, state, actor, now);
-        result.reopened.push({ studentEmail: email, attemptId: state.attemptId, submissionId: submission.id });
+        // Travada por perda de foco no fim do tempo: volta travada, e o professor precisa
+        // desbloquear no Monitor para o aluno continuar.
+        if (state.focusLocked === true) result.reopenedLocked += 1;
+        result.reopened.push({ studentEmail: email, attemptId: state.attemptId, submissionId: submission.id, focusLocked: state.focusLocked === true });
     }
     return result;
+}
+
+// Tentativa reaberta pelo "+N min" que termina sem entrega nova (o professor desconsiderou
+// as tentativas em andamento ao encerrar): a entrega do fim do tempo que ela já tinha
+// volta como estava, marcada para o professor. Devolve a entrega restaurada (ou null).
+function restoreReopenedDelivery(memory, state, { application = null, actor = null, now = Date.now() } = {}) {
+    const archived = state?.reopenedDelivery;
+    if (!archived || typeof archived !== 'object' || !archived.id) return null;
+    if (!Array.isArray(memory.submissions)) memory.submissions = [];
+    const attemptId = archived.attemptId || state.attemptId || null;
+    if (attemptId && memory.submissions.some(item => item?.attemptId === attemptId)) return null;
+    const restored = JSON.parse(JSON.stringify(archived));
+    restored.restoredAfterDiscard = {
+        at: new Date(now).toISOString(),
+        by: actor || 'sistema',
+        reopenedAt: Number(state.reopenedAt) > 0 ? new Date(Number(state.reopenedAt)).toISOString() : null,
+    };
+    memory.submissions.push(restored);
+    if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
+    memory.auditLogs.push({
+        id: `audit_exam_${now}_${Math.random().toString(36).slice(2, 10)}`,
+        type: 'exam_attempt_reopen_discarded',
+        actor: actor || 'sistema',
+        applicationId: application?.id || state.applicationId || null,
+        examKey: application?.examKey || restored.examKey || null,
+        studentClass: application?.studentClass || null,
+        courseId: application?.courseId || null,
+        details: {
+            studentEmail: normalizedEmail(restored.student?.email || state.studentEmail),
+            attemptId,
+            submissionId: restored.id,
+            discardedAnsweredCount: countAnswers(state.answers),
+            restoredAnsweredCount: Number(restored.answeredCount || 0),
+        },
+        timestamp: new Date(now).toISOString(),
+    });
+    return restored;
 }
 
 function recordReopenedAttempt(memory, application, submission, state, actor, now) {
@@ -494,5 +566,6 @@ module.exports = {
     markLateSubmission,
     reopenDeadlineDeliveries,
     replaceServerFinalization,
+    restoreReopenedDelivery,
     settleExpiredAttempts,
 };

@@ -9,7 +9,7 @@ import { Textarea } from '../../../components/ui/Textarea'
 import { Badge } from '../../../components/ui/Badge'
 import { ConfirmDialog, Modal } from '../../../components/ui/Modal'
 import { api, hasActiveSession } from '../../../lib/api'
-import { recentRenderError } from '../../../lib/renderErrors'
+import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '../../../lib/renderErrors'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { pickSnapshot, normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
@@ -118,6 +118,7 @@ export default function ExamRunner() {
   const blockedActionRef = useRef(null) // POP (voltar do navegador) ou PUSH/REPLACE (link)
   const unsupportedLoggedRef = useRef(null) // tentativa já registrada como sem tela cheia
   const pageHiddenRef = useRef(false) // a página está sendo recarregada ou fechada
+  const timeOverScreenRef = useRef(false) // a tela de erro é a de "tempo terminou" (pode voltar)
   answersRef.current = answers
   phaseRef.current = phase
   attemptIdRef.current = attemptId
@@ -128,6 +129,8 @@ export default function ExamRunner() {
 
   useEffect(() => {
     mountedRef.current = true
+    // A prova voltou à tela: não há mais tela de erro no lugar dela.
+    clearInterruptedExam()
     return () => { mountedRef.current = false }
   }, [])
 
@@ -188,6 +191,8 @@ export default function ExamRunner() {
     submittedRef.current = false
     deliveredAttemptRef.current = null
     loadedAttemptRef.current = null
+    timeOverScreenRef.current = false
+    setFatal(null)
     setTimeupInfo(null)
     setResult(null)
     setSubmitConfirm(false)
@@ -522,6 +527,7 @@ export default function ExamRunner() {
       const r = await api.get(`/api/student/sync?${qs(`&attemptId=${encodeURIComponent(knownAttemptId)}`)}`)
       const c = (r.onlineExamConfigs || {})[examKey]
       if (!c) {
+        timeOverScreenRef.current = false
         setFatal('Esta prova não está mais disponível para sua turma.')
         setPhase('error')
         return
@@ -563,10 +569,16 @@ export default function ExamRunner() {
       const stateAttemptId = r.attemptId || st.attemptId || null
       // A tentativa que esta tela mostrou como entregue (ou que estava enviando no fim
       // do tempo) voltou a ter prazo: o professor deu mais tempo à turma logo depois do
-      // fim do tempo e ela foi reaberta. A prova continua de onde parou.
+      // fim do tempo e ela foi reaberta. A prova continua de onde parou. O mesmo vale para
+      // a página aberta (ou recarregada) depois da entrega, que mostrava "Tentativas
+      // esgotadas" ou "o tempo terminou": o servidor tem de novo uma tentativa em andamento.
       const shownAsDelivered = deliveredAttemptRef.current || timeupRef.current?.attemptId || null
-      if (submittedRef.current && st.startedAt && st.reopenedAt && stateAttemptId && stateAttemptId === shownAsDelivered) {
-        resumeExtendedAttempt('O professor deu mais tempo à turma: sua prova foi reaberta.')
+      const openStartedAttempt = !!(st.startedAt && stateAttemptId && !['submitted', 'invalidated'].includes(st.status))
+      const reopenedHere = submittedRef.current && st.reopenedAt && openStartedAttempt && stateAttemptId === shownAsDelivered
+      const reopenedForClosedScreen = !submittedRef.current && openStartedAttempt
+        && (phaseRef.current === 'exhausted' || (phaseRef.current === 'error' && timeOverScreenRef.current))
+      if (reopenedHere || reopenedForClosedScreen) {
+        resumeExtendedAttempt(st.reopenedAt ? 'O professor deu mais tempo à turma: sua prova foi reaberta.' : 'Sua prova continua.')
         setAttemptId(stateAttemptId)
       }
       if (st.startedAt && stateAttemptId && !timeupRef.current) {
@@ -618,6 +630,7 @@ export default function ExamRunner() {
           })
         } else {
           clearExamDraftsForApplication(applicationId)
+          timeOverScreenRef.current = false
           setFatal(r.finishOutcome === 'discarded'
             ? 'A aplicação foi encerrada e o professor desconsiderou as tentativas que estavam em andamento.'
             : 'Esta aplicação foi encerrada pelo professor.')
@@ -635,6 +648,7 @@ export default function ExamRunner() {
         return
       }
       if (r.timeOver && !st.startedAt) {
+        timeOverScreenRef.current = true
         setFatal('O tempo desta aplicação já terminou. Procure o professor se precisar de uma nova oportunidade.')
         setPhase('error')
         return
@@ -673,6 +687,7 @@ export default function ExamRunner() {
       setPhase((p) => (['paused', 'server_paused', 'loading', 'waiting', 'token', 'instructions'].includes(p) ? 'active' : p))
     } catch (e) {
       if (e.status === 401 || e.status === 403) {
+        timeOverScreenRef.current = false
         setFatal(e.message)
         setPhase('error')
       }
@@ -768,6 +783,7 @@ export default function ExamRunner() {
     } catch (error) {
       if (error.data?.timeOver) {
         // O cronômetro coletivo acabou enquanto o aluno lia as instruções.
+        timeOverScreenRef.current = true
         setFatal('O tempo desta aplicação já terminou. Procure o professor se precisar de uma nova oportunidade.')
         setPhase('error')
         return
@@ -864,6 +880,8 @@ export default function ExamRunner() {
     const renderError = recentRenderError()
     if (renderError) {
       api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_render_error', details: `Erro técnico na tela da prova: ${renderError.message}` }, { keepalive: true }).catch(() => {})
+      // A tela de erro da prova confirma e registra uma saída por voltar ou link.
+      markInterruptedExam({ ...ctx, attemptId: attemptIdRef.current })
       return
     }
     api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_left', details: 'Saiu da prova pela navegação' }, { keepalive: true }).catch(() => {})

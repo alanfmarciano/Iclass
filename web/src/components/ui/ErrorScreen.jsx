@@ -2,12 +2,13 @@ import { Component } from 'react'
 import { useRouteError } from 'react-router-dom'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 import { Button } from './Button'
-import { markRenderError } from '../../lib/renderErrors'
+import { markRenderError, renderErrorDetails } from '../../lib/renderErrors'
 
 // Tela de erro em português no lugar da tela padrão do roteador ("Unexpected Application
 // Error!"). Na prova, as respostas já salvas continuam guardadas e a prova segue aberta.
-export function ErrorScreen({ error }) {
-  const message = String(error?.message || error?.statusText || '').trim()
+// Os detalhes técnicos vêm sem endereços (o código do erro basta para o suporte).
+export function ErrorScreen({ error, onReload }) {
+  const message = renderErrorDetails(error)
   return (
     <div role="alert" className="app-canvas min-h-full flex flex-col items-center justify-center text-center px-4 py-16 text-text">
       <div className="w-14 h-14 grid place-items-center rounded-full bg-danger-soft text-danger mb-4"><AlertTriangle aria-hidden="true" size={26} /></div>
@@ -15,7 +16,7 @@ export function ErrorScreen({ error }) {
       <p className="text-sm text-muted mt-2 max-w-md">
         Recarregue a página para continuar. Se você estava fazendo uma prova, as respostas já salvas continuam guardadas e a prova não foi encerrada.
       </p>
-      <Button className="mt-5" icon={RotateCw} onClick={() => window.location.reload()}>Recarregar a página</Button>
+      <Button className="mt-5" icon={RotateCw} onClick={() => (onReload ? onReload() : window.location.reload())}>Recarregar a página</Button>
       {message && (
         <details className="mt-6 max-w-md text-left text-xs text-muted">
           <summary className="cursor-pointer select-none">Detalhes técnicos</summary>
@@ -26,8 +27,9 @@ export function ErrorScreen({ error }) {
   )
 }
 
-// Erro de renderização dentro de uma área (ex.: a prova): mostra a tela de erro e marca o
-// erro antes de a área desmontar, para a prova não registrar isso como saída.
+// Erro de renderização dentro de uma área (ex.: a prova): mostra a tela de erro (ou a
+// fallback da área) e marca o erro antes de a área desmontar, para a prova não registrar
+// isso como saída.
 export class AppErrorBoundary extends Component {
   constructor(props) {
     super(props)
@@ -44,7 +46,10 @@ export class AppErrorBoundary extends Component {
   }
 
   render() {
-    if (this.state.error) return <ErrorScreen error={this.state.error} />
+    if (this.state.error) {
+      const Fallback = this.props.fallback || ErrorScreen
+      return <Fallback error={this.state.error} />
+    }
     return this.props.children
   }
 }

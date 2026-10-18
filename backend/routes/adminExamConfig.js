@@ -504,7 +504,7 @@ function createAdminExamConfigRouter() {
                 }
             }
             const reopened = !targetEmail && adjustmentMinutes > 0
-                ? reopenDeadlineDeliveries(db.memory, application, { actor: adminActor(req) })
+                ? reopenDeadlineDeliveries(db.memory, application, { actor: adminActor(req), extraMinutes: adjustmentMinutes })
                 : null;
             application.updatedAt = new Date().toISOString();
             application.updatedBy = adminActor(req);
@@ -516,6 +516,7 @@ function createAdminExamConfigRouter() {
                 success: true,
                 application,
                 reopenedAtDeadline: reopened ? reopened.reopened.length : 0,
+                reopenedLocked: reopened ? reopened.reopenedLocked : 0,
                 deliveredAtDeadline: reopened ? reopened.deadlineKept : settled.finalized.length,
                 deliveredByStudent: reopened ? reopened.manualKept : 0,
             });

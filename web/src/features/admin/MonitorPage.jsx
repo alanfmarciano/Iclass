@@ -1217,6 +1217,7 @@ export default function MonitorPage() {
                         {r.status === 'time_over' && <p className="mt-1 text-[11px] text-subtle">Entrega automática em instantes</p>}
                         {r.status === 'discarded' && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">Tentativa em andamento desconsiderada no encerramento</p>}
                         {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
+                        {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLocked ? 'Reaberta com o tempo extra da turma: desbloqueie para o aluno continuar' : 'Reaberta com o tempo extra da turma'}</p>}
                       </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email)}>{r.assignedVersion || 'A'}</Button></td>
                       <td className="px-4 py-3 font-mono text-muted">{fmt(r.timerRemaining)}</td>

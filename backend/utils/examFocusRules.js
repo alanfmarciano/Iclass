@@ -13,9 +13,12 @@
 const crypto = require('crypto');
 
 const PAGE_EXIT_RETURN_WINDOW_MS = 60 * 1000;
-// Bloqueio que chega colado à saída da página (a aba fica oculta enquanto a página
-// descarrega, ou o aviso "sair do site?" tira o foco da janela) faz parte da mesma saída.
-const PAGE_EXIT_BURST_MS = 3 * 1000;
+// Bloqueio que chega colado à saída da página (a aba fica oculta ou a tela cheia fecha
+// enquanto a página descarrega) faz parte da mesma saída. No navegador esses eventos
+// saem juntos (milissegundos); a folga cobre só a diferença de chegada pela rede. Uma
+// troca de aba de verdade seguida de recarga leva mais que isso e continua travada (a
+// tela da prova também já fica pausada na troca de aba e nem registra a saída da página).
+const PAGE_EXIT_BURST_MS = 1000;
 const PAGE_RETURN_EVENT = 'page_return';
 
 // Identifica a sessão sem guardar o token no estado da tentativa.

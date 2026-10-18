@@ -3035,14 +3035,16 @@ router.post('/api/admin/server-exam-control', (req, res) => {
     });
 });
 
-// Retorno do "+N min" da turma: entregas do fim do tempo reabertas com o tempo extra e
-// quem já tinha entregue e ficou sem ele (fim do tempo fora da janela ou nota publicada,
-// e quem enviou por conta própria).
+// Retorno do "+N min" da turma: entregas do fim do tempo reabertas com o tempo extra
+// (e quantas delas voltaram bloqueadas por perda de foco) e quem já tinha entregue e
+// ficou sem ele (fim do tempo fora da janela ou nota publicada, e quem enviou por conta
+// própria depois que o tempo dele tinha acabado).
 function classExtraTimeResult(reopened, deliveredAtDeadline = 0) {
-    if (!reopened) return { success: true, reopenedAtDeadline: 0, deliveredAtDeadline, deliveredByStudent: 0 };
+    if (!reopened) return { success: true, reopenedAtDeadline: 0, reopenedLocked: 0, deliveredAtDeadline, deliveredByStudent: 0 };
     return {
         success: true,
         reopenedAtDeadline: reopened.reopened.length,
+        reopenedLocked: reopened.reopenedLocked,
         deliveredAtDeadline: reopened.deadlineKept,
         deliveredByStudent: reopened.manualKept,
     };
@@ -3139,7 +3141,7 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
                 application.globalTimeAdjustment = Number(application.globalTimeAdjustment || 0) + adjustmentMinutes;
                 cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cls.onlineExamConfigs[examKey]);
                 if (adjustmentMinutes > 0) {
-                    reopened = reopenDeadlineDeliveries(db.memory, application, { actor: req.adminAccount?.email || 'Administrador' });
+                    reopened = reopenDeadlineDeliveries(db.memory, application, { actor: req.adminAccount?.email || 'Administrador', extraMinutes: adjustmentMinutes });
                 }
             }
         }
@@ -3476,6 +3478,13 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 lateBySeconds: Number(submission?.lateBySeconds || 0),
                 focusLockedAtDeadline: submission?.focusLockedAtDeadline === true,
                 recoveredAfterFinish: submission?.recoveredAfterFinish === true,
+                // Reaberta pelo "+N min" da turma depois da entrega do fim do tempo (tentativa
+                // em andamento ou a entrega que veio dela) e entrega do fim do tempo que voltou
+                // porque o tempo extra foi desconsiderado no encerramento.
+                reopenedAt: submission
+                    ? (submission.reopenedAt || null)
+                    : (Number(state.reopenedAt) > 0 ? new Date(Number(state.reopenedAt)).toISOString() : null),
+                restoredAfterDiscard: !!submission?.restoredAfterDiscard,
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
                 fullscreenUnsupported: studentLogs.some(log => log.eventType === 'fullscreen_unsupported'),
                 logs: studentLogs,

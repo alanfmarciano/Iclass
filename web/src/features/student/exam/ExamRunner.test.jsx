@@ -15,7 +15,8 @@ vi.mock('../../../context/ToastProvider', () => ({ useToast: () => toast }))
 
 import ExamRunner from './ExamRunner'
 import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
-import { clearRenderError } from '../../../lib/renderErrors'
+import { ExamErrorScreen } from './ExamErrorScreen'
+import { clearInterruptedExam, clearRenderError } from '../../../lib/renderErrors'
 
 const EXAM = 'Avaliacao_Ciclo'
 // Chave da cópia local que o servidor entrega ao dono da tentativa (32 bytes em base64).
@@ -316,6 +317,36 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     expect(screen.getByText('1/1 respondidas')).toBeVisible()
     expect(screen.queryByText('Prova enviada!')).not.toBeInTheDocument()
     expect(postsTo('/api/student/submit')).toHaveLength(1)
+  }, 15000)
+
+  it('página aberta depois da entrega ("Tentativas esgotadas") volta às questões quando o "+N min" da turma reabre a tentativa (G1-mais5)', async () => {
+    let reopened = false
+    apiMock.get.mockImplementation(async () => (reopened
+      ? syncResponse({ timerRemaining: 277, answers: { 1: 'A' }, reopenedAt: Date.now() })
+      : { ...syncResponse({ startedAt: null }), attemptsUsed: 1 }))
+    renderRunner()
+    expect(await screen.findByText(/Tentativas esgotadas/)).toBeVisible()
+    reopened = true
+    enterFullscreen()
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 6000 })).toBeVisible()
+    expect(toast.info).toHaveBeenCalledWith('O professor deu mais tempo à turma: sua prova foi reaberta.')
+    expect(screen.getByText('1/1 respondidas')).toBeVisible()
+    expect(screen.queryByText(/Tentativas esgotadas/)).not.toBeInTheDocument()
+    expect(postsTo('/api/student/submit')).toHaveLength(0)
+  }, 15000)
+
+  it('página que mostrava "o tempo desta aplicação já terminou" volta às questões quando a tentativa é reaberta (G1-mais5)', async () => {
+    let reopened = false
+    apiMock.get.mockImplementation(async () => (reopened
+      ? syncResponse({ timerRemaining: 290, answers: { 1: 'B' }, reopenedAt: Date.now() })
+      : syncResponse({ startedAt: null, timeOver: true })))
+    renderRunner()
+    expect(await screen.findByText(/O tempo desta aplicação já terminou/)).toBeVisible()
+    reopened = true
+    enterFullscreen()
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 6000 })).toBeVisible()
+    expect(screen.queryByText(/O tempo desta aplicação já terminou/)).not.toBeInTheDocument()
+    expect(screen.getByText('1/1 respondidas')).toBeVisible()
   }, 15000)
 
   it('envio automático que o servidor recusa porque o professor deu mais tempo: a prova continua sem entregar', async () => {
@@ -624,6 +655,85 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     } finally {
       consoleError.mockRestore()
       clearRenderError()
+    }
+  })
+
+  it('depois de um erro de tela na prova, o voltar do navegador pede confirmação e a saída fica registrada no Monitor (G4)', async () => {
+    const user = userEvent.setup()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    clearRenderError()
+    clearInterruptedExam()
+    let quebrar = null
+    function PedacoDaProva() {
+      const [quebrado, setQuebrado] = useState(false)
+      quebrar = () => setQuebrado(true)
+      if (quebrado) throw new Error('Minified React error #31; visit https://reactjs.org/docs/error-decoder.html?invariant=31 for the full message')
+      return null
+    }
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      const router = renderRunner(['/aluno'], <AppErrorBoundary fallback={ExamErrorScreen}><ExamRunner /><PedacoDaProva /></AppErrorBoundary>)
+      enterFullscreen()
+      await user.click(await screen.findByRole('button', { name: /Dois/ }))
+      act(() => { quebrar() })
+      expect(await screen.findByText('Algo deu errado nesta tela')).toBeVisible()
+      // Detalhes técnicos sem o endereço da documentação e em português.
+      expect(screen.getByText('Erro interno da tela (código React #31)')).toBeInTheDocument()
+      expect(screen.queryByText(/https?:/)).not.toBeInTheDocument()
+      expect(activityLogs('exam_left')).toHaveLength(0)
+
+      await act(async () => { router.navigate(-1) })
+      expect(await screen.findByRole('dialog', { name: 'Sair da prova agora?' })).toBeVisible()
+      expect(screen.getByText('Você usou o botão voltar do navegador.')).toBeVisible()
+      expect(router.state.location.pathname).toBe(`/aluno/prova/${EXAM}`)
+      expect(activityLogs('exam_left')).toHaveLength(0)
+      await user.click(screen.getByRole('button', { name: 'Sair da prova' }))
+      await waitFor(() => expect(router.state.location.pathname).toBe('/aluno'))
+      const left = activityLogs('exam_left')
+      expect(left).toHaveLength(1)
+      expect(left[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1', examKey: EXAM, studentClass: '1DES', email: 'ana@escola.local' })
+      expect(left[0][1].details).toBe('Saiu da prova pelo botão voltar do navegador (depois de um erro de tela)')
+      // Saída já registrada: fechar a página depois não registra de novo.
+      act(() => { window.dispatchEvent(new Event('pagehide')) })
+      expect(activityLogs('exam_left')).toHaveLength(1)
+    } finally {
+      consoleError.mockRestore()
+      clearRenderError()
+      clearInterruptedExam()
+    }
+  })
+
+  it('depois de um erro de tela na prova, sair da página pede a confirmação do navegador e registra a saída da página (G4)', async () => {
+    const user = userEvent.setup()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    clearRenderError()
+    clearInterruptedExam()
+    let quebrar = null
+    function PedacoDaProva() {
+      const [quebrado, setQuebrado] = useState(false)
+      quebrar = () => setQuebrado(true)
+      if (quebrado) throw new Error('Cannot read properties of undefined (reading \'map\')')
+      return null
+    }
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      renderRunner(['/aluno'], <AppErrorBoundary fallback={ExamErrorScreen}><ExamRunner /><PedacoDaProva /></AppErrorBoundary>)
+      enterFullscreen()
+      await user.click(await screen.findByRole('button', { name: /Dois/ }))
+      act(() => { quebrar() })
+      expect(await screen.findByText('Algo deu errado nesta tela')).toBeVisible()
+      const beforeUnload = new Event('beforeunload', { cancelable: true })
+      act(() => { window.dispatchEvent(beforeUnload) })
+      expect(beforeUnload.defaultPrevented).toBe(true)
+      act(() => { window.dispatchEvent(new Event('pagehide')) })
+      const left = activityLogs('exam_left')
+      expect(left).toHaveLength(1)
+      expect(left[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1', pageExit: true, details: 'Página da prova foi fechada ou recarregada (depois de um erro de tela)' })
+      expect(left[0][2]).toMatchObject({ keepalive: true })
+    } finally {
+      consoleError.mockRestore()
+      clearRenderError()
+      clearInterruptedExam()
     }
   })
 

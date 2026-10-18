@@ -14,6 +14,9 @@ describe('controlResultMessage · encerramento repetido', () => {
 
   it('nunca mostra o nome interno da ação', () => {
     expect(controlResultMessage('finish', { finish: { policy: 'discard', discarded: 2 } }).text).toBe('Aplicação encerrada. As tentativas em andamento foram desconsideradas.')
+    // Tentativa reaberta pelo "+N min" da turma: ao desconsiderar, vale a entrega do fim do tempo (G1-mais5).
+    expect(controlResultMessage('finish', { finish: { policy: 'discard', discarded: 1, restoredDeliveries: 1 } }).text).toBe('Aplicação encerrada. As tentativas em andamento foram desconsideradas; 1 tentativa reaberta com o tempo extra ficou com a entrega do fim do tempo.')
+    expect(controlResultMessage('finish', { finish: { policy: 'discard', discarded: 0, restoredDeliveries: 2 } }).text).toBe('Aplicação encerrada. 2 tentativas reabertas com o tempo extra ficaram com a entrega do fim do tempo.')
     expect(controlResultMessage('finish', { finish: { policy: 'submit', submitted: 1 } }).text).toMatch(/salvas como entrega/)
     expect(controlResultMessage('finish', { finish: { policy: 'none' } }).text).toBe('Aplicação encerrada.')
     expect(controlResultMessage('stop', {}).text).toBe('Aplicação encerrada.')

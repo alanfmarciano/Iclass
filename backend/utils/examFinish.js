@@ -14,7 +14,7 @@ const {
     listExamApplications,
     transitionExamApplication,
 } = require('./examApplications.js');
-const { isAttemptPastDeadline, settleExpiredAttempts } = require('./examDeadline.js');
+const { isAttemptPastDeadline, restoreReopenedDelivery, settleExpiredAttempts } = require('./examDeadline.js');
 
 const IN_PROGRESS_POLICIES = new Set(['submit', 'discard']);
 // Aplicação que ocupa a prova na turma: preparada (ainda sem alunos) ou em andamento.
@@ -38,9 +38,13 @@ function finishSummary(memory, application, now = Date.now()) {
     // Tempo esgotado: a entrega é automática com as respostas salvas, em qualquer escolha.
     const timeOver = started.filter(([, state]) => isAttemptPastDeadline(state, application, now));
     const inProgress = started.filter(entry => !timeOver.includes(entry));
+    // Reabertas pelo "+N min" da turma: ao desconsiderar, vale a entrega do fim do tempo
+    // que elas já tinham (guardada na tentativa).
+    const reopened = inProgress.filter(([, state]) => state.reopenedDelivery && typeof state.reopenedDelivery === 'object');
     return {
         applicationId: application.id,
         inProgressAttempts: inProgress.length,
+        reopenedAttempts: reopened.length,
         answeredQuestions: inProgress.reduce((total, [, state]) => total + Object.keys(state.answers || {}).length, 0),
         waitingToStart: entries.length - started.length,
         timeOverAttempts: timeOver.length,
@@ -106,6 +110,7 @@ function resolveInProgressAttempts(memory, { application, onlineConfig = null, p
     if (!Array.isArray(memory.submissions)) memory.submissions = [];
     let submitted = 0;
     let discarded = 0;
+    let restoredDeliveries = 0;
     let discardedAttempts = [];
     if (policy === 'submit') {
         for (const [, state] of entries) {
@@ -137,18 +142,25 @@ function resolveInProgressAttempts(memory, { application, onlineConfig = null, p
             submitted += 1;
         }
     } else if (policy === 'discard') {
-        discarded = summary.inProgressAttempts;
-        // Quem de fato tinha tentativa em andamento desconsiderada: só esses alunos
-        // veem "o professor desconsiderou" ao abrir a prova depois.
-        discardedAttempts = entries
-            .filter(([, state]) => !!state.startedAt)
-            .map(([, state]) => ({
+        for (const [, state] of entries) {
+            if (!state.startedAt) continue;
+            // Tentativa reaberta pelo "+N min" da turma: desconsidera só o que foi feito no
+            // tempo extra e a entrega do fim do tempo que o aluno já tinha volta.
+            if (restoreReopenedDelivery(memory, state, { application, actor, now })) {
+                restoredDeliveries += 1;
+                continue;
+            }
+            // Quem de fato tinha tentativa em andamento desconsiderada: só esses alunos
+            // veem "o professor desconsiderou" ao abrir a prova depois.
+            discardedAttempts.push({
                 studentEmail: normalizedEmail(state.studentEmail),
                 attemptId: state.attemptId || state.id || null,
-            }));
+            });
+        }
+        discarded = Math.max(0, summary.inProgressAttempts - restoredDeliveries);
     }
     entries.forEach(([key]) => { delete memory.studentExamState[key]; });
-    const processed = { policy: policy || 'none', submitted, discarded, deliveredAtDeadline, summary };
+    const processed = { policy: policy || 'none', submitted, discarded, deliveredAtDeadline, ...(restoredDeliveries ? { restoredDeliveries } : {}), summary };
     // Uma segunda resolução (sobras de tentativa numa aplicação já encerrada) nunca
     // apaga a decisão do primeiro encerramento: ela fica guardada no histórico.
     if (application.finishResolution) {
@@ -163,6 +175,7 @@ function resolveInProgressAttempts(memory, { application, onlineConfig = null, p
         discarded,
         deliveredAtDeadline,
         ...(policy === 'discard' ? { discardedAttempts } : {}),
+        ...(restoredDeliveries ? { restoredDeliveries } : {}),
         ...(reason ? { reason } : {}),
         at: new Date(now).toISOString(),
         by: actor,

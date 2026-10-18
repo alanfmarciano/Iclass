@@ -58,4 +58,18 @@ describe('[UC-TENTATIVA-001] +5 min para a turma depois do fim do tempo', () => 
     expect(mixed.tone).toBe('warning')
     expect(mixed.message).toBe('+10 min para a turma. 1 aluno entregue automaticamente no fim do tempo voltou para a prova com o tempo extra. 3 alunos que já tinham entregue ficaram sem o tempo extra: 1 enviou a prova por conta própria; 2 foram entregues automaticamente no fim do tempo e não puderam ser reabertos (nota publicada ou fim do tempo há mais de 2 min).')
   })
+
+  it('no meio da prova (ninguém com o tempo acabado) o aviso é só de sucesso', () => {
+    // O servidor só conta quem enviou por conta própria depois que o tempo dele acabou.
+    expect(classTimeExtraFeedback({ success: true, reopenedAtDeadline: 0, deliveredAtDeadline: 0, deliveredByStudent: 0 })).toEqual({ tone: 'success', message: '+5 min para a turma' })
+  })
+
+  it('quem voltou bloqueado por perda de foco não é dado como "de volta à prova" sem aviso', () => {
+    const allLocked = classTimeExtraFeedback({ success: true, reopenedAtDeadline: 1, reopenedLocked: 1 })
+    expect(allLocked.tone).toBe('warning')
+    expect(allLocked.message).toBe('+5 min para a turma. 1 aluno entregue automaticamente no fim do tempo voltou para a prova com o tempo extra, mas continua bloqueado por perda de foco: desbloqueie no Monitor para ele continuar.')
+    const someLocked = classTimeExtraFeedback({ success: true, reopenedAtDeadline: 3, reopenedLocked: 1 })
+    expect(someLocked.tone).toBe('warning')
+    expect(someLocked.message).toBe('+5 min para a turma. 3 alunos entregues automaticamente no fim do tempo voltaram para a prova com o tempo extra (1 continua bloqueado por perda de foco: desbloqueie no Monitor para continuar).')
+  })
 })

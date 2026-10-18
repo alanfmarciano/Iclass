@@ -689,8 +689,11 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     // Registro da entrega do servidor que o envio atrasado substituiu: é auditoria do
     // professor e guarda a nota daquela versão, então nunca vai para o aluno.
     delete safeGrade.serverFinalization;
-    // Estado interno da tentativa guardado para o "+N min" da turma poder reabri-la.
+    // Estado interno da tentativa guardado para o "+N min" da turma poder reabri-la, e o
+    // histórico da reabertura (traz a nota da entrega substituída): só do professor.
     delete safeGrade.reopenableState;
+    delete safeGrade.reopenedFrom;
+    delete safeGrade.restoredAfterDiscard;
     if (!gradePublished) {
         delete safeGrade.score;
         delete safeGrade.correctCount;

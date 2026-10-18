@@ -20,4 +20,14 @@ describe('[UC-TENTATIVA-001] como a entrega chegou (AVA-03, UXA-01)', () => {
     expect(deliveryLabel(recovered)).toMatch(/Recuperada depois do encerramento/)
     expect(deliveryTone(recovered)).toBe('warning')
   })
+
+  it('mostra a reabertura pelo "+N min" da turma e a entrega do fim do tempo mantida quando o extra foi desconsiderado (G1-mais5)', () => {
+    const manualAfterReopen = { submissionSource: 'student', reopenedAt: '2026-10-18T10:00:00.000Z', reopenedFrom: [{ source: 'timer_auto_submit' }] }
+    expect(deliveryLabel(manualAfterReopen)).toBe('Reaberta com o tempo extra da turma')
+    const twice = { submissionSource: 'timer_auto_submit', reopenedAt: '2026-10-18T10:00:00.000Z', reopenedFrom: [{}, {}] }
+    expect(deliveryLabel(twice)).toBe('Enviada automaticamente no fim do tempo · Reaberta 2 vezes com o tempo extra da turma')
+    const restored = { submissionSource: 'deadline_server_auto_submit', restoredAfterDiscard: { at: '2026-10-18T10:06:00.000Z' } }
+    expect(deliveryLabel(restored)).toBe('Tempo esgotado: entregue automaticamente com as respostas salvas · Reaberta com o tempo extra da turma e desconsiderada no encerramento: vale a entrega do fim do tempo')
+    expect(deliveryTone(restored)).toBe('warning')
+  })
 })

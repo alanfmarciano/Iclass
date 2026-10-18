@@ -38,10 +38,11 @@ function localCopyKeyFor(state) {
 
 // Estado da tentativa sem a chave (e sem a flag interna do token) para respostas da API:
 // a chave só sai no campo próprio, para o dono da tentativa. De uma tentativa reaberta
-// pelo "+N min" da turma o aluno só vê quando foi reaberta (reopenedAt).
+// pelo "+N min" da turma o aluno só vê quando foi reaberta (reopenedAt): a entrega
+// guardada (com a nota ainda não publicada) e o histórico são do professor.
 function stateWithoutSecrets(state) {
     if (!state || typeof state !== 'object') return state;
-    const { localCopyKey, tokenValidated, reopenedBy, reopenedFrom, pageExit, ...safeState } = state;
+    const { localCopyKey, tokenValidated, reopenedBy, reopenedFrom, reopenedDelivery, pageExit, ...safeState } = state;
     return safeState;
 }
 
