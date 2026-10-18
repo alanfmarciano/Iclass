@@ -3,6 +3,13 @@
 // As REGRAS DE NEGÓCIO permanecem no backend Express (server-authoritative).
 let authProvider = () => ({})
 export function setAuthProvider(fn) { authProvider = fn } // injetado pelo AuthProvider
+// Há sessão aberta neste navegador? O logout limpa o provedor na hora (antes de o portal
+// trocar de rota), então logo depois dele a resposta já é não. A prova online usa isto
+// para deixar a ida ao login passar sem confirmação só quando a sessão acabou de fato.
+export function hasActiveSession() {
+  const current = authProvider() || {}
+  return !!(current.sessionToken || current.adminSession || current.adminAuth)
+}
 const AUTH_STORAGE_KEY = 'iclass-v3-auth'
 
 function getStoredAuth() {

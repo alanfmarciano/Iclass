@@ -845,6 +845,9 @@ function initializeExamState(state, onlineConfig) {
     if (onlineConfig.onlineActive === true && configuredStart > 0 && Date.now() >= configuredStart) {
         if (!state.startedAt) {
             state.startedAt = configuredStart;
+            // Tentativa começada nesta versão: o aluno vê a letra da posição (AVA-05,
+            // utils/examAnswerIds.js), como nas tentativas das aplicações.
+            state.alternativeLabels = 'position';
             changed = true;
         }
         // "Cronômetro ativo" desligado: a prova não tem prazo, mesmo com duração configurada.

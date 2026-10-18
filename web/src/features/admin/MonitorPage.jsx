@@ -18,7 +18,7 @@ import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
 import { deliveryLabel, deliveryTone } from './attemptDelivery'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { StudentAnswersModal } from './StudentAnswersModal'
-import { LOG_INFO, examLeftLabel, focusLogLabel } from './monitorLogs'
+import { LOG_INFO, buildAlerts, examLeftLabel, focusLogLabel, isSuspiciousItem, suspiciousCount } from './monitorLogs'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -98,7 +98,6 @@ const SHORTCUT_INFO = {
   atalho: { label: 'Atalho de teclado', icon: '⌘', sev: 'low' },
 }
 const ALERT_LOG_TYPES = new Set(Object.keys(LOG_INFO))
-const SEV_RANK = { high: 3, med: 2, low: 1 }
 
 // Classifica um keystroke → { reason, label, icon, sev }. Char/key não são comandos.
 function classifyKeystroke(ev) {
@@ -156,19 +155,6 @@ function groupStream(items) {
   return segs
 }
 
-// Alertas = comandos de gravidade média/alta + logs de foco, com duplicados consecutivos colapsados.
-function buildAlerts(items) {
-  const out = []
-  for (const it of items) {
-    if (it.cat !== 'cmd') continue
-    if (SEV_RANK[it.sev] < SEV_RANK.med) continue
-    const last = out[out.length - 1]
-    if (last && last.sig === it.sig) { last.count++; last.lastT = it.t }
-    else out.push({ ...it, count: 1, lastT: it.t })
-  }
-  return out
-}
-
 function buildCounters(items) {
   const c = { copy: 0, paste: 0, focus: 0, ia: 0, devtools: 0, menu: 0 }
   for (const it of items) {
@@ -191,7 +177,7 @@ function buildTimeline(items, now, binMs = 10000, bins = 30) {
     if (it.t < start || it.t > end) continue
     const idx = Math.min(bins - 1, Math.max(0, Math.floor((it.t - start) / binMs)))
     arr[idx].count++
-    if (it.cat === 'cmd' && SEV_RANK[it.sev] >= SEV_RANK.med) arr[idx].sus = true
+    if (isSuspiciousItem(it)) arr[idx].sus = true
   }
   const max = Math.max(1, ...arr.map((b) => b.count))
   return { arr, max, start, end }
@@ -235,7 +221,7 @@ function KeystrokeViewer({ events, row, loading }) {
   const counters = useMemo(() => buildCounters(items), [items])
   const stream = useMemo(() => groupStream(items), [items])
   const timeline = useMemo(() => buildTimeline(items, Date.now()), [items])
-  const suspCount = alerts.reduce((n, a) => n + a.count, 0)
+  const suspCount = suspiciousCount(alerts)
   const focusExits = counters.focus
   const lastTs = row?.lastKeystrokeAt || (items.length ? items[items.length - 1].t : null)
   const lastAgo = lastTs ? Math.max(0, Math.round((Date.now() - lastTs) / 1000)) : null
@@ -307,8 +293,8 @@ function KeystrokeViewer({ events, row, loading }) {
                 <div className="space-y-2">
                   {alerts.map((a, i) => {
                     const tone = SEV_TONE[a.sev]
-                    const cls = tone === 'danger' ? 'bg-danger-soft border-danger/25' : 'bg-warning-soft border-warning/25'
-                    const ttone = tone === 'danger' ? 'text-danger' : 'text-warning'
+                    const cls = tone === 'danger' ? 'bg-danger-soft border-danger/25' : tone === 'warning' ? 'bg-warning-soft border-warning/25' : 'bg-surface-2 border-border'
+                    const ttone = tone === 'danger' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'text-text'
                     return (
                       <div key={i} className={`flex items-center gap-3 rounded-xl border p-3 ${cls}`}>
                         <div className="w-9 h-9 shrink-0 grid place-items-center rounded-lg bg-surface-2 text-base">{a.icon}</div>

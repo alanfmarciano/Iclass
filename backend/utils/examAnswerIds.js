@@ -20,6 +20,9 @@ const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 const POSITION_LABELS = 'position';
 const ANSWER_ID_PATTERN = /^[0-9A-Z]{13}$/;
 const SINGLE_LETTER_PATTERN = /^[A-Z]$/;
+// Sem a lista de questões da tentativa (registro antigo sem snapshot), no máximo esta
+// quantidade de respostas é convertida: cada identificador custa até 26 HMACs.
+const MAX_ANSWERS_WITHOUT_QUESTIONS = 200;
 
 let cachedSecret = null;
 let idCache = new Map();
@@ -104,32 +107,41 @@ function encodeAnswersForStudent(answers, scope) {
 // Respostas do navegador (identificador, ou letra) convertidas para a letra original.
 // questions: questões da tentativa na ordem da versão do aluno (questionsForAttempt).
 // positional: a letra avulsa é a posição na versão (tentativas novas) ou a original.
+// Só as questões da tentativa contam (a correção ignora as outras): a chave de uma
+// questão que não está na tentativa é descartada antes de qualquer HMAC, e milhares de
+// chaves inventadas num salvamento não prendem o servidor da sala.
 function decodeStudentAnswers(answers, { scope, questions = [], positional = false } = {}) {
     const byNumber = new Map((Array.isArray(questions) ? questions : [])
         .map((question, index) => [questionNumberOf(question, index), question]));
     const decoded = {};
+    let unknownQuestionAnswers = 0;
     Object.entries(answers && typeof answers === 'object' && !Array.isArray(answers) ? answers : {}).forEach(([key, raw]) => {
         const number = Number(key);
         if (!Number.isFinite(number)) return;
+        const question = byNumber.get(number) || null;
+        if (!question) {
+            if (byNumber.size) return;
+            unknownQuestionAnswers += 1;
+            if (unknownQuestionAnswers > MAX_ANSWERS_WITHOUT_QUESTIONS) return;
+        }
         const value = String(raw ?? '').trim().toUpperCase();
         if (!value) return;
-        const question = byNumber.get(number) || null;
         const letters = question
             ? alternativeList(question).map((alternative, index) => originalLetter(alternative, index)).filter(Boolean)
             : [];
         if (ANSWER_ID_PATTERN.test(value)) {
             const candidates = letters.length ? letters : LETTERS;
             const match = candidates.find(letter => alternativeAnswerId(scope, number, letter) === value);
-            if (match) decoded[key] = match;
+            if (match) decoded[String(number)] = match;
             return;
         }
         if (!SINGLE_LETTER_PATTERN.test(value)) return;
         if (!positional) {
-            decoded[key] = value;
+            decoded[String(number)] = value;
             return;
         }
         const position = LETTERS.indexOf(value);
-        if (position >= 0 && letters[position]) decoded[key] = letters[position];
+        if (position >= 0 && letters[position]) decoded[String(number)] = letters[position];
     });
     return decoded;
 }

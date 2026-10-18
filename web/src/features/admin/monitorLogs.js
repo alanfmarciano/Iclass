@@ -7,6 +7,7 @@ export function examLeftLabel(details) {
   if (text.includes('link do portal')) return 'Saiu por um link do portal'
   if (text.includes('botão da prova')) return 'Saiu pelo botão Sair'
   if (text.includes('fechada ou recarregada')) return 'Fechou ou recarregou a prova'
+  if (text.includes('pela navegação')) return 'Saiu da prova pela navegação'
   return 'Saiu da prova'
 }
 export function focusLogLabel(log) {
@@ -26,5 +27,33 @@ export const LOG_INFO = {
   exam_left: { label: 'Saiu da prova', icon: '⎋', sev: 'high' },
   fullscreen_exit: { label: 'Saiu da tela cheia', icon: '⛶', sev: 'high' },
   // Aparelho sem tela cheia (iPhone): a prova abriu sem ela e não foi pausada (UXA-02).
-  fullscreen_unsupported: { label: 'Dispositivo sem tela cheia', icon: '📱', sev: 'med', pauses: false },
+  // É um aviso ao professor, não um comando do aluno: aparece no painel, mas não conta
+  // como comando suspeito nem pinta a linha do tempo de vermelho.
+  fullscreen_unsupported: { label: 'Dispositivo sem tela cheia', icon: '📱', sev: 'info', pauses: false, informative: true },
+}
+
+const SEV_RANK = { high: 3, med: 2, low: 1 }
+
+// Item da linha do tempo do painel que é suspeito (comando de gravidade média ou alta).
+export function isSuspiciousItem(item) {
+  if (!item || item.cat !== 'cmd' || item.informative) return false
+  return (SEV_RANK[item.sev] || 0) >= SEV_RANK.med
+}
+
+// Alertas do painel: comandos suspeitos e avisos ao professor (sem tela cheia), com
+// repetidos em sequência colapsados.
+export function buildAlerts(items) {
+  const out = []
+  for (const item of items || []) {
+    if (!isSuspiciousItem(item) && !(item?.cat === 'cmd' && item.informative)) continue
+    const last = out[out.length - 1]
+    if (last && last.sig === item.sig) { last.count++; last.lastT = item.t }
+    else out.push({ ...item, count: 1, lastT: item.t })
+  }
+  return out
+}
+
+// Quantos comandos suspeitos (os avisos ao professor não contam).
+export function suspiciousCount(alerts) {
+  return (alerts || []).reduce((total, alert) => total + (isSuspiciousItem(alert) ? alert.count || 1 : 0), 0)
 }

@@ -69,7 +69,7 @@ const {
     settleExpiredAttempts,
 } = require('../utils/examDeadline.js');
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
-const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
+const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 
 // Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
 // a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
@@ -1103,6 +1103,10 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         state.status = 'active';
         state.accessibilityExtraMinutes = extraMinutes;
         state.deadlineAt = deadlineAt;
+        // A tentativa começa nesta versão: o aluno vê a letra da posição (AVA-05). Vale
+        // também para o estado criado antes da atualização (instruções abertas ou
+        // tentativa antiga vinculada), que ainda não tinha a marca.
+        state.alternativeLabels = POSITION_LABELS;
     }
     initializeExamState(state, config);
     ensureLocalCopyKey(state);

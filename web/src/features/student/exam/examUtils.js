@@ -13,15 +13,17 @@ export function positionLabel(index) {
 
 // Normaliza uma questão para render (número, enunciado e alternativas). O aluno vê a
 // letra da POSIÇÃO (label) e a resposta guarda o identificador opaco da alternativa
-// (id), que o servidor converte na letra original (AVA-05). A letra original nunca
-// chega aqui; servidores antigos mandavam só letter e ela vira o id.
+// (id), que o servidor converte na letra original (AVA-05). Alternativa sem id (lista de
+// questões que não passou por studentAlternatives no servidor) responde com a letra da
+// POSIÇÃO, nunca com a letter que veio: o servidor lê a letra avulsa de uma tentativa
+// nova como posição, e mandar a original corrigiria outra alternativa sem aviso.
 export function normQuestion(q, i) {
   const number = Number(q.originalNumber ?? q.number ?? i + 1)
   const rawAlternatives = Array.isArray(q.alternatives)
     ? q.alternatives
     : Object.entries(q.alternatives || {}).map(([letter, text]) => ({ letter, text }))
   const alternatives = rawAlternatives.map((a, j) => ({
-    id: String(a?.id || a?.letter || positionLabel(j)).toUpperCase(),
+    id: String(a?.id || positionLabel(j)).toUpperCase(),
     label: positionLabel(j),
     text: a?.text ?? a?.label ?? String(a),
   }))

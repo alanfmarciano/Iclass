@@ -8,7 +8,7 @@ import { Select } from '../../../components/ui/Select'
 import { Textarea } from '../../../components/ui/Textarea'
 import { Badge } from '../../../components/ui/Badge'
 import { ConfirmDialog, Modal } from '../../../components/ui/Modal'
-import { api } from '../../../lib/api'
+import { api, hasActiveSession } from '../../../lib/api'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { pickSnapshot, normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
@@ -118,6 +118,9 @@ export default function ExamRunner() {
   phaseRef.current = phase
   attemptIdRef.current = attemptId
   examConfigVersionRef.current = examConfigVersion
+  // Dados do registro de saída feito na desmontagem (sem acesso ao render seguinte).
+  const exitContextRef = useRef(null)
+  exitContextRef.current = { email, studentClass, courseId, examKey, applicationId }
 
   useEffect(() => {
     mountedRef.current = true
@@ -745,7 +748,9 @@ export default function ExamRunner() {
     if (leavingRef.current || submittedRef.current || phaseRef.current !== 'active') return false
     if (currentLocation.pathname === nextLocation.pathname && currentLocation.search === nextLocation.search) return false
     // Sessão encerrada (logout, revogação): o portal manda para o login sem perguntar.
-    if (nextLocation.pathname === '/login') return false
+    // Vale pelo fim da sessão, não pelo destino: com a sessão aberta, a entrada do login
+    // no histórico (lista do botão voltar) é uma saída como outra qualquer.
+    if (!hasActiveSession()) return false
     blockedActionRef.current = historyAction
     return true
   }, []))
@@ -795,12 +800,18 @@ export default function ExamRunner() {
     nav('/aluno/provas')
   }
 
-  // Desmontagem sem saída confirmada (sessão encerrada, manutenção): as respostas que
-  // ainda não chegaram ao servidor vão com keepalive (a digitação sai na limpeza do
-  // efeito de captura).
+  // Desmontagem com a prova em andamento sem saída confirmada: as respostas que ainda
+  // não chegaram ao servidor vão com keepalive (a digitação sai na limpeza do efeito de
+  // captura). Com a sessão aberta, é uma saída da prova que escapou da confirmação
+  // (navegação que o roteador não conseguiu segurar): fica registrada no Monitor e a
+  // prova trava até o professor liberar, como na saída confirmada. No logout não há
+  // registro (a sessão acabou) e em manutenção o servidor recusa as chamadas do aluno.
   useEffect(() => () => {
     if (leavingRef.current || submittedRef.current || phaseRef.current !== 'active') return
     saveRef.current?.({ keepalive: true })
+    if (!hasActiveSession()) return
+    const ctx = exitContextRef.current
+    api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_left', details: 'Saiu da prova pela navegação' }, { keepalive: true }).catch(() => {})
   }, [])
 
   function openQuestionReport(question) {
@@ -1105,26 +1116,28 @@ export default function ExamRunner() {
           <p className="-mt-3 text-xs text-subtle">{reportForm.text.length}/300 caracteres</p>
         </div>
       </Modal>
-      {/* Cabeçalho que cabe no celular e com zoom de 200% (UXA-03, ACS-16): o título
-          encurta com reticências (uma linha no celular, até duas a partir de 640 px), Sair
-          e Mensagens viram só ícone abaixo de 640 px e o Enviar fica sempre visível. */}
+      {/* Cabeçalho que cabe no celular e com zoom de 200% a 400% (UXA-03, ACS-16). Abaixo
+          de 640 px são duas linhas: título e cronômetro em cima, contagem e botões embaixo
+          (o título ganha a largura dos botões e nada passa por baixo do cronômetro, nem em
+          320 px); Sair e Mensagens viram só ícone e o Enviar fica sempre visível. A partir
+          de 640 px, título e contagem à esquerda, cronômetro e botões à direita. */}
       <div className="sticky top-0 z-10 -mx-4 md:-mx-6 px-3 sm:px-4 md:px-6 py-2 sm:py-3 bg-surface/95 backdrop-blur border-b border-border">
-        <div className="flex items-center gap-2 sm:gap-3">
-          <div className="min-w-0 flex-1">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-2 sm:gap-x-3 gap-y-1 sm:gap-y-0">
+          <div className={`min-w-0 row-start-1 col-start-1 sm:col-span-1 ${remaining != null ? 'col-span-2' : 'col-span-3'}`}>
             <h1 className="truncate sm:whitespace-normal sm:line-clamp-2 text-sm sm:text-base font-bold text-text" title={examTitle || examKey.replace(/_/g, ' ')}>{examTitle || examKey.replace(/_/g, ' ')}</h1>
-            <div className="flex flex-wrap items-baseline gap-x-2">
-              <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
-              <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
-                {saveState.status === 'saving' && 'Salvando respostas...'}
-                {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
-                {saveState.status === 'error' && 'Falha no último salvamento'}
-              </p>
-            </div>
+          </div>
+          <div className="min-w-0 row-start-2 col-start-1 flex flex-wrap items-baseline gap-x-2">
+            <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
+            <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
+              {saveState.status === 'saving' && 'Salvando respostas...'}
+              {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
+              {saveState.status === 'error' && 'Falha no último salvamento'}
+            </p>
           </div>
           {remaining != null && (
-            <div className={`shrink-0 flex items-center gap-1 font-mono text-sm sm:text-base font-bold tabular-nums ${remaining < 60 ? 'text-danger' : 'text-text'}`} title="Tempo restante"><Clock size={16} aria-hidden="true" /> {fmtTime(remaining)}</div>
+            <div className={`row-start-1 col-start-3 sm:col-start-2 sm:row-span-2 justify-self-end flex items-center gap-1 font-mono text-sm sm:text-base font-bold tabular-nums ${remaining < 60 ? 'text-danger' : 'text-text'}`} title="Tempo restante"><Clock size={16} aria-hidden="true" /> {fmtTime(remaining)}</div>
           )}
-          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+          <div className="row-start-2 col-start-2 col-span-2 sm:row-start-1 sm:row-span-2 sm:col-start-3 sm:col-span-1 justify-self-end flex shrink-0 items-center gap-1 sm:gap-2">
             <Button size="sm" variant="ghost" icon={ArrowLeft} className="px-2 sm:px-3" aria-label="Sair" title="Sair da prova" onClick={() => setExitConfirm(true)}><span className="hidden sm:inline">Sair</span></Button>
             <Button size="sm" variant="secondary" icon={History} className="px-2 sm:px-3" aria-label="Mensagens" title="Mensagens do professor" onClick={openMessageHistory}><span className="hidden sm:inline">Mensagens</span></Button>
             <Button size="sm" icon={Send} className="px-2.5 sm:px-3" loading={submitting} onClick={() => setSubmitConfirm(true)}>Enviar</Button>

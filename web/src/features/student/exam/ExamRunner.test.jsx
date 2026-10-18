@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { examDraftStorageKey, importExamDraftKey, readExamDraft, writeExamDraft } from '../../../lib/examDrafts'
 
 const apiMock = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
+// Sessão aberta no navegador (o logout a fecha antes de o portal ir para o login).
+const sessionMock = vi.hoisted(() => vi.fn(() => true))
 const toast = vi.hoisted(() => ({ info: vi.fn(), success: vi.fn(), error: vi.fn() }))
-vi.mock('../../../lib/api', () => ({ api: apiMock }))
+vi.mock('../../../lib/api', () => ({ api: apiMock, hasActiveSession: sessionMock }))
 vi.mock('../useStudent', () => ({ useStudent: () => ({ email: 'ana@escola.local', studentClass: '1DES', courseId: 'curso' }) }))
 vi.mock('../../../context/ToastProvider', () => ({ useToast: () => toast }))
 
@@ -64,15 +66,16 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
 
 // Roteador de dados como o do app (main.jsx): o ExamRunner usa useBlocker. A página
 // anterior no histórico é o início do portal, para testar o voltar do navegador.
-function renderRunner() {
+function renderRunner(history = ['/aluno']) {
   const router = createMemoryRouter([
     { path: '/aluno/prova/:examKey', element: <ExamRunner /> },
     { path: '/aluno/provas', element: <p>Lista de provas</p> },
     { path: '/aluno/modulos', element: <p>Página de módulos</p> },
     { path: '/aluno', element: <p>Início do portal</p> },
     { path: '/login', element: <p>Tela de login</p> },
-  ], { initialEntries: ['/aluno', `/aluno/prova/${EXAM}?applicationId=app-1`], initialIndex: 1 })
-  render(<RouterProvider router={router} />)
+  ], { initialEntries: [...history, `/aluno/prova/${EXAM}?applicationId=app-1`], initialIndex: history.length })
+  const view = render(<RouterProvider router={router} />)
+  router.unmountView = view.unmount
   return router
 }
 
@@ -100,6 +103,8 @@ beforeEach(() => {
   apiMock.get.mockReset()
   apiMock.post.mockReset()
   apiMock.post.mockResolvedValue({ success: true })
+  sessionMock.mockReset()
+  sessionMock.mockReturnValue(true)
   Object.values(toast).forEach((fn) => fn.mockReset())
   sessionStorage.clear()
   localStorage.clear()
@@ -451,14 +456,93 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     expect(activityLogs('exam_left')).toHaveLength(1)
     expect(activityLogs('exam_left')[0][1]).toMatchObject({ details: 'Aluno saiu usando o botão da prova' })
 
+    // Sessão encerrada (logout ou revogação): a ida ao login passa sem perguntar e sem
+    // registrar saída (a sessão acabou de fato, não foi o aluno que saiu).
     cleanup()
+    apiMock.post.mockClear()
     const router = renderRunner()
     enterFullscreen()
     await screen.findByRole('button', { name: /Dois/ })
+    sessionMock.mockReturnValue(false)
     await act(async () => { router.navigate('/login') })
     expect(await screen.findByText('Tela de login')).toBeVisible()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(activityLogs('exam_left')).toHaveLength(0)
   })
+
+  it('com a sessão aberta, voltar pela lista do histórico até a entrada do login também pede confirmação e registra (AVA-12, UXA-X1)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    // Login, início do portal, lista de provas e a prova: history.go(-3) é escolher o
+    // login na lista do botão voltar (toque longo no Safari do iPhone).
+    const router = renderRunner(['/login', '/aluno', '/aluno/provas'])
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+
+    await act(async () => { router.navigate(-3) })
+    expect(await screen.findByRole('dialog', { name: 'Sair da prova agora?' })).toBeVisible()
+    expect(screen.getByText('Você usou o botão voltar do navegador.')).toBeVisible()
+    expect(router.state.location.pathname).toBe(`/aluno/prova/${EXAM}`)
+    expect(screen.queryByText('Tela de login')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Continuar na prova' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /Dois/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(activityLogs('exam_left')).toHaveLength(0)
+
+    await act(async () => { router.navigate(-3) })
+    await user.click(await screen.findByRole('button', { name: 'Salvar e sair' }))
+    expect(await screen.findByText('Tela de login')).toBeVisible()
+    expect(activityLogs('exam_left')).toHaveLength(1)
+    expect(activityLogs('exam_left')[0][1]).toMatchObject({ attemptId: 'att-1', details: 'Saiu da prova pelo botão voltar do navegador' })
+    expect(postsTo('/api/student/autosave-progress').some(([, body]) => body.answers?.[1] === 'A')).toBe(true)
+  }, 15000)
+
+  it('saída que escapa da confirmação (desmontagem com a prova em andamento) salva as respostas e fica registrada no Monitor', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const router = renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    act(() => { router.unmountView() })
+    const left = activityLogs('exam_left')
+    expect(left).toHaveLength(1)
+    expect(left[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1', examKey: EXAM, details: 'Saiu da prova pela navegação' })
+    expect(left[0][2]).toMatchObject({ keepalive: true })
+    const saves = postsTo('/api/student/autosave-progress')
+    expect(saves.at(-1)[1]).toMatchObject({ answers: { 1: 'A' } })
+    expect(saves.at(-1)[2]).toMatchObject({ keepalive: true })
+  })
+
+  it('desmontagem por fim da sessão salva as respostas sem registrar saída', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const router = renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    sessionMock.mockReturnValue(false)
+    act(() => { router.unmountView() })
+    expect(activityLogs('exam_left')).toHaveLength(0)
+    expect(postsTo('/api/student/autosave-progress').at(-1)[1]).toMatchObject({ answers: { 1: 'A' } })
+  })
+
+  it('alternativas sem identificador respondem com a letra da posição, nunca com a letra que veio (AVA-05)', async () => {
+    const user = userEvent.setup()
+    const response = syncResponse({ timerRemaining: 600 })
+    // Lista de questões sem os identificadores: letter é a original, fora de ordem.
+    response.onlineExamConfigs[EXAM].versionSnapshots[0].questions[0].alternatives = [
+      { letter: 'C', text: 'Onze' },
+      { letter: 'A', text: 'Dois' },
+      { letter: 'B', text: 'Três' },
+    ]
+    apiMock.get.mockResolvedValue(response)
+    renderRunner()
+    enterFullscreen()
+    const dois = await screen.findByRole('button', { name: /Dois/ })
+    expect(within(dois).getByText('B')).toBeVisible()
+    await user.click(dois)
+    await waitFor(() => expect(postsTo('/api/student/autosave-progress').length).toBeGreaterThan(0), { timeout: 6000 })
+    expect(postsTo('/api/student/autosave-progress')[0][1]).toMatchObject({ answers: { 1: 'B' } })
+  }, 15000)
 
   it('cabeçalho compacto: título encurtado e Sair, Mensagens e Enviar sempre acessíveis (UXA-03, ACS-16)', async () => {
     apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
@@ -472,5 +556,13 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     const send = screen.getByRole('button', { name: 'Enviar', exact: true })
     expect(send).toHaveTextContent('Enviar')
     expect(send.parentElement).toHaveClass('shrink-0')
+    // Celular: duas linhas (título e cronômetro; contagem e botões). A contagem não fica
+    // mais embaixo do título, na coluna estreita ao lado do cronômetro (320 px).
+    const counter = screen.getByText('0/1 respondidas')
+    expect(heading.parentElement).not.toContainElement(counter)
+    expect(heading.parentElement).toHaveClass('col-span-2', 'row-start-1')
+    expect(counter.parentElement).toHaveClass('row-start-2', 'min-w-0')
+    expect(send.parentElement).toHaveClass('row-start-2')
+    expect(screen.getByTitle('Tempo restante')).toHaveClass('row-start-1')
   })
 })

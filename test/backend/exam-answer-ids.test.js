@@ -18,7 +18,8 @@ process.env.TEST_MODE = '1';
 
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
-const { alternativeAnswerId } = require('../../backend/utils/examAnswerIds.js');
+const crypto = require('node:crypto');
+const { alternativeAnswerId, decodeStudentAnswers } = require('../../backend/utils/examAnswerIds.js');
 
 let app;
 const adminToken = 'admin-token-answer-ids';
@@ -31,6 +32,8 @@ const students = {
     bruno: { email: 'bruno@answer-ids.local', token: 'token-bruno' },
     carla: { email: 'carla@answer-ids.local', token: 'token-carla' },
     diego: { email: 'diego@answer-ids.local', token: 'token-diego' },
+    eva: { email: 'eva@answer-ids.local', token: 'token-eva' },
+    fabio: { email: 'fabio@answer-ids.local', token: 'token-fabio' },
 };
 // Gabarito original: questão 1 = C, questão 2 = A.
 const CORRECT = { 1: 'C', 2: 'A' };
@@ -377,4 +380,104 @@ test('[UC-PROVA-003] aparelho sem tela cheia aparece no Monitor sem pausar a pro
     assert.equal(row(students.ana.email).fullscreenUnsupported, false);
     assert.equal(row(diego.email).focusLocked, true);
     assert.equal(row(diego.email).focusLockReason, 'Saiu da prova pelo botão voltar do navegador');
+});
+
+// Conta os HMACs calculados durante fn (cada identificador custa um HMAC).
+function countHmacs(fn) {
+    const original = crypto.createHmac;
+    let calls = 0;
+    crypto.createHmac = (...args) => { calls += 1; return original.apply(crypto, args); };
+    try {
+        const result = fn();
+        return { result, calls };
+    } finally {
+        crypto.createHmac = original;
+    }
+}
+
+test('[UC-PROVA-003] chaves de questões que não estão na tentativa são descartadas sem calcular HMAC (sem travar o servidor)', async () => {
+    const questions = shuffledSnapshot()[0].questions;
+    const junk = {};
+    for (let index = 0; index < 5000; index += 1) junk[1000 + index] = `Z${String(index).padStart(12, '0')}`;
+    const valid = alternativeAnswerId('escopo-teste-dos', 1, 'C');
+    // Antes: 26 HMACs por chave inventada (5000 chaves = 130 mil HMACs, ~1 s de CPU parada).
+    const { result, calls } = countHmacs(() => decodeStudentAnswers({ ...junk, 1: valid, '01': 'B' }, {
+        scope: 'escopo-teste-dos',
+        questions,
+        positional: true,
+    }));
+    assert.deepEqual(result, { 1: 'A' }, 'só as questões da tentativa; "01" é a questão 1 (posição B = original A)');
+    assert.ok(calls <= 4, `no máximo os HMACs das alternativas da questão 1 (foram ${calls})`);
+
+    // Sem a lista de questões (registro antigo sem snapshot): número de respostas limitado.
+    const manyIds = {};
+    for (let index = 0; index < 1000; index += 1) manyIds[index + 1] = `Z${String(index).padStart(12, '0')}`;
+    const unknown = countHmacs(() => decodeStudentAnswers(manyIds, { scope: 'escopo-teste-dos', questions: [] }));
+    assert.ok(unknown.calls <= 200 * 26, `HMACs limitados sem a lista de questões (foram ${unknown.calls})`);
+
+    // Pela rota: milhares de chaves inventadas no salvamento não viram resposta.
+    const { eva } = students;
+    const app1 = await application();
+    const synced = await sync(eva, app1.id);
+    const started = await startAttempt(eva, app1.id);
+    const before = Date.now();
+    const { calls: routeCalls } = await (async () => {
+        const original = crypto.createHmac;
+        let count = 0;
+        crypto.createHmac = (...args) => { count += 1; return original.apply(crypto, args); };
+        try {
+            await autosave(eva, app1.id, started.attemptId, { ...junk, 2: idAt(synced.body, 2, 'C') });
+        } finally {
+            crypto.createHmac = original;
+        }
+        return { calls: count };
+    })();
+    assert.deepEqual(stateOf(started.attemptId).answers, { 2: 'A' });
+    assert.ok(routeCalls < 100, `o salvamento não calcula HMAC para as chaves inventadas (foram ${routeCalls})`);
+    assert.ok(Date.now() - before < 5000);
+});
+
+test('[UC-PROVA-003] estado criado antes da atualização (instruções abertas ou tentativa antiga vinculada) começa com a letra da posição (AVA-05)', async () => {
+    const { eva, fabio } = students;
+    const app1 = await application();
+
+    // Estado de instruções criado pelo sync antes da atualização: sem a marca.
+    const evaSecond = await sync(eva, app1.id);
+    await submit(eva, app1.id, { attemptId: evaSecond.body.attemptId, examConfigVersion: evaSecond.body.examConfigVersion }, {});
+    const instructions = await sync(eva, app1.id);
+    const pending = stateOf(instructions.body.attemptId);
+    assert.equal(pending.startedAt, null);
+    delete pending.alternativeLabels;
+    const started = await startAttempt(eva, app1.id);
+    assert.equal(started.attemptId, instructions.body.attemptId);
+    assert.equal(stateOf(started.attemptId).alternativeLabels, 'position');
+    // Letra avulsa (chamada direta) é a posição: posição A da questão 1 é a original C.
+    await autosave(eva, app1.id, started.attemptId, { 1: 'A' });
+    assert.deepEqual(stateOf(started.attemptId).answers, { 1: 'C' });
+
+    // Tentativa da interface antiga (chave sem aplicação), ainda nas instruções.
+    db.memory.studentExamState[`${fabio.email}_${examKey}`] = {
+        studentEmail: fabio.email,
+        examKey,
+        studentClass,
+        courseId,
+        answers: {},
+        startedAt: null,
+        assignedVersion: 'A',
+        tokenValidated: true,
+    };
+    const linked = await startAttempt(fabio, app1.id);
+    assert.equal(stateOf(linked.attemptId).alternativeLabels, 'position');
+    await autosave(fabio, app1.id, linked.attemptId, { 2: 'A' });
+    assert.deepEqual(stateOf(linked.attemptId).answers, { 2: 'B' });
+    // O professor vê a letra que o aluno viu (posição A) e a original ao lado.
+    const review = await request(app)
+        .get(`/api/admin/monitor-review/${encodeURIComponent(studentClass)}/${examKey}`)
+        .set('x-admin-session', adminToken)
+        .query({ courseId, applicationId: app1.id, studentEmail: fabio.email })
+        .expect(200);
+    assert.equal(review.body.alternativeLabels, 'position');
+    const second = review.body.questions.find(question => question.questionNumber === 2);
+    assert.equal(second.studentChoice, 'B');
+    assert.equal(second.studentChoiceSeen, 'A');
 });
