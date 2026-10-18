@@ -498,8 +498,11 @@ test('[UC-SIGILO-001] apostila lida pelo aluno (/:key.md e /api/data.js) perde o
         '> ## GABARITO DO PROFESSOR', '> 1. B SEGREDO_4', '',
         'VISIVEL_7 depois da citação',
         '',
-        // Regra 4: rótulo com as respostas na mesma linha, só o parágrafo.
+        // Regra 4: rótulo com as respostas na mesma linha também abre seção, até o próximo
+        // título de nível igual ou menor (antes saía só o parágrafo e SEGREDO_7 vazava).
         '**GABARITO DO PROFESSOR:** 1-B SEGREDO_5', '',
+        'Questão 2: C SEGREDO_7', '',
+        '## Glossário',
         'VISIVEL_8',
         '',
         // Regra 1: <details> do professor.

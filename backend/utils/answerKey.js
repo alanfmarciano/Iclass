@@ -2,43 +2,54 @@
 // texto servido ao aluno por regras fixas, sem adivinhar pelo conteúdo.
 //
 // Regra para o professor: o gabarito dele fica sob um título "## Gabarito do professor"
-// (ou num <details> com esse resumo). Um rótulo em negrito sozinho ("**Gabarito do
-// professor**") protege até o fim da seção em que está.
+// (ou num <details> com esse resumo). Um rótulo em negrito ("**Gabarito do professor**")
+// protege até o fim da seção em que está.
 //
 // Palavras: gabarito = "gabarito" (ou "chave de respostas"/"chave de correção"); marca do
-// professor = professor(a), prof., profs., instrutor(a), docente, exclusivo(a). "Oficial"
-// sozinho não é marca, exceto no <summary> de <details> ("gabarito oficial").
+// professor = professor(a), prof., profs., profa. (também "Prof&ordf;"), instrutor(a),
+// docente, exclusivo(a). "Oficial" sozinho não é marca, exceto no <summary> de <details>
+// ("gabarito oficial").
 //
-// A remoção é feita em duas etapas, sem dependência nova:
+// A remoção é feita em etapas, sem dependência nova:
+// 0. pré-passagem: todos os comentários HTML <!-- --> fora de código saem ANTES de
+//    reconhecer títulos e rótulos (comentário nunca é para o aluno, e "## Gabarito <!-- x
+//    --> do professor" é o título do professor). Depois do ">" de uma citação, o
+//    comentário sai sem o ">" e sem a quebra de linha (a citação não se parte em duas);
 // 1. tokenize: uma varredura LINEAR divide o texto em blocos: cercas de código (``` e
-//    ~~~), código com recuo, <pre>, comentários <!-- -->, títulos Markdown e <h1>-<h6>,
-//    itens de lista e citações (com o recuo de cada um), tags de contêiner HTML (<p>,
-//    <div>, <section>, <details>, <ul>, <ol>, <li>, <table>, <blockquote>...) e
-//    parágrafos ou trechos de texto (o parágrafo acaba na linha em branco ou quando a
-//    linha seguinte abre outro bloco). Cada bloco guarda o trecho exato do original, e o
-//    documento é remontado só com os trechos que ficam, sem alterar nada do resto;
+//    ~~~), código com recuo, <pre>, comentários, títulos Markdown e <h1>-<h6>, itens de
+//    lista e citações (com o recuo de cada um), tags de contêiner HTML (<p>, <div>,
+//    <section>, <details>, <ul>, <ol>, <li>, <table>, <blockquote>...) e parágrafos ou
+//    trechos de texto (o parágrafo acaba na linha em branco ou quando a linha seguinte
+//    abre outro bloco). Cada bloco guarda o trecho exato do original, e o documento é
+//    remontado só com os trechos que ficam, sem alterar nada do resto;
 // 2. as regras escolhem trechos inteiros para tirar:
 //    - código (cercado, com recuo, inline ou <pre>) nunca é casado nem cortado;
-//    - todo comentário HTML sai (comentário nunca é para o aluno);
 //    - <details> cujo <summary> tem gabarito + marca (ou "gabarito oficial"): o elemento
 //      inteiro, com os <details> de dentro;
 //    - título (Markdown, sublinhado ou <h1>-<h6>, também em citação ou item de lista) com
 //      gabarito + marca: até o próximo título de nível igual ou menor (## para em ## ou #);
-//    - rótulo em negrito com gabarito + marca no começo de uma linha ("**Gabarito do
-//      professor**", <strong>, <b>; também depois de emoji ou outro símbolo, e em <p>,
-//      <li>, <div>). O rótulo é o texto em negrito até o primeiro ":". Se o bloco tem só o
-//      rótulo, ele vale como título: vai até o próximo título de nível igual ou menor que
-//      o do título da seção onde está (subtítulos mais fundos, como "### Questão 1" numa
-//      seção "##", saem junto); sem título acima, até o próximo título de nível 1 ou 2 ou
-//      o fim. Se o bloco tem o rótulo e respostas (na mesma linha ou nas linhas seguintes
-//      do mesmo bloco), sai só esse bloco. Elemento (<p>, <li>, <div>...), item de lista
-//      ou citação que só tem o bloco do rótulo sai junto com ele;
+//    - rótulo em negrito com gabarito + marca no começo de um bloco ou de uma linha dele
+//      ("**Gabarito do professor**", <strong>, <b>, também em maiúsculas, dentro de
+//      itálico ("_**...**_", <em><strong>) ou de <span>; também depois de emoji ou outro
+//      símbolo, e em <p>, <li>, <div>). O rótulo é o texto em negrito até o primeiro ":".
+//      O rótulo SEMPRE abre uma seção, sozinho ou com texto (as respostas) depois dele no
+//      mesmo bloco: vai até o próximo título de nível igual ou menor que o do título da
+//      seção onde está (subtítulos mais fundos, como "### Questão 1" numa seção "##", saem
+//      junto); sem título acima, até o próximo título de nível 1 ou 2 ou o fim. Elemento
+//      (<p>, <li>, <div>...), item de lista ou citação que só tem o bloco do rótulo sai
+//      junto com ele, e o item de lista que a remoção esvazia (rótulo sozinho + sublista)
+//      sai inteiro. Rótulo em célula de tabela HTML não é reconhecido (tabela não é
+//      suportada e fica inteira), nem negrito quebrado em duas linhas ("**Gabarito do" e
+//      "professor**" na linha seguinte);
 //    - a remoção nunca atravessa o fechamento de um contêiner aberto antes dela (div,
 //      section, li, details, blockquote, p..., citação ou item de lista em Markdown): para
 //      nele e o fechamento fica. Contêiner aberto dentro do trecho removido sai junto com
-//      o fechamento dele, mesmo que o fechamento venha depois do trecho.
+//      o fechamento dele, mesmo que o fechamento venha depois do trecho. Trecho que
+//      termina num título Markdown preserva a linha em branco que fechava um bloco HTML
+//      aberto antes dele (sem ela, o título viraria texto do bloco HTML).
 // Nada mais sai: glossário, avisos, "Gabarito dos exercícios", "Ver resposta", tabela,
-// rótulo em itálico ou sem negrito e "gabarito" sem a marca do professor ficam.
+// rótulo em itálico ou sem negrito e "gabarito" sem a marca do professor ficam. A função
+// é idempotente: aplicada de novo no resultado, não muda nada.
 
 // ---------------------------------------------------------------- palavras do gabarito
 
@@ -70,7 +81,7 @@ function normalizedLabel(html) {
 }
 
 const ANSWER_KEY_WORD = /\b(gabaritos?|chaves? de (respostas?|correcao))\b/;
-const TEACHER_MARKER = /\b(professor|professora|professores|professoras|prof|profs|docente|docentes|instrutor|instrutora|instrutores|instrutoras|exclusivo|exclusiva|exclusivos|exclusivas)\b/;
+const TEACHER_MARKER = /\b(professor|professora|professores|professoras|prof|profs|profa|profas|docente|docentes|instrutor|instrutora|instrutores|instrutoras|exclusivo|exclusiva|exclusivos|exclusivas)\b/;
 const OFFICIAL_ANSWER_KEY = /\b(gabaritos?|chaves? de (respostas?|correcao)) oficia(l|is)\b/;
 
 function hasTeacherAnswerKey(text) {
@@ -258,10 +269,12 @@ function startsBlock(text) {
 }
 
 // Posição do próximo "<!--" fora de código inline, a partir de `from`; -1 se não há.
-function findCommentStart(text, from) {
+// codeEnd: o localizador de código inline da linha (codeSpanFinder), criado uma vez por
+// linha e reaproveitado nas chamadas seguintes com `from` crescente (custo linear).
+function findCommentStart(text, from, codeEnd = null) {
     let comment = text.indexOf('<!--', from);
     if (comment < 0 || !text.includes('`')) return comment;
-    const codeEnd = codeSpanFinder(text);
+    if (!codeEnd) codeEnd = codeSpanFinder(text);
     let index = from;
     while (comment >= 0) {
         const tick = text.indexOf('`', index);
@@ -330,6 +343,11 @@ function tokenize(source) {
         let pending = from;          // começo do texto ainda não emitido
         let atLineStart = lineStart;
         let codeEnd = null;          // código inline da linha (criado na primeira crase)
+        // Recuo da linha: comentário depois só de espaços está em linha própria; depois do
+        // ">" de uma citação (ou de texto), a remoção começa no "<!--" e a quebra de linha
+        // fica, para a citação não se partir em duas.
+        let indent = 0;
+        while (indent < text.length && (text[indent] === ' ' || text[indent] === '\t')) indent += 1;
         const flush = until => {
             if (pending >= until) return;
             const piece = text.slice(pending, until);
@@ -385,11 +403,12 @@ function tokenize(source) {
             if (text.startsWith('<!--', next)) {
                 flush(next);
                 const close = text.indexOf('-->', next + 4);
+                const cutStart = next > indent ? line.start + next : cursor;
                 if (close < 0) {
-                    leaf = { type: 'comment', resume: leaf, midLine: cursor > line.start, unit: emit('comment', line.end) };
+                    leaf = { type: 'comment', resume: leaf, midLine: next > indent, unit: emit('comment', line.end, { cutStart }) };
                     return;
                 }
-                emit('comment', line.start + close + 3);
+                emit('comment', line.start + close + 3, { cutStart });
                 atLineStart = false;
                 pending = close + 3;
                 index = pending;
@@ -444,20 +463,21 @@ function tokenize(source) {
         finishLine(line);
     };
 
-    // Resto da linha de um título Markdown: comentários saem, o resto é inerte.
-    const scanTail = (line, from) => {
+    // Resto da linha de um título Markdown: comentários saem, o resto é inerte. codeEnd: o
+    // localizador de código inline da linha (um só por linha, sem custo quadrático).
+    const scanTail = (line, from, codeEnd) => {
         const text = line.text;
         let index = from;
         for (;;) {
-            const comment = findCommentStart(text, index);
+            const comment = findCommentStart(text, index, codeEnd);
             if (comment < 0) break;
             if (line.start + comment > cursor) emit('tail', line.start + comment);
             const close = text.indexOf('-->', comment + 4);
             if (close < 0) {
-                leaf = { type: 'comment', resume: null, midLine: true, unit: emit('comment', line.end) };
+                leaf = { type: 'comment', resume: null, midLine: true, unit: emit('comment', line.end, { cutStart: line.start + comment }) };
                 return;
             }
-            emit('comment', line.start + close + 3);
+            emit('comment', line.start + close + 3, { cutStart: line.start + comment });
             index = close + 3;
         }
         finishLine(line);
@@ -545,9 +565,10 @@ function tokenize(source) {
         // Markdown mostra como texto) também conta como título, para o gabarito não vazar.
         if (allMatched && leaf && leaf.type === 'html') {
             if (isBlank(rest)) {
+                const closesHtmlFrom = leaf.firstIndex;
                 closeHeading();
                 leaf = null;
-                emit('blank', line.end);
+                emit('blank', line.end, { closesHtmlFrom });
             } else if (!heading && atxHeading(rest)) {
                 const atx = atxHeading(rest);
                 emit('heading', line.end, { level: atx.level, text: atx.text });
@@ -638,9 +659,10 @@ function tokenize(source) {
             leaf = null;
             const title = atx.text;
             const titleStart = title ? pos + atx.textStart : text.length;
-            const comment = findCommentStart(text, titleStart);
+            const codeEnd = text.includes('`') ? codeSpanFinder(text) : null;
+            const comment = findCommentStart(text, titleStart, codeEnd);
             emit('heading', comment < 0 ? line.end : line.start + comment, { level: atx.level, text: comment < 0 ? title : text.slice(titleStart, comment) });
-            if (comment >= 0) scanTail(line, comment);
+            if (comment >= 0) scanTail(line, comment, codeEnd);
             continue;
         }
         if (THEMATIC_BREAK.test(rest)) {
@@ -654,7 +676,7 @@ function tokenize(source) {
             // blocos HTML vão até a linha em branco.
             const untilBlank = !COMMENT_START.test(rest) && !RAW_BLOCK_START.test(rest);
             closeHeading();
-            leaf = untilBlank ? { type: 'html' } : null;
+            leaf = untilBlank ? { type: 'html', firstIndex: units.length } : null;
             run = null;
             scanContent(line, pos, true, false);
             continue;
@@ -676,15 +698,28 @@ function tokenize(source) {
 // ---------------------------------------------------------------- etapa 2: regras
 
 // Rótulo em negrito no começo do texto: prefixo opcional sem letra nem número (emoji,
-// seta, "- "), depois um ou mais trechos em negrito seguidos (**, __, ***, <strong>, <b>).
+// seta, "- "), abertura opcional de itálico ou de <span> ("_**...**_", <em><strong>,
+// <span><strong>), depois um ou mais trechos em negrito seguidos (**, __, ***, <strong>,
+// <b>, também em maiúsculas). Negrito quebrado em duas linhas ("**Gabarito do" e
+// "professor**" na linha seguinte) não é rótulo.
 const LABEL_PREFIX = /^[^\p{L}\p{N}*_<`|[\]!\\]{0,16}/u;
-const BOLD_AT = /(\*{2,3}|_{2,3})(?!\s)((?:(?!\1).)+?)\1|<(strong|b)\b[^<>]*>([\s\S]*?)<\/\3\s*>/y;
+const BOLD_AT = /(\*{2,3}|_{2,3})(?!\s)((?:(?!\1).)+?)\1|<(strong|b)\b[^<>]*>([\s\S]*?)<\/\3\s*>/iy;
+const BOLD_OPENER_AT = /(?:<(?:em|i|span|u|mark|small|font)\b[^<>]*>|[*_](?=\*\*|__|<(?:strong|b)\b))[ \t]*/iy;
 const GAP_AT = /[ \t]*/y;
 
-// Rótulo do gabarito do professor no começo do texto; rest = o que vem depois do rótulo
-// (no negrito, depois do ":", e na linha, depois do negrito). null se não é rótulo.
+// Rótulo do gabarito do professor no começo do texto? (o texto em negrito até o primeiro
+// ":" tem gabarito + marca do professor)
 function parseLabel(text) {
     let index = LABEL_PREFIX.exec(text)[0].length;
+    // Itálico ou <span> em volta do negrito (no máximo três aberturas).
+    for (let opener = 0; opener < 3; opener += 1) {
+        BOLD_AT.lastIndex = index;
+        if (BOLD_AT.test(text)) break;
+        BOLD_OPENER_AT.lastIndex = index;
+        const open = BOLD_OPENER_AT.exec(text);
+        if (!open || !open[0]) break;
+        index += open[0].length;
+    }
     const parts = [];
     for (;;) {
         BOLD_AT.lastIndex = index;
@@ -699,21 +734,78 @@ function parseLabel(text) {
         if (!BOLD_AT.test(text)) break;
         index += gap;
     }
-    if (!parts.length) return null;
+    if (!parts.length) return false;
     const plain = decodeHtmlEntities(withoutInlineCode(parts.join(' ')).replace(/<[^<>]*>/g, ' '));
     const colon = plain.indexOf(':');
-    if (!hasTeacherAnswerKey(colon >= 0 ? plain.slice(0, colon) : plain)) return null;
-    return { rest: `${colon >= 0 ? plain.slice(colon + 1) : ''} ${text.slice(index)}` };
+    return hasTeacherAnswerKey(colon >= 0 ? plain.slice(0, colon) : plain);
 }
 
 const INERT = new Set(['space', 'blank', 'comment']);
-// Elementos que, quando só têm o bloco do rótulo, saem junto com ele.
-const LABEL_WRAPPERS = new Set(['p', 'div', 'li', 'td', 'th', 'dd', 'dt', 'blockquote', 'md:item', 'md:quote']);
+// Elementos que, quando só têm o bloco do rótulo, saem junto com ele. Célula de tabela
+// não: tabela não é suportada e fica inteira (rótulo dentro dela não é reconhecido).
+const LABEL_WRAPPERS = new Set(['p', 'div', 'li', 'dd', 'dt', 'blockquote', 'md:item', 'md:quote']);
+const TABLE_TAGS = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'caption']);
+// Item de lista que a remoção esvazia (o rótulo sozinho e a sublista ou as respostas
+// dele) sai inteiro, sem deixar um marcador vazio.
+const LIST_ITEMS = new Set(['li', 'md:item']);
 
+// Trechos [início, fim) do texto sem os trechos de `ranges` (ordenados ou não).
+function withoutRanges(source, ranges) {
+    if (!ranges.length) return source;
+    ranges.sort((a, b) => a[0] - b[0]);
+    let output = '';
+    let position = 0;
+    ranges.forEach(([start, end]) => {
+        if (start > position) output += source.slice(position, start);
+        position = Math.max(position, end);
+    });
+    return output + source.slice(position);
+}
+
+// Comentários HTML fora de código (os de dentro de <hN> também): onde cada um começa e
+// acaba. Depois do ">" de uma citação, o comentário sai sem o ">" e sem a quebra de linha.
+function commentRanges(units, length) {
+    const ranges = [];
+    units.forEach(unit => {
+        if (unit.kind === 'comment') ranges.push([unit.cutStart !== undefined ? unit.cutStart : unit.start, unit.end]);
+        (unit.holes || []).forEach(([from, to]) => ranges.push([from, to === null || to === undefined ? length : to]));
+    });
+    return ranges;
+}
+
+// Pré-passagem: todos os comentários HTML fora de código saem ANTES de reconhecer títulos
+// e rótulos ("## Gabarito <!-- x --> do professor" é o título do professor). Repete até não
+// sobrar comentário (tirar um pode formar outro: "<!<!-- x -->-- y -->").
+const MAX_COMMENT_PASSES = 50;
+function withoutComments(source) {
+    let text = source;
+    let units = tokenize(text);
+    for (let pass = 0; pass < MAX_COMMENT_PASSES; pass += 1) {
+        const ranges = commentRanges(units, text.length);
+        if (!ranges.length) break;
+        text = withoutRanges(text, ranges);
+        units = tokenize(text);
+    }
+    return { text, units };
+}
+
+// A função é idempotente: aplicada de novo no resultado, não muda nada. Cada rodada só
+// tira trechos; repete enquanto a rodada anterior tirou algo (no texto comum, uma rodada
+// tira e a seguinte confirma).
+const MAX_STRIP_ROUNDS = 20;
 function stripAnswerKeyBlocks(markdown) {
-    const source = String(markdown || '');
+    let text = String(markdown || '');
+    for (let round = 0; round < MAX_STRIP_ROUNDS && text; round += 1) {
+        const next = stripRound(text);
+        if (next === text) break;
+        text = next;
+    }
+    return text;
+}
+
+function stripRound(original) {
+    const { text: source, units } = withoutComments(original);
     if (!source) return source;
-    const units = tokenize(source);
     const count = units.length;
 
     // Pares de abertura e fechamento (HTML e Markdown), num passe só:
@@ -774,13 +866,51 @@ function stripAnswerKeyBlocks(markdown) {
     const dropped = new Set();
     const offsetOf = index => (index < count ? units[index].start : source.length);
     // Tira as unidades [from, to); contêiner aberto ali dentro e fechado depois leva o
-    // fechamento junto.
+    // fechamento junto. Trecho que termina num título Markdown e engoliu a linha em branco
+    // que fechava um bloco HTML aberto antes dele: essa linha fica (sem ela, o título
+    // seguinte viraria texto do bloco HTML).
     const cut = (from, to) => {
         if (to <= from) return;
-        removed.push([units[from].start, offsetOf(to)]);
+        let keep = -1;
+        if (to < count && units[to].kind === 'heading' && !units[to].html) {
+            for (let j = from; j < to; j += 1) {
+                if (units[j].kind === 'blank' && units[j].closesHtmlFrom !== undefined && units[j].closesHtmlFrom < from) keep = j;
+            }
+        }
+        if (keep >= 0) {
+            if (keep > from) removed.push([units[from].start, units[keep].start]);
+            if (keep + 1 < to) removed.push([units[keep].end, offsetOf(to)]);
+        } else {
+            removed.push([units[from].start, offsetOf(to)]);
+        }
         for (let j = from; j < to; j += 1) {
             if (units[j].kind === 'open' && explicitClose[j] >= to) dropped.add(explicitClose[j]);
         }
+    };
+    // Dentro de tabela HTML (o rótulo não é reconhecido: a tabela fica inteira)?
+    const insideTable = index => {
+        for (let container = parent[index]; container >= 0; container = parent[container]) {
+            if (units[container].kind === 'open' && TABLE_TAGS.has(units[container].tag)) return true;
+        }
+        return false;
+    };
+    // Item de lista que o trecho [from, to) esvazia (começa no primeiro conteúdo dele e vai
+    // até o fechamento) sai inteiro, com o fechamento.
+    const wholeListItem = (from, to) => {
+        let start = from;
+        let end = to;
+        for (;;) {
+            const container = parent[start];
+            if (container < 0) break;
+            const unit = units[container];
+            const name = unit.kind === 'mdopen' ? `md:${unit.type}` : unit.tag;
+            if (!LIST_ITEMS.has(name)) break;
+            const contentEnd = explicitClose[container] >= 0 ? explicitClose[container] : endOf[container];
+            if (end !== contentEnd || !inert(container + 1, start)) break;
+            start = container;
+            end = explicitClose[container] >= 0 ? explicitClose[container] + 1 : endOf[container];
+        }
+        return [start, end];
     };
     // Fim do trecho que começa em `start` e vale como título de nível `level`: o próximo
     // título de nível igual ou menor, o fechamento de um contêiner aberto antes do trecho
@@ -876,34 +1006,22 @@ function stripAnswerKeyBlocks(markdown) {
             i = end;
             continue;
         }
-        if (unit.kind === 'text' && (unit.atLineStart || runStart.get(unit.run) === i)) {
-            const label = parseLabel(source.slice(unit.contentStart, unit.end));
-            if (label) {
-                const last = runEnd.get(unit.run);
-                let rest = label.rest;
-                for (let j = i + 1; j <= last; j += 1) {
-                    if (units[j].kind === 'text') rest += ` ${source.slice(units[j].contentStart, units[j].end)}`;
-                }
-                const [start, end] = expand(i, last + 1);
-                const onlyLabel = !normalizedLabel(rest);
-                const stop = onlyLabel ? sectionEnd(start, end, sectionLevel(i) || 2) : end;
-                cut(start, stop);
-                i = stop;
-                continue;
-            }
+        // Rótulo em negrito no começo do bloco (ou de uma linha dele): sempre abre uma
+        // seção, com ou sem texto depois dele no mesmo bloco, até o próximo título de nível
+        // igual ou menor que o do título da seção onde está (sem título acima, até o
+        // próximo # ou ##), sem atravessar o fechamento de um contêiner aberto antes.
+        if (unit.kind === 'text' && (unit.atLineStart || runStart.get(unit.run) === i)
+            && parseLabel(source.slice(unit.contentStart, unit.end)) && !insideTable(i)) {
+            const [start, end] = expand(i, runEnd.get(unit.run) + 1);
+            const [from, stop] = wholeListItem(start, sectionEnd(start, end, sectionLevel(i) || 2));
+            cut(from, stop);
+            i = stop;
+            continue;
         }
         i += 1;
     }
 
-    if (!removed.length) return source;
-    removed.sort((a, b) => a[0] - b[0]);
-    let output = '';
-    let position = 0;
-    removed.forEach(([start, end]) => {
-        if (start > position) output += source.slice(position, start);
-        position = Math.max(position, end);
-    });
-    return output + source.slice(position);
+    return withoutRanges(source, removed);
 }
 
 module.exports = {
