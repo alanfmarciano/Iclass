@@ -64,6 +64,19 @@ describe('ApplicationTokenPanel · token perdido', () => {
     expect(sessionStorage.getItem('exam-token-issued:app-1')).toBe('2026-10-18T10:06:00.000Z')
   })
 
+  it('[UC-APLICACAO-001] prova encerrada com o token trocado em outra tela: aviso sem mandar gerar outro e a situação não aparece como se fosse o token', () => {
+    sessionStorage.setItem('exam-token:app-1', 'ABCDE')
+    sessionStorage.setItem('exam-token-issued:app-1', '2026-10-18T10:00:00.000Z')
+    render(<ApplicationTokenPanel applicationId="app-1" requiresToken closed tokenIssuedAt="2026-10-18T10:05:00.000Z" />)
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Gerar novo token' })).not.toBeInTheDocument()
+    const situation = screen.getByText('Trocado em outra tela')
+    expect(situation).toBeVisible()
+    expect(situation.className).not.toMatch(/font-mono/)
+    expect(screen.queryByText(/gere outro/)).not.toBeInTheDocument()
+    expect(screen.getByText(/A prova já foi encerrada: nenhum aluno entra mais com token\./)).toBeVisible()
+  })
+
   it('token guardado antes da marca de versão some depois de uma troca em outra tela', () => {
     sessionStorage.setItem('exam-token:app-1', 'ABCDE')
     const { rerender } = render(<ApplicationTokenPanel applicationId="app-1" requiresToken closed={false} />)
@@ -76,6 +89,7 @@ describe('ApplicationTokenPanel · token perdido', () => {
     sessionStorage.setItem('exam-token:app-1', 'ABCDE')
     render(<ApplicationTokenPanel applicationId="app-1" requiresToken closed={false} />)
     expect(screen.getByText('ABCDE')).toBeVisible()
+    expect(screen.getByText('ABCDE').className).toMatch(/font-mono/)
     expect(screen.getByRole('button', { name: 'Trocar' })).toBeVisible()
   })
 })

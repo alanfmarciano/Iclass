@@ -17,7 +17,8 @@ const {
     listExamApplications,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
-const { deliveredWithoutAttemptsLeft, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { examFamilyKeys } = require('../utils/examFamily.js');
 const {
     OPEN_APPLICATION_STATUSES,
     activeApplicationConflict,
@@ -129,36 +130,47 @@ function replacePreparedApplications({ studentClass, courseId, examKey, actor })
     return replaced;
 }
 
-// Nova rodada da prova na turma: o gabarito liberado na rodada anterior volta a ficar
-// bloqueado (turma e liberações individuais) até o professor liberar de novo.
-function lockAnswerKeyForNewApplication(cls, examKey, actor) {
-    const answerKey = `Gabarito_${examKey}`;
-    let changed = false;
-    if (cls.releasedItems && cls.releasedItems[answerKey] === true) {
-        cls.releasedItems[answerKey] = false;
-        changed = true;
-    }
-    Object.values(cls.studentReleasedItems || {}).forEach(items => {
-        if (items && items[answerKey] === true) {
-            items[answerKey] = false;
-            changed = true;
-        }
-    });
-    if (changed) {
-        if (!cls.releaseMeta) cls.releaseMeta = {};
-        cls.releaseMeta[answerKey] = { by: actor, at: new Date().toISOString(), released: false, reason: 'nova_aplicacao' };
-    }
-    return changed;
+// Chaves de liberação do gabarito da família da prova: a prova do curso e as variantes
+// "só desta turma" (editar com escopo turma copia o Gabarito_X para Gabarito_X').
+function answerKeyFamily(examKey) {
+    return [...examFamilyKeys(db.memory, examKey)].map(key => `Gabarito_${key}`);
 }
 
-// Aplicação preparada ou em andamento da prova na turma (a que ocupa a prova).
-function openExamApplication(cls, examKey) {
+// Nova rodada da prova na turma: o gabarito liberado na rodada anterior volta a ficar
+// bloqueado (turma e liberações individuais) até o professor liberar de novo. Vale
+// para a família inteira: aplicar a variante editada também trava o Gabarito_X.
+function lockAnswerKeyForNewApplication(cls, examKey, actor) {
+    const changedKeys = new Set();
+    answerKeyFamily(examKey).forEach(answerKey => {
+        if (cls.releasedItems && cls.releasedItems[answerKey] === true) {
+            cls.releasedItems[answerKey] = false;
+            changedKeys.add(answerKey);
+        }
+        Object.values(cls.studentReleasedItems || {}).forEach(items => {
+            if (items && items[answerKey] === true) {
+                items[answerKey] = false;
+                changedKeys.add(answerKey);
+            }
+        });
+    });
+    if (changedKeys.size) {
+        if (!cls.releaseMeta) cls.releaseMeta = {};
+        const at = new Date().toISOString();
+        changedKeys.forEach(answerKey => {
+            cls.releaseMeta[answerKey] = { by: actor, at, released: false, reason: 'nova_aplicacao' };
+        });
+    }
+    return changedKeys.size > 0;
+}
+
+// Aplicação preparada ou em andamento de qualquer prova da família na turma.
+function openExamFamilyApplication(cls, examKey) {
+    const family = examFamilyKeys(db.memory, examKey);
     return classExamApplications(db.memory, {
         studentClass: cls.name,
         courseId: cls.courseId,
-        examKey,
         statuses: OPEN_APPLICATION_STATUSES,
-    })[0] || null;
+    }).find(application => family.has(String(application.examKey || ''))) || null;
 }
 
 function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req) {
@@ -460,7 +472,9 @@ function createAdminExamConfigRouter() {
             const adjustmentMinutes = Number(req.body.adjustmentMinutes);
             if (!Number.isFinite(adjustmentMinutes)) return res.status(400).json({ error: 'Ajuste de tempo inválido.' });
             const targetEmail = String(req.body.targetEmail || '').trim().toLowerCase();
-            // Tempo extra nunca ressuscita tentativa vencida: ela é entregue antes do ajuste.
+            // Tempo extra para um aluno nunca ressuscita tentativa vencida: ela é entregue
+            // antes do ajuste. No ajuste da turma, as entregas automáticas do fim do tempo de
+            // até 2 min atrás voltam para a prova com o tempo extra (reopenDeadlineDeliveries).
             const settled = settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: targetEmail || null, graceMs: 0 });
             if (targetEmail && settled.finalized.length) {
                 await db.save();
@@ -489,11 +503,22 @@ function createAdminExamConfigRouter() {
                     cls.onlineExamConfigs[application.examKey] = applicationToOnlineConfig(application, cls.onlineExamConfigs[application.examKey]);
                 }
             }
+            const reopened = !targetEmail && adjustmentMinutes > 0
+                ? reopenDeadlineDeliveries(db.memory, application, { actor: adminActor(req) })
+                : null;
             application.updatedAt = new Date().toISOString();
             application.updatedBy = adminActor(req);
             await db.save();
-            // Ajuste da turma: quantos já estavam sem tempo e foram entregues sem o extra.
-            res.json({ success: true, application, deliveredAtDeadline: targetEmail ? 0 : settled.finalized.length });
+            // Ajuste da turma: quem voltou para a prova com o tempo extra e quem já tinha
+            // entregue e ficou sem ele.
+            if (targetEmail) return res.json({ success: true, application, deliveredAtDeadline: 0 });
+            res.json({
+                success: true,
+                application,
+                reopenedAtDeadline: reopened ? reopened.reopened.length : 0,
+                deliveredAtDeadline: reopened ? reopened.deadlineKept : settled.finalized.length,
+                deliveredByStudent: reopened ? reopened.manualKept : 0,
+            });
         });
     });
 
@@ -803,7 +828,7 @@ function createAdminExamConfigRouter() {
             // Gabarito só é liberado pela chave própria e nunca enquanto a prova tem
             // aplicação preparada ou em andamento na turma (G2: gabarito na reaplicação).
             if (released && itemKey.startsWith('Gabarito_')) {
-                const examApplication = openExamApplication(cls, itemKey.slice('Gabarito_'.length));
+                const examApplication = openExamFamilyApplication(cls, itemKey.slice('Gabarito_'.length));
                 if (examApplication) {
                     return res.status(409).json({
                         ...activeApplicationConflict(examApplication, 'Esta prova tem uma aplicação preparada ou em andamento nesta turma. Libere o gabarito depois de encerrá-la.'),
@@ -904,10 +929,30 @@ function createAdminExamConfigRouter() {
                 }
             }
 
+            // O gabarito é um só para a família da prova nesta turma: liberar ou bloquear o
+            // da variante "só desta turma" vale também para o da prova de origem (as
+            // entregas da rodada anterior), que a tela de Materiais não mostra mais.
+            // Só mexe nas chaves que a turma (ou o aluno) já tem gravadas.
+            const familyAnswerKeys = [];
+            if (itemKey.startsWith('Gabarito_')) {
+                const target = normalizedStudentEmail ? cls.studentReleasedItems[normalizedStudentEmail] : cls.releasedItems;
+                answerKeyFamily(itemKey.slice('Gabarito_'.length)).forEach(answerKey => {
+                    if (answerKey === itemKey) return;
+                    const recorded = target[answerKey] !== undefined
+                        || (normalizedStudentEmail && cls.releasedItems && cls.releasedItems[answerKey] !== undefined);
+                    if (!recorded) return;
+                    target[answerKey] = !!released;
+                    familyAnswerKeys.push(answerKey);
+                });
+            }
+
             if (!normalizedStudentEmail) {
                 if (!cls.releaseMeta) cls.releaseMeta = {};
                 const releaseActor = (req.adminAccount && (req.adminAccount.name || req.adminAccount.email)) || 'Administrador';
-                cls.releaseMeta[itemKey] = { by: releaseActor, at: new Date().toISOString(), released: !!released };
+                const at = new Date().toISOString();
+                [itemKey, ...familyAnswerKeys].forEach(key => {
+                    cls.releaseMeta[key] = { by: releaseActor, at, released: !!released };
+                });
             }
             await persistClasses(classes);
             res.json({

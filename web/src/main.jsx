@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import App from './App'
+import { appRoutes } from './appRoutes'
 import { ThemeProvider } from './context/ThemeProvider'
 import { ToastProvider } from './context/ToastProvider'
 import { AuthProvider } from './context/AuthProvider'
@@ -27,8 +28,9 @@ function Root() {
 }
 
 // Roteador de dados: permite à prova online confirmar a saída pelo voltar do navegador
-// ou por um link (useBlocker, AVA-12). As rotas continuam declaradas no App.
-const router = createBrowserRouter([{ path: '*', element: <Root /> }])
+// ou por um link (useBlocker, AVA-12). As rotas continuam declaradas no App; um erro de
+// tela mostra a tela de erro em português (appRoutes).
+const router = createBrowserRouter(appRoutes(<Root />))
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

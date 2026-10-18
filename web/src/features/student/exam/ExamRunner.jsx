@@ -9,6 +9,7 @@ import { Textarea } from '../../../components/ui/Textarea'
 import { Badge } from '../../../components/ui/Badge'
 import { ConfirmDialog, Modal } from '../../../components/ui/Modal'
 import { api, hasActiveSession } from '../../../lib/api'
+import { recentRenderError } from '../../../lib/renderErrors'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { pickSnapshot, normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
@@ -105,8 +106,10 @@ export default function ExamRunner() {
   const savingRef = useRef(false)
   const loadedAttemptRef = useRef(null)
   const timeupRef = useRef(null) // respostas congeladas no fim do tempo, até a entrega
+  const deliveredAttemptRef = useRef(null) // tentativa que esta tela mostrou como entregue
   const mountedRef = useRef(true)
   const saveRef = useRef(null)
+  const syncRef = useRef(null)
   const startTimeUpRef = useRef(null)
   // Cópia local cifrada (AVA-11): a chave da tentativa fica só em memória.
   const draftCryptoRef = useRef(null) // { attemptId, rawKey, cryptoKey }
@@ -114,6 +117,7 @@ export default function ExamRunner() {
   const leavingRef = useRef(false) // saída confirmada pelo aluno: a navegação segue
   const blockedActionRef = useRef(null) // POP (voltar do navegador) ou PUSH/REPLACE (link)
   const unsupportedLoggedRef = useRef(null) // tentativa já registrada como sem tela cheia
+  const pageHiddenRef = useRef(false) // a página está sendo recarregada ou fechada
   answersRef.current = answers
   phaseRef.current = phase
   attemptIdRef.current = attemptId
@@ -163,6 +167,7 @@ export default function ExamRunner() {
   // Entrega confirmada (pelo aluno, pelo fim do tempo, pelo servidor ou pelo professor).
   const finishDelivered = useCallback((delivered) => {
     const deliveredAttemptId = timeupRef.current?.attemptId || attemptIdRef.current
+    deliveredAttemptRef.current = deliveredAttemptId || null
     timeupRef.current = null
     submittedRef.current = true
     if (deliveredAttemptId) clearExamDraft(deliveredAttemptId)
@@ -174,6 +179,21 @@ export default function ExamRunner() {
     setTimeupInfo(null)
     setPhase('done')
   }, [applicationId])
+
+  // A tentativa entregue no fim do tempo foi reaberta pelo "+N min" da turma (ou o
+  // professor deu mais tempo enquanto o envio automático saía): a tela volta para as
+  // questões, com as respostas do servidor e o prazo novo, na próxima sincronização.
+  const resumeExtendedAttempt = useCallback((message) => {
+    timeupRef.current = null
+    submittedRef.current = false
+    deliveredAttemptRef.current = null
+    loadedAttemptRef.current = null
+    setTimeupInfo(null)
+    setResult(null)
+    setSubmitConfirm(false)
+    setPhase('loading')
+    toast.info(message)
+  }, [toast])
 
   const qs = (v = '') => `email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&examKey=${encodeURIComponent(examKey)}&applicationId=${encodeURIComponent(applicationId)}${v}`
   const submit = useCallback(async (auto = false) => {
@@ -272,6 +292,13 @@ export default function ExamRunner() {
           finishDelivered({ finalizedByServer: true, answeredCount: e.data?.answeredCount, gradePublished: false })
           return
         }
+        if (kind === 'extended') {
+          if (timeupRef.current === frozen) {
+            resumeExtendedAttempt('O professor deu mais tempo. A prova continua.')
+            syncRef.current?.()
+          }
+          return
+        }
         if (kind === 'locked' || kind === 'paused') {
           timeupRef.current = null
           submittedRef.current = false
@@ -286,7 +313,7 @@ export default function ExamRunner() {
         return
       }
     }
-  }, [email, studentClass, courseId, examKey, applicationId, finishDelivered, toast])
+  }, [email, studentClass, courseId, examKey, applicationId, finishDelivered, resumeExtendedAttempt, toast])
 
   const startTimeUp = useCallback((override = {}) => {
     if (timeupRef.current || submittedRef.current) return
@@ -415,6 +442,9 @@ export default function ExamRunner() {
   useEffect(() => {
     if (phase !== 'active') return
     const report = (eventType, details) => {
+      // A página está descarregando (recarregar, fechar): a saída da página já foi
+      // registrada no pagehide; a aba oculta da descarga não é troca de aba.
+      if (pageHiddenRef.current) return
       api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType, details }).catch(() => {})
       setPhase('paused')
     }
@@ -434,14 +464,22 @@ export default function ExamRunner() {
       event.preventDefault()
       event.returnValue = ''
     }
+    // Saída da página (recarregar, fechar, ir para outro endereço): fica registrada e
+    // trava a prova; se esta mesma sessão voltar logo à tentativa, o servidor destrava
+    // sozinho e o Monitor mostra em quanto tempo ela voltou (backend/utils/examFocusRules.js).
     const onPageHide = () => {
-      api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details: 'Página da prova foi fechada ou recarregada' }, { keepalive: true }).catch(() => {})
+      pageHiddenRef.current = true
+      api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details: 'Página da prova foi fechada ou recarregada', pageExit: true }, { keepalive: true }).catch(() => {})
     }
+    // Página restaurada do cache do navegador (voltar/avançar): segue a regra de retorno.
+    const onPageShow = () => { pageHiddenRef.current = false }
     window.addEventListener('beforeunload', onBeforeUnload)
     window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload)
       window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
     }
   }, [phase, email, studentClass, courseId, examKey, applicationId, attemptId])
 
@@ -523,6 +561,14 @@ export default function ExamRunner() {
       const st = r.state || {}
       if (st.assignedVersion) setAssignedVersion(st.assignedVersion)
       const stateAttemptId = r.attemptId || st.attemptId || null
+      // A tentativa que esta tela mostrou como entregue (ou que estava enviando no fim
+      // do tempo) voltou a ter prazo: o professor deu mais tempo à turma logo depois do
+      // fim do tempo e ela foi reaberta. A prova continua de onde parou.
+      const shownAsDelivered = deliveredAttemptRef.current || timeupRef.current?.attemptId || null
+      if (submittedRef.current && st.startedAt && st.reopenedAt && stateAttemptId && stateAttemptId === shownAsDelivered) {
+        resumeExtendedAttempt('O professor deu mais tempo à turma: sua prova foi reaberta.')
+        setAttemptId(stateAttemptId)
+      }
       if (st.startedAt && stateAttemptId && !timeupRef.current) {
         const serverAnswers = st.answers || {}
         if (loadedAttemptRef.current !== stateAttemptId) {
@@ -669,6 +715,8 @@ export default function ExamRunner() {
     }
   }
 
+  syncRef.current = sync
+
   useEffect(() => {
     sync()
     const id = setInterval(sync, SYNC_MS)
@@ -811,6 +859,13 @@ export default function ExamRunner() {
     saveRef.current?.({ keepalive: true })
     if (!hasActiveSession()) return
     const ctx = exitContextRef.current
+    // A tela de erro tomou o lugar da prova (erro de renderização): não é saída. Vai ao
+    // Monitor como erro técnico e a prova não trava (o aluno recarrega e continua).
+    const renderError = recentRenderError()
+    if (renderError) {
+      api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_render_error', details: `Erro técnico na tela da prova: ${renderError.message}` }, { keepalive: true }).catch(() => {})
+      return
+    }
     api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_left', details: 'Saiu da prova pela navegação' }, { keepalive: true }).catch(() => {})
   }, [])
 

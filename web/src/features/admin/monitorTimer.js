@@ -59,15 +59,33 @@ export function resolveMonitorTimer({ config = {}, rows = [], now = Date.now(), 
   }
 }
 
-// Retorno do "+N min" para a turma: quem já estava com o tempo esgotado foi entregue
-// automaticamente com as respostas salvas e não recebe o tempo extra (o professor
-// precisa saber disso, não só ver "sucesso").
+// Retorno do "+N min" para a turma. Logo depois do fim do tempo (até 2 min), quem foi
+// entregue automaticamente no fim do tempo volta para a prova com o tempo extra; o
+// professor fica sabendo quantos voltaram e quantos já tinham entregue e ficaram sem o
+// extra (envio pelo próprio aluno, nota publicada ou fim do tempo há mais de 2 min),
+// não só "sucesso".
 export function classTimeExtraFeedback(response, minutes = 5) {
-  const base = `+${minutes} min para a turma`
-  const delivered = Math.max(0, Math.floor(Number(response?.deliveredAtDeadline) || 0))
-  if (!delivered) return { tone: 'success', message: base }
-  const who = delivered === 1
-    ? '1 aluno já estava sem tempo e foi entregue'
-    : `${delivered} alunos já estavam sem tempo e foram entregues`
-  return { tone: 'warning', message: `${base}. ${who} automaticamente com as respostas salvas, sem o tempo extra.` }
+  const count = (value) => Math.max(0, Math.floor(Number(value) || 0))
+  const reopened = count(response?.reopenedAtDeadline)
+  const keptAtDeadline = count(response?.deliveredAtDeadline)
+  const keptByStudent = count(response?.deliveredByStudent)
+  const parts = [`+${minutes} min para a turma`]
+  if (reopened) {
+    parts.push(reopened === 1
+      ? '1 aluno entregue automaticamente no fim do tempo voltou para a prova com o tempo extra'
+      : `${reopened} alunos entregues automaticamente no fim do tempo voltaram para a prova com o tempo extra`)
+  }
+  const kept = keptAtDeadline + keptByStudent
+  if (kept) {
+    const reasons = []
+    if (keptByStudent) reasons.push(keptByStudent === 1 ? '1 enviou a prova por conta própria' : `${keptByStudent} enviaram a prova por conta própria`)
+    if (keptAtDeadline) {
+      reasons.push(keptAtDeadline === 1
+        ? '1 foi entregue automaticamente no fim do tempo e não pôde ser reaberto (nota publicada ou fim do tempo há mais de 2 min)'
+        : `${keptAtDeadline} foram entregues automaticamente no fim do tempo e não puderam ser reabertos (nota publicada ou fim do tempo há mais de 2 min)`)
+    }
+    const who = kept === 1 ? '1 aluno que já tinha entregue ficou sem o tempo extra' : `${kept} alunos que já tinham entregue ficaram sem o tempo extra`
+    parts.push(`${who}: ${reasons.join('; ')}`)
+  }
+  return { tone: kept ? 'warning' : 'success', message: parts.length > 1 ? `${parts.join('. ')}.` : parts[0] }
 }

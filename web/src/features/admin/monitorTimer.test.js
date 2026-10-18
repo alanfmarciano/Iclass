@@ -45,14 +45,17 @@ describe('cronometro do monitor', () => {
 })
 
 describe('[UC-TENTATIVA-001] +5 min para a turma depois do fim do tempo', () => {
-  it('avisa o professor de quem já estava sem tempo e foi entregue sem o extra (AVA-03)', () => {
+  it('conta quem voltou para a prova e avisa quem já tinha entregue e ficou sem o extra (AVA-03)', () => {
     expect(classTimeExtraFeedback({ success: true, deliveredAtDeadline: 0 })).toEqual({ tone: 'success', message: '+5 min para a turma' })
     expect(classTimeExtraFeedback({ success: true })).toEqual({ tone: 'success', message: '+5 min para a turma' })
+    const reopened = classTimeExtraFeedback({ success: true, reopenedAtDeadline: 2 })
+    expect(reopened.tone).toBe('success')
+    expect(reopened.message).toBe('+5 min para a turma. 2 alunos entregues automaticamente no fim do tempo voltaram para a prova com o tempo extra.')
     const one = classTimeExtraFeedback({ success: true, deliveredAtDeadline: 1 })
     expect(one.tone).toBe('warning')
-    expect(one.message).toBe('+5 min para a turma. 1 aluno já estava sem tempo e foi entregue automaticamente com as respostas salvas, sem o tempo extra.')
-    const two = classTimeExtraFeedback({ success: true, deliveredAtDeadline: 2 }, 10)
-    expect(two.tone).toBe('warning')
-    expect(two.message).toMatch(/^\+10 min para a turma\. 2 alunos já estavam sem tempo e foram entregues automaticamente/)
+    expect(one.message).toBe('+5 min para a turma. 1 aluno que já tinha entregue ficou sem o tempo extra: 1 foi entregue automaticamente no fim do tempo e não pôde ser reaberto (nota publicada ou fim do tempo há mais de 2 min).')
+    const mixed = classTimeExtraFeedback({ success: true, reopenedAtDeadline: 1, deliveredAtDeadline: 2, deliveredByStudent: 1 }, 10)
+    expect(mixed.tone).toBe('warning')
+    expect(mixed.message).toBe('+10 min para a turma. 1 aluno entregue automaticamente no fim do tempo voltou para a prova com o tempo extra. 3 alunos que já tinham entregue ficaram sem o tempo extra: 1 enviou a prova por conta própria; 2 foram entregues automaticamente no fim do tempo e não puderam ser reabertos (nota publicada ou fim do tempo há mais de 2 min).')
   })
 })

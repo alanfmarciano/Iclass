@@ -613,7 +613,7 @@ test('[UC-TENTATIVA-001] retomar no modo coletivo não reinicia o relógio: quem
     await control(application.id, 'finish', { inProgressPolicy: 'discard' });
 });
 
-test('[UC-TENTATIVA-001] tempo extra do professor não reabre tentativa vencida (AVA-03)', async () => {
+test('[UC-TENTATIVA-001] tempo extra para UM aluno não reabre tentativa vencida; o da turma logo depois do fim reabre (AVA-03)', async () => {
     const { ana, bruno, carla } = students;
     const application = await createApplication({ timerMode: 'per_attempt' });
     const startedAna = await startAttempt(ana, application.id);
@@ -636,8 +636,9 @@ test('[UC-TENTATIVA-001] tempo extra do professor não reabre tentativa vencida 
         .expect(409);
     assert.equal(submissionsOf(bruno, application.id).length, 1);
 
-    // +5 min para a turma também não ressuscita quem já estava sem tempo, e a resposta
-    // diz ao professor quantos foram entregues sem o extra.
+    // +5 min para a TURMA logo depois do fim do tempo: as entregas automáticas do fim do
+    // tempo (ana e bruno, há segundos) e a da carla (entregue pelo próprio ajuste) voltam
+    // para a prova com o tempo extra.
     const startedCarla = await startAttempt(carla, application.id);
     expireAttempt(startedCarla.attemptId, 3000);
     const classAdjust = await request(app)
@@ -645,11 +646,17 @@ test('[UC-TENTATIVA-001] tempo extra do professor não reabre tentativa vencida 
         .set('x-admin-session', adminToken)
         .send({ adjustmentMinutes: 5 })
         .expect(200);
-    assert.equal(classAdjust.body.deliveredAtDeadline, 1);
-    assert.equal(submissionsOf(carla, application.id).length, 1);
-    assert.equal(openStatesOf(carla, application.id).length, 0);
+    assert.equal(classAdjust.body.reopenedAtDeadline, 3);
+    assert.equal(classAdjust.body.deliveredAtDeadline, 0);
+    for (const [student, started] of [[ana, startedAna], [bruno, startedBruno], [carla, startedCarla]]) {
+        assert.equal(submissionsOf(student, application.id).length, 0);
+        const [open] = openStatesOf(student, application.id);
+        assert.equal(open.attemptId, started.attemptId, 'a mesma tentativa volta, nunca uma nova');
+        assert.equal(open.status, 'active');
+    }
+    assert.deepEqual(stateOf(startedAna.attemptId).answers, { 1: 'A' });
 
-    // O "+5 min" do Monitor (turma inteira) logo depois do fim do tempo.
+    // O "+5 min" do Monitor (turma inteira) logo depois do fim do tempo do diego.
     const startedDiego = await startAttempt(students.diego, application.id);
     stateOf(startedDiego.attemptId).startedAt = Date.now() - (DURATION_MIN + 5) * MIN - 2000;
     const monitorAdjust = await request(app)
@@ -658,14 +665,136 @@ test('[UC-TENTATIVA-001] tempo extra do professor não reabre tentativa vencida 
         .send({ studentClass, courseId, examKey, applicationId: application.id, adjustmentMinutes: 5 })
         .expect(200);
     assert.equal(monitorAdjust.body.success, true);
-    assert.equal(monitorAdjust.body.deliveredAtDeadline, 1);
-    assert.equal(submissionsOf(students.diego, application.id)[0].submissionSource, 'deadline_server_auto_submit');
+    assert.equal(monitorAdjust.body.reopenedAtDeadline, 1);
+    assert.equal(monitorAdjust.body.deliveredAtDeadline, 0);
+    assert.equal(submissionsOf(students.diego, application.id).length, 0);
+    assert.equal(openStatesOf(students.diego, application.id)[0].attemptId, startedDiego.attemptId);
     const nobodyLate = await request(app)
         .post('/api/admin/adjust-student-time')
         .set('x-admin-session', adminToken)
         .send({ studentClass, courseId, examKey, applicationId: application.id, adjustmentMinutes: 5 })
         .expect(200);
+    assert.equal(nobodyLate.body.reopenedAtDeadline, 0);
     assert.equal(nobodyLate.body.deliveredAtDeadline, 0);
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] +N min da turma até 2 min depois do fim do tempo coletivo reabre só as entregas automáticas (AVA-03)', async () => {
+    const { ana, bruno, carla, diego } = students;
+    const application = await createApplication({ timerMode: 'collective', maxAttempts: 1 });
+    const startedAna = await startAttempt(ana, application.id);
+    const startedBruno = await startAttempt(bruno, application.id);
+    const startedCarla = await startAttempt(carla, application.id);
+    const startedDiego = await startAttempt(diego, application.id);
+    await autosave(ana, application.id, startedAna.attemptId, { 1: 'A' }).expect(200);
+    await autosave(bruno, application.id, startedBruno.attemptId, { 1: 'A', 2: 'C' }).expect(200);
+    // Carla envia por conta própria antes do fim: nunca é reaberta.
+    await submit(carla, application.id, startedCarla, { 1: 'A', 2: 'B' }, false).expect(200);
+
+    // O tempo coletivo acabou há 3 s.
+    const shift = DURATION_MIN * MIN + 3000;
+    applicationOf(application.id).startsAt -= shift;
+    [startedAna, startedBruno, startedDiego].forEach(started => { stateOf(started.attemptId).startedAt -= shift; });
+    // Ana: o navegador entregou no zero. Diego: também, mas a nota já foi publicada.
+    // Bruno: sem rede, o servidor entrega o que estava salvo.
+    await submit(ana, application.id, startedAna, { 1: 'A', 2: 'B' }).expect(200);
+    await submit(diego, application.id, startedDiego, { 1: 'A' }).expect(200);
+    submissionsOf(diego, application.id)[0].gradePublished = true;
+    assert.equal(settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 }).finalized.length, 1);
+    assert.equal(submissionsOf(bruno, application.id)[0].submissionSource, 'deadline_server_auto_submit');
+    assert.equal(submissionsOf(ana, application.id)[0].submissionSource, 'timer_auto_submit');
+
+    const adjusted = await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, adjustmentMinutes: 5 })
+        .expect(200);
+    assert.equal(adjusted.body.reopenedAtDeadline, 2);
+    assert.equal(adjusted.body.deliveredAtDeadline, 1, 'diego: nota publicada');
+    assert.equal(adjusted.body.deliveredByStudent, 1, 'carla: enviou por conta própria');
+    assert.equal(submissionsOf(carla, application.id).length, 1);
+    assert.equal(submissionsOf(diego, application.id).length, 1);
+    assert.equal(openStatesOf(carla, application.id).length, 0);
+    assert.equal(openStatesOf(diego, application.id).length, 0);
+
+    // Ana volta para a mesma tentativa, com as respostas da entrega e o prazo novo.
+    const anaBack = await sync(ana, application.id, startedAna.attemptId);
+    assert.equal(anaBack.body.attemptId, startedAna.attemptId);
+    assert.equal(anaBack.body.attemptOutcome, null);
+    assert.equal(anaBack.body.attemptsUsed, 0);
+    assert.ok(anaBack.body.state.reopenedAt > 0);
+    assert.equal(anaBack.body.state.reopenedFrom, undefined, 'o histórico da reabertura é do professor');
+    assert.deepEqual(anaBack.body.state.answers, asStudentAnswers(application.id, { 1: 'A', 2: 'B' }));
+    const remaining = Number(anaBack.body.state.timerRemaining);
+    assert.ok(remaining > 4 * 60 && remaining <= 5 * 60, `tempo extra: ${remaining}`);
+    assert.ok(anaBack.body.localCopyKey, 'a tentativa reaberta ganha uma chave nova da cópia local');
+    assert.ok(db.memory.auditLogs.some(log => log.type === 'exam_attempt_reopened_extra_time'
+        && log.details.attemptId === startedAna.attemptId && log.details.submissionSource === 'timer_auto_submit'));
+    const bobBack = await sync(bruno, application.id, startedBruno.attemptId);
+    assert.deepEqual(bobBack.body.state.answers, asStudentAnswers(application.id, { 1: 'A', 2: 'C' }));
+
+    // A tela que ainda tentava o envio automático congelado no zero não entrega de novo:
+    // o servidor responde que a prova continua.
+    const stale = await submit(ana, application.id, startedAna, { 1: 'A', 2: 'B' }).expect(409);
+    assert.equal(stale.body.deadlineExtended, true);
+    assert.ok(stale.body.timerRemaining > 4 * 60);
+    assert.equal(submissionsOf(ana, application.id).length, 0);
+
+    // Ana termina e envia: a entrega mostra ao professor que a tentativa foi reaberta.
+    await submit(ana, application.id, startedAna, { 1: 'A', 2: 'B', 3: 'C' }, false).expect(200);
+    const [final] = submissionsOf(ana, application.id);
+    assert.equal(final.attemptId, startedAna.attemptId);
+    assert.equal(final.correctCount, 3);
+    assert.ok(Date.parse(final.reopenedAt) > 0);
+    assert.equal(final.reopenedFrom[0].source, 'timer_auto_submit');
+    assert.equal(final.reopenedFrom[0].answeredCount, 2);
+    const mine = await request(app)
+        .post('/api/student/my-submissions')
+        .set('x-session-token', ana.token)
+        .send({ studentClass, courseId })
+        .expect(200);
+    assert.equal(mine.body.submissions.find(item => item.attemptId === startedAna.attemptId).reopenableState, undefined);
+
+    // Passados os 2 min do fim do tempo, o +N min não reabre mais (e avisa).
+    const brunoState = stateOf(startedBruno.attemptId);
+    brunoState.startedAt -= 5 * MIN + 3 * MIN;
+    applicationOf(application.id).startsAt -= 5 * MIN + 3 * MIN;
+    const late = await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, adjustmentMinutes: 5 })
+        .expect(200);
+    assert.equal(late.body.reopenedAtDeadline, 0);
+    assert.equal(late.body.deliveredAtDeadline, 2, 'bruno (fim do tempo há 3 min) e diego (nota publicada)');
+    assert.equal(submissionsOf(bruno, application.id).length, 1);
+    assert.equal(openStatesOf(bruno, application.id).length, 0);
+
+    // Tirar tempo da turma nunca reabre nada.
+    const minus = await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, adjustmentMinutes: -1 })
+        .expect(200);
+    assert.equal(minus.body.reopenedAtDeadline, 0);
+    await control(application.id, 'finish');
+});
+
+test('[UC-TENTATIVA-001] entrega do fim do tempo gravada antes desta versão (sem o estado guardado) não é reaberta', async () => {
+    const { ana } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const started = await startAttempt(ana, application.id);
+    await autosave(ana, application.id, started.attemptId, { 1: 'A' }).expect(200);
+    expireAttempt(started.attemptId, 3000);
+    settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 });
+    delete submissionsOf(ana, application.id)[0].reopenableState;
+    const adjusted = await request(app)
+        .post(`/api/admin/exam-applications/${application.id}/time-adjustment`)
+        .set('x-admin-session', adminToken)
+        .send({ adjustmentMinutes: 5 })
+        .expect(200);
+    assert.equal(adjusted.body.reopenedAtDeadline, 0);
+    assert.equal(adjusted.body.deliveredAtDeadline, 1);
+    assert.equal(submissionsOf(ana, application.id).length, 1);
     await control(application.id, 'finish');
 });
 
@@ -902,4 +1031,167 @@ test('[UC-TENTATIVA-001] tentativa vencida deixada por versão antiga em aplica�
         .query({ courseId, studentClass })
         .expect(200);
     assert.equal(cleared.body.some(entry => entry.id === 'provas_recuperadas'), false);
+});
+
+test('[UC-TENTATIVA-001] aplicação encerrada com "desconsiderar" em versão antiga: tentativa "expired" nunca fica para sempre em "entrega em instantes"', async () => {
+    const { ana, bruno, carla, diego } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+    const finishedApp = applicationOf(application.id);
+    // Encerramento gravado pela versão antiga: há 20 min, sem a lista de desconsideradas.
+    const closedAt = Date.now() - 20 * MIN;
+    finishedApp.endsAt = closedAt;
+    finishedApp.finishedAt = new Date(closedAt).toISOString();
+    delete finishedApp.finishResolution.discardedAttempts;
+    const legacyState = (student, attemptId, startedAt, status = 'expired') => {
+        db.memory.studentExamState[`${application.id}::${student.email}::1`] = {
+            id: attemptId,
+            attemptId,
+            applicationId: application.id,
+            studentEmail: student.email,
+            studentClass,
+            courseId,
+            examKey,
+            attemptNumber: 1,
+            status,
+            answers: { 1: 'A', 2: 'C' },
+            assignedVersion: 'A',
+            startedAt,
+            individualTimeAdjustment: 0,
+        };
+    };
+    // Ana: o tempo dela acabou 10 min antes do encerramento (regra atual: entrega do fim do tempo).
+    legacyState(ana, 'attempt_legacy_ana', closedAt - (DURATION_MIN + 10) * MIN);
+    // Bruno: marcado 'expired' com o tempo acabando depois do encerramento: desconsiderada.
+    legacyState(bruno, 'attempt_legacy_bruno', closedAt - (DURATION_MIN - 5) * MIN);
+    // Carla: em andamento ('active') quando a versão antiga encerrou sem decisão, mas o
+    // tempo dela já tinha acabado: também é entrega do fim do tempo.
+    legacyState(carla, 'attempt_legacy_carla2', closedAt - (DURATION_MIN + 2) * MIN, 'active');
+    // Diego: em andamento no encerramento e sem 'expired': continua esperando a decisão.
+    legacyState(diego, 'attempt_legacy_diego', closedAt - (DURATION_MIN - 5) * MIN, 'active');
+
+    const monitorRows = async () => (await request(app)
+        .get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
+        .set('x-admin-session', adminToken)
+        .query({ courseId, applicationId: application.id })
+        .expect(200)).body;
+    const first = await monitorRows();
+    const statusOf = (rows, student) => rows.find(row => row.email === student.email).status;
+    assert.equal(statusOf(first, ana), 'finished');
+    assert.equal(statusOf(first, bruno), 'discarded');
+    assert.equal(statusOf(first, carla), 'finished');
+    assert.ok(first.every(row => row.status !== 'time_over'), 'nenhuma linha "entrega automática em instantes" em aplicação encerrada');
+
+    const [anaDelivered] = submissionsOf(ana, application.id);
+    assert.equal(anaDelivered.recoveredAfterFinish, true);
+    assert.equal(anaDelivered.correctCount, 1);
+    assert.equal(submissionsOf(bruno, application.id).length, 0);
+    const brunoState = stateOf('attempt_legacy_bruno');
+    assert.equal(brunoState.status, 'invalidated');
+    assert.equal(brunoState.discardedAtFinish, true);
+    assert.deepEqual(brunoState.answers, { 1: 'A', 2: 'C' }, 'as respostas ficam guardadas');
+    assert.equal(submissionsOf(carla, application.id)[0].recoveredAfterFinish, true);
+    assert.equal(submissionsOf(diego, application.id).length, 0);
+
+    // Estável: a próxima varredura e o próximo Monitor mostram o mesmo.
+    const again = settleExpiredAttempts(db.memory);
+    assert.equal(again.finalized.length, 0);
+    assert.equal(again.discarded, 0);
+    const second = await monitorRows();
+    assert.equal(statusOf(second, bruno), 'discarded');
+    assert.ok(second.every(row => row.status !== 'time_over'));
+    assert.equal((await sync(bruno, application.id, 'attempt_legacy_bruno')).body.finishOutcome, 'discarded');
+    assert.equal((await sync(ana, application.id)).body.finishOutcome, 'delivered');
+    delete db.memory.studentExamState[`${application.id}::${diego.email}::1`];
+});
+
+test('[UC-TENTATIVA-001] recarregar a página da prova: a mesma sessão que volta em até 60 s destrava sozinha e o Monitor registra', async () => {
+    const { ana, bruno } = students;
+    const { PAGE_EXIT_RETURN_WINDOW_MS } = require('../../backend/utils/examFocusRules.js');
+    assert.equal(PAGE_EXIT_RETURN_WINDOW_MS, 60 * 1000);
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const logActivity = (student, started, eventType, details, extra = {}) => request(app)
+        .post('/api/student/log-activity')
+        .set('x-session-token', student.token)
+        .send({ email: student.email, studentClass, courseId, examKey, applicationId: application.id, attemptId: started.attemptId, eventType, details, ...extra })
+        .expect(200);
+    // Registros iguais em menos de 1 s são deduplicados: cada cena começa "depois".
+    const ageLogs = () => db.memory.proctoringLogs
+        .filter(log => log.applicationId === application.id)
+        .forEach(log => { log.timestamp -= 5000; });
+    const startedAna = await startAttempt(ana, application.id);
+    await autosave(ana, application.id, startedAna.attemptId, { 1: 'A' }).expect(200);
+
+    // Recarregou: o pagehide registra a saída da página e trava.
+    await logActivity(ana, startedAna, 'exam_left', 'Página da prova foi fechada ou recarregada', { pageExit: true });
+    // A aba fica oculta enquanto a página descarrega: faz parte da mesma saída.
+    await logActivity(ana, startedAna, 'tab_blur', 'Aba oculta');
+    assert.equal(stateOf(startedAna.attemptId).focusLocked, true);
+    stateOf(startedAna.attemptId).pageExit.at -= 7000;
+    const back = await sync(ana, application.id, startedAna.attemptId);
+    assert.equal(back.body.state.focusLocked, false, 'voltou em 7 s: destravou sozinha');
+    assert.equal(back.body.state.pageExit, undefined);
+    assert.deepEqual(back.body.state.answers, asStudentAnswers(application.id, { 1: 'A' }));
+    const returnLog = db.memory.proctoringLogs.find(log => log.applicationId === application.id && log.eventType === 'page_return');
+    assert.ok(returnLog, 'o retorno fica registrado no Monitor');
+    assert.match(returnLog.details, /voltou em 7 s/);
+    const monitor = await request(app)
+        .get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
+        .set('x-admin-session', adminToken)
+        .query({ courseId, applicationId: application.id })
+        .expect(200);
+    const anaRow = monitor.body.find(row => row.email === ana.email);
+    assert.equal(anaRow.focusLocked, false);
+    assert.equal(anaRow.status, 'online');
+    assert.ok(anaRow.logs.some(log => log.eventType === 'page_return'));
+
+    // Sem voltar em 60 s: vale a regra de saída (só o professor libera).
+    ageLogs();
+    await logActivity(ana, startedAna, 'exam_left', 'Página da prova foi fechada ou recarregada', { pageExit: true });
+    stateOf(startedAna.attemptId).pageExit.at -= 61 * 1000;
+    const tooLate = await sync(ana, application.id, startedAna.attemptId);
+    assert.equal(tooLate.body.state.focusLocked, true);
+    assert.equal(stateOf(startedAna.attemptId).pageExit, undefined);
+    assert.equal((await sync(ana, application.id, startedAna.attemptId)).body.state.focusLocked, true);
+    await request(app)
+        .post('/api/admin/unlock-student-focus')
+        .set('x-admin-session', adminToken)
+        .send({ studentEmail: ana.email, studentClass, courseId, examKey, applicationId: application.id })
+        .expect(200);
+
+    // Saída pelo botão da prova (sem ser saída da página): continua travada.
+    ageLogs();
+    await logActivity(ana, startedAna, 'exam_left', 'Aluno saiu usando o botão da prova');
+    assert.equal((await sync(ana, application.id, startedAna.attemptId)).body.state.focusLocked, true);
+    await request(app)
+        .post('/api/admin/unlock-student-focus')
+        .set('x-admin-session', adminToken)
+        .send({ studentEmail: ana.email, studentClass, courseId, examKey, applicationId: application.id })
+        .expect(200);
+
+    // Troca de aba continua como está: a prova já travada não destrava com uma recarga depois.
+    ageLogs();
+    const startedBruno = await startAttempt(bruno, application.id);
+    await logActivity(bruno, startedBruno, 'tab_blur', 'Aba oculta');
+    stateOf(startedBruno.attemptId).focusLockedAt -= 10 * 1000;
+    await logActivity(bruno, startedBruno, 'exam_left', 'Página da prova foi fechada ou recarregada', { pageExit: true });
+    assert.equal((await sync(bruno, application.id, startedBruno.attemptId)).body.state.focusLocked, true);
+    await request(app)
+        .post('/api/admin/unlock-student-focus')
+        .set('x-admin-session', adminToken)
+        .send({ studentEmail: bruno.email, studentClass, courseId, examKey, applicationId: application.id })
+        .expect(200);
+
+    // Outra sessão (login em outro aparelho) não destrava a saída desta.
+    ageLogs();
+    await logActivity(bruno, startedBruno, 'exam_left', 'Página da prova foi fechada ou recarregada', { pageExit: true });
+    const otherDevice = { ...bruno, token: 'token-bruno-outro-aparelho' };
+    const previousToken = db.memory.sessions[bruno.email].token;
+    db.memory.sessions[bruno.email].token = otherDevice.token;
+    try {
+        assert.equal((await sync(otherDevice, application.id, startedBruno.attemptId)).body.state.focusLocked, true);
+    } finally {
+        db.memory.sessions[bruno.email].token = previousToken;
+    }
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
 });

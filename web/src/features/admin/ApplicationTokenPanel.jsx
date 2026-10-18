@@ -29,6 +29,15 @@ export function rememberApplicationToken(applicationId, token, issuedAt) {
   } catch { /* navegador sem armazenamento: o token aparece só nesta tela */ }
 }
 
+// Aviso do token trocado em outra tela: só sugere gerar outro quando o botão existe
+// (aplicação encerrada não aceita mais ninguém, então não há token a usar).
+export function staleTokenMessage(canRegenerate, closed) {
+  const base = 'O token desta tela foi trocado em outro navegador e não vale mais.'
+  if (canRegenerate) return `${base} Use o token novo ou gere outro.`
+  if (closed) return `${base} A prova já foi encerrada: nenhum aluno entra mais com token.`
+  return `${base} Use o token novo.`
+}
+
 // Token de acesso da aplicação no Monitor. O servidor guarda só o hash: o token em
 // texto puro fica na aba que preparou a prova. Em outra máquina (ou com a aba fechada)
 // o professor gera um novo aqui, sem preparar de novo nem encerrar a prova; quem já
@@ -73,11 +82,14 @@ export function ApplicationTokenPanel({ applicationId, requiresToken, closed, le
     <div className="rounded-lg border border-border bg-surface-2 px-4 py-3 min-w-[190px]">
       <p className="text-[11px] font-semibold uppercase text-muted">Token de acesso</p>
       <div className="mt-1 flex flex-wrap items-center gap-2">
-        <span className={`font-mono font-bold ${token ? 'text-lg tracking-[0.2em] text-warning' : 'text-sm text-muted'}`}>{token || (staleToken ? 'Trocado em outra tela' : requiresToken ? 'Definido na preparação' : 'Desativado')}</span>
+        {/* Só o token vai em fonte monoespaçada; a situação dele é texto comum. */}
+        {token
+          ? <span data-testid="application-token" className="font-mono font-bold text-lg tracking-[0.2em] text-warning">{token}</span>
+          : <span className="text-sm font-semibold text-muted">{staleToken ? 'Trocado em outra tela' : requiresToken ? 'Definido na preparação' : 'Desativado'}</span>}
         {token && <Button size="sm" variant="ghost" icon={Copy} onClick={copy}>Copiar</Button>}
         {canRegenerate && <Button size="sm" variant={token ? 'ghost' : 'secondary'} icon={RefreshCw} onClick={() => setConfirmOpen(true)}>{token ? 'Trocar' : 'Gerar novo token'}</Button>}
       </div>
-      {staleToken && <p className="mt-1 text-[11px] text-warning">O token desta tela foi trocado em outro navegador e não vale mais. Use o token novo ou gere outro.</p>}
+      {staleToken && <p className="mt-1 text-[11px] text-warning">{staleTokenMessage(canRegenerate, closed)}</p>}
       {canRegenerate && !token && !staleToken && <p className="mt-1 text-[11px] text-subtle">O token só aparece no navegador que preparou a prova. Perdeu? Gere um novo.</p>}
       <Modal open={confirmOpen} onClose={() => { if (!busy) setConfirmOpen(false) }} title="Gerar novo token"
         description="O token atual deixa de valer para quem ainda vai entrar. Quem já validou o token continua fazendo a prova normalmente."

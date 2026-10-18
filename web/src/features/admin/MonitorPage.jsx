@@ -20,12 +20,12 @@ import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { StudentAnswersModal } from './StudentAnswersModal'
-import { LOG_INFO, buildAlerts, examLeftLabel, focusLogLabel, isSuspiciousItem, suspiciousCount } from './monitorLogs'
+import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
 const DEFAULT_WAITING_ROOM_MINUTES = 10
-const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'], time_over: ['warning', 'Tempo esgotado'] }
+const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'], time_over: ['warning', 'Tempo esgotado'], discarded: ['neutral', 'Desconsiderada'] }
 const EXAM_STATUS = {
   prepared: ['neutral', 'Preparada'],
   running: ['success', 'Em andamento'],
@@ -128,8 +128,8 @@ function buildItems(events, logs) {
   })
   const lg = (logs || []).filter((l) => ALERT_LOG_TYPES.has(l.eventType)).map((l) => {
     const info = LOG_INFO[l.eventType]
-    const label = l.eventType === 'exam_left' ? examLeftLabel(l.details) : info.label
-    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: l.eventType === 'exam_left' ? `exam_left:${label}` : l.eventType, ...info, label, log: l }
+    const label = logLabel(l)
+    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: ['exam_left', 'page_return'].includes(l.eventType) ? `${l.eventType}:${label}` : l.eventType, ...info, label, log: l }
   })
   return [...ks, ...lg].sort((a, b) => a.t - b.t)
 }
@@ -305,7 +305,7 @@ function KeystrokeViewer({ events, row, loading }) {
                             {a.label}
                             {a.count > 1 && <span className="font-mono text-[10px] font-bold rounded-full px-1.5 py-0.5 bg-surface-2 text-danger border border-danger/30">×{a.count}</span>}
                             {a.kind === 'focus' && a.pauses !== false && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-warning border border-warning/30">pausou a prova</span>}
-                            {a.kind === 'focus' && a.pauses === false && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-subtle border border-border">prova sem tela cheia</span>}
+                            {a.kind === 'focus' && a.pauses === false && a.badge && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-subtle border border-border">{a.badge}</span>}
                           </div>
                           {(a.mods || a.key) && a.kind !== 'focus' && <div className="text-[11px] text-subtle mt-0.5 font-mono">{[a.mods, a.key].filter(Boolean).join('+')}</div>}
                         </div>
@@ -1215,6 +1215,7 @@ export default function MonitorPage() {
                       <td className="px-4 py-3">
                         <Badge tone={st[0]} dot>{st[1]}</Badge>
                         {r.status === 'time_over' && <p className="mt-1 text-[11px] text-subtle">Entrega automática em instantes</p>}
+                        {r.status === 'discarded' && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">Tentativa em andamento desconsiderada no encerramento</p>}
                         {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
                       </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email)}>{r.assignedVersion || 'A'}</Button></td>

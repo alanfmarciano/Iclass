@@ -50,7 +50,7 @@ const {
     findOpenAttemptState,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
-const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
 
 function rejectInvalidBranding(res, body) {
@@ -3035,6 +3035,19 @@ router.post('/api/admin/server-exam-control', (req, res) => {
     });
 });
 
+// Retorno do "+N min" da turma: entregas do fim do tempo reabertas com o tempo extra e
+// quem já tinha entregue e ficou sem ele (fim do tempo fora da janela ou nota publicada,
+// e quem enviou por conta própria).
+function classExtraTimeResult(reopened, deliveredAtDeadline = 0) {
+    if (!reopened) return { success: true, reopenedAtDeadline: 0, deliveredAtDeadline, deliveredByStudent: 0 };
+    return {
+        success: true,
+        reopenedAtDeadline: reopened.reopened.length,
+        deliveredAtDeadline: reopened.deadlineKept,
+        deliveredByStudent: reopened.manualKept,
+    };
+}
+
 // 2. Adiciona ou subtrai minutos de um aluno específico ou de toda a turma
 router.post('/api/admin/adjust-student-time', (req, res) => {
     validateAdmin(req, res, () => {
@@ -3046,9 +3059,12 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
         const scopedClass = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
         const application = findExamApplication(db.memory.examApplications, applicationId || scopedClass?.onlineExamConfigs?.[examKey]?.applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
-        // Tempo extra nunca reabre tentativa vencida: ela é entregue (respostas salvas) antes do ajuste.
-        // No ajuste da turma, o professor fica sabendo quantos já estavam sem tempo.
+        // Tempo extra para um aluno nunca reabre tentativa vencida: ela é entregue (respostas
+        // salvas) antes do ajuste. No ajuste da TURMA, quem foi entregue automaticamente no
+        // fim do tempo há até 2 min volta para a prova com o tempo extra (reopenDeadlineDeliveries);
+        // o professor fica sabendo quantos voltaram e quantos ficaram sem o extra.
         let deliveredAtDeadline = 0;
+        let reopened = null;
         if (application) {
             const settled = settleExpiredAttempts(db.memory, {
                 applicationId: application.id,
@@ -3122,11 +3138,14 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
             if (application) {
                 application.globalTimeAdjustment = Number(application.globalTimeAdjustment || 0) + adjustmentMinutes;
                 cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cls.onlineExamConfigs[examKey]);
+                if (adjustmentMinutes > 0) {
+                    reopened = reopenDeadlineDeliveries(db.memory, application, { actor: req.adminAccount?.email || 'Administrador' });
+                }
             }
         }
 
         db.save();
-        res.json(targetEmail ? { success: true } : { success: true, deliveredAtDeadline });
+        res.json(targetEmail ? { success: true } : classExtraTimeResult(reopened, deliveredAtDeadline));
     });
 });
 
@@ -3171,7 +3190,7 @@ router.post('/api/admin/unlock-student-focus', (req, res) => {
     validateAdmin(req, res, (config, currentAdmin) => {
         const { studentEmail, studentClass, courseId, examKey, applicationId } = req.body;
         if (!studentEmail || !examKey) {
-            return res.status(400).json({ error: 'E-mail do aluno e prova sÃ£o obrigatÃ³rios.' });
+            return res.status(400).json({ error: 'E-mail do aluno e prova são obrigatórios.' });
         }
 
         const email = studentEmail.trim().toLowerCase();
@@ -3197,6 +3216,7 @@ router.post('/api/admin/unlock-student-focus', (req, res) => {
         db.memory.studentExamState[key].focusLocked = false;
         db.memory.studentExamState[key].focusUnlockedAt = Date.now();
         db.memory.studentExamState[key].focusUnlockedBy = currentAdmin ? currentAdmin.email : null;
+        delete db.memory.studentExamState[key].pageExit;
 
         db.memory.proctoringLogs.push({
             id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
@@ -3289,6 +3309,24 @@ router.post('/api/admin/message-history/delete', (req, res) => {
     });
 });
 
+// Alunos cuja tentativa em andamento foi desconsiderada no encerramento da aplicação:
+// os listados na decisão (encerramentos desta versão) e as tentativas que versões
+// antigas deixaram e o servidor registrou como desconsideradas (discardedAtFinish).
+function discardedAttemptEmails(application) {
+    const emails = new Set();
+    [application.finishResolution, ...(Array.isArray(application.previousFinishResolutions) ? application.previousFinishResolutions : [])]
+        .filter(resolution => resolution && resolution.policy === 'discard' && Array.isArray(resolution.discardedAttempts))
+        .forEach(resolution => resolution.discardedAttempts.forEach(item => {
+            if (item?.studentEmail) emails.add(String(item.studentEmail).trim().toLowerCase());
+        }));
+    Object.values(db.memory.studentExamState || {}).forEach(state => {
+        if (state && state.applicationId === application.id && state.discardedAtFinish === true) {
+            emails.add(String(state.studentEmail || '').trim().toLowerCase());
+        }
+    });
+    return emails;
+}
+
 // 5. Retorna o status de monitoramento em tempo real de todos os estudantes
 router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
     validateAdmin(req, res, () => {
@@ -3303,6 +3341,11 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         // Mesma varredura do servidor: tentativa vencida há mais que o atraso normal vira entrega.
         if (application && settleExpiredAttempts(db.memory, { applicationId: application.id }).changed) db.save();
         const monitorNow = Date.now();
+        // "Tempo esgotado: entrega automática em instantes" só existe com a aplicação em
+        // andamento. Encerrada, quem teve a tentativa desconsiderada aparece assim, de
+        // forma estável (inclusive as sobras de versões antigas).
+        const applicationActive = !application || ACTIVE_APPLICATION_STATUSES.has(application.status);
+        const discardedEmails = applicationActive ? new Set() : discardedAttemptEmails(application);
 
         const students = db.memory.students.filter(s => {
             const hasClass = s.classes && s.classes.some(c => 
@@ -3359,7 +3402,9 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             let status = 'absent';
             if (submission) {
                 status = 'finished';
-            } else if (timing && timing.overdueMs !== null && timing.overdueMs >= 0) {
+            } else if (discardedEmails.has(email)) {
+                status = 'discarded';
+            } else if (applicationActive && timing && timing.overdueMs !== null && timing.overdueMs >= 0) {
                 // Prazo esgotado: a entrega automática chega em instantes (navegador ou servidor).
                 status = 'time_over';
             } else if (state.focusLocked === true) {
@@ -3644,7 +3689,7 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
     });
 });
 
-// 7. RelatÃ³rio analÃ­tico por questÃ£o para apoiar revisÃ£o pedagÃ³gica
+// 7. Relatório analítico por questão para apoiar revisão pedagógica
 router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
     validateAdmin(req, res, () => {
         const studentClass = req.params.class.trim();
@@ -3721,7 +3766,7 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
     });
 });
 
-// 8. Banco centralizado de questÃµes reutilizÃ¡veis
+// 8. Banco centralizado de questões reutilizáveis
 router.get('/api/admin/question-bank', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const questions = isProfessorAccount(matchedAdmin)
@@ -3735,7 +3780,7 @@ router.post('/api/admin/question-bank/create', (req, res) => {
     validateAdmin(req, res, () => {
         const { category, type, questionText, alternatives, correctAnswer, sourceExamKey, curriculumKey } = req.body;
         if (!questionText || String(questionText).trim() === '') {
-            return res.status(400).json({ error: 'Texto da questÃ£o Ã© obrigatÃ³rio.' });
+            return res.status(400).json({ error: 'Texto da questão é obrigatório.' });
         }
         let normalizedQuestion;
         try {

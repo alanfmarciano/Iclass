@@ -20,9 +20,9 @@ vi.mock('../../context/AuthProvider', () => ({
 
 import { StudentExamShell } from './StudentExamShell'
 
-function renderShell() {
+function renderShell(child = <p>Conteúdo da prova</p>) {
   const router = createMemoryRouter([
-    { path: '/aluno/prova/:examKey', element: <StudentExamShell />, children: [{ index: true, element: <p>Conteúdo da prova</p> }] },
+    { path: '/aluno/prova/:examKey', element: <StudentExamShell />, children: [{ index: true, element: child }] },
     { path: '/login', element: <p>Tela de login</p> },
   ], { initialEntries: ['/aluno/prova/Avaliacao?applicationId=app-1'] })
   render(<RouterProvider router={router} />)
@@ -56,5 +56,21 @@ describe('[UC-PROVA-003] layout da prova online (AVA-12, UXA-X1)', () => {
     expect(await screen.findByText('Tela de login')).toBeVisible()
     expect(authMock.logout).toHaveBeenCalled()
     expect(router.state.location.pathname).toBe('/login')
+  })
+
+  it('erro de tela na prova mostra a tela de erro em português com o botão de recarregar, dentro do layout da prova (G4)', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    function TelaQuebrada() { throw new Error('Cannot read properties of undefined') }
+    try {
+      renderShell(<TelaQuebrada />)
+      const main = screen.getByRole('main')
+      expect(main).toHaveTextContent('Algo deu errado nesta tela')
+      expect(main).toHaveTextContent('as respostas já salvas continuam guardadas e a prova não foi encerrada')
+      expect(screen.getByRole('button', { name: 'Recarregar a página' })).toBeVisible()
+      expect(screen.queryByText(/Unexpected Application Error/)).not.toBeInTheDocument()
+      expect(screen.getByText('Detalhes técnicos')).toBeInTheDocument()
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 })

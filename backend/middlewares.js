@@ -13,6 +13,7 @@ const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
 const { computeAttemptDeadline } = require('./utils/examDeadline.js');
 const { listExamApplications } = require('./utils/examApplications.js');
+const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
@@ -147,6 +148,9 @@ function validateStudentSession(req, res, next) {
     req.auth = { role: 'student', email: normalizedEmail, student };
     req.studentEmail = normalizedEmail;
     req.studentAccount = student;
+    // Sessão do aparelho (o mesmo token do login): a regra de foco da saída da página
+    // confere que quem volta à prova é a mesma sessão (utils/examFocusRules.js).
+    req.studentSessionToken = providedToken;
 
     next();
 }
@@ -685,6 +689,8 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     // Registro da entrega do servidor que o envio atrasado substituiu: é auditoria do
     // professor e guarda a nota daquela versão, então nunca vai para o aluno.
     delete safeGrade.serverFinalization;
+    // Estado interno da tentativa guardado para o "+N min" da turma poder reabri-la.
+    delete safeGrade.reopenableState;
     if (!gradePublished) {
         delete safeGrade.score;
         delete safeGrade.correctCount;
@@ -724,16 +730,22 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
 }
 
 // Aplicações que ocupam a prova na turma: enquanto uma delas existir, o gabarito
-// daquela prova não sai para nenhum aluno (G2: gabarito na reaplicação).
+// daquela prova não sai para nenhum aluno (G2: gabarito na reaplicação). Vale para a
+// família da prova (a do curso e as variantes "só desta turma", utils/examFamily.js):
+// a variante editada tem as mesmas respostas da prova de origem.
 const ANSWER_KEY_BLOCKING_STATUSES = ['prepared', 'waiting', 'running', 'paused'];
 
-function examHasOpenApplication(cls, examKey) {
+function examFamilyOf(examKey, familyOf) {
+    return (familyOf || examFamilyIndex(db.memory))(examKey);
+}
+
+function examHasOpenApplication(cls, examKey, familyOf) {
+    const family = examFamilyOf(examKey, familyOf);
     return listExamApplications(db.memory.examApplications, {
         studentClass: cls.name,
         courseId: cls.courseId,
-        examKey,
         statuses: ANSWER_KEY_BLOCKING_STATUSES,
-    }).length > 0;
+    }).some(application => family.has(String(application.examKey || '')));
 }
 
 // Matrícula do aluno na turma da aplicação (classes como texto ou { name, courseId }).
@@ -756,10 +768,12 @@ function studentEnrolledInApplicationClass(student, application) {
 // andamento numa turma em que ele está matriculado (aluno em duas turmas do curso,
 // dependência) ou tentativa dele ainda não entregue numa aplicação aberta. Enquanto
 // isso, o gabarito dessa prova não sai para ele por nenhuma turma.
-function studentHasOpenExamApplication(studentEmail, examKey) {
+function studentHasOpenExamApplication(studentEmail, examKey, familyOf) {
     const email = String(studentEmail || '').trim().toLowerCase();
     if (!email || !examKey) return false;
-    const openApplications = listExamApplications(db.memory.examApplications, { examKey, statuses: ANSWER_KEY_BLOCKING_STATUSES });
+    const family = examFamilyOf(examKey, familyOf);
+    const openApplications = listExamApplications(db.memory.examApplications, { statuses: ANSWER_KEY_BLOCKING_STATUSES })
+        .filter(application => family.has(String(application.examKey || '')));
     if (!openApplications.length) return false;
     const student = (db.memory.students || []).find(item => item && item.email && String(item.email).trim().toLowerCase() === email);
     if (student && openApplications.some(application => studentEnrolledInApplicationClass(student, application))) return true;
@@ -770,8 +784,8 @@ function studentHasOpenExamApplication(studentEmail, examKey) {
         && !['submitted', 'invalidated'].includes(state.status));
 }
 
-function answerKeyBlockedForStudent(cls, examKey, studentEmail) {
-    return examHasOpenApplication(cls, examKey) || studentHasOpenExamApplication(studentEmail, examKey);
+function answerKeyBlockedForStudent(cls, examKey, studentEmail, familyOf = examFamilyIndex(db.memory)) {
+    return examHasOpenApplication(cls, examKey, familyOf) || studentHasOpenExamApplication(studentEmail, examKey, familyOf);
 }
 
 // Verifica se o aluno pode visualizar o gabarito: só da tentativa com nota publicada,
@@ -798,9 +812,10 @@ function canStudentViewAnswerKey(submission, studentEmail) {
 // ele (nesta turma ou em outra dele) aparece bloqueado até a aplicação ser encerrada.
 function getStudentReleasedItems(cls, studentEmail) {
     const released = getReleasedItemsForClass(cls, studentEmail);
+    const familyOf = examFamilyIndex(db.memory);
     Object.keys(released).forEach(key => {
         if (!key.startsWith('Gabarito_') || released[key] !== true) return;
-        if (answerKeyBlockedForStudent(cls, key.slice('Gabarito_'.length), studentEmail)) released[key] = false;
+        if (answerKeyBlockedForStudent(cls, key.slice('Gabarito_'.length), studentEmail, familyOf)) released[key] = false;
     });
     return released;
 }

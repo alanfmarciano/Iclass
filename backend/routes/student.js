@@ -18,6 +18,7 @@ const {
     sanitizeOnlineExamConfigsForStudent,
     canStudentViewAnswerKey,
     getStudentReleasedItems,
+    getReleasedItemsForClass,
     findClassByNameAndCourse,
     initializeExamState,
     accessibilityExtraMinutes,
@@ -56,9 +57,11 @@ const {
     questionsForAttempt,
 } = require('../utils/examGrading.js');
 const {
+    AUTO_SUBMIT_EARLY_TOLERANCE_MS,
     SERVER_DEADLINE_SOURCE,
     SERVER_FINALIZE_DELAY_MS,
     attemptOverdueMs,
+    attemptStateForReopen,
     canReplaceServerFinalization,
     computeAttemptDeadline,
     countAnswers,
@@ -70,6 +73,7 @@ const {
 } = require('../utils/examDeadline.js');
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
+const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 
 // Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
 // a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
@@ -208,6 +212,39 @@ function collectiveTimeOverForNewAttempt(application, studentEmail, now = Date.n
     return deadlineAt !== null && deadlineAt <= now;
 }
 
+// A mesma sessão voltou à página da prova logo depois de recarregar ou sair dela: a
+// tentativa travada por essa saída destrava sozinha e o Monitor registra em quanto
+// tempo ela voltou (regra única em utils/examFocusRules.js). Devolve se mudou algo.
+function applyPageReturn(state, { sessionToken, application, cls, examKey }) {
+    if (!state || state.focusLocked !== true || !state.pageExit) return false;
+    const now = Date.now();
+    const decision = pageExitReturnDecision(state, { sessionToken, now });
+    if (decision.expired) {
+        // Passou do prazo: vale a regra de saída de sempre (o professor libera).
+        delete state.pageExit;
+        return true;
+    }
+    if (!decision.unlock) return false;
+    state.focusLocked = false;
+    state.focusUnlockedAt = now;
+    state.focusUnlockedBy = null;
+    delete state.pageExit;
+    if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
+    db.memory.proctoringLogs.push({
+        id: crypto.randomUUID ? crypto.randomUUID() : `${now}_${Math.random().toString(36).slice(2, 11)}`,
+        studentEmail: state.studentEmail,
+        studentClass: cls?.name || state.studentClass || '',
+        courseId: cls?.courseId || state.courseId || null,
+        examKey,
+        applicationId: application?.id || null,
+        attemptId: state.attemptId || null,
+        timestamp: now,
+        eventType: PAGE_RETURN_EVENT,
+        details: pageReturnDetails(decision.seconds),
+    });
+    return true;
+}
+
 // Resultado de uma tentativa que o navegador conhece (inclusive a guardada antes de
 // recarregar a página): diz se ela já virou entrega e de que forma.
 function attemptOutcomeFor(application, studentEmail, attemptId) {
@@ -308,11 +345,18 @@ router.get('/api/classes', (req, res) => {
 
 // Retorna o status da prova ativa e itens liberados (específicos por turma).
 // Exige sessão (aluno ou instrutor): a resposta inclui os enunciados da prova preparada.
+// Aluno: os itens liberados (e a máscara do gabarito) são os da conta da SESSÃO, nunca
+// os do e-mail da URL. Professor: vê o que está gravado, sem a máscara do aluno, para
+// conseguir bloquear pela tela um gabarito liberado (o e-mail da URL escolhe o aluno das
+// liberações individuais, em Alunos).
 router.get('/api/status', validateAnySession, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     const studentClass = req.query.studentClass;
     const courseId = req.query.courseId;
-    const studentEmail = req.query.studentEmail || req.query.email;
+    const isAdmin = req.requester?.role === 'admin';
+    const studentEmail = isAdmin
+        ? String(req.query.studentEmail || req.query.email || '')
+        : String(req.requester?.email || '');
     if (!studentClass) {
         return res.json({ 
             activeExamKey: null,
@@ -334,7 +378,7 @@ router.get('/api/status', validateAnySession, (req, res) => {
     res.json({
         examConfigs: cls.examConfigs || {},
         onlineExamConfigs: sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs),
-        releasedItems: getStudentReleasedItems(cls, studentEmail),
+        releasedItems: isAdmin ? getReleasedItemsForClass(cls, studentEmail) : getStudentReleasedItems(cls, studentEmail),
         releaseMeta: cls.releaseMeta || {}
     });
 });
@@ -515,6 +559,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 db.memory.studentExamState[stateKey] = rawState;
                 db.save();
             }
+            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save();
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
             if (application && context.state && ensureLocalCopyKey(rawState)) db.save();
@@ -1421,6 +1466,17 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         });
     }
 
+    // Envio automático com o prazo ainda bem à frente: a tela não viu o tempo extra
+    // (o professor deu mais tempo ou reabriu a tentativa no "+N min" da turma). A
+    // prova continua; o navegador volta para as questões com o tempo novo.
+    if (auto === true && timing.overdueMs !== null && timing.overdueMs < -AUTO_SUBMIT_EARLY_TOLERANCE_MS) {
+        return res.status(409).json({
+            error: 'O professor deu mais tempo. A prova continua.',
+            deadlineExtended: true,
+            timerRemaining: Math.max(0, Math.ceil(-timing.overdueMs / 1000)),
+        });
+    }
+
     // Tenta obter questoes estruturadas do banco de dados primeiro
     let questions;
     const evaluation = db.memory.evaluations[examKey];
@@ -1486,6 +1542,12 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
     });
     submissionObj.answeredCount = countAnswers(answers);
     markLateSubmission(submissionObj, { deadlineAt: timing.deadlineAt, lateMs: lateDecision.lateMs });
+    // Entrega automática do fim do tempo: guarda a tentativa para o "+N min" da turma
+    // poder reabri-la logo depois do fim do tempo.
+    if (auto === true && application) {
+        const reopenable = attemptStateForReopen(lockedState);
+        if (reopenable) submissionObj.reopenableState = reopenable;
+    }
     
     const submissions = db.memory.submissions;
     submissions.push(submissionObj);

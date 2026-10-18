@@ -248,7 +248,7 @@ router.delete('/api/courses/:id', (req, res) => {
         if (!db.memory.courses) db.memory.courses = [];
         const idx = db.memory.courses.findIndex(c => c.id === courseId);
         if (idx === -1) {
-            return res.status(404).json({ error: 'Curso nÃ£o encontrado.' });
+            return res.status(404).json({ error: 'Curso não encontrado.' });
         }
         db.memory.courses[idx] = {
             ...db.memory.courses[idx],

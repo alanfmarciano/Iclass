@@ -9,11 +9,14 @@ export function autoSubmitRetryDelay(attempt) {
 
 // retry: sem rede, servidor fora do ar ou ocupado. finalized: a janela de tolerância
 // passou e o servidor já entregou as respostas salvas. locked/paused: a tentativa voltou
-// a depender do professor (bloqueio por foco ou aplicação pausada). fatal: o resto.
+// a depender do professor (bloqueio por foco ou aplicação pausada). extended: o
+// professor deu mais tempo (ou reabriu a tentativa no "+N min" da turma) e a prova
+// continua. fatal: o resto.
 export function classifyAutoSubmitError(error) {
   const status = Number(error?.status || 0)
   if (!status || status >= 500 || status === 429) return 'retry'
   if (status === 408 && error?.data?.deadlineExceeded) return 'finalized'
+  if (status === 409 && error?.data?.deadlineExtended) return 'extended'
   if (status === 423) return 'locked'
   if (status === 403 && error?.data?.applicationPaused) return 'paused'
   return 'fatal'

@@ -9,6 +9,7 @@ const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js'
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
+    examStateKey,
     extendDeadlineByPauses,
     findExamApplication,
 } = require('./examApplications.js');
@@ -26,6 +27,17 @@ const LATE_AUTO_SUBMIT_TOLERANCE_MS = 10 * 60 * 1000;
 const SERVER_FINALIZE_DELAY_MS = AUTO_SUBMIT_GRACE_MS;
 const SERVER_DEADLINE_SOURCE = 'deadline_server_auto_submit';
 const CLIENT_TIMER_SOURCE = 'timer_auto_submit';
+// Entregas automáticas do fim do tempo (navegador ou servidor). Só elas podem ser
+// reabertas pelo "+N min" da turma; o envio feito pelo próprio aluno nunca.
+const DEADLINE_DELIVERY_SOURCES = new Set([CLIENT_TIMER_SOURCE, SERVER_DEADLINE_SOURCE]);
+// "+N min" para a turma até 2 min depois do fim do tempo: quem foi entregue
+// automaticamente no fim do tempo volta para a mesma tentativa com o prazo novo.
+const CLASS_EXTRA_TIME_REOPEN_WINDOW_MS = 2 * 60 * 1000;
+// O navegador só envia sozinho quando o cronômetro dele chega a zero, e o cronômetro
+// é acertado pelo servidor a cada sincronização (4 s). Um envio "automático" que
+// chega com o prazo ainda bem à frente é de uma tela que não viu o tempo extra (o
+// professor deu mais tempo, ou reabriu a tentativa): a prova continua.
+const AUTO_SUBMIT_EARLY_TOLERANCE_MS = 15 * 1000;
 
 function normalizedEmail(value) {
     return String(value || '').trim().toLowerCase();
@@ -34,6 +46,21 @@ function normalizedEmail(value) {
 function countAnswers(answers) {
     return Object.values(answers && typeof answers === 'object' ? answers : {})
         .filter(value => value !== null && value !== undefined && value !== '').length;
+}
+
+// Estado da tentativa guardado na entrega automática do fim do tempo, para o "+N min"
+// da turma poder reabri-la (sem as respostas, que ficam na própria entrega, e sem a
+// chave da cópia local, que é do navegador do aluno).
+const REOPEN_STATE_OMITTED_FIELDS = new Set(['answers', 'localCopyKey', 'status', 'timerRemaining', 'submittedAt', 'reopenableState', 'pageExit']);
+
+function attemptStateForReopen(state) {
+    if (!state || typeof state !== 'object' || !state.startedAt) return null;
+    const snapshot = {};
+    Object.entries(state).forEach(([field, value]) => {
+        if (REOPEN_STATE_OMITTED_FIELDS.has(field) || value === undefined) return;
+        snapshot[field] = value == null || typeof value !== 'object' ? value : JSON.parse(JSON.stringify(value));
+    });
+    return snapshot;
 }
 
 // Prazo efetivo da tentativa: início + duração + ajustes (turma, aluno e tempo de
@@ -109,7 +136,10 @@ function finalizeAttemptState(memory, { key, state, application, now = Date.now(
         submission.focusLockReason = state.focusLockReason || '';
     }
     if (state.status === 'expired') submission.recoveredFromExpiredState = true;
-    if (!ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+    if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+        const reopenable = attemptStateForReopen(state);
+        if (reopenable) submission.reopenableState = reopenable;
+    } else {
         // Tentativa que versões antigas deixaram sem entrega numa aplicação já encerrada:
         // a entrega leva a hora do fim do tempo (não a da recuperação) e fica marcada
         // para o professor conferir em Resultados e no "Precisa de você".
@@ -143,22 +173,46 @@ function recordRecoveredAttempt(memory, application, submission, now) {
     });
 }
 
-function finalizableApplication(application, state) {
-    if (!application) return false;
-    if (ACTIVE_APPLICATION_STATUSES.has(application.status)) return true;
-    // Aplicação já encerrada: só recupera as tentativas vencidas ('expired') que
-    // versões antigas deixaram para trás sem entrega, e nunca quando o professor
-    // escolheu desconsiderar o que estava em andamento.
-    return state?.status === 'expired'
-        && application.status === 'finished'
-        && application.finishResolution?.policy !== 'discard';
+// Hora em que a aplicação deixou de estar em andamento (encerrada ou cancelada).
+function applicationClosedAt(application) {
+    const candidates = [
+        Number(application?.endsAt),
+        Date.parse(application?.finishedAt || ''),
+        Date.parse(application?.cancelledAt || ''),
+    ];
+    return candidates.find(value => Number.isFinite(value) && value > 0) || null;
+}
+
+// Tentativa sem entrega numa aplicação já encerrada. O código atual resolve todas no
+// encerramento; estas são sobras de versões antigas e nunca podem ficar para sempre
+// "esperando a entrega automática" no Monitor:
+// - o tempo dela acabou antes do encerramento: pela regra atual a entrega automática
+//   do fim do tempo vale qualquer que tenha sido a escolha do professor (inclusive
+//   "desconsiderar", que só vale para quem ainda estava fazendo a prova);
+// - marcada 'expired' por versão antiga com o tempo acabando depois do encerramento:
+//   entregue, a menos que o professor tenha desconsiderado o que estava em andamento,
+//   e aí ela fica registrada como desconsiderada (estado final, com as respostas);
+// - em andamento no encerramento (sem 'expired'): continua esperando a decisão do
+//   professor, como antes.
+function closedApplicationLeftover(application, state, deadlineAt) {
+    if (!application || application.status !== 'finished') return null;
+    const closedAt = applicationClosedAt(application);
+    if (deadlineAt != null && closedAt != null && deadlineAt <= closedAt) return 'finalize';
+    if (state?.status !== 'expired') return null;
+    return application.finishResolution?.policy === 'discard' ? 'discard' : 'finalize';
+}
+
+function markDiscardedAtFinish(state, now) {
+    state.status = 'invalidated';
+    state.discardedAtFinish = true;
+    state.discardedAt = new Date(now).toISOString();
 }
 
 // Finaliza as tentativas cujo prazo passou há pelo menos graceMs. Com graceMs 0
 // (encerramento, ajuste de tempo, início de tentativa) finaliza na hora.
 // Estados 'expired' de versões antigas que voltaram a ter tempo (pausa) reabrem.
 function settleExpiredAttempts(memory, { applicationId = null, studentEmail = null, now = Date.now(), graceMs = SERVER_FINALIZE_DELAY_MS } = {}) {
-    const result = { finalized: [], changed: false };
+    const result = { finalized: [], discarded: 0, changed: false };
     const states = memory?.studentExamState;
     if (!states || typeof states !== 'object') return result;
     const email = studentEmail ? normalizedEmail(studentEmail) : null;
@@ -168,9 +222,22 @@ function settleExpiredAttempts(memory, { applicationId = null, studentEmail = nu
         if (email && normalizedEmail(state.studentEmail) !== email) continue;
         if (!state.startedAt) continue;
         const application = findExamApplication(memory.examApplications, state.applicationId);
-        if (!finalizableApplication(application, state)) continue;
+        if (!application) continue;
         const legacyExpired = state.status === 'expired';
         const { deadlineAt, overdueMs } = attemptOverdueMs(state, application, now);
+        if (!ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+            const leftover = closedApplicationLeftover(application, state, deadlineAt);
+            if (leftover === 'discard') {
+                markDiscardedAtFinish(state, now);
+                result.discarded += 1;
+                result.changed = true;
+            } else if (leftover === 'finalize') {
+                const submission = finalizeAttemptState(memory, { key, state, application, now, deadlineAt });
+                result.changed = true;
+                if (submission) result.finalized.push(submission);
+            }
+            continue;
+        }
         if (overdueMs === null || overdueMs < 0) {
             if (legacyExpired) {
                 state.status = 'active';
@@ -184,6 +251,129 @@ function settleExpiredAttempts(memory, { applicationId = null, studentEmail = nu
         if (submission) result.finalized.push(submission);
     }
     return result;
+}
+
+function hasOpenAttemptInApplication(memory, applicationId, email) {
+    return Object.values(memory?.studentExamState || {}).some(state => state
+        && state.applicationId === applicationId
+        && normalizedEmail(state.studentEmail) === email
+        && !CLOSED_ATTEMPT_STATUSES.has(state.status));
+}
+
+function latestDeliveryByStudent(memory, applicationId) {
+    const latest = new Map();
+    (Array.isArray(memory?.submissions) ? memory.submissions : []).forEach(item => {
+        if (!item || item.applicationId !== applicationId || item.resultStatus === 'invalidated') return;
+        const email = normalizedEmail(item.student?.email || item.studentEmail);
+        if (!email) return;
+        const current = latest.get(email);
+        const newer = !current
+            || Number(item.attemptNumber || 0) > Number(current.attemptNumber || 0)
+            || (Number(item.attemptNumber || 0) === Number(current.attemptNumber || 0)
+                && String(item.timestamp || '') > String(current.timestamp || ''));
+        if (newer) latest.set(email, item);
+    });
+    return latest;
+}
+
+// Respostas da entrega (letra original por questão), como ficam no estado da tentativa.
+function answersFromDelivery(submission) {
+    const answers = {};
+    (Array.isArray(submission?.gradedAnswers) ? submission.gradedAnswers : []).forEach(item => {
+        const number = Number(item?.questionNumber);
+        if (Number.isFinite(number) && item.studentChoice) answers[number] = String(item.studentChoice).toUpperCase();
+    });
+    return answers;
+}
+
+// "+N min" para a turma logo depois do fim do tempo (AVA-03). Chamado depois de somar
+// o tempo extra na aplicação: quem foi entregue AUTOMATICAMENTE no fim do tempo (pelo
+// navegador ou pelo servidor) há até 2 min volta para a mesma tentativa, com as mesmas
+// respostas e o prazo novo, e a entrega sai da lista (fica no registro de auditoria e
+// na própria tentativa). Nunca reabre o envio feito pelo próprio aluno, entrega com
+// nota publicada ou arquivada, entrega mais antiga que a janela ou tentativa que o
+// tempo extra não alcança. Devolve as tentativas reabertas e quantos ficaram de fora.
+function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor = null, windowMs = CLASS_EXTRA_TIME_REOPEN_WINDOW_MS } = {}) {
+    const result = { reopened: [], deadlineKept: 0, manualKept: 0 };
+    if (!application || !ACTIVE_APPLICATION_STATUSES.has(application.status)) return result;
+    if (!memory.studentExamState || typeof memory.studentExamState !== 'object') memory.studentExamState = {};
+    for (const [email, submission] of latestDeliveryByStudent(memory, application.id)) {
+        if (hasOpenAttemptInApplication(memory, application.id, email)) continue;
+        if (!DEADLINE_DELIVERY_SOURCES.has(submission.submissionSource)) {
+            result.manualKept += 1;
+            continue;
+        }
+        const snapshot = submission.reopenableState;
+        const deadlineAt = Number(submission.deadlineAt);
+        const reopenable = snapshot && typeof snapshot === 'object' && snapshot.startedAt
+            && submission.gradePublished !== true
+            && !['archived', 'invalidated'].includes(submission.resultStatus)
+            && deadlineAt > 0 && now - deadlineAt <= windowMs;
+        const state = reopenable ? {
+            ...JSON.parse(JSON.stringify(snapshot)),
+            applicationId: application.id,
+            studentEmail: email,
+            status: 'active',
+            answers: answersFromDelivery(submission),
+            timerRemaining: null,
+        } : null;
+        const newDeadline = state ? computeAttemptDeadline({ application, state, now }) : null;
+        if (!state || (newDeadline !== null && newDeadline <= now)) {
+            result.deadlineKept += 1;
+            continue;
+        }
+        state.attemptId = state.attemptId || submission.attemptId;
+        state.id = state.id || state.attemptId;
+        state.attemptNumber = Number(state.attemptNumber || submission.attemptNumber || 1);
+        state.deadlineAt = newDeadline;
+        state.savedAt = state.savedAt || submission.timestamp || null;
+        state.reopenedAt = now;
+        state.reopenedBy = actor || null;
+        // A entrega que a reabertura substituiu: vai junto na próxima entrega da tentativa.
+        state.reopenedFrom = [
+            ...(Array.isArray(snapshot.reopenedFrom) ? snapshot.reopenedFrom : []),
+            {
+                submissionId: submission.id,
+                source: submission.submissionSource,
+                deliveredAt: submission.timestamp || null,
+                deadlineAt,
+                answeredCount: countAnswers(state.answers),
+                lateBySeconds: Number(submission.lateBySeconds || 0),
+            },
+        ];
+        const key = examStateKey({ applicationId: application.id, studentEmail: email, attemptNumber: state.attemptNumber });
+        const index = memory.submissions.indexOf(submission);
+        if (index >= 0) memory.submissions.splice(index, 1);
+        memory.studentExamState[key] = state;
+        recordReopenedAttempt(memory, application, submission, state, actor, now);
+        result.reopened.push({ studentEmail: email, attemptId: state.attemptId, submissionId: submission.id });
+    }
+    return result;
+}
+
+function recordReopenedAttempt(memory, application, submission, state, actor, now) {
+    if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
+    memory.auditLogs.push({
+        id: `audit_exam_${now}_${Math.random().toString(36).slice(2, 10)}`,
+        type: 'exam_attempt_reopened_extra_time',
+        actor: actor || 'sistema',
+        applicationId: application.id,
+        examKey: application.examKey,
+        studentClass: application.studentClass,
+        courseId: application.courseId || null,
+        details: {
+            studentEmail: normalizedEmail(submission.student?.email),
+            attemptId: state.attemptId,
+            submissionId: submission.id,
+            submissionSource: submission.submissionSource,
+            deliveredAt: submission.timestamp || null,
+            deadlineAt: Number(submission.deadlineAt) || null,
+            newDeadlineAt: state.deadlineAt,
+            answeredCount: countAnswers(state.answers),
+            score: submission.score ?? null,
+        },
+        timestamp: new Date(now).toISOString(),
+    });
 }
 
 // Aluno sem tentativa aberta que já entregou todas as tentativas desta aplicação:
@@ -284,13 +474,16 @@ function replaceServerFinalization(submission, { application, onlineConfig, eval
 }
 
 module.exports = {
+    AUTO_SUBMIT_EARLY_TOLERANCE_MS,
     AUTO_SUBMIT_GRACE_MS,
+    CLASS_EXTRA_TIME_REOPEN_WINDOW_MS,
     CLIENT_TIMER_SOURCE,
     LATE_AUTO_SUBMIT_TOLERANCE_MS,
     LATE_FLAG_THRESHOLD_MS,
     SERVER_DEADLINE_SOURCE,
     SERVER_FINALIZE_DELAY_MS,
     attemptOverdueMs,
+    attemptStateForReopen,
     canReplaceServerFinalization,
     computeAttemptDeadline,
     countAnswers,
@@ -299,6 +492,7 @@ module.exports = {
     isAttemptPastDeadline,
     lateSubmitDecision,
     markLateSubmission,
+    reopenDeadlineDeliveries,
     replaceServerFinalization,
     settleExpiredAttempts,
 };

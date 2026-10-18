@@ -15,6 +15,7 @@ const { attemptOverdueMs } = require('../utils/examDeadline.js');
 const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
+const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
 
 // Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
@@ -102,6 +103,13 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
                 assignedVersion: 'A',
                 individualTimeAdjustment: 0
             };
+            // Saída da PÁGINA (recarregar, fechar): a mesma sessão que volta logo à
+            // tentativa destrava sozinha (regra única em utils/examFocusRules.js).
+            if (normalizedEventType === 'exam_left' && req.body.pageExit === true) {
+                markPageExit(existing, { sessionToken: req.studentSessionToken, now: logEntry.timestamp });
+            } else {
+                keepPageExitOnLock(existing, logEntry.timestamp);
+            }
             existing.focusLocked = true;
             existing.focusLockedAt = logEntry.timestamp;
             existing.focusLockReason = logEntry.details || normalizedEventType;

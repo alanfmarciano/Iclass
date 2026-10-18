@@ -60,11 +60,11 @@ Correções aplicadas (backup pré-correção registrado em `data/backups/`):
 **Baixos**
 - Status HTTP inválido no recover (`444` → `404`).
 - Removida aceitação de senha via query string no login admin legado.
+- Textos com codificação quebrada ("nÃ£o" no lugar de "não") regravados em UTF-8 nas rotas (fase 1); um teste varre o repositório para não voltarem.
 
 ### Pendências conhecidas (não corrigidas — com motivo)
 
 - Endpoints GET pós-login sem sessão na área de material/leitura: adiada porque a área será reescrita.
-- Mojibake de encoding (`nÃ£o`, `AvaliaÃ§Ã£o`): exige passe deliberado de re-gravação em UTF-8.
 - `localStorage` → cookie HttpOnly e modularização de `admin.js`: mudanças arquiteturais fora do escopo daquele passe.
 
 > O registro detalhado original está arquivado em [`docs/arquivo/CORRECOES_SEGURANCA_2026-07-14.md`](./arquivo/CORRECOES_SEGURANCA_2026-07-14.md).

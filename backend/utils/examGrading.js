@@ -156,6 +156,12 @@ function createSubmissionFromAttempt({
         timestamp,
         // Letras que o aluno viu (posição na versão), para as revisões (AVA-05).
         ...(state?.alternativeLabels ? { alternativeLabels: state.alternativeLabels } : {}),
+        // Tentativa reaberta pelo "+N min" da turma depois da entrega do fim do tempo:
+        // o professor vê que houve reabertura e qual entrega ela substituiu.
+        ...(Number(state?.reopenedAt) > 0 ? {
+            reopenedAt: new Date(Number(state.reopenedAt)).toISOString(),
+            reopenedFrom: clone(Array.isArray(state.reopenedFrom) ? state.reopenedFrom : []),
+        } : {}),
     };
 }
 

@@ -19,6 +19,7 @@ const db = require('../../backend/database.js');
 const runtimePaths = require('../../backend/runtimePaths.js');
 const { createApp } = require('../../backend/server.js');
 const { initializeExamState } = require('../../backend/middlewares.js');
+const { hasAnyAdminPermission, resolveAdminApiPermission } = require('../../backend/utils/adminPermissions.js');
 
 let app;
 const adminToken = 'admin-token-guards';
@@ -87,12 +88,12 @@ function admin(method, url) {
     return request(app)[method](url).set('x-admin-session', adminToken);
 }
 
-async function createHistory(studentClass) {
+async function createHistory(studentClass, key = examKey) {
     const response = await admin('post', '/api/admin/exam-history/add')
         .send({
             studentClass,
             courseId,
-            examKey,
+            examKey: key,
             type: 'online',
             questionNumbers: [1, 2],
             printSnapshot: [{
@@ -111,11 +112,11 @@ async function createHistory(studentClass) {
     return response.body.entry.id;
 }
 
-function prepare(studentClass, historyId) {
+function prepare(studentClass, historyId, key = examKey) {
     return admin('post', '/api/admin/exam-applications').send({
         studentClass,
         courseId,
-        examKey,
+        examKey: key,
         historyId,
         applicationOptions: { timerMode: 'per_attempt', waitingRoomMinutes: 0, maxAttempts: 1 },
     });
@@ -596,6 +597,11 @@ test('[UC-APLICACAO-001] aluno em duas turmas não vê o gabarito enquanto faz a
         .expect(200)).body.releasedItems[answerKey];
     assert.equal((await viewA()).answerKeyReleased, true);
     assert.equal(await statusA(), true);
+    const statusAsOther = async () => (await request(app)
+        .get('/api/status')
+        .set('x-session-token', gabiA.token)
+        .query({ studentClass: classA, courseId, email: students.ana.email })
+        .expect(200)).body.releasedItems[answerKey];
 
     // A mesma prova preparada e iniciada na Turma B: pela Turma A o gabarito some para ela.
     const historyB = await createHistory(classB);
@@ -616,6 +622,8 @@ test('[UC-APLICACAO-001] aluno em duas turmas não vê o gabarito enquanto faz a
         .query({ email: gabiA.email, studentClass: classA, courseId })
         .expect(200);
     assert.equal(sync.body.releasedItems[answerKey], false);
+    // O e-mail de outra pessoa na URL não muda nada: a máscara é a da conta da sessão.
+    assert.equal(await statusAsOther(), false);
     // Quem só está na Turma A continua vendo o gabarito liberado para a turma dele.
     const anaView = (await mySubmissions(students.ana)).body.submissions.find(item => item.examKey === examKey && item.answerKeyReleased);
     assert.ok(anaView, 'colega só da Turma A mantém o gabarito liberado');
@@ -691,4 +699,93 @@ test('[UC-APLICACAO-001] token validado depois do encerramento não abre tentati
     assert.equal(applicationOf(applicationId).finishResolution.policy, 'submit');
     assert.equal(await finishOutcome(ana), 'discarded');
     assert.equal(await finishOutcome(bruno), 'submitted');
+});
+
+test('[UC-APLICACAO-001] gerar novo token vale para quem tem o Monitor, onde fica o botão', () => {
+    const permission = resolveAdminApiPermission('POST', '/exam-applications/app-1/access-token');
+    assert.equal(hasAnyAdminPermission(new Set(['page.monitor']), permission), true);
+    assert.equal(hasAnyAdminPermission(new Set(['page.exams']), permission), true);
+    assert.equal(hasAnyAdminPermission(new Set(['page.results']), permission), false);
+    // Preparar e controlar a aplicação continuam exigindo a página de Provas.
+    assert.equal(hasAnyAdminPermission(new Set(['page.monitor']), resolveAdminApiPermission('POST', '/exam-applications')), false);
+});
+
+test('[UC-APLICACAO-001] o gabarito segue a família da prova: a variante "só desta turma" criada ao editar trava e esconde o gabarito da prova de origem', async () => {
+    const { ana } = students;
+    // Rodada 1 na Turma A: nota publicada e gabarito liberado.
+    const { application: first } = await prepareAndStart(classA);
+    const started = await startAttempt(ana, first.id);
+    await submit(ana, first.id, started, { 1: 'A', 2: 'B' }).expect(200);
+    await control(first.id, { action: 'finish' }).expect(200);
+    const delivered = db.memory.submissions.find(item => item.attemptId === started.attemptId);
+    await admin('post', '/api/admin/submissions/publish').send({ ids: [delivered.id], published: true }).expect(200);
+    await admin('post', '/api/admin/release-item').send({ studentClass: classA, courseId, itemKey: answerKey, released: true }).expect(200);
+    const anaView = async () => (await mySubmissions(ana)).body.submissions.find(item => item.id === delivered.id);
+    const anaStatus = async () => (await request(app)
+        .get('/api/status')
+        .set('x-session-token', ana.token)
+        .query({ studentClass: classA, courseId, email: ana.email })
+        .expect(200)).body.releasedItems;
+    assert.equal((await anaView()).answerKeyReleased, true);
+
+    // O professor corrige um enunciado em Provas com o escopo "esta turma" (padrão do
+    // editor): nasce a variante Avaliacao_X__turma_..., que herda o gabarito liberado.
+    const edited = await admin('put', `/api/admin/evaluation/${examKey}`).send({
+        courseId,
+        studentClass: classA,
+        scope: 'class',
+        title: 'Prova das guardas (enunciado corrigido)',
+        questions: ['A', 'B'].map((correct, index) => ({
+            text: `Questão ${index + 1} corrigida`,
+            correctAnswer: correct,
+            alternatives: ['A', 'B', 'C'].map(letter => ({ letter, text: `Alternativa ${letter}` })),
+        })),
+    }).expect(200);
+    const variantKey = edited.body.key;
+    assert.match(variantKey, /^Avaliacao_Guardas__turma_/);
+    assert.equal(db.memory.evaluations[variantKey].sourceEvaluationKey, examKey);
+    const variantAnswerKey = `Gabarito_${variantKey}`;
+    assert.equal(classOf(classA).releasedItems[variantAnswerKey], true);
+
+    // Nova aplicação (da variante): a trava pega a família inteira.
+    const historyId = await createHistory(classA, variantKey);
+    const second = await prepare(classA, historyId, variantKey).expect(201);
+    assert.equal(second.body.answerKeyLocked, true);
+    assert.equal(classOf(classA).releasedItems[variantAnswerKey], false);
+    assert.equal(classOf(classA).releasedItems[answerKey], false);
+    assert.equal((await anaView()).answerKeyReleased, false);
+    assert.equal((await anaStatus())[answerKey], false);
+
+    // Liberações gravadas por versões antigas: durante a aplicação a máscara também
+    // segue a família, e o gabarito da rodada anterior não sai para a aluna.
+    classOf(classA).releasedItems[answerKey] = true;
+    classOf(classA).releasedItems[variantAnswerKey] = true;
+    await control(second.body.application.id, { action: 'start' }).expect(200);
+    const view = await anaView();
+    assert.equal(view.answerKeyReleased, false);
+    assert.equal(view.gradedAnswers.some(answer => 'correctAnswer' in answer || 'isCorrect' in answer), false);
+    assert.equal((await anaStatus())[answerKey], false);
+    assert.equal((await anaStatus())[variantAnswerKey], false);
+
+    // O professor vê o que está gravado (Liberado) e consegue bloquear pela tela; o
+    // bloqueio vale para a família na turma.
+    const teacherStatus = await admin('get', '/api/status').query({ studentClass: classA, courseId }).expect(200);
+    assert.equal(teacherStatus.body.releasedItems[variantAnswerKey], true);
+    await admin('post', '/api/admin/release-item').send({ studentClass: classA, courseId, itemKey: variantAnswerKey, released: false }).expect(200);
+    assert.equal(classOf(classA).releasedItems[variantAnswerKey], false);
+    assert.equal(classOf(classA).releasedItems[answerKey], false);
+    await admin('post', '/api/admin/release-item').send({ studentClass: classA, courseId, itemKey: variantAnswerKey, released: true }).expect(409);
+
+    // Encerrada a nova rodada, liberar o gabarito da prova vale também para as entregas
+    // da rodada anterior (a tela de Materiais só mostra a variante).
+    await control(second.body.application.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    assert.equal((await anaView()).answerKeyReleased, false);
+    await admin('post', '/api/admin/release-item').send({ studentClass: classA, courseId, itemKey: variantAnswerKey, released: true }).expect(200);
+    assert.equal(classOf(classA).releasedItems[answerKey], true);
+    assert.equal((await anaView()).answerKeyReleased, true);
+    assert.equal((await anaStatus())[answerKey], true);
+
+    // A Turma A volta a usar a prova do curso (os outros testes usam a chave original).
+    delete classOf(classA).contentOverrides.evaluations[examKey];
+    delete classOf(classA).contentOverrides.unitNames[examKey];
 });

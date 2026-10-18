@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
@@ -13,6 +14,8 @@ vi.mock('../useStudent', () => ({ useStudent: () => ({ email: 'ana@escola.local'
 vi.mock('../../../context/ToastProvider', () => ({ useToast: () => toast }))
 
 import ExamRunner from './ExamRunner'
+import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
+import { clearRenderError } from '../../../lib/renderErrors'
 
 const EXAM = 'Avaliacao_Ciclo'
 // Chave da cópia local que o servidor entrega ao dono da tentativa (32 bytes em base64).
@@ -31,7 +34,7 @@ async function readCopy(attemptId = 'att-1') {
   return readExamDraft({ attemptId, cryptoKey: await localKey() })
 }
 
-function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false } = {}) {
+function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null } = {}) {
   return {
     success: true,
     onlineExamConfigs: {
@@ -52,7 +55,7 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
     examConfigVersion: 'v1',
     applicationId: 'app-1',
     attemptId: startedAt ? 'att-1' : null,
-    state: startedAt ? { attemptId: 'att-1', startedAt, timerRemaining, answers, assignedVersion: 'A', status: 'active' } : {},
+    state: startedAt ? { attemptId: 'att-1', startedAt, timerRemaining, answers, assignedVersion: 'A', status: 'active', ...(reopenedAt ? { reopenedAt } : {}) } : {},
     attemptsUsed: attemptOutcome ? 1 : 0,
     maxAttempts: 1,
     messages: [],
@@ -66,9 +69,9 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
 
 // Roteador de dados como o do app (main.jsx): o ExamRunner usa useBlocker. A página
 // anterior no histórico é o início do portal, para testar o voltar do navegador.
-function renderRunner(history = ['/aluno']) {
+function renderRunner(history = ['/aluno'], element = <ExamRunner />) {
   const router = createMemoryRouter([
-    { path: '/aluno/prova/:examKey', element: <ExamRunner /> },
+    { path: '/aluno/prova/:examKey', element },
     { path: '/aluno/provas', element: <p>Lista de provas</p> },
     { path: '/aluno/modulos', element: <p>Página de módulos</p> },
     { path: '/aluno', element: <p>Início do portal</p> },
@@ -181,6 +184,30 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     expect(call[1]).toMatchObject({ attemptId: 'att-1', answers: { 1: 'C' } })
   })
 
+  it('recarregar a página registra a saída da página (o servidor destrava se a sessão voltar em 60 s) e a aba oculta da descarga não conta como troca de aba', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Onze/ })
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+    try {
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    } finally {
+      delete document.hidden
+    }
+    const left = activityLogs('exam_left')
+    expect(left).toHaveLength(1)
+    expect(left[0][1]).toMatchObject({ details: 'Página da prova foi fechada ou recarregada', pageExit: true, attemptId: 'att-1' })
+    expect(left[0][2]).toMatchObject({ keepalive: true })
+    expect(activityLogs('tab_blur')).toHaveLength(0)
+
+    // Página restaurada do cache do navegador: trocar de aba volta a contar.
+    act(() => { window.dispatchEvent(new Event('pageshow')) })
+    act(() => { window.dispatchEvent(new Event('blur')) })
+    expect(activityLogs('tab_blur')).toHaveLength(1)
+  })
+
   it('tentativa entregue pelo servidor no fim do tempo enquanto a página estava sem rede: reenvia o que só esta página tinha (UXA-01)', async () => {
     const user = userEvent.setup()
     apiMock.get.mockResolvedValueOnce(syncResponse({ timerRemaining: 600 }))
@@ -267,6 +294,49 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     expect(await screen.findByText('Não foi possível abrir a prova')).toBeVisible()
     expect(screen.getByText(/O tempo desta aplicação já terminou/)).toBeVisible()
   })
+
+  it('o "+N min" da turma reabre a tentativa entregue no fim do tempo: a tela sai de "entregue" e volta às questões (AVA-03)', async () => {
+    const user = userEvent.setup()
+    let delivered = false
+    apiMock.get.mockImplementation(async () => (delivered
+      ? syncResponse({ timerRemaining: 300, answers: { 1: 'A' }, reopenedAt: Date.now() })
+      : syncResponse({ timerRemaining: 2 })))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/submit') return { success: true }
+      delivered = true
+      return { success: true, gradePublished: false, answeredCount: 1 }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    expect(await screen.findByText('Prova enviada!', {}, { timeout: 5000 })).toBeVisible()
+
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 6000 })).toBeVisible()
+    expect(toast.info).toHaveBeenCalledWith('O professor deu mais tempo à turma: sua prova foi reaberta.')
+    expect(screen.getByText('1/1 respondidas')).toBeVisible()
+    expect(screen.queryByText('Prova enviada!')).not.toBeInTheDocument()
+    expect(postsTo('/api/student/submit')).toHaveLength(1)
+  }, 15000)
+
+  it('envio automático que o servidor recusa porque o professor deu mais tempo: a prova continua sem entregar', async () => {
+    const user = userEvent.setup()
+    let extended = false
+    apiMock.get.mockImplementation(async () => syncResponse({ timerRemaining: extended ? 300 : 2, answers: extended ? { 1: 'A' } : {} }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/submit') return { success: true }
+      extended = true
+      throw Object.assign(new Error('O professor deu mais tempo. A prova continua.'), { status: 409, data: { deadlineExtended: true, timerRemaining: 300 } })
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    await waitFor(() => expect(postsTo('/api/student/submit')).toHaveLength(1), { timeout: 4000 })
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('O professor deu mais tempo. A prova continua.'))
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 4000 })).toBeVisible()
+    expect(screen.getByText('1/1 respondidas')).toBeVisible()
+    expect(screen.queryByText('Prova enviada!')).not.toBeInTheDocument()
+    expect(postsTo('/api/student/submit')).toHaveLength(1)
+  }, 15000)
 
   it('aplicação encerrada com "desconsiderar" mostra a entrega de quem já tinha sido entregue no fim do tempo', async () => {
     apiMock.get.mockResolvedValue(syncResponse({
@@ -523,6 +593,38 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     act(() => { router.unmountView() })
     expect(activityLogs('exam_left')).toHaveLength(0)
     expect(postsTo('/api/student/autosave-progress').at(-1)[1]).toMatchObject({ answers: { 1: 'A' } })
+  })
+
+  it('erro de tela durante a prova não conta como saída: tela de erro em português e erro técnico no Monitor, sem travar (G4)', async () => {
+    const user = userEvent.setup()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    clearRenderError()
+    let quebrar = null
+    // Um pedaço da tela da prova que quebra na renderização (como um enunciado malformado).
+    function PedacoDaProva() {
+      const [quebrado, setQuebrado] = useState(false)
+      quebrar = () => setQuebrado(true)
+      if (quebrado) throw new Error('Cannot read properties of undefined (reading \'map\')')
+      return null
+    }
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      renderRunner(['/aluno'], <AppErrorBoundary><ExamRunner /><PedacoDaProva /></AppErrorBoundary>)
+      enterFullscreen()
+      await user.click(await screen.findByRole('button', { name: /Dois/ }))
+      act(() => { quebrar() })
+      expect(await screen.findByText('Algo deu errado nesta tela')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Recarregar a página' })).toBeVisible()
+      expect(activityLogs('exam_left')).toHaveLength(0)
+      const technical = activityLogs('exam_render_error')
+      expect(technical).toHaveLength(1)
+      expect(technical[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1', examKey: EXAM })
+      expect(technical[0][1].details).toMatch(/^Erro técnico na tela da prova: Cannot read properties of undefined/)
+      expect(postsTo('/api/student/autosave-progress').at(-1)[1]).toMatchObject({ answers: { 1: 'A' } })
+    } finally {
+      consoleError.mockRestore()
+      clearRenderError()
+    }
   })
 
   it('alternativas sem identificador respondem com a letra da posição, nunca com a letra que veio (AVA-05)', async () => {
