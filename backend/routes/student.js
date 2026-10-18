@@ -16,6 +16,10 @@ const {
     validateAnySession,
     sanitizeSubmissionForStudent,
     sanitizeOnlineExamConfigsForStudent,
+    studentExamConfigSummary,
+    studentExamConfigsSummary,
+    studentBelongsToClass,
+    sanitizeBroadcastMessageForStudent,
     canStudentViewAnswerKey,
     getStudentReleasedItems,
     getReleasedItemsForClass,
@@ -30,7 +34,7 @@ const {
     adminCanAccessClass,
     adminCanAccessItem
 } = require('../middlewares.js');
-const { extractStudentFields, validateStudentFields, DEFAULT_STATUS } = require('../utils/students.js');
+const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
 const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_VERSION } = require('../utils/security.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
@@ -50,7 +54,8 @@ const {
     filterStudentExamAttempts,
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
-const { consolidateSubmissions, enrichSubmissionsWithAttemptResult } = require('../utils/submissionAttempts.js');
+const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, roundGrade } = require('../utils/submissionAttempts.js');
+const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
 const {
     createSubmissionFromAttempt,
@@ -74,13 +79,19 @@ const {
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
+const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 
-// Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
-// a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
+// Marca a presença automática do dia (origem "login", exibida como "Automática"),
+// no máx. 1x/dia por turma, respeitando a config (liga/desliga + janela + fuso).
 // Usada tanto no POST de login quanto no heartbeat (/api/ping): assim, alunos cuja
 // sessão foi retomada pelo navegador (sem novo POST de login) também são marcados
 // presentes ao voltarem no dia seguinte.
-function ensureDailyLoginAttendance(rawEmail) {
+// FUN-X2 / CRIT-02: só vale dentro da janela das aulas do dia da turma (do início da
+// primeira aula menos a tolerância até o fim da última) e, se configurada, também da
+// janela do Sistema. Fora disso o acesso não cria registro nem falta (quem entra às
+// 18h para estudar não ganha falta nas aulas da manhã). Guarda IP, navegador e hora
+// do acesso para o professor conferir na Chamada. Retorna true se criou o registro.
+function ensureDailyLoginAttendance(rawEmail, { req = null, source = 'login' } = {}) {
     try {
         const normalizedEmail = String(rawEmail || '').trim().toLowerCase();
         if (!normalizedEmail) return false;
@@ -92,23 +103,31 @@ function ensureDailyLoginAttendance(rawEmail) {
         if (!['ativo', 'active'].includes(status)) return false;
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
         const _today = settingsUtil.today();
-        const _firstClass = Array.isArray(student.classes) && student.classes[0];
-        const _cls = student.studentClass || (_firstClass && (typeof _firstClass === 'string' ? _firstClass : _firstClass.name)) || '';
-        if (!_cls) return false;
-        const _courseId = (_firstClass && typeof _firstClass === 'object' && _firstClass.courseId) || student.courseId || '';
+        const horaAcesso = settingsUtil.nowHHMM(_stPres.timezone);
+        // Turma da matrícula aprovada que tem aula agora (a turma principal primeiro).
+        const primary = primaryStudentClassName(student).toLowerCase();
+        const candidates = studentClassEntries(student)
+            .sort((a, b) => (b.name.toLowerCase() === primary) - (a.name.toLowerCase() === primary))
+            .map(entry => findClassByNameAndCourse(db.memory.classes || [], entry.name, entry.courseId)
+                || (db.memory.classes || []).find(c => String(c.name || '').toLowerCase() === entry.name.toLowerCase()
+                    && (!entry.courseId || !c.courseId || String(c.courseId) === entry.courseId)))
+            .filter(cls => cls && studentBelongsToClass(student, cls));
+        const classObj = candidates.find(cls => {
+            const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
+            return attendanceUtil.withinClassDayWindow(attendanceUtil.gradeForDate(cls, _today), cfg.toleranciaMin, horaAcesso);
+        });
+        if (!classObj) return false;
+        const _cls = classObj.name;
+        const _courseId = String(classObj.courseId || '');
         // Já existe algum lançamento hoje para essa turma? (chamada do professor tem prioridade)
         const _hasToday = db.memory.attendance.some(a => a.studentEmail === normalizedEmail && a.date === _today
-            && (!a.studentClass || a.studentClass === _cls));
+            && (!a.studentClass || a.studentClass === _cls)
+            && (!a.courseId || !_courseId || String(a.courseId) === _courseId));
         if (_hasToday) return false;
-        // Grade do dia: se não é dia letivo, não cria registro (não inventa aulas).
-        const classObj = findClassByNameAndCourse(db.memory.classes || [], _cls, _courseId)
-            || (db.memory.classes || []).find(c => c.name === _cls);
-        const gradeAulas = attendanceUtil.gradeForDate(classObj, _today);
-        if (!gradeAulas.length) return false;
-        // Marca por aula conforme a hora do login + tolerância da turma.
+        // Marca por aula conforme a hora do acesso + tolerância da turma.
         const cfg = attendanceUtil.effectiveAttendanceConfig(classObj);
-        const horaLogin = settingsUtil.nowHHMM();
-        const aulas = attendanceUtil.deriveAulasFromArrival(gradeAulas, horaLogin, cfg.toleranciaMin);
+        const gradeAulas = attendanceUtil.gradeForDate(classObj, _today);
+        const aulas = attendanceUtil.deriveAulasFromArrival(gradeAulas, horaAcesso, cfg.toleranciaMin);
         db.memory.attendance.push({
             id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
             studentEmail: normalizedEmail,
@@ -116,6 +135,10 @@ function ensureDailyLoginAttendance(rawEmail) {
             courseId: _courseId,
             date: _today,
             origin: 'login',
+            source: source === 'heartbeat' ? 'heartbeat' : 'login',
+            horaAcesso,
+            ip: req ? normalizeIp(req.ip || (req.socket && req.socket.remoteAddress)) : '',
+            userAgent: req ? String(req.get('user-agent') || '').slice(0, 300) : '',
             aulas,
             justificativa: null,
             markedBy: null,
@@ -292,7 +315,7 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
         }
         // Presença automática também no heartbeat: cobre alunos com sessão já ativa
         // (retomada do navegador), que não passam de novo pelo POST /api/student/login.
-        if (ensureDailyLoginAttendance(normalizedEmail)) {
+        if (ensureDailyLoginAttendance(normalizedEmail, { req, source: 'heartbeat' })) {
             db.save().catch(() => {});
         }
     }
@@ -344,9 +367,11 @@ router.get('/api/classes', (req, res) => {
 });
 
 // Retorna o status da prova ativa e itens liberados (específicos por turma).
-// Exige sessão (aluno ou instrutor): a resposta inclui os enunciados da prova preparada.
-// Aluno: os itens liberados (e a máscara do gabarito) são os da conta da SESSÃO, nunca
-// os do e-mail da URL. Professor: vê o que está gravado, sem a máscara do aluno, para
+// Exige sessão (aluno ou instrutor). O aluno precisa ter matrícula aprovada na turma
+// e recebe só metadados das provas (estado, horários); enunciados e alternativas
+// nunca vão por aqui. Os itens liberados dele (e a máscara do gabarito) são os da conta
+// da SESSÃO, nunca os do e-mail da URL. O instrutor continua recebendo a configuração
+// completa (sem gabarito) e vê o que está gravado, sem a máscara do aluno, para
 // conseguir bloquear pela tela um gabarito liberado (o e-mail da URL escolhe o aluno das
 // liberações individuais, em Alunos).
 router.get('/api/status', validateAnySession, (req, res) => {
@@ -375,6 +400,18 @@ router.get('/api/status', validateAnySession, (req, res) => {
         });
     }
 
+    if (req.requester.role === 'student') {
+        if (!studentBelongsToClass(req.studentAccount, cls)) {
+            return res.status(403).json({ error: 'Turma não autorizada para este estudante.' });
+        }
+        return res.json({
+            examConfigs: cls.examConfigs || {},
+            onlineExamConfigs: studentExamConfigsSummary(cls.onlineExamConfigs),
+            releasedItems: getStudentReleasedItems(cls, req.studentEmail),
+            releaseMeta: cls.releaseMeta || {}
+        });
+    }
+
     res.json({
         examConfigs: cls.examConfigs || {},
         onlineExamConfigs: sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs),
@@ -396,9 +433,32 @@ function studentApplicationLabel(application, cls) {
     return String(application.examKey || 'Prova').replace(/_/g, ' ');
 }
 
+// Campos da aplicação que o aluno pode ver. Lista branca: versionSnapshots (com o
+// gabarito), versões sorteadas, ajustes e contestações de outros alunos ficam no servidor.
+const STUDENT_APPLICATION_FIELDS = [
+    'id',
+    'examKey',
+    'courseId',
+    'studentClass',
+    'status',
+    'timerMode',
+    'durationMinutes',
+    'timerEnabled',
+    'waitingRoomDuration',
+    'startsAt',
+    'endsAt',
+    'maxAttempts',
+    'questionCount',
+    'tokenEnabled',
+    'globalTimeAdjustment',
+    'createdAt',
+    'startedAt',
+    'finishedAt',
+    'updatedAt',
+];
+
 function applicationForStudent(application, cls, studentEmail) {
-    const safeConfigs = sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs || {});
-    const config = safeConfigs[application.examKey] || null;
+    const config = studentExamConfigSummary(cls.onlineExamConfigs?.[application.examKey]);
     const maxAttempts = normalizeMaxAttempts(application.maxAttempts ?? config?.maxAttempts);
     const attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
         studentEmail,
@@ -410,7 +470,10 @@ function applicationForStudent(application, cls, studentEmail) {
         applicationId: application.id,
         studentEmail,
     });
-    const { accessTokenHash, ...safeApplication } = application;
+    const safeApplication = {};
+    STUDENT_APPLICATION_FIELDS.forEach(field => {
+        if (application[field] !== undefined) safeApplication[field] = application[field];
+    });
     const course = getCourseForClass(cls);
     return {
         ...safeApplication,
@@ -489,7 +552,14 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             });
         }
 
-        const sanitizedConfigs = sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs);
+        // Só aluno com matrícula aprovada na turma sincroniza (e cria tentativa) nela.
+        if (!studentBelongsToClass(req.studentAccount, cls)) {
+            return res.status(403).json({ error: 'Turma não autorizada para este estudante.' });
+        }
+
+        // Só a configuração (metadados) da prova pedida; nada das outras provas da turma.
+        const studentConfigs = examKey ? studentExamConfigsSummary(cls.onlineExamConfigs, examKey) : {};
+        // Máscara do gabarito da prova aberta para o aluno (G2: gabarito na reaplicação).
         const releasedItems = getStudentReleasedItems(cls, email);
 
         let state = null;
@@ -505,6 +575,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         let attemptOutcome = null;
         let timeOver = false;
         let localCopyKey = null;
+        let questions = null;
+        let questionsVersion = null;
 
         if (examKey) {
             const onlineCfg = cls.onlineExamConfigs && cls.onlineExamConfigs[examKey];
@@ -571,6 +643,19 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             attemptId = rawState.attemptId || null;
             tokenAccepted = rawState.tokenValidated === true;
 
+            // Questões só da tentativa iniciada (aplicação em andamento, token validado)
+            // e só quando o cliente ainda não tem esta versão delas.
+            if (attemptQuestionsAvailable({ application, onlineConfig: onlineCfg, state: rawState })) {
+                const delivered = questionsForStudentAttempt({
+                    application,
+                    onlineConfig: onlineCfg,
+                    state: rawState,
+                    evaluation: db.memory.evaluations?.[examKey],
+                });
+                questionsVersion = delivered.questionsVersion;
+                if (String(req.query.questionsVersion || '') !== questionsVersion) questions = delivered.questions;
+            }
+
             messages = (db.memory.broadcastMessages || []).filter(m =>
                 !m.adminDeleted &&
                 m.studentClass &&
@@ -582,7 +667,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 !(m.acknowledgedBy || []).includes(email) &&
                 !(m.deletedFor || []).includes(email) &&
                 m.status !== 'read'
-            );
+            ).map(m => sanitizeBroadcastMessageForStudent(m, email));
 
             const cfg = cls.onlineExamConfigs && cls.onlineExamConfigs[examKey];
             examConfigVersion = cfg ? (cfg.updatedAt || null) : null;
@@ -639,9 +724,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
 
         res.json({
             success: true,
-            onlineExamConfigs: sanitizedConfigs,
+            onlineExamConfigs: studentConfigs,
             releasedItems,
             state,
+            questions,
+            questionsVersion,
             messages,
             examConfigVersion,
             attemptsUsed,
@@ -849,6 +936,33 @@ router.get('/api/student/library', validateStudentSession, (req, res) => {
 
 
 // ===================== AVISOS DO ALUNO =====================
+// Aviso (não evento de calendário) dirigido ao aluno no contexto curso + turma. Mesma
+// regra da lista de avisos, do sino e da marcação de leitura.
+function announcementVisibleInContext(a, email, courseId, studentClass) {
+    if (!a || a.kind === 'calendar') return false;
+    if (a.target === 'todos') return true;
+    if (a.target === 'turma') return String(a.targetValue || '') === studentClass && (!a.courseId || String(a.courseId) === courseId);
+    if (a.target === 'curso') return String(a.targetValue || '') === courseId;
+    if (a.target === 'aluno') return String(a.targetValue || '').toLowerCase() === email
+        && (!a.courseId || String(a.courseId) === courseId)
+        && (!a.studentClass || String(a.studentClass) === studentClass);
+    return false;
+}
+
+// O aviso chega ao aluno por alguma turma em que ele tem matrícula aprovada? Sem isso,
+// qualquer conta (inclusive autocadastro pendente) marcava como lido aviso de outra turma.
+function studentCanSeeAnnouncement(student, email, a) {
+    return (db.memory.classes || []).some(cls => cls && studentBelongsToClass(student, cls)
+        && announcementVisibleInContext(a, email, String(cls.courseId || ''), String(cls.name || '')));
+}
+
+function markAnnouncementRead(a, email) {
+    if (!Array.isArray(a.readBy)) a.readBy = [];
+    if (a.readBy.includes(email)) return false;
+    a.readBy.push(email);
+    return true;
+}
+
 router.get('/api/student/announcements', validateStudentSession, (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.query.courseId || '').trim();
@@ -859,15 +973,8 @@ router.get('/api/student/announcements', validateStudentSession, (req, res) => {
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
     const today = settingsUtil.today(); // fuso configurado, como no restante do sistema
     let list = (db.memory.announcements || []).filter(a => {
-        if (a.kind === 'calendar') return false;
         if (a.expiresAt && a.expiresAt < today) return false;
-        if (a.target === 'todos') return true;
-        if (a.target === 'turma') return String(a.targetValue || '') === studentClass && (!a.courseId || String(a.courseId) === courseId);
-        if (a.target === 'curso') return String(a.targetValue || '') === courseId;
-        if (a.target === 'aluno') return String(a.targetValue || '').toLowerCase() === email
-            && (!a.courseId || String(a.courseId) === courseId)
-            && (!a.studentClass || String(a.studentClass) === studentClass);
-        return false;
+        return announcementVisibleInContext(a, email, courseId, studentClass);
     });
     list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0));
     res.json(list.map(a => ({ id: a.id, title: a.title, message: a.message, priority: a.priority, pinned: a.pinned, createdAt: a.createdAt, authorName: a.authorName, read: (a.readBy || []).includes(email) })));
@@ -877,7 +984,8 @@ router.post('/api/student/announcements/read', validateStudentSession, (req, res
     const email = req.studentEmail;
     const id = String(req.body.id || '');
     const ann = (db.memory.announcements || []).find(a => a.id === id);
-    if (ann) { ann.readBy = ann.readBy || []; if (!ann.readBy.includes(email)) { ann.readBy.push(email); db.save(); } }
+    if (!ann || !studentCanSeeAnnouncement(req.studentAccount, email, ann)) return res.status(404).json({ error: 'Aviso não encontrado.' });
+    if (markAnnouncementRead(ann, email)) db.save();
     res.json({ success: true });
 });
 
@@ -952,7 +1060,7 @@ router.post('/api/student/login', async (req, res) => {
     recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'success', req });
     // Presença automática por login: respeita config (liga/desliga, janela, fuso). Máx. 1/dia.
     // (mesma lógica reaproveitada no heartbeat /api/ping para sessões já ativas)
-    ensureDailyLoginAttendance(normalizedEmail);
+    ensureDailyLoginAttendance(normalizedEmail, { req, source: 'login' });
     // Sessão única: gera um token novo a cada login. Logins anteriores (em outros
     // dispositivos) deixam de valer porque o token guardado neles passa a divergir.
     const sessionToken = crypto.randomUUID
@@ -1063,25 +1171,6 @@ router.post('/api/student/recover', (req, res) => {
 });
 
 
-function studentBelongsToClass(studentRecord, cls) {
-    if (!studentRecord || !cls || !cls.name) return false;
-
-    const memberships = studentRecord.classes || (studentRecord.studentClass ? [studentRecord.studentClass] : []);
-    return memberships.some(item => {
-        if (typeof item === 'string') {
-            return item === cls.name;
-        }
-
-        if (!item || typeof item !== 'object') {
-            return false;
-        }
-
-        const sameClass = item.name === cls.name;
-        const sameCourse = !cls.courseId || !item.courseId || item.courseId === cls.courseId;
-        return sameClass && sameCourse;
-    });
-}
-
 router.post('/api/student/exam-applications/:applicationId/start-attempt', validateStudentSession, async (req, res) => {
     const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
     if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
@@ -1162,6 +1251,11 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     ensureLocalCopyKey(state);
     db.memory.studentExamState[context.key] = state;
     await db.save();
+    // A tentativa acabou de começar: as questões da versão do aluno já vão na resposta,
+    // com os identificadores opacos das alternativas (AVA-05).
+    const delivered = attemptQuestionsAvailable({ application, onlineConfig: config, state })
+        ? questionsForStudentAttempt({ application, onlineConfig: config, state, evaluation: db.memory.evaluations?.[application.examKey] })
+        : null;
     res.json({
         success: true,
         applicationId: application.id,
@@ -1171,6 +1265,8 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         state: stateForStudent(stateWithoutSecrets(state), answerIdScope({ application })),
         localCopyKey: localCopyKeyFor(state),
         examConfigVersion: state.examConfigVersion,
+        questions: delivered ? delivered.questions : null,
+        questionsVersion: delivered ? delivered.questionsVersion : null,
     });
 });
 
@@ -1190,23 +1286,23 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
     const text = String(req.body?.text || '').trim();
     const number = Number(req.body?.questionNumber);
     if (!applicationId || !attemptId || !Number.isFinite(number) || !QUESTION_REPORT_REASONS.has(reason)) {
-        return res.status(400).json({ error: 'Dados da contestacao invalidos.' });
+        return res.status(400).json({ error: 'Dados da contestação inválidos.' });
     }
-    if (text.length > 300) return res.status(400).json({ error: 'O detalhe deve ter no maximo 300 caracteres.' });
+    if (text.length > 300) return res.status(400).json({ error: 'O detalhe deve ter no máximo 300 caracteres.' });
 
     const application = findExamApplication(db.memory.examApplications, applicationId);
-    if (!application) return res.status(404).json({ error: 'Aplicacao de prova nao encontrada.' });
+    if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
     if (!['waiting', 'running', 'paused'].includes(application.status)) {
-        return res.status(409).json({ error: 'Esta aplicacao ja foi encerrada.' });
+        return res.status(409).json({ error: 'Esta aplicação já foi encerrada.' });
     }
     const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
     if (!cls || !studentBelongsToClass(req.studentAccount, cls)) {
-        return res.status(403).json({ error: 'Aplicacao nao autorizada para este estudante.' });
+        return res.status(403).json({ error: 'Aplicação não autorizada para este estudante.' });
     }
     const context = attemptContextForStudent({ application, studentEmail: req.studentEmail, examKey: application.examKey });
     const state = context.state;
     if (!state?.startedAt || state.attemptId !== attemptId) {
-        return res.status(409).json({ error: 'A contestacao nao corresponde a tentativa ativa.' });
+        return res.status(409).json({ error: 'A contestação não corresponde à tentativa ativa.' });
     }
     const resolved = questionsForAttempt({
         application,
@@ -1215,7 +1311,7 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
         evaluation: db.memory.evaluations?.[application.examKey],
     });
     if (!resolved.assignedNumbers.includes(number)) {
-        return res.status(400).json({ error: 'Esta questao nao pertence a tentativa do aluno.' });
+        return res.status(400).json({ error: 'Esta questão não pertence à tentativa do aluno.' });
     }
 
     if (!Array.isArray(application.questionReports)) application.questionReports = [];
@@ -1223,13 +1319,13 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
         String(report.studentEmail || '').toLowerCase() === req.studentEmail
         && Number(report.questionNumber) === number);
     if (duplicate) {
-        return res.status(409).json({ error: 'Voce ja reportou esta questao.', alreadyReported: true, report: duplicate });
+        return res.status(409).json({ error: 'Você já reportou esta questão.', alreadyReported: true, report: duplicate });
     }
     const oneMinuteAgo = Date.now() - 60000;
     const recentCount = application.questionReports.filter(report =>
         String(report.studentEmail || '').toLowerCase() === req.studentEmail
         && new Date(report.createdAt || 0).getTime() >= oneMinuteAgo).length;
-    if (recentCount >= 5) return res.status(429).json({ error: 'Aguarde um minuto antes de enviar novas contestacoes.' });
+    if (recentCount >= 5) return res.status(429).json({ error: 'Aguarde um minuto antes de enviar novas contestações.' });
 
     const now = new Date().toISOString();
     const report = {
@@ -1568,7 +1664,7 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         attemptId: submissionObj.attemptId,
         answeredCount: submissionObj.answeredCount,
         lateBySeconds: Number(submissionObj.lateBySeconds || 0),
-        message: 'Prova enviada. A nota sera exibida apos a publicacao do professor.',
+        message: 'Prova enviada. A nota será exibida após a publicação do professor.',
         examConfigVersion: currentExamConfigVersion
     });
 });
@@ -1584,8 +1680,13 @@ router.post('/api/student/my-submissions', validateStudentSession, (req, res) =>
     const submissions = readJSON(DB_SUBMISSIONS_FILE);
     const normalizedEmail = email.trim().toLowerCase();
     
-    const ownSubmissions = submissions.filter(s => s.student && s.student.email && s.student.email.toLowerCase() === normalizedEmail)
-        .filter(s => String(s.student?.courseId || s.courseId || '') === courseId && String(s.student?.studentClass || s.studentClass || '') === studentClass);
+    // Mesmo recorte do painel do aluno e do boletim: registro antigo sem curso entra
+    // no curso da matrícula do aluno naquela turma (antes ficava fora desta lista e a
+    // "Média das consideradas" divergia da média do painel).
+    const ownSubmissions = scopeSubmissionsToContext(
+        submissions.filter(s => s.student && s.student.email && s.student.email.toLowerCase() === normalizedEmail),
+        { courseId, studentClass, students: db.memory.students || [], classes: db.memory.classes || [] },
+    );
     const publishedResultById = new Map(
         enrichSubmissionsWithAttemptResult(ownSubmissions.filter(item => item.gradePublished === true))
             .map(item => [String(item.id), item])
@@ -1662,14 +1763,8 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     const today = settingsUtil.today();
     const items = [];
 
-    const visibleTarget = item => item.target === 'todos'
-        || (item.target === 'curso' && String(item.targetValue || '') === courseId)
-        || (item.target === 'turma' && String(item.targetValue || '') === className && (!item.courseId || String(item.courseId) === courseId))
-        || (item.target === 'aluno' && String(item.targetValue || '').toLowerCase() === email
-            && (!item.courseId || String(item.courseId) === courseId)
-            && (!item.studentClass || String(item.studentClass) === className));
     (db.memory.announcements || [])
-        .filter(item => item.kind !== 'calendar' && visibleTarget(item) && (!item.expiresAt || item.expiresAt >= today))
+        .filter(item => announcementVisibleInContext(item, email, courseId, className) && (!item.expiresAt || item.expiresAt >= today))
         .forEach(item => items.push({
             id: `aviso:${item.id}`, type: 'aviso', title: item.title || 'Aviso', text: String(item.message || '').slice(0, 140),
             at: Number(item.createdAt || 0), href: '/aluno/avisos', unread: !(item.readBy || []).includes(email),
@@ -1710,10 +1805,21 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length });
 });
 
+// "Marcar como lidas" (UXA-X3): carimbo para dúvidas, notas e provas e leitura dos
+// avisos listados no sino (readBy), senão o próximo polling trazia o contador de volta.
 router.post('/api/student/notifications/seen', validateStudentSession, async (req, res) => {
+    const email = req.studentEmail;
     req.studentAccount.notificationsSeenAt = Date.now();
+    const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.slice(0, 100).map(String) : [];
+    const announcementIds = new Set(ids.filter(id => id.startsWith('aviso:')).map(id => id.slice('aviso:'.length)));
+    let marked = 0;
+    (db.memory.announcements || []).forEach(a => {
+        if (!a || !announcementIds.has(String(a.id))) return;
+        if (!studentCanSeeAnnouncement(req.studentAccount, email, a)) return;
+        if (markAnnouncementRead(a, email)) marked++;
+    });
     await db.save();
-    res.json({ success: true });
+    res.json({ success: true, announcementsMarked: marked });
 });
 
 router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
@@ -1721,7 +1827,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     const courseId = String(req.query.courseId || '').trim();
     const className = String(req.query.studentClass || '').trim();
     const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === email);
-    if (!student) return res.status(404).json({ error: 'Aluno nao encontrado.' });
+    if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
 
     const classes = readJSON(DB_CLASSES_FILE);
     const cls = findClassByNameAndCourse(classes, className, courseId);
@@ -1730,10 +1836,12 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     const structure = effectiveStructure(courseId, className)?.structure || [];
     const completed = db.memory.progress[email] || {};
     const released = cls ? getStudentReleasedItems(cls, email) : {};
-    const submissions = readJSON(DB_SUBMISSIONS_FILE)
-        .filter(item => item.student?.email && item.student.email.toLowerCase() === email)
-        .filter(item => (!courseId || !item.student?.courseId || item.student.courseId === courseId)
-            && (!className || !item.student?.studentClass || item.student.studentClass === className));
+    // Mesmo recorte curso/turma do boletim e de Resultados: registro antigo sem curso
+    // conta só no curso da matrícula do aluno naquela turma.
+    const submissions = scopeSubmissionsToContext(
+        readJSON(DB_SUBMISSIONS_FILE).filter(item => item.student?.email && item.student.email.toLowerCase() === email),
+        { courseId, studentClass: className, students: db.memory.students || [], classes: db.memory.classes || [] },
+    );
 
     const modules = structure.map((module, moduleIndex) => {
         const units = module.units || module.items || [];
@@ -1742,15 +1850,15 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         const moduleSubmissions = submissions.filter(item => examKeys.has(item.examKey));
         const published = moduleSubmissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score)));
         const consolidated = consolidateSubmissions(published).filter(item => item.score != null);
-        const note = consolidated.length ? consolidated.reduce((sum, item) => sum + Number(item.score), 0) / consolidated.length / 10 : null;
+        const note = consolidated.length ? roundGrade(consolidated.reduce((sum, item) => sum + Number(item.score), 0) / consolidated.length) : null;
         const done = unitKeys.filter(key => completed[key]).length;
         return {
             id: module.id || module.key || `module_${moduleIndex}`,
-            name: module.name || module.title || `Modulo ${moduleIndex + 1}`,
+            name: module.name || module.title || `Módulo ${moduleIndex + 1}`,
             done,
             total: unitKeys.length,
             progress: unitKeys.length ? Math.round((done / unitKeys.length) * 100) : 0,
-            note: note == null ? null : Number(note.toFixed(1)),
+            note,
             noteStatus: note != null ? 'published' : moduleSubmissions.length ? 'review' : 'none',
         };
     });
@@ -1803,20 +1911,36 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         progress: totalUnits.length ? Math.round((completedCount / totalUnits.length) * 100) : 0,
         completedCount,
         totalUnits: totalUnits.length,
-        overallNote: publishedSubmissions.length ? Number((publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length / 10).toFixed(1)) : null,
+        // Mesmo arredondamento do boletim, do quadro e das planilhas (roundGrade).
+        overallNote: publishedSubmissions.length ? roundGrade(publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length) : null,
         frequency,
         pendingCount,
         continueItem,
         announcements,
         calendar,
-        performance: publishedSubmissions.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).slice(-5).map(item => ({ id: item.id, examKey: item.examKey, note: Number((Number(item.score) / 10).toFixed(1)) })),
+        // Cada item é um grupo consolidado (prova/aplicação): id, prova e data vêm da tentativa mais recente.
+        performance: publishedSubmissions
+            .map(group => {
+                const latest = [...group.attempts].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0] || {};
+                return { id: latest.id, examKey: latest.examKey, timestamp: latest.timestamp, note: roundGrade(group.score) };
+            })
+            .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
+            .slice(-5)
+            .map(({ timestamp, ...item }) => item),
     });
 });
 
 // Atualizar progresso do aluno (POST)
+// completedUnits: { [chaveDaUnidade]: true/false } (registros antigos podem ter listas).
 router.post('/api/student/progress', validateStudentSession, (req, res) => {
-    const { email, completedUnits } = req.body;
+    const { completedUnits } = req.body || {};
+    const email = req.studentEmail;
     if (!email || !completedUnits) return res.status(400).json({ error: 'Dados incompletos.' });
+    const entries = typeof completedUnits === 'object' && !Array.isArray(completedUnits) ? Object.entries(completedUnits) : null;
+    if (!entries || entries.length > 2000 || entries.some(([key, value]) => !key || key.length > 200
+        || !(typeof value === 'boolean' || (Array.isArray(value) && value.every(item => typeof item === 'string' || typeof item === 'number'))))) {
+        return res.status(400).json({ error: 'Progresso em formato inválido.' });
+    }
 
     db.memory.progress[email.toLowerCase()] = completedUnits;
     db.save();
@@ -2271,9 +2395,9 @@ router.post('/api/admin/forum/resolve', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { commentId, resolved } = req.body;
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
-        if (!comment) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta duvida.' });
+        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         if (resolved) {
             comment.status = 'resolvida';
             comment.resolvedBy = matchedAdmin.email;
@@ -2294,9 +2418,9 @@ router.post('/api/admin/forum/faq', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { commentId, faq } = req.body;
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
-        if (!comment) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta duvida.' });
+        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         comment.isFaq = !!faq;
         comment.faqBy = faq ? matchedAdmin.email : null;
         comment.faqAt = faq ? new Date().toISOString() : null;
@@ -2310,12 +2434,12 @@ router.post('/api/admin/forum/restore', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { commentId, replyId } = req.body;
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
-        if (!comment) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta duvida.' });
+        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         if (replyId) {
             const reply = (comment.replies || []).find(r => r.id === replyId);
-            if (!reply) return res.status(404).json({ error: 'Resposta nao encontrada.' });
+            if (!reply) return res.status(404).json({ error: 'Resposta não encontrada.' });
             reply.deleted = false; reply.deletedAt = null; reply.deletedBy = null;
             logForumEvent(comment, 'restore_reply', adminActor(matchedAdmin));
         } else {
@@ -2332,7 +2456,7 @@ router.post('/api/admin/forum/purge', (req, res) => {
         if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores podem apagar definitivamente.' });
         const { commentId, replyId } = req.body;
         const idx = (db.memory.forum || []).findIndex(c => c.id === commentId);
-        if (idx === -1) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (idx === -1) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, db.memory.forum[idx])) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
         if (replyId) {
             const comment = db.memory.forum[idx];

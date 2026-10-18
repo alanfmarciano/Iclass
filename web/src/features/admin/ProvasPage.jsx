@@ -170,7 +170,7 @@ export default function ProvasPage() {
   }, [summaries.data, courseId])
   const modulesWithExams = useMemo(() => structure.map((mod, index) => {
     const moduleId = String(mod.id || mod.key || mod.title || mod.name || index)
-    const moduleName = mod.name || mod.title || mod.id || `Modulo ${index + 1}`
+    const moduleName = mod.name || mod.title || mod.id || `Módulo ${index + 1}`
     const moduleExams = (mod.units || mod.items || [])
       .filter((unit) => unit.avaliacaoKey)
       .map((unit) => ({
@@ -926,13 +926,13 @@ export default function ProvasPage() {
               <>
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px] gap-3 border-t border-border pt-4">
                   <div>
-                    <p className="text-xs uppercase font-semibold text-subtle">Avaliacao selecionada</p>
+                    <p className="text-xs uppercase font-semibold text-subtle">Avaliação selecionada</p>
                     <h2 className="text-lg font-bold text-text mt-1">{evaluation.title || selectedExam?.name || examKey}</h2>
                     <div className="mt-2"><Button size="sm" variant="secondary" icon={Edit3} onClick={openEvaluationEditor}>Editar conteúdo</Button></div>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <Badge tone="info">{selectedCount}/{totalQuestions} questoes</Badge>
-                      <Badge tone={usedCount > 0 ? 'warning' : 'neutral'}>{usedCount} ja usadas</Badge>
-                      <Badge tone="neutral">{mode === 'online' ? `${form.onlineVersions} versoes online` : `${form.printVersions} versoes impressas`}</Badge>
+                      <Badge tone="info">{selectedCount}/{totalQuestions} questões</Badge>
+                      <Badge tone={usedCount > 0 ? 'warning' : 'neutral'}>{usedCount} já usadas</Badge>
+                      <Badge tone="neutral">{mode === 'online' ? `${form.onlineVersions} versões online` : `${form.printVersions} versões impressas`}</Badge>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -965,10 +965,10 @@ export default function ProvasPage() {
                           <p className="text-xs text-muted">Quantidade, tempo e embaralhamento</p>
                         </div>
                       </div>
-                      <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponiveis`} />
+                      <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponíveis`} />
                       {mode === 'online' ? (
                         <div className="grid grid-cols-2 gap-3">
-                          <Input label="Versoes online" type="number" min="1" max="5" value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
+                          <Input label="Versões online" type="number" min="1" max="5" value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
                           <Input label="Duração (min)" type="number" min="1" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} />
                           <Input label="Sala de espera (min)" type="number" min="0" value={form.waitingRoomMinutes} onChange={(e) => setForm({ ...form, waitingRoomMinutes: e.target.value })} helper="Padrão: 10 minutos." />
                           <Select label="Início do cronômetro" value={form.timerMode} onChange={(e) => setForm({ ...form, timerMode: e.target.value })}>
@@ -993,7 +993,7 @@ export default function ProvasPage() {
                           </div>}
                         </div>
                       ) : (
-                        <Input label="Versoes impressas" type="number" min="1" max="10" value={form.printVersions} onChange={(e) => setForm({ ...form, printVersions: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} helper="Cada versão recebe codigo proprio." />
+                        <Input label="Versões impressas" type="number" min="1" max="10" value={form.printVersions} onChange={(e) => setForm({ ...form, printVersions: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} helper="Cada versão recebe código próprio." />
                       )}
                       <div className="grid grid-cols-1 gap-2">
                         <Switch label="Embaralhar questões" checked={form.shuffleQuestions} onChange={(v) => setForm({ ...form, shuffleQuestions: v })} />
@@ -1050,7 +1050,7 @@ export default function ProvasPage() {
                   </div>
 
                   <Card>
-                    <CardHeader title="Prévia da prova" subtitle={`Versão ${currentVersions[0]?.version || 'A'} - ${selectedCount} questoes`} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
+                    <CardHeader title="Prévia da prova" subtitle={`Versão ${currentVersions[0]?.version || 'A'} - ${selectedCount} questões`} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
                     <CardBody className="space-y-3">
                       {previewQuestions.map((q, index) => {
                         const usages = usage[q.originalNumber] || []
@@ -1060,7 +1060,7 @@ export default function ProvasPage() {
                               <span className="w-7 h-7 shrink-0 grid place-items-center rounded-md bg-primary-soft text-primary text-sm font-bold">{index + 1}</span>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-text">{q.text}</p>
-                                {usages.length > 0 && <p className="text-xs text-warning mt-1">Ja usada: {usages.map((u) => u.label).join(', ')}</p>}
+                                {usages.length > 0 && <p className="text-xs text-warning mt-1">Já usada: {usages.map((u) => u.label).join(', ')}</p>}
                               </div>
                               <Button size="sm" variant="ghost" icon={Trash2} onClick={() => toggleQuestion(q.originalNumber, false)}>Remover</Button>
                             </div>
@@ -1090,17 +1090,17 @@ export default function ProvasPage() {
                 </div>
 
                 <Card>
-                  <CardHeader title="Aplicacoes anteriores" subtitle="Preparações salvas, reimpressões e questões já usadas" action={<Badge tone="neutral">{history.length}</Badge>} />
+                  <CardHeader title="Aplicações anteriores" subtitle="Preparações salvas, reimpressões e questões já usadas" action={<Badge tone="neutral">{history.length}</Badge>} />
                   <CardBody className="space-y-2">
                     {history.map((entry, index) => {
                       const prepared = onlineConfig?.activeHistoryId === entry.id
                       const qList = (entry.questionNumbers || []).join(', ')
                       return (
                         <div key={entry.id} className={`rounded-lg border p-3 flex flex-wrap items-center gap-3 ${prepared ? 'border-primary/50 bg-primary-soft/20' : 'border-border'}`}>
-                          <button type="button" onClick={() => setViewApplication(entry)} className="flex-1 min-w-[220px] flex items-center gap-2 text-left group rounded-md -m-1 p-1 transition hover:bg-surface-2" title="Ver prova aplicada e versoes">
+                          <button type="button" onClick={() => setViewApplication(entry)} className="flex-1 min-w-[220px] flex items-center gap-2 text-left group rounded-md -m-1 p-1 transition hover:bg-surface-2" title="Ver prova aplicada e versões">
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-semibold text-text group-hover:text-primary transition">{historyLabel(entry, index)} {prepared ? <span className="text-primary">- preparada</span> : ''}</p>
-                              <p className="text-xs text-subtle">{entry.questionCount || entry.questionNumbers?.length || 0} questoes - {entry.durationMinutes || '-'} min - Q: {qList || '-'}</p>
+                              <p className="text-xs text-subtle">{entry.questionCount || entry.questionNumbers?.length || 0} questões - {entry.durationMinutes || '-'} min - Q: {qList || '-'}</p>
                             </div>
                             <ChevronRight size={16} className="text-subtle group-hover:text-primary shrink-0 transition" />
                           </button>

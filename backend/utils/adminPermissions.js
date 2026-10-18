@@ -119,6 +119,8 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/(exam-config|online-exam-config)$/, permission: 'page.exams' },
     // Gerar novo token: o botão fica no Monitor (e a aplicação nasce em Provas).
     { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/access-token$/, permission: ['page.monitor', 'page.exams'] },
+    // Registro da aplicação é lido na tela Resultados (AVA-08).
+    { methods: ['GET'], pattern: /^\/exam-applications\/[^/]+\/audit$/, permission: 'page.results' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-applications(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-history(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/release-item$/, permission: 'page.materials' },
@@ -156,6 +158,7 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/(correct-live-question|annul-question|replace-question)$/, permission: 'page.monitor' },
     { methods: ['GET'], pattern: /^\/(monitor-status|monitor-review|proctoring-logs|exam-keystrokes)\/.*$/, permission: 'page.monitor' },
     { methods: ['GET'], pattern: /^\/export-grades\/.*$/, permission: 'page.results' },
+    { methods: ['GET'], pattern: /^\/gradebook$/, permission: 'page.results' },
     { methods: ['GET'], pattern: /^\/exam-analytics\/.*$/, permission: 'page.results' },
     { methods: ['GET', 'POST'], pattern: /^\/question-bank(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/forum\/all$/, permission: 'page.forum' },

@@ -2,6 +2,7 @@
 // Frequência: por aula, geral e por disciplina (ver backend/utils/attendance.js).
 
 const attendanceUtil = require('./attendance.js');
+const { normalizeScore } = require('./submissionAttempts.js');
 
 function pad(n) { return String(n).padStart(2, '0'); }
 function ymd(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -27,9 +28,11 @@ function courseUnitStats(memory, courseId) {
 }
 
 // Média (0–10) das provas. null quando não há prova — "sem avaliação" não é nota zero.
+// Nota inválida de registro antigo (vazia ou fora de 0 a 100) não entra na média.
 function mediaOf(subs) {
-    if (!subs.length) return null;
-    return subs.reduce((a, s) => a + (Number(s.score) || 0), 0) / subs.length / 10;
+    const scores = subs.map(s => normalizeScore(s.score)).filter(score => score !== null);
+    if (!scores.length) return null;
+    return scores.reduce((a, score) => a + score, 0) / scores.length / 10;
 }
 // Arredonda para 1 casa preservando null (sem dado continua sem dado).
 const round1 = (v) => v == null ? null : Math.round(v * 10) / 10;
@@ -130,7 +133,9 @@ function computeStudentDashboard(memory, email) {
     turma.forEach(s => {
         const e = s.email.toLowerCase();
         const ss = (memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === e);
-        if (ss.length) turmaMedias.push(mediaOf(ss));
+        // Colega só com notas inválidas (registro antigo) não tem média: não entra como 0.
+        const media = ss.length ? mediaOf(ss) : null;
+        if (media !== null) turmaMedias.push(media);
         const f = freqPct(memory, e, courseId);
         if (f != null) turmaFreqs.push(f);
     });
@@ -148,7 +153,7 @@ function computeStudentDashboard(memory, email) {
     const disciplinasEmRisco = frequenciaDisciplinas.filter(d => d.emRisco);
     if (stats.totalAulas > 0 && stats.frequenciaGeral != null && stats.frequenciaGeral < limiar) reasons.push(`Frequência baixa (${frequencia}%)`);
     if (disciplinasEmRisco.length) reasons.push(`Baixa frequência em ${disciplinasEmRisco.map(d => d.nome).join(', ')}`);
-    if (subs.length && media < 6) reasons.push(`Média abaixo de 6 (${kpis.media})`);
+    if (media != null && media < 6) reasons.push(`Média abaixo de 6 (${kpis.media})`);
     const lastAccess = student && (student.lastLoginAt || student.lastSeenAt);
     const daysSince = lastAccess ? Math.floor((Date.now() - lastAccess) / 86400000) : null;
     if (daysSince !== null && daysSince > 14) reasons.push(`Sem acesso há ${daysSince} dias`);
@@ -205,10 +210,11 @@ function computeStudentDashboard(memory, email) {
     };
 
     // Notas e módulos
-    const notas = [...subs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
-        .map(s => ({ label: (s.examKey || '').split('_').slice(1).join(' '), value: (Number(s.score) || 0) / 10 }));
+    const validSubs = subs.filter(s => normalizeScore(s.score) !== null);
+    const notas = [...validSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
+        .map(s => ({ label: (s.examKey || '').split('_').slice(1).join(' '), value: normalizeScore(s.score) / 10 }));
     const modGroups = {};
-    subs.forEach(s => { const m = (s.examKey || '').split('_')[1] || '—'; (modGroups[m] = modGroups[m] || []).push(Number(s.score) || 0); });
+    validSubs.forEach(s => { const m = (s.examKey || '').split('_')[1] || '—'; (modGroups[m] = modGroups[m] || []).push(normalizeScore(s.score)); });
     const modulos = Object.entries(modGroups).map(([m, arr]) => ({ modulo: m, media: Math.round(arr.reduce((a, b) => a + b, 0) / arr.length / 10 * 10) / 10 }));
 
     return { kpis, comparativo, risco, engajamento, streak, temporal, notas, modulos, frequenciaDisciplinas, faltas: stats.faltasContam, limiarRisco: limiar };

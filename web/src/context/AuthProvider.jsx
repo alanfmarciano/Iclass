@@ -74,11 +74,11 @@ export function AuthProvider({ children }) {
         if (serverInst && auth.serverInstanceId && serverInst !== auth.serverInstanceId) { if (!cancelled) doLogout('restart'); return }
 
         if (auth.role === 'student') {
-          if (!auth.email || !auth.sessionToken) throw Object.assign(new Error('Sessao incompleta'), { status: 401 })
+          if (!auth.email || !auth.sessionToken) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
           await api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`)
           if (!cancelled && serverInst && !auth.serverInstanceId) setAuth((c) => ({ ...c, serverInstanceId: serverInst }))
         } else if (auth.role === 'admin') {
-          if (!auth.adminSession && !auth.adminAuth) throw Object.assign(new Error('Sessao incompleta'), { status: 401 })
+          if (!auth.adminSession && !auth.adminAuth) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
           const who = await api.get('/api/admin/whoami')
           if (!cancelled) {
             setAuth((current) => ({

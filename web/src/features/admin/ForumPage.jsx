@@ -29,10 +29,10 @@ function relTime(iso) {
   if (!iso) return ''
   const s = (Date.now() - new Date(iso).getTime()) / 1000
   if (s < 60) return 'agora'
-  if (s < 3600) return `ha ${Math.floor(s / 60)} min`
-  if (s < 86400) return `ha ${Math.floor(s / 3600)} h`
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`
+  if (s < 86400) return `há ${Math.floor(s / 3600)} h`
   const d = Math.floor(s / 86400)
-  if (d < 30) return `ha ${d} ${d === 1 ? 'dia' : 'dias'}`
+  if (d < 30) return `há ${d} ${d === 1 ? 'dia' : 'dias'}`
   return new Date(iso).toLocaleDateString('pt-BR')
 }
 function hoursSince(iso) { return iso ? (Date.now() - new Date(iso).getTime()) / 3600000 : 0 }
@@ -158,7 +158,7 @@ export default function ForumPage() {
   function markAllRead() { setPref('forum.lastSeen', new Date().toISOString()); toast.success('Marcadas como lidas') }
   function applyTemplate(commentId, text) { setReply((r) => ({ ...r, [commentId]: (r[commentId] ? r[commentId] + '\n' : '') + text })) }
   function addTemplate() {
-    if (!tplForm.title.trim() || !tplForm.text.trim()) return toast.error('Preencha titulo e texto')
+    if (!tplForm.title.trim() || !tplForm.text.trim()) return toast.error('Preencha título e texto')
     setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: tplForm.title.trim(), text: tplForm.text.trim() }])
     setTplForm({ title: '', text: '' })
   }
@@ -170,16 +170,16 @@ export default function ForumPage() {
     <div className="max-w-5xl mx-auto space-y-6">
       <PageHeader title="Fórum e dúvidas" subtitle={`Modere as dúvidas · ${courseName || activeCourseId} · ${activeClassName}`}>
         <div className="flex gap-2">
-          <Button size="sm" variant="secondary" icon={Zap} onClick={() => setTplOpen(true)}>Respostas rapidas</Button>
+          <Button size="sm" variant="secondary" icon={Zap} onClick={() => setTplOpen(true)}>Respostas rápidas</Button>
           {unreadCount > 0 && <Button size="sm" variant="secondary" onClick={markAllRead}>Marcar lidas ({unreadCount})</Button>}
         </div>
       </PageHeader>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total de duvidas" value={stats.total} icon="MessagesSquare" />
+        <StatCard label="Total de dúvidas" value={stats.total} icon="MessagesSquare" />
         <StatCard label="Pendentes" value={stats.abertas} icon="AlertCircle" />
         <StatCard label="Resolvidas" value={stats.resolvidas} icon="CircleCheck" />
-        <StatCard label="Tempo medio" value={stats.avg !== null ? `${stats.avg.toFixed(1)}h` : '-'} icon="Clock" />
+        <StatCard label="Tempo médio" value={stats.avg !== null ? `${stats.avg.toFixed(1).replace('.', ',')} h` : '-'} icon="Clock" />
       </div>
 
       <div className="space-y-3">
@@ -302,7 +302,7 @@ export default function ForumPage() {
         <div className="space-y-3">
           <div className="text-xs text-muted">Criada por {historyTarget?.studentName} {relTime(historyTarget?.timestamp)}</div>
           {(historyTarget?.events || []).length === 0 ? (
-            <p className="text-sm text-muted">Sem eventos de moderacao registrados ainda.</p>
+            <p className="text-sm text-muted">Sem eventos de moderação registrados ainda.</p>
           ) : (
             <div className="pl-3 border-l-2 border-border flex flex-col gap-3">
               {[...(historyTarget?.events || [])].reverse().map((e, i) => (
@@ -319,7 +319,7 @@ export default function ForumPage() {
         </div>
       </Modal>
 
-      <Modal open={tplOpen} onClose={() => setTplOpen(false)} title="Respostas rapidas" description="Modelos reutilizaveis, salvos na sua conta.">
+      <Modal open={tplOpen} onClose={() => setTplOpen(false)} title="Respostas rápidas" description="Modelos reutilizáveis, salvos na sua conta.">
         <div className="space-y-3">
           {templates.length === 0 && <p className="text-sm text-muted">Nenhum modelo ainda. Crie abaixo.</p>}
           {templates.map((t) => (
@@ -332,8 +332,8 @@ export default function ForumPage() {
             </div>
           ))}
           <div className="pt-3 border-t border-border space-y-2">
-            <Input label="Titulo" value={tplForm.title} onChange={(e) => setTplForm({ ...tplForm, title: e.target.value })} placeholder="Ex.: Prazo da prova" />
-            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} placeholder="Resposta padrao..." className="min-h-[70px]" />
+            <Input label="Título" value={tplForm.title} onChange={(e) => setTplForm({ ...tplForm, title: e.target.value })} placeholder="Ex.: Prazo da prova" />
+            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} placeholder="Resposta padrão..." className="min-h-[70px]" />
             <Button icon={Plus} onClick={addTemplate}>Adicionar modelo</Button>
           </div>
         </div>

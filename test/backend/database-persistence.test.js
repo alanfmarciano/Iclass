@@ -440,3 +440,45 @@ test('acesso rapido local escolhe somente as contas oficiais de teste', async ()
     expiredApp.use(createSetupModeRouter({ enabled: true, setupToken, now: () => currentTime, startedAt: 5000 }));
     await request(expiredApp).post('/api/setup/quick-session').send({ token: setupToken, profile: 'admin' }).expect(410);
 });
+
+test('[UC-NOTAS-004] no boot, nada é anonimizado automaticamente: aluno excluído antes continua como estava', async () => {
+    // Decisão: a anonimização só acontece na ação explícita de excluir o aluno; quem foi
+    // excluído antes dela fica como está (o Alan decide caso a caso na tela da fase 2).
+    // Antes, a migração do boot anonimizava este histórico sozinha.
+    db.memory.students = [{ name: 'Ativa', email: 'ativa@teste.local', status: 'Ativo', classes: [] }];
+    db.memory.submissions = [];
+    const logs = [{
+        id: 'audit_grade_boot', actor: 'admin@teste.local', studentEmail: 'gabriela.lima@teste.local', action: 'grade_delete', field: 'Nota',
+        oldValue: 'Avaliação 1: 6,3 (3/4 acertos) · tentativa 1 · publicada', newValue: 'excluída', category: 'grade', submissionId: 'sub_boot', timestamp: 1,
+        details: { deletedSubmission: { id: 'sub_boot', examKey: 'Avaliacao_FUTEC_1', score: 63, student: { name: 'Gabriela Lima', email: 'gabriela.lima@teste.local', matricula: '2026-0042', courseId: 'curso-1', studentClass: '1DES' } } },
+    }, {
+        id: 'audit_perfil_boot', actor: 'admin@teste.local', studentEmail: 'gabriela.lima@teste.local', action: 'update', field: 'Telefone', oldValue: '(11) 98888-7777', newValue: '(11) 97777-6666', timestamp: 2,
+    }];
+    db.memory.auditLogs = JSON.parse(JSON.stringify(logs));
+    await db.save();
+    // Outro processo sobe o banco gravado (como o servidor ao ligar).
+    const script = `const db = require(${JSON.stringify(require.resolve('../../backend/database.js'))});
+db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(db.memory.auditLogs.filter(item => String(item.id).endsWith('_boot')))); await db.close(); });`;
+    const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
+    const after = JSON.parse(output.slice(output.indexOf('@@') + 2));
+    assert.deepEqual(after, logs);
+});
+
+test('[UC-NOTAS-004] no boot, histórico de aluna ativa que trocou de e-mail na versão antiga não é anonimizado', async () => {
+    // Formato das versões 2a69f47..68115bc: a troca de e-mail não atualizava auditLogs[].studentEmail.
+    db.memory.students = [{ name: 'Ana Maria Souza', email: 'ana.souza@escola.br', matricula: '2025-77', status: 'Ativo', classes: [{ name: '1DES', courseId: 'c1' }], studentClass: '1DES' }];
+    db.memory.submissions = [{ id: 's1', examKey: 'Avaliacao_X', score: 80, student: { name: 'Ana Maria Souza', email: 'ana.souza@escola.br', courseId: 'c1', studentClass: '1DES' } }];
+    const logs = [
+        { id: 'boot_a1', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Nome completo', oldValue: 'Ana Souza', newValue: 'Ana Maria Souza', timestamp: 1, ip: '10.0.0.1' },
+        { id: 'boot_a2', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Status', oldValue: 'Trancado', newValue: 'Ativo', timestamp: 2, ip: '10.0.0.1' },
+        { id: 'boot_a3', actor: 'admin@escola.br', studentEmail: 'ana.souza@escola.br', action: 'update', field: 'E-mail/login', oldValue: 'ana@escola.br', newValue: 'ana.souza@escola.br', timestamp: 3, ip: '10.0.0.1' },
+    ];
+    db.memory.auditLogs = JSON.parse(JSON.stringify(logs));
+    await db.save();
+    const script = `const db = require(${JSON.stringify(require.resolve('../../backend/database.js'))});
+db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(db.memory.auditLogs.filter(item => String(item.id).startsWith('boot_a')))); await db.close(); });`;
+    const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
+    const after = JSON.parse(output.slice(output.indexOf('@@') + 2));
+    // Antes: a1 e a2 ficavam com studentEmail '', oldValue '' e newValue ''; a3 perdia o e-mail antigo.
+    assert.deepEqual(after, logs);
+});

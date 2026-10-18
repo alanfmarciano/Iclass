@@ -15,6 +15,7 @@ const { computeAttemptDeadline } = require('./utils/examDeadline.js');
 const { listExamApplications } = require('./utils/examApplications.js');
 const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
+const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -94,7 +95,7 @@ function validateStudentSession(req, res, next) {
     if (typeof session !== 'object' || !session.token) {
         delete db.memory.sessions[normalizedEmail];
         return res.status(401).json({
-            error: 'Sessao expirada. Faca login novamente.',
+            error: 'Sessão expirada. Faça login novamente.',
             sessionRevoked: true
         });
     }
@@ -129,7 +130,7 @@ function validateStudentSession(req, res, next) {
         // Cap ABSOLUTO no servidor (backstop). A ociosidade e enforced no cliente.
         if (nowTs - liveSession.createdAt > absoluteTtlMs()) {
             delete db.memory.sessions[normalizedEmail];
-            return res.status(401).json({ error: 'Sessao expirada (limite maximo atingido). Faca login novamente.', sessionRevoked: true });
+            return res.status(401).json({ error: 'Sessão expirada (limite máximo atingido). Faça login novamente.', sessionRevoked: true });
         }
         liveSession.lastSeen = nowTs;
     }
@@ -172,13 +173,133 @@ function resolveRequester(req) {
     return null;
 }
 
+// Instrutor segue direto. Aluno passa pela validação completa de sessão (token único,
+// prazo absoluto, conta ativa), que também preenche req.studentAccount para as rotas
+// conferirem a matrícula na turma antes de devolver qualquer dado de prova.
 function validateAnySession(req, res, next) {
     const requester = resolveRequester(req);
+    if (!requester && req.headers.authorization) {
+        // Instrutor no login legado (Authorization "email:senha").
+        return validateAdmin(req, res, (config, account) => {
+            req.requester = { role: 'admin', email: String(account.email || '').toLowerCase() };
+            next();
+        });
+    }
     if (!requester) {
         return res.status(401).json({ error: 'Autenticação necessária.', sessionRevoked: true });
     }
-    req.requester = requester;
-    next();
+    if (requester.role !== 'student') {
+        req.requester = requester;
+        return next();
+    }
+    return validateStudentSession(req, res, () => {
+        req.requester = { role: 'student', email: req.studentEmail };
+        next();
+    });
+}
+
+// Matrícula aprovada: a turma precisa estar em `classes` do aluno. O autocadastro
+// nasce com `classes` vazio e só ganha a turma quando o instrutor aprova a matrícula.
+function studentBelongsToClass(studentRecord, cls) {
+    if (!studentRecord || !cls || !cls.name) return false;
+
+    const memberships = studentRecord.classes || (studentRecord.studentClass ? [studentRecord.studentClass] : []);
+    return memberships.some(item => {
+        if (typeof item === 'string') {
+            return item === cls.name;
+        }
+
+        if (!item || typeof item !== 'object') {
+            return false;
+        }
+
+        const sameClass = item.name === cls.name;
+        const sameCourse = !cls.courseId || !item.courseId || item.courseId === cls.courseId;
+        return sameClass && sameCourse;
+    });
+}
+
+// Mensagem do professor (broadcastMessages) que o aluno pode ver: a turma da mensagem
+// precisa ser uma em que ele tem matrícula aprovada e, se a mensagem for individual, ela
+// precisa ser para ele. Sem isso, uma conta autocadastrada pendente lia as mensagens de
+// prova de todas as turmas.
+function studentCanSeeBroadcastMessage(studentRecord, studentEmail, message, classes = db.memory.classes) {
+    if (!studentRecord || !message || message.adminDeleted || !message.studentClass) return false;
+    const email = String(studentEmail || studentRecord.email || '').trim().toLowerCase();
+    if (message.targetEmail && String(message.targetEmail).trim().toLowerCase() !== email) return false;
+    const className = String(message.studentClass).trim().toLowerCase();
+    return (classes || []).some(cls =>
+        cls && cls.name &&
+        String(cls.name).trim().toLowerCase() === className &&
+        (!message.courseId || !cls.courseId || String(message.courseId) === String(cls.courseId)) &&
+        studentBelongsToClass(studentRecord, cls)
+    );
+}
+
+// O que o aluno recebe de uma mensagem: o texto e o contexto da prova. Quem já confirmou
+// a leitura (e-mails de colegas) e quem excluiu do histórico ficam só com o instrutor.
+function sanitizeBroadcastMessageForStudent(message, studentEmail) {
+    const email = String(studentEmail || '').trim().toLowerCase();
+    return {
+        id: message.id,
+        studentClass: message.studentClass || null,
+        courseId: message.courseId || null,
+        examKey: message.examKey || null,
+        applicationId: message.applicationId || null,
+        targetEmail: message.targetEmail ? email : null,
+        messageText: message.messageText || '',
+        timestamp: message.timestamp || null,
+        createdAt: message.createdAt || null,
+        status: message.status || 'pending',
+        acknowledged: (message.acknowledgedBy || []).includes(email),
+    };
+}
+
+// Campos da configuração de prova online que o aluno pode receber: só metadados
+// (estado, horários, duração). Enunciados e alternativas (versionSnapshots) nunca vão
+// por aqui; as questões da tentativa saem apenas por questionsForStudentAttempt.
+const STUDENT_EXAM_CONFIG_FIELDS = [
+    'applicationId',
+    'questionCount',
+    'durationMinutes',
+    'timerEnabled',
+    'timerMode',
+    'waitingRoomDuration',
+    'onlineActive',
+    'status',
+    'startTime',
+    'waitingRoomStartTimestamp',
+    'globalTimeAdjustment',
+    'maxAttempts',
+    'shuffleQuestions',
+    'shuffleAnswers',
+    'preparedAt',
+    'updatedAt',
+];
+
+function studentExamConfigSummary(cfg) {
+    if (!cfg || typeof cfg !== 'object') return null;
+    const summary = {};
+    STUDENT_EXAM_CONFIG_FIELDS.forEach(field => {
+        if (cfg[field] !== undefined) summary[field] = cfg[field];
+    });
+    summary.requiresToken = !!cfg.accessToken || !!cfg.accessTokenHash || cfg.tokenEnabled === true;
+    summary.annulledQuestions = (Array.isArray(cfg.annulledQuestions) ? cfg.annulledQuestions : [])
+        .map(item => ({ questionNumber: Number(item && item.questionNumber), mode: item && item.mode ? String(item.mode) : null }))
+        .filter(item => Number.isFinite(item.questionNumber));
+    return summary;
+}
+
+// Resumo das configurações da turma para o aluno; com examKey, só a da prova pedida.
+function studentExamConfigsSummary(onlineExamConfigs, examKey) {
+    const result = {};
+    if (!onlineExamConfigs || typeof onlineExamConfigs !== 'object') return result;
+    const keys = examKey ? [examKey] : Object.keys(onlineExamConfigs);
+    keys.forEach(key => {
+        const summary = studentExamConfigSummary(onlineExamConfigs[key]);
+        if (summary) result[key] = summary;
+    });
+    return result;
 }
 
 // Remove dados sensíveis (token de acesso e gabarito embutido nos snapshots de versão)
@@ -252,13 +373,13 @@ function validateAdmin(req, res, callback) {
         const now = Date.now();
         if (now - (sess.createdAt || now) > absoluteTtlMs()) {
             delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Sessao expirada. Faca login novamente.', sessionRevoked: true });
+            return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true });
         }
         const adminsList = readJSON(DB_ADMINS_FILE);
         const tokenAdmin = adminsList.find(a => a.email && a.email.toLowerCase() === sess.email);
         if (!tokenAdmin) {
             delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Conta nao encontrada. Faca login novamente.', sessionRevoked: true });
+            return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
         }
         sess.lastSeen = now;
         req.adminSessionToken = adminSessionToken;
@@ -561,17 +682,31 @@ function validateProfessorRequestScope(req, account) {
 function adminRbacGuard(req, res, next) {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const permission = resolveAdminApiPermission(req.method, req.path);
+        // Restauração de backup recusada aqui (antes da rota) também é evento de
+        // segurança: fica no histórico de backup, como as recusas da própria rota.
+        const refuse = body => {
+            if (!isBackupRestoreRequest(req)) return res.status(403).json(body);
+            try {
+                recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', {
+                    error: `Tentativa de restauração recusada: ${String(body.error || '').slice(0, 200)}`,
+                });
+            } catch (_) { /* o registro não pode impedir a recusa */ }
+            return Promise.resolve()
+                .then(() => db.save())
+                .catch(() => {})
+                .then(() => res.status(403).json(body));
+        };
         if (matchedAdmin.mustChangePassword === true && !['/whoami', '/change-password'].includes(req.path)) {
-            return res.status(403).json({ error: 'Troque a senha temporária antes de continuar.', passwordChangeRequired: true });
+            return refuse({ error: 'Troque a senha temporária antes de continuar.', passwordChangeRequired: true });
         }
         if (permission === undefined && isProfessorAccount(matchedAdmin)) {
-            return res.status(403).json({ error: 'Esta operação administrativa não está liberada para professores.' });
+            return refuse({ error: 'Esta operação administrativa não está liberada para professores.' });
         }
         if (!canAccessAdminPermission(matchedAdmin, permission)) {
-            return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
+            return refuse({ error: 'Sua conta não possui permissão para esta operação.' });
         }
         const scopeError = validateProfessorRequestScope(req, matchedAdmin);
-        if (scopeError) return res.status(403).json({ error: scopeError });
+        if (scopeError) return refuse({ error: scopeError });
         next();
     });
 }
@@ -683,8 +818,15 @@ function sanitizeEvaluationForStudent(evaluation) {
 function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     // Letras como o aluno viu na tela (posição na versão dele), não as originais (AVA-05).
     const submission = submissionWithSeenLetters(rawSubmission);
-    const gradePublished = submission && submission.gradePublished === true;
-    const { examSnapshot, ...submissionWithoutSnapshot } = submission || {};
+    // Nota inválida de registro antigo (vazia ou fora de 0 a 100) nunca chega ao
+    // aluno: para ele a entrega fica como não publicada (em revisão).
+    const rawScore = submission && submission.score;
+    const scoreValue = typeof rawScore === 'number' ? rawScore : Number(rawScore);
+    const scoreValid = rawScore !== null && rawScore !== undefined && rawScore !== '' && Number.isFinite(scoreValue) && scoreValue >= 0 && scoreValue <= 100;
+    const gradePublished = submission && submission.gradePublished === true && scoreValid;
+    // scoreHistory (notas anteriores de cada recorreção) é do professor: revelava a
+    // nota antes da publicação.
+    const { examSnapshot, scoreHistory, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };
     // Registro da entrega do servidor que o envio atrasado substituiu: é auditoria do
     // professor e guarda a nota daquela versão, então nunca vai para o aluno.
@@ -851,10 +993,16 @@ function getReleasedItemsForClass(cls, studentEmail) {
 // Middleware centralizado de tratamento de erros
 function errorHandler(err, req, res, next) {
     console.error('🔴 [SERVER ERROR]:', err);
-    const status = err.status || 500;
+    const status = Number(err && (err.status || err.statusCode)) || 500;
+    // Erro interno (500+) não expõe a mensagem do código (ex.: "email.trim is not
+    // a function"); JSON malformado ganha mensagem em português (CONF-14).
+    let message = 'Ocorreu um erro interno no servidor.';
+    if (err && err.type === 'entity.parse.failed') message = 'Dados enviados em formato inválido (JSON).';
+    else if (err && err.type === 'entity.too.large') message = 'Os dados enviados são grandes demais.';
+    else if (status < 500 && err && err.message) message = err.message;
     res.status(status).json({
         success: false,
-        error: err.message || 'Ocorreu um erro interno no servidor.'
+        error: message
     });
 }
 
@@ -1009,6 +1157,11 @@ module.exports = {
     sanitizeEvaluationForStudent,
     sanitizeSubmissionForStudent,
     sanitizeOnlineExamConfigsForStudent,
+    studentExamConfigSummary,
+    studentExamConfigsSummary,
+    studentBelongsToClass,
+    studentCanSeeBroadcastMessage,
+    sanitizeBroadcastMessageForStudent,
     canStudentViewAnswerKey,
     getStudentReleasedItems,
     getReleasedItemsForClass,

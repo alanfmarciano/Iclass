@@ -1206,7 +1206,8 @@ test('[UC-TENTATIVA-001] tentativa vencida deixada por versÃ£o antiga em aplicaÃ
         .set('x-admin-session', adminToken)
         .query({ courseId, studentClass })
         .expect(200);
-    assert.ok(bell.body.items.some(entry => entry.id === 'provas_recuperadas' && entry.unread));
+    // O sino do instrutor identifica o item por curso + turma (UXI-X2): "item@curso::turma".
+    assert.ok(bell.body.items.some(entry => entry.id === `provas_recuperadas@${courseId}::${studentClass}` && entry.unread));
 
     // Publicada a nota, o aviso sai da fila.
     delivered.gradePublished = true;

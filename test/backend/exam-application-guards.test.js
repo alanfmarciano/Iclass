@@ -597,11 +597,13 @@ test('[UC-APLICACAO-001] aluno em duas turmas não vê o gabarito enquanto faz a
         .expect(200)).body.releasedItems[answerKey];
     assert.equal((await viewA()).answerKeyReleased, true);
     assert.equal(await statusA(), true);
+    // E-mail de outra pessoa na URL com a sessão da Gabi: a validação da sessão do aluno
+    // (G3) recusa a identidade divergente, então nada sai pela máscara de outra conta.
     const statusAsOther = async () => (await request(app)
         .get('/api/status')
         .set('x-session-token', gabiA.token)
         .query({ studentClass: classA, courseId, email: students.ana.email })
-        .expect(200)).body.releasedItems[answerKey];
+        .expect(403)).body.releasedItems?.[answerKey];
 
     // A mesma prova preparada e iniciada na Turma B: pela Turma A o gabarito some para ela.
     const historyB = await createHistory(classB);
@@ -622,8 +624,9 @@ test('[UC-APLICACAO-001] aluno em duas turmas não vê o gabarito enquanto faz a
         .query({ email: gabiA.email, studentClass: classA, courseId })
         .expect(200);
     assert.equal(sync.body.releasedItems[answerKey], false);
-    // O e-mail de outra pessoa na URL não muda nada: a máscara é a da conta da sessão.
-    assert.equal(await statusAsOther(), false);
+    // O e-mail de outra pessoa na URL não muda nada: a máscara é a da conta da sessão e a
+    // identidade divergente é recusada sem devolver itens liberados.
+    assert.equal(await statusAsOther(), undefined);
     // Quem só está na Turma A continua vendo o gabarito liberado para a turma dele.
     const anaView = (await mySubmissions(students.ana)).body.submissions.find(item => item.examKey === examKey && item.answerKeyReleased);
     assert.ok(anaView, 'colega só da Turma A mantém o gabarito liberado');

@@ -35,6 +35,11 @@ async function readCopy(attemptId = 'att-1') {
   return readExamDraft({ attemptId, cryptoKey: await localKey() })
 }
 
+// Questão da tentativa como o servidor entrega (sync e start-attempt).
+function attemptQuestions() {
+  return [{ originalNumber: 1, text: 'Quanto é 1 + 1?', alternatives: [{ letter: 'A', text: 'Dois' }, { letter: 'B', text: 'Três' }, { letter: 'C', text: 'Onze' }] }]
+}
+
 function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null } = {}) {
   return {
     success: true,
@@ -47,12 +52,12 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
         durationMinutes: 30,
         timerMode: 'per_attempt',
         maxAttempts: 1,
-        versionSnapshots: [{
-          version: 'A',
-          questions: [{ originalNumber: 1, text: 'Quanto é 1 + 1?', alternatives: [{ letter: 'A', text: 'Dois' }, { letter: 'B', text: 'Três' }, { letter: 'C', text: 'Onze' }] }],
-        }],
       },
     },
+    // As questões chegam só da tentativa iniciada (sigilo da prova, G3), fora da
+    // configuração da turma.
+    questions: startedAt ? attemptQuestions() : null,
+    questionsVersion: startedAt ? 'q1' : null,
     examConfigVersion: 'v1',
     applicationId: 'app-1',
     attemptId: startedAt ? 'att-1' : null,
@@ -395,7 +400,7 @@ const IDS = { dois: 'K1QW0Z8V3M2PA', tres: '0B7XN4R2T9LQC', onze: 'Z9Y8X7W6V5U4T
 
 // Versão embaralhada: na tela a ordem é Três (A), Dois (B), Onze (C).
 function withIds(response) {
-  const question = response.onlineExamConfigs[EXAM].versionSnapshots[0].questions[0]
+  const question = response.questions[0]
   question.alternatives = [
     { id: IDS.tres, letter: IDS.tres, text: 'Três' },
     { id: IDS.dois, letter: IDS.dois, text: 'Dois' },
@@ -405,7 +410,7 @@ function withIds(response) {
 }
 
 function startedAttemptResponse() {
-  return { success: true, attemptId: 'att-1', examConfigVersion: 'v1', localCopyKey: LOCAL_KEY, state: { attemptId: 'att-1', startedAt: Date.now(), timerRemaining: 600, answers: {}, assignedVersion: 'A' } }
+  return { success: true, attemptId: 'att-1', examConfigVersion: 'v1', localCopyKey: LOCAL_KEY, state: { attemptId: 'att-1', startedAt: Date.now(), timerRemaining: 600, answers: {}, assignedVersion: 'A' }, questions: attemptQuestions(), questionsVersion: 'q1' }
 }
 
 function activityLogs(eventType) {
@@ -741,7 +746,7 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     const user = userEvent.setup()
     const response = syncResponse({ timerRemaining: 600 })
     // Lista de questões sem os identificadores: letter é a original, fora de ordem.
-    response.onlineExamConfigs[EXAM].versionSnapshots[0].questions[0].alternatives = [
+    response.questions[0].alternatives = [
       { letter: 'C', text: 'Onze' },
       { letter: 'A', text: 'Dois' },
       { letter: 'B', text: 'Três' },
@@ -776,5 +781,61 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     expect(counter.parentElement).toHaveClass('row-start-2', 'min-w-0')
     expect(send.parentElement).toHaveClass('row-start-2')
     expect(screen.getByTitle('Tempo restante')).toHaveClass('row-start-1')
+  })
+})
+
+// Sigilo da prova (AVA-02, DES-X1): a tela mostra só as questões da tentativa que o
+// servidor entrega (sync/start-attempt) e avisa qual versão já tem, para o servidor não
+// reenviar as questões a cada sincronização.
+describe('[UC-SIGILO-001] ExamRunner: questões da tentativa', () => {
+  it('mostra as questões entregues pela tentativa e ignora snapshots na configuração da turma', async () => {
+    const response = syncResponse({ timerRemaining: 600 })
+    response.questions[0].text = 'Questão da tentativa'
+    // Servidor antigo mandava as versões na config; a tela não pode usá-las.
+    response.onlineExamConfigs[EXAM].versionSnapshots = [{ version: 'A', questions: [{ originalNumber: 9, text: 'Questão vazada pela config', alternatives: [] }] }]
+    apiMock.get.mockResolvedValue(response)
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('Questão da tentativa')).toBeInTheDocument()
+    expect(screen.queryByText('Questão vazada pela config')).not.toBeInTheDocument()
+    expect(apiMock.get.mock.calls[0][0]).toMatch(/[?&]questionsVersion=$/)
+  })
+
+  it('recebe as questões ao iniciar a tentativa e informa a versão que já tem no próximo sync', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
+    apiMock.post.mockImplementation(async (url) => (url.endsWith('/start-attempt')
+      ? { ...startedAttemptResponse(), questionsVersion: 'v-inicio' }
+      : { success: true }))
+    renderRunner()
+    await user.click(await screen.findByRole('checkbox'))
+    expect(screen.queryByRole('button', { name: /Dois/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Iniciar prova' }))
+    enterFullscreen()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    expect(postsTo('/api/student/exam-applications/app-1/start-attempt')).toHaveLength(1)
+
+    // Próximo sync: o servidor não reenvia as questões (o navegador já tem v-inicio).
+    const later = syncResponse({ timerRemaining: 590 })
+    later.questions = null
+    later.questionsVersion = 'v-inicio'
+    apiMock.get.mockResolvedValue(later)
+    await waitFor(() => expect(apiMock.get.mock.calls.some(([path]) => path.includes('questionsVersion=v-inicio'))).toBe(true), { timeout: 6000 })
+    expect(screen.getByRole('button', { name: /Dois/ })).toBeVisible()
+  }, 10000)
+})
+
+describe('[UC-NOTAS-001] ExamRunner: nota no fim da prova', () => {
+  it('nota publicada no fim da prova aparece com vírgula (antes 7.5)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => (url === '/api/student/submit' ? { success: true, gradePublished: true, score: 75 } : { success: true }))
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    expect(await screen.findByText('7,5')).toBeInTheDocument()
+    expect(screen.queryByText('7.5')).not.toBeInTheDocument()
   })
 })

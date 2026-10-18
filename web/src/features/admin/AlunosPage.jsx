@@ -12,6 +12,7 @@ import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { fmtGrade, gradeOf } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -24,6 +25,9 @@ const STATUS_TONE = {
 
 const OBS_CATEGORIES = ['Dificuldade de aprendizagem', 'Participação', 'Frequência', 'Entregas atrasadas', 'Acompanhamento pedagógico', 'Acessibilidade pedagógica', 'Comportamento acadêmico', 'Observação geral']
 const OBS_VISIBILITY = ['Restrita (coordenação)', 'Equipe pedagógica', 'Compartilhada']
+const OBS_RESTRICTED = 'Restrita (coordenação)'
+// Dado de saúde: sempre restrito à coordenação (o servidor aplica a mesma regra).
+const OBS_SENSITIVE = new Set(['Acessibilidade pedagógica'])
 
 function studentClassNames(student) {
   const raw = student.classes && student.classes.length ? student.classes : (student.studentClass ? [student.studentClass] : [])
@@ -282,12 +286,12 @@ export default function AlunosPage() {
 
       <Modal open={open} onClose={() => setOpen(false)} title="Novo aluno" description="Cadastre uma conta de aluno."
         footer={<><Button variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button loading={saving} onClick={create}>Salvar aluno</Button></>}>
-        <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('form', name)} passwordField="studentPassword" passwordLabel="Senha inicial" />
+        <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('form', name)} passwordField="studentPassword" passwordLabel="Senha inicial" accessibilityReadOnly={isProfessor} />
       </Modal>
 
       <Modal open={!!edit} onClose={() => setEdit(null)} title="Editar aluno" description={edit?.originalEmail}
         footer={<><Button variant="ghost" onClick={() => setEdit(null)}>Cancelar</Button><Button loading={saving} onClick={saveEdit}>Salvar alterações</Button></>}>
-        {edit && <StudentFormTabs value={edit} onChange={setEdit} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('edit', name)} passwordField="password" passwordLabel="Senha/hash atual" passwordHelper="Mantenha como está para não trocar." />}
+        {edit && <StudentFormTabs value={edit} onChange={setEdit} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('edit', name)} passwordField="password" passwordLabel="Senha/hash atual" passwordHelper="Mantenha como está para não trocar." accessibilityReadOnly={isProfessor} />}
       </Modal>
 
       <Modal open={!!menuRow} onClose={() => setMenuRow(null)} title={menuRow ? displayName(menuRow) : ''} description={menuRow?.email}>
@@ -308,7 +312,7 @@ export default function AlunosPage() {
           {filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).map((s, i) => (
             <div key={s.id || i} className="flex items-center justify-between rounded-md border border-border p-3 text-sm">
               <span className="text-text">{s.examKey}</span>
-              <Badge tone={Number(s.score) >= 60 ? 'success' : 'warning'}>{Number(s.score || 0).toFixed(1)}</Badge>
+              <Badge tone={gradeOf(s.score) >= 6 ? 'success' : 'warning'}>{fmtGrade(s.score)}</Badge>
             </div>
           ))}
           {!submissions.loading && filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).length === 0 && <p className="text-sm text-muted">Nenhum resultado encontrado.</p>}
@@ -376,6 +380,7 @@ export default function AlunosPage() {
               ) : <p className="text-sm text-muted">Nenhuma preferência registrada.</p>}
               {profile.accessibility?.tempoAdicional && <Row label="Tempo adicional em provas" value={`${profile.accessibility.tempoAdicionalPercent || 0}%`} />}
               {profile.accessibility?.observacao && <Row label="Observação" value={profile.accessibility.observacao} />}
+              {profile.accessibilityNoteRestricted && <Row label="Observação" value="Restrita à coordenação" />}
             </Section>
 
             {!isProfessor && (
@@ -397,8 +402,8 @@ export default function AlunosPage() {
                       {academic.submissions.map((sb) => (
                         <div key={sb.id} className="flex items-center justify-between gap-2 text-xs rounded-md border border-border p-2">
                           <span className="text-text truncate">{sb.examKey}</span>
-                          <span className="text-subtle whitespace-nowrap">{sb.correctCount}/{sb.totalCount} · {sb.timestamp ? new Date(sb.timestamp).toLocaleDateString('pt-BR') : ''}</span>
-                          <Badge tone={Number(sb.score) >= 60 ? 'success' : 'warning'}>{Number(sb.score || 0).toFixed(0)}</Badge>
+                          <span className="text-subtle whitespace-nowrap">{Number.isInteger(sb.correctCount) && Number.isInteger(sb.totalCount) ? `${sb.correctCount}/${sb.totalCount} · ` : ''}{sb.timestamp ? new Date(sb.timestamp).toLocaleDateString('pt-BR') : ''}</span>
+                          <Badge tone={gradeOf(sb.score) >= 6 ? 'success' : 'warning'}>{fmtGrade(sb.score)}</Badge>
                         </div>
                       ))}
                     </div>
@@ -418,7 +423,7 @@ export default function AlunosPage() {
                     const aulas = Array.isArray(at.aulas) ? at.aulas : []
                     const faltas = aulas.filter((a) => a.status === 'falta' || a.status === 'justificada').length
                     const tone = faltas === 0 ? 'success' : faltas === aulas.length ? 'danger' : 'warning'
-                    const resumo = aulas.length ? (faltas === 0 ? 'presente' : `${faltas}/${aulas.length} falta`) : (at.origin === 'login' ? 'login' : 'manual')
+                    const resumo = aulas.length ? (faltas === 0 ? 'presente' : `${faltas}/${aulas.length} falta`) : (at.origin === 'login' ? 'automática' : 'manual')
                     return <Badge key={at.id} tone={aulas.length ? tone : 'neutral'}>{at.date} · {resumo}</Badge>
                   })}
                 </div>
@@ -472,13 +477,14 @@ export default function AlunosPage() {
         <div className="space-y-4">
           <div className="space-y-2 rounded-md border border-border p-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Select label="Categoria" value={obsForm.category} onChange={(e) => setObsForm({ ...obsForm, category: e.target.value })}>
+              <Select label="Categoria" value={obsForm.category} onChange={(e) => setObsForm({ ...obsForm, category: e.target.value, ...(OBS_SENSITIVE.has(e.target.value) ? { visibility: OBS_RESTRICTED } : {}) })}>
                 {OBS_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
               </Select>
-              <Select label="Visibilidade" value={obsForm.visibility} onChange={(e) => setObsForm({ ...obsForm, visibility: e.target.value })}>
+              <Select label="Visibilidade" value={obsForm.visibility} disabled={OBS_SENSITIVE.has(obsForm.category)} onChange={(e) => setObsForm({ ...obsForm, visibility: e.target.value })}>
                 {OBS_VISIBILITY.map((v) => <option key={v} value={v}>{v}</option>)}
               </Select>
             </div>
+            <p className="text-xs text-subtle">Observações restritas à coordenação e as de acessibilidade só aparecem para o administrador e para quem as escreveu. Editar e excluir: o autor ou o administrador.</p>
             <Textarea label="Observação" value={obsForm.text} onChange={(e) => setObsForm({ ...obsForm, text: e.target.value })} />
             <div className="flex justify-end"><Button loading={obsSaving} onClick={addObs}>Registrar</Button></div>
           </div>
@@ -486,10 +492,13 @@ export default function AlunosPage() {
             {obsRows.map((o) => (
               <div key={o.id} className="rounded-md border border-border p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <Badge tone="info">{o.category}</Badge>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge tone="info">{o.category}</Badge>
+                    {o.restricted && <Badge tone="warning">Restrita</Badge>}
+                  </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-subtle">{new Date(o.timestamp).toLocaleDateString('pt-BR')}</span>
-                    <button onClick={() => delObs(o.id)} className="text-danger" title="Excluir"><Trash2 size={14} /></button>
+                    {o.canEdit !== false && <button onClick={() => delObs(o.id)} className="text-danger" title="Excluir" aria-label="Excluir observação"><Trash2 size={14} /></button>}
                   </div>
                 </div>
                 <p className="text-sm text-text mt-2 whitespace-pre-wrap">{o.text}</p>
@@ -567,7 +576,7 @@ export default function AlunosPage() {
   )
 }
 
-export function StudentFormTabs({ value, onChange, classes, courses, schools, onToggleClass, passwordField, passwordLabel, passwordHelper, multiCourse }) {
+export function StudentFormTabs({ value, onChange, classes, courses, schools, onToggleClass, passwordField, passwordLabel, passwordHelper, multiCourse, accessibilityReadOnly = false }) {
   const [tab, setTab] = useState('basic')
   const set = (patch) => onChange({ ...value, ...patch })
   const setGuardian = (patch) => onChange({ ...value, guardian: { ...(value.guardian || {}), ...patch } })
@@ -612,7 +621,7 @@ export function StudentFormTabs({ value, onChange, classes, courses, schools, on
       {tab === 'link' && (multiCourse ? (
         <div className="space-y-3">
           <Input label="Unidade/instituição" value={value.unidade} onChange={(e) => set({ unidade: e.target.value })} />
-          <p className="text-sm font-medium text-text">Matriculas — turmas por curso</p>
+          <p className="text-sm font-medium text-text">Matrículas — turmas por curso</p>
           <div className="space-y-3 max-h-72 overflow-auto pr-1">
             {(courses || []).map((course) => {
               const turmas = (classes || []).filter((c) => c.courseId === course.id)
@@ -663,23 +672,27 @@ export function StudentFormTabs({ value, onChange, classes, courses, schools, on
 
       {tab === 'access' && (
         <div className="space-y-3">
-          <p className="text-xs text-subtle">Registre apenas configurações funcionais. Não registre diagnósticos médicos.</p>
+          {accessibilityReadOnly
+            ? <p className="text-xs text-subtle">Somente o administrador altera os dados de acessibilidade. Você vê as adaptações para aplicar em aula e nas provas.</p>
+            : <p className="text-xs text-subtle">Registre apenas configurações funcionais. Não registre diagnósticos médicos.</p>}
           <div className="space-y-2">
-            <Switch checked={!!a.fonteAmpliada} onChange={(v) => setAccess({ fonteAmpliada: v })} label="Fonte ampliada" />
-            <Switch checked={!!a.altoContraste} onChange={(v) => setAccess({ altoContraste: v })} label="Alto contraste" />
-            <Switch checked={!!a.reducaoAnimacoes} onChange={(v) => setAccess({ reducaoAnimacoes: v })} label="Redução de animações" />
-            <Switch checked={!!a.leitorTela} onChange={(v) => setAccess({ leitorTela: v })} label="Compatível com leitor de tela" />
-            <Switch checked={!!a.tempoAdicional} onChange={(v) => setAccess({ tempoAdicional: v })} label="Tempo adicional em provas" />
+            <Switch checked={!!a.fonteAmpliada} disabled={accessibilityReadOnly} onChange={(v) => setAccess({ fonteAmpliada: v })} label="Fonte ampliada" />
+            <Switch checked={!!a.altoContraste} disabled={accessibilityReadOnly} onChange={(v) => setAccess({ altoContraste: v })} label="Alto contraste" />
+            <Switch checked={!!a.reducaoAnimacoes} disabled={accessibilityReadOnly} onChange={(v) => setAccess({ reducaoAnimacoes: v })} label="Redução de animações" />
+            <Switch checked={!!a.leitorTela} disabled={accessibilityReadOnly} onChange={(v) => setAccess({ leitorTela: v })} label="Compatível com leitor de tela" />
+            <Switch checked={!!a.tempoAdicional} disabled={accessibilityReadOnly} onChange={(v) => setAccess({ tempoAdicional: v })} label="Tempo adicional em provas" />
           </div>
           {a.tempoAdicional && (
-            <Select label="Percentual de tempo adicional" value={String(a.tempoAdicionalPercent || 0)} onChange={(e) => setAccess({ tempoAdicionalPercent: Number(e.target.value) })}>
+            <Select label="Percentual de tempo adicional" disabled={accessibilityReadOnly} value={String(a.tempoAdicionalPercent || 0)} onChange={(e) => setAccess({ tempoAdicionalPercent: Number(e.target.value) })}>
               <option value="0">Selecione...</option>
               <option value="25">25%</option>
               <option value="50">50%</option>
               <option value="100">100%</option>
             </Select>
           )}
-          <Textarea label="Observação de acessibilidade (opcional)" value={a.observacao || ''} onChange={(e) => setAccess({ observacao: e.target.value })} />
+          {accessibilityReadOnly
+            ? (value.accessibilityNoteRestricted && <p className="text-sm text-muted">Há uma observação de acessibilidade restrita à coordenação.</p>)
+            : <Textarea label="Observação de acessibilidade (opcional)" value={a.observacao || ''} onChange={(e) => setAccess({ observacao: e.target.value })} />}
         </div>
       )}
     </div>

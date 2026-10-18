@@ -12,7 +12,7 @@ import { api, hasActiveSession } from '../../../lib/api'
 import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '../../../lib/renderErrors'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
-import { pickSnapshot, normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
+import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
 import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, wait } from './examAutoSubmit'
 import {
   clearExamDraft,
@@ -24,6 +24,7 @@ import {
   sameExamAnswers,
   writeExamDraft,
 } from '../../../lib/examDrafts'
+import { fmtGrade } from '../../../lib/grades'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
@@ -119,6 +120,8 @@ export default function ExamRunner() {
   const unsupportedLoggedRef = useRef(null) // tentativa já registrada como sem tela cheia
   const pageHiddenRef = useRef(false) // a página está sendo recarregada ou fechada
   const timeOverScreenRef = useRef(false) // a tela de erro é a de "tempo terminou" (pode voltar)
+  // Impressão digital das questões já recebidas: o servidor só reenvia quando mudam.
+  const questionsVersionRef = useRef('')
   answersRef.current = answers
   phaseRef.current = phase
   attemptIdRef.current = attemptId
@@ -199,6 +202,13 @@ export default function ExamRunner() {
     setPhase('loading')
     toast.info(message)
   }, [toast])
+
+  // As questões chegam só da tentativa iniciada (sync ou start-attempt), nunca da config da turma.
+  const applyAttemptQuestions = useCallback((payload) => {
+    if (!payload || !Array.isArray(payload.questions)) return
+    setQuestions(payload.questions.map(normQuestion))
+    questionsVersionRef.current = payload.questionsVersion || ''
+  }, [])
 
   const qs = (v = '') => `email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&examKey=${encodeURIComponent(examKey)}&applicationId=${encodeURIComponent(applicationId)}${v}`
   const submit = useCallback(async (auto = false) => {
@@ -524,7 +534,7 @@ export default function ExamRunner() {
     try {
       await saveRef.current?.()
       const knownAttemptId = timeupRef.current?.attemptId || attemptIdRef.current || findExamDraftAttempt(applicationId) || ''
-      const r = await api.get(`/api/student/sync?${qs(`&attemptId=${encodeURIComponent(knownAttemptId)}`)}`)
+      const r = await api.get(`/api/student/sync?${qs(`&attemptId=${encodeURIComponent(knownAttemptId)}&questionsVersion=${encodeURIComponent(questionsVersionRef.current)}`)}`)
       const c = (r.onlineExamConfigs || {})[examKey]
       if (!c) {
         timeOverScreenRef.current = false
@@ -605,8 +615,7 @@ export default function ExamRunner() {
         clearExamDraftsForApplication(applicationId)
       }
 
-      const snap = pickSnapshot(c, st.assignedVersion)
-      if (snap && Array.isArray(snap.questions)) setQuestions(snap.questions.map(normQuestion))
+      applyAttemptQuestions(r)
 
       if (Array.isArray(r.messages)) {
         const nextMessage = r.messages.find((m) => m && m.messageText)
@@ -775,6 +784,7 @@ export default function ExamRunner() {
       setExamConfigVersion(response.examConfigVersion || examConfigVersion)
       if (response.state?.assignedVersion) setAssignedVersion(response.state.assignedVersion)
       if (Number.isFinite(Number(response.state?.timerRemaining))) setRemaining(Number(response.state.timerRemaining))
+      applyAttemptQuestions(response)
       await loadAttemptAnswers(response.attemptId, response.localCopyKey, response.state?.answers || {})
       setPhase('active')
       // A prova começa da primeira questão (a página das instruções podia estar rolada).
@@ -1008,7 +1018,7 @@ export default function ExamRunner() {
       <div className="w-16 h-16 grid place-items-center rounded-full bg-success-soft text-success mb-3"><CheckCircle2 size={32} /></div>
       <h2 className="text-xl font-bold text-text">{result?.submittedByInstructor ? 'Respostas salvas e entregues' : result?.finalizedByServer ? 'Tempo esgotado: prova entregue' : 'Prova enviada!'}</h2>
       {result?.gradePublished === true
-        ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{(Number(result.score) / 10).toFixed(1)}</p>
+        ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{fmtGrade(result.score)}</p>
         : <p className="text-sm text-muted mt-3 max-w-sm text-center">{result?.submittedByInstructor
           ? 'O professor encerrou a aplicação e salvou o que você havia respondido.'
           : result?.finalizedByServer

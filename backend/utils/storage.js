@@ -128,6 +128,22 @@ function listTrash() {
     return out.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
 }
 
+// SEG-X1: .json/.zip que saiu de /uploads pode ser um arquivo de backup enviado para
+// restauração (versões anteriores mandavam esse arquivo para a lixeira). Ele leva o
+// banco inteiro, com os hashes de senha das contas: só o administrador vê, restaura
+// ou apaga esse item. Arquivo de biblioteca excluído perde o item de biblioteca, então
+// restaurá-lo não serve ao professor de qualquer forma.
+function isAdminOnlyTrashEntry(entry) {
+    if (!entry) return false;
+    return /^uploads\/[^/]+\.(json|zip)$/i.test(String(entry.originalRel || '').split('\\').join('/'));
+}
+
+// Registro do manifesto de um item (sem tocar no disco).
+function getTrashEntry(id) {
+    try { id = assertSafeId(id); } catch (e) { return null; }
+    return readIndex().find(x => x.id === id) || null;
+}
+
 // Restaura um item para o caminho original (sem sobrescrever).
 function restoreTrash(id) {
     const idx = readIndex();
@@ -162,12 +178,16 @@ function deleteTrashItem(id) {
     return true;
 }
 
-// Esvazia a lixeira inteira.
-function emptyTrash() {
+// Esvazia a lixeira inteira (ou só os itens aceitos por `shouldRemove`).
+function emptyTrash(shouldRemove) {
     const idx = readIndex();
+    const keep = [];
     let n = 0;
-    idx.forEach(e => { try { const abs = resolveInside(LIXEIRA_DIR, assertSafeId(e.id)); if (fs.existsSync(abs)) { fs.rmSync(abs, { recursive: true, force: true }); n++; } } catch (e2) {} });
-    writeIndex([]);
+    idx.forEach(e => {
+        if (typeof shouldRemove === 'function' && !shouldRemove(e)) { keep.push(e); return; }
+        try { const abs = resolveInside(LIXEIRA_DIR, assertSafeId(e.id)); if (fs.existsSync(abs)) { fs.rmSync(abs, { recursive: true, force: true }); n++; } } catch (e2) {}
+    });
+    writeIndex(keep);
     return n;
 }
 
@@ -192,5 +212,6 @@ module.exports = {
     DATA, ALUNOS_DIR, LIXEIRA_DIR, UPLOADS_DIR,
     safeName, studentFolderName, studentDir, storeStudentFile,
     moveToTrash, moveDirToTrash, purgeTrash, listTrash, restoreTrash, deleteTrashItem, emptyTrash,
+    isAdminOnlyTrashEntry, getTrashEntry,
     relFromData, absFromData, isInsideStudents, ensureDir,
 };

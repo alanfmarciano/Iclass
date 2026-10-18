@@ -182,9 +182,11 @@ function stateOf(attemptId) {
     return Object.values(db.memory.studentExamState).find(state => state?.attemptId === attemptId) || null;
 }
 
+// Questões da tentativa como chegam ao navegador: só pelo campo questions do sync e do
+// start-attempt (sigilo da prova, G3); a configuração da turma não traz mais as versões.
 function payloadQuestions(syncBody) {
-    const cfg = syncBody.onlineExamConfigs[examKey];
-    return cfg.versionSnapshots.find(snapshot => snapshot.version === 'A').questions;
+    assert.equal(syncBody.onlineExamConfigs?.[examKey]?.versionSnapshots, undefined, 'a configuração não traz as versões da prova');
+    return syncBody.questions;
 }
 
 // Identificador que o navegador recebe para a alternativa na posição dada.
@@ -213,7 +215,8 @@ test('[UC-PROVA-003] o navegador recebe só identificadores opacos e o texto das
         }
         assert.equal(ids.size, question.alternatives.length);
     }
-    const serialized = JSON.stringify(synced.body.onlineExamConfigs[examKey]);
+    // Nada do sync (questões, configuração, estado) traz a letra original ou o gabarito.
+    const serialized = JSON.stringify(synced.body);
     for (const leak of ['isCorrect', 'correctAnswer', 'displayLetter', 'canonicalLetter']) {
         assert.equal(serialized.includes(leak), false, `${leak} não pode chegar ao aluno`);
     }
@@ -418,8 +421,9 @@ test('[UC-PROVA-003] chaves de questões que não estão na tentativa são desca
     // Pela rota: milhares de chaves inventadas no salvamento não viram resposta.
     const { eva } = students;
     const app1 = await application();
-    const synced = await sync(eva, app1.id);
+    // As questões (e os identificadores) chegam com a tentativa iniciada.
     const started = await startAttempt(eva, app1.id);
+    const synced = { body: started };
     const before = Date.now();
     const { calls: routeCalls } = await (async () => {
         const original = crypto.createHmac;

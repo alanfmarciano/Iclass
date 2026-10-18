@@ -12,6 +12,7 @@ import { Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { fmtGrade } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
@@ -1381,7 +1382,7 @@ export default function MonitorPage() {
         {analytics && <div className="space-y-4">
           <div className="grid grid-cols-3 gap-3">
             <Card className="p-3"><span className="text-xs text-muted">Entregas</span><div className="text-2xl font-bold text-text">{analytics.totalSubmissions}</div></Card>
-            <Card className="p-3"><span className="text-xs text-muted">Média</span><div className="text-2xl font-bold text-text">{analytics.averageScore}</div></Card>
+            <Card className="p-3"><span className="text-xs text-muted">Média</span><div className="text-2xl font-bold text-text">{fmtGrade(analytics.averageScore)}</div></Card>
             <Card className="p-3"><span className="text-xs text-muted">Perdas de foco</span><div className="text-2xl font-bold text-text">{analytics.proctoringSummary?.totalFocusLosses || 0}</div></Card>
           </div>
           <div className="space-y-2">
