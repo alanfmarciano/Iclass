@@ -4,6 +4,7 @@
 const attendanceUtil = require('./attendance.js');
 const { normalizeScore } = require('./submissionAttempts.js');
 const {
+    buildStudentReportModules,
     consolidatedStudentAverage,
     createSubmissionContextResolver,
     studentMemberships,
@@ -162,6 +163,22 @@ function computeStudentDashboard(memory, email, options = {}) {
         provasTotais: unitStats.exams,
     };
 
+    // "Desempenho por módulo" da ficha: as mesmas entregas e a mesma consolidação da
+    // média geral (grupo por aplicação, regra da prova, notas inválidas fora), agrupadas
+    // pelos módulos da estrutura do curso, como no boletim. Antes a tela fazia a média
+    // simples de todas as tentativas e mostrava outro número ao lado da média geral.
+    const structure = (typeof options.structureFor === 'function' && options.structureFor(courseId, scope.studentClass))
+        || ((memory.courses || []).find(c => String(c.id) === String(courseId))?.structure)
+        || [];
+    const modulos = buildStudentReportModules({
+        submissions: subs,
+        structure,
+        evaluations: memory.evaluations || {},
+        applications: memory.examApplications || [],
+    }).modules
+        .filter(module => module.average !== null)
+        .map(module => ({ id: module.id, modulo: module.name, media: module.average }));
+
     // Frequência por disciplina (nome vindo do curso), marcando em risco.
     const discNome = {};
     ((memory.courses || []).find(c => String(c.id) === String(courseId))?.disciplinas || []).forEach(d => { discNome[d.id] = d.nome; });
@@ -252,13 +269,10 @@ function computeStudentDashboard(memory, email, options = {}) {
         presencaAnterior: attWindow(60, 30),
     };
 
-    // Notas e módulos
+    // Notas (cada tentativa, para o gráfico de evolução). A média por módulo está acima.
     const validSubs = subs.filter(s => normalizeScore(s.score) !== null);
     const notas = [...validSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
         .map(s => ({ label: (s.examKey || '').split('_').slice(1).join(' '), value: normalizeScore(s.score) / 10 }));
-    const modGroups = {};
-    validSubs.forEach(s => { const m = (s.examKey || '').split('_')[1] || '—'; (modGroups[m] = modGroups[m] || []).push(normalizeScore(s.score)); });
-    const modulos = Object.entries(modGroups).map(([m, arr]) => ({ modulo: m, media: Math.round(arr.reduce((a, b) => a + b, 0) / arr.length / 10 * 10) / 10 }));
 
     return { kpis, comparativo, risco, engajamento, streak, temporal, notas, modulos, frequenciaDisciplinas, faltas: stats.faltasContam, limiarRisco: limiar };
 }

@@ -219,6 +219,9 @@ test('uploads exigem sessão e respeitam o curso da biblioteca', async () => {
     fs.writeFileSync(path.join(uploads, 'protegido.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     db.memory.sessions = { 'aluno@teste.local': { token: 'token-teste', lastSeen: Date.now(), ip: '::ffff:127.0.0.1' } };
     db.memory.students = [{ email: 'aluno@teste.local', status: 'Ativo', classes: [{ name: 'Turma 1', courseId: 'curso-1' }] }];
+    // O download segue a regra da listagem da biblioteca: turma cadastrada em que o aluno
+    // tem matrícula (studentLibrary.js).
+    db.memory.classes = [{ name: 'Turma 1', courseId: 'curso-1' }];
     db.memory.library = [{ id: 'lib-1', filename: 'protegido.png', url: '/uploads/protegido.png', courseId: 'curso-2' }];
     const app = createApp();
 

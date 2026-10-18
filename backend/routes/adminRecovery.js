@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount } = require('../middlewares.js');
+const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse } = require('../middlewares.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
 const backupAudit = require('../utils/backupAudit.js');
@@ -14,11 +14,24 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
 
     const router = express.Router();
 
-    // SEG-X1: arquivo de backup (.json/.zip vindo de /uploads) que esteja na lixeira só
-    // aparece para o administrador; o professor com "Executar manutenção" não lista,
-    // não restaura nem apaga esse item (restaurá-lo devolvia o banco inteiro a /uploads).
+    // Lixeira para quem não é administrador: só o que está no escopo dele.
+    // - SEG-X1: arquivo de backup (.json/.zip vindo de /uploads) só aparece para o
+    //   administrador (restaurá-lo devolvia o banco inteiro a /uploads);
+    // - pasta de aluno (alunos/...: documentos e atestados) também, como "Excluir aluno"
+    //   e os atestados (antes o professor de outra turma via, restaurava e apagava);
+    // - material da biblioteca guarda curso e turma ao ir para a lixeira e segue o
+    //   escopo do professor; o resto só para quem excluiu. Item antigo sem essa
+    //   informação fica com o administrador.
     function hiddenFromAccount(entry, matchedAdmin) {
-        return isProfessorAccount(matchedAdmin) && fileStore.isAdminOnlyTrashEntry(entry);
+        if (!isProfessorAccount(matchedAdmin) || !entry) return false;
+        if (fileStore.isAdminOnlyTrashEntry(entry)) return true;
+        const courseId = String(entry.courseId || '').trim();
+        if (courseId) {
+            const className = String(entry.studentClass || '').trim();
+            return className ? !adminCanAccessClass(matchedAdmin, className, courseId) : !adminCanAccessCourse(matchedAdmin, courseId);
+        }
+        const owner = String(entry.deletedBy || '').trim().toLowerCase();
+        return !owner || owner !== String(matchedAdmin.email || '').trim().toLowerCase();
     }
 
     router.get('/api/admin/trash', (req, res) => {
@@ -31,7 +44,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         validateAdmin(req, res, (config, matchedAdmin) => {
             const id = String((req.body && req.body.id) || '');
             if (hiddenFromAccount(fileStore.getTrashEntry(id), matchedAdmin)) {
-                return res.status(403).json({ error: 'Este item da lixeira é exclusivo do administrador.' });
+                return res.status(403).json({ error: 'Este item da lixeira está fora do seu escopo.' });
             }
             const result = fileStore.restoreTrash(id);
             if (!result.ok) return res.status(400).json({ error: result.error });
@@ -44,7 +57,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             try {
                 const id = String((req.body && req.body.id) || '');
                 if (hiddenFromAccount(fileStore.getTrashEntry(id), matchedAdmin)) {
-                    return res.status(403).json({ error: 'Este item da lixeira é exclusivo do administrador.' });
+                    return res.status(403).json({ error: 'Este item da lixeira está fora do seu escopo.' });
                 }
                 const removed = fileStore.deleteTrashItem(id);
                 if (!removed) return res.status(404).json({ error: 'Item não encontrado na lixeira.' });

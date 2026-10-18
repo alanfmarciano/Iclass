@@ -1663,6 +1663,35 @@ test('[UC-NOTAS-003] ficha do aluno, coluna "Média" de Alunos e risco do Dashbo
     assert.equal(reportPendente.body.overallAverage, 8);
 });
 
+test('[UC-NOTAS-003] "Desempenho por módulo" da ficha usa a consolidação da "Média geral" (antes média simples no navegador)', async () => {
+    // Cenário do revisor: a prova tem 6,0 e 6,8 na aplicação e o professor lança 2,0 e
+    // 10,0 à mão (regra "maior": 6,8 e 10,0). A média simples das quatro tentativas dava
+    // 6,2 ao lado de uma "Média geral" de 8,4. Também entram nota de outro curso (fora)
+    // e uma nota inválida antiga (fora).
+    db.memory.submissions = [
+        submission('ana_p1_a', { score: 60, applicationId: 'app_1', timestamp: '2026-03-01T10:30:00.000Z' }),
+        submission('ana_p1_b', { score: 68, applicationId: 'app_1', timestamp: '2026-03-01T11:00:00.000Z', extra: { attemptNumber: 2 } }),
+        submission('ana_p1_m1', { score: 20, timestamp: '2026-03-02T11:00:00.000Z' }),
+        submission('ana_p1_m2', { score: 100, timestamp: '2026-03-03T11:00:00.000Z', extra: { attemptNumber: 2 } }),
+        submission('ana_p3', { examKey: 'Avaliacao_P3', score: 70 }),
+        submission('ana_p3_invalida', { examKey: 'Avaliacao_P3', score: 150, applicationId: 'app_velha' }),
+        submission('ana_fora', { score: 10, courseId: COURSE_B, studentClass: '2RED' }),
+    ];
+    const ficha = await admin(request(app).get(`/api/admin/student/dashboard?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.deepEqual(ficha.body.modulos, [
+        { id: 'm1', modulo: 'FUTEC — Fundamentos', media: 8.4 },
+        { id: 'm2', modulo: 'LOGPROG — Lógica', media: 7 },
+    ]);
+    // Média geral = média das mesmas notas consolidadas (6,8 + 10,0 + 7,0) / 3.
+    assert.equal(ficha.body.kpis.media, 7.9);
+    const report = await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.deepEqual(report.body.modules.map(module => module.average), [8.4, 7], 'boletim (tudo publicado) bate com a ficha');
+    assert.equal(report.body.overallAverage, 7.9);
+    // O professor da turma vê os mesmos números.
+    const prof = await request(app).get(`/api/admin/student/dashboard?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`).set('x-admin-session', professorToken).expect(200);
+    assert.deepEqual(prof.body.modulos.map(item => item.media), [8.4, 7]);
+});
+
 test('[UC-NOTAS-003] ficha do aluno em dois cursos mostra a média do curso ativo, como o boletim', async () => {
     db.memory.submissions = [
         submission('bia_a', { email: 'bia@notas.local', name: 'Bia', score: 90 }),

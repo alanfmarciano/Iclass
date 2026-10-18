@@ -675,3 +675,68 @@ test('[UC-PRIVACIDADE-001] professor recebe a acomodação sem o texto de saúde
     assert.equal(stored.name, 'Ana Maria');
     assert.deepEqual(stored.accessibility, { tempoAdicional: true, tempoAdicionalPercent: 25, fonteAmpliada: true, observacao: 'Laudo de TDAH, CID F90' });
 });
+
+test('[UC-PRIVACIDADE-001] professor não recebe o texto de saúde por nenhuma rota (cópia do aluno nas entregas, lixeira de notas e auditoria)', async () => {
+    const ana = db.memory.students.find(s => s.email === 'ana@g6.local');
+    const { password, ...snapshot } = ana;
+    const applicationId = 'app_g6_privacidade';
+    db.memory.examApplications = [{
+        id: applicationId, examKey, courseId: courseA, studentClass: 'TURMA A', status: 'finished',
+        mode: 'collective', durationMinutes: 30, startsAt: Date.now() - 3600000, finishedAt: Date.now() - 60000,
+    }];
+    // A entrega guarda a ficha inteira do aluno (examGrading.createSubmissionFromAttempt), com o laudo.
+    const sub = {
+        id: 'sub_g6_privacidade', student: { ...snapshot, studentClass: 'TURMA A', courseId: courseA }, examKey, applicationId,
+        attemptId: 'att_g6', score: 80, correctCount: 4, totalCount: 5, gradedAnswers: [], gradePublished: true,
+        timestamp: new Date().toISOString(),
+    };
+    db.memory.submissions = [sub];
+    db.memory.auditLogs = [{
+        action: 'grade_delete', actor: 'admin@g6.local', timestamp: Date.now(), studentEmail: 'ana@g6.local',
+        details: { deletedSubmission: { ...sub, id: 'sub_g6_lixeira' } },
+    }];
+
+    const asAdmin = await request(app).get(`/api/admin/submissions?courseId=${courseA}&studentClass=TURMA%20A`).set('x-admin-session', adminToken);
+    assert.equal(asAdmin.status, 200);
+    assert.match(JSON.stringify(asAdmin.body), /Laudo de TDAH/);
+
+    const direct = await request(app).get(`/api/admin/submissions?courseId=${courseA}&studentClass=TURMA%20A`).set('x-admin-session', professorToken);
+    assert.equal(direct.status, 200);
+    const mine = direct.body.find(item => item.id === 'sub_g6_privacidade');
+    assert.ok(mine, 'o professor continua vendo a entrega');
+    assert.equal(mine.student.accessibility.tempoAdicional, true);
+    assert.equal(mine.student.accessibility.observacao, '');
+    assert.equal(mine.student.accessibilityNoteRestricted, true);
+    // O banco não é alterado pela máscara.
+    assert.equal(db.memory.submissions[0].student.accessibility.observacao, 'Laudo de TDAH, CID F90');
+
+    // Varredura: toda rota GET de instrutor, com os parâmetros da turma, da prova e da aluna.
+    const routesDir = path.join(__dirname, '../../backend/routes');
+    const paths = new Set();
+    for (const file of fs.readdirSync(routesDir)) {
+        const source = fs.readFileSync(path.join(routesDir, file), 'utf8');
+        for (const match of source.matchAll(/router\.get\(\[?'(\/api\/admin\/[^']*)'/g)) paths.add(match[1]);
+    }
+    assert.ok(paths.size > 40, `rotas encontradas: ${paths.size}`);
+    const query = new URLSearchParams({
+        courseId: courseA, studentClass: 'TURMA A', className: 'TURMA A', email: 'ana@g6.local', studentEmail: 'ana@g6.local',
+        examKey, applicationId,
+    }).toString();
+    const answered = [];
+    for (const routePath of paths) {
+        const url = routePath
+            .replace(':class', encodeURIComponent('TURMA A'))
+            .replace(':examKey', examKey)
+            .replace(':key', examKey)
+            .replace(':applicationId', applicationId)
+            .replace(':id/review', 'sub_g6_privacidade/review')
+            .replace(':id', courseA);
+        const res = await request(app).get(`${url}?${query}`).set('x-admin-session', professorToken);
+        const text = res.text || JSON.stringify(res.body || '');
+        assert.doesNotMatch(text, /TDAH|F90/, `${routePath} devolveu o texto de saúde ao professor`);
+        if (res.status === 200) answered.push(routePath);
+    }
+    for (const expected of ['/api/admin/submissions', '/api/admin/submissions/deleted', '/api/admin/student/academic', '/api/admin/submissions/:id/review']) {
+        assert.ok(answered.includes(expected), `${expected} deveria responder ao professor`);
+    }
+});

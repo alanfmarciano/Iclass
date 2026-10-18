@@ -77,6 +77,7 @@ const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('..
 const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
+const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
 const {
     attemptContextForStudent,
     collectiveTimeOverForNewAttempt,
@@ -849,13 +850,8 @@ router.get('/api/student/library', validateStudentSession, (req, res) => {
     // resolve nomes de módulo (matéria) por curso para agrupar
     const moduleName = {};
     (effectiveStructure(courseId, studentClass)?.structure || []).forEach(m => { moduleName[courseId + '::' + m.id] = m.name || m.id; });
-    const courseEntries = (db.memory.library || []).filter(e => String(e.courseId || '') === courseId);
-    const classEntries = courseEntries.filter(e => String(e.studentClass || '') === studentClass);
-    const replaced = new Set(classEntries.map(e => e.sourceLibraryId).filter(Boolean));
-    const list = [
-        ...courseEntries.filter(e => !e.studentClass && !e.hidden && !replaced.has(e.id)),
-        ...classEntries.filter(e => !e.hidden),
-    ];
+    // Mesma regra do download do arquivo (sendControlledFile em server.js).
+    const list = visibleLibraryEntries(db.memory.library, courseId, studentClass);
     list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     const access = encodeURIComponent(String(req.get('x-session-token') || ''));
     res.json(list.map(e => ({

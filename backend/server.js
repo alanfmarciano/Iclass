@@ -11,6 +11,7 @@ const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildI
 const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount } = require('./middlewares.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
+const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -124,17 +125,13 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
             // Imagens das apostilas: aluno com matrícula aprovada (UXA-09).
             if (!studentHasApprovedClass(student, studentBelongsToClass)) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
         } else {
-            const entry = (db.memory.library || []).find(item => item.filename === filename);
-            if (entry) {
-                if (entry.courseId) {
-                    const rawClasses = student && Array.isArray(student.classes) ? student.classes : [];
-                    const courseIds = new Set(rawClasses.filter(item => item && typeof item === 'object').map(item => item.courseId).filter(Boolean));
-                    rawClasses.filter(item => typeof item === 'string').forEach(className => {
-                        const matches = (db.memory.classes || []).filter(cls => cls.name === className);
-                        if (matches.length === 1 && matches[0].courseId) courseIds.add(matches[0].courseId);
-                    });
-                    if (!courseIds.has(entry.courseId)) return res.status(403).json({ error: 'Arquivo fora dos cursos autorizados.' });
-                }
+            const libraryFile = (db.memory.library || []).some(item => item && item.filename === filename);
+            if (libraryFile) {
+                // Mesma regra da listagem da biblioteca: turma do item ('class') e itens ocultos.
+                const allowed = studentCanDownloadLibraryFile({
+                    student, filename, library: db.memory.library, classes: db.memory.classes, belongsToClass: studentBelongsToClass,
+                });
+                if (!allowed) return res.status(403).json({ error: 'Arquivo fora dos materiais da sua turma.' });
             } else {
                 // Upload sem item de biblioteca só sai para o aluno quando é imagem citada
                 // numa apostila liberada para a turma dele (imagem inserida pelo editor,

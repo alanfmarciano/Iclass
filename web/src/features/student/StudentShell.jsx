@@ -80,9 +80,12 @@ export function StudentShell() {
     )
   }
 
+  // No celular a gaveta do menu (e o fundo escuro) fica acima da faixa "Prova disponível"
+  // (z-[70]): antes a faixa cobria o rodapé da gaveta e o toque em Sair caía nela. No
+  // desktop a gaveta é estática e a faixa fica à direita, fora dela.
   return (
     <div className="app-canvas h-full flex text-text">
-      <aside aria-hidden={!open ? 'true' : undefined} inert={!open ? '' : undefined} className={cn('fixed inset-y-0 left-0 z-40 flex w-[272px] flex-col overflow-hidden border-r border-border bg-[var(--sidebar)] backdrop-blur-2xl transition-transform duration-300 md:static md:translate-x-0', open ? 'translate-x-0' : '-translate-x-full')}>
+      <aside aria-hidden={!open ? 'true' : undefined} inert={!open ? '' : undefined} className={cn('fixed inset-y-0 left-0 z-[80] flex w-[272px] flex-col overflow-hidden border-r border-border bg-[var(--sidebar)] backdrop-blur-2xl transition-transform duration-300 md:static md:translate-x-0', open ? 'translate-x-0' : '-translate-x-full')}>
         <div className="flex h-[72px] items-center gap-3 border-b border-border px-5">
           {logo ? <img src={logo} alt={brandName} className="h-9 max-w-[165px] object-contain" /> : <>
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-primary text-primary-fg shadow-[0_10px_28px_var(--primary-glow)]"><GraduationCap size={20} /></span>
@@ -121,7 +124,7 @@ export function StudentShell() {
           <ThemeToggle />
         </div>
       </aside>
-      {open && <button type="button" aria-label="Fechar menu" className="fixed inset-0 z-30 bg-black/55 backdrop-blur-sm md:hidden" onClick={() => setOpen(false)} />}
+      {open && <button type="button" aria-label="Fechar menu" className="fixed inset-0 z-[75] bg-black/55 backdrop-blur-sm md:hidden" onClick={() => setOpen(false)} />}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="glass-panel z-20 flex h-[72px] items-center gap-2 border-x-0 border-t-0 px-4 md:px-7">
           <button onClick={() => setOpen((o) => !o)} className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-surface-2 md:hidden" aria-label="Menu"><Menu size={21} /></button>

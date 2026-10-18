@@ -75,6 +75,7 @@ const {
     studentEmailOwnership,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
+const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     applicationToOnlineConfig,
@@ -1622,18 +1623,6 @@ function canChangeObservation(account, obs) {
     return !isProfessorAccount(account) || isObservationAuthor(account, obs);
 }
 
-// Professor vê o necessário para a acomodação (tempo extra e recursos), sem o texto
-// de acessibilidade, que pode trazer laudo ou diagnóstico (SEG-04).
-function redactSensitiveStudentData(student, account) {
-    if (!isProfessorAccount(account) || !student || !student.accessibility || typeof student.accessibility !== 'object') return student;
-    const { observacao, ...accommodation } = student.accessibility;
-    return {
-        ...student,
-        accessibility: { ...accommodation, observacao: '' },
-        accessibilityNoteRestricted: !!String(observacao || '').trim(),
-    };
-}
-
 router.get('/api/admin/student/observations', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.query.email || '').trim().toLowerCase();
@@ -1836,6 +1825,8 @@ router.get('/api/admin/student/dashboard', (req, res) => {
         res.json(computeStudentDashboard(db.memory, email, {
             courseId: String(req.query.courseId || '').trim(),
             studentClass: String(req.query.studentClass || '').trim(),
+            // Módulos da estrutura da turma (com as variantes dela), como no boletim.
+            structureFor: (courseId, className) => (courseId ? effectiveStructure(courseId, className)?.structure : null),
         }));
     });
 });
@@ -2066,10 +2057,12 @@ router.get('/api/admin/attendance/export', (req, res) => {
         if (from) rows = rows.filter(a => (a.date || '') >= from);
         if (to) rows = rows.filter(a => (a.date || '') <= to);
         rows.sort((a, b) => (a.date || '').localeCompare(b.date || '') || (nameByEmail[a.studentEmail] || '').localeCompare(nameByEmail[b.studentEmail] || '', 'pt-BR'));
-        const esc = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+        // Mesmo CSV da exportação de notas (buildCsv/csvSafe): ";", BOM para os acentos no
+        // Excel e fórmula neutralizada (o nome vem do autocadastro do aluno; "=..." entre
+        // aspas ainda era executado pelo Excel).
         const stLabel = { presente: 'Presente', falta: 'Falta', justificada: 'Justificada' };
         const header = ['Data', 'Aluno', 'E-mail', 'Turma', 'Aula', 'Disciplina', 'Início', 'Status', 'Abonado', 'Justificativa', 'Origem'];
-        const lines = [header.map(esc).join(';')];
+        const lines = [header];
         rows.forEach(a => {
             const just = a.justificativa || null;
             const abonado = just && just.abonado ? 'Sim' : '';
@@ -2080,10 +2073,10 @@ router.get('/api/admin/attendance/export', (req, res) => {
                     aula.ordem, discNome[`${a.courseId}::${aula.disciplinaId}`] || aula.disciplinaId || '', aula.inicio || '',
                     stLabel[aula.status] || aula.status || '', aula.status === 'justificada' ? abonado : '',
                     aula.status === 'justificada' ? justTxt : '', ATT_ORIGIN_LABEL[a.origin] || a.origin || '',
-                ].map(esc).join(';'));
+                ]);
             });
         });
-        const csv = '﻿' + lines.join('\r\n'); // BOM p/ acentos no Excel
+        const csv = buildCsv(lines);
         res.set('Content-Type', 'text/csv; charset=utf-8');
         res.set('Content-Disposition', `attachment; filename="presenca_${className.replace(/[^a-z0-9]/gi, '_')}.csv"`);
         res.send(csv);
@@ -2113,6 +2106,16 @@ function _annInScope(a, matchedAdmin) {
     return false;
 }
 
+// Editar ou excluir: o aviso para toda a instituição ('todos') é do administrador. O
+// professor vê esse aviso, mas só muda ou apaga avisos de turma, curso ou aluno dentro
+// do escopo dele (antes o 'todos' contava como escopo de todo mundo e o professor
+// apagava ou redirecionava o aviso da direção).
+function _annCanChange(a, matchedAdmin) {
+    if (!isProfessorAccount(matchedAdmin)) return true;
+    if (!a || a.target === 'todos' || !ANN_TARGETS.includes(a.target)) return false;
+    return _annInScope(a, matchedAdmin);
+}
+
 router.get('/api/admin/announcements', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         let list = (db.memory.announcements || []).filter(a => a.kind !== 'calendar' && _annInScope(a, matchedAdmin));
@@ -2132,7 +2135,7 @@ router.get('/api/admin/announcements', (req, res) => {
             });
         }
         list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0));
-        res.json(list.map(a => ({ ...a, readCount: (a.readBy || []).length })));
+        res.json(list.map(a => ({ ...a, readCount: (a.readBy || []).length, canEdit: _annCanChange(a, matchedAdmin) })));
     });
 });
 
@@ -2182,7 +2185,9 @@ router.post('/api/admin/announcements/update', (req, res) => {
         const { id, title, message, target, targetValue, courseId, studentClass, priority, pinned, expiresAt } = req.body || {};
         const ann = (db.memory.announcements || []).find(a => a.id === id);
         if (!ann) return res.status(404).json({ error: 'Aviso não encontrado.' });
-        if (!_annInScope(ann, matchedAdmin)) return res.status(403).json({ error: 'Aviso fora do seu escopo.' });
+        if (!_annCanChange(ann, matchedAdmin)) {
+            return res.status(403).json({ error: ann.target === 'todos' ? 'Só o administrador edita aviso para toda a instituição.' : 'Aviso fora do seu escopo.' });
+        }
         const tgt = ANN_TARGETS.includes(target) ? target : ann.target;
         if (isProfessorAccount(matchedAdmin)) {
             if (tgt === 'todos') return res.status(403).json({ error: 'Professor não pode enviar para toda a instituição.' });
@@ -2214,13 +2219,15 @@ router.post('/api/admin/announcements/delete', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const id = String((req.body && req.body.id) || '');
         if (!id) return res.status(400).json({ error: 'ID do aviso é obrigatório.' });
-        const before = (db.memory.announcements || []).length;
-        db.memory.announcements = (db.memory.announcements || []).filter(a => {
-            if (a.id !== id) return true;
-            return !_annInScope(a, matchedAdmin); // só remove se estiver no escopo de quem pediu
-        });
+        const ann = (db.memory.announcements || []).find(a => a.id === id);
+        if (!ann) return res.status(404).json({ error: 'Aviso não encontrado.' });
+        if (!_annCanChange(ann, matchedAdmin)) {
+            return res.status(403).json({ error: ann.target === 'todos' ? 'Só o administrador exclui aviso para toda a instituição.' : 'Aviso fora do seu escopo.' });
+        }
+        const before = db.memory.announcements.length;
+        db.memory.announcements = db.memory.announcements.filter(a => a.id !== id);
         db.save();
-        res.json({ success: true, removed: before - (db.memory.announcements || []).length });
+        res.json({ success: true, removed: before - db.memory.announcements.length });
     });
 });
 
@@ -3168,8 +3175,10 @@ router.post('/api/admin/library/upload', (req, res) => {
             if (rejectInvalidUpload(req, res)) return;
             const ext = path.extname(req.file.originalname).toLowerCase();
             const _st = settingsUtil.getSettings();
-            if (req.file.size > _st.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename)); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _st.upload.maxSizeMb + ' MB.' }); }
-            if (!_st.upload.allowedTypes.includes(settingsUtil.extCategory(ext))) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename)); return res.status(400).json({ error: 'Tipo de arquivo não permitido nas configurações.' }); }
+            // Envio recusado da biblioteca: na lixeira, fica visível para quem enviou.
+            const refusedMeta = { deletedBy: matchedAdmin && matchedAdmin.email };
+            if (req.file.size > _st.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _st.upload.maxSizeMb + ' MB.' }); }
+            if (!_st.upload.allowedTypes.includes(settingsUtil.extCategory(ext))) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Tipo de arquivo não permitido nas configurações.' }); }
             let tags = [];
             try { tags = req.body.tags ? String(req.body.tags).split(',').map(t => t.trim()).filter(Boolean) : []; } catch (e) {}
             const entry = {
@@ -3304,12 +3313,12 @@ router.post('/api/admin/library/delete', (req, res) => {
             });
         } else if (scope === 'class') {
             db.memory.library = (db.memory.library || []).filter(x => x.id !== id);
-            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename)); } catch (err) {}
+            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename), { courseId, studentClass, deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
         } else {
             const sourceId = e.sourceLibraryId || e.id;
             const base = (db.memory.library || []).find(item => item.id === sourceId) || e;
             db.memory.library = (db.memory.library || []).filter(item => item.id !== sourceId && item.sourceLibraryId !== sourceId);
-            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename)); } catch (err) {}
+            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename), { courseId: base.courseId || courseId, studentClass: base.studentClass || '', deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
         }
         const affectedClasses = scope === 'class' ? [studentClass] : contentCourseClasses(courseId).map(cls => cls.name);
         recordAcademicAudit(req, matchedAdmin, 'content_library_deleted', { courseId, className: studentClass, id, scope }, null, { affectedClasses });

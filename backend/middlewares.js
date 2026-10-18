@@ -16,6 +16,7 @@ const { listExamApplications } = require('./utils/examApplications.js');
 const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
+const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -387,6 +388,7 @@ function validateAdmin(req, res, callback) {
         req.adminAccount = tokenAdmin;
         req.adminConfig = cfg;
         if (!validateRequestedAdminContext(req, res, tokenAdmin)) return;
+        installProfessorResponseRedaction(res, tokenAdmin);
         return callback(cfg, tokenAdmin);
     }
 
@@ -425,6 +427,7 @@ function validateAdmin(req, res, callback) {
         req.adminAccount = matchedAdmin;
         req.adminConfig = config;
         if (!validateRequestedAdminContext(req, res, matchedAdmin)) return;
+        installProfessorResponseRedaction(res, matchedAdmin);
         callback(config, matchedAdmin);
     } else {
         res.status(401).json({ error: 'Acesso não autorizado. E-mail ou senha incorretos.' });

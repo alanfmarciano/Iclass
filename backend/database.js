@@ -11,6 +11,8 @@ const {
     createExamApplication,
     findExamApplication,
     normalizeLegacyApplicationPause,
+    normalizeLegacyStudentAdjustments,
+    openApplicationPause,
 } = require('./utils/examApplications.js');
 const { hashExamToken } = require('./utils/examToken.js');
 const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
@@ -466,14 +468,85 @@ function populateDefaultsIfEmpty() {
     }
 }
 
+// Matrícula do aluno na turma (nome, e curso quando a matrícula o traz).
+function studentRecordInClass(email, cls) {
+    const student = (memoryDB.students || []).find(item => item && String(item.email || '').trim().toLowerCase() === email);
+    if (!student || !cls) return false;
+    const memberships = Array.isArray(student.classes) && student.classes.length
+        ? student.classes
+        : (student.studentClass ? [student.studentClass] : []);
+    return memberships.some(item => (typeof item === 'string'
+        ? item === cls.name
+        : !!item && (item.name || item.className) === cls.name && (!item.courseId || !cls.courseId || String(item.courseId) === String(cls.courseId))));
+}
+
+// Versão escolhida no Monitor antes de o aluno começar: a versão anterior (5b69148)
+// gravava a escolha na aplicação e num estado avulso "<email>_<prova>" com
+// versionAssigned. O backup daquela versão não levava as aplicações; a escolha volta
+// pelo estado avulso (só o desta preparação da prova e de aluno da turma). O estado
+// avulso deixa de marcar a versão (ela fica na aplicação, que a tentativa nova lê);
+// sem isso ele virava uma "tentativa em uso" que era reiniciada com outra versão.
+function legacyMonitorVersions(cls, examKey, cfg) {
+    const versions = new Set((Array.isArray(cfg.versionSnapshots) ? cfg.versionSnapshots : [])
+        .map(snapshot => String((snapshot && snapshot.version) || '').trim().toUpperCase())
+        .filter(Boolean));
+    const configVersion = cfg.updatedAt || cfg.preparedAt || cfg.activeHistoryId || null;
+    const chosen = {};
+    Object.entries(memoryDB.studentExamState || {}).forEach(([key, state]) => {
+        if (!state || typeof state !== 'object' || state.applicationId || state.versionAssigned !== true) return;
+        const email = String(state.studentEmail || '').trim().toLowerCase();
+        if (!email || String(state.examKey || '').trim() !== examKey || key !== `${email}_${examKey}`) return;
+        if (state.examConfigVersion && configVersion && state.examConfigVersion !== configVersion) return;
+        const version = String(state.assignedVersion || '').trim().toUpperCase();
+        if (!versions.has(version) || !studentRecordInClass(email, cls)) return;
+        chosen[email] = version;
+        const onlyTheChoice = !(Number(state.startedAt) > 0)
+            && typeof state.timerRemaining !== 'number'
+            && !(state.answers && typeof state.answers === 'object' && Object.keys(state.answers).length)
+            && state.tokenValidated !== true;
+        if (onlyTheChoice) state.versionAssigned = false;
+    });
+    return chosen;
+}
+
+// Momento aproximado do encerramento de uma aplicação refeita de um backup antigo: a
+// última entrega dela; sem entrega, o último salvamento de uma tentativa; sem nada, a
+// preparação. Nunca antes do início.
+function approximateFinishedAt(applicationId, cfg) {
+    const times = [];
+    (memoryDB.submissions || []).forEach(sub => {
+        if (!sub || String(sub.applicationId || '') !== applicationId) return;
+        const at = Date.parse(sub.timestamp || sub.submittedAt || '');
+        if (Number.isFinite(at)) times.push(at);
+    });
+    if (!times.length) {
+        Object.values(memoryDB.studentExamState || {}).forEach(state => {
+            if (!state || String(state.applicationId || '') !== applicationId) return;
+            const at = Date.parse(state.savedAt || state.updatedAt || '');
+            if (Number.isFinite(at)) times.push(at);
+        });
+    }
+    if (!times.length) {
+        const prepared = Date.parse(cfg.updatedAt || cfg.preparedAt || '');
+        if (Number.isFinite(prepared)) times.push(prepared);
+    }
+    const start = Number(cfg.startTime) || 0;
+    return times.length ? Math.max(start, ...times) : (start || null);
+}
+
 // Inicialização Assíncrona do Banco
-function migrateLegacyExamApplications() {
+// options.pausedAt: na restauração de um backup de versão anterior, o momento do
+// backup (a aplicação pausada nele fica pausada desde então: o cronômetro não anda
+// durante a pausa e ninguém ganha o tempo de novo). No boot, sem esse dado, "agora".
+function migrateLegacyExamApplications(options = {}) {
     if (!Array.isArray(memoryDB.examApplications)) memoryDB.examApplications = [];
     let changed = false;
     // Aplicações pausadas por versões antigas passam a registrar o início da pausa
-    // (o cronômetro fica congelado a partir dele). Idempotente.
+    // (o cronômetro fica congelado a partir dele). "+N min" de aluno duplicado na
+    // aplicação vale só para a tentativa em que foi dado. Idempotente.
     memoryDB.examApplications.forEach(application => {
         if (normalizeLegacyApplicationPause(application)) changed = true;
+        if (normalizeLegacyStudentAdjustments(application, memoryDB.studentExamState)) changed = true;
     });
     (memoryDB.classes || []).forEach(cls => {
         if (!cls.onlineExamConfigs) return;
@@ -495,14 +568,35 @@ function migrateLegacyExamApplications() {
                     historyId: cfg.activeHistoryId,
                     config: {
                         ...cfg,
-                        accessTokenHash: hashExamToken(cfg.accessToken),
-                        tokenEnabled: !!cfg.accessToken,
+                        // A versão anterior (5b69148) guardava só o hash do token, com
+                        // accessToken null: o token continua exigido. Antes o hash era
+                        // descartado e qualquer aluno começava sem token.
+                        accessTokenHash: cfg.accessTokenHash || hashExamToken(cfg.accessToken),
+                        tokenEnabled: cfg.tokenEnabled === true || !!cfg.accessTokenHash || !!cfg.accessToken,
+                        studentVersions: { ...(cfg.studentVersions || {}), ...legacyMonitorVersions(cls, examKey, cfg) },
                     },
                     actor: 'migração automática',
                     status: legacyStatus,
                     now: cfg.startTime || Date.now(),
                 });
                 if (cfg.startTime) application.startsAt = Number(cfg.startTime);
+                if (legacyStatus === 'paused') {
+                    // Pausada desde o momento do backup (ou de agora): nunca desde o
+                    // início da prova, que devolveria a todos o tempo já usado.
+                    const hint = Number(options.pausedAt);
+                    const pausedAt = Math.max(Number(application.startsAt) || 0, Number.isFinite(hint) && hint > 0 ? hint : Date.now());
+                    openApplicationPause(application, pausedAt);
+                    application.updatedAt = new Date(pausedAt).toISOString();
+                }
+                if (legacyStatus === 'finished') {
+                    const previousId = String(cfg.applicationId || '').trim();
+                    const finishedAt = approximateFinishedAt(previousId || application.id, cfg);
+                    if (finishedAt) {
+                        application.finishedAt = new Date(finishedAt).toISOString();
+                        application.endsAt = application.endsAt || finishedAt;
+                        application.updatedAt = application.finishedAt;
+                    }
+                }
                 // A configuração ainda aponta para a aplicação que sumiu (backup de versão
                 // anterior, que não trazia as aplicações): ela volta com o mesmo
                 // identificador, e as tentativas e entregas gravadas com ele continuam dela.
@@ -570,10 +664,10 @@ function syncOnlineExamConfigsWithApplications() {
 // são refeitas a partir das turmas do backup pelo mesmo caminho do boot para dados
 // antigos. Antes as atuais ficavam: aplicação "finalizada" com as tentativas "em
 // andamento" que vieram do backup, e aplicações posteriores ao backup sobrando.
-function rebuildExamApplicationsFromClasses() {
+function rebuildExamApplicationsFromClasses({ backupAt = null } = {}) {
     const discarded = Array.isArray(memoryDB.examApplications) ? memoryDB.examApplications.length : 0;
     memoryDB.examApplications = [];
-    migrateLegacyExamApplications();
+    migrateLegacyExamApplications({ pausedAt: backupAt });
     syncOnlineExamConfigsWithApplications();
     return { discarded, rebuilt: memoryDB.examApplications.length };
 }

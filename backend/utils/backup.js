@@ -31,10 +31,16 @@ function hasLegacyApplications(snapshot) {
     return !!(snapshot && snapshot.data && typeof snapshot.data === 'object' && snapshot.data.examApplications === undefined);
 }
 
+// Diz o que volta e o que não volta: o backup antigo não guardava as aplicações, só as
+// turmas, as tentativas e as entregas.
 const LEGACY_BACKUP_WARNING = 'Este backup é de uma versão anterior do IClass e não traz as aplicações de prova. '
     + 'Ao restaurar, as aplicações de prova atuais serão descartadas (inclusive as criadas depois do backup) e refeitas '
-    + 'a partir das turmas do backup: a prova que estava em andamento naquele momento volta como estava, com as tentativas '
-    + 'dos alunos. Um backup de segurança dos dados atuais é criado antes.';
+    + 'a partir das turmas do backup. Voltam: a última prova preparada ou aplicada de cada turma, com as tentativas, as '
+    + 'respostas e as entregas dos alunos, o token de acesso e a versão escolhida no Monitor para quem ainda não tinha '
+    + 'começado. Prova que estava pausada continua pausada desde o momento do backup. '
+    + 'Não voltam, porque esse backup não as guardava: as contestações de questão feitas pelos alunos e o "+N min" dado '
+    + 'a um aluno que ainda não tinha começado a tentativa. O horário de encerramento das provas já encerradas é '
+    + 'aproximado pela última entrega. Um backup de segurança dos dados atuais é criado antes.';
 
 function getZipLib() { try { return require('adm-zip'); } catch (e) { return null; } }
 
@@ -203,7 +209,9 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     (db.memory.students || []).forEach(student => normalizeStoredStudentClasses(student));
     // Backup de versão anterior: aplicações refeitas a partir das turmas restauradas,
     // pelo mesmo caminho do boot para dados antigos (database.js).
-    const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses() : null;
+    // A prova pausada no backup fica pausada desde o momento dele (exportedAt).
+    const backupAt = Date.parse(String(snapshot.exportedAt || '')) || null;
+    const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses({ backupAt }) : null;
     db.memory.sessions = {};
     db.memory.adminSessions = {};
     await db.save();

@@ -110,16 +110,13 @@ export default function AlunoDetailPage() {
   const subs = academic?.submissions || []
   // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
   const validSubs = useMemo(() => subs.filter((s) => gradeOf(s.score) !== null), [subs])
-  const media = validSubs.length ? (validSubs.reduce((a, s) => a + gradeOf(s.score), 0) / validSubs.length) : 0
   const modules = useMemo(() => [...new Set(subs.map((s) => moduleOf(s.examKey)))].filter((m) => m !== '—'), [subs])
   const semesters = useMemo(() => [...new Set(subs.map((s) => semesterOf(s.timestamp)))].sort(), [subs])
   const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [validSubs, filterModule, filterSemester])
   const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''), value: gradeOf(s.score) })), [filteredSubs])
-  const modulos = useMemo(() => {
-    const g = {}
-    validSubs.forEach((s) => { const m = moduleOf(s.examKey); (g[m] = g[m] || []).push(gradeOf(s.score)) })
-    return Object.entries(g).map(([m, arr]) => ({ m, media: arr.reduce((a, b) => a + b, 0) / arr.length }))
-  }, [validSubs])
+  // Média por módulo do servidor: mesma consolidação e mesmo curso/turma da "Média geral"
+  // (antes era a média simples de todas as tentativas, feita aqui no navegador).
+  const modulos = Array.isArray(dash?.modulos) ? dash.modulos : []
   const timeline = useMemo(() => {
     const ev = []
     subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${fmtGrade(s.score)}`, time: fmtDate(s.timestamp) }))
@@ -166,7 +163,7 @@ export default function AlunoDetailPage() {
                 <div className="h-1.5 rounded bg-surface overflow-hidden mt-1.5"><div className="h-full bg-primary" style={{ width: (dash?.kpis?.frequencia ?? 0) + '%' }} /></div>
               </Kpi>
               {/* Média do servidor: consolidada como em Resultados (sem nota no curso ativo, "—"). */}
-              <Kpi label="Média geral" value={dash ? fmtGradeValue(dash.kpis?.media) : fmtGradeValue(validSubs.length ? media : null)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
+              <Kpi label="Média geral" value={fmtGradeValue(dash?.kpis?.media)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
               <Kpi label="Progresso"><div className="flex items-center gap-2.5"><ProgressRing value={dash?.kpis?.progresso ?? 0}>{(dash?.kpis?.progresso ?? 0)}%</ProgressRing></div></Kpi>
               <Kpi label="Provas" value={`${dash?.kpis?.provasFeitas ?? subs.length}/${dash?.kpis?.provasTotais ?? 0}`} sub={`${Math.max(0, (dash?.kpis?.provasTotais ?? 0) - (dash?.kpis?.provasFeitas ?? subs.length))} pendentes`} />
             </div>
@@ -190,7 +187,7 @@ export default function AlunoDetailPage() {
                   }><MiniLineChart points={notas} /></Card>
                   <Card title="Desempenho por módulo">
                     {modulos.length ? <div className="space-y-3">{modulos.map((m) => (
-                      <div key={m.m}><div className="flex justify-between text-xs mb-1"><span className="text-text">{m.m}</span><span className="text-muted">{fmtGradeValue(m.media)}</span></div><div className="h-1.5 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: `${m.media * 10}%` }} /></div></div>
+                      <div key={m.id || m.modulo}><div className="flex justify-between text-xs mb-1"><span className="text-text">{m.modulo}</span><span className="text-muted">{fmtGradeValue(m.media)}</span></div><div className="h-1.5 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: `${Math.min(100, Number(m.media) * 10)}%` }} /></div></div>
                     ))}</div> : <p className="text-sm text-muted">Sem notas ainda.</p>}
                   </Card>
                 </div>

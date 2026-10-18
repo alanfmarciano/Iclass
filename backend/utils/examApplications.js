@@ -107,6 +107,9 @@ function createExamApplication({
         tokenEnabled: config.tokenEnabled === true || !!config.accessTokenHash || !!config.accessToken,
         globalTimeAdjustment: Number(config.globalTimeAdjustment || 0),
         studentAdjustments: clone(config.studentAdjustments || {}),
+        // "+N min" de um aluno guardado na aplicação vale só para a próxima tentativa
+        // dele (é consumido ao criá-la). Ver normalizeLegacyStudentAdjustments.
+        studentAdjustmentsMode: 'next_attempt',
         studentVersions: clone(config.studentVersions || {}),
         annulledQuestions: clone(Array.isArray(config.annulledQuestions) ? config.annulledQuestions : []),
         questionReports: clone(Array.isArray(config.questionReports) ? config.questionReports : []),
@@ -239,6 +242,33 @@ function normalizeLegacyApplicationPause(application, now = Date.now()) {
     if (applicationPauses(application).some(pause => !pause.resumedAt)) return false;
     const updatedAt = Date.parse(application.updatedAt || '');
     openApplicationPause(application, Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= now ? updatedAt : now);
+    return true;
+}
+
+// "+N min" de um aluno gravado por versões anteriores (5b69148): com a tentativa
+// aberta, o ajuste ia para a tentativa E para application.studentAdjustments, e cada
+// tentativa nova copiava o acumulado da aplicação. Depois da atualização, a tentativa
+// seguinte nascia de novo com o extra. Aqui fica na aplicação só o que ainda não foi
+// aplicado a nenhuma tentativa (dado depois de a última tentativa do aluno fechar, ou
+// antes da primeira): o acumulado menos o ajuste da última tentativa dele. Idempotente:
+// a aplicação passa a ter studentAdjustmentsMode 'next_attempt' (como as novas).
+function normalizeLegacyStudentAdjustments(application, studentExamState) {
+    if (!application || application.studentAdjustmentsMode === 'next_attempt') return false;
+    if (application.status === 'finished' || application.status === 'cancelled') return false;
+    const adjustments = application.studentAdjustments && typeof application.studentAdjustments === 'object'
+        ? application.studentAdjustments
+        : {};
+    Object.keys(adjustments).forEach(email => {
+        const total = Number(adjustments[email] || 0);
+        const attempts = attemptStatesForApplication(studentExamState, { applicationId: application.id, studentEmail: email });
+        const latest = attempts.reduce((last, [, state]) => (!last || Number(state.attemptNumber || 1) > Number(last.attemptNumber || 1) ? state : last), null);
+        const applied = latest ? Number(latest.individualTimeAdjustment || 0) : 0;
+        const pending = Number.isFinite(total) ? total - (Number.isFinite(applied) ? applied : 0) : 0;
+        if (pending > 0) adjustments[email] = pending;
+        else delete adjustments[email];
+    });
+    application.studentAdjustments = adjustments;
+    application.studentAdjustmentsMode = 'next_attempt';
     return true;
 }
 
@@ -393,6 +423,7 @@ module.exports = {
     listExamApplications,
     normalizeApplicationStatus,
     normalizeLegacyApplicationPause,
+    normalizeLegacyStudentAdjustments,
     normalizeTimerMode,
     openApplicationPause,
     resolveExamApplication,
