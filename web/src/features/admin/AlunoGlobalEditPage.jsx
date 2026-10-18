@@ -10,6 +10,7 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
+import { useAuth } from '../../context/AuthProvider'
 import { StudentFormTabs } from './AlunosPage'
 import { StudentAuditPanel } from './StudentAuditPanel'
 
@@ -35,6 +36,8 @@ export default function AlunoGlobalEditPage() {
   const isNew = email === 'novo'
   const nav = useNavigate()
   const toast = useToast()
+  const { auth } = useAuth()
+  const isProfessor = auth?.accountRole === 'professor'
   const students = useApi('/api/admin/students')
   const { data: classes } = useApi('/api/admin/classes')
   const { data: courses } = useApi('/api/courses')
@@ -134,7 +137,7 @@ export default function AlunoGlobalEditPage() {
             {(isNew || tab === 'cadastro') && (
               <>
                 <Card className="p-5">
-                  <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} schools={schools || []} multiCourse onToggleClass={toggleClass} passwordField={isNew ? 'studentPassword' : 'password'} passwordLabel={isNew ? 'Senha inicial' : 'Senha/hash atual'} passwordHelper={isNew ? undefined : 'Mantenha como está para não trocar.'} />
+                  <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} schools={schools || []} multiCourse onToggleClass={toggleClass} passwordField={isNew ? 'studentPassword' : 'password'} passwordLabel={isNew ? 'Senha inicial' : 'Senha/hash atual'} passwordHelper={isNew ? undefined : 'Mantenha como está para não trocar.'} accessibilityReadOnly={isProfessor} />
                 </Card>
                 <div className="flex justify-end gap-2">
                   <Button variant="ghost" onClick={() => nav('/diretorio')}>Cancelar</Button>

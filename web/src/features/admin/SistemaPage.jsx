@@ -79,8 +79,9 @@ function SettingsCard() {
         <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-wider text-subtle">Presença automática</p>
           <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={cfg.attendance.autoOnLogin} onChange={(e) => set(['attendance', 'autoOnLogin'], e.target.checked)} /> Marcar presença quando o aluno acessa o sistema</label>
+          <p className="text-xs text-subtle">Só vale durante as aulas do dia da turma (do início da primeira aula, menos a tolerância, até o fim da última). Acesso fora desse horário não marca presença nem falta. Na Chamada o registro aparece como “Automática”, com a hora e o IP do acesso, para você conferir.</p>
           <div className="flex flex-wrap gap-6">
-            <Field label="Janela — início" hint="Vazio = qualquer horário."><input type="time" value={cfg.attendance.windowStart} onChange={(e) => set(['attendance', 'windowStart'], e.target.value)} className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm" /></Field>
+            <Field label="Janela — início" hint="Opcional: limita ainda mais o horário. Vazio = só a grade da turma."><input type="time" value={cfg.attendance.windowStart} onChange={(e) => set(['attendance', 'windowStart'], e.target.value)} className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm" /></Field>
             <Field label="Janela — fim"><input type="time" value={cfg.attendance.windowEnd} onChange={(e) => set(['attendance', 'windowEnd'], e.target.value)} className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm" /></Field>
           </div>
         </section>
@@ -137,11 +138,23 @@ function TrashCard() {
 
 function _bkAuth() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
 
-function BackupCard() {
+// Baixar e restaurar backup é só do administrador: o arquivo leva todos os alunos e
+// os hashes de senha das contas (SEG-X1). Professor com "Executar manutenção" só gera
+// a cópia de segurança, que fica guardada no servidor.
+function BackupCard({ isAdmin }) {
   const toast = useToast()
   const [file, setFile] = useState(null)
   const [confirmTxt, setConfirmTxt] = useState('')
+  const [replaceAccounts, setReplaceAccounts] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [serverBusy, setServerBusy] = useState(false)
+  async function serverBackup() {
+    setServerBusy(true)
+    try {
+      const r = await api.post('/api/admin/backup/server', {})
+      toast.success(`Cópia de segurança gerada no servidor (${r.fileName}).`)
+    } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
+  }
   async function download(kind) {
     try {
       const res = await fetch('/api/admin/backup/' + kind, { headers: _bkAuth() })
@@ -156,34 +169,39 @@ function BackupCard() {
   async function restore() {
     if (!file) return toast.error('Escolha o arquivo de backup')
     if (confirmTxt.trim().toUpperCase() !== 'RESTAURAR') return toast.error('Digite RESTAURAR para confirmar')
-    if (!window.confirm('Isto substitui TODOS os dados atuais. Um backup de segurança será criado antes. Continuar?')) return
-    const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt)
+    if (!window.confirm(replaceAccounts
+      ? 'Isto substitui TODOS os dados atuais, inclusive as contas de acesso. Um backup de segurança será criado antes. Continuar?'
+      : 'Isto substitui TODOS os dados atuais (as contas de acesso continuam as de hoje). Um backup de segurança será criado antes. Continuar?')) return
+    const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt); fd.append('replaceAccounts', replaceAccounts ? '1' : '0')
     setBusy(true)
     try {
       const res = await fetch('/api/admin/backup/restore', { method: 'POST', headers: _bkAuth(), body: fd })
       const d = await res.json().catch(() => null)
       if (!res.ok) throw new Error((d && d.error) || 'Falha ao restaurar')
       toast.success('Backup restaurado. Recarregue a página para ver os dados.')
-      setFile(null); setConfirmTxt('')
+      setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
   return (
     <Card>
-      <CardHeader title={<span className="inline-flex items-center gap-2"><Database size={16} /> Backup geral</span>} subtitle="Baixe uma cópia ou restaure o sistema a partir de um arquivo" />
+      <CardHeader title={<span className="inline-flex items-center gap-2"><Database size={16} /> Backup geral</span>} subtitle={isAdmin ? 'Gere, baixe ou restaure o sistema a partir de um arquivo' : 'Gere uma cópia de segurança guardada no servidor'} />
       <CardBody className="space-y-4">
         <div className="flex flex-wrap gap-3">
-          <Button variant="secondary" icon={Download} onClick={() => download('data')}>Baixar dados (JSON)</Button>
-          <Button variant="secondary" icon={Download} onClick={() => download('full')}>Baixar completo (ZIP)</Button>
+          <Button variant="secondary" icon={Save} loading={serverBusy} onClick={serverBackup}>Gerar cópia no servidor</Button>
+          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('data')}>Baixar dados (JSON)</Button>}
+          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('full')}>Baixar completo (ZIP)</Button>}
         </div>
-        <div className="p-4 rounded-lg border border-danger/40 bg-danger-soft space-y-3">
+        {!isAdmin && <p className="text-xs text-muted">Baixar e restaurar backup é exclusivo do administrador, porque o arquivo traz os dados de todos os alunos e as senhas protegidas das contas.</p>}
+        {isAdmin && <div className="p-4 rounded-lg border border-danger/40 bg-danger-soft space-y-3">
           <p className="text-sm font-semibold text-text">Restaurar de um arquivo</p>
-          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes.</p>
+          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo.</p>
           <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
+          <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
           <div className="flex flex-wrap items-center gap-3">
             <Input id="bk-confirm" value={confirmTxt} onChange={(e) => setConfirmTxt(e.target.value)} placeholder="Digite RESTAURAR" />
             <Button variant="destructive" icon={Upload} loading={busy} onClick={restore}>Restaurar</Button>
           </div>
-        </div>
+        </div>}
       </CardBody>
     </Card>
   )
@@ -227,7 +245,7 @@ export default function SistemaPage() {
 
       {canManage && <TrashCard />}
 
-      {canManage && <BackupCard />}
+      {canManage && <BackupCard isAdmin={auth?.accountRole !== 'professor'} />}
 
       {canManage && <Card>
         <CardHeader title="Manutenção" />

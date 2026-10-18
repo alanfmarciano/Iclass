@@ -4,6 +4,7 @@ const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
+const { normalizeStoredStudentClasses } = require('./utils/students.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     applicationToOnlineConfig,
@@ -682,6 +683,9 @@ async function init() {
                 student.status = "Ativo";
                 needsSave = true;
             }
+            // DES-03: `studentClass` gravado como objeto (aprovação + matrícula em lote)
+            // volta a ser o nome da turma; idempotente.
+            if (normalizeStoredStudentClasses(student)) needsSave = true;
         });
     }
     if (memoryDB.config && memoryDB.config.adminPassword && !isHashed(memoryDB.config.adminPassword)) {

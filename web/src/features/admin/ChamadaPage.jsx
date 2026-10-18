@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ClipboardCheck, Download, Check, X, Clock, LogOut, FileText, Paperclip, Users,
-  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2,
+  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -432,6 +432,11 @@ export default function ChamadaPage() {
                             {lvMissing(u) && <Tag tone="danger" Icon={AlertTriangle}>falta a hora da saída</Tag>}
                             {jMissing(u) && <Tag tone="danger" Icon={AlertTriangle}>justificativa incompleta</Tag>}
                             {u.st === 'j' && u.just?.arquivoNome && <Tag tone="info" Icon={Paperclip}>{u.just.arquivoNome}{u.just.abonado ? ' · abona' : ' · não abona'}</Tag>}
+                            {s.origin === 'login' && (
+                              <span title="Registro criado pelo acesso do aluno ao sistema. Confira antes de concluir a chamada.">
+                                <Tag tone="info" Icon={Wifi}>Automática{s.acessoAutomatico?.hora ? ` · acesso às ${s.acessoAutomatico.hora}` : ''}{s.acessoAutomatico?.ip ? ` · IP ${s.acessoAutomatico.ip}` : ''}</Tag>
+                              </span>
+                            )}
                           </div>
                         </div>
 

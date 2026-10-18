@@ -14,6 +14,7 @@ const {
     isRestrictedContentKey,
     readApostila,
     releasedApostilaKeysForClass,
+    stripStoredAccessTokens,
 } = require('../utils/contentAccess.js');
 const {
     sanitizeEvaluationForStudent,
@@ -206,7 +207,8 @@ router.get('/:key.md', async (req, res, next) => {
             return res.status(404).type('text/plain').send('');
         }
         try {
-            const content = await fs.promises.readFile(filePath, 'utf8');
+            // Links antigos com a sessão de outro instrutor gravada saem limpos (UXA-X2).
+            const content = stripStoredAccessTokens(await fs.promises.readFile(filePath, 'utf8'));
             res.type('text/markdown').send(content);
         } catch (err) {
             console.error('Erro ao ler apostila:', err && err.message, 'filePath:', filePath);

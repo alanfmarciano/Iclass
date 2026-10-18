@@ -35,7 +35,16 @@ export function StudentShell() {
   const brandName = branding?.displayName || 'IClass'
   const pageTitle = NAV.find((item) => item.to === pathname)?.text || 'Portal do Aluno'
   const notificationsEndpoint = cls && activeClass.courseId ? `/api/student/notifications?courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : null
-  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint="/api/student/notifications/seen" />
+  // Abrir um aviso pelo sino já conta como lido (UXA-X3).
+  const openNotification = async (item) => {
+    let markedRead = false
+    if (item.type === 'aviso' && String(item.id || '').startsWith('aviso:')) {
+      try { await api.post('/api/student/announcements/read', { id: item.id.slice('aviso:'.length) }); markedRead = true } catch { /* segue para a tela */ }
+    }
+    if (item.href) nav(item.href)
+    return markedRead
+  }
+  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint="/api/student/notifications/seen" onOpenItem={openNotification} />
   useEffect(() => {
     if (!auth.email) return
     const ping = () => api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`).catch((err) => {

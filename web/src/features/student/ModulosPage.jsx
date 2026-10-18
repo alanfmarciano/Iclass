@@ -122,7 +122,8 @@ export default function ModulosPage() {
 
   async function loadAnnotations(key) {
     try {
-      const r = await api.get(`/api/student/annotations?email=${encodeURIComponent(email)}&key=${encodeURIComponent(key)}`, { auth: false })
+      // Com a sessão do aluno: sem ela a rota responde 401 e as anotações nunca aparecem (UXA-10).
+      const r = await api.get(`/api/student/annotations?email=${encodeURIComponent(email)}&key=${encodeURIComponent(key)}`)
       paintAnnotations(r.annotations || {})
     } catch {
       paintAnnotations({})
@@ -167,7 +168,7 @@ export default function ModulosPage() {
   }
 
   async function loadComments(key) {
-    try { setComments((await api.get(`/api/forum?key=${encodeURIComponent(key)}&courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`, { auth: false })).comments || []) } catch { setComments([]) }
+    try { setComments((await api.get(`/api/forum?key=${encodeURIComponent(key)}&courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`)).comments || []) } catch { setComments([]) }
   }
 
   async function postComment() {

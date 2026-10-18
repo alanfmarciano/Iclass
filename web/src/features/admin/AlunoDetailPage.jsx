@@ -122,7 +122,7 @@ export default function AlunoDetailPage() {
     const ev = []
     subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${fmtGrade(s.score)}`, time: fmtDate(s.timestamp) }))
     ;(academic?.moduleAccess || []).forEach((m) => ev.push({ id: 'a' + m.id, t: m.timestamp, tone: 'bg-primary', title: `Abriu ${String(m.key).replace(/_/g, ' ')}`, time: fmtDateTime(m.timestamp) }))
-    ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? 'login' : 'manual'})`, time: a.date }))
+    ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? 'automática' : a.origin === 'chamada' ? 'chamada' : 'manual'})`, time: a.date }))
     return ev.sort((x, y) => y.t - x.t).slice(0, 8)
   }, [subs, academic])
 

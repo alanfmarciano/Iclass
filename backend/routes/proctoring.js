@@ -38,6 +38,30 @@ function rejectForeignClass(req, res, cls) {
     return false;
 }
 
+// Turma da prova pelo nome (sem diferenciar maiúsculas) e curso. Nos registros da
+// prova (eventos de foco, digitação e rascunho) a turma é obrigatória: sem turma
+// resolvida ou sem matrícula aprovada nela, 403. Antes, '1des' ou uma turma inexistente
+// passavam e uma conta pendente gravava log que aparecia na auditoria da 1DES.
+function resolveExamClass(studentClass, courseId) {
+    const name = String(studentClass || '').trim();
+    if (!name) return null;
+    const classes = db.memory.classes || [];
+    const course = String(courseId || '').trim();
+    return findClassByNameAndCourse(classes, name, course)
+        || classes.find(c => c && c.name && String(c.name).trim().toLowerCase() === name.toLowerCase()
+            && (!course || String(c.courseId || '') === course))
+        || null;
+}
+
+function requireEnrolledExamClass(req, res, studentClass, courseId) {
+    const cls = resolveExamClass(studentClass, courseId);
+    if (!cls || !studentBelongsToClass(req.studentAccount, cls)) {
+        res.status(403).json({ error: 'Turma não autorizada para este estudante.' });
+        return null;
+    }
+    return cls;
+}
+
 // Mensagens do professor que este aluno pode ver (turma com matrícula aprovada e, se
 // individual, endereçada a ele). Base de exam-state, histórico, confirmação e exclusão.
 function visibleMessagesForStudent(req) {
@@ -92,8 +116,8 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
         const normalizedEmail = req.studentEmail;
         const normalizedExamKey = examKey.trim();
         const normalizedEventType = eventType.trim();
-        const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
-        if (rejectForeignClass(req, res, cls)) return;
+        const cls = requireEnrolledExamClass(req, res, studentClass, courseId);
+        if (!cls) return;
         const application = applicationForClass(cls, normalizedExamKey, applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
@@ -108,8 +132,8 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
         const logEntry = {
             id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
             studentEmail: normalizedEmail,
-            studentClass: studentClass ? studentClass.trim() : 'Desconhecida',
-            courseId: courseId || null,
+            studentClass: cls.name,
+            courseId: cls.courseId || courseId || null,
             examKey: normalizedExamKey,
             applicationId: application?.id || null,
             attemptId: attemptId || null,
@@ -157,8 +181,8 @@ router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) =>
         }
         const normalizedEmail = req.studentEmail;
         const normalizedExamKey = examKey.trim();
-        const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
-        if (rejectForeignClass(req, res, cls)) return;
+        const cls = requireEnrolledExamClass(req, res, studentClass, courseId);
+        if (!cls) return;
         const application = applicationForClass(cls, normalizedExamKey, applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
@@ -169,8 +193,8 @@ router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) =>
             store.push({
                 id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
                 studentEmail: normalizedEmail,
-                studentClass: studentClass ? studentClass.trim() : 'Desconhecida',
-                courseId: courseId || null,
+                studentClass: cls.name,
+                courseId: cls.courseId || courseId || null,
                 examKey: normalizedExamKey,
                 applicationId: application?.id || null,
                 attemptId: attemptId || null,
@@ -248,8 +272,8 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
         }
         
         const normalizedEmail = req.studentEmail;
-        const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
-        if (rejectForeignClass(req, res, cls)) return;
+        const cls = requireEnrolledExamClass(req, res, studentClass, courseId);
+        if (!cls) return;
         const application = applicationForClass(cls, examKey.trim(), applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
         const context = stateContext({ application, studentEmail: normalizedEmail, examKey: examKey.trim(), attemptId, cls });

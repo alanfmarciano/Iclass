@@ -22,29 +22,107 @@ function isRestrictedContentKey(key) {
     return normalized.startsWith('avaliacao_') || normalized.startsWith('gabarito_');
 }
 
-const DETAILS_BLOCK = /<details[^>]*>\s*<summary[^>]*>((?:(?!<\/summary>)[\s\S])*)<\/summary>[\s\S]*?(?:<\/details>|$)/gi;
+// Entidades HTML mais comuns em títulos escritos à mão (GABARITO&nbsp;OFICIAL).
+const NAMED_ENTITIES = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", ndash: '-', mdash: '-' };
+function decodeHtmlEntities(text) {
+    return String(text || '').replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code) => {
+        if (code[0] === '#') {
+            const value = code[1].toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+            try { return Number.isFinite(value) ? String.fromCodePoint(value) : ' '; } catch (error) { return ' '; }
+        }
+        return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, code.toLowerCase()) ? NAMED_ENTITIES[code.toLowerCase()] : ' ';
+    });
+}
 
-// Título de bloco que marca o gabarito do professor, nos formatos dos arquivos de
-// avaliação: "GABARITO EXCLUSIVO DO PROFESSOR", "GABARITO OFICIAL" ou só "GABARITO".
-// Um bloco de autocorreção escrito para o aluno ("Gabarito dos exercícios",
-// "Ver resposta") não casa e continua na apostila.
-function isTeacherAnswerKeySummary(summaryHtml) {
-    const text = String(summaryHtml || '')
-        .replace(/<[^>]*>/g, ' ')
+function normalizedLabel(html) {
+    return decodeHtmlEntities(String(html || '').replace(/<[^>]*>/g, ' '))
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/[^\p{L}\p{N}\s]/gu, ' ')
         .replace(/\s+/g, ' ')
         .trim()
         .toLowerCase();
-    if (!text.includes('gabarito')) return false;
-    return text === 'gabarito' || text.includes('gabarito oficial') || text.includes('professor');
 }
 
-// Remove blocos de gabarito do professor (<details><summary>GABARITO ...</summary>...) que
-// por engano tenham ido parar numa apostila. Defesa extra: o material do aluno nunca
-// carrega o bloco "GABARITO EXCLUSIVO DO PROFESSOR".
+// Marca de material do professor junto da palavra "gabarito".
+const TEACHER_MARKER = /\b(oficial|professor|professora|prof|docente|instrutor|instrutora|exclusivo)\b/;
+
+// Título de bloco que marca o gabarito do professor, nos formatos dos arquivos de
+// avaliação: "GABARITO EXCLUSIVO DO PROFESSOR", "GABARITO OFICIAL", "Gabarito do prof."
+// ou só "GABARITO". Um bloco de autocorreção escrito para o aluno ("Gabarito dos
+// exercícios", "Ver resposta") não casa e continua na apostila.
+function isTeacherAnswerKeySummary(summaryHtml) {
+    const text = normalizedLabel(summaryHtml);
+    if (!/\bgabarito\b/.test(text)) return false;
+    return text === 'gabarito' || TEACHER_MARKER.test(text);
+}
+
+// Título Markdown de seção do professor ("## GABARITO EXCLUSIVO DO PROFESSOR"). Aqui
+// "Gabarito" sozinho não basta: uma seção assim pode ser a autocorreção do aluno.
+function isTeacherAnswerKeyHeading(headingText) {
+    const text = normalizedLabel(headingText);
+    return /\bgabarito\b/.test(text) && TEACHER_MARKER.test(text);
+}
+
+// Remove <details> do professor inteiro, inclusive com <details> aninhado dentro (a
+// expressão antiga parava no primeiro </details> e deixava o resto do gabarito).
+function stripTeacherDetails(markdown) {
+    const source = String(markdown || '');
+    const tagPattern = /<(\/?)details\b[^>]*>/gi;
+    const blocks = [];
+    const stack = [];
+    let match;
+    while ((match = tagPattern.exec(source))) {
+        if (!match[1]) stack.push({ start: match.index, openEnd: match.index + match[0].length });
+        else if (stack.length) blocks.push({ ...stack.pop(), end: match.index + match[0].length });
+    }
+    // <details> sem fechamento vai até o fim do texto (mesmo efeito de antes).
+    stack.forEach(open => blocks.push({ ...open, end: source.length }));
+    const remove = blocks.filter(block => {
+        const summary = /^\s*<summary\b[^>]*>([\s\S]*?)<\/summary>/i.exec(source.slice(block.openEnd, block.end));
+        return !!summary && isTeacherAnswerKeySummary(summary[1]);
+    }).sort((a, b) => a.start - b.start);
+    let output = '';
+    let cursor = 0;
+    remove.forEach(block => {
+        if (block.start < cursor) return; // já dentro de um bloco removido
+        output += source.slice(cursor, block.start);
+        cursor = block.end;
+    });
+    return output + source.slice(cursor);
+}
+
+// Remove a seção Markdown do professor até o próximo título do mesmo nível ou acima.
+// Títulos dentro de bloco de código não contam.
+function stripTeacherHeadingSections(markdown) {
+    const lines = String(markdown || '').split('\n');
+    const output = [];
+    let skipLevel = 0;
+    let inFence = false;
+    lines.forEach(line => {
+        if (/^\s{0,3}(```|~~~)/.test(line)) {
+            inFence = !inFence;
+            if (!skipLevel) output.push(line);
+            return;
+        }
+        const heading = !inFence && /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+        if (heading) {
+            const level = heading[1].length;
+            if (skipLevel && level <= skipLevel) skipLevel = 0;
+            if (!skipLevel && isTeacherAnswerKeyHeading(heading[2])) {
+                skipLevel = level;
+                return;
+            }
+        }
+        if (!skipLevel) output.push(line);
+    });
+    return output.join('\n');
+}
+
+// Remove blocos de gabarito do professor (<details><summary>GABARITO ...</summary>...) e
+// seções "## GABARITO ... DO PROFESSOR" que por engano tenham ido parar numa apostila.
+// Defesa extra: o material do aluno nunca carrega o gabarito do professor.
 function stripAnswerKeyBlocks(markdown) {
-    return String(markdown || '')
-        .replace(DETAILS_BLOCK, (block, summary) => (isTeacherAnswerKeySummary(summary) ? '' : block));
+    return stripTeacherHeadingSections(stripTeacherDetails(markdown));
 }
 
 function classStructure(cls) {
@@ -88,11 +166,20 @@ async function findContentFile(key) {
     return match ? path.join(runtimePaths.CONTENT_DIR, match) : null;
 }
 
+// Remove ?access=<sessão> de links /uploads e /imagens (o editor antigo gravava a
+// sessão do instrutor na apostila). contentMedia.js reexporta para o editor.
+function stripStoredAccessTokens(markdown) {
+    return String(markdown || '').replace(/(\/(?:uploads|imagens)\/[^\s)"'<>?#]+)\?([^\s)"'<>#]*)/g, (match, base, query) => {
+        const kept = query.split(/&(?:amp;)?/).filter(part => part && !/^access=/i.test(part));
+        return kept.length ? `${base}?${kept.join('&')}` : base;
+    });
+}
+
 async function readApostila(key) {
     const filePath = await findContentFile(key);
     if (!filePath) return null;
     try {
-        return stripAnswerKeyBlocks(await fs.promises.readFile(filePath, 'utf8'));
+        return stripStoredAccessTokens(stripAnswerKeyBlocks(await fs.promises.readFile(filePath, 'utf8')));
     } catch (error) {
         return null;
     }
@@ -107,5 +194,6 @@ module.exports = {
     readApostila,
     releasedApostilaKeysForClass,
     stripAnswerKeyBlocks,
+    stripStoredAccessTokens,
     structureApostilaKeys,
 };

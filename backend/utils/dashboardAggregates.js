@@ -182,6 +182,8 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
             titulo: 'Dúvidas sem resposta há mais de 24 h',
             detalhe: 'aguardando o instrutor · Fórum',
             count: paradas.length, tone: 'warning', href: '/forum', permissao: 'page.forum',
+            // Desde quando a mais antiga espera (o sino mostra "há 3 d").
+            at: Math.min(...paradas.map(c => tsOf(c.timestamp))),
         });
     }
 

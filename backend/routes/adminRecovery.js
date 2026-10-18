@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin } = require('../middlewares.js');
+const { validateAdmin, isProfessorAccount } = require('../middlewares.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
 
@@ -43,8 +43,26 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         });
     });
 
-    router.get('/api/admin/backup/data', (req, res) => {
+    // SEG-X1: o arquivo de backup leva todos os alunos, atestados e os hashes de senha
+    // das contas; baixar e restaurar é exclusivo do administrador. Professor com
+    // "Executar manutenção" só gera a cópia de segurança, que fica no servidor.
+    function rejectProfessor(res, matchedAdmin) {
+        if (!isProfessorAccount(matchedAdmin)) return false;
+        res.status(403).json({ error: 'Baixar ou restaurar backup é exclusivo do administrador.' });
+        return true;
+    }
+
+    router.post('/api/admin/backup/server', (req, res) => {
         validateAdmin(req, res, async () => {
+            await db.save();
+            const file = backupUtil.saveServerBackup('manual');
+            res.json({ success: true, fileName: path.basename(file), createdAt: Date.now() });
+        });
+    });
+
+    router.get('/api/admin/backup/data', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
             await db.save();
             const stamp = new Date().toISOString().slice(0, 10);
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -54,7 +72,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     });
 
     router.get('/api/admin/backup/full', (req, res) => {
-        validateAdmin(req, res, async () => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
             await db.save();
             const stamp = new Date().toISOString().slice(0, 10);
             res.setHeader('Content-Type', 'application/zip');
@@ -69,7 +88,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     });
 
     router.post('/api/admin/backup/restore', (req, res) => {
-        validateAdmin(req, res, () => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
             uploadForRequest().single('file')(req, res, async (error) => {
                 if (error) return res.status(400).json({ error: `Erro no upload: ${error.message}` });
                 if (!req.file) return res.status(400).json({ error: 'Envie o arquivo de backup (.json ou .zip).' });
@@ -80,10 +100,13 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                     fileStore.moveToTrash(temporaryFile);
                     return res.status(400).json({ error: 'Confirme digitando RESTAURAR.' });
                 }
+                // Contas de acesso atuais ficam como estão, salvo pedido explícito.
+                const replaceAccounts = ['1', 'true', 'sim', 'on'].includes(String(req.body.replaceAccounts || '').trim().toLowerCase());
                 try {
-                    await backupUtil.restoreFromFile(temporaryFile, req.file.originalname);
+                    await backupUtil.restoreFromFile(temporaryFile, req.file.originalname, { replaceAccounts });
                     fileStore.moveToTrash(temporaryFile);
-                    res.json({ success: true });
+                    console.log(`[backup] Restauração feita por ${matchedAdmin && matchedAdmin.email} (${req.ip}) em ${new Date().toISOString()}${replaceAccounts ? ' com substituição das contas' : ''}.`);
+                    res.json({ success: true, replaceAccounts });
                 } catch (restoreError) {
                     fileStore.moveToTrash(temporaryFile);
                     res.status(400).json({ error: restoreError.message || 'Falha ao restaurar backup.' });

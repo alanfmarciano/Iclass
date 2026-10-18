@@ -33,7 +33,7 @@ const {
     adminCanAccessClass,
     adminCanAccessItem
 } = require('../middlewares.js');
-const { extractStudentFields, validateStudentFields, DEFAULT_STATUS } = require('../utils/students.js');
+const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
 const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_VERSION } = require('../utils/security.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
@@ -62,12 +62,17 @@ const {
 } = require('../utils/examGrading.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 
-// Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
-// a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
+// Marca a presença automática do dia (origem "login", exibida como "Automática"),
+// no máx. 1x/dia por turma, respeitando a config (liga/desliga + janela + fuso).
 // Usada tanto no POST de login quanto no heartbeat (/api/ping): assim, alunos cuja
 // sessão foi retomada pelo navegador (sem novo POST de login) também são marcados
 // presentes ao voltarem no dia seguinte.
-function ensureDailyLoginAttendance(rawEmail) {
+// FUN-X2 / CRIT-02: só vale dentro da janela das aulas do dia da turma (do início da
+// primeira aula menos a tolerância até o fim da última) e, se configurada, também da
+// janela do Sistema. Fora disso o acesso não cria registro nem falta (quem entra às
+// 18h para estudar não ganha falta nas aulas da manhã). Guarda IP, navegador e hora
+// do acesso para o professor conferir na Chamada. Retorna true se criou o registro.
+function ensureDailyLoginAttendance(rawEmail, { req = null, source = 'login' } = {}) {
     try {
         const normalizedEmail = String(rawEmail || '').trim().toLowerCase();
         if (!normalizedEmail) return false;
@@ -79,23 +84,31 @@ function ensureDailyLoginAttendance(rawEmail) {
         if (!['ativo', 'active'].includes(status)) return false;
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
         const _today = settingsUtil.today();
-        const _firstClass = Array.isArray(student.classes) && student.classes[0];
-        const _cls = student.studentClass || (_firstClass && (typeof _firstClass === 'string' ? _firstClass : _firstClass.name)) || '';
-        if (!_cls) return false;
-        const _courseId = (_firstClass && typeof _firstClass === 'object' && _firstClass.courseId) || student.courseId || '';
+        const horaAcesso = settingsUtil.nowHHMM(_stPres.timezone);
+        // Turma da matrícula aprovada que tem aula agora (a turma principal primeiro).
+        const primary = primaryStudentClassName(student).toLowerCase();
+        const candidates = studentClassEntries(student)
+            .sort((a, b) => (b.name.toLowerCase() === primary) - (a.name.toLowerCase() === primary))
+            .map(entry => findClassByNameAndCourse(db.memory.classes || [], entry.name, entry.courseId)
+                || (db.memory.classes || []).find(c => String(c.name || '').toLowerCase() === entry.name.toLowerCase()
+                    && (!entry.courseId || !c.courseId || String(c.courseId) === entry.courseId)))
+            .filter(cls => cls && studentBelongsToClass(student, cls));
+        const classObj = candidates.find(cls => {
+            const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
+            return attendanceUtil.withinClassDayWindow(attendanceUtil.gradeForDate(cls, _today), cfg.toleranciaMin, horaAcesso);
+        });
+        if (!classObj) return false;
+        const _cls = classObj.name;
+        const _courseId = String(classObj.courseId || '');
         // Já existe algum lançamento hoje para essa turma? (chamada do professor tem prioridade)
         const _hasToday = db.memory.attendance.some(a => a.studentEmail === normalizedEmail && a.date === _today
-            && (!a.studentClass || a.studentClass === _cls));
+            && (!a.studentClass || a.studentClass === _cls)
+            && (!a.courseId || !_courseId || String(a.courseId) === _courseId));
         if (_hasToday) return false;
-        // Grade do dia: se não é dia letivo, não cria registro (não inventa aulas).
-        const classObj = findClassByNameAndCourse(db.memory.classes || [], _cls, _courseId)
-            || (db.memory.classes || []).find(c => c.name === _cls);
-        const gradeAulas = attendanceUtil.gradeForDate(classObj, _today);
-        if (!gradeAulas.length) return false;
-        // Marca por aula conforme a hora do login + tolerância da turma.
+        // Marca por aula conforme a hora do acesso + tolerância da turma.
         const cfg = attendanceUtil.effectiveAttendanceConfig(classObj);
-        const horaLogin = settingsUtil.nowHHMM();
-        const aulas = attendanceUtil.deriveAulasFromArrival(gradeAulas, horaLogin, cfg.toleranciaMin);
+        const gradeAulas = attendanceUtil.gradeForDate(classObj, _today);
+        const aulas = attendanceUtil.deriveAulasFromArrival(gradeAulas, horaAcesso, cfg.toleranciaMin);
         db.memory.attendance.push({
             id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
             studentEmail: normalizedEmail,
@@ -103,6 +116,10 @@ function ensureDailyLoginAttendance(rawEmail) {
             courseId: _courseId,
             date: _today,
             origin: 'login',
+            source: source === 'heartbeat' ? 'heartbeat' : 'login',
+            horaAcesso,
+            ip: req ? normalizeIp(req.ip || (req.socket && req.socket.remoteAddress)) : '',
+            userAgent: req ? String(req.get('user-agent') || '').slice(0, 300) : '',
             aulas,
             justificativa: null,
             markedBy: null,
@@ -196,7 +213,7 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
         }
         // Presença automática também no heartbeat: cobre alunos com sessão já ativa
         // (retomada do navegador), que não passam de novo pelo POST /api/student/login.
-        if (ensureDailyLoginAttendance(normalizedEmail)) {
+        if (ensureDailyLoginAttendance(normalizedEmail, { req, source: 'heartbeat' })) {
             db.save().catch(() => {});
         }
     }
@@ -759,6 +776,33 @@ router.get('/api/student/library', validateStudentSession, (req, res) => {
 
 
 // ===================== AVISOS DO ALUNO =====================
+// Aviso (não evento de calendário) dirigido ao aluno no contexto curso + turma. Mesma
+// regra da lista de avisos, do sino e da marcação de leitura.
+function announcementVisibleInContext(a, email, courseId, studentClass) {
+    if (!a || a.kind === 'calendar') return false;
+    if (a.target === 'todos') return true;
+    if (a.target === 'turma') return String(a.targetValue || '') === studentClass && (!a.courseId || String(a.courseId) === courseId);
+    if (a.target === 'curso') return String(a.targetValue || '') === courseId;
+    if (a.target === 'aluno') return String(a.targetValue || '').toLowerCase() === email
+        && (!a.courseId || String(a.courseId) === courseId)
+        && (!a.studentClass || String(a.studentClass) === studentClass);
+    return false;
+}
+
+// O aviso chega ao aluno por alguma turma em que ele tem matrícula aprovada? Sem isso,
+// qualquer conta (inclusive autocadastro pendente) marcava como lido aviso de outra turma.
+function studentCanSeeAnnouncement(student, email, a) {
+    return (db.memory.classes || []).some(cls => cls && studentBelongsToClass(student, cls)
+        && announcementVisibleInContext(a, email, String(cls.courseId || ''), String(cls.name || '')));
+}
+
+function markAnnouncementRead(a, email) {
+    if (!Array.isArray(a.readBy)) a.readBy = [];
+    if (a.readBy.includes(email)) return false;
+    a.readBy.push(email);
+    return true;
+}
+
 router.get('/api/student/announcements', validateStudentSession, (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.query.courseId || '').trim();
@@ -769,15 +813,8 @@ router.get('/api/student/announcements', validateStudentSession, (req, res) => {
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
     const today = settingsUtil.today(); // fuso configurado, como no restante do sistema
     let list = (db.memory.announcements || []).filter(a => {
-        if (a.kind === 'calendar') return false;
         if (a.expiresAt && a.expiresAt < today) return false;
-        if (a.target === 'todos') return true;
-        if (a.target === 'turma') return String(a.targetValue || '') === studentClass && (!a.courseId || String(a.courseId) === courseId);
-        if (a.target === 'curso') return String(a.targetValue || '') === courseId;
-        if (a.target === 'aluno') return String(a.targetValue || '').toLowerCase() === email
-            && (!a.courseId || String(a.courseId) === courseId)
-            && (!a.studentClass || String(a.studentClass) === studentClass);
-        return false;
+        return announcementVisibleInContext(a, email, courseId, studentClass);
     });
     list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0));
     res.json(list.map(a => ({ id: a.id, title: a.title, message: a.message, priority: a.priority, pinned: a.pinned, createdAt: a.createdAt, authorName: a.authorName, read: (a.readBy || []).includes(email) })));
@@ -787,7 +824,8 @@ router.post('/api/student/announcements/read', validateStudentSession, (req, res
     const email = req.studentEmail;
     const id = String(req.body.id || '');
     const ann = (db.memory.announcements || []).find(a => a.id === id);
-    if (ann) { ann.readBy = ann.readBy || []; if (!ann.readBy.includes(email)) { ann.readBy.push(email); db.save(); } }
+    if (!ann || !studentCanSeeAnnouncement(req.studentAccount, email, ann)) return res.status(404).json({ error: 'Aviso não encontrado.' });
+    if (markAnnouncementRead(ann, email)) db.save();
     res.json({ success: true });
 });
 
@@ -862,7 +900,7 @@ router.post('/api/student/login', async (req, res) => {
     recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'success', req });
     // Presença automática por login: respeita config (liga/desliga, janela, fuso). Máx. 1/dia.
     // (mesma lógica reaproveitada no heartbeat /api/ping para sessões já ativas)
-    ensureDailyLoginAttendance(normalizedEmail);
+    ensureDailyLoginAttendance(normalizedEmail, { req, source: 'login' });
     // Sessão única: gera um token novo a cada login. Logins anteriores (em outros
     // dispositivos) deixam de valer porque o token guardado neles passa a divergir.
     const sessionToken = crypto.randomUUID
@@ -1432,14 +1470,8 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     const today = settingsUtil.today();
     const items = [];
 
-    const visibleTarget = item => item.target === 'todos'
-        || (item.target === 'curso' && String(item.targetValue || '') === courseId)
-        || (item.target === 'turma' && String(item.targetValue || '') === className && (!item.courseId || String(item.courseId) === courseId))
-        || (item.target === 'aluno' && String(item.targetValue || '').toLowerCase() === email
-            && (!item.courseId || String(item.courseId) === courseId)
-            && (!item.studentClass || String(item.studentClass) === className));
     (db.memory.announcements || [])
-        .filter(item => item.kind !== 'calendar' && visibleTarget(item) && (!item.expiresAt || item.expiresAt >= today))
+        .filter(item => announcementVisibleInContext(item, email, courseId, className) && (!item.expiresAt || item.expiresAt >= today))
         .forEach(item => items.push({
             id: `aviso:${item.id}`, type: 'aviso', title: item.title || 'Aviso', text: String(item.message || '').slice(0, 140),
             at: Number(item.createdAt || 0), href: '/aluno/avisos', unread: !(item.readBy || []).includes(email),
@@ -1480,10 +1512,21 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length });
 });
 
+// "Marcar como lidas" (UXA-X3): carimbo para dúvidas, notas e provas e leitura dos
+// avisos listados no sino (readBy), senão o próximo polling trazia o contador de volta.
 router.post('/api/student/notifications/seen', validateStudentSession, async (req, res) => {
+    const email = req.studentEmail;
     req.studentAccount.notificationsSeenAt = Date.now();
+    const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.slice(0, 100).map(String) : [];
+    const announcementIds = new Set(ids.filter(id => id.startsWith('aviso:')).map(id => id.slice('aviso:'.length)));
+    let marked = 0;
+    (db.memory.announcements || []).forEach(a => {
+        if (!a || !announcementIds.has(String(a.id))) return;
+        if (!studentCanSeeAnnouncement(req.studentAccount, email, a)) return;
+        if (markAnnouncementRead(a, email)) marked++;
+    });
     await db.save();
-    res.json({ success: true });
+    res.json({ success: true, announcementsMarked: marked });
 });
 
 router.get('/api/student/dashboard', validateStudentSession, (req, res) => {

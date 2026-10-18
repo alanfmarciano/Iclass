@@ -142,8 +142,12 @@ export default function AlunosGlobalPage() {
     setBulkBusy(true); setBulkMsg(null)
     try {
       const path = bulkOpen === 'turma' ? '/api/admin/student/bulk-enroll' : '/api/admin/student/bulk-status'
+      // Turma vai com o curso: o mesmo nome de turma pode existir em mais de um curso.
+      const sep = bulkValue.indexOf('::')
+      const bulkCourseId = sep >= 0 ? bulkValue.slice(0, sep) : ''
+      const bulkClassName = sep >= 0 ? bulkValue.slice(sep + 2) : bulkValue
       const body = bulkOpen === 'turma'
-        ? { emails: selectedIds, className: bulkValue }
+        ? { emails: selectedIds, className: bulkClassName, courseId: bulkCourseId }
         : { emails: selectedIds, status: bulkValue }
       const res = await api.post(path, body)
       setBulkMsg({ ok: true, text: `${res.updated} aluno(s) atualizado(s).`, skipped: res.skipped || [] })
@@ -311,7 +315,7 @@ export default function AlunosGlobalPage() {
         {bulkOpen === 'turma' ? (
           <Select label="Turma de destino" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)}>
             <option value="">Selecione…</option>
-            {(classes || []).map((c) => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+            {(classes || []).map((c) => <option key={`${c.courseId}::${c.name}`} value={`${c.courseId}::${c.name}`}>{c.name}{courseById.get(c.courseId)?.name ? ` · ${courseById.get(c.courseId).name}` : ''}</option>)}
           </Select>
         ) : (
           <Select label="Nova situação" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)}>

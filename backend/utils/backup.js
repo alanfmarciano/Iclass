@@ -4,6 +4,7 @@ const path = require('path');
 const db = require('../database.js');
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
+const { normalizeStoredStudentClasses } = require('./students.js');
 
 const CONTENT_DIR = runtimePaths.CONTENT_DIR;
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -144,16 +145,36 @@ function extractZipToStage(zip, stageRoot) {
     }
 }
 
-async function applySnapshot(snapshot) {
+// SEG-X1: contas de acesso (administradores e professores) só são trocadas pela
+// restauração quando um administrador pede isso explicitamente. Nesse caso o backup
+// precisa ter ao menos um administrador e nenhuma senha em texto puro (um JSON editado
+// à mão não pode criar ou promover conta).
+function validateRestoredAccounts(snapshot) {
+    const admins = snapshot && snapshot.data ? snapshot.data.admins : undefined;
+    if (admins === undefined) return;
+    if (!Array.isArray(admins)) throw new Error('Contas de acesso inválidas no backup.');
+    const plain = admins.find(account => !account || !account.email || !db.isHashed(account.password));
+    if (plain) throw new Error(`O backup traz a conta ${(plain && plain.email) || 'sem e-mail'} sem senha protegida (texto puro). Restaure sem substituir as contas.`);
+    if (!admins.some(account => account.role !== 'professor')) throw new Error('O backup não tem nenhuma conta de administrador. Restaure sem substituir as contas.');
+}
+
+async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
-    COLLECTIONS.forEach(key => { if (snapshot.data[key] !== undefined) db.memory[key] = structuredClone(snapshot.data[key]); });
+    COLLECTIONS.forEach(key => {
+        if (snapshot.data[key] === undefined) return;
+        if (key === 'admins' && !replaceAccounts) return;
+        db.memory[key] = structuredClone(snapshot.data[key]);
+    });
+    // Backups antigos podem trazer `studentClass` em objeto (DES-03).
+    (db.memory.students || []).forEach(student => normalizeStoredStudentClasses(student));
     db.memory.sessions = {};
     db.memory.adminSessions = {};
     await db.save();
 }
 
-async function restoreDataSnapshot(snapshot) {
+async function restoreDataSnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
+    if (replaceAccounts) validateRestoredAccounts(snapshot);
     const previous = buildDataSnapshot();
     const staged = [];
     try {
@@ -165,7 +186,7 @@ async function restoreDataSnapshot(snapshot) {
             staged.push({ target, temporary, previous: fs.existsSync(target) ? fs.readFileSync(target) : null });
         }
         staged.forEach(file => fs.renameSync(file.temporary, file.target));
-        await applySnapshot(snapshot);
+        await applySnapshot(snapshot, { replaceAccounts });
     } catch (error) {
         staged.forEach(file => {
             try {
@@ -174,13 +195,14 @@ async function restoreDataSnapshot(snapshot) {
                 else fs.writeFileSync(file.target, file.previous);
             } catch (e) {}
         });
-        await applySnapshot(previous).catch(() => {});
+        await applySnapshot(previous, { replaceAccounts: true }).catch(() => {});
         throw error;
     }
 }
 
-async function restoreFullZip(buffer) {
+async function restoreFullZip(buffer, { replaceAccounts = false } = {}) {
     const { zip, snapshot } = validateZip(buffer);
+    if (replaceAccounts) validateRestoredAccounts(snapshot);
     const stageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-restore-'));
     const recoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-recovery-'));
     const targets = [
@@ -202,7 +224,7 @@ async function restoreFullZip(buffer) {
             fs.renameSync(staged, target);
             moved.push({ target, recovery });
         }
-        await applySnapshot(snapshot);
+        await applySnapshot(snapshot, { replaceAccounts });
     } catch (error) {
         for (const item of moved.reverse()) {
             try {
@@ -210,7 +232,7 @@ async function restoreFullZip(buffer) {
                 if (fs.existsSync(item.recovery)) fs.renameSync(item.recovery, item.target);
             } catch (e) {}
         }
-        await applySnapshot(previous).catch(() => {});
+        await applySnapshot(previous, { replaceAccounts: true }).catch(() => {});
         throw error;
     } finally {
         fs.rmSync(stageRoot, { recursive: true, force: true });
@@ -218,14 +240,14 @@ async function restoreFullZip(buffer) {
     }
 }
 
-async function restoreFromFile(absPath, originalName) {
+async function restoreFromFile(absPath, originalName, { replaceAccounts = false } = {}) {
     await db.save();
     await saveServerFullBackup();
     const buffer = fs.readFileSync(absPath);
     const isZip = /\.zip$/i.test(originalName || '') || buffer.subarray(0, 2).toString() === 'PK';
-    if (isZip) await restoreFullZip(buffer);
-    else await restoreDataSnapshot(JSON.parse(buffer.toString('utf8')));
-    return { ok: true };
+    if (isZip) await restoreFullZip(buffer, { replaceAccounts });
+    else await restoreDataSnapshot(JSON.parse(buffer.toString('utf8')), { replaceAccounts });
+    return { ok: true, replaceAccounts };
 }
 
 module.exports = {

@@ -30,7 +30,9 @@ function timeAgo(at) {
 // Sino de notificações real: busca `endpoint` (lista + contador de não lidas),
 // mostra um painel e "marca como lidas" via `seenEndpoint`. O badge só aparece
 // quando há algo novo, em vez do ponto vermelho fixo que existia antes.
-export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName }) {
+// `onOpenItem(item)` (opcional) abre o item: troca de turma no painel do instrutor,
+// marca o aviso como lido no do aluno. Se devolver true, o item fica lido na hora.
+export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName, onOpenItem }) {
   const [data, setData] = useState({ items: [], unread: 0 })
   const [open, setOpen] = useState(false)
   const rootRef = useRef(null)
@@ -60,14 +62,28 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
   }, [open])
 
   async function markAllSeen() {
-    const keys = data.items.map((item) => `${item.id}:${item.count || 0}`)
+    // `key` vem do servidor (curso + turma + item); `ids` deixa o aluno marcar os avisos.
+    const keys = data.items.map((item) => item.key || `${item.id}:${item.count || 0}`)
+    const ids = data.items.map((item) => item.id)
     setData((current) => ({ ...current, unread: 0, items: current.items.map((item) => ({ ...item, unread: false })) }))
-    try { await api.post(seenEndpoint, { keys }) } catch { /* silencioso */ }
+    try { await api.post(seenEndpoint, { keys, ids }) } catch { /* silencioso */ }
   }
 
-  function openItem(item) {
+  async function openItem(item) {
     setOpen(false)
-    if (item.href) navigate(item.href)
+    if (!onOpenItem) {
+      if (item.href) navigate(item.href)
+      return
+    }
+    let markedRead = false
+    try { markedRead = await onOpenItem(item) } catch { /* a navegação já aconteceu */ }
+    if (markedRead && item.unread) {
+      setData((current) => ({
+        ...current,
+        unread: Math.max(0, Number(current.unread || 0) - 1),
+        items: current.items.map((other) => (other.id === item.id ? { ...other, unread: false } : other)),
+      }))
+    }
   }
 
   const unread = Number(data.unread || 0)

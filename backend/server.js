@@ -8,7 +8,8 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { verifyBuild } = require('./utils/buildIntegrity.js');
-const { localIpAddresses } = require('./middlewares.js');
+const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass } = require('./middlewares.js');
+const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent } = require('./utils/contentMedia.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -56,59 +57,92 @@ app.use((req, res, next) => {
     next();
 });
 
-function sendControlledFile(baseDir, req, res) {
+// Extensões que nunca saem como arquivo (viram vetor de script ou executável).
+const BLOCKED_FILE_EXTENSIONS = ['.html', '.htm', '.js', '.mjs', '.exe', '.bat', '.cmd', '.ps1'];
+const INLINE_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+
+// `relativePath` já validado: um nome (uploads) ou segmentos de subpasta (imagens).
+async function sendControlledFile(baseDir, relativePath, req, res) {
     let target;
     try {
-        if (path.basename(req.params.filename || '') !== req.params.filename) throw new Error('Nome inválido');
-        target = resolveInside(baseDir, req.params.filename);
+        target = resolveInside(baseDir, relativePath);
     } catch (e) {
         return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
     }
     if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return res.status(404).json({ error: 'Arquivo não encontrado.' });
-    const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || req.query.access || '');
+    const filename = path.basename(target);
+    // `?access=` repetido (link antigo com a sessão do instrutor gravada na apostila):
+    // vale o último, que é o que o navegador do usuário acrescentou.
+    const queryAccess = Array.isArray(req.query.access) ? req.query.access[req.query.access.length - 1] : req.query.access;
+    const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || queryAccess || '');
     const adminSession = accessToken && db.memory.adminSessions && db.memory.adminSessions[accessToken];
     const studentEmail = Object.keys(db.memory.sessions || {}).find(email => {
         const session = db.memory.sessions[email];
         return session && typeof session === 'object' && session.token === accessToken;
     });
-    const publicBrandingFile = Object.values(db.memory.branding || {}).some(value => {
+    const publicBrandingFile = baseDir === runtimePaths.UPLOADS_DIR && Object.values(db.memory.branding || {}).some(value => {
         if (typeof value !== 'string' || !value.startsWith('/uploads/')) return false;
-        return path.basename(value.split('?')[0]) === req.params.filename;
+        return path.basename(value.split('?')[0]) === filename;
     });
     if (!adminSession && !studentEmail && !publicBrandingFile) return res.status(401).json({ error: 'Autenticação necessária para acessar este arquivo.' });
-    if (studentEmail && baseDir === runtimePaths.UPLOADS_DIR && !publicBrandingFile) {
-        const entry = (db.memory.library || []).find(item => item.filename === req.params.filename);
-        // Aluno só acessa uploads que sejam itens de biblioteca. Sem esse guard,
-        // um upload sem registro na biblioteca era servido a qualquer aluno
-        // autenticado (vazamento de material entre cursos).
-        if (!entry) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
-        if (entry.courseId) {
-            const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
-            const rawClasses = student && Array.isArray(student.classes) ? student.classes : [];
-            const courseIds = new Set(rawClasses.filter(item => item && typeof item === 'object').map(item => item.courseId).filter(Boolean));
-            rawClasses.filter(item => typeof item === 'string').forEach(className => {
-                const matches = (db.memory.classes || []).filter(cls => cls.name === className);
-                if (matches.length === 1 && matches[0].courseId) courseIds.add(matches[0].courseId);
-            });
-            if (!courseIds.has(entry.courseId)) return res.status(403).json({ error: 'Arquivo fora dos cursos autorizados.' });
-        }
-    }
     const ext = path.extname(target).toLowerCase();
-    if (['.html', '.htm', '.js', '.mjs', '.svg', '.exe', '.bat', '.cmd', '.ps1'].includes(ext)) {
+    // SVG só das imagens do conteúdo (content/imagens); enviado pelo usuário, não.
+    const isContentImage = baseDir !== runtimePaths.UPLOADS_DIR;
+    if (BLOCKED_FILE_EXTENSIONS.includes(ext) || (ext === '.svg' && !isContentImage)) {
         return res.status(415).json({ error: 'Este formato não pode ser servido pela aplicação.' });
     }
-    const inline = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)
+    if (studentEmail && !adminSession && !publicBrandingFile) {
+        const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
+        if (isContentImage) {
+            // Imagens das apostilas: aluno com matrícula aprovada (UXA-09).
+            if (!studentHasApprovedClass(student, studentBelongsToClass)) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
+        } else {
+            const entry = (db.memory.library || []).find(item => item.filename === filename);
+            if (entry) {
+                if (entry.courseId) {
+                    const rawClasses = student && Array.isArray(student.classes) ? student.classes : [];
+                    const courseIds = new Set(rawClasses.filter(item => item && typeof item === 'object').map(item => item.courseId).filter(Boolean));
+                    rawClasses.filter(item => typeof item === 'string').forEach(className => {
+                        const matches = (db.memory.classes || []).filter(cls => cls.name === className);
+                        if (matches.length === 1 && matches[0].courseId) courseIds.add(matches[0].courseId);
+                    });
+                    if (!courseIds.has(entry.courseId)) return res.status(403).json({ error: 'Arquivo fora dos cursos autorizados.' });
+                }
+            } else {
+                // Upload sem item de biblioteca só sai para o aluno quando é imagem citada
+                // numa apostila liberada para a turma dele (imagem inserida pelo editor,
+                // UXA-X2). Sem esse guard, qualquer upload era servido a qualquer aluno.
+                const allowed = INLINE_IMAGE_EXTENSIONS.includes(ext) && await uploadReferencedInReleasedContent({
+                    student, studentEmail, filename, studentBelongsToClass, getReleasedItemsForClass,
+                });
+                if (!allowed) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
+            }
+        }
+    }
+    const inline = INLINE_IMAGE_EXTENSIONS.includes(ext) || ext === '.svg'
         || (ext === '.pdf' && req.query.preview === '1');
     res.set('X-Content-Type-Options', 'nosniff');
-    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    // sandbox + default-src 'none': um SVG aberto direto na aba não roda script.
+    res.set('Content-Security-Policy', ext === '.svg'
+        ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox"
+        : "default-src 'none'; sandbox");
     res.set('Cache-Control', 'private, no-store');
-    if (!inline) res.set('Content-Disposition', `attachment; filename="${path.basename(target).replace(/["\r\n]/g, '_')}"`);
-    res.type(ext || 'application/octet-stream');
+    if (!inline) res.set('Content-Disposition', `attachment; filename="${filename.replace(/["\r\n]/g, '_')}"`);
+    res.type(ext === '.svg' ? 'image/svg+xml' : (ext || 'application/octet-stream'));
     return res.sendFile(target);
 }
 
-app.get('/uploads/:filename', (req, res) => sendControlledFile(runtimePaths.UPLOADS_DIR, req, res));
-app.get('/imagens/:filename', (req, res) => sendControlledFile(path.join(runtimePaths.CONTENT_DIR, 'imagens'), req, res));
+app.get('/uploads/:filename', (req, res) => {
+    const filename = String(req.params.filename || '');
+    if (!filename || path.basename(filename) !== filename) return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
+    return sendControlledFile(runtimePaths.UPLOADS_DIR, filename, req, res);
+});
+// As apostilas citam imagens em subpastas (imagens/fecop/cap1/x.svg).
+app.get('/imagens/*path', (req, res) => {
+    const segments = safeImageSegments(req.params.path);
+    if (!segments) return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
+    return sendControlledFile(path.join(runtimePaths.CONTENT_DIR, 'imagens'), segments.join('/'), req, res);
+});
 // IclassV3: serve o build da nova interface React (Vite -> web/dist).
 // Em desenvolvimento o Vite roda em :5173 com proxy para /api; para uso local
 // normal, rode `npm run build` na pasta web/ e o Express entrega tudo aqui.

@@ -217,15 +217,17 @@ export default function EditorPage() {
     try {
       const res = await fetch('/api/admin/upload-image', {
         method: 'POST',
-        headers: auth.adminAuth ? { Authorization: auth.adminAuth } : {},
+        // Login atual guarda só a sessão (x-admin-session); a credencial legada fica de reserva.
+        headers: auth.adminSession ? { 'x-admin-session': auth.adminSession } : (auth.adminAuth ? { Authorization: auth.adminAuth } : {}),
         body: form,
       })
       const data = await res.json().catch(() => null)
       if (!res.ok) throw new Error(data?.error || 'Falha no upload da imagem')
 
+      // No Markdown vai o endereço limpo; a sessão só entra na imagem exibida no editor.
       const url = resolveContentUrl(data.url)
       if (mode === 'markdown') {
-        onMarkdownChange(`${markdown.trimEnd()}\n\n![${file.name}](${url})\n`)
+        onMarkdownChange(`${markdown.trimEnd()}\n\n![${file.name}](${data.url})\n`)
       } else {
         editorRef.current?.focus()
         document.execCommand('insertHTML', false, `<p><img src="${escapeAttr(url)}" alt="${escapeAttr(file.name)}"></p>`)
