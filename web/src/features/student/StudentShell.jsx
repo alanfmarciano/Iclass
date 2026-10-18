@@ -1,15 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
-import { api } from '../../lib/api'
 import { StudentCourseGate } from './StudentCourseGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
 import { NotificationBell } from '../../components/ui/NotificationBell'
+import { useStudentHeartbeat } from './useStudentHeartbeat'
 const NAV = [
   { to: '/aluno', icon: Home, text: 'Início', end: true },
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
@@ -36,18 +36,7 @@ export function StudentShell() {
   const pageTitle = NAV.find((item) => item.to === pathname)?.text || 'Portal do Aluno'
   const notificationsEndpoint = cls && activeClass.courseId ? `/api/student/notifications?courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : null
   const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint="/api/student/notifications/seen" />
-  useEffect(() => {
-    if (!auth.email) return
-    const ping = () => api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`).catch((err) => {
-      if (err?.status === 401 || err?.data?.sessionRevoked === true) {
-        logout()
-        nav('/login')
-      }
-    })
-    ping()
-    const id = setInterval(ping, 4000)
-    return () => clearInterval(id)
-  }, [auth.email, logout, nav])
+  useStudentHeartbeat()
 
   if (interfacePreset === 'lumen') {
     const studentName = ((s.nomeSocial && s.nomeSocial.trim()) || s.name) || auth.email || 'Aluno'

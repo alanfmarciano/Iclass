@@ -13,6 +13,7 @@ const {
 } = require('../utils/examApplications.js');
 const { attemptOverdueMs } = require('../utils/examDeadline.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
+const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 
 // Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
@@ -242,6 +243,15 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
                 focusLocked: true,
             });
         }
+        // O navegador manda o identificador opaco de cada alternativa (AVA-05); o estado
+        // guarda a letra original, como sempre.
+        const decodedAnswers = decodeAttemptAnswers(answers || {}, {
+            application,
+            onlineConfig: cls?.onlineExamConfigs?.[examKey.trim()] || null,
+            state: existing,
+            evaluation: db.memory.evaluations?.[examKey.trim()],
+            examKey: examKey.trim(),
+        });
         db.memory.studentExamState[key] = {
             ...existing,
             studentEmail: normalizedEmail,
@@ -249,7 +259,7 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
             applicationId: application?.id || existing.applicationId || null,
             attemptId: existing.attemptId || attemptId || null,
             status: 'active',
-            answers: answers || {},
+            answers: decodedAnswers,
             timerRemaining: existing.deadlineAt
                 ? Math.max(0, Math.ceil((Number(existing.deadlineAt) - Date.now()) / 1000))
                 : null,
@@ -325,11 +335,13 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
         let examConfigVersion = null;
         let attemptsUsed = 0;
         let maxAttempts = null;
+        let scopeConfig = null;
         if (studentClass && examKey) {
             const classes = db.memory.classes || [];
             const cls = findClassByNameAndCourse(classes, studentClass, courseId)
                 || classes.find(c => c.name && c.name.toLowerCase() === studentClass.trim().toLowerCase());
             const onlineCfg = cls && cls.onlineExamConfigs && cls.onlineExamConfigs[examKey.trim()];
+            scopeConfig = onlineCfg || null;
             if (onlineCfg) {
                 examConfigVersion = onlineCfg.updatedAt || null;
                 maxAttempts = normalizeMaxAttempts(onlineCfg.maxAttempts);
@@ -352,7 +364,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
         
         res.json({
             success: true,
-            state: stateWithoutSecrets(state),
+            state: stateForStudent(stateWithoutSecrets(state), answerIdScope({ onlineConfig: scopeConfig, examKey: examKey.trim() })),
             messages,
             examConfigVersion,
             attemptsUsed,

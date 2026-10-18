@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { ShieldAlert, Clock, LockKeyhole, CheckCircle2, ArrowLeft, Send, AlertTriangle, Loader2, History, Trash2, Play } from 'lucide-react'
+import { useParams, useNavigate, useSearchParams, useBlocker } from 'react-router-dom'
+import { ShieldAlert, Clock, LockKeyhole, CheckCircle2, ArrowLeft, Send, AlertTriangle, Loader2, History, Trash2, Play, Info } from 'lucide-react'
 import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
 import { Input } from '../../../components/ui/Input'
@@ -11,7 +11,7 @@ import { ConfirmDialog, Modal } from '../../../components/ui/Modal'
 import { api } from '../../../lib/api'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
-import { pickSnapshot, normQuestion, fmtTime } from './examUtils'
+import { pickSnapshot, normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
 import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, wait } from './examAutoSubmit'
 import {
   clearExamDraft,
@@ -29,6 +29,8 @@ import {
 const SYNC_MS = 4000
 const KEYSTROKE_FLUSH_MS = 2000
 const KEYSTROKE_FLUSH_SIZE = 20
+// Identificador opaco da alternativa (AVA-05); uma letra avulsa vem de páginas antigas.
+const ANSWER_ID_PATTERN = /^[0-9A-Z]{13}$/
 
 // Combinações bloqueadas dentro da prova (fluxos de cópia/busca/impressão/devtools/Lens).
 // Retorna a razão se a combinação for suspeita/bloqueável, senão null.
@@ -82,11 +84,15 @@ export default function ExamRunner() {
   const [instructionsAccepted, setInstructionsAccepted] = useState(false)
   const [submitConfirm, setSubmitConfirm] = useState(false)
   const [exitConfirm, setExitConfirm] = useState(false)
+  const [leavingBusy, setLeavingBusy] = useState(false)
   const [reportedQuestions, setReportedQuestions] = useState(() => new Set())
   const [reportQuestion, setReportQuestion] = useState(null)
   const [reportForm, setReportForm] = useState({ reason: 'sem_resposta_correta', text: '' })
   const [reportBusy, setReportBusy] = useState(false)
-  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(() => !!fullscreenElement())
+  // Aparelho sem tela cheia para a página (iPhone): a prova abre sem exigir tela cheia,
+  // com aviso ao aluno e registro no Monitor (UXA-02). Foco e aba seguem monitorados.
+  const [noFullscreen] = useState(() => !fullscreenSupported())
   const [timeupInfo, setTimeupInfo] = useState(null)
   const answersRef = useRef(answers)
   const submittedRef = useRef(false)
@@ -105,6 +111,9 @@ export default function ExamRunner() {
   // Cópia local cifrada (AVA-11): a chave da tentativa fica só em memória.
   const draftCryptoRef = useRef(null) // { attemptId, rawKey, cryptoKey }
   const draftReadyRef = useRef(null) // tentativa cuja cópia anterior já foi lida
+  const leavingRef = useRef(false) // saída confirmada pelo aluno: a navegação segue
+  const blockedActionRef = useRef(null) // POP (voltar do navegador) ou PUSH/REPLACE (link)
+  const unsupportedLoggedRef = useRef(null) // tentativa já registrada como sem tela cheia
   answersRef.current = answers
   phaseRef.current = phase
   attemptIdRef.current = attemptId
@@ -310,15 +319,19 @@ export default function ExamRunner() {
     })
   }, [email, studentClass, courseId, examKey, applicationId, attemptId])
 
+  // Pede a tela cheia e diz se a página ficou em tela cheia. Sem a API (iPhone) ou com a
+  // tela cheia proibida, retorna false: antes retornava true sem nada acontecer (UXA-02).
   const enterFullscreen = useCallback(async () => {
+    if (fullscreenElement()) return true
+    if (!fullscreenSupported()) return false
     try {
       const el = document.documentElement
-      if (el.requestFullscreen) await el.requestFullscreen()
-      else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen()
-      return true
+      if (typeof el.requestFullscreen === 'function') await el.requestFullscreen()
+      else await el.webkitRequestFullscreen()
     } catch (err) {
       return false
     }
+    return !!fullscreenElement()
   }, [])
 
   // Captura do histórico de digitação + bloqueio de atalhos perigosos (só na fase ativa).
@@ -370,7 +383,7 @@ export default function ExamRunner() {
   // Detecção de saída de tela cheia → pausa (mesmo fluxo do blur, com desbloqueio pelo professor).
   useEffect(() => {
     const onFsChange = () => {
-      const active = !!document.fullscreenElement
+      const active = !!fullscreenElement()
       setIsFullscreen(active)
       if (!active && phase === 'active') {
         flushKeystrokes()
@@ -378,9 +391,23 @@ export default function ExamRunner() {
         setPhase('paused')
       }
     }
+    // O Safari do iPad antigo só emite o evento com prefixo.
     document.addEventListener('fullscreenchange', onFsChange)
-    return () => document.removeEventListener('fullscreenchange', onFsChange)
+    document.addEventListener('webkitfullscreenchange', onFsChange)
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange)
+      document.removeEventListener('webkitfullscreenchange', onFsChange)
+    }
   }, [phase, email, studentClass, courseId, examKey, applicationId, attemptId, flushKeystrokes])
+
+  // Aparelho sem tela cheia: registra uma vez por tentativa para o professor (Monitor).
+  // Não pausa a prova; perder o foco ou esconder a aba continua pausando.
+  useEffect(() => {
+    if (!noFullscreen || phase !== 'active' || !attemptId) return
+    if (unsupportedLoggedRef.current === attemptId) return
+    unsupportedLoggedRef.current = attemptId
+    api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'fullscreen_unsupported', details: 'Dispositivo sem tela cheia: a prova seguiu sem ela' }).catch(() => {})
+  }, [noFullscreen, phase, email, studentClass, courseId, examKey, applicationId, attemptId])
 
   useEffect(() => {
     if (phase !== 'active') return
@@ -498,6 +525,18 @@ export default function ExamRunner() {
         if (loadedAttemptRef.current !== stateAttemptId) {
           await loadAttemptAnswers(stateAttemptId, r.localCopyKey, serverAnswers)
         } else {
+          // Letra avulsa de uma cópia ou página antiga já confirmada pelo servidor: troca
+          // pelo identificador que o servidor devolveu, para a alternativa ficar marcada.
+          const confirmed = lastSavedRef.current || {}
+          const legacy = Object.entries(answersRef.current)
+            .filter(([number, value]) => !ANSWER_ID_PATTERN.test(String(value)) && confirmed[number] === value && serverAnswers[number])
+          if (legacy.length) {
+            setAnswers((current) => {
+              const next = { ...current }
+              legacy.forEach(([number, value]) => { if (next[number] === value) next[number] = serverAnswers[number] })
+              return next
+            })
+          }
           lastSavedRef.current = serverAnswers
         }
       } else if (!st.startedAt && !timeupRef.current) {
@@ -672,6 +711,8 @@ export default function ExamRunner() {
       if (Number.isFinite(Number(response.state?.timerRemaining))) setRemaining(Number(response.state.timerRemaining))
       await loadAttemptAnswers(response.attemptId, response.localCopyKey, response.state?.answers || {})
       setPhase('active')
+      // A prova começa da primeira questão (a página das instruções podia estar rolada).
+      document.querySelector('main')?.scrollTo?.(0, 0)
       toast.success('Tentativa iniciada')
     } catch (error) {
       if (error.data?.timeOver) {
@@ -692,21 +733,75 @@ export default function ExamRunner() {
   // Reentra em tela cheia por gesto do aluno após liberação do professor.
   async function resumeFullscreen() {
     const ok = await enterFullscreen()
+    setIsFullscreen(!!fullscreenElement())
     if (ok) sync()
   }
 
-  async function leaveExam() {
-    setExitConfirm(false)
+  // Saída da prova em andamento (AVA-12, UXA-X1): qualquer caminho para fora da rota
+  // (botão Sair, voltar do navegador, link) passa pela confirmação. A saída salva as
+  // respostas e fica registrada no Monitor (exam_left, que bloqueia a prova até o
+  // professor liberar, como já fazia o botão Sair). Ao voltar, a tentativa é a mesma.
+  const blocker = useBlocker(useCallback(({ currentLocation, nextLocation, historyAction }) => {
+    if (leavingRef.current || submittedRef.current || phaseRef.current !== 'active') return false
+    if (currentLocation.pathname === nextLocation.pathname && currentLocation.search === nextLocation.search) return false
+    // Sessão encerrada (logout, revogação): o portal manda para o login sem perguntar.
+    if (nextLocation.pathname === '/login') return false
+    blockedActionRef.current = historyAction
+    return true
+  }, []))
+  const blockerRef = useRef(blocker)
+  blockerRef.current = blocker
+  const navigationBlocked = blocker.state === 'blocked'
+
+  // Navegação bloqueada e a prova deixou de estar em andamento (pausa, entrega): libera.
+  useEffect(() => {
+    if (navigationBlocked && phase !== 'active' && !leavingRef.current) blockerRef.current.reset()
+  }, [navigationBlocked, phase])
+
+  async function leaveAttempt(details) {
+    if (leavingRef.current) return false
+    leavingRef.current = true
+    setLeavingBusy(true)
     await saveAnswersIfDirty()
-    await api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details: 'Aluno saiu usando o botão da prova' }).catch(() => {})
+    flushKeystrokes()
+    await api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details }).catch(() => {})
+    if (mountedRef.current) {
+      setLeavingBusy(false)
+      setExitConfirm(false)
+    }
+    return true
+  }
+
+  async function leaveExam() {
+    if (blockerRef.current.state === 'blocked') {
+      const viaBack = blockedActionRef.current === 'POP'
+      if (!await leaveAttempt(viaBack ? 'Saiu da prova pelo botão voltar do navegador' : 'Saiu da prova por um link do portal')) return
+      if (blockerRef.current.state === 'blocked') blockerRef.current.proceed()
+      return
+    }
+    if (!await leaveAttempt('Aluno saiu usando o botão da prova')) return
     nav('/aluno/provas')
+  }
+
+  function stayInExam() {
+    setExitConfirm(false)
+    if (blockerRef.current.state === 'blocked') blockerRef.current.reset()
   }
 
   // Saída pelas telas de pausa: salva antes o que ainda não chegou ao servidor.
   async function leaveToExamList() {
+    leavingRef.current = true
     await saveAnswersIfDirty()
     nav('/aluno/provas')
   }
+
+  // Desmontagem sem saída confirmada (sessão encerrada, manutenção): as respostas que
+  // ainda não chegaram ao servidor vão com keepalive (a digitação sai na limpeza do
+  // efeito de captura).
+  useEffect(() => () => {
+    if (leavingRef.current || submittedRef.current || phaseRef.current !== 'active') return
+    saveRef.current?.({ keepalive: true })
+  }, [])
 
   function openQuestionReport(question) {
     if (reportedQuestions.has(Number(question.number))) {
@@ -780,6 +875,24 @@ export default function ExamRunner() {
     </Modal>
   )
   const withInstructorMessage = (content) => <>{content}{messageHistoryButton}{messageHistoryModal}{instructorMessageOverlay}</>
+  // Confirmação de saída: botão Sair da prova, voltar do navegador ou link (AVA-12).
+  const exitDialog = (
+    <Modal
+      open={exitConfirm || navigationBlocked}
+      onClose={() => !leavingBusy && stayInExam()}
+      title="Sair da prova agora?"
+      description="Suas respostas serão salvas e a saída fica registrada para o professor."
+      footer={<>
+        <Button variant="ghost" onClick={stayInExam} disabled={leavingBusy}>Continuar na prova</Button>
+        <Button onClick={leaveExam} loading={leavingBusy}>Salvar e sair</Button>
+      </>}
+    >
+      {navigationBlocked && (
+        <p className="text-sm text-text mb-2">{blockedActionRef.current === 'POP' ? 'Você usou o botão voltar do navegador.' : 'Você tentou abrir outra página do portal.'}</p>
+      )}
+      <p className="text-sm text-muted">A prova fica bloqueada até o professor liberar. Depois disso, você volta à mesma tentativa enquanto a aplicação estiver aberta e ainda houver tempo.</p>
+    </Modal>
+  )
 
   if (phase === 'loading') return withInstructorMessage(
     <Center>
@@ -878,9 +991,12 @@ export default function ExamRunner() {
         </div>
         <ul className="mt-5 space-y-2 text-sm text-muted list-disc pl-5">
           <li>Suas respostas são salvas automaticamente durante a prova.</li>
-          <li>A prova roda em <strong>tela cheia</strong>. Sair da tela cheia, da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>
+          {noFullscreen
+            ? <li>Este aparelho não permite <strong>tela cheia</strong>: a prova abre sem ela e o professor é avisado. Sair da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>
+            : <li>A prova roda em <strong>tela cheia</strong>. Sair da tela cheia, da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>}
           <li>Durante a prova, os atalhos de teclado e a digitação são monitorados para garantir a integridade da avaliação.</li>
-          <li>Se você sair, poderá retornar à mesma tentativa enquanto houver tempo e a aplicação estiver aberta.</li>
+          <li>Durante a prova, o menu do portal fica indisponível. Sair da prova (pelo botão Sair ou pelo voltar do navegador) pede confirmação, fica registrado para o professor e bloqueia a prova até a liberação dele.</li>
+          <li>Depois de sair, você retorna à mesma tentativa, com as respostas salvas, enquanto houver tempo e a aplicação estiver aberta.</li>
           <li>Revise as respostas antes de confirmar o envio final.</li>
         </ul>
         <label className="mt-5 flex items-start gap-3 rounded-lg border border-border p-3 text-sm text-text cursor-pointer">
@@ -935,7 +1051,7 @@ export default function ExamRunner() {
     </div>
   )
 
-  if (phase === 'active' && !isFullscreen) return withInstructorMessage(
+  if (phase === 'active' && !isFullscreen && !noFullscreen) return withInstructorMessage(
     <div className="fixed inset-0 z-[9999] grid place-items-center bg-bg/95 backdrop-blur-sm p-4">
       <div className="text-center max-w-md">
         <div className="w-16 h-16 grid place-items-center rounded-full bg-warning-soft text-warning mb-4 mx-auto"><ShieldAlert size={32} /></div>
@@ -944,14 +1060,7 @@ export default function ExamRunner() {
         <Button className="mt-6" icon={Play} onClick={resumeFullscreen}>Voltar à tela cheia</Button>
         <div className="mt-4"><Button variant="ghost" icon={ArrowLeft} onClick={() => setExitConfirm(true)}>Sair da prova</Button></div>
       </div>
-      <ConfirmDialog
-        open={exitConfirm}
-        onClose={() => setExitConfirm(false)}
-        onConfirm={leaveExam}
-        title="Sair da prova agora?"
-        description="Suas respostas serão salvas e você poderá voltar à mesma tentativa enquanto a aplicação estiver aberta e ainda houver tempo."
-        confirmLabel="Salvar e sair"
-      />
+      {exitDialog}
     </div>
   )
 
@@ -967,14 +1076,7 @@ export default function ExamRunner() {
         description={`Você respondeu ${answeredCount} de ${questions.length} questões. Depois do envio esta tentativa será encerrada.`}
         confirmLabel="Enviar prova"
       />
-      <ConfirmDialog
-        open={exitConfirm}
-        onClose={() => setExitConfirm(false)}
-        onConfirm={leaveExam}
-        title="Sair da prova agora?"
-        description="Suas respostas serão salvas e você poderá voltar à mesma tentativa enquanto a aplicação estiver aberta e ainda houver tempo."
-        confirmLabel="Salvar e sair"
-      />
+      {exitDialog}
       <Modal
         open={!!reportQuestion}
         onClose={() => !reportBusy && setReportQuestion(null)}
@@ -1003,23 +1105,34 @@ export default function ExamRunner() {
           <p className="-mt-3 text-xs text-subtle">{reportForm.text.length}/300 caracteres</p>
         </div>
       </Modal>
-      <div className="sticky top-0 z-10 -mx-4 md:-mx-6 px-4 md:px-6 py-3 bg-surface/95 backdrop-blur border-b border-border flex items-center gap-3">
-        <div>
-          <h1 className="text-base font-bold text-text">{examTitle || examKey.replace(/_/g, ' ')}</h1>
-          <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
-          <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
-            {saveState.status === 'saving' && 'Salvando respostas...'}
-            {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
-            {saveState.status === 'error' && 'Falha no último salvamento'}
-          </p>
+      {/* Cabeçalho que cabe no celular e com zoom de 200% (UXA-03, ACS-16): o título
+          encurta com reticências (uma linha no celular, até duas a partir de 640 px), Sair
+          e Mensagens viram só ícone abaixo de 640 px e o Enviar fica sempre visível. */}
+      <div className="sticky top-0 z-10 -mx-4 md:-mx-6 px-3 sm:px-4 md:px-6 py-2 sm:py-3 bg-surface/95 backdrop-blur border-b border-border">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate sm:whitespace-normal sm:line-clamp-2 text-sm sm:text-base font-bold text-text" title={examTitle || examKey.replace(/_/g, ' ')}>{examTitle || examKey.replace(/_/g, ' ')}</h1>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
+              <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
+                {saveState.status === 'saving' && 'Salvando respostas...'}
+                {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
+                {saveState.status === 'error' && 'Falha no último salvamento'}
+              </p>
+            </div>
+          </div>
+          {remaining != null && (
+            <div className={`shrink-0 flex items-center gap-1 font-mono text-sm sm:text-base font-bold tabular-nums ${remaining < 60 ? 'text-danger' : 'text-text'}`} title="Tempo restante"><Clock size={16} aria-hidden="true" /> {fmtTime(remaining)}</div>
+          )}
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+            <Button size="sm" variant="ghost" icon={ArrowLeft} className="px-2 sm:px-3" aria-label="Sair" title="Sair da prova" onClick={() => setExitConfirm(true)}><span className="hidden sm:inline">Sair</span></Button>
+            <Button size="sm" variant="secondary" icon={History} className="px-2 sm:px-3" aria-label="Mensagens" title="Mensagens do professor" onClick={openMessageHistory}><span className="hidden sm:inline">Mensagens</span></Button>
+            <Button size="sm" icon={Send} className="px-2.5 sm:px-3" loading={submitting} onClick={() => setSubmitConfirm(true)}>Enviar</Button>
+          </div>
         </div>
-        <div className="flex-1" />
-        {remaining != null && (
-          <div className={`flex items-center gap-1.5 font-mono font-bold ${remaining < 60 ? 'text-danger' : 'text-text'}`}><Clock size={16} /> {fmtTime(remaining)}</div>
+        {noFullscreen && (
+          <p className="mt-1 flex items-center gap-1 text-[11px] text-subtle"><Info size={12} aria-hidden="true" className="shrink-0" /> Este aparelho não permite tela cheia. A prova segue normalmente e o professor foi avisado.</p>
         )}
-        <Button size="sm" variant="ghost" icon={ArrowLeft} onClick={() => setExitConfirm(true)}>Sair</Button>
-        <Button size="sm" variant="secondary" icon={History} onClick={openMessageHistory}>Mensagens</Button>
-        <Button size="sm" icon={Send} loading={submitting} onClick={() => setSubmitConfirm(true)}>Enviar</Button>
       </div>
 
       <div className="py-5 space-y-4">
@@ -1038,25 +1151,29 @@ export default function ExamRunner() {
                 size="sm"
                 variant="ghost"
                 icon={AlertTriangle}
-                className={reportedQuestions.has(Number(q.number)) ? 'text-warning' : 'text-subtle'}
-                aria-label="Reportar problema nesta questão"
+                className={`shrink-0 px-2 sm:px-3 ${reportedQuestions.has(Number(q.number)) ? 'text-warning' : 'text-subtle'}`}
+                aria-label={reportedQuestions.has(Number(q.number)) ? 'Problema já reportado nesta questão' : 'Reportar problema nesta questão'}
                 title={reportedQuestions.has(Number(q.number)) ? 'Problema reportado' : 'Reportar problema'}
                 onClick={() => openQuestionReport(q)}
               >
-                {reportedQuestions.has(Number(q.number)) ? 'Reportada' : 'Reportar'}
+                <span className="hidden sm:inline">{reportedQuestions.has(Number(q.number)) ? 'Reportada' : 'Reportar'}</span>
               </Button>
             </div>
             <div className="space-y-2 pl-9">
+              {/* O aluno vê a letra da posição (A, B, C... nesta versão) e a resposta guarda o
+                  identificador da alternativa; a letra original nunca chega aqui (AVA-05). */}
               {q.alternatives.map((alt) => {
-                const sel = answers[q.number] === alt.letter
+                const sel = answers[q.number] === alt.id
                 return (
                   <button
-                    key={alt.letter}
+                    key={alt.id}
+                    type="button"
+                    aria-pressed={sel}
                     disabled={(remaining != null && remaining <= 0) || (cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number))}
-                    onClick={() => setAnswers((a) => ({ ...a, [q.number]: alt.letter }))}
+                    onClick={() => setAnswers((a) => ({ ...a, [q.number]: alt.id }))}
                     className={`w-full text-left flex items-center gap-3 p-3 rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-60 ${sel ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}
                   >
-                    <span className={`w-6 h-6 shrink-0 grid place-items-center rounded-full text-xs font-bold ${sel ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>{alt.letter}</span>
+                    <span className={`w-6 h-6 shrink-0 grid place-items-center rounded-full text-xs font-bold ${sel ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>{alt.label}</span>
                     <span className="text-sm text-text">{alt.text}</span>
                   </button>
                 )

@@ -17,6 +17,7 @@ import { useToast } from '../../context/ToastProvider'
 import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { deliveryLabel } from './attemptDelivery'
+import { OriginalLetter, reviewLettersNote } from './reviewLetters'
 
 function useCountUp(value, durationMs = 900) {
   const [display, setDisplay] = useState(0)
@@ -943,6 +944,7 @@ export default function ResultadosPage() {
                 <Badge tone="neutral">Versão {review.assignedVersion || detail.assignedVersion || '-'}</Badge>
                 {review.examCode && <span>Código da prova: {review.examCode}</span>}
               </div>
+              {reviewLettersNote(review.alternativeLabels) && <p className="text-xs text-subtle">{reviewLettersNote(review.alternativeLabels)}</p>}
               {review.questions.map((question) => (
                 <section key={`${question.questionNumber}-${question.position}`} className="border-t border-border py-4 first:border-t-0 first:pt-0">
                   <div className="flex items-start gap-3">
@@ -966,6 +968,7 @@ export default function ResultadosPage() {
                           return (
                             <div key={`${question.position}-${alternative.canonicalLetter || alternative.letter}`} className={`flex flex-wrap items-center gap-3 px-2 py-2.5 ${optionStyle}`}>
                               <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
+                              <OriginalLetter seen={alternative.letter} original={alternative.canonicalLetter} />
                               <span className="min-w-0 flex-1 text-sm text-text">{alternative.text}</span>
                               {alternative.selectedByStudent && (
                                 <span className={`inline-flex items-center gap-1 text-xs font-semibold ${alternative.correct ? 'text-success' : 'text-danger'}`}>
@@ -991,6 +994,7 @@ export default function ResultadosPage() {
           )}
           {!reviewLoading && (!review?.questions || review.questions.length === 0) && Array.isArray(detail.gradedAnswers) && detail.gradedAnswers.length > 0 && (
             <div className="overflow-x-auto border-y border-border">
+              {detail.alternativeLabels === 'position' && <p className="px-3 py-2 text-xs text-subtle">Letras do gabarito original. Na tela do aluno as alternativas seguiam a ordem da versão dele.</p>}
               <table className="w-full text-sm">
                 <thead><tr className="bg-surface-2 text-muted"><th className="text-left px-3 py-2">Questão</th><th className="text-left px-3 py-2">Aluno</th><th className="text-left px-3 py-2">Correta</th><th className="text-left px-3 py-2">Status</th></tr></thead>
                 <tbody>{detail.gradedAnswers.map((a, i) => <tr key={i} className="border-t border-border"><td className="px-3 py-2">{a.questionNumber}</td><td className="px-3 py-2">{a.studentChoice || '-'}</td><td className="px-3 py-2">{a.correctAnswer || '-'}</td><td className="px-3 py-2"><Badge tone={a.isCorrect ? 'success' : 'danger'}>{a.isCorrect ? 'Correta' : 'Errada'}</Badge></td></tr>)}</tbody>

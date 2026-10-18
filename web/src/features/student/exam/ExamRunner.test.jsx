@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { examDraftStorageKey, importExamDraftKey, readExamDraft, writeExamDraft } from '../../../lib/examDrafts'
 
@@ -62,17 +62,31 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
   }
 }
 
+// Roteador de dados como o do app (main.jsx): o ExamRunner usa useBlocker. A página
+// anterior no histórico é o início do portal, para testar o voltar do navegador.
 function renderRunner() {
-  return render(
-    <MemoryRouter initialEntries={[`/aluno/prova/${EXAM}?applicationId=app-1`]}>
-      <Routes>
-        <Route path="/aluno/prova/:examKey" element={<ExamRunner />} />
-      </Routes>
-    </MemoryRouter>
-  )
+  const router = createMemoryRouter([
+    { path: '/aluno/prova/:examKey', element: <ExamRunner /> },
+    { path: '/aluno/provas', element: <p>Lista de provas</p> },
+    { path: '/aluno/modulos', element: <p>Página de módulos</p> },
+    { path: '/aluno', element: <p>Início do portal</p> },
+    { path: '/login', element: <p>Tela de login</p> },
+  ], { initialEntries: ['/aluno', `/aluno/prova/${EXAM}?applicationId=app-1`], initialIndex: 1 })
+  render(<RouterProvider router={router} />)
+  return router
 }
 
-// jsdom não tem tela cheia: simula o navegador já em tela cheia.
+// jsdom não tem tela cheia: o navegador de teste ganha a API (como um computador) e
+// enterFullscreen simula a página já em tela cheia.
+function installFullscreenApi() {
+  Object.defineProperty(Element.prototype, 'requestFullscreen', { configurable: true, writable: true, value: vi.fn(async () => {}) })
+}
+
+function removeFullscreenApi() {
+  delete Element.prototype.requestFullscreen
+  delete Element.prototype.webkitRequestFullscreen
+}
+
 function enterFullscreen() {
   Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => document.body })
   act(() => { document.dispatchEvent(new Event('fullscreenchange')) })
@@ -89,11 +103,13 @@ beforeEach(() => {
   Object.values(toast).forEach((fn) => fn.mockReset())
   sessionStorage.clear()
   localStorage.clear()
+  installFullscreenApi()
 })
 
 afterEach(() => {
   cleanup()
   delete document.fullscreenElement
+  removeFullscreenApi()
 })
 
 describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', () => {
@@ -265,5 +281,196 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     renderRunner()
     expect(await screen.findByText('Esta aplicação foi encerrada pelo professor.')).toBeVisible()
     expect(screen.queryByText(/desconsiderou/)).not.toBeInTheDocument()
+  })
+})
+
+// Identificadores opacos que o servidor manda no lugar da letra original (AVA-05).
+const IDS = { dois: 'K1QW0Z8V3M2PA', tres: '0B7XN4R2T9LQC', onze: 'Z9Y8X7W6V5U4T' }
+
+// Versão embaralhada: na tela a ordem é Três (A), Dois (B), Onze (C).
+function withIds(response) {
+  const question = response.onlineExamConfigs[EXAM].versionSnapshots[0].questions[0]
+  question.alternatives = [
+    { id: IDS.tres, letter: IDS.tres, text: 'Três' },
+    { id: IDS.dois, letter: IDS.dois, text: 'Dois' },
+    { id: IDS.onze, letter: IDS.onze, text: 'Onze' },
+  ]
+  return response
+}
+
+function startedAttemptResponse() {
+  return { success: true, attemptId: 'att-1', examConfigVersion: 'v1', localCopyKey: LOCAL_KEY, state: { attemptId: 'att-1', startedAt: Date.now(), timerRemaining: 600, answers: {}, assignedVersion: 'A' } }
+}
+
+function activityLogs(eventType) {
+  return postsTo('/api/student/log-activity').filter(([, body]) => body.eventType === eventType)
+}
+
+describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da prova', () => {
+  it('mostra a letra da posição na versão do aluno e responde com o identificador da alternativa (AVA-05)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(withIds(syncResponse({ timerRemaining: 600 })))
+    renderRunner()
+    enterFullscreen()
+    const tres = await screen.findByRole('button', { name: /Três/ })
+    expect(within(tres).getByText('A')).toBeVisible()
+    expect(within(screen.getByRole('button', { name: /Dois/ })).getByText('B')).toBeVisible()
+    expect(within(screen.getByRole('button', { name: /Onze/ })).getByText('C')).toBeVisible()
+    expect(screen.queryByText(IDS.tres)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Dois/ }))
+    expect(screen.getByRole('button', { name: /Dois/ })).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(postsTo('/api/student/autosave-progress').length).toBeGreaterThan(0), { timeout: 6000 })
+    expect(postsTo('/api/student/autosave-progress')[0][1]).toMatchObject({ attemptId: 'att-1', answers: { 1: IDS.dois } })
+  }, 15000)
+
+  it('ao recarregar, a resposta salva (identificador) volta marcada na alternativa certa (AVA-05)', async () => {
+    apiMock.get.mockResolvedValue(withIds(syncResponse({ timerRemaining: 600, answers: { 1: IDS.onze } })))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('1/1 respondidas')).toBeVisible()
+    expect(screen.getByRole('button', { name: /Onze/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /Três/ })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('letra avulsa de uma cópia antiga do aparelho vira o identificador depois que o servidor confirma (AVA-05)', async () => {
+    await writeCopy('att-1', { 1: 'B' }, false)
+    apiMock.get.mockResolvedValueOnce(withIds(syncResponse({ timerRemaining: 600, answers: {} })))
+    apiMock.get.mockResolvedValue(withIds(syncResponse({ timerRemaining: 600, answers: { 1: IDS.dois } })))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('1/1 respondidas')).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: /Dois/ })).toHaveAttribute('aria-pressed', 'true'), { timeout: 7000 })
+    expect(postsTo('/api/student/autosave-progress')[0][1]).toMatchObject({ answers: { 1: 'B' } })
+    const saves = postsTo('/api/student/autosave-progress').length
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 4500)) })
+    expect(postsTo('/api/student/autosave-progress')).toHaveLength(saves)
+  }, 20000)
+
+  it('aparelho sem tela cheia (iPhone): a prova abre sem exigir tela cheia, avisa o aluno e registra uma vez para o Monitor (UXA-02)', async () => {
+    removeFullscreenApi()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    renderRunner()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    expect(screen.queryByText('Tela cheia obrigatória')).not.toBeInTheDocument()
+    expect(screen.getByText(/Este aparelho não permite tela cheia/)).toBeVisible()
+    await waitFor(() => expect(activityLogs('fullscreen_unsupported')).toHaveLength(1))
+    expect(activityLogs('fullscreen_unsupported')[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1' })
+    await waitFor(() => expect(apiMock.get.mock.calls.length).toBeGreaterThan(1), { timeout: 6000 })
+    expect(activityLogs('fullscreen_unsupported')).toHaveLength(1)
+    expect(screen.queryByRole('heading', { name: 'Prova pausada' })).not.toBeInTheDocument()
+  }, 15000)
+
+  it('Iniciar prova sem API de tela cheia leva às questões, não a uma tela de tela cheia sem saída (UXA-02)', async () => {
+    const user = userEvent.setup()
+    removeFullscreenApi()
+    apiMock.get.mockResolvedValueOnce(syncResponse({ startedAt: null }))
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => (url.endsWith('/start-attempt') ? startedAttemptResponse() : { success: true }))
+    renderRunner()
+    expect(await screen.findByText(/Este aparelho não permite/)).toBeVisible()
+    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: 'Iniciar prova' }))
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    expect(screen.queryByText('Tela cheia obrigatória')).not.toBeInTheDocument()
+  })
+
+  it('com tela cheia disponível, Iniciar prova pede a tela cheia e as questões só aparecem nela', async () => {
+    const user = userEvent.setup()
+    Element.prototype.requestFullscreen = vi.fn(async function requestFullscreen() { enterFullscreen() })
+    apiMock.get.mockResolvedValueOnce(syncResponse({ startedAt: null }))
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => (url.endsWith('/start-attempt') ? startedAttemptResponse() : { success: true }))
+    renderRunner()
+    await user.click(await screen.findByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: 'Iniciar prova' }))
+    expect(Element.prototype.requestFullscreen).toHaveBeenCalled()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    expect(screen.queryByText(/Este aparelho não permite/)).not.toBeInTheDocument()
+    expect(activityLogs('fullscreen_unsupported')).toHaveLength(0)
+  })
+
+  it('voltar à prova com a página já em tela cheia mostra as questões (antes ficava presa em "Voltar à tela cheia")', async () => {
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => document.body })
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    renderRunner()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    expect(screen.queryByText('Tela cheia obrigatória')).not.toBeInTheDocument()
+  })
+
+  it('voltar do navegador durante a prova pede confirmação; continuar mantém a prova e sair registra no Monitor (AVA-12, UXA-X1)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const router = renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+
+    await act(async () => { router.navigate(-1) })
+    expect(await screen.findByRole('dialog', { name: 'Sair da prova agora?' })).toBeVisible()
+    expect(screen.getByText('Você usou o botão voltar do navegador.')).toBeVisible()
+    expect(router.state.location.pathname).toBe(`/aluno/prova/${EXAM}`)
+    await user.click(screen.getByRole('button', { name: 'Continuar na prova' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(router.state.location.pathname).toBe(`/aluno/prova/${EXAM}`)
+    expect(screen.getByRole('button', { name: /Dois/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(activityLogs('exam_left')).toHaveLength(0)
+
+    await act(async () => { router.navigate(-1) })
+    await user.click(await screen.findByRole('button', { name: 'Salvar e sair' }))
+    expect(await screen.findByText('Início do portal')).toBeVisible()
+    expect(router.state.location.pathname).toBe('/aluno')
+    expect(activityLogs('exam_left')).toHaveLength(1)
+    expect(activityLogs('exam_left')[0][1]).toMatchObject({ attemptId: 'att-1', details: 'Saiu da prova pelo botão voltar do navegador' })
+    expect(postsTo('/api/student/autosave-progress').some(([, body]) => body.answers?.[1] === 'A')).toBe(true)
+  }, 15000)
+
+  it('link para outra página do portal durante a prova pede confirmação e registra a saída (AVA-12)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    await act(async () => { router.navigate('/aluno/modulos') })
+    expect(await screen.findByText('Você tentou abrir outra página do portal.')).toBeVisible()
+    expect(screen.queryByText('Página de módulos')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Salvar e sair' }))
+    expect(await screen.findByText('Página de módulos')).toBeVisible()
+    expect(activityLogs('exam_left')[0][1]).toMatchObject({ details: 'Saiu da prova por um link do portal' })
+  })
+
+  it('o botão Sair da prova confirma uma vez só e leva à lista de provas; o login (sessão encerrada) não é bloqueado', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    await user.click(screen.getByRole('button', { name: 'Sair', exact: true }))
+    await user.click(await screen.findByRole('button', { name: 'Salvar e sair' }))
+    expect(await screen.findByText('Lista de provas')).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(activityLogs('exam_left')).toHaveLength(1)
+    expect(activityLogs('exam_left')[0][1]).toMatchObject({ details: 'Aluno saiu usando o botão da prova' })
+
+    cleanup()
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    await act(async () => { router.navigate('/login') })
+    expect(await screen.findByText('Tela de login')).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('cabeçalho compacto: título encurtado e Sair, Mensagens e Enviar sempre acessíveis (UXA-03, ACS-16)', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const heading = await screen.findByRole('heading', { level: 1 })
+    expect(heading).toHaveClass('truncate')
+    expect(heading.parentElement).toHaveClass('min-w-0')
+    expect(screen.getByRole('button', { name: 'Sair', exact: true })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Mensagens', exact: true })).toBeVisible()
+    const send = screen.getByRole('button', { name: 'Enviar', exact: true })
+    expect(send).toHaveTextContent('Enviar')
+    expect(send.parentElement).toHaveClass('shrink-0')
   })
 })

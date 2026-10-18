@@ -21,6 +21,13 @@ const {
     transitionExamApplication,
 } = require('../../backend/utils/examApplications.js');
 const { lateSubmitDecision, LATE_AUTO_SUBMIT_TOLERANCE_MS, settleExpiredAttempts } = require('../../backend/utils/examDeadline.js');
+const { encodeAnswersForStudent } = require('../../backend/utils/examAnswerIds.js');
+
+// O sync devolve as respostas com o identificador opaco de cada alternativa (AVA-05),
+// nunca a letra original: compara com os identificadores das letras esperadas.
+function asStudentAnswers(applicationId, letters) {
+    return encodeAnswersForStudent(letters, applicationId);
+}
 
 let app;
 const adminToken = 'admin-token-lifecycle';
@@ -202,12 +209,12 @@ test('[UC-TENTATIVA-001] sincronizar depois do prazo não recria a tentativa nem
     const firstAfter = await sync(ana, application.id, started.attemptId);
     assert.equal(firstAfter.body.attemptId, started.attemptId);
     assert.equal(firstAfter.body.state.timerRemaining, 0);
-    assert.deepEqual(firstAfter.body.state.answers, { 1: 'A', 2: 'B' });
+    assert.deepEqual(firstAfter.body.state.answers, asStudentAnswers(application.id, { 1: 'A', 2: 'B' }));
     assert.notEqual(firstAfter.body.state.status, 'instructions');
 
     const secondAfter = await sync(ana, application.id, started.attemptId);
     assert.equal(secondAfter.body.attemptId, started.attemptId, 'a tentativa vencida não é recriada');
-    assert.deepEqual(secondAfter.body.state.answers, { 1: 'A', 2: 'B' });
+    assert.deepEqual(secondAfter.body.state.answers, asStudentAnswers(application.id, { 1: 'A', 2: 'B' }));
 
     // Passado o atraso normal do envio automático, o servidor entrega sozinho.
     expireAttempt(started.attemptId, 45000);
@@ -565,7 +572,7 @@ test('[UC-TENTATIVA-001] pausar congela o cronômetro; pausa maior que o tempo r
     const duringPause = await sync(ana, application.id, started.attemptId);
     assert.equal(duringPause.body.attemptId, started.attemptId);
     assert.ok(duringPause.body.state.timerRemaining >= 58 && duringPause.body.state.timerRemaining <= 60, `restante na pausa: ${duringPause.body.state.timerRemaining}`);
-    assert.deepEqual(duringPause.body.state.answers, { 1: 'A' });
+    assert.deepEqual(duringPause.body.state.answers, asStudentAnswers(application.id, { 1: 'A' }));
     assert.equal(duringPause.body.attemptOutcome, null);
     await autosave(ana, application.id, started.attemptId, { 1: 'A', 2: 'B' }).expect(200);
 
@@ -574,7 +581,7 @@ test('[UC-TENTATIVA-001] pausar congela o cronômetro; pausa maior que o tempo r
     assert.ok(stored.pauses[0].resumedAt > 0);
     const afterResume = await sync(ana, application.id, started.attemptId);
     assert.ok(afterResume.body.state.timerRemaining >= 58 && afterResume.body.state.timerRemaining <= 60, `restante após retomar: ${afterResume.body.state.timerRemaining}`);
-    assert.deepEqual(afterResume.body.state.answers, { 1: 'A', 2: 'B' });
+    assert.deepEqual(afterResume.body.state.answers, asStudentAnswers(application.id, { 1: 'A', 2: 'B' }));
 
     const monitor = await request(app)
         .get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)

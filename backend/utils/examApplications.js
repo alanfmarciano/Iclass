@@ -261,6 +261,8 @@ function createAttemptState({ application, studentEmail, attemptNumber, studentC
         createdAt: new Date(now).toISOString(),
         examConfigVersion: application.contentVersion || application.updatedAt || null,
         focusLocked: false,
+        // O aluno vê as alternativas pela letra da posição (AVA-05, utils/examAnswerIds.js).
+        alternativeLabels: 'position',
     };
     state.attemptId = state.id;
     return state;

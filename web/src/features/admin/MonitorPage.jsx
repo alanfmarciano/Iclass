@@ -18,6 +18,7 @@ import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
 import { deliveryLabel, deliveryTone } from './attemptDelivery'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { StudentAnswersModal } from './StudentAnswersModal'
+import { LOG_INFO, examLeftLabel, focusLogLabel } from './monitorLogs'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -63,14 +64,6 @@ function keystrokeText(ev) {
   if (ev.key === 'Tab') return '⇥ tab'
   return ev.key || ev.code || '?'
 }
-function focusLogLabel(log) {
-  const type = log?.eventType
-  if (type === 'tab_blur') return 'Foco perdido'
-  if (type === 'tab_focus') return 'Foco recuperado'
-  if (type === 'exam_left') return 'Saiu da prova'
-  if (type === 'exam_return') return 'Retornou a prova'
-  return type || 'Evento'
-}
 
 /* ────────────────────────────────────────────────────────────────────────
  * KeystrokeViewer — leitura legível dos comandos capturados (Fase 1)
@@ -104,11 +97,6 @@ const SHORTCUT_INFO = {
   tecla_sistema: { label: 'Tecla de sistema', icon: '⊞', sev: 'low' },
   atalho: { label: 'Atalho de teclado', icon: '⌘', sev: 'low' },
 }
-const LOG_INFO = {
-  tab_blur: { label: 'Saiu do foco da prova', icon: '⇄', sev: 'high' },
-  exam_left: { label: 'Fechou ou recarregou a prova', icon: '⎋', sev: 'high' },
-  fullscreen_exit: { label: 'Saiu da tela cheia', icon: '⛶', sev: 'high' },
-}
 const ALERT_LOG_TYPES = new Set(Object.keys(LOG_INFO))
 const SEV_RANK = { high: 3, med: 2, low: 1 }
 
@@ -139,7 +127,8 @@ function buildItems(events, logs) {
   })
   const lg = (logs || []).filter((l) => ALERT_LOG_TYPES.has(l.eventType)).map((l) => {
     const info = LOG_INFO[l.eventType]
-    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: l.eventType, ...info, log: l }
+    const label = l.eventType === 'exam_left' ? examLeftLabel(l.details) : info.label
+    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: l.eventType === 'exam_left' ? `exam_left:${label}` : l.eventType, ...info, label, log: l }
   })
   return [...ks, ...lg].sort((a, b) => a.t - b.t)
 }
@@ -189,7 +178,7 @@ function buildCounters(items) {
     else if (it.reason === 'assistente_ia') c.ia++
     else if (it.reason === 'devtools') c.devtools++
     else if (it.reason === 'contextmenu') c.menu++
-    if (it.kind === 'focus') c.focus++
+    if (it.kind === 'focus' && it.pauses !== false) c.focus++
   }
   return c
 }
@@ -327,7 +316,8 @@ function KeystrokeViewer({ events, row, loading }) {
                           <div className={`text-sm font-semibold flex items-center gap-2 flex-wrap ${ttone}`}>
                             {a.label}
                             {a.count > 1 && <span className="font-mono text-[10px] font-bold rounded-full px-1.5 py-0.5 bg-surface-2 text-danger border border-danger/30">×{a.count}</span>}
-                            {a.kind === 'focus' && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-warning border border-warning/30">pausou a prova</span>}
+                            {a.kind === 'focus' && a.pauses !== false && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-warning border border-warning/30">pausou a prova</span>}
+                            {a.kind === 'focus' && a.pauses === false && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-subtle border border-border">prova sem tela cheia</span>}
                           </div>
                           {(a.mods || a.key) && a.kind !== 'focus' && <div className="text-[11px] text-subtle mt-0.5 font-mono">{[a.mods, a.key].filter(Boolean).join('+')}</div>}
                         </div>
@@ -1256,7 +1246,15 @@ export default function MonitorPage() {
                         </button>
                       </td>
                       <td className="px-4 py-3">
-                        {r.focusLocked ? <Badge tone="danger">Bloqueado</Badge> : recentLogs.length > 0 ? <span className="text-xs text-muted">{recentLogs.join(' | ')}</span> : <span className="text-subtle">ok</span>}
+                        {r.focusLocked ? (
+                          <div>
+                            <Badge tone="danger">Bloqueado</Badge>
+                            {r.focusLockReason && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLockReason}</p>}
+                          </div>
+                        ) : recentLogs.length > 0 ? <span className="text-xs text-muted">{recentLogs.join(' | ')}</span> : <span className="text-subtle">ok</span>}
+                        {r.fullscreenUnsupported && (
+                          <div className="mt-1" title="O navegador do aluno não permite tela cheia (iPhone). A prova seguiu sem ela; foco e aba continuam monitorados."><Badge tone="info">Sem tela cheia</Badge></div>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">

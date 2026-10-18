@@ -12,6 +12,7 @@ const settingsUtil = require('./utils/settings.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
 const { computeAttemptDeadline } = require('./utils/examDeadline.js');
+const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -176,7 +177,9 @@ function validateAnySession(req, res, next) {
 }
 
 // Remove dados sensíveis (token de acesso e gabarito embutido nos snapshots de versão)
-// das configurações de prova online antes de enviá-las ao navegador do aluno.
+// das configurações de prova online antes de enviá-las ao navegador do aluno. As
+// alternativas vão só com identificador opaco e texto, na ordem da versão: a letra
+// original (a do gabarito) não sai do servidor (AVA-05, utils/examAnswerIds.js).
 function sanitizeOnlineExamConfigsForStudent(onlineExamConfigs) {
     const result = {};
     if (!onlineExamConfigs || typeof onlineExamConfigs !== 'object') return result;
@@ -187,19 +190,16 @@ function sanitizeOnlineExamConfigsForStudent(onlineExamConfigs) {
         safe.requiresToken = !!accessToken || !!accessTokenHash || cfg.tokenEnabled === true;
 
         if (Array.isArray(safe.versionSnapshots)) {
+            const scope = answerIdScope({ onlineConfig: cfg, examKey });
             safe.versionSnapshots = safe.versionSnapshots.map(snapshot => {
                 const cleanSnapshot = { ...snapshot };
                 delete cleanSnapshot.answerKey;
                 if (Array.isArray(cleanSnapshot.questions)) {
-                    cleanSnapshot.questions = cleanSnapshot.questions.map(question => {
+                    cleanSnapshot.questions = cleanSnapshot.questions.map((question, index) => {
                         const cleanQuestion = { ...question };
                         delete cleanQuestion.correctAnswer;
-                        if (Array.isArray(cleanQuestion.alternatives)) {
-                            cleanQuestion.alternatives = cleanQuestion.alternatives.map(alt => {
-                                const cleanAlt = { ...alt };
-                                delete cleanAlt.isCorrect;
-                                return cleanAlt;
-                            });
+                        if (cleanQuestion.alternatives && typeof cleanQuestion.alternatives === 'object') {
+                            cleanQuestion.alternatives = studentAlternatives(question, scope, index);
                         }
                         return cleanQuestion;
                     });
@@ -675,7 +675,9 @@ function sanitizeEvaluationForStudent(evaluation) {
 }
 
 // Sanitização de Submissão para Aluno
-function sanitizeSubmissionForStudent(submission, canViewAnswerKey) {
+function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
+    // Letras como o aluno viu na tela (posição na versão dele), não as originais (AVA-05).
+    const submission = submissionWithSeenLetters(rawSubmission);
     const gradePublished = submission && submission.gradePublished === true;
     const { examSnapshot, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };

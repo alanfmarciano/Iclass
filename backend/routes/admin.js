@@ -27,6 +27,7 @@ const {
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt } = require('../utils/examGrading.js');
+const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
 const {
     DEFAULT_STATUS,
@@ -464,11 +465,15 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
                     text: question.questionText || question.text || `Questão ${questionNumber}`,
                     studentChoice,
                     correctAnswer,
+                    // Letras como o aluno viu (AVA-05); studentChoice/correctAnswer são as originais.
+                    studentChoiceSeen: seenLetterFor(submission, { alternatives: rawAlternatives }, studentChoice),
+                    correctAnswerSeen: seenLetterFor(submission, { alternatives: rawAlternatives }, correctAnswer),
                     isCorrect: graded.isCorrect === true,
                     alternatives: rawAlternatives.map((alternative, alternativeIndex) => {
                         const canonicalLetter = String(alternative.letter || String.fromCharCode(65 + alternativeIndex)).toUpperCase();
                         return {
-                            letter: String(alternative.displayLetter || canonicalLetter).toUpperCase(),
+                            // letter: a que o aluno viu na tela; canonicalLetter: a original (gabarito).
+                            letter: seenAlternativeLetter(submission, alternative, alternativeIndex),
                             canonicalLetter,
                             text: alternative.text ?? alternative.label ?? String(alternative),
                             selectedByStudent: canonicalLetter === studentChoice,
@@ -483,6 +488,7 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
             success: true,
             source,
             submissionId: submission.id,
+            alternativeLabels: alternativeLabelsMode(submission),
             assignedVersion: submission.assignedVersion || snapshot?.version || 'A',
             examCode: submission.examSnapshot?.examCode || snapshot?.examCode || null,
             questions: reviewQuestions
@@ -3400,6 +3406,8 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 lateBySeconds: Number(submission?.lateBySeconds || 0),
                 focusLockedAtDeadline: submission?.focusLockedAtDeadline === true,
                 recoveredAfterFinish: submission?.recoveredAfterFinish === true,
+                // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
+                fullscreenUnsupported: studentLogs.some(log => log.eventType === 'fullscreen_unsupported'),
                 logs: studentLogs,
                 keystrokeCount,
                 suspiciousCount,
@@ -3485,6 +3493,11 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                 .map(a => [Number(a.questionNumber), a])
         );
         const answers = state.answers || {};
+        // Tentativa (ou entrega) que diz quais letras o aluno viu na tela (AVA-05). Quem
+        // ainda não abriu a prova vai vê-la com as letras da posição.
+        const labelsRecord = submission || (state.attemptId || state.startedAt
+            ? { ...state, alternativeLabels: state.alternativeLabels || 'original' }
+            : { alternativeLabels: application ? 'position' : 'original' });
 
         const reviewQuestions = questions.map((question, index) => {
             const questionNumber = Number(question.originalNumber || question.number || index + 1);
@@ -3517,6 +3530,9 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                 text: question.questionText || question.text || `Questão ${questionNumber}`,
                 studentChoice,
                 correctAnswer,
+                // Letras como o aluno viu (AVA-05); studentChoice/correctAnswer são as originais.
+                studentChoiceSeen: seenLetterFor(labelsRecord, { alternatives: rawAlternatives }, studentChoice),
+                correctAnswerSeen: seenLetterFor(labelsRecord, { alternatives: rawAlternatives }, correctAnswer),
                 isCorrect,
                 annulled: !!(graded && graded.annulled),
                 annulmentMode: (graded && graded.annulmentMode) || null,
@@ -3524,7 +3540,8 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                 alternatives: rawAlternatives.map((alternative, alternativeIndex) => {
                     const canonicalLetter = String(alternative.letter || String.fromCharCode(65 + alternativeIndex)).toUpperCase();
                     return {
-                        letter: String(alternative.displayLetter || canonicalLetter).toUpperCase(),
+                        // letter: a que o aluno viu na tela; canonicalLetter: a original (gabarito).
+                        letter: seenAlternativeLetter(labelsRecord, alternative, alternativeIndex),
                         canonicalLetter,
                         text: alternative.text ?? alternative.label ?? String(alternative),
                         selectedByStudent: canonicalLetter === studentChoice,
@@ -3545,6 +3562,7 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             studentName: student.name,
             studentEmail: student.email,
             assignedVersion,
+            alternativeLabels: alternativeLabelsMode(labelsRecord),
             examCode: (submission && submission.examSnapshot && submission.examSnapshot.examCode) || (snapshot && snapshot.examCode) || null,
             status,
             answeredCount,

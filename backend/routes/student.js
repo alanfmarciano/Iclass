@@ -69,6 +69,7 @@ const {
     settleExpiredAttempts,
 } = require('../utils/examDeadline.js');
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
+const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 
 // Marca a presença automática do dia (origem "login"), no máx. 1x/dia, respeitando
 // a config (liga/desliga + janela + fuso). Retorna true se criou o registro.
@@ -520,7 +521,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             localCopyKey = application && context.state ? localCopyKeyFor(rawState) : null;
 
             // Não expõe a flag interna de validação de token nem a chave dentro do estado.
-            state = stateWithoutSecrets(rawState);
+            // As respostas vão com os identificadores opacos das alternativas (AVA-05).
+            state = stateForStudent(stateWithoutSecrets(rawState), answerIdScope({ application, onlineConfig: onlineCfg, examKey }));
             attemptId = rawState.attemptId || null;
             tokenAccepted = rawState.tokenValidated === true;
 
@@ -1111,7 +1113,8 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         applicationId: application.id,
         attemptId: state.attemptId,
         attemptNumber: state.attemptNumber,
-        state: stateWithoutSecrets(state),
+        // Respostas com os identificadores opacos das alternativas (AVA-05).
+        state: stateForStudent(stateWithoutSecrets(state), answerIdScope({ application })),
         localCopyKey: localCopyKeyFor(state),
         examConfigVersion: state.examConfigVersion,
     });
@@ -1214,8 +1217,8 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
 });
 
 router.post('/api/student/submit', validateStudentSession, async (req, res) => {
-    const { student = {}, studentClass: bodyStudentClass, courseId: bodyCourseId, examKey, applicationId, attemptId, answers, questionNumbers, examConfigVersion, auto } = req.body;
-    if (!examKey || !answers || typeof answers !== 'object' || Array.isArray(answers)) {
+    const { student = {}, studentClass: bodyStudentClass, courseId: bodyCourseId, examKey, applicationId, attemptId, answers: rawAnswers, questionNumbers, examConfigVersion, auto } = req.body;
+    if (!examKey || !rawAnswers || typeof rawAnswers !== 'object' || Array.isArray(rawAnswers)) {
         return res.status(400).json({ error: 'Dados inválidos ou incompletos.' });
     }
     const studentEmail = req.studentEmail;
@@ -1257,6 +1260,18 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         ? previousAttempts.find(item => item.attemptId === attemptId)
         : null;
     if (previousSameAttempt) {
+        // Respostas do navegador (identificadores opacos) com a letra original (AVA-05).
+        const answers = decodeAttemptAnswers(rawAnswers, {
+            application,
+            onlineConfig,
+            examKey,
+            evaluation: db.memory.evaluations?.[examKey],
+            state: {
+                assignedVersion: previousSameAttempt.assignedVersion || 'A',
+                assignedQuestionNumbers: (previousSameAttempt.gradedAnswers || []).map(item => Number(item?.questionNumber)).filter(Number.isFinite),
+                alternativeLabels: previousSameAttempt.alternativeLabels,
+            },
+        });
         // O servidor já tinha entregue no fim do tempo com as respostas salvas; o envio
         // automático do navegador (respostas congeladas no zero) ainda vale dentro da
         // janela de tolerância e fica marcado com o atraso.
@@ -1447,7 +1462,9 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         }
     }
 
-    // Correção das respostas no servidor respeitando a configuração aplicada.
+    // Correção das respostas no servidor respeitando a configuração aplicada. O navegador
+    // manda o identificador opaco de cada alternativa; aqui ele vira a letra original.
+    const answers = decodeAttemptAnswers(rawAnswers, { application, onlineConfig, state: lockedState, evaluation, examKey });
     const submissionObj = createSubmissionFromAttempt({
         application,
         onlineConfig,

@@ -154,6 +154,8 @@ function createSubmissionFromAttempt({
         gradePublished: false,
         submissionSource: source,
         timestamp,
+        // Letras que o aluno viu (posição na versão), para as revisões (AVA-05).
+        ...(state?.alternativeLabels ? { alternativeLabels: state.alternativeLabels } : {}),
     };
 }
 

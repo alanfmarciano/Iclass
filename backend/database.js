@@ -694,6 +694,13 @@ async function init() {
         memoryDB.config.adminPassword = hashPassword(memoryDB.config.adminPassword);
         needsSave = true;
     }
+    // Segredo dos identificadores opacos das alternativas da prova (AVA-05). Gerado uma
+    // vez e gravado antes de servir: os identificadores não mudam ao reiniciar.
+    if (memoryDB.config && typeof memoryDB.config === 'object'
+        && (typeof memoryDB.config.examAnswerSecret !== 'string' || memoryDB.config.examAnswerSecret.length < 32)) {
+        memoryDB.config.examAnswerSecret = crypto.randomBytes(32).toString('hex');
+        needsSave = true;
+    }
     if (needsSave) {
         await saveToDisk();
     }
