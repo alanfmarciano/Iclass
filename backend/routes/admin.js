@@ -51,6 +51,7 @@ const {
     transitionExamApplication,
 } = require('../utils/examApplications.js');
 const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { applicationStateEntries, resolveInProgressAttempts } = require('../utils/examFinish.js');
 
 function rejectInvalidBranding(res, body) {
     const validationError = validateBrandingPatch(body);
@@ -2921,8 +2922,22 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
         }
         if (application) {
-            // Encerrar entrega antes quem já estava sem tempo (respostas salvas).
-            if (action === 'finished') settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 });
+            // Encerrar ou cancelar uma aplicação em andamento pelo controle antigo segue a
+            // mesma regra do Monitor: sem decisão sobre as respostas, nada é encerrado (AVA-04).
+            const closing = action === 'finished' || action === 'cancelled' || action === 'cancel';
+            if (closing && (ACTIVE_APPLICATION_STATUSES.has(application.status) || applicationStateEntries(db.memory, application.id).length > 0)) {
+                try {
+                    resolveInProgressAttempts(db.memory, {
+                        application,
+                        onlineConfig: currentConfig,
+                        policy: req.body.inProgressPolicy,
+                        actor: req.adminAccount?.email || 'Administrador',
+                    });
+                } catch (error) {
+                    if (!error.requiresInProgressPolicy) throw error;
+                    return res.status(409).json({ error: error.message, requiresInProgressPolicy: true, summary: error.summary });
+                }
+            }
             try {
                 transitionExamApplication(application, action, {
                     actor: req.adminAccount?.email || 'Administrador',

@@ -2,9 +2,8 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken } = require('../utils/examToken.js');
-const { filterStudentExamAttempts, normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
+const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
 const {
-    createSubmissionFromAttempt,
     questionNumber,
     regradeSubmission,
     snapshotForAttempt,
@@ -18,7 +17,17 @@ const {
     listExamApplications,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
-const { deliveredWithoutAttemptsLeft, isAttemptPastDeadline, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { deliveredWithoutAttemptsLeft, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const {
+    OPEN_APPLICATION_STATUSES,
+    activeApplicationConflict,
+    activeExamApplication,
+    applicationStateEntries: sharedApplicationStateEntries,
+    classExamApplications,
+    finishSummary: sharedFinishSummary,
+    recordExamAudit: sharedRecordExamAudit,
+    resolveInProgressAttempts,
+} = require('../utils/examFinish.js');
 const {
     validateAdmin,
     adminCanAccessClass,
@@ -103,14 +112,52 @@ function adminActor(req) {
     return (req.adminAccount && (req.adminAccount.email || req.adminAccount.name)) || 'Administrador';
 }
 
-function closePreviousApplications({ studentClass, courseId, examKey, actor }) {
-    listExamApplications(db.memory.examApplications, { studentClass, courseId, examKey })
-        .filter(application => !['finished', 'cancelled'].includes(application.status))
+// Uma aplicação preparada que ainda não começou (nenhum aluno entrou) é substituída
+// pela nova preparação: fica cancelada e registrada na auditoria. Aplicação em
+// andamento nunca chega aqui: as rotas recusam antes (AVA-04).
+function replacePreparedApplications({ studentClass, courseId, examKey, actor }) {
+    const replaced = [];
+    listExamApplications(db.memory.examApplications, { studentClass, courseId, examKey, statuses: ['draft', 'prepared'] })
         .forEach(application => {
             try {
-                transitionExamApplication(application, ACTIVE_APPLICATION_STATUSES.has(application.status) ? 'finished' : 'cancelled', { actor });
+                transitionExamApplication(application, 'cancelled', { actor });
+                recordExamAudit('exam_application_replaced', application, actor, { reason: 'nova_preparacao' });
+                replaced.push(application.id);
             } catch (_) {}
         });
+    return replaced;
+}
+
+// Nova rodada da prova na turma: o gabarito liberado na rodada anterior volta a ficar
+// bloqueado (turma e liberações individuais) até o professor liberar de novo.
+function lockAnswerKeyForNewApplication(cls, examKey, actor) {
+    const answerKey = `Gabarito_${examKey}`;
+    let changed = false;
+    if (cls.releasedItems && cls.releasedItems[answerKey] === true) {
+        cls.releasedItems[answerKey] = false;
+        changed = true;
+    }
+    Object.values(cls.studentReleasedItems || {}).forEach(items => {
+        if (items && items[answerKey] === true) {
+            items[answerKey] = false;
+            changed = true;
+        }
+    });
+    if (changed) {
+        if (!cls.releaseMeta) cls.releaseMeta = {};
+        cls.releaseMeta[answerKey] = { by: actor, at: new Date().toISOString(), released: false, reason: 'nova_aplicacao' };
+    }
+    return changed;
+}
+
+// Aplicação preparada ou em andamento da prova na turma (a que ocupa a prova).
+function openExamApplication(cls, examKey) {
+    return classExamApplications(db.memory, {
+        studentClass: cls.name,
+        courseId: cls.courseId,
+        examKey,
+        statuses: OPEN_APPLICATION_STATUSES,
+    })[0] || null;
 }
 
 function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req) {
@@ -127,7 +174,8 @@ function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOp
     preparedConfig.timerMode = options.timerMode === 'per_attempt' ? 'per_attempt' : 'collective';
 
     const actor = adminActor(req);
-    closePreviousApplications({ studentClass: cls.name, courseId: cls.courseId, examKey, actor });
+    const replacedApplicationIds = replacePreparedApplications({ studentClass: cls.name, courseId: cls.courseId, examKey, actor });
+    const answerKeyLocked = lockAnswerKeyForNewApplication(cls, examKey, actor);
     const application = createExamApplication({
         examKey,
         courseId: cls.courseId,
@@ -142,49 +190,20 @@ function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOp
     cls.releasedItems[examKey] = false;
     if (cls.activeExamKey === examKey) cls.activeExamKey = null;
     if (cls.activeApplicationId === application.id) cls.activeApplicationId = null;
-    return { application, accessToken: rawToken || null };
+    return { application, accessToken: rawToken || null, replacedApplicationIds, answerKeyLocked };
 }
 
 // Tentativas ainda sem entrega (inclui as vencidas: elas nunca ficam de fora).
 function applicationStateEntries(applicationId) {
-    return Object.entries(db.memory.studentExamState || {}).filter(([, state]) =>
-        state && state.applicationId === applicationId && !CLOSED_ATTEMPT_STATUSES.has(state.status));
+    return sharedApplicationStateEntries(db.memory, applicationId);
 }
 
 function finishSummary(application) {
-    const now = Date.now();
-    const entries = applicationStateEntries(application.id);
-    const started = entries.filter(([, state]) => !!state.startedAt);
-    // Tempo esgotado: a entrega é automática com as respostas salvas, em qualquer escolha.
-    const timeOver = started.filter(([, state]) => isAttemptPastDeadline(state, application, now));
-    const inProgress = started.filter(entry => !timeOver.includes(entry));
-    return {
-        applicationId: application.id,
-        inProgressAttempts: inProgress.length,
-        answeredQuestions: inProgress.reduce((total, [, state]) => total + Object.keys(state.answers || {}).length, 0),
-        waitingToStart: entries.length - started.length,
-        timeOverAttempts: timeOver.length,
-        students: inProgress.map(([, state]) => ({
-            email: state.studentEmail,
-            answeredQuestions: Object.keys(state.answers || {}).length,
-            attemptNumber: state.attemptNumber || 1,
-        })),
-    };
+    return sharedFinishSummary(db.memory, application);
 }
 
 function recordExamAudit(type, application, actor, details = {}) {
-    if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-    db.memory.auditLogs.push({
-        id: `audit_exam_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-        type,
-        actor,
-        applicationId: application.id,
-        examKey: application.examKey,
-        studentClass: application.studentClass,
-        courseId: application.courseId || null,
-        details,
-        timestamp: new Date().toISOString(),
-    });
+    sharedRecordExamAudit(db.memory, type, application, actor, details);
 }
 
 function pushExamMessage(application, actor, messageText) {
@@ -326,6 +345,10 @@ function createAdminExamConfigRouter() {
                 ? options.maxAttempts
                 : (Object.prototype.hasOwnProperty.call(historyEntry, 'maxAttempts') ? historyEntry.maxAttempts : DEFAULT_MAX_ATTEMPTS));
             if (!parsedMaxAttempts.valid) return res.status(400).json({ error: 'Tentativas deve ser um número entre 1 e 10.' });
+            // Uma aplicação em andamento nunca é encerrada por outra preparação: o
+            // professor decide no Monitor o que fazer com as respostas (AVA-04).
+            const running = activeExamApplication(db.memory, { studentClass: cls.name, courseId: cls.courseId, examKey });
+            if (running) return res.status(409).json(activeApplicationConflict(running));
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             if (!cls.releasedItems) cls.releasedItems = {};
             const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req);
@@ -341,77 +364,24 @@ function createAdminExamConfigRouter() {
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
             if (!cls) return res.status(404).json({ error: 'Turma da aplicacao nao encontrada.' });
             let processedFinish = null;
-            if (req.body.action === 'finish' || req.body.action === 'stop') {
-                const summary = finishSummary(application);
-                const policy = req.body.inProgressPolicy;
-                if (summary.inProgressAttempts > 0 && !['submit', 'discard'].includes(policy)) {
-                    return res.status(409).json({
-                        error: 'Escolha se as respostas em andamento devem ser salvas ou desconsideradas.',
-                        requiresInProgressPolicy: true,
-                        summary,
+            // Encerrar ou cancelar (com qualquer nome de ação) uma aplicação em andamento
+            // passa sempre pela decisão sobre as respostas de quem está fazendo a prova.
+            const closingTarget = { finish: 'finished', stop: 'finished', finished: 'finished', cancel: 'cancelled', cancelled: 'cancelled' }[req.body.action];
+            const closesRunningApplication = closingTarget
+                && (ACTIVE_APPLICATION_STATUSES.has(application.status) || applicationStateEntries(application.id).length > 0);
+            if (req.body.action === 'finish' || req.body.action === 'stop' || closesRunningApplication) {
+                try {
+                    processedFinish = resolveInProgressAttempts(db.memory, {
+                        application,
+                        onlineConfig: cls.onlineExamConfigs?.[application.examKey],
+                        policy: req.body.inProgressPolicy,
+                        actor: adminActor(req),
                     });
+                } catch (error) {
+                    if (!error.requiresInProgressPolicy) throw error;
+                    return res.status(409).json({ error: error.message, requiresInProgressPolicy: true, summary: error.summary });
                 }
-                // Quem já estava sem tempo recebe a entrega automática do fim do tempo
-                // (respostas salvas), qualquer que seja a escolha para quem está em andamento.
-                const deliveredAtDeadline = settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 }).finalized.length;
-                const entries = applicationStateEntries(application.id);
-                let submitted = 0;
-                let discarded = 0;
-                let discardedAttempts = [];
-                if (policy === 'submit') {
-                    for (const [, state] of entries) {
-                        if (!state.startedAt) continue;
-                        const duplicate = (db.memory.submissions || []).some(item => item?.attemptId && item.attemptId === state.attemptId);
-                        if (duplicate) continue;
-                        const student = (db.memory.students || []).find(item =>
-                            String(item?.email || '').toLowerCase() === String(state.studentEmail || '').toLowerCase())
-                            || { email: state.studentEmail, name: state.studentEmail };
-                        const previousAttempts = filterStudentExamAttempts(db.memory.submissions, {
-                            studentEmail: state.studentEmail,
-                            examKey: application.examKey,
-                            courseId: application.courseId,
-                            applicationId: application.id,
-                        });
-                        const submission = createSubmissionFromAttempt({
-                            application,
-                            onlineConfig: cls.onlineExamConfigs?.[application.examKey],
-                            state,
-                            evaluation: db.memory.evaluations?.[application.examKey],
-                            student,
-                            answers: state.answers || {},
-                            previousAttempts,
-                            source: 'instructor_finish',
-                        });
-                        submission.autoSubmittedByInstructor = true;
-                        submission.finishPolicy = 'submit';
-                        db.memory.submissions.push(submission);
-                        submitted += 1;
-                    }
-                } else if (policy === 'discard') {
-                    discarded = summary.inProgressAttempts;
-                    // Quem de fato tinha tentativa em andamento desconsiderada: só esses alunos
-                    // veem "o professor desconsiderou" ao abrir a prova depois.
-                    discardedAttempts = entries
-                        .filter(([, state]) => !!state.startedAt)
-                        .map(([, state]) => ({
-                            studentEmail: String(state.studentEmail || '').trim().toLowerCase(),
-                            attemptId: state.attemptId || state.id || null,
-                        }));
-                }
-                entries.forEach(([key]) => { delete db.memory.studentExamState[key]; });
-                processedFinish = { policy: policy || 'none', submitted, discarded, deliveredAtDeadline, summary };
-                application.finishResolution = {
-                    policy: processedFinish.policy,
-                    submitted,
-                    discarded,
-                    deliveredAtDeadline,
-                    ...(policy === 'discard' ? { discardedAttempts } : {}),
-                    at: new Date().toISOString(),
-                    by: adminActor(req),
-                };
-                recordExamAudit('exam_application_finished', application, adminActor(req), processedFinish);
             }
-            if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });
             try {
                 transitionExamApplication(application, req.body.action, {
                     actor: adminActor(req),
@@ -734,6 +704,12 @@ function createAdminExamConfigRouter() {
             const cls = findClassByNameAndCourse(classes, studentClass, courseId);
             if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
             if (!isCourseExamKey(cls, examKey)) return res.status(400).json({ error: 'Avaliação não pertence ao curso da turma.' });
+            // Reconfigurar a prova trocaria a versão da configuração e zeraria as
+            // tentativas de quem está fazendo a prova: só depois de encerrada (AVA-04).
+            const running = activeExamApplication(db.memory, { studentClass: cls.name, courseId: cls.courseId, examKey });
+            if (running) {
+                return res.status(409).json(activeApplicationConflict(running, 'Há uma aplicação em andamento desta prova nesta turma; encerre-a pelo Monitor antes de mudar a configuração.'));
+            }
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             const previousConfig = cls.onlineExamConfigs[examKey] || {};
             const updatedAt = new Date().toISOString();
@@ -773,6 +749,18 @@ function createAdminExamConfigRouter() {
             if (!isCourseItemKey(cls, itemKey)) return res.status(400).json({ error: 'Item não pertence ao curso da turma.' });
 
             const normalizedStudentEmail = (studentEmail || '').trim().toLowerCase();
+            const actor = adminActor(req);
+            // Gabarito só é liberado pela chave própria e nunca enquanto a prova tem
+            // aplicação preparada ou em andamento na turma (G2: gabarito na reaplicação).
+            if (released && itemKey.startsWith('Gabarito_')) {
+                const examApplication = openExamApplication(cls, itemKey.slice('Gabarito_'.length));
+                if (examApplication) {
+                    return res.status(409).json({
+                        ...activeApplicationConflict(examApplication, 'Esta prova tem uma aplicação preparada ou em andamento nesta turma. Libere o gabarito depois de encerrá-la.'),
+                        activeApplication: ACTIVE_APPLICATION_STATUSES.has(examApplication.status),
+                    });
+                }
+            }
             let affectedApplication = null;
             if (normalizedStudentEmail) {
                 if (!cls.studentReleasedItems) cls.studentReleasedItems = {};
@@ -783,7 +771,29 @@ function createAdminExamConfigRouter() {
                 if (itemKey.startsWith('Avaliacao_')) {
                     if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
                     const previousConfig = cls.onlineExamConfigs[itemKey] || {};
+                    const running = activeExamApplication(db.memory, { studentClass: cls.name, courseId: cls.courseId, examKey: itemKey });
                     if (released) {
+                        if (running) {
+                            // Liberar de novo (por exemplo, "Liberar tudo" em Materiais) não mexe
+                            // na aplicação em andamento: nada é recriado nem zerado (AVA-X1).
+                            if (historyId) return res.status(409).json(activeApplicationConflict(running));
+                            return res.json({
+                                success: true,
+                                scope: 'class',
+                                unchanged: true,
+                                releasedItems: getReleasedItemsForClass(cls, ''),
+                                application: running,
+                            });
+                        }
+                        // A prova online só nasce de uma preparação explícita (Provas >
+                        // Preparar, ou esta rota com a configuração salva escolhida). Liberar
+                        // em lote nunca cria aplicação nem reabre prova encerrada (AVA-X1).
+                        if (!historyId) {
+                            return res.status(409).json({
+                                error: 'A prova online não é liberada por aqui: prepare a aplicação em Provas e inicie-a pelo Monitor.',
+                                requiresApplication: true,
+                            });
+                        }
                         const historyEntry = findOnlineHistoryEntry(cls, itemKey, historyId);
                         if (!historyEntry) {
                             return res.status(400).json({ error: 'Nenhuma aplicação salva com questões foi encontrada para preparar esta prova.' });
@@ -801,7 +811,7 @@ function createAdminExamConfigRouter() {
                         affectedApplication = prepared.application;
                         const targetStatus = Number(affectedApplication.waitingRoomDuration || 0) > 0 ? 'waiting' : 'running';
                         transitionExamApplication(affectedApplication, targetStatus, {
-                            actor: adminActor(req),
+                            actor,
                             waitingRoomDuration: affectedApplication.waitingRoomDuration,
                         });
                         cls.onlineExamConfigs[itemKey] = applicationToOnlineConfig(affectedApplication, previousConfig);
@@ -809,14 +819,17 @@ function createAdminExamConfigRouter() {
                         cls.activeExamKey = itemKey;
                         cls.activeApplicationId = affectedApplication.id;
                     } else {
+                        // Bloquear não encerra prova em andamento: quem decide o que fazer
+                        // com as respostas é o professor, no Monitor (AVA-04).
+                        if (running) {
+                            return res.status(409).json(activeApplicationConflict(running, 'Há uma aplicação em andamento desta prova nesta turma; encerre-a pelo Monitor (salvando ou desconsiderando as respostas) antes de bloquear.'));
+                        }
+                        // Aplicação só preparada (nenhum aluno entrou): é cancelada.
                         affectedApplication = findExamApplication(db.memory.examApplications, previousConfig.applicationId);
                         if (affectedApplication && !['finished', 'cancelled'].includes(affectedApplication.status)) {
                             try {
-                                transitionExamApplication(
-                                    affectedApplication,
-                                    ACTIVE_APPLICATION_STATUSES.has(affectedApplication.status) ? 'finished' : 'cancelled',
-                                    { actor: adminActor(req) }
-                                );
+                                transitionExamApplication(affectedApplication, 'cancelled', { actor });
+                                recordExamAudit('exam_application_cancelled', affectedApplication, actor, { reason: 'bloqueio_materiais' });
                             } catch (_) {}
                         }
                         cls.onlineExamConfigs[itemKey] = {
@@ -843,8 +856,8 @@ function createAdminExamConfigRouter() {
 
             if (!normalizedStudentEmail) {
                 if (!cls.releaseMeta) cls.releaseMeta = {};
-                const actor = (req.adminAccount && (req.adminAccount.name || req.adminAccount.email)) || 'Administrador';
-                cls.releaseMeta[itemKey] = { by: actor, at: new Date().toISOString(), released: !!released };
+                const releaseActor = (req.adminAccount && (req.adminAccount.name || req.adminAccount.email)) || 'Administrador';
+                cls.releaseMeta[itemKey] = { by: releaseActor, at: new Date().toISOString(), released: !!released };
             }
             await persistClasses(classes);
             res.json({

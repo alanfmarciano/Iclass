@@ -246,16 +246,27 @@ test('routers extraídos preservam contratos administrativos', async () => {
     const loadedSettings = await request(app).get('/api/admin/settings').set('x-admin-session', 'admin-token').expect(200);
     assert.equal(loadedSettings.body.maintenance.message, 'Manutenção de teste');
 
-    db.memory.studentExamState = { 'aluno@teste.local::prova-1': {} };
-    db.memory.proctoringLogs = [{ studentEmail: 'aluno@teste.local', examKey: 'prova-1' }];
-    db.memory.broadcastMessages = [{ targetEmail: 'aluno@teste.local', studentClass: 'Turma 1' }];
+    // Limpar estado de prova: só na turma informada, com confirmação digitada, e sem
+    // apagar logs de monitoramento nem entregas (evidência e notas ficam).
+    db.memory.classes = [{ name: 'Turma 1', courseId: 'curso-1' }];
+    db.memory.studentExamState = { 'aluno@teste.local_prova-1': { studentEmail: 'aluno@teste.local', studentClass: 'Turma 1', examKey: 'prova-1' } };
+    db.memory.proctoringLogs = [{ studentEmail: 'aluno@teste.local', studentClass: 'Turma 1', examKey: 'prova-1' }];
+    db.memory.broadcastMessages = [{ targetEmail: 'aluno@teste.local', studentClass: 'Turma 1', examKey: 'prova-1' }];
     db.memory.submissions = [{ email: 'aluno@teste.local', examKey: 'prova-1' }];
+    await request(app).post('/api/admin/flush-exam-state').set('x-admin-session', 'admin-token').send({
+        studentEmail: 'aluno@teste.local',
+        examKey: 'prova-1',
+        studentClass: 'Turma 1',
+    }).expect(400);
     const flushed = await request(app).post('/api/admin/flush-exam-state').set('x-admin-session', 'admin-token').send({
         studentEmail: 'aluno@teste.local',
         examKey: 'prova-1',
         studentClass: 'Turma 1',
+        confirm: 'LIMPAR',
     }).expect(200);
-    assert.equal(flushed.body.clearedCount, 4);
+    assert.equal(flushed.body.clearedCount, 2);
+    assert.equal(db.memory.proctoringLogs.length, 1);
+    assert.equal(db.memory.submissions.length, 1);
 
     const identity = await request(app).get('/api/admin/whoami').set('x-admin-session', 'admin-token').expect(200);
     assert.equal(identity.body.email, 'admin@teste.local');

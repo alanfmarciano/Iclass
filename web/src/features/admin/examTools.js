@@ -129,6 +129,14 @@ export function buildExamVersions(evaluation, options = {}) {
   })
 }
 
+// Aplicação em andamento (sala de espera, rodando ou pausada) entre as aplicações da
+// prova na turma. Enquanto ela existir não se prepara outra: o servidor recusa (409)
+// e a tela aponta para o Monitor, onde o professor decide o que fazer com as respostas.
+const RUNNING_APPLICATION_STATUSES = new Set(['waiting', 'running', 'paused'])
+export function runningApplicationOf(applications = []) {
+  return (Array.isArray(applications) ? applications : []).find((item) => item && RUNNING_APPLICATION_STATUSES.has(item.status)) || null
+}
+
 export function snapshotsFromHistory(entry) {
   const raw = Array.isArray(entry?.printSnapshot)
     ? entry.printSnapshot

@@ -11,6 +11,7 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
+import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
 
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
@@ -189,22 +190,81 @@ function BackupCard() {
   )
 }
 
+const APPLICATION_STATUS = { prepared: 'Preparada', waiting: 'Sala de espera', running: 'Em andamento', paused: 'Pausada', finished: 'Finalizada', cancelled: 'Cancelada' }
+function _plural(n, one, many) { return `${n} ${n === 1 ? one : many}` }
+function _appLabel(a) { return `${a.examTitle || a.examKey} · ${APPLICATION_STATUS[a.status] || a.status}${a.createdAt ? ' · ' + _when(a.createdAt) : ''}` }
+
+// Confirmação digitada no padrão do app (RESETAR, RESTAURAR...): o botão só funciona
+// com a palavra certa, e o servidor confere de novo.
+function TypedConfirm({ id, word, value, onChange }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-sm text-muted">Digite <b className="text-text font-mono">{word}</b> para confirmar.</p>
+      <Input id={id} aria-label={`Digite ${word} para confirmar`} value={value} onChange={(e) => onChange(e.target.value)} placeholder={word} autoComplete="off" />
+    </div>
+  )
+}
+
 export default function SistemaPage() {
   const { auth } = useAuth()
+  const { courseId, className } = useAdminWorkspace()
   const { data: net } = useApi('/api/admin/network-info')
-  const [confirm, setConfirm] = useState('')
-  const [resetOpen, setResetOpen] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [previewError, setPreviewError] = useState(null)
+  const [dialog, setDialog] = useState(null) // 'restart' | 'flush' | 'reset'
+  const [confirmText, setConfirmText] = useState('')
+  const [flushApplication, setFlushApplication] = useState('')
+  const [busy, setBusy] = useState(false)
   const toast = useToast()
   const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.SYSTEM_MANAGE)
   const ips = (net && (net.addresses || net.ips || net)) || []
   const list = Array.isArray(ips) ? ips : []
 
-  async function restart() { try { await api.post('/api/admin/server/restart', {}); toast.info('Servidor reiniciando…') } catch (e) { toast.error(e.message) } }
-  async function flush() { try { const r = await api.post('/api/admin/flush-exam-state', {}); toast.success(r?.message || 'Estado de prova limpo') } catch (e) { toast.error(e.message) } }
-  async function reset() {
-    if (confirm !== 'RESETAR') return toast.error('Digite RESETAR para confirmar')
-    try { await api.post('/api/admin/reset', {}); toast.success('Sala resetada'); setResetOpen(false); setConfirm('') } catch (e) { toast.error(e.message) }
+  async function loadPreview(applicationId = '') {
+    setPreviewError(null)
+    try {
+      const params = new URLSearchParams()
+      if (className) params.set('studentClass', className)
+      if (courseId) params.set('courseId', courseId)
+      if (applicationId) params.set('applicationId', applicationId)
+      setPreview(await api.get(`/api/admin/maintenance/preview?${params.toString()}`))
+    } catch (e) { setPreview(null); setPreviewError(e.message) }
   }
+  function openDialog(kind) {
+    setConfirmText(''); setFlushApplication(''); setPreview(null); setDialog(kind)
+    loadPreview('')
+  }
+  function closeDialog() { if (!busy) { setDialog(null); setConfirmText('') } }
+
+  async function restart() {
+    setBusy(true)
+    try { await api.post('/api/admin/server/restart', { confirm: 'REINICIAR' }); toast.info('Servidor reiniciando…'); setDialog(null) }
+    catch (e) { toast.error(e.message) } finally { setBusy(false) }
+  }
+  async function flush() {
+    if (confirmText.trim().toUpperCase() !== 'LIMPAR') return toast.error('Digite LIMPAR para confirmar')
+    setBusy(true)
+    try {
+      const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() })
+      toast.success(r?.message || 'Estado de prova limpo'); setDialog(null); setConfirmText('')
+    } catch (e) { toast.error(e.message) } finally { setBusy(false) }
+  }
+  async function reset() {
+    if (confirmText.trim().toUpperCase() !== 'RESETAR') return toast.error('Digite RESETAR para confirmar')
+    setBusy(true)
+    try {
+      const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() })
+      toast.success(r?.message || 'Sala resetada'); setDialog(null); setConfirmText('')
+    } catch (e) { toast.error(e.message) } finally { setBusy(false) }
+  }
+
+  const flushPlan = preview?.flush
+  const flushBlocked = !!flushPlan?.blockedBy?.length
+  const flushEmpty = !!flushPlan && !flushBlocked && (flushPlan.counts.examStates + flushPlan.counts.messages) === 0
+  const resetPlan = preview?.reset
+  const restartActive = preview?.restart?.activeApplications || []
+  const noClass = !className
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <PageHeader title="Sistema" subtitle="Rede, configurações e manutenção." />
@@ -230,30 +290,86 @@ export default function SistemaPage() {
       {canManage && <BackupCard />}
 
       {canManage && <Card>
-        <CardHeader title="Manutenção" />
+        <CardHeader title="Manutenção" subtitle={noClass ? 'Selecione uma turma no topo para limpar o estado de prova.' : `Turma de trabalho: ${className}`} />
         <CardBody className="flex flex-wrap gap-3">
-          <Button variant="secondary" icon={RefreshCw} onClick={restart}>Reiniciar servidor</Button>
-          <Button variant="secondary" icon={Trash2} onClick={flush}>Limpar estado de prova</Button>
+          <Button variant="secondary" icon={RefreshCw} onClick={() => openDialog('restart')}>Reiniciar servidor</Button>
+          <Button variant="secondary" icon={Trash2} disabled={noClass} onClick={() => openDialog('flush')}>Limpar estado de prova</Button>
         </CardBody>
       </Card>}
 
       {canManage && <Card>
         <CardHeader title="Zona de risco" />
         <CardBody>
-          <div className="flex items-center gap-3 p-4 rounded-lg border border-danger/40 bg-danger-soft">
+          <div className="flex flex-wrap items-center gap-3 p-4 rounded-lg border border-danger/40 bg-danger-soft">
             <AlertTriangle className="text-danger" size={22} />
-            <div className="flex-1"><p className="font-semibold text-text">Resetar sala</p><p className="text-sm text-muted">Apaga o estado da prova ativa. Não afeta conteúdos liberados.</p></div>
-            <Button variant="destructive" onClick={() => setResetOpen(true)}>Resetar sala</Button>
+            <div className="flex-1 min-w-[220px]"><p className="font-semibold text-text">Resetar sala</p><p className="text-sm text-muted">{noClass ? 'Selecione uma turma no topo.' : `Só na turma ${className}: encerra as provas em andamento salvando as respostas, desconecta os alunos dela e limpa as mensagens de prova. Não afeta conteúdos liberados, notas nem logs.`}</p></div>
+            <Button variant="destructive" disabled={noClass} onClick={() => openDialog('reset')}>Resetar sala</Button>
           </div>
         </CardBody>
       </Card>}
 
       {!canManage && <Badge tone="neutral">Ações de manutenção não liberadas para esta conta.</Badge>}
 
-      <Modal open={resetOpen} onClose={() => { setResetOpen(false); setConfirm('') }} title="Resetar sala" description="Ação irreversível."
-        footer={<><Button variant="ghost" onClick={() => { setResetOpen(false); setConfirm('') }}>Cancelar</Button><Button variant="destructive" onClick={reset}>Confirmar reset</Button></>}>
-        <p className="text-sm text-muted mb-3">Digite <b className="text-text font-mono">RESETAR</b> para confirmar.</p>
-        <Input id="rc" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="RESETAR" />
+      <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description="Todos os alunos e professores conectados perdem a conexão por alguns segundos."
+        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} onClick={restart}>Reiniciar agora</Button></>}>
+        {previewError && <p className="text-sm text-danger">{previewError}</p>}
+        {restartActive.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-sm font-semibold text-warning">{_plural(restartActive.length, 'prova em andamento', 'provas em andamento')}:</p>
+            <ul className="text-sm text-text list-disc pl-5 space-y-1">
+              {restartActive.map((a) => <li key={a.id}>{a.studentClass} · {_appLabel(a)}</li>)}
+            </ul>
+            <p className="text-xs text-muted">As respostas já salvas ficam guardadas, mas os alunos precisam entrar de novo depois do reinício.</p>
+          </div>
+        ) : <p className="text-sm text-muted">{preview ? 'Nenhuma prova em andamento agora.' : 'Conferindo as provas em andamento…'}</p>}
+      </Modal>
+
+      <Modal open={dialog === 'flush'} onClose={closeDialog} title={`Limpar estado de prova · turma ${className}`} description="Apaga só o estado de tentativas e as mensagens de prova da turma escolhida."
+        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!flushPlan || flushBlocked || flushEmpty || confirmText.trim().toUpperCase() !== 'LIMPAR'} onClick={flush}>Limpar estado</Button></>}>
+        <div className="space-y-4">
+          <Select label="Aplicação" value={flushApplication} onChange={(e) => { setFlushApplication(e.target.value); loadPreview(e.target.value) }}>
+            <option value="">Todas as provas desta turma</option>
+            {(preview?.applications || []).map((a) => <option key={a.id} value={a.id}>{_appLabel(a)}</option>)}
+          </Select>
+          {previewError && <p className="text-sm text-danger">{previewError}</p>}
+          {!flushPlan && !previewError && <p className="text-sm text-muted">Calculando o que será apagado…</p>}
+          {flushBlocked && (
+            <p className="text-sm text-warning" role="alert">Há aplicação em andamento ({flushPlan.blockedBy.map((a) => a.examTitle).join(', ')}). Encerre-a pelo Monitor, salvando ou desconsiderando as respostas, antes de limpar.</p>
+          )}
+          {flushPlan && !flushBlocked && (
+            <div className="text-sm space-y-1">
+              {flushEmpty ? <p className="text-muted">Nada para limpar nesta seleção.</p> : <>
+                <p className="text-text"><b>Será apagado:</b> {_plural(flushPlan.counts.examStates, 'estado de tentativa sem entrega', 'estados de tentativa sem entrega')}{flushPlan.counts.pendingAnswers ? ` (${flushPlan.counts.pendingAnswers} com respostas não entregues)` : ''} e {_plural(flushPlan.counts.messages, 'mensagem de prova', 'mensagens de prova')}.</p>
+                <p className="text-muted"><b className="text-text">Fica preservado:</b> {_plural(flushPlan.preserved.proctoringLogs, 'registro de monitoramento', 'registros de monitoramento')}, {_plural(flushPlan.preserved.keystrokes, 'registro de digitação', 'registros de digitação')}, todas as entregas e notas.</p>
+                <p className="text-xs text-subtle">Um backup dos dados é salvo antes da limpeza.</p>
+              </>}
+            </div>
+          )}
+          {flushPlan && !flushBlocked && !flushEmpty && <TypedConfirm id="flush-confirm" word="LIMPAR" value={confirmText} onChange={setConfirmText} />}
+        </div>
+      </Modal>
+
+      <Modal open={dialog === 'reset'} onClose={closeDialog} title={`Resetar sala · turma ${className}`} description="Ação irreversível. Um backup dos dados é salvo antes."
+        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!resetPlan || confirmText.trim().toUpperCase() !== 'RESETAR'} onClick={reset}>Confirmar reset</Button></>}>
+        <div className="space-y-4">
+          {previewError && <p className="text-sm text-danger">{previewError}</p>}
+          {!resetPlan && !previewError && <p className="text-sm text-muted">Conferindo a turma…</p>}
+          {resetPlan && (
+            <div className="text-sm space-y-2">
+              {resetPlan.activeApplications.length > 0 ? (
+                <div>
+                  <p className="text-text font-semibold">Provas encerradas com as respostas salvas (viram entrega):</p>
+                  <ul className="list-disc pl-5 space-y-1 text-text">
+                    {resetPlan.activeApplications.map((a) => <li key={a.id}>{_appLabel(a)}: {_plural(a.inProgressAttempts, 'tentativa em andamento', 'tentativas em andamento')}{a.waitingToStart ? `, ${a.waitingToStart} ainda nas instruções` : ''}</li>)}
+                  </ul>
+                </div>
+              ) : <p className="text-muted">Nenhuma prova em andamento nesta turma.</p>}
+              <p className="text-text">{_plural(resetPlan.counts.sessions, 'aluno desconectado', 'alunos desconectados')} · {_plural(resetPlan.counts.examStates, 'estado de prova limpo', 'estados de prova limpos')} · {_plural(resetPlan.counts.messages, 'mensagem limpa', 'mensagens limpas')}.</p>
+              <p className="text-muted">Outras turmas, conteúdos liberados, notas e logs de monitoramento não são afetados.</p>
+            </div>
+          )}
+          {resetPlan && <TypedConfirm id="reset-confirm" word="RESETAR" value={confirmText} onChange={setConfirmText} />}
+        </div>
       </Modal>
     </div>
   )

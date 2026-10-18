@@ -17,6 +17,8 @@
 | UC-DASH-002 | Automatizado | `/` (Dashboard) | fila "Precisa de você" com snooze de 24h | `dashboard-aggregates.test.js` |
 | UC-DASH-003 | Automatizado | `/` (Dashboard) | Pulso: janelas móveis de 30 dias, sem dado ≠ zero | `dashboard-aggregates.test.js` |
 | UC-DASH-004 | Automatizado | `/` (Dashboard) | escopo de professor e permissões nas rotas /now /queue /trends | `dashboard-aggregates.test.js` |
+| UC-APLICACAO-001 | Automatizado | `/provas`, `/materiais`, `/monitor` | uma aplicação por prova e turma: preparar outra com uma em andamento é recusado (409) sem encerrar nada; bloquear em Materiais não descarta respostas; liberar em lote só libera apostilas; gabarito travado em nova aplicação e escondido do aluno enquanto houver aplicação aberta ou nota não publicada | `exam-application-guards.test.js`, `exam-applications.test.js`, `MateriaisPage.test.jsx`, `examTools.test.js` |
+| UC-MANUT-001 | Automatizado | `/sistema` | limpar estado de prova e resetar sala só na turma escolhida, com prévia, confirmação digitada validada no servidor, backup antes, auditoria e logs de monitoramento preservados; reset encerra provas salvando as respostas; reiniciar servidor pede confirmação | `exam-application-guards.test.js`, `database-persistence.test.js`, `SistemaPage.test.jsx` |
 | UC-CONTEUDO-001 | Adiado | apostilas/unidades | nova arquitetura pendente | sem novos testes nesta etapa |
 
 Ao adicionar ou renomear um teste, esta matriz deve ser atualizada no mesmo conjunto de mudanças.

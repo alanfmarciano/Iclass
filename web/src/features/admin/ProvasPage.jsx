@@ -23,6 +23,7 @@ import {
   getQuestionUsageMap,
   normalizeEvaluation,
   openPrintWindow,
+  runningApplicationOf,
   snapshotsFromHistory,
 } from './examTools'
 
@@ -211,6 +212,8 @@ export default function ProvasPage() {
     const configuredId = onlineConfig?.applicationId
     return applications.find((item) => item.id === configuredId) || applications[0] || null
   }, [applications, onlineConfig])
+  const runningApplication = useMemo(() => runningApplicationOf(applications), [applications])
+  const RUNNING_MESSAGE = 'Há uma aplicação em andamento desta prova; encerre-a pelo Monitor antes de preparar outra.'
   const normalizedEval = useMemo(() => evaluation ? normalizeEvaluation(evaluation) : null, [evaluation])
   const usage = useMemo(() => getQuestionUsageMap(history), [history])
   const effectiveExcluded = useMemo(() => {
@@ -377,8 +380,21 @@ export default function ProvasPage() {
     })
   }
 
+  function openRunningMonitor() {
+    if (!runningApplication) return
+    const params = new URLSearchParams({ courseId, className, examKey, applicationId: runningApplication.id })
+    navigate(`/monitor?${params.toString()}`)
+  }
+
+  // Avisos depois de preparar: o que a nova preparação substituiu ou bloqueou.
+  function notifyPrepared(prepared) {
+    if (prepared?.replacedApplicationIds?.length) toast.info('A aplicação preparada anterior (ainda não iniciada) foi substituída por esta.')
+    if (prepared?.answerKeyLocked) toast.info('O gabarito liberado na aplicação anterior voltou a ficar bloqueado. Libere de novo em Materiais quando quiser.')
+  }
+
   async function saveOnline(prepare) {
     if (!className || !courseId || !examKey || !normalizedEval) return toast.error('Selecione turma, curso e prova')
+    if (prepare && runningApplication) return toast.error(RUNNING_MESSAGE)
     if (currentVersions.length === 0) return toast.error('Esta avaliação não tem questões')
     if (form.tokenEnabled && !/^[A-Z]{5}$/.test(form.accessToken)) return toast.error('O token deve ter exatamente 5 letras maiúsculas')
     const parsedMaxAttempts = parseMaxAttemptsInput(form.maxAttempts)
@@ -405,6 +421,7 @@ export default function ProvasPage() {
         })
         if (prepared.accessToken) sessionStorage.setItem(`exam-token:${prepared.application.id}`, prepared.accessToken)
         toast.success('Aplicação preparada. Inicie pelo monitor quando a turma estiver pronta.')
+        notifyPrepared(prepared)
         await loadExamState()
         const params = new URLSearchParams({ courseId, className, examKey, applicationId: prepared.application.id })
         navigate(`/monitor?${params.toString()}`)
@@ -414,6 +431,7 @@ export default function ProvasPage() {
       }
     } catch (e) {
       toast.error(e.message)
+      if (e.data?.activeApplication) loadExamState().catch(() => {})
     } finally {
       setBusy(null)
     }
@@ -435,6 +453,7 @@ export default function ProvasPage() {
   }
 
   function openHistoryApplication(entry) {
+    if (runningApplication) return toast.error(RUNNING_MESSAGE)
     const availableVersions = Math.max(1, snapshotsFromHistory(entry).length)
     setApplyHistory({
       entry,
@@ -479,11 +498,16 @@ export default function ProvasPage() {
       })
       if (prepared.accessToken) sessionStorage.setItem(`exam-token:${prepared.application.id}`, prepared.accessToken)
       toast.success('Nova aplicação preparada. Abrindo o Monitor Online.')
+      notifyPrepared(prepared)
       setApplyHistory(null)
       const params = new URLSearchParams({ courseId, className, examKey, applicationId: prepared.application.id })
       navigate(`/monitor?${params.toString()}`)
     } catch (e) {
       toast.error(e.message)
+      if (e.data?.activeApplication) {
+        setApplyHistory(null)
+        loadExamState().catch(() => {})
+      }
     } finally {
       setBusy(null)
     }
@@ -990,9 +1014,15 @@ export default function ProvasPage() {
                             <p className="text-xs text-muted">Salvar, preparar e depois iniciar pelo monitor</p>
                           </div>
                         </div>
+                        {runningApplication && (
+                          <div role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-3 space-y-2">
+                            <p className="text-sm text-text"><b>Prova em andamento nesta turma.</b> Encerre-a pelo Monitor (salvando ou desconsiderando as respostas) antes de preparar outra aplicação.</p>
+                            <Button size="sm" variant="secondary" icon={Play} onClick={openRunningMonitor}>Abrir Monitor</Button>
+                          </div>
+                        )}
                         <div className="flex flex-wrap gap-2">
                           <Button icon={FileText} loading={busy === 'saveOnline'} onClick={() => saveOnline(false)}>Salvar online</Button>
-                          <Button icon={Play} loading={busy === 'prepare'} onClick={() => saveOnline(true)}>Preparar e abrir monitor</Button>
+                          <Button icon={Play} loading={busy === 'prepare'} disabled={!!runningApplication} title={runningApplication ? RUNNING_MESSAGE : undefined} onClick={() => saveOnline(true)}>Preparar e abrir monitor</Button>
                         </div>
                         <p className="text-xs text-warning">Preparar ainda não libera a prova. No monitor, clique em “Iniciar prova e avisar alunos” ou abra a sala de espera.</p>
                         <div className="flex flex-wrap gap-2">
@@ -1074,7 +1104,7 @@ export default function ProvasPage() {
                           </button>
                           <Badge tone={entry.type === 'impressa' ? 'info' : 'neutral'}>{entry.type || 'online'}</Badge>
                           <Button size="sm" variant="secondary" icon={Printer} onClick={() => reprintHistory(entry)}>{entry.type === 'impressa' ? 'Reimprimir' : 'Imprimir'}</Button>
-                          <Button size="sm" icon={Play} onClick={() => openHistoryApplication(entry)}>Aplicar online</Button>
+                          <Button size="sm" icon={Play} disabled={!!runningApplication} title={runningApplication ? RUNNING_MESSAGE : undefined} onClick={() => openHistoryApplication(entry)}>Aplicar online</Button>
                           {prepared && <Button size="sm" variant="secondary" icon={Lock} onClick={blockPrepared}>Bloquear</Button>}
                           <button className="text-subtle hover:text-danger" onClick={() => setDeleteHistory(entry)} aria-label="Excluir histórico"><Trash2 size={16} /></button>
                         </div>

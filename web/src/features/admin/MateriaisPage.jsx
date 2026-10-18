@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
-import { BookOpen, ClipboardList, FileCheck2, ChevronRight, Lock, Unlock, PackageOpen, Layers, CheckCircle2, XCircle } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { BookOpen, ClipboardList, FileCheck2, ChevronRight, Lock, Unlock, PackageOpen, Layers, CheckCircle2, XCircle, MonitorPlay } from 'lucide-react'
 import { Switch } from '../../components/ui/Switch'
 import { Button } from '../../components/ui/Button'
+import { Badge } from '../../components/ui/Badge'
 import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { PageHeader } from '../../components/ui/PageHeader'
@@ -25,6 +27,27 @@ function moduleUnits(mod) {
 
 function moduleItems(mod) { return moduleUnits(mod).flatMap((u) => u.items) }
 function moduleTitle(mod, i) { return mod.title || mod.name || `Modulo ${i + 1}` }
+
+// A prova online não é um item liberável: ela é aplicada em Provas e controlada no
+// Monitor. Em lote, "liberar" vale só para as apostilas (nunca cria aplicação, não
+// reabre prova encerrada nem libera gabarito) e "bloquear" para apostilas e gabaritos.
+export function batchReleaseKeys(items, value) {
+  return items
+    .filter((item) => item.type === 'Apostila' || (!value && item.type === 'Gabarito'))
+    .map((item) => item.key)
+}
+// Itens contados como "liberados" (a prova online fica de fora: tem status próprio).
+function countedItems(items) { return items.filter((item) => item.type !== 'Prova online') }
+
+const EXAM_STATUS = {
+  running: { label: 'Em andamento', tone: 'success' },
+  waiting: { label: 'Sala de espera', tone: 'warning' },
+  paused: { label: 'Pausada', tone: 'warning' },
+  prepared: { label: 'Preparada', tone: 'info' },
+  finished: { label: 'Finalizada', tone: 'neutral' },
+}
+const OPEN_EXAM_STATUSES = new Set(['prepared', 'waiting', 'running', 'paused'])
+function examStatusOf(configs, examKey) { return configs?.[examKey]?.status || 'none' }
 
 function relTime(iso) {
   if (!iso) return ''
@@ -54,10 +77,12 @@ export default function MateriaisPage() {
   const [structure, setStructure] = useState(null)
   const [released, setReleased] = useState({})
   const [releaseMeta, setReleaseMeta] = useState({})
+  const [examConfigs, setExamConfigs] = useState({})
   const [selIdx, setSelIdx] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const toast = useToast()
+  const navigate = useNavigate()
 
   async function load() {
     if (!courseId) { setStructure(null); return }
@@ -69,7 +94,8 @@ export default function MateriaisPage() {
         const st = await api.get(`/api/status?studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(courseId)}`)
         setReleased(st.releasedItems || {})
         setReleaseMeta(st.releaseMeta || {})
-      } else { setReleased({}); setReleaseMeta({}) }
+        setExamConfigs(st.onlineExamConfigs || {})
+      } else { setReleased({}); setReleaseMeta({}); setExamConfigs({}) }
     } catch (e) { setError(e) } finally { setLoading(false) }
   }
 
@@ -91,17 +117,32 @@ export default function MateriaisPage() {
 
   async function setBatch(items, value) {
     if (!className) return toast.error('Selecione uma turma')
-    const keys = items.map((i) => i.key)
+    const keys = batchReleaseKeys(items, value)
+    const skipped = items.length - keys.length
     setReleased((r) => keys.reduce((a, k) => ({ ...a, [k]: value }), r))
-    try {
-      for (const itemKey of keys) await api.post('/api/admin/release-item', { studentClass: className, courseId, itemKey, released: value })
-      toast.success(value ? 'Itens liberados' : 'Itens bloqueados')
-    } catch (e) { toast.error(e.message) } finally { load() }
+    // Um erro não interrompe o lote no meio: cada item é tentado e o resumo diz o que falhou.
+    const failures = []
+    for (const itemKey of keys) {
+      try { await api.post('/api/admin/release-item', { studentClass: className, courseId, itemKey, released: value }) }
+      catch (e) { failures.push(e.message) }
+    }
+    if (failures.length) toast.error(`${failures.length} item(ns) não foram alterados: ${failures[0]}`)
+    else if (keys.length) toast.success(value ? 'Apostilas liberadas' : 'Itens bloqueados')
+    if (value && skipped > 0) toast.info('Provas e gabaritos não são liberados em lote: aplique a prova em Provas e libere cada gabarito na própria chave.')
+    load()
+  }
+
+  function openExam(examKey) {
+    const cfg = examConfigs[examKey]
+    if (cfg && OPEN_EXAM_STATUSES.has(cfg.status) && cfg.applicationId) {
+      const params = new URLSearchParams({ courseId, className, examKey, applicationId: cfg.applicationId })
+      navigate(`/monitor?${params.toString()}`)
+    } else navigate('/provas')
   }
 
   const modules = structure || []
   const counts = useMemo(() => modules.map((m) => {
-    const items = moduleItems(m)
+    const items = countedItems(moduleItems(m))
     return { total: items.length, on: items.filter((i) => released[i.key]).length }
   }), [modules, released])
   const totals = useMemo(() => counts.reduce((a, c) => ({ total: a.total + c.total, on: a.on + c.on }), { total: 0, on: 0 }), [counts])
@@ -117,7 +158,7 @@ export default function MateriaisPage() {
       <PageHeader title="Materiais e liberação" subtitle={`Libere apostilas, provas e gabaritos · ${courseName || courseId} · ${className}`}>
         {className && modules.length > 0 && (
           <div className="flex gap-2">
-            <Button size="sm" variant="secondary" icon={Unlock} onClick={() => setAll(true)}>Liberar tudo</Button>
+            <Button size="sm" variant="secondary" icon={Unlock} onClick={() => setAll(true)}>Liberar todas as apostilas</Button>
             <Button size="sm" variant="secondary" icon={Lock} onClick={() => setAll(false)}>Bloquear tudo</Button>
           </div>
         )}
@@ -169,7 +210,7 @@ export default function MateriaisPage() {
                     </div>
                     {selItems.length > 0 && (
                       <div className="flex gap-2">
-                        <Button size="sm" variant="secondary" icon={CheckCircle2} onClick={() => setBatch(selItems, true)}>Liberar tudo</Button>
+                        <Button size="sm" variant="secondary" icon={CheckCircle2} onClick={() => setBatch(selItems, true)}>Liberar apostilas</Button>
                         <Button size="sm" variant="secondary" icon={XCircle} onClick={() => setBatch(selItems, false)}>Bloquear</Button>
                       </div>
                     )}
@@ -177,27 +218,53 @@ export default function MateriaisPage() {
                   {selUnits.length === 0 ? (
                     <div className="p-6"><EmptyState icon={PackageOpen} title="Sem unidades" description="Este módulo ainda não possui materiais cadastrados." /></div>
                   ) : selUnits.map((unit, ui) => {
-                    const uon = unit.items.filter((i) => released[i.key]).length
+                    const counted = countedItems(unit.items)
+                    const uon = counted.filter((i) => released[i.key]).length
+                    const apostilaBlocked = unit.items.some((i) => i.type === 'Apostila' && !released[i.key])
+                    const canRelease = apostilaBlocked
+                    const canBlock = unit.items.some((i) => i.type !== 'Prova online' && released[i.key])
                     return (
                       <div key={ui} className="border-b border-border last:border-0">
                         <div className="flex items-center justify-between gap-3 px-4 sm:px-5 py-2.5 bg-surface-2">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className="text-sm font-medium text-text truncate">{unit.name}</span>
-                            <button onClick={() => setBatch(unit.items, uon < unit.items.length)} className="text-xs text-primary hover:underline shrink-0">{uon < unit.items.length ? 'liberar unidade' : 'bloquear unidade'}</button>
+                            {(canRelease || canBlock) && (
+                              <button onClick={() => setBatch(unit.items, canRelease)} className="text-xs text-primary hover:underline shrink-0">{canRelease ? 'liberar apostila' : 'bloquear unidade'}</button>
+                            )}
                           </div>
-                          <span className="text-xs text-subtle shrink-0">{uon} de {unit.items.length} liberados</span>
+                          <span className="text-xs text-subtle shrink-0">{uon} de {counted.length} liberados</span>
                         </div>
                         {unit.items.map((item) => {
                           const isOn = !!released[item.key]; const Icon = TYPE_ICON[item.type] || BookOpen; const meta = releaseMeta[item.key]
+                          if (item.type === 'Prova online') {
+                            const status = examStatusOf(examConfigs, item.key)
+                            const info = EXAM_STATUS[status] || { label: 'Não aplicada', tone: 'neutral' }
+                            const open = OPEN_EXAM_STATUSES.has(status)
+                            return (
+                              <div key={item.key} className="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-3 pl-8 sm:pl-10 border-b border-border/50 last:border-0">
+                                <Icon size={18} className={open ? 'text-text' : 'text-subtle'} />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-text">{item.type}</p>
+                                  <p className="text-xs text-muted mt-0.5">{open ? 'Controlada pelo Monitor: encerre por lá, salvando ou desconsiderando as respostas.' : 'Prepare em Provas e inicie pelo Monitor.'}</p>
+                                </div>
+                                <Badge tone={info.tone}>{info.label}</Badge>
+                                <Button size="sm" variant="secondary" icon={MonitorPlay} onClick={() => openExam(item.key)}>{open ? 'Abrir Monitor' : 'Ir para Provas'}</Button>
+                              </div>
+                            )
+                          }
+                          // Gabarito só depois que a aplicação da prova termina.
+                          const examKey = item.type === 'Gabarito' ? item.key.replace(/^Gabarito_/, '') : null
+                          const lockedByExam = !!examKey && OPEN_EXAM_STATUSES.has(examStatusOf(examConfigs, examKey)) && !isOn
                           return (
                             <div key={item.key} className="flex items-center gap-3 px-4 sm:px-5 py-3 pl-8 sm:pl-10 border-b border-border/50 last:border-0">
                               <Icon size={18} className={isOn ? 'text-text' : 'text-subtle'} />
                               <div className="flex-1 min-w-0">
                                 <p className="text-sm text-text">{item.type}</p>
                                 {isOn && meta?.by && <p className="text-xs text-muted mt-0.5">liberado por {meta.by} {relTime(meta.at)}</p>}
+                                {lockedByExam && <p className="text-xs text-muted mt-0.5">Disponível depois que a aplicação da prova for encerrada.</p>}
                               </div>
                               <span className={`text-xs mr-2 shrink-0 ${isOn ? 'text-success' : 'text-muted'}`}>{isOn ? 'Liberado' : 'Bloqueado'}</span>
-                              <Switch checked={isOn} onChange={(v) => toggle(item.key, v)} />
+                              <Switch checked={isOn} disabled={lockedByExam} onChange={(v) => toggle(item.key, v)} />
                             </div>
                           )
                         })}

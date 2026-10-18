@@ -12,6 +12,7 @@ const settingsUtil = require('./utils/settings.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
 const { computeAttemptDeadline } = require('./utils/examDeadline.js');
+const { listExamApplications } = require('./utils/examApplications.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
@@ -722,17 +723,33 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     };
 }
 
-// Verifica se o aluno pode visualizar o gabarito
+// Aplicações que ocupam a prova na turma: enquanto uma delas existir, o gabarito
+// daquela prova não sai para nenhum aluno (G2: gabarito na reaplicação).
+const ANSWER_KEY_BLOCKING_STATUSES = ['prepared', 'waiting', 'running', 'paused'];
+
+function examHasOpenApplication(cls, examKey) {
+    return listExamApplications(db.memory.examApplications, {
+        studentClass: cls.name,
+        courseId: cls.courseId,
+        examKey,
+        statuses: ANSWER_KEY_BLOCKING_STATUSES,
+    }).length > 0;
+}
+
+// Verifica se o aluno pode visualizar o gabarito: só da tentativa com nota publicada,
+// com o gabarito liberado e sem nova aplicação da mesma prova preparada ou rodando.
 function canStudentViewAnswerKey(submission, studentEmail) {
     if (!submission || !submission.examKey) return false;
+    if (submission.gradePublished !== true) return false;
 
     const normalizedEmail = (studentEmail || (submission.student && submission.student.email) || '').trim().toLowerCase();
-    const submittedClass = submission.student && submission.student.studentClass;
-    const submittedCourseId = submission.student && submission.student.courseId;
+    const submittedClass = (submission.student && submission.student.studentClass) || submission.studentClass;
+    const submittedCourseId = (submission.student && submission.student.courseId) || submission.courseId;
     const classes = readJSON(DB_CLASSES_FILE);
     const cls = findClassByNameAndCourse(classes, submittedClass, submittedCourseId);
 
     if (!cls) return false;
+    if (examHasOpenApplication(cls, submission.examKey)) return false;
 
     const releasedItems = getReleasedItemsForClass(cls, normalizedEmail);
     return releasedItems[getAnswerKeyReleaseKey(submission.examKey)] === true;
@@ -803,6 +820,9 @@ function accessibilityExtraMinutes(studentEmail, durationMinutes) {
 
 function initializeExamState(state, onlineConfig) {
     if (!state || !onlineConfig) return false;
+    // Tentativa de uma aplicação nunca é reiniciada com a configuração de outra (por
+    // exemplo, a de uma nova preparação da mesma prova): isso zerava as respostas.
+    if (state.applicationId && onlineConfig.applicationId && state.applicationId !== onlineConfig.applicationId) return false;
     let changed = false;
     const configVersion = onlineConfig.updatedAt || onlineConfig.preparedAt || onlineConfig.activeHistoryId || null;
     if (configVersion && state.examConfigVersion !== configVersion) {

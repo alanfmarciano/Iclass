@@ -408,6 +408,14 @@ test('isola tentativas e estado entre duas aplicações consecutivas da mesma pr
     assert.deepEqual(secondSync.body.state.answers, {});
     assert.equal(secondSync.body.state.status, 'instructions');
     assert.equal(db.memory.submissions[0].applicationId, first.id);
+
+    // Uma nova preparação não encerra mais em silêncio a aplicação em andamento: o
+    // professor encerra a segunda antes de o próximo teste preparar outra.
+    await request(app)
+        .post(`/api/admin/exam-applications/${second.id}/control`)
+        .set('x-admin-session', adminToken)
+        .send({ action: 'finish', inProgressPolicy: 'discard' })
+        .expect(200);
 });
 
 test('cria e edita prova com validação e mantém banco de questões editável', async () => {
