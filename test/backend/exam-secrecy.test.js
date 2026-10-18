@@ -568,7 +568,9 @@ test('[UC-SIGILO-001] apostila perde só o gabarito do professor; autocorreção
         '<details>\n<summary>Gabarito dos exercícios</summary>\n\n1. Resposta para o aluno conferir\n</details>',
         '<details>\n<summary>👀 Ver Resposta</summary>\n\nExplicação para o aluno\n</details>',
         `<details>\n<summary><b>👀 ${GABARITO}</b></summary>\n\n1. **B** (segredo do professor)\n</details>`,
-        '<details>\n<summary><b>GABARITO</b></summary>\n\n1. **C** (segredo da prova)\n</details>',
+        '<details>\n<summary><b>Gabarito do professor</b></summary>\n\n1. **C** (segredo da prova)\n</details>',
+        // Regra fixa (B-gabarito): "GABARITO" sem a marca do professor é autocorreção e fica.
+        '<details>\n<summary><b>GABARITO</b></summary>\n\n1. **E** (conferência do aluno)\n</details>',
         '<details>\n<summary><b>GABARITO OFICIAL</b></summary>\n\n1. **D** (segredo oficial)\n</details>',
     ].join('\n\n'));
     try {
@@ -578,6 +580,7 @@ test('[UC-SIGILO-001] apostila perde só o gabarito do professor; autocorreção
         for (const [label, text] of [['apostila .md', asStudent.text], ['data.js', data.text]]) {
             assert.match(text, /Resposta para o aluno conferir/, `${label}: bloco de autocorreção continua`);
             assert.match(text, /Explicação para o aluno/, label);
+            assert.match(text, /conferência do aluno/, `${label}: "GABARITO" sem marca do professor fica`);
             assert.equal(/segredo (do professor|da prova|oficial)/.test(text), false, `${label}: gabarito do professor sai`);
             assert.equal(text.includes(GABARITO), false, label);
         }

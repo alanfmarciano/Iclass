@@ -43,32 +43,56 @@ function normalizedLabel(html) {
         .toLowerCase();
 }
 
-// Marcador forte do gabarito do professor: a palavra "gabarito" (ou "chave de
-// respostas"/"chave de correção"), junto de uma marca de material do professor
-// ("oficial", "professor", "prof.", "docente", "instrutor", "exclusivo"). "Resposta"
-// ou "solução" com "professor" não basta: "## Perguntas e respostas com o professor",
-// "## Solução proposta pelo instrutor" e "<summary>Resposta do professor</summary>"
-// são material do aluno e ficam.
-const TEACHER_MARKER = /\b(oficial|professor|professora|prof|docente|instrutor|instrutora|exclusivo|exclusiva)\b/;
+// Gabarito do professor que por engano foi parar numa apostila: regras fixas, sem
+// adivinhar pelo conteúdo. Para o professor: o gabarito dele fica sob um título ou
+// bloco "Gabarito do professor".
+// - Palavra do gabarito: "gabarito" (ou "chave de respostas"/"chave de correção").
+// - Marca do professor: professor(a), prof., instrutor(a), docente, exclusivo(a).
+//   "Oficial" sozinho não é marca, exceto no <summary> de <details> ("gabarito oficial").
+// Sai:
+// 1. <details> cujo <summary> tem gabarito + marca (ou "gabarito oficial"): o bloco
+//    inteiro, com os <details> aninhados;
+// 2. título Markdown (#, sublinhado) ou HTML (<h1>-<h6>), também dentro de citação, com
+//    gabarito + marca: até o próximo título de nível igual ou maior;
+// 3. parágrafo que é só um rótulo em negrito com gabarito + marca ("**Gabarito do
+//    professor**", "<p><strong>GABARITO DO PROFESSOR</strong></p>"): vale como título,
+//    abaixo de todos os outros (vai até o próximo título). O rótulo é o texto em negrito
+//    até o primeiro ":" ("**Atenção: o gabarito ... professor.**" tem o rótulo "Atenção");
+// 4. parágrafo que começa com esse rótulo e traz texto na mesma linha ("**Gabarito do
+//    professor:** 1-B, 2-C"): só esse parágrafo (até a linha em branco).
+// Nada mais sai: glossário, avisos, "Gabarito dos exercícios", "Ver resposta", tabela,
+// rótulo em itálico ou sem negrito ficam. O trecho removido também acaba onde acaba o
+// bloco que contém o título (citação, item de lista, <div>/<section>...) e nenhuma tag de
+// contêiner fica aberta. Títulos e rótulos dentro de bloco de código não contam.
 const ANSWER_KEY_WORD = /\b(gabaritos?|chaves? de (respostas?|correcao))\b/;
-const BARE_ANSWER_KEY = /^(gabaritos?|chaves? de (respostas?|correcao))$/;
+const TEACHER_MARKER = /\b(professor|professora|professores|professoras|prof|docente|docentes|instrutor|instrutora|instrutores|instrutoras|exclusivo|exclusiva|exclusivos|exclusivas)\b/;
+const OFFICIAL_ANSWER_KEY = /\b(gabaritos?|chaves? de (respostas?|correcao)) oficia(l|is)\b/;
 
-// Título de bloco que marca o gabarito do professor, nos formatos dos arquivos de
-// avaliação: "GABARITO EXCLUSIVO DO PROFESSOR", "GABARITO OFICIAL", "Gabarito do prof."
-// ou só "GABARITO". Um bloco de autocorreção escrito para o aluno ("Gabarito dos
-// exercícios", "Ver resposta") não casa e continua na apostila.
-function isTeacherAnswerKeySummary(summaryHtml) {
-    const text = normalizedLabel(summaryHtml);
-    if (BARE_ANSWER_KEY.test(text)) return true;
-    return ANSWER_KEY_WORD.test(text) && TEACHER_MARKER.test(text);
+function hasTeacherAnswerKey(text) {
+    const label = normalizedLabel(text);
+    return ANSWER_KEY_WORD.test(label) && TEACHER_MARKER.test(label);
 }
 
-// Título de seção do professor ("## GABARITO EXCLUSIVO DO PROFESSOR", "<h2>GABARITO DO
-// PROFESSOR</h2>", "**GABARITO DO PROFESSOR**"). Aqui "Gabarito" sozinho não basta:
-// uma seção assim pode ser a autocorreção do aluno.
+// Regra 1: <summary> do bloco do professor ("GABARITO EXCLUSIVO DO PROFESSOR",
+// "Gabarito do prof.", "GABARITO&nbsp;OFICIAL"). "Gabarito dos exercícios" e "Ver
+// resposta" são autocorreção do aluno e ficam.
+function isTeacherAnswerKeySummary(summaryHtml) {
+    return hasTeacherAnswerKey(summaryHtml) || OFFICIAL_ANSWER_KEY.test(normalizedLabel(summaryHtml));
+}
+
+// Regra 2: título com gabarito + marca ("## GABARITO EXCLUSIVO DO PROFESSOR", "<h2>GABARITO
+// DO PROFESSOR</h2>"). "## Gabarito dos exercícios" e "## Perguntas e respostas com o
+// professor" ficam.
 function isTeacherAnswerKeyHeading(headingText) {
-    const text = normalizedLabel(headingText);
-    return ANSWER_KEY_WORD.test(text) && TEACHER_MARKER.test(text);
+    return hasTeacherAnswerKey(headingText);
+}
+
+// Regras 3 e 4: rótulo em negrito do gabarito do professor. O rótulo é o texto em negrito
+// até o primeiro ":" e tem gabarito + marca ("Gabarito do professor", "GABARITO
+// EXCLUSIVO DO PROFESSOR", "Gabarito do prof."). Em "**Atenção: o gabarito oficial será
+// divulgado pelo professor.**" o rótulo é "Atenção": é aviso e fica.
+function isAnswerKeyLabel(text) {
+    return hasTeacherAnswerKey(String(text || '').split(':')[0]);
 }
 
 // Remove <details> do professor inteiro, inclusive com <details> aninhado dentro (a
@@ -107,57 +131,22 @@ function stripTeacherDetails(markdown) {
 function setextHeadingLevel(line, next) {
     if (!line || !line.trim() || next === undefined) return 0;
     if (/^\s{0,3}(#{1,6}(\s|$)|[-*+]\s|\d+[.)]\s|```|~~~|>)/.test(line)) return 0;
+    if (THEMATIC_BREAK.test(line)) return 0;
     const underline = /^\s{0,3}(=+|-+)\s*$/.exec(next);
     if (!underline) return 0;
     return underline[1][0] === '=' ? 1 : 2;
 }
 
-// Parágrafo só em negrito ou itálico ("**GABARITO DO PROFESSOR**", "*Gabarito
-// oficial*", "<p><strong>...</strong></p>") funciona como título: nível 7, abaixo de
-// qualquer título de verdade. Quando o texto em negrito começa com "gabarito" (ou
-// "chave de respostas") e tem a marca do professor, é o rótulo do gabarito, com
-// qualquer tamanho ou pontuação ("**GABARITO OFICIAL.**", "**GABARITO EXCLUSIVO DO
-// PROFESSOR - NÃO DIVULGAR PARA OS ALUNOS**"). Os outros só contam se parecerem
-// título (curtos e sem ponto final): "**Atenção: o gabarito oficial será divulgado
-// pelo professor após a prova.**" é um aviso, não o começo do gabarito.
-const BOLD_LINE_LEVEL = 7;
-const MARKDOWN_BOLD_LINE = /^\s{0,3}(\*{1,3}|_{1,3})(?!\s)((?:(?!\1).)+)\1\s*:?\s*$/;
-const HTML_BOLD_LINE = /^\s{0,3}(?:<p\b[^>]*>\s*)?<(strong|b|em|i)\b[^>]*>([\s\S]+?)<\/\1>\s*:?\s*(?:<\/p>)?\s*$/i;
-const HTML_HEADING_LINE = /^\s{0,3}<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>\s*$/i;
-const MAX_BOLD_TITLE_WORDS = 8;
-// O rótulo começa com o nome do gabarito ("Gabarito do professor", "Chave de respostas").
-const ANSWER_KEY_START = /^(gabaritos?|chaves? de (respostas?|correcao))\b/;
-// Rótulo que só diz onde o gabarito está ("**Gabarito oficial disponível com o
-// professor**"): sai o próprio parágrafo, mas o conteúdo seguinte é do aluno.
-const ANSWER_KEY_NOTICE = /\b(disponive(l|is)|divulgad[oa]s?|publicad[oa]s?|sera|serao|estara|estarao|fica|ficam|ficara|ficarao|entregues?|solicite|solicitar|peca|pedir|consulte|consultar|procure|procurar|secretaria|mural|coordenacao)\b|\bcom (o|a) (professor|professora|docente|instrutor|instrutora|prof)\b/;
-// Subtítulo em negrito dentro do gabarito ("**Parte objetiva**", "**Seção A**",
-// "**Questão 2**"): não encerra o gabarito aberto por negrito. Outro negrito
-// ("**Exercício extra**") encerra.
-const ANSWER_KEY_SUBPART = /^(partes?|secao|secoes|bloco|questao|questoes|q ?\d+|itens?|letra|versao|versoes|resolucao|resolucoes|respostas?|comentarios?|justificativas?|criterios?|correcao|rubrica|objetivas?|discursivas?|dissertativas?|[a-e]|\d+)\b/;
-// Linha de resposta ("1. B", "2) c", "Questão 3 - D", "4. E (ls -la)"). "2. A rede..."
-// é texto, não resposta.
-const ANSWER_LINE = /^\s*(?:[-*+]\s+)?(?:(?:quest[aã]o|q)\s*)?\d{1,3}\s*[).:\-–—]\s*(?:letra\s+)?\(?[a-e]\)?(?=\s*(?:$|[,;.:)(\-–—]))/i;
+// Rótulo em negrito vale como título abaixo de qualquer <h6>.
+const LABEL_LEVEL = 7;
+const HTML_HEADING_LINE = /^\s{0,3}<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>\s*$/i;
 const THEMATIC_BREAK = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
 const LIST_ITEM = /^\s*(?:[-*+]|\d{1,9}[.)])\s+/;
 const HTML_BLOCK_START = /^\s{0,3}<\/?(p|div|section|article|aside|main|h[1-6]|ul|ol|li|table|blockquote|details|figure|hr)\b/i;
-// Rótulo em negrito no começo da linha, com texto depois na mesma linha ("**GABARITO
-// DO PROFESSOR:** 1-B, 2-C", "<strong>Gabarito oficial</strong><br>1. B"), também
-// dentro de item de lista.
-const LEADING_BOLD_LABEL = /^\s*(?:(?:[-*+]|\d{1,9}[.)])\s+)?(?:<p\b[^>]*>\s*)?(?:(\*{1,3}|_{1,3})(?!\s)((?:(?!\1).)+?)\1|<(strong|b|em|i)\b[^>]*>([\s\S]+?)<\/\3>)/i;
-
-function looksLikeTitle(text) {
-    const plain = decodeHtmlEntities(String(text || '').replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
-    const words = normalizedLabel(plain).split(' ').filter(Boolean);
-    if (!words.length || words.length > MAX_BOLD_TITLE_WORDS) return false;
-    // Frase terminada em ponto é aviso; "Gabarito do prof." é abreviação.
-    return !/[.!?…]\s*$/.test(plain) || /\bprof\.\s*$/i.test(plain);
-}
-
-// Rótulo do gabarito do professor: começa com "gabarito" e tem a marca do professor.
-function isAnswerKeyLabel(text) {
-    const label = normalizedLabel(text);
-    return ANSWER_KEY_START.test(label) && TEACHER_MARKER.test(label);
-}
+const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
+// Negrito no começo da linha ("**...**", "__...__", "***...***", <strong>, <b>), com
+// marcador de lista e <p> opcionais. Itálico (*...*, <em>) não é negrito.
+const LEADING_BOLD = /^(\s*)((?:[-*+]|\d{1,9}[.)])\s+)?(?:<p\b[^>]*>\s*)?(?:(\*{2,3}|_{2,3})(?!\s)((?:(?!\3).)+?)\3|<(strong|b)\b[^>]*>([\s\S]*?)<\/\5\s*>)/i;
 
 const BLOCKQUOTE_PREFIX = /^(?:\s{0,3}>\s?)+/;
 function quoteDepth(line) {
@@ -169,41 +158,38 @@ function indentOf(line) {
     return (/^\s*/.exec(line)[0] || '').replace(/\t/g, '    ').length;
 }
 
+// Linha que começa com o rótulo do gabarito do professor em negrito. onlyLabel: a linha
+// é só o rótulo (regra 3); senão traz texto depois dele (regra 4). Com 4 espaços ou mais
+// fora de lista a linha é bloco de código e não conta.
+function answerKeyLabelLine(inner, inList) {
+    const match = LEADING_BOLD.exec(inner);
+    if (!match) return null;
+    const indent = indentOf(match[1]);
+    if (indent >= 4 && !inList) return null;
+    const bold = match[4] !== undefined ? match[4] : match[6];
+    const plain = decodeHtmlEntities(String(bold || '').replace(/<[^>]*>/g, ' '));
+    if (!isAnswerKeyLabel(plain)) return null;
+    const colon = plain.indexOf(':');
+    const insideRest = colon >= 0 ? plain.slice(colon + 1) : '';
+    const after = inner.slice(match[0].length).replace(/<\/p>\s*$/i, '');
+    const onlyLabel = !normalizedLabel(insideRest) && !normalizedLabel(after);
+    return { onlyLabel, indent, listItem: !!match[2] };
+}
+
 // Título da linha (já sem o "> " de citação): nível, texto e quantas linhas ocupa.
+// O rótulo em negrito sozinho na linha (regra 3) entra como título de nível 7.
 // allowSetext: falso quando a linha continua um item de lista ("1. B\nQuestão 3: C\n---"
-// não é título sublinhado; o "---" ali é só uma linha).
-function lineHeading(inner, nextInner, { allowSetext = true } = {}) {
-    const atx = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(inner);
-    if (atx) return { level: atx[1].length, text: atx[2], span: 1 };
+// não é título sublinhado).
+function lineHeading(inner, nextInner, { allowSetext = true, inList = false } = {}) {
+    const atx = /^\s{0,3}(#{1,6})(?:\s+(.*?))?\s*#*\s*$/.exec(inner);
+    if (atx) return { level: atx[1].length, text: atx[2] || '', span: 1 };
     const html = HTML_HEADING_LINE.exec(inner);
     if (html) return { level: Number(html[1]), text: html[2], span: 1 };
     const setext = allowSetext ? setextHeadingLevel(inner, nextInner) : 0;
     if (setext) return { level: setext, text: inner, span: 2 };
-    const bold = MARKDOWN_BOLD_LINE.exec(inner) || HTML_BOLD_LINE.exec(inner);
-    if (bold && normalizedLabel(bold[2])) {
-        if (isAnswerKeyLabel(bold[2])) {
-            return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true, notice: ANSWER_KEY_NOTICE.test(normalizedLabel(bold[2])) };
-        }
-        if (looksLikeTitle(bold[2])) return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true };
-    }
+    const label = answerKeyLabelLine(inner, inList);
+    if (label && label.onlyLabel) return { level: LABEL_LEVEL, text: inner, span: 1, label };
     return null;
-}
-
-// Rótulo do gabarito no começo da linha com as respostas na mesma linha.
-function leadingAnswerKeyLabel(inner) {
-    const match = LEADING_BOLD_LABEL.exec(inner);
-    return !!match && isAnswerKeyLabel(match[2] || match[4]);
-}
-
-// Linha sem negrito que é só o rótulo ("GABARITO DO PROFESSOR", "Gabarito oficial:"),
-// em maiúsculas ou terminada em dois-pontos, no começo de um parágrafo.
-function plainAnswerKeyTitle(inner) {
-    const text = inner.trim();
-    if (!text || /^[#>*_<`|\-+]|^\d+[.)]/.test(text)) return false;
-    const label = normalizedLabel(text);
-    if (!isAnswerKeyLabel(text) || ANSWER_KEY_NOTICE.test(label)) return false;
-    const letters = text.replace(/[^\p{L}]/gu, '');
-    return /:\s*$/.test(text) || (letters.length > 0 && letters === letters.toUpperCase());
 }
 
 // Título HTML do gabarito no meio de uma linha ("<div><h2>GABARITO DO PROFESSOR</h2>
@@ -217,6 +203,7 @@ function isolateHtmlHeadings(markdown) {
     const source = String(markdown || '');
     const hasTeacherHtmlHeading = [...source.matchAll(HTML_HEADING_ANYWHERE)].some(match => isTeacherAnswerKeyHeading(match[2]));
     if (!hasTeacherHtmlHeading) return source;
+    const eol = /\r\n/.test(source) ? '\r\n' : '\n';
     const lines = source.split('\n');
     const output = [];
     let segment = [];
@@ -224,9 +211,9 @@ function isolateHtmlHeadings(markdown) {
         if (!segment.length) return;
         const text = segment.join('\n').replace(HTML_HEADING_ANYWHERE, (match, level, inner, offset, whole) => {
             const heading = match.replace(/\s*\n\s*/g, ' ');
-            const before = offset > 0 && whole[offset - 1] !== '\n' ? '\n' : '';
+            const before = offset > 0 && whole[offset - 1] !== '\n' ? eol : '';
             const afterIndex = offset + match.length;
-            const after = afterIndex < whole.length && whole[afterIndex] !== '\n' ? '\n' : '';
+            const after = afterIndex < whole.length && !/^\r?\n/.test(whole.slice(afterIndex, afterIndex + 2)) ? eol : '';
             return `${before}${heading}${after}`;
         });
         output.push(text);
@@ -248,40 +235,31 @@ function isolateHtmlHeadings(markdown) {
 }
 
 // Contêineres HTML de bloco. O gabarito dentro de um <div>/<section> sai, mas as tags
-// que abrem ou fecham o contêiner de fora continuam no texto: sem isso o <div> ficava
-// aberto e o "## Próximo" seguinte aparecia como texto cru.
-const CONTAINER_TAG = /<(\/?)(div|section|article|aside|main|header|footer|nav|details|figure|blockquote|table)\b[^>]*?(\/?)>/gi;
+// que fecham o contêiner de fora continuam no texto, e o trecho removido acaba ali;
+// contêiner aberto dentro do trecho removido e fechado depois dele é reaberto.
+const CONTAINER_TAG = /<(\/?)(div|section|article|aside|main|header|footer|nav|details|figure|blockquote|table|ul|ol|dl)\b[^>]*?(\/?)>/gi;
 
-// Remove a seção do professor:
-// - aberta por título (#, sublinhado, <h1>-<h6>): até o próximo título do mesmo nível
-//   ou acima;
-// - aberta por parágrafo em negrito: até o próximo título de verdade, outro negrito que
-//   não seja subtítulo do gabarito ("**Exercício extra**" encerra, "**Parte objetiva**"
-//   não) ou um "---" que não seja seguido de mais respostas;
-// - rótulo com as respostas na mesma linha ("**GABARITO DO PROFESSOR:** 1-B") ou aviso
-//   que começa com o rótulo: só o parágrafo.
-// Dentro de citação ("> ## GABARITO DO PROFESSOR") a seção acaba também quando a
-// citação termina; dentro de item de lista, quando o item termina. Títulos dentro de
-// bloco de código não contam.
+// Regras 2, 3 e 4 (a regra 1 é stripTeacherDetails).
 function stripTeacherHeadingSections(markdown) {
     const lines = isolateHtmlHeadings(markdown).split('\n');
     const output = [];
     let skip = null;
-    let inFence = false;
+    let fence = null;
     let previousBlank = true;
     let paragraphIsList = false;
+    let inList = false;
     let htmlDepth = 0;
 
     const startSkip = (kind, fields) => {
-        skip = { kind, ...fields, htmlDepth, minDepth: htmlDepth, opened: [] };
+        skip = { kind, ...fields, minDepth: htmlDepth, opened: [], containerClosed: false };
     };
     const endSkip = () => {
         // Contêiner aberto dentro do trecho removido e fechado depois: reabre aqui.
         if (skip && skip.opened.length) output.push(...skip.opened);
         skip = null;
     };
-    // Atualiza a profundidade dos contêineres HTML; dentro do trecho removido, guarda as
-    // tags que fecham contêineres de fora (voltam ao texto, seguidas de linha em branco).
+    // Atualiza a profundidade dos contêineres HTML; dentro do trecho removido, devolve as
+    // tags que fecham contêineres de fora (voltam ao texto) e marca o fim do bloco.
     const trackContainers = line => {
         const kept = [];
         line.replace(CONTAINER_TAG, (tag, closing, name, selfClosing) => {
@@ -294,102 +272,96 @@ function stripTeacherHeadingSections(markdown) {
             htmlDepth = Math.max(0, htmlDepth - 1);
             if (skip) {
                 if (skip.opened.length) skip.opened.pop();
-                else if (htmlDepth < skip.minDepth) { skip.minDepth = htmlDepth; kept.push(tag); }
+                else if (htmlDepth < skip.minDepth) { skip.minDepth = htmlDepth; skip.containerClosed = true; kept.push(tag); }
             }
             return tag;
         });
         return kept;
     };
-    const nextNonBlank = from => {
-        for (let index = from; index < lines.length; index++) {
-            if (lines[index].replace(BLOCKQUOTE_PREFIX, '').trim()) return index;
-        }
-        return -1;
-    };
-    // Depois de um "---" no gabarito em negrito: continua se vier mais resposta.
-    const continuesAnswerKey = index => {
-        if (index < 0) return false;
-        const inner = lines[index].replace(BLOCKQUOTE_PREFIX, '');
-        if (ANSWER_LINE.test(inner) || leadingAnswerKeyLabel(inner)) return true;
-        const heading = lineHeading(inner, undefined, { allowSetext: false });
-        return !!heading && heading.bold && (ANSWER_KEY_SUBPART.test(normalizedLabel(heading.text)) || isTeacherAnswerKeyHeading(heading.text));
-    };
+    const startsBlock = (inner, heading) => !!heading || LIST_ITEM.test(inner) || FENCE.test(inner)
+        || HTML_BLOCK_START.test(inner) || THEMATIC_BREAK.test(inner);
 
     for (let index = 0; index < lines.length; index++) {
         const line = lines[index];
         const depth = quoteDepth(line);
         const inner = line.replace(BLOCKQUOTE_PREFIX, '');
         const blank = !inner.trim();
+        const indent = indentOf(inner);
+
+        // Bloco de código dentro de citação acaba junto com a citação.
+        if (fence && depth < fence.depth) fence = null;
+        if (fence) {
+            // Dentro de bloco de código: nada é título nem rótulo.
+            if (new RegExp(`^\\s{0,3}${fence.marker[0] === '`' ? '`' : '~'}{${fence.marker.length},}\\s*$`).test(inner)) fence = null;
+            if (!skip) output.push(line);
+            previousBlank = false;
+            continue;
+        }
+
         if (!blank && previousBlank) paragraphIsList = LIST_ITEM.test(inner);
-        // Saiu da citação onde o gabarito começou (linha sem ">" depois de uma em branco).
-        if (skip && skip.depth > 0 && !blank && depth < skip.depth && previousBlank && !inFence) endSkip();
-        // Saiu do item de lista onde o rótulo estava.
-        if (skip && skip.indent > 0 && !blank && !inFence && indentOf(inner) < skip.indent) endSkip();
-        if (/^\s{0,3}(```|~~~)/.test(inner)) {
-            inFence = !inFence;
-            if (!skip) output.push(line);
-            previousBlank = false;
-            continue;
-        }
-        if (inFence) {
-            if (!skip) output.push(line);
-            previousBlank = false;
-            continue;
-        }
-        // Rótulo com as respostas na mesma linha: o parágrafo acaba na linha em branco.
-        if (skip && skip.kind === 'paragraph') {
-            // Mais respostas na linha seguinte ("2. C") continuam no mesmo parágrafo.
-            // Bloco HTML novo (<p>, <div>...) também começa outro parágrafo.
-            const startsBlock = blank || (LIST_ITEM.test(inner) && indentOf(inner) <= skip.listIndent && !ANSWER_LINE.test(inner))
-                || HTML_BLOCK_START.test(inner) || !!lineHeading(inner, undefined, { allowSetext: false }) || depth !== skip.depth;
-            if (startsBlock) endSkip();
-        }
-        let span = 1;
         const nextLine = lines[index + 1];
         const nextInner = nextLine !== undefined && quoteDepth(nextLine) === depth ? nextLine.replace(BLOCKQUOTE_PREFIX, '') : undefined;
-        const heading = blank ? null : lineHeading(inner, nextInner, { allowSetext: previousBlank || !paragraphIsList });
-        if (skip && skip.kind === 'section') {
-            let closes = false;
-            if (heading && depth <= skip.depth) {
-                if (skip.level !== BOLD_LINE_LEVEL) closes = heading.level <= skip.level;
-                else if (heading.level < BOLD_LINE_LEVEL) closes = true;
-                else closes = !ANSWER_KEY_SUBPART.test(normalizedLabel(heading.text)) && !isTeacherAnswerKeyHeading(heading.text);
-            } else if (skip.level === BOLD_LINE_LEVEL && THEMATIC_BREAK.test(inner) && depth <= skip.depth) {
-                closes = !continuesAnswerKey(nextNonBlank(index + 1));
-            }
-            if (closes) endSkip();
-        }
-        if (!skip && !blank) {
-            const listIndent = LIST_ITEM.test(inner) ? indentOf(inner) : -1;
-            const indent = indentOf(inner) >= 2 ? indentOf(inner) : 0;
-            if (heading && isTeacherAnswerKeyHeading(heading.text)) {
-                if (heading.bold && heading.notice) startSkip('paragraph', { depth, listIndent: Math.max(listIndent, indentOf(inner)), indent: 0 });
-                else startSkip('section', { level: heading.level, depth, indent: heading.bold ? indent : 0 });
-            } else if (!heading && leadingAnswerKeyLabel(inner)) {
-                startSkip('paragraph', { depth, listIndent: Math.max(listIndent, indentOf(inner)), indent: 0 });
-            } else if (!heading && previousBlank && plainAnswerKeyTitle(inner)) {
-                startSkip('section', { level: BOLD_LINE_LEVEL, depth, indent });
+        // Sublinhado logo depois do parágrafo do rótulo (regra 4) faz parte dele, não é título novo.
+        const allowSetext = (previousBlank || !paragraphIsList) && !(skip && skip.kind === 'paragraph');
+        const heading = blank || FENCE.test(inner) ? null : lineHeading(inner, nextInner, { allowSetext, inList });
+
+        if (skip && !blank) {
+            // Fim do bloco onde o título estava: a citação acabou (linha sem ">" que não
+            // continua o parágrafo) ou o item de lista acabou.
+            if (depth < skip.depth && (previousBlank || startsBlock(inner, heading))) endSkip();
+            else if (skip.list) {
+                const itemEnded = skip.list.sibling ? indent <= skip.list.indent : indent < skip.list.indent;
+                if (itemEnded && (previousBlank || startsBlock(inner, heading))) endSkip();
             }
         }
-        if (heading) span = heading.span;
+        if (skip && skip.kind === 'paragraph' && (blank || heading || depth > skip.depth)) endSkip();
+        if (skip && skip.kind === 'section' && heading && depth <= skip.depth && heading.level <= skip.level) endSkip();
+
+        if (!skip && !blank && !FENCE.test(inner)) {
+            const label = heading ? heading.label : answerKeyLabelLine(inner, inList);
+            const list = label && (label.listItem || (label.indent > 0 && inList))
+                ? { indent: label.indent, sibling: label.listItem }
+                : null;
+            if (heading && (heading.label || isTeacherAnswerKeyHeading(heading.text))) {
+                startSkip('section', { level: heading.level, depth, list });
+            } else if (!heading && label) {
+                startSkip('paragraph', { depth, list });
+            }
+        }
+
+        const fenceOpen = FENCE.exec(inner);
+        if (fenceOpen) fence = { marker: fenceOpen[1], depth };
+        const span = heading ? heading.span : 1;
         const chunk = lines.slice(index, index + span);
         if (!skip) {
-            chunk.forEach(trackContainers);
+            if (!fenceOpen) chunk.forEach(trackContainers);
             output.push(...chunk);
         } else {
-            const kept = chunk.flatMap(trackContainers);
-            if (kept.length) output.push(kept.join(''), '');
+            const kept = fenceOpen ? [] : chunk.flatMap(trackContainers);
+            if (skip.containerClosed) {
+                // O contêiner onde o título estava fechou nesta linha: a remoção acaba aqui.
+                skip.opened = [];
+                skip = null;
+            }
+            if (kept.length) {
+                output.push(kept.join('') + (/\r$/.test(chunk[chunk.length - 1]) ? '\r' : ''));
+                const following = lines[index + span];
+                if (skip || (following !== undefined && following.replace(BLOCKQUOTE_PREFIX, '').trim())) output.push(/\r$/.test(line) ? '\r' : '');
+            }
+        }
+
+        if (!blank) {
+            if (indent <= 3 && LIST_ITEM.test(inner)) inList = true;
+            else if (indent === 0 && (previousBlank || heading)) inList = false;
         }
         previousBlank = blank;
         index += span - 1;
     }
-    if (skip) skip.opened = [];
     return output.join('\n');
 }
 
-// Remove blocos de gabarito do professor (<details><summary>GABARITO ...</summary>...) e
-// seções "## GABARITO ... DO PROFESSOR" que por engano tenham ido parar numa apostila.
-// Defesa extra: o material do aluno nunca carrega o gabarito do professor.
+// Remove o gabarito do professor (regras acima) que por engano tenha ido parar numa
+// apostila. Defesa extra: o material do aluno nunca carrega o gabarito do professor.
 function stripAnswerKeyBlocks(markdown) {
     return stripTeacherHeadingSections(stripTeacherDetails(markdown));
 }

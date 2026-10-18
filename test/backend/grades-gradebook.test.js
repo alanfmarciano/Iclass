@@ -18,7 +18,6 @@ const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { errorHandler } = require('../../backend/middlewares.js');
 const { regradeSubmission } = require('../../backend/utils/examGrading.js');
-const { anonymizeAuditOfRemovedStudents } = require('../../backend/utils/gradebook.js');
 
 let app;
 // Funções de nota da interface (web/src/lib/grades.js), para comparar com o que a tela mostra.
@@ -1016,87 +1015,6 @@ test('[UC-NOTAS-004] excluir o aluno tira o e-mail, o nome e o cadastro de todo 
     assert.deepEqual(audit.body, []);
 });
 
-test('[UC-NOTAS-004] migração: aluno excluído antes da correção tem as cópias e o histórico anonimizados; arquivado e ativo, não', () => {
-    const copy = (id, email, name, extra = {}) => ({
-        id: `audit_del_${id}`, actor: 'admin@notas.local', studentEmail: email, action: 'grade_delete', field: 'Nota',
-        oldValue: `Prova 1 — Fundamentos: 6,3 (3/4 acertos) · ${name}`, newValue: 'excluída', category: 'grade', submissionId: id, examKey: 'Avaliacao_P1',
-        details: { deletedSubmission: { id, examKey: 'Avaliacao_P1', score: 63, student: { name, email, matricula: `MAT-${id}`, courseId: COURSE_A, studentClass: '1DES' }, ...extra } },
-    });
-    const memory = {
-        students: [{ email: 'viva@notas.local', name: 'Viva' }, { email: 'nova@notas.local', name: 'Troca' }],
-        submissions: [{ id: 's1', student: { email: 'semconta@notas.local' }, score: 50 }],
-        auditLogs: [
-            copy('del', 'apagada@notas.local', 'Gabriela Lima'),
-            { id: 'audit_perfil', actor: 'admin@notas.local', studentEmail: 'apagada@notas.local', action: 'update', field: 'Telefone', oldValue: '(11) 98888-7777', newValue: '(11) 97777-6666', timestamp: 1 },
-            copy('arq', 'arquivada@notas.local', 'Arquivada'),
-            copy('viva', 'viva@notas.local', 'Viva'),
-            // Troca de e-mail na versão antiga: a cópia ficou com o e-mail velho e a auditoria com o novo.
-            { ...copy('troca', 'velha@notas.local', 'Troca'), studentEmail: 'nova@notas.local' },
-            // Sem conta, mas com entrega: não foi excluído pela ficha.
-            copy('semconta', 'semconta@notas.local', 'Sem Conta'),
-        ],
-    };
-    const changed = anonymizeAuditOfRemovedStudents(memory, { archivedEmails: () => new Set(['arquivada@notas.local']) });
-    assert.equal(changed, 2);
-    const byId = id => memory.auditLogs.find(item => item.id === id);
-    const gone = byId('audit_del_del');
-    assert.equal(gone.studentEmail, '');
-    assert.equal(gone.details.deletedSubmission.anonymized, true);
-    assert.deepEqual(gone.details.deletedSubmission.student, { name: 'Aluno excluído', email: '', courseId: COURSE_A, studentClass: '1DES' });
-    assert.equal(gone.details.deletedSubmission.score, 63);
-    assert.equal(/Gabriela Lima|apagada@|MAT-del/.test(JSON.stringify(gone)), false);
-    assert.equal(byId('audit_perfil').studentEmail, '');
-    assert.equal(byId('audit_perfil').oldValue, '');
-    for (const id of ['audit_del_arq', 'audit_del_viva', 'audit_del_troca', 'audit_del_semconta']) {
-        assert.notEqual(byId(id).details.deletedSubmission.anonymized, true, `${id} não deveria mudar`);
-    }
-    // Idempotente.
-    assert.equal(anonymizeAuditOfRemovedStudents(memory, { archivedEmails: () => new Set(['arquivada@notas.local']) }), 0);
-    // Sem conseguir ler os cursos arquivados, ou com o cadastro vazio, não mexe em nada.
-    const empty = { students: [], submissions: [], auditLogs: [copy('y', 'y@notas.local', 'Ypsilon')] };
-    assert.equal(anonymizeAuditOfRemovedStudents(empty, { archivedEmails: () => new Set() }), 0);
-    const other = { students: [{ email: 'viva@notas.local' }], submissions: [], auditLogs: [copy('x', 'x@notas.local', 'Xis')] };
-    assert.equal(anonymizeAuditOfRemovedStudents(other, { archivedEmails: () => { throw new Error('arquivo corrompido'); } }), 0);
-    assert.equal(other.auditLogs[0].details.deletedSubmission.student.email, 'x@notas.local');
-});
-
-test('[UC-NOTAS-004] migração nunca anonimiza aluno vivo: e-mail antigo da troca (versão antiga), rastro no banco ou dúvida', () => {
-    // Banco gravado antes de 585a6bd: a troca de e-mail não atualizava auditLogs[].studentEmail.
-    const memory = {
-        students: [{ name: 'Ana Maria Souza', email: 'ana.souza@escola.br', matricula: '2025-77', status: 'Ativo', classes: [{ name: '1DES', courseId: 'c1' }] }],
-        submissions: [{ id: 's1', examKey: 'Avaliacao_X', score: 80, student: { name: 'Ana Maria Souza', email: 'ana.souza@escola.br', courseId: 'c1', studentClass: '1DES' } }],
-        attendance: [{ studentEmail: 'presenca@escola.br', date: '2026-03-01', status: 'presente' }],
-        auditLogs: [
-            { id: 'a1', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Nome completo', oldValue: 'Ana Souza', newValue: 'Ana Maria Souza', timestamp: 1, ip: '10.0.0.1' },
-            { id: 'a2', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Status', oldValue: 'Trancado', newValue: 'Ativo', timestamp: 2, ip: '10.0.0.1' },
-            { id: 'a3', actor: 'admin@escola.br', studentEmail: 'ana.souza@escola.br', action: 'update', field: 'E-mail/login', oldValue: 'ana@escola.br', newValue: 'ana.souza@escola.br', timestamp: 3, ip: '10.0.0.1' },
-            // Trocou duas vezes (a → b → c), c é o cadastro atual: a e b continuam dele.
-            { id: 'b1', actor: 'admin@escola.br', studentEmail: 'bruno.a@escola.br', action: 'update', field: 'Telefone', oldValue: '(11) 1111-1111', newValue: '(11) 2222-2222', timestamp: 4 },
-            { id: 'b2', actor: 'admin@escola.br', studentEmail: 'bruno.c@escola.br', action: 'update', field: 'E-mail/login', oldValue: 'bruno.a@escola.br', newValue: 'bruno.b@escola.br', timestamp: 5 },
-            { id: 'b3', actor: 'admin@escola.br', studentEmail: 'bruno.c@escola.br', action: 'update', field: 'E-mail/login', oldValue: 'bruno.b@escola.br', newValue: 'bruno.c@escola.br', timestamp: 6 },
-            // Sem cadastro, mas com presença gravada: a exclusão antiga deixava a presença; é dúvida.
-            { id: 'p1', actor: 'admin@escola.br', studentEmail: 'presenca@escola.br', action: 'update', field: 'Telefone', oldValue: '(11) 3333-3333', newValue: '', timestamp: 7 },
-            // Sem rastro nenhum: excluído de verdade.
-            { id: 'x1', actor: 'admin@escola.br', studentEmail: 'excluida@escola.br', action: 'update', field: 'Telefone', oldValue: '(11) 4444-4444', newValue: '', timestamp: 8 },
-        ],
-    };
-    memory.students.push({ name: 'Bruno', email: 'bruno.c@escola.br', status: 'Ativo', classes: [] });
-    const before = JSON.parse(JSON.stringify(memory.auditLogs));
-    const changed = anonymizeAuditOfRemovedStudents(memory, { archivedEmails: () => new Set() });
-    assert.equal(changed, 1, 'só a aluna sem rastro nenhum');
-    const byId = id => memory.auditLogs.find(item => item.id === id);
-    for (const id of ['a1', 'a2', 'a3', 'b1', 'b2', 'b3', 'p1']) {
-        assert.deepEqual(byId(id), before.find(item => item.id === id), `${id} é de aluno vivo (ou em dúvida) e não pode mudar`);
-    }
-    assert.equal(byId('x1').studentEmail, '');
-    assert.equal(byId('x1').oldValue, '');
-    assert.equal(byId('x1').studentAnonymized, true);
-    // Sem conseguir ler um curso arquivado (curso.json ausente ou corrompido), não mexe.
-    const other = { students: [{ email: 'viva@escola.br' }], submissions: [], auditLogs: [{ id: 'y1', studentEmail: 'y@escola.br', field: 'Telefone', oldValue: '1', newValue: '2' }] };
-    assert.equal(anonymizeAuditOfRemovedStudents(other, { archivedEmails: () => { throw new Error('ENOENT curso.json'); } }), 0);
-    assert.equal(other.auditLogs[0].studentEmail, 'y@escola.br');
-});
-
 test('[UC-NOTAS-004] excluir aluno que reaproveitou o e-mail antigo de outro não mexe no histórico do aluno vivo', async () => {
     // Ana trocou ana@ → ana.souza@ na versão antiga (as entradas de antes ficaram com ana@);
     // depois outra pessoa se cadastrou com ana@ e é excluída.
@@ -1148,4 +1066,184 @@ test('[UC-NOTAS-004] excluir o aluno anonimiza as contestações dele nas aplica
     assert.deepEqual(application.studentAdjustments, { 'bia@notas.local': 5 });
     assert.deepEqual(application.studentVersions, {});
     assert.equal(db.memory.classes[0].onlineExamConfigs.Avaliacao_P1.questionReports[0].studentName, 'Aluno excluído');
+});
+
+// ---------------------------------------------------------------- exclusão do aluno (B-anonimizar)
+// Regra: só a ação "excluir aluno" anonimiza, com casamento exato (campo igual ao
+// e-mail; em texto livre, só o e-mail inteiro), para todos os e-mails conhecidos dele.
+
+test('[UC-NOTAS-004] excluir ana@teste.local não altera nada de joana@teste.local (casamento exato, nunca por pedaço do e-mail)', async () => {
+    const ANA = 'ana@teste.local';
+    const JOANA = 'joana@teste.local';
+    db.memory.students.push(
+        { name: 'Ana Teste', email: ANA, matricula: 'MAT-ANA-01', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE_A }] },
+        { name: 'Joana Teste', email: JOANA, matricula: 'MAT-JOA-01', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE_A }] },
+    );
+    const copyOf = (id, email, name) => ({ id, examKey: 'Avaliacao_P1', score: 70, student: { name, email, courseId: COURSE_A, studentClass: '1DES' } });
+    db.memory.auditLogs = [
+        { id: 'j_perfil', actor: 'admin@notas.local', studentEmail: JOANA, action: 'update', field: 'Telefone', oldValue: '(11) 1111-1111', newValue: '(11) 2222-2222', timestamp: 1 },
+        { id: 'j_nota', actor: 'admin@notas.local', studentEmail: JOANA, action: 'grade_delete', category: 'grade', field: 'Nota', oldValue: '7,0', newValue: 'excluída', submissionId: 'sj', details: { deletedSubmission: copyOf('sj', JOANA, 'Joana Teste') }, timestamp: 2 },
+        { id: 'j_contesta', type: 'exam_question_reported', actor: JOANA, applicationId: 'app_1', details: { reportId: 'rj', questionNumber: 1, reason: 'outro' }, timestamp: 3 },
+        { id: 'j_texto', actor: 'admin@notas.local', studentEmail: JOANA, action: 'update', field: 'Observação', oldValue: '', newValue: `Responsável avisado em ${JOANA}`, timestamp: 4 },
+        { id: 'a_perfil', actor: 'admin@notas.local', studentEmail: ANA, action: 'update', field: 'Telefone', oldValue: '(11) 3333-3333', newValue: '(11) 4444-4444', timestamp: 5 },
+        { id: 'a_contesta', type: 'exam_question_reported', actor: ANA, applicationId: 'app_1', details: { reportId: 'ra', questionNumber: 2, reason: 'outro' }, timestamp: 6 },
+        { id: 'turma_fim', type: 'exam_application_finished', actor: 'admin@notas.local', applicationId: 'app_1', details: { students: [{ email: ANA, answeredQuestions: 2 }, { email: JOANA, answeredQuestions: 4 }] }, timestamp: 7 },
+        { id: 'turma_nota', type: 'academic_note', actorEmail: 'admin@notas.local', target: '1DES', after: `Contato: ${ANA}; ${JOANA}; maria.ana@teste.local; ${ANA}.br; ANA@Teste.Local. Fim com ${ANA}.`, at: 8 },
+    ];
+    db.memory.loginLogs = [
+        { id: 'l_ana', email: ANA, role: 'student', status: 'success', timestamp: 1 },
+        { id: 'l_joana', email: JOANA, role: 'student', status: 'success', timestamp: 2 },
+        { id: 'l_maria', email: 'maria.ana@teste.local', role: 'student', status: 'failure', timestamp: 3 },
+    ];
+    db.memory.examApplications[0].questionReports = [
+        { id: 'ra', applicationId: 'app_1', questionNumber: 2, studentEmail: ANA, studentName: 'Ana Teste', reason: 'outro', text: 'texto da Ana', status: 'open' },
+        { id: 'rj', applicationId: 'app_1', questionNumber: 1, studentEmail: JOANA, studentName: 'Joana Teste', reason: 'outro', text: 'texto da Joana', status: 'open' },
+    ];
+    db.memory.examApplications[0].studentAdjustments = { [ANA]: 10, [JOANA]: 5 };
+    db.memory.attendance = [
+        { id: 'pa', studentEmail: ANA, date: '2026-03-02', status: 'presente' },
+        { id: 'pj', studentEmail: JOANA, date: '2026-03-02', status: 'presente' },
+    ];
+    db.memory.forum = [{
+        id: 'c_joana', key: 'geral', studentName: 'Joana Teste', studentEmail: JOANA, courseId: COURSE_A, studentClass: '1DES', text: 'dúvida da Joana', timestamp: 't',
+        replies: [
+            { id: 'r_ana', authorName: 'Ana Teste', authorRole: 'Aluno', authorEmail: ANA, text: 'resposta da Ana', timestamp: 't' },
+            { id: 'r_joana', authorName: 'Joana Teste', authorRole: 'Aluno', authorEmail: JOANA, text: 'obrigada', timestamp: 't' },
+        ],
+        events: [{ type: 'reply', by: ANA, byName: 'Ana Teste', role: 'Aluno', at: 't' }, { type: 'reply', by: JOANA, byName: 'Joana Teste', role: 'Aluno', at: 't' }],
+    }];
+    db.memory.broadcastMessages = [
+        { id: 'm_ana', targetEmail: ANA, messageText: 'só para a Ana', acknowledgedBy: [], deletedFor: [] },
+        { id: 'm_joana', targetEmail: JOANA, messageText: 'só para a Joana', acknowledgedBy: [JOANA], deletedFor: [] },
+        { id: 'm_turma', targetEmail: null, messageText: 'turma', acknowledgedBy: [ANA, JOANA], deletedFor: [ANA] },
+    ];
+    db.memory.announcements = [
+        { id: 'av_ana', target: 'aluno', targetValue: ANA, title: 'Para a Ana', readBy: [ANA] },
+        { id: 'av_joana', target: 'aluno', targetValue: JOANA, title: 'Para a Joana', readBy: [JOANA] },
+        { id: 'av_turma', target: 'turma', targetValue: '1DES', title: 'Turma', readBy: [ANA, JOANA] },
+    ];
+    const snapshot = value => JSON.parse(JSON.stringify(value));
+    const joanaBefore = {
+        audit: snapshot(db.memory.auditLogs.filter(item => item.id.startsWith('j_'))),
+        logins: snapshot(db.memory.loginLogs.filter(item => item.id !== 'l_ana')),
+        report: snapshot(db.memory.examApplications[0].questionReports.find(item => item.id === 'rj')),
+        attendance: snapshot(db.memory.attendance.find(item => item.id === 'pj')),
+        message: snapshot(db.memory.broadcastMessages.find(item => item.id === 'm_joana')),
+        announcement: snapshot(db.memory.announcements.find(item => item.id === 'av_joana')),
+    };
+
+    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: ANA });
+    assert.equal(deleted.status, 200, deleted.body.error);
+
+    // Nada da Joana mudou (antes: "joana@teste.local" contém "ana@teste.local" e virava "joaluno excluído").
+    assert.deepEqual(db.memory.auditLogs.filter(item => item.id.startsWith('j_')), joanaBefore.audit);
+    assert.deepEqual(db.memory.loginLogs, joanaBefore.logins);
+    assert.deepEqual(db.memory.examApplications[0].questionReports.find(item => item.id === 'rj'), joanaBefore.report);
+    assert.deepEqual(db.memory.examApplications[0].studentAdjustments, { [JOANA]: 5 });
+    assert.deepEqual(db.memory.attendance, [joanaBefore.attendance]);
+    assert.deepEqual(db.memory.broadcastMessages.find(item => item.id === 'm_joana'), joanaBefore.message);
+    assert.deepEqual(db.memory.announcements.find(item => item.id === 'av_joana'), joanaBefore.announcement);
+    assert.ok(db.memory.students.some(item => item.email === JOANA));
+    const forum = db.memory.forum.find(item => item.id === 'c_joana');
+    assert.equal(forum.studentEmail, JOANA);
+    assert.deepEqual(forum.replies.map(item => item.id), ['r_joana']);
+    assert.deepEqual(forum.events.map(item => item.by), ['aluno excluído', JOANA]);
+
+    // Da Ana: campo exato vira vazio (ou "aluno excluído" no autor); em texto livre, só o e-mail inteiro.
+    const byId = id => db.memory.auditLogs.find(item => item.id === id);
+    assert.equal(byId('a_perfil').studentEmail, '');
+    assert.equal(byId('a_perfil').oldValue, '');
+    assert.equal(byId('a_contesta').actor, 'aluno excluído');
+    assert.deepEqual(byId('turma_fim').details.students, [{ email: '', answeredQuestions: 2 }, { email: JOANA, answeredQuestions: 4 }]);
+    assert.equal(byId('turma_nota').after, `Contato: aluno excluído; ${JOANA}; maria.ana@teste.local; ${ANA}.br; aluno excluído. Fim com aluno excluído.`);
+    assert.deepEqual(db.memory.examApplications[0].questionReports.find(item => item.id === 'ra'), {
+        id: 'ra', applicationId: 'app_1', questionNumber: 2, studentEmail: '', studentName: 'Aluno excluído', reason: 'outro', text: '', status: 'open',
+        studentAnonymized: true, anonymizedAt: db.memory.examApplications[0].questionReports.find(item => item.id === 'ra').anonymizedAt,
+    });
+    assert.deepEqual(db.memory.broadcastMessages.find(item => item.id === 'm_turma'), { id: 'm_turma', targetEmail: null, messageText: 'turma', acknowledgedBy: [JOANA], deletedFor: [] });
+    assert.equal(db.memory.broadcastMessages.some(item => item.id === 'm_ana'), false);
+    assert.deepEqual(db.memory.announcements.find(item => item.id === 'av_turma').readBy, [JOANA]);
+    assert.equal(db.memory.announcements.some(item => item.id === 'av_ana'), false);
+    // Nenhum lugar do banco cita mais o e-mail da Ana (como e-mail inteiro).
+    const anaEverywhere = new RegExp(`(?<![A-Za-z0-9._%+-])ana@teste\\.local(?![A-Za-z0-9_%+-]|\\.[A-Za-z0-9])`, 'i');
+    for (const collection of ['auditLogs', 'loginLogs', 'examApplications', 'attendance', 'forum', 'broadcastMessages', 'announcements', 'students']) {
+        assert.equal(anaEverywhere.test(JSON.stringify(db.memory[collection])), false, `${collection} ainda cita ${ANA}`);
+    }
+});
+
+test('[UC-NOTAS-004] aluno que trocou de e-mail tem os registros dos dois e-mails anonimizados (auditoria, logins, contestações e demais dados)', async () => {
+    const OLD = 'ana@notas.local';
+    const MIDDLE = 'ana.meio@notas.local';
+    const NEW = 'ana.nova@notas.local';
+    db.memory.loginLogs = [];
+    // Login, contestação e presença com o e-mail antigo (a troca não renomeia logins nem contestações).
+    assert.equal((await request(app).post('/api/student/login').send({ email: OLD, password: '123' })).status, 200);
+    db.memory.examApplications[0].questionReports = [
+        { id: 'r_antiga', applicationId: 'app_1', questionNumber: 1, studentEmail: OLD, studentName: 'Ana', reason: 'outro', text: 'minha matrícula é 2026-77', status: 'open' },
+        { id: 'r_bia', applicationId: 'app_1', questionNumber: 1, studentEmail: 'bia@notas.local', studentName: 'Bia', reason: 'outro', text: 'texto da Bia', status: 'open' },
+    ];
+    // Troca em cadeia pela ficha: antigo → meio → novo.
+    for (const [from, to] of [[OLD, MIDDLE], [MIDDLE, NEW]]) {
+        const update = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: from, email: to, name: 'Ana', classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
+        assert.equal(update.status, 200, update.body.error);
+    }
+    assert.equal((await request(app).post('/api/student/login').send({ email: NEW, password: '123' })).status, 200);
+    // Dados gravados por versões antigas, que a troca não renomeava.
+    db.memory.auditLogs.push(
+        { id: 'legado_antigo', actor: 'admin@notas.local', studentEmail: OLD, action: 'update', field: 'Telefone', oldValue: '(11) 98888-7777', newValue: '(11) 97777-6666', timestamp: 1 },
+        { id: 'legado_meio', type: 'exam_question_reported', actor: MIDDLE, applicationId: 'app_1', details: { reportId: 'r_antiga', questionNumber: 1, reason: 'outro' }, timestamp: 2 },
+        { id: 'bia_x', actor: 'admin@notas.local', studentEmail: 'bia@notas.local', action: 'update', field: 'Telefone', oldValue: '1', newValue: '2', timestamp: 3 },
+    );
+    db.memory.attendance = [
+        { id: 'p_antiga', studentEmail: OLD, date: '2026-03-01', status: 'presente' },
+        { id: 'p_bia', studentEmail: 'bia@notas.local', date: '2026-03-01', status: 'presente' },
+    ];
+    const biaBefore = JSON.parse(JSON.stringify(db.memory.auditLogs.find(item => item.id === 'bia_x')));
+    assert.deepEqual(db.memory.loginLogs.map(item => item.email).sort(), [NEW, OLD].sort());
+
+    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: NEW });
+    assert.equal(deleted.status, 200, deleted.body.error);
+
+    const emailPattern = email => new RegExp(`(?<![A-Za-z0-9._%+-])${email.replace(/\./g, '\\.')}(?![A-Za-z0-9_%+-]|\\.[A-Za-z0-9])`, 'i');
+    for (const email of [OLD, MIDDLE, NEW]) {
+        for (const collection of ['auditLogs', 'loginLogs', 'examApplications', 'attendance', 'students', 'submissions']) {
+            assert.equal(emailPattern(email).test(JSON.stringify(db.memory[collection])), false, `${collection} ainda cita ${email}`);
+        }
+    }
+    assert.deepEqual(db.memory.loginLogs, [], 'os logins com o e-mail antigo e com o novo saem');
+    const report = db.memory.examApplications[0].questionReports.find(item => item.id === 'r_antiga');
+    assert.equal(report.studentEmail, '');
+    assert.equal(report.text, '');
+    assert.equal(report.questionNumber, 1, 'a contestação continua para o professor revisar a questão');
+    const legacy = db.memory.auditLogs.find(item => item.id === 'legado_antigo');
+    assert.equal(legacy.studentEmail, '');
+    assert.equal(legacy.oldValue, '');
+    assert.equal(legacy.studentAnonymized, true);
+    assert.equal(db.memory.auditLogs.find(item => item.id === 'legado_meio').actor, 'aluno excluído');
+    const changes = db.memory.auditLogs.filter(item => item.field === 'E-mail/login');
+    assert.equal(changes.length, 2);
+    for (const change of changes) assert.deepEqual([change.studentEmail, change.oldValue, change.newValue], ['', '', '']);
+    // A Bia (outra aluna) continua igual.
+    assert.deepEqual(db.memory.auditLogs.find(item => item.id === 'bia_x'), biaBefore);
+    assert.equal(db.memory.examApplications[0].questionReports.find(item => item.id === 'r_bia').text, 'texto da Bia');
+    assert.deepEqual(db.memory.attendance.map(item => item.id), ['p_bia']);
+});
+
+test('[UC-NOTAS-004] e-mail antigo que hoje é o login de outro aluno não entra na exclusão', async () => {
+    // Ana trocou ana@ → ana.souza@; depois o Carlos se cadastrou com ana@. Excluir a Ana não toca no Carlos.
+    const update = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: 'ana@notas.local', email: 'ana.souza@notas.local', name: 'Ana', classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
+    assert.equal(update.status, 200, update.body.error);
+    db.memory.students.push({ name: 'Carlos', email: 'ana@notas.local', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE_A }] });
+    db.memory.loginLogs = [];
+    assert.equal((await request(app).post('/api/student/login').send({ email: 'ana@notas.local', password: '123' })).status, 200);
+    db.memory.auditLogs.push({ id: 'carlos_x', actor: 'admin@notas.local', studentEmail: 'ana@notas.local', action: 'update', field: 'Telefone', oldValue: '1', newValue: '2', timestamp: 9 });
+    db.memory.attendance = [{ id: 'p_carlos', studentEmail: 'ana@notas.local', date: '2026-03-01', status: 'presente' }];
+    const carlosBefore = JSON.parse(JSON.stringify({ audit: db.memory.auditLogs.find(item => item.id === 'carlos_x'), logins: db.memory.loginLogs, attendance: db.memory.attendance }));
+
+    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana.souza@notas.local' })).status, 200);
+
+    assert.deepEqual({ audit: db.memory.auditLogs.find(item => item.id === 'carlos_x'), logins: db.memory.loginLogs, attendance: db.memory.attendance }, carlosBefore);
+    assert.ok(db.memory.students.some(item => item.email === 'ana@notas.local' && item.name === 'Carlos'));
+    const change = db.memory.auditLogs.find(item => item.field === 'E-mail/login');
+    assert.deepEqual([change.studentEmail, change.oldValue, change.newValue], ['', '', ''], 'a troca de e-mail da Ana (excluída) fica sem os e-mails');
 });

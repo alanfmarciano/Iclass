@@ -70,6 +70,7 @@ const {
     structureExamIndex,
     anonymizeStudentAuditTrail,
     anonymizeStudentExamRecords,
+    studentKnownEmails,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const {
@@ -323,7 +324,10 @@ router.post('/api/admin/reset-password', (req, res) => {
     });
 });
 
-// Excluir conta do aluno e dados pessoais associados
+// Excluir conta do aluno e dados pessoais associados.
+// Vale para todos os e-mails conhecidos do aluno (o atual e os anteriores, pelas trocas
+// de e-mail registradas na auditoria), sempre por campo exato: excluir ana@ não toca
+// joana@. É a única anonimização de aluno: não há anonimização automática no boot.
 router.post('/api/admin/delete-student', (req, res) => {
     validateAdmin(req, res, () => {
         const { email } = req.body || {};
@@ -333,46 +337,71 @@ router.post('/api/admin/delete-student', (req, res) => {
 
         const normalizedEmail = email.trim().toLowerCase();
         const students = readJSON(DB_STUDENTS_FILE);
-        const studentExists = students.some(s => s.email && s.email.toLowerCase() === normalizedEmail);
         const studentObjToDelete = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
 
-        if (!studentExists) {
+        if (!studentObjToDelete) {
             return res.status(404).json({ error: 'Estudante não encontrado.' });
         }
 
-        db.memory.students = students.filter(s => !s.email || s.email.toLowerCase() !== normalizedEmail);
-        db.memory.submissions = readJSON(DB_SUBMISSIONS_FILE).filter(s =>
-            !(s.student && s.student.email && s.student.email.toLowerCase() === normalizedEmail)
-        );
+        const emails = new Set(studentKnownEmails(db.memory, normalizedEmail));
+        const isTheStudent = value => emails.has(String(value || '').trim().toLowerCase());
 
-        if (db.memory.progress) delete db.memory.progress[normalizedEmail];
-        if (db.memory.notes) delete db.memory.notes[normalizedEmail];
-        if (db.memory.annotations) delete db.memory.annotations[normalizedEmail];
-        if (db.memory.sessions) delete db.memory.sessions[normalizedEmail];
-        // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
-        // certificados, logs de prova e de login). O log de auditoria é mantido como histórico,
-        // mas sem ligação com o aluno: as entradas perdem o e-mail, o nome e a matrícula e as
-        // cópias das notas na lixeira ficam só com prova e nota (para a estatística).
+        db.memory.students = students.filter(s => !s.email || s.email.toLowerCase() !== normalizedEmail);
+        db.memory.submissions = readJSON(DB_SUBMISSIONS_FILE).filter(s => !(s.student && isTheStudent(s.student.email)));
+
+        emails.forEach(known => {
+            ['progress', 'notes', 'annotations', 'sessions'].forEach(collection => {
+                if (db.memory[collection]) delete db.memory[collection][known];
+            });
+        });
+        // O log de auditoria é mantido como histórico, mas sem ligação com o aluno: as
+        // entradas perdem o e-mail, o nome e a matrícula e as cópias das notas na lixeira
+        // ficam só com prova e nota (para a estatística).
         anonymizeStudentAuditTrail(db.memory, {
-            emails: [normalizedEmail],
-            names: [studentObjToDelete && studentObjToDelete.name, studentObjToDelete && studentObjToDelete.nomeSocial],
-            matriculas: [studentObjToDelete && studentObjToDelete.matricula],
+            emails: [...emails],
+            names: [studentObjToDelete.name, studentObjToDelete.nomeSocial],
+            matriculas: [studentObjToDelete.matricula],
         });
         // Contestações de questão (com o texto livre do aluno), tempo extra e versão da prova.
-        anonymizeStudentExamRecords(db.memory, { emails: [normalizedEmail] });
-        const ownedBy = item => item && String(item.studentEmail || item.email || '').toLowerCase() === normalizedEmail;
+        anonymizeStudentExamRecords(db.memory, { emails: [...emails] });
+        // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
+        // certificados, logs de prova e de login, dúvidas do fórum).
+        const ownedBy = item => item && isTheStudent(item.studentEmail || item.email);
         ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs', 'forum']
             .forEach(collection => { if (Array.isArray(db.memory[collection])) db.memory[collection] = db.memory[collection].filter(item => !ownedBy(item)); });
+        // Respostas dele nas dúvidas de outros alunos saem; no histórico da dúvida fica "aluno excluído".
+        (db.memory.forum || []).forEach(comment => {
+            if (!comment) return;
+            if (Array.isArray(comment.replies)) comment.replies = comment.replies.filter(reply => !(reply && isTheStudent(reply.authorEmail)));
+            (Array.isArray(comment.events) ? comment.events : []).forEach(event => {
+                if (event && isTheStudent(event.by)) { event.by = 'aluno excluído'; event.byName = 'Aluno excluído'; }
+            });
+        });
+        // Mensagens da prova e avisos só para ele saem; nos outros, sai das listas de leitura.
+        if (Array.isArray(db.memory.broadcastMessages)) {
+            db.memory.broadcastMessages = db.memory.broadcastMessages.filter(message => !(message && isTheStudent(message.targetEmail)));
+            db.memory.broadcastMessages.forEach(message => {
+                ['acknowledgedBy', 'deletedFor'].forEach(field => {
+                    if (message && Array.isArray(message[field])) message[field] = message[field].filter(value => !isTheStudent(value));
+                });
+            });
+        }
+        if (Array.isArray(db.memory.announcements)) {
+            db.memory.announcements = db.memory.announcements.filter(item => !(item && item.target === 'aluno' && isTheStudent(item.targetValue)));
+            db.memory.announcements.forEach(item => {
+                if (item && Array.isArray(item.readBy)) item.readBy = item.readBy.filter(value => !isTheStudent(value));
+            });
+        }
         Object.keys(db.memory.studentExamState || {}).forEach(key => {
             const state = db.memory.studentExamState[key];
-            if (state && String(state.studentEmail || '').toLowerCase() === normalizedEmail) delete db.memory.studentExamState[key];
+            if (state && isTheStudent(state.studentEmail)) delete db.memory.studentExamState[key];
         });
 
         const classes = readJSON(DB_CLASSES_FILE);
         classes.forEach(cls => {
-            if (cls.studentReleasedItems && cls.studentReleasedItems[normalizedEmail]) {
-                delete cls.studentReleasedItems[normalizedEmail];
-            }
+            Object.keys((cls && cls.studentReleasedItems) || {}).forEach(key => {
+                if (isTheStudent(key)) delete cls.studentReleasedItems[key];
+            });
         });
         db.memory.classes = classes;
 

@@ -476,243 +476,55 @@ test('[UC-SIGILO-001] gabarito do professor sai da apostila em todas as grafias,
     assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
 });
 
-test('[UC-SIGILO-001] gabarito do professor também sai com título sublinhado, <summary> depois de texto e "Chave de respostas (professor)"', () => {
-    const markdown = [
-        '# Unidade',
-        'GABARITO DO PROFESSOR',
-        '=====================',
-        'segredo-1',
-        '# Próximo capítulo',
-        'visível-1',
-        'Respostas comentadas',
-        '--------------------',
-        'visível-2 (título sublinhado do aluno fica)',
-        'Gabarito oficial',
-        '----------------',
-        'segredo-2',
-        '## Seção seguinte',
-        'visível-3',
-        '<details>\nAbra só na correção: <summary>Gabarito oficial</summary>segredo-3\n</details>',
-        '<details><summary>👀 Ver Resposta e Explicação</summary>42</details>',
-        // "Respostas (professor)" sem a palavra gabarito agora fica (ver o teste seguinte);
-        // a variação "chave de respostas" continua sendo gabarito.
-        '## Chave de respostas (professor)',
-        'segredo-4',
-        '## Resolução do exercício',
-        'visível-4',
-    ].join('\n');
-    const out = stripAnswerKeyBlocks(markdown);
-    assert.doesNotMatch(out, /segredo-\d/);
-    for (const marker of ['visível-1', 'visível-2', 'visível-3', 'visível-4', 'Ver Resposta e Explicação</summary>42', '# Próximo capítulo']) {
-        assert.ok(out.includes(marker), `sumiu: ${marker}`);
-    }
-    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
-});
-
-test('[UC-SIGILO-001] "resposta do professor" sem a palavra gabarito fica; gabarito em negrito, <h2> e citação sai', () => {
-    const markdown = [
-        '# Unidade',
-        // Material do aluno que a regra antiga (resposta/solução + professor) apagava.
-        '## Perguntas e respostas com o professor', 'visível-1',
-        '## Solução proposta pelo instrutor', 'visível-2',
-        '### Resposta do professor à dúvida da turma', 'visível-3',
-        '<details><summary>Resposta do professor</summary>visível-4</details>',
-        // Gabarito que a regra antiga deixava passar.
-        '**GABARITO DO PROFESSOR**', '', '1. B segredo-1', '', '**Questão 2**', 'segredo-2', '',
-        '## Exercícios', 'visível-5',
-        '<h2>GABARITO DO PROFESSOR</h2>', 'segredo-3', '<h3>Questão 1</h3>', 'segredo-4',
-        '<h2>Leitura complementar</h2>', 'visível-6',
-        '> ## GABARITO DO PROFESSOR', '> 1. B segredo-5', '> 2. C segredo-6', '',
-        'visível-7 depois da citação',
-        // "---" depois do gabarito em negrito encerra quando o que vem depois não é
-        // resposta (o ajuste anterior apagava o texto do aluno até o próximo título);
-        // seguido de mais respostas ("2. C"), o gabarito continua.
-        '<p><strong>Gabarito oficial</strong></p>', 'segredo-7', '', '---', '2. C - segredo-7b', '', '---', 'visível-8',
-        '**Respostas do gabarito (professor)**', 'segredo-8', '## Fim', 'visível-9',
-        'Texto com **negrito** e **outro** visível-10',
-    ].join('\n');
-    const out = stripAnswerKeyBlocks(markdown);
-    assert.doesNotMatch(out, /segredo-\d/);
-    for (let index = 1; index <= 10; index += 1) assert.ok(out.includes(`visível-${index}`), `sumiu: visível-${index}`);
-    for (const title of ['## Perguntas e respostas com o professor', '## Solução proposta pelo instrutor', '### Resposta do professor à dúvida da turma', '<h2>Leitura complementar</h2>']) {
-        assert.ok(out.includes(title), `sumiu o título: ${title}`);
-    }
-    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
-});
-
-test('[UC-SIGILO-001] gabarito em negrito com subtítulos e "---", <h2> no meio da linha ou em várias linhas e em itálico sai; aviso em negrito fica', async () => {
-    const markdown = [
-        '# Redes',
-        '',
-        'Intro',
-        '',
-        // Aviso em negrito que cita o gabarito: é frase, não título (antes sumia tudo até o próximo título).
-        '**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**',
-        '',
-        'Parágrafo legítimo 1 sobre o tema.',
-        '',
-        '![diagrama](/imagens/redes/diagrama.png)',
-        '',
-        'Mais conteúdo legítimo.',
-        '',
-        '## Exercícios',
-        '',
-        '1. Quanto é 2 + 2?',
-        '',
-        '**GABARITO DO PROFESSOR**',
-        '',
-        '**Parte objetiva**',
-        '',
-        '1. B SEGREDO_1',
-        '',
-        '---',
-        '',
-        '**Seção A**',
-        '',
-        '**Parte discursiva**',
-        '',
-        'Resposta esperada SEGREDO_2',
-        '',
-        '## Leitura complementar',
-        '',
-        'visível-1',
-        '',
-        '<div><h2>GABARITO DO PROFESSOR</h2><p>1. B SEGREDO_3</p></div>',
-        '<p>2. C SEGREDO_4</p>',
-        '<h2>Próxima parte</h2><p>visível-2</p>',
-        '',
-        '<h2 class="gab">',
-        '  GABARITO DO PROFESSOR',
-        '</h2>',
-        '<p>1. D SEGREDO_5</p>',
-        '',
-        '## Anexo',
-        '',
-        'visível-3',
-        '',
-        '*GABARITO DO PROFESSOR*',
-        '',
-        '1. A SEGREDO_6',
-        '',
-        '## Fim',
-        '',
-        'visível-4',
-        '',
-        '```html',
-        '<h2>Gabarito do professor</h2> exemplo de HTML visível-5',
-        '```',
-    ].join('\n');
-    const out = stripAnswerKeyBlocks(markdown);
-    assert.doesNotMatch(out, /SEGREDO_\d/);
-    for (const kept of ['Atenção: o gabarito oficial será divulgado pelo professor após a prova.', 'Parágrafo legítimo 1 sobre o tema.', '![diagrama](/imagens/redes/diagrama.png)', 'Mais conteúdo legítimo.', '1. Quanto é 2 + 2?', '## Leitura complementar', '<h2>Próxima parte</h2>', 'visível-1', 'visível-2', 'visível-3', 'visível-4', '<h2>Gabarito do professor</h2> exemplo de HTML visível-5']) {
-        assert.ok(out.includes(kept), `sumiu: ${kept}`);
-    }
-    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
-    // Sem gabarito, o texto não muda (nem as quebras de linha do HTML).
-    const plain = '# Título\n\n<div><h2>Resumo</h2><p>texto</p></div>\n\n**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**\n\nfim';
-    assert.equal(stripAnswerKeyBlocks(plain), plain);
-
-    // Caminho do aluno: apostila salva pelo administrador e lida pelo aluno (/:key.md e /api/data.js).
-    const saved = await request(app).put('/api/admin/material/Apostila_POR_1').set('x-admin-session', adminToken).send({ markdownText: markdown });
-    assert.equal(saved.status, 200, saved.body && saved.body.error);
-    const studentView = await request(app).get('/Apostila_POR_1.md').set('x-session-token', tokens.ana);
-    assert.equal(studentView.status, 200);
-    assert.doesNotMatch(studentView.text, /SEGREDO_\d/);
-    assert.ok(studentView.text.includes('Parágrafo legítimo 1 sobre o tema.'));
-});
-
-test('[UC-SIGILO-001] rótulo do gabarito em negrito com as respostas na mesma linha sai; aviso curto, "---" e negrito seguinte não levam o texto do aluno', async () => {
+// As regras fixas (o que sai e o que fica) estão na tabela de answer-key-rules.test.js;
+// aqui, o caminho do aluno usa as mesmas regras.
+test('[UC-SIGILO-001] apostila lida pelo aluno (/:key.md e /api/data.js) perde o gabarito do professor pelas regras fixas e mantém o resto', async () => {
     const markdown = [
         '# Unidade 1',
         '',
-        'Texto antes.',
+        // Material do aluno que a regra antiga (resposta/solução + professor) apagava.
+        '## Perguntas e respostas com o professor', 'VISIVEL_1',
+        '## Solução proposta pelo instrutor', 'VISIVEL_2',
+        '### Resposta do professor à dúvida da turma', 'VISIVEL_3',
+        '<details><summary>Resposta do professor</summary>VISIVEL_4</details>',
         '',
-        // Jeito mais compacto de escrever o gabarito: rótulo e respostas no mesmo parágrafo.
-        '**GABARITO DO PROFESSOR:** 1-B (ls -la), 2-C SEGREDO_1',
+        // Regra 3: rótulo em negrito sozinho vale como título.
+        '**GABARITO DO PROFESSOR**', '', '1. B SEGREDO_1', '',
+        '# Exercícios', 'VISIVEL_5',
+        // Regra 2: <h2> e título dentro de citação.
+        '<h2>GABARITO DO PROFESSOR</h2>', 'SEGREDO_2', '<h3>Questão 1</h3>', 'SEGREDO_3',
+        '<h2>Leitura complementar</h2>', 'VISIVEL_6',
         '',
-        'visível-1',
+        '> ## GABARITO DO PROFESSOR', '> 1. B SEGREDO_4', '',
+        'VISIVEL_7 depois da citação',
         '',
-        '**Gabarito do professor**: 1-B SEGREDO_2',
-        '3-D SEGREDO_3',
+        // Regra 4: rótulo com as respostas na mesma linha, só o parágrafo.
+        '**GABARITO DO PROFESSOR:** 1-B SEGREDO_5', '',
+        'VISIVEL_8',
         '',
-        '**Gabarito do professor:** 1. B (SEGREDO_13)',
-        '2. C - SEGREDO_14',
-        '3. D',
+        // Regra 1: <details> do professor.
+        '<details><summary>GABARITO&nbsp;OFICIAL</summary>SEGREDO_6</details>',
         '',
-        '<strong>GABARITO DO PROFESSOR</strong><br>1. B SEGREDO_4',
-        '',
-        '1. Questão sobre o comando ls',
-        '   **Gabarito do professor:** B SEGREDO_5',
-        '2. Questão LEGITIMO_1 seguinte da lista',
-        '',
-        // Rótulo com ponto final ou comprido continua sendo o gabarito.
-        '**GABARITO OFICIAL.**',
-        '',
-        '1. B SEGREDO_6',
-        '',
-        '## Exercícios',
-        '',
-        '**GABARITO EXCLUSIVO DO PROFESSOR - NÃO DIVULGAR PARA OS ALUNOS**',
-        '',
-        '1. C SEGREDO_7',
-        '',
-        '## Para casa',
-        '',
-        // Aviso curto que começa com o rótulo: sai o aviso, o exercício seguinte fica.
-        '**Gabarito oficial disponível com o professor**',
-        '',
-        '1. Exercício LEGITIMO_2 para casa',
-        '',
-        '**Gabarito do professor**',
-        '',
-        '1. A SEGREDO_8',
-        '',
-        // Negrito que não é subtítulo do gabarito encerra a seção em negrito.
-        '**Exercício extra**',
-        '',
-        'Texto LEGITIMO_3 depois',
-        '',
-        '*Gabarito do professor*',
-        '',
-        '1. D SEGREDO_9',
-        '',
-        '---',
-        '',
-        'Texto LEGITIMO_4 depois do separador',
-        '',
-        'GABARITO DO PROFESSOR',
-        '',
-        '1. E SEGREDO_10',
-        '',
-        '## Fim',
-        '',
-        'visível-2',
+        // Aviso, glossário e autocorreção do aluno ficam.
+        '**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**', '',
+        '**Gabarito oficial**: documento com as respostas corretas usado pelo professor na correção. VISIVEL_9', '',
+        '<details><summary>Gabarito dos exercícios</summary>VISIVEL_10</details>',
     ].join('\n');
-    const out = stripAnswerKeyBlocks(markdown);
-    assert.doesNotMatch(out, /SEGREDO_\d+/, 'antes vazavam o rótulo na mesma linha, o ponto final, o rótulo longo e o <strong> com <br>');
-    for (const kept of ['Texto antes.', 'visível-1', '1. Questão sobre o comando ls', 'LEGITIMO_1', 'LEGITIMO_2', 'LEGITIMO_3', 'LEGITIMO_4', '## Exercícios', '## Para casa', '**Exercício extra**', 'visível-2']) {
-        assert.ok(out.includes(kept), `sumiu: ${kept}`);
-    }
-    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
+    const expected = stripAnswerKeyBlocks(markdown);
+    assert.doesNotMatch(expected, /SEGREDO_\d/);
+    for (let index = 1; index <= 10; index += 1) assert.ok(expected.includes(`VISIVEL_${index}`), `sumiu: VISIVEL_${index}`);
+    assert.ok(expected.includes('**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**'));
 
-    // Gabarito dentro de <div>: a tag que fecha o contêiner fica, seguida de linha em
-    // branco, e o "## Próximo" volta a ser título (antes o <div> ficava aberto).
-    const boxed = stripAnswerKeyBlocks('Intro\n\n<div class="box"><h2>GABARITO DO PROFESSOR</h2><p>1. SEGREDO_11</p></div>\n\n## Próximo\nvisível-3');
-    assert.doesNotMatch(boxed, /SEGREDO_11/);
-    assert.match(boxed, /<div class="box">\n<\/div>\n\n## Próximo\nvisível-3/);
-    const sections = stripAnswerKeyBlocks('<section><h3>Gabarito do professor</h3><ol><li>SEGREDO_12</li></ol></section>\n<section><h3>Atividade</h3><p>LEGITIMO_5</p></section>');
-    assert.doesNotMatch(sections, /SEGREDO_12/);
-    assert.equal((sections.match(/<section>/g) || []).length, (sections.match(/<\/section>/g) || []).length, 'contêineres continuam balanceados');
-    assert.match(sections, /<h3>Atividade<\/h3>\n<p>LEGITIMO_5<\/p><\/section>/);
-
-    // Caminho do aluno: /Apostila_X.md e /api/data.js.
     const saved = await request(app).put('/api/admin/material/Apostila_POR_1').set('x-admin-session', adminToken).send({ markdownText: markdown });
     assert.equal(saved.status, 200, saved.body && saved.body.error);
     const studentView = await request(app).get('/Apostila_POR_1.md').set('x-session-token', tokens.ana);
     assert.equal(studentView.status, 200);
-    assert.doesNotMatch(studentView.text, /SEGREDO_\d+/);
-    assert.ok(studentView.text.includes('Exercício LEGITIMO_2 para casa'));
+    assert.equal(studentView.text, expected);
     const data = await request(app).get(`/api/data.js?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', tokens.ana);
     assert.equal(data.status, 200);
-    assert.doesNotMatch(data.text, /SEGREDO_\d+/);
+    assert.doesNotMatch(data.text, /SEGREDO_\d/);
+    assert.match(data.text, /VISIVEL_9/);
+    // O instrutor vê o arquivo como foi salvo.
+    const asAdmin = await request(app).get('/Apostila_POR_1.md').set('x-admin-session', adminToken);
+    assert.match(asAdmin.text, /SEGREDO_1/);
 });

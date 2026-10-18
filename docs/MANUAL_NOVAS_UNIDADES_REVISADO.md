@@ -493,6 +493,7 @@ O gabarito pode existir no markdown para importação e revisão, mas o sistema 
 
 - O gabarito deve ficar no final do arquivo.
 - Usar `<details>` apenas como padrão de organização do markdown.
+- Em apostila (material do aluno), gabarito do professor só sob um título ou bloco "Gabarito do professor" (`## Gabarito do professor`, `**Gabarito do professor**` sozinho na linha ou `<details><summary>Gabarito do professor</summary>`): o sistema tira esse trecho da apostila do aluno. "Gabarito" sem a marca do professor (professor, prof., instrutor, docente, exclusivo) é tratado como autocorreção do aluno e aparece.
 - No sistema real, a correção deve acontecer no servidor.
 - O frontend não deve ser fonte única de validação.
 - A prova só deve aparecer para o aluno quando liberada para a turma.
