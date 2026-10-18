@@ -247,9 +247,14 @@ test('[UC-BACKUP-001] o arquivo enviado para restaurar é apagado (não vai para
     const failed = await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
         .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{"type":"outro"}'), 'backup.json');
     assert.equal(failed.status, 400);
-    const failure = db.memory.auditLogs.find(entry => entry.type === 'backup_restore_failed');
+    const failure = db.memory.auditLogs.find(entry => entry.action === 'backup_restore_failed');
     assert.ok(failure, 'a falha também fica registrada');
-    assert.equal(failure.actorEmail, 'admin@g6.local');
+    // Mesmo formato dos outros registros de auditoria (antes: type/actorEmail/at).
+    assert.equal(failure.actor, 'admin@g6.local');
+    assert.equal(typeof failure.timestamp, 'number');
+    assert.equal(failure.details.file, 'backup.json');
+    assert.ok(failure.details.error);
+    assert.equal(failure.type, undefined);
     db.memory.adminSessions = { [adminToken]: { email: 'admin@g6.local', createdAt: Date.now(), lastSeen: Date.now() } };
 
     const response = await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
@@ -261,13 +266,48 @@ test('[UC-BACKUP-001] o arquivo enviado para restaurar é apagado (não vai para
     const leftovers = fs.readdirSync(fileStore.UPLOADS_DIR).filter(name => !uploadsBefore.has(name));
     assert.deepEqual(leftovers, [], 'nenhum arquivo enviado fica em /uploads');
 
-    const audit = db.memory.auditLogs.filter(entry => entry.type === 'backup_restored');
+    const audit = db.memory.auditLogs.filter(entry => entry.action === 'backup_restored');
     assert.equal(audit.length, 1, 'a restauração vai para o registro de auditoria');
-    assert.equal(audit[0].actorEmail, 'admin@g6.local');
-    assert.equal(audit[0].file, 'backup-da-escola.json');
-    assert.equal(audit[0].format, 'json');
+    assert.equal(audit[0].actor, 'admin@g6.local');
+    assert.equal(audit[0].details.file, 'backup-da-escola.json');
+    assert.equal(audit[0].details.format, 'json');
     assert.ok(audit[0].ip);
-    assert.ok(audit[0].collections.includes('students'));
+    assert.ok(audit[0].details.collections.includes('students'));
+    // A restauração bem-sucedida troca o registro pelo do backup: a falha anterior sumia.
+    assert.ok(db.memory.auditLogs.some(entry => entry.id === failure.id), 'o registro da falha continua depois da restauração');
+});
+
+test('[UC-BACKUP-001] histórico de backup na tela do administrador (formato novo e antigo) e só 20 cópias manuais', async () => {
+    const runtimePaths = require('../../backend/runtimePaths.js');
+    // Registro gravado pela versão anterior (type/actorEmail/at e dados soltos).
+    db.memory.auditLogs = [{ id: 'audit_backup_legado', actorEmail: 'admin@g6.local', at: 1700000000000, ip: '10.0.0.5', type: 'backup_restore_failed', file: 'velho.json', size: 10, replaceAccounts: false, error: 'Arquivo de backup inválido.' }];
+
+    fs.mkdirSync(runtimePaths.BACKUPS_DIR, { recursive: true });
+    const manual = () => fs.readdirSync(runtimePaths.BACKUPS_DIR).filter(name => name.startsWith('manual_') && name.endsWith('.json'));
+    manual().forEach(name => fs.rmSync(path.join(runtimePaths.BACKUPS_DIR, name), { force: true }));
+    // 22 cópias antigas mais uma nova: ficam as 20 mais recentes.
+    for (let index = 0; index < 22; index += 1) {
+        fs.writeFileSync(path.join(runtimePaths.BACKUPS_DIR, `manual_2020-01-${String(index + 1).padStart(2, '0')}T00-00-00-000Z.json`), '{}');
+    }
+    const created = await request(app).post('/api/admin/backup/server').set('x-admin-session', professorToken).send({});
+    assert.equal(created.status, 200, created.body && created.body.error);
+    const kept = manual();
+    assert.equal(kept.length, 20, 'as cópias manuais eram ilimitadas');
+    assert.ok(kept.includes(created.body.fileName), 'a cópia nova fica');
+    assert.ok(!kept.includes('manual_2020-01-01T00-00-00-000Z.json'), 'as mais antigas saem');
+
+    const asProfessor = await request(app).get('/api/admin/backup/history').set('x-admin-session', professorToken);
+    assert.equal(asProfessor.status, 403);
+    const history = await request(app).get('/api/admin/backup/history').set('x-admin-session', adminToken);
+    assert.equal(history.status, 200, history.body && history.body.error);
+    const [latest, legacy] = history.body.entries;
+    assert.equal(latest.action, 'backup_server_created');
+    assert.equal(latest.actor, 'prof@g6.local');
+    assert.equal(latest.file, created.body.fileName);
+    assert.deepEqual(
+        { action: legacy.action, actor: legacy.actor, timestamp: legacy.timestamp, ip: legacy.ip, file: legacy.file, error: legacy.error },
+        { action: 'backup_restore_failed', actor: 'admin@g6.local', timestamp: 1700000000000, ip: '10.0.0.5', file: 'velho.json', error: 'Arquivo de backup inválido.' },
+    );
 });
 
 test('[UC-BACKUP-001] backup que já estava na lixeira (versões anteriores) não volta para o professor nem é baixado em /uploads', async () => {
@@ -301,8 +341,63 @@ test('[UC-BACKUP-001] backup que já estava na lixeira (versões anteriores) nã
     fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, unitZip), 'PK\u0003\u0004');
     db.memory.courses[0].structure = [{ id: 'm1', units: [{ id: 'u1', apostilaKey: 'Apostila_G6', files: [{ id: 'f1', name: 'projeto.zip', path: `/uploads/${unitZip}`, type: 'other' }] }] }];
     await request(app).get(`/uploads/${unitZip}`).set('x-admin-session', professorToken).expect(200);
+    // Mas o vínculo não libera um backup: item de biblioteca apontando para o banco
+    // continua só do administrador (antes dava 200 ao professor).
     db.memory.library = [{ id: 'lib1', kind: 'file', courseId: courseA, filename: restoredName, url: `/uploads/${restoredName}` }];
-    await request(app).get(`/uploads/${restoredName}`).set('x-admin-session', professorToken).expect(200);
+    await request(app).get(`/uploads/${restoredName}`).set('x-admin-session', professorToken).expect(403);
+    const plainJson = `${Date.now()}-778.json`;
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, plainJson), JSON.stringify({ exercicios: [{ id: 1, enunciado: 'Some 2 + 2' }] }));
+    db.memory.library.push({ id: 'lib2', kind: 'file', courseId: courseA, filename: plainJson, url: `/uploads/${plainJson}` });
+    await request(app).get(`/uploads/${plainJson}`).set('x-admin-session', professorToken).expect(200);
+    db.memory.library = [];
+});
+
+test('[UC-BACKUP-001] professor que liga um backup à estrutura da turma ou a um material não o baixa (decisão pelo conteúdo)', async () => {
+    const fileStore = require('../../backend/utils/storage.js');
+    const AdmZip = require('adm-zip');
+    await db.save();
+    const stamp = Date.now();
+    const snapshot = backup.buildDataSnapshot();
+    const files = {
+        // Backup como o sistema gera, o mesmo editado à mão (chaves em outra ordem e
+        // indentado), o backup completo em ZIP e um ZIP com o backup renomeado.
+        json: `${stamp}-501.json`,
+        edited: `${stamp}-502.json`,
+        fullZip: `${stamp}-503.zip`,
+        renamedZip: `${stamp}-504.zip`,
+    };
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, files.json), JSON.stringify(snapshot));
+    const { type, ...rest } = snapshot;
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, files.edited), JSON.stringify({ ...rest, type }, null, 2));
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, files.fullZip), backup.buildFullZipBuffer());
+    const renamed = new AdmZip();
+    renamed.addFile('material/dados.json', Buffer.from(JSON.stringify(snapshot)));
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, files.renamedZip), renamed.toBuffer());
+    const unitFiles = Object.values(files).map((name, index) => ({ id: `f${index}`, name, path: `/uploads/${name}`, type: 'other' }));
+
+    // Caminho exato do achado: o próprio professor salva a estrutura da turma com o link.
+    const saved = await request(app).post(`/api/admin/courses/${courseA}/structure`).set('x-admin-session', professorToken)
+        .send({ scope: 'class', studentClass: 'TURMA A', structure: [{ id: 'm1', name: 'Módulo', units: [{ id: 'u1', name: 'Unidade', apostilaKey: 'Apostila_G6', files: unitFiles }] }] });
+    assert.equal(saved.status, 200, saved.body && saved.body.error);
+    // E também pelo link de material na estrutura do curso.
+    db.memory.courses[0].structure = [{ id: 'm1', units: [{ id: 'u1', apostilaKey: 'Apostila_G6_Curso', files: [] }] }];
+    const linked = await request(app).post('/api/admin/material/link').set('x-admin-session', professorToken)
+        .send({ apostilaKey: 'Apostila_G6_Curso', name: 'backup', url: `/uploads/${files.fullZip}` });
+    assert.equal(linked.status, 200, linked.body && linked.body.error);
+
+    for (const name of Object.values(files)) {
+        const asProfessor = await request(app).get(`/uploads/${name}`).set('x-admin-session', professorToken);
+        assert.equal(asProfessor.status, 403, `${name}: o professor baixava o banco com os hashes`);
+        assert.doesNotMatch(asProfessor.text, /scrypt\$/);
+        await request(app).get(`/uploads/${name}`).set('x-admin-session', adminToken).expect(200);
+    }
+
+    // Aluno com o backup na biblioteca do curso também não baixa.
+    const login = await request(app).post('/api/student/login').send({ email: 'ana@g6.local', password: '123' });
+    assert.equal(login.status, 200, login.body && login.body.error);
+    db.memory.library = [{ id: 'lib-bkp', kind: 'file', courseId: courseA, filename: files.json, url: `/uploads/${files.json}` }];
+    const asStudent = await request(app).get(`/uploads/${files.json}`).set('x-session-token', login.body.sessionToken);
+    assert.equal(asStudent.status, 403);
     db.memory.library = [];
 });
 

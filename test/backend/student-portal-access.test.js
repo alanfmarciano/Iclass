@@ -20,7 +20,7 @@ const db = require('../../backend/database.js');
 const runtimePaths = require('../../backend/runtimePaths.js');
 const settingsUtil = require('../../backend/utils/settings.js');
 const attendanceUtil = require('../../backend/utils/attendance.js');
-const { stripAnswerKeyBlocks } = require('../../backend/utils/contentAccess.js');
+const { stripAnswerKeyBlocks, stripStoredAccessTokens } = require('../../backend/utils/contentAccess.js');
 const { createApp } = require('../../backend/server.js');
 
 let app;
@@ -186,6 +186,37 @@ test('[UC-IMAGENS-001] a sessão do instrutor não fica gravada na apostila nem 
     assert.doesNotMatch(stored, /access=/);
     assert.match(stored, /\/uploads\/editor-img\.png\)/);
     assert.match(stored, /\/imagens\/capa\.png\?v=2"/);
+});
+
+test('[UC-IMAGENS-001] só links do próprio site perdem o access=; link externo com /uploads/ no caminho fica intacto', async () => {
+    const markdown = [
+        '[Apostila no Drive](https://drive.example.com/uploads/doc.pdf?access=chave-do-drive)',
+        '<img src="//cdn.example.org/imagens/capa.png?access=chave-cdn">',
+        '![Editor](/uploads/editor-img.png?access=sessao-1)',
+        '![Rede](http://192.168.0.10:3000/uploads/rede.png?v=1&access=sessao-2)',
+        '![Máquina](http://PC-PROFESSOR:3000/imagens/capa.png?access=sessao-3)',
+        '![Própria](https://escola.example.com/uploads/propria.png?access=sessao-4)',
+    ].join('\n');
+    const out = stripStoredAccessTokens(markdown, { ownHosts: ['escola.example.com'] });
+    // Antes o access= do Drive e do CDN também saía e o link externo quebrava.
+    assert.ok(out.includes('https://drive.example.com/uploads/doc.pdf?access=chave-do-drive'));
+    assert.ok(out.includes('//cdn.example.org/imagens/capa.png?access=chave-cdn'));
+    assert.doesNotMatch(out, /sessao-\d/);
+    assert.ok(out.includes('(/uploads/editor-img.png)'));
+    assert.ok(out.includes('(http://192.168.0.10:3000/uploads/rede.png?v=1)'));
+    assert.ok(out.includes('(http://PC-PROFESSOR:3000/imagens/capa.png)'));
+    assert.ok(out.includes('(https://escola.example.com/uploads/propria.png)'));
+
+    // Pelo editor: o Host da requisição conta como o próprio site.
+    const saved = await request(app).put('/api/admin/material/Apostila_POR_1').set('x-admin-session', adminToken).set('Host', 'escola.example.com')
+        .send({ markdownText: `# Unidade 1\n\n${markdown}\n` });
+    assert.equal(saved.status, 200, saved.body && saved.body.error);
+    const stored = fs.readFileSync(path.join(CONTENT_DIR, 'Apostila_POR_1.md'), 'utf8');
+    assert.ok(stored.includes('https://drive.example.com/uploads/doc.pdf?access=chave-do-drive'));
+    assert.doesNotMatch(stored, /sessao-\d/);
+    const studentView = await request(app).get('/Apostila_POR_1.md').set('x-session-token', tokens.ana);
+    assert.equal(studentView.status, 200);
+    assert.ok(studentView.text.includes('https://drive.example.com/uploads/doc.pdf?access=chave-do-drive'));
 });
 
 // ---------------------------------------------------------------- FUN-X2 / CRIT-02
@@ -399,7 +430,7 @@ test('[UC-SIGILO-001] gabarito do professor sai da apostila em todas as grafias,
     assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
 });
 
-test('[UC-SIGILO-001] gabarito do professor também sai com título sublinhado, <summary> depois de texto e "Respostas (professor)"', () => {
+test('[UC-SIGILO-001] gabarito do professor também sai com título sublinhado, <summary> depois de texto e "Chave de respostas (professor)"', () => {
     const markdown = [
         '# Unidade',
         'GABARITO DO PROFESSOR',
@@ -417,7 +448,9 @@ test('[UC-SIGILO-001] gabarito do professor também sai com título sublinhado, 
         'visível-3',
         '<details>\nAbra só na correção: <summary>Gabarito oficial</summary>segredo-3\n</details>',
         '<details><summary>👀 Ver Resposta e Explicação</summary>42</details>',
-        '## Respostas (professor)',
+        // "Respostas (professor)" sem a palavra gabarito agora fica (ver o teste seguinte);
+        // a variação "chave de respostas" continua sendo gabarito.
+        '## Chave de respostas (professor)',
         'segredo-4',
         '## Resolução do exercício',
         'visível-4',
@@ -426,6 +459,34 @@ test('[UC-SIGILO-001] gabarito do professor também sai com título sublinhado, 
     assert.doesNotMatch(out, /segredo-\d/);
     for (const marker of ['visível-1', 'visível-2', 'visível-3', 'visível-4', 'Ver Resposta e Explicação</summary>42', '# Próximo capítulo']) {
         assert.ok(out.includes(marker), `sumiu: ${marker}`);
+    }
+    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
+});
+
+test('[UC-SIGILO-001] "resposta do professor" sem a palavra gabarito fica; gabarito em negrito, <h2> e citação sai', () => {
+    const markdown = [
+        '# Unidade',
+        // Material do aluno que a regra antiga (resposta/solução + professor) apagava.
+        '## Perguntas e respostas com o professor', 'visível-1',
+        '## Solução proposta pelo instrutor', 'visível-2',
+        '### Resposta do professor à dúvida da turma', 'visível-3',
+        '<details><summary>Resposta do professor</summary>visível-4</details>',
+        // Gabarito que a regra antiga deixava passar.
+        '**GABARITO DO PROFESSOR**', '', '1. B segredo-1', '', '**Questão 2**', 'segredo-2', '',
+        '## Exercícios', 'visível-5',
+        '<h2>GABARITO DO PROFESSOR</h2>', 'segredo-3', '<h3>Questão 1</h3>', 'segredo-4',
+        '<h2>Leitura complementar</h2>', 'visível-6',
+        '> ## GABARITO DO PROFESSOR', '> 1. B segredo-5', '> 2. C segredo-6', '',
+        'visível-7 depois da citação',
+        '<p><strong>Gabarito oficial</strong></p>', 'segredo-7', '', '---', 'visível-8',
+        '**Respostas do gabarito (professor)**', 'segredo-8', '## Fim', 'visível-9',
+        'Texto com **negrito** e **outro** visível-10',
+    ].join('\n');
+    const out = stripAnswerKeyBlocks(markdown);
+    assert.doesNotMatch(out, /segredo-\d/);
+    for (let index = 1; index <= 10; index += 1) assert.ok(out.includes(`visível-${index}`), `sumiu: visível-${index}`);
+    for (const title of ['## Perguntas e respostas com o professor', '## Solução proposta pelo instrutor', '### Resposta do professor à dúvida da turma', '<h2>Leitura complementar</h2>']) {
+        assert.ok(out.includes(title), `sumiu o título: ${title}`);
     }
     assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
 });

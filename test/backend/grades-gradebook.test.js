@@ -850,3 +850,107 @@ test('[UC-NOTAS-003] portal do aluno (Provas) faz a média como o painel e o bol
     assert.equal(dashboard2.body.overallNote, 8.5);
     assert.equal(webGrades.fmtGrade(webGrades.consolidatedAverage(mine2.body.submissions)), '8,5', 'antes a tela Provas mostrava 8,0');
 });
+
+test('[UC-NOTAS-004] excluir o aluno anonimiza as cópias das notas dele na lixeira (fica só prova e nota)', async () => {
+    // Entrega online copiava o cadastro inteiro do aluno para a nota (e daí para a lixeira).
+    db.memory.students[0].matricula = 'MAT-2026-001';
+    db.memory.students[0].telefone = '(11) 99999-0000';
+    db.memory.submissions = [
+        submission('ana_online', { applicationId: 'app_1', score: 70, extra: {
+            student: { name: 'Ana', email: 'ana@notas.local', matricula: 'MAT-2026-001', telefone: '(11) 99999-0000', courseId: COURSE_A, studentClass: '1DES' },
+            studentName: 'Ana', correctCount: 3, totalCount: 4, assignedVersion: 'A', gradedAnswers: [{ questionNumber: 1, studentChoice: 'B', isCorrect: true }],
+        } }),
+        submission('bia_p1', { email: 'bia@notas.local', name: 'Bia', score: 90 }),
+    ];
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_online' })).status, 200);
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'bia_p1' })).status, 200);
+    const before = db.memory.auditLogs.find(entry => entry.action === 'grade_delete' && entry.details.deletedSubmission.id === 'ana_online');
+    assert.equal(before.details.deletedSubmission.student.matricula, 'MAT-2026-001', 'antes da exclusão do aluno a cópia é completa (restaurável)');
+
+    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ANA@notas.local' });
+    assert.equal(deleted.status, 200, deleted.body.error);
+
+    const entry = db.memory.auditLogs.find(item => item.action === 'grade_delete' && item.details.deletedSubmission.id === 'ana_online');
+    const copy = entry.details.deletedSubmission;
+    const serialized = JSON.stringify(copy);
+    for (const personal of ['ana@notas.local', 'MAT-2026-001', '99999-0000', '"Ana"']) {
+        assert.equal(serialized.includes(personal), false, `cópia ainda tem ${personal}`);
+    }
+    assert.equal(copy.anonymized, true);
+    assert.deepEqual(copy.student, { name: 'Aluno excluído', email: '', courseId: COURSE_A, studentClass: '1DES' });
+    // Para a estatística: prova, nota, acertos e respostas continuam.
+    assert.equal(copy.examKey, 'Avaliacao_P1');
+    assert.equal(copy.score, 70);
+    assert.equal(copy.correctCount, 3);
+    assert.equal(copy.totalCount, 4);
+    assert.equal(copy.gradedAnswers.length, 1);
+    // A ficha de auditoria pelo e-mail antigo também não devolve mais o cadastro.
+    const audit = await admin(request(app).get('/api/admin/student/audit?email=ana@notas.local'));
+    assert.equal(JSON.stringify(audit.body).includes('MAT-2026-001'), false);
+
+    // A nota da Bia (outra aluna) continua completa e restaurável.
+    const bia = db.memory.auditLogs.find(item => item.action === 'grade_delete' && item.details.deletedSubmission.id === 'bia_p1');
+    assert.equal(bia.details.deletedSubmission.student.email, 'bia@notas.local');
+
+    const trash = await admin(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_A}&studentClass=1DES`));
+    const anaItem = trash.body.items.find(item => item.submissionId === 'ana_online');
+    assert.equal(anaItem.studentName, 'Aluno excluído');
+    assert.equal(anaItem.studentEmail, '');
+    assert.equal(anaItem.canRestore, false);
+    assert.equal(trash.body.items.find(item => item.submissionId === 'bia_p1').canRestore, true);
+
+    // Nova conta com o mesmo e-mail não "herda" a nota anonimizada.
+    db.memory.students.push({ name: 'Outra Ana', email: 'ana@notas.local', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const again = await admin(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_A}&studentClass=1DES`));
+    assert.equal(again.body.items.find(item => item.submissionId === 'ana_online').canRestore, false);
+    const restore = await admin(request(app).post('/api/admin/submissions/restore')).send({ auditId: entry.id });
+    assert.equal(restore.status, 409);
+    assert.match(restore.body.error, /excluído/);
+    assert.equal(db.memory.submissions.some(item => item.id === 'ana_online'), false);
+});
+
+test('[UC-NOTAS-002] CSV da prova exige o curso e não marca como publicada a nota inválida', async () => {
+    db.memory.submissions = [
+        submission('ana_p1', { score: 70 }),
+        submission('ana_invalida', { score: 150, extra: { attemptNumber: 2 } }),
+        // Registro antigo sem curso de um aluno da 1DES do curso B (turma homônima).
+        { ...submission('caio_antigo', { email: 'caio@notas.local', name: 'Caio', score: 30 }), student: { name: 'Caio', email: 'caio@notas.local', studentClass: '1DES' } },
+    ];
+    const noCourse = await admin(request(app).get('/api/admin/export-grades/1DES/Avaliacao_P1'));
+    assert.equal(noCourse.status, 400, 'antes juntava o Caio do curso B');
+    assert.match(noCourse.body.error, /Curso é obrigatório/);
+
+    const res = await admin(request(app).get(`/api/admin/export-grades/1DES/Avaliacao_P1?courseId=${COURSE_A}`));
+    assert.equal(res.status, 200);
+    const lines = parseCsv(res.text);
+    assert.equal(res.text.includes('caio@notas.local'), false);
+    const invalid = lines.find(line => line[9] === 'nota inválida');
+    assert.ok(invalid, 'linha da nota inválida');
+    assert.equal(invalid[12], 'Não (nota inválida)', 'antes saía "Sim"');
+    assert.equal(lines.find(line => line[9] === '7,0')[12], 'Sim');
+});
+
+test('[UC-NOTAS-004] registro da aplicação não fala em "0 tentativas descartadas" quando não houve descarte', async () => {
+    const application = db.memory.examApplications[0];
+    application.finishedAt = '2026-03-01T11:00:00.000Z';
+    const finishEntry = (id, details) => ({
+        id, type: 'exam_application_finished', actor: 'prof@notas.local', applicationId: 'app_1', examKey: 'Avaliacao_P1',
+        studentClass: '1DES', courseId: COURSE_A, details, timestamp: '2026-03-01T11:00:00.000Z',
+    });
+    db.memory.auditLogs = [finishEntry('fin_discard_0', { policy: 'discard', submitted: 0, discarded: 0 })];
+    let trail = await admin(request(app).get('/api/admin/exam-applications/app_1/audit'));
+    let finished = trail.body.entries.find(entry => entry.title === 'Aplicação encerrada');
+    assert.equal(finished.detail, '', 'antes: "0 tentativas em andamento descartadas"');
+
+    db.memory.auditLogs = [finishEntry('fin_submit_0', { policy: 'submit', submitted: 0, discarded: 0 })];
+    trail = await admin(request(app).get('/api/admin/exam-applications/app_1/audit'));
+    assert.equal(trail.body.entries.find(entry => entry.title === 'Aplicação encerrada').detail, '');
+
+    db.memory.auditLogs = [finishEntry('fin_discard_2', { policy: 'discard', submitted: 0, discarded: 2 })];
+    trail = await admin(request(app).get('/api/admin/exam-applications/app_1/audit'));
+    assert.equal(trail.body.entries.find(entry => entry.title === 'Aplicação encerrada').detail, '2 tentativas em andamento descartadas');
+
+    db.memory.auditLogs = [finishEntry('fin_submit_1', { policy: 'submit', submitted: 1, discarded: 0 })];
+    trail = await admin(request(app).get('/api/admin/exam-applications/app_1/audit'));
+    assert.equal(trail.body.entries.find(entry => entry.title === 'Aplicação encerrada').detail, '1 prova em andamento enviada pelo professor');
+});

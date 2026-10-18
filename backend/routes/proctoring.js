@@ -507,9 +507,11 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
         }
 
         const normalizedEmail = req.studentEmail;
-        const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
-        if (rejectForeignClass(req, res, cls)) return;
-        const cfg = cls && cls.onlineExamConfigs ? cls.onlineExamConfigs[examKey.trim()] : null;
+        // Turma resolvida e matrícula aprovada nela: antes, uma conta pendente com turma
+        // inexistente (ou sem turma) recebia valid:true.
+        const cls = requireEnrolledExamClass(req, res, studentClass, courseId);
+        if (!cls) return;
+        const cfg = cls.onlineExamConfigs ? cls.onlineExamConfigs[examKey.trim()] : null;
         const application = applicationForClass(cls, examKey.trim(), applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
         const requiredToken = normalizeExamToken(cfg && cfg.accessToken);

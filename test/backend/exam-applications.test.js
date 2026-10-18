@@ -501,12 +501,13 @@ test('aluno contesta e professor corrige a questao ao vivo antes do envio', asyn
         reason: 'sem_resposta_correta',
         text: 'A alternativa correta parece ausente.',
     }).expect(201);
-    await request(app).post('/api/student/report-question').set('x-session-token', studentToken).send({
+    const duplicate = await request(app).post('/api/student/report-question').set('x-session-token', studentToken).send({
         applicationId: application.id,
         attemptId: started.body.attemptId,
         questionNumber: 1,
         reason: 'outro',
     }).expect(409);
+    assert.equal(duplicate.body.error, 'Você já reportou esta questão.');
 
     const reports = await request(app)
         .get(`/api/admin/question-reports/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
@@ -566,6 +567,11 @@ test('anula e substitui questao para tentativas ativas com tempo extra', async (
     assert.equal(replaced.body.replacementNumber, 2);
     assert.equal(state.assignedQuestionNumbers.includes(2), true);
     assert.equal(state.deadlineAt, oldDeadline + 300000);
+    // Mensagem que o aluno lê durante a prova: português com acentos (sobra G5).
+    const notice = db.memory.broadcastMessages.filter(item => item.applicationId === application.id).at(-1);
+    assert.equal(notice.messageText, 'A questão 1 foi anulada e uma questão adicional foi inserida no final da prova. Foram acrescentados 5 minutos.');
+    const annulment = db.memory.examApplications.find(item => item.id === application.id).annulledQuestions.find(item => item.questionNumber === 1);
+    assert.equal(annulment.reason, 'Questão substituída durante a aplicação.');
 
     const sync = await syncApplication(application.id);
     const cfg = sync.body.onlineExamConfigs[examKey];

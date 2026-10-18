@@ -801,7 +801,9 @@ function sanitizeSubmissionForStudent(submission, canViewAnswerKey) {
     const scoreValue = typeof rawScore === 'number' ? rawScore : Number(rawScore);
     const scoreValid = rawScore !== null && rawScore !== undefined && rawScore !== '' && Number.isFinite(scoreValue) && scoreValue >= 0 && scoreValue <= 100;
     const gradePublished = submission && submission.gradePublished === true && scoreValid;
-    const { examSnapshot, ...submissionWithoutSnapshot } = submission || {};
+    // scoreHistory (notas anteriores de cada recorreção) é do professor: revelava a
+    // nota antes da publicação.
+    const { examSnapshot, scoreHistory, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };
     if (!gradePublished) {
         delete safeGrade.score;

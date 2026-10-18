@@ -10,6 +10,7 @@ const { resolveInside } = require('./utils/safePath.js');
 const { verifyBuild } = require('./utils/buildIntegrity.js');
 const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount } = require('./middlewares.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
+const { fileLooksLikeBackup } = require('./utils/backup.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -60,7 +61,8 @@ app.use((req, res, next) => {
 // Extensões que nunca saem como arquivo (viram vetor de script ou executável).
 const BLOCKED_FILE_EXTENSIONS = ['.html', '.htm', '.js', '.mjs', '.exe', '.bat', '.cmd', '.ps1'];
 const INLINE_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-// Formatos de arquivo de backup: em /uploads, o professor só os recebe ligados ao conteúdo.
+// Formatos de arquivo de backup: em /uploads, quem não é administrador só os recebe
+// quando o conteúdo não é um backup (e, o professor, ligados ao conteúdo).
 const BACKUP_FILE_EXTENSIONS = ['.json', '.zip'];
 
 // `relativePath` já validado: um nome (uploads) ou segmentos de subpasta (imagens).
@@ -93,13 +95,20 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
     if (BLOCKED_FILE_EXTENSIONS.includes(ext) || (ext === '.svg' && !isContentImage)) {
         return res.status(415).json({ error: 'Este formato não pode ser servido pela aplicação.' });
     }
-    if (adminSession && !isContentImage && BACKUP_FILE_EXTENSIONS.includes(ext)) {
-        // SEG-X1: um .json/.zip solto em /uploads pode ser o banco inteiro (backup que
-        // voltou da lixeira); só o administrador baixa esse arquivo.
-        const sessionEmail = String(adminSession.email || '').toLowerCase();
-        const account = (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === sessionEmail);
-        if ((!account || isProfessorAccount(account)) && !uploadAttachedToContent(filename)) {
-            return res.status(403).json({ error: 'Arquivo disponível só para o administrador.' });
+    if (!isContentImage && BACKUP_FILE_EXTENSIONS.includes(ext)) {
+        // SEG-X1: um .json/.zip em /uploads pode ser o banco inteiro (backup que voltou
+        // da lixeira) com os hashes das senhas; só o administrador baixa esse arquivo.
+        // A decisão é pelo conteúdo: o professor cria o vínculo sozinho (estrutura da
+        // turma ou link de material com '/uploads/<nome>.json'), então o vínculo não basta.
+        const sessionEmail = adminSession ? String(adminSession.email || '').toLowerCase() : '';
+        const account = sessionEmail ? (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === sessionEmail) : null;
+        const isAdministrator = !!account && !isProfessorAccount(account);
+        if (!isAdministrator) {
+            let backupLike = true;
+            try { backupLike = await fileLooksLikeBackup(target); } catch (error) { backupLike = true; }
+            if (backupLike || (adminSession && !uploadAttachedToContent(filename))) {
+                return res.status(403).json({ error: 'Arquivo disponível só para o administrador.' });
+            }
         }
     }
     if (studentEmail && !adminSession && !publicBrandingFile) {

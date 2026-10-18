@@ -179,8 +179,9 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '
 
 // Gera um documento imprimivel (print -> Salvar como PDF) com o cabecalho,
 // as questoes completas e o gabarito-resumo. Roda 100% no cliente, sem libs.
-function buildExamPrintHtml(detail, questions, answerByNumber) {
-  const nota = detail?.gradePublished === true ? (Number(detail.score || 0) / 10).toFixed(1) : '—'
+// Nota com vírgula, como no resto do portal (fmtGrade).
+export function buildExamPrintHtml(detail, questions, answerByNumber) {
+  const nota = detail?.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : '—'
   const acertos = detail?.gradePublished === true ? `${detail.correctCount ?? '-'}/${detail.totalCount ?? '-'}` : '-'
   const versao = detail?.assignedVersion || '-'
   const titulo = detail?.examTitle || detail?.examKey || 'Prova'
@@ -275,7 +276,7 @@ function FullExamView({ detail, questions, answers }) {
               <div className="mb-2.5 flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-2 text-xs font-semibold text-muted">
                   <span className="grid h-6 w-6 place-items-center rounded-md border border-border bg-surface text-text">{q.number}</span>
-                  Questao {q.number}
+                  Questão {q.number}
                 </span>
                 <Badge tone={isCorrect ? 'success' : 'danger'}>{isCorrect ? 'Correta' : 'Errada'}</Badge>
               </div>

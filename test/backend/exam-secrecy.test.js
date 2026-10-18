@@ -308,6 +308,80 @@ test('[UC-SIGILO-001] conta autocadastrada pendente e aluno de outra turma não 
     await control(application.id, 'finish', { inProgressPolicy: 'discard' }).expect(200);
 });
 
+test('[UC-SIGILO-001] conta pendente não valida token de prova, nem com turma inexistente ou sem turma', async () => {
+    await request(app).post('/api/student/register').send({
+        name: 'Pendente', email: 'pendente@sigilo.local', password: '1', studentClass: classA, courseId: courseA, acceptedTerms: true,
+    }).expect(200);
+    const pending = await loginStudent('pendente@sigilo.local', '1');
+    const application = await prepareApplication({ tokenEnabled: true });
+    await control(application.id, 'start').expect(200);
+    for (const studentClass of ['TURMA FANTASMA', '', classA, classA.toLowerCase()]) {
+        const res = await request(app).post('/api/student/validate-exam-token').set('x-session-token', pending)
+            .send({ email: 'pendente@sigilo.local', studentClass, courseId: courseA, examKey, token: 'ABCDE' });
+        assert.equal(res.status, 403, `turma "${studentClass}": antes valid:true para turma inexistente`);
+        assert.notEqual(res.body.valid, true);
+    }
+    assert.equal(Object.values(db.memory.studentExamState).some(state => state.studentEmail === 'pendente@sigilo.local'), false);
+    // Aluno matriculado continua validando (com a turma em outra grafia, inclusive).
+    const ana = await loginStudent('ana@sigilo.local');
+    const ok = await request(app).post('/api/student/validate-exam-token').set('x-session-token', ana)
+        .send({ email: 'ana@sigilo.local', studentClass: classA.toLowerCase(), courseId: courseA, examKey, applicationId: application.id, token: 'ABCDE' });
+    assert.equal(ok.status, 200, ok.body && ok.body.error);
+    assert.equal(ok.body.valid, true);
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' }).expect(200);
+});
+
+test('[UC-SIGILO-001] lista de aplicações e entregas do aluno não levam snapshots, letra original, gabarito nem nota não publicada', async () => {
+    const application = await prepareApplication({ tokenEnabled: true });
+    const token = await loginStudent('ana@sigilo.local');
+    const assertCleanList = async (label) => {
+        const listed = await request(app).get('/api/student/exam-applications').set('x-session-token', token).expect(200);
+        const raw = JSON.stringify(listed.body);
+        assertNoExamContent(listed.body, label);
+        for (const field of ['alternatives', '"letter"', 'displayLetter', 'answerKey', 'accessToken', 'ABCDE', 'questionReports', 'studentVersions']) {
+            assert.equal(raw.includes(field), false, `${label}: ${field} não pode ir ao aluno`);
+        }
+        return listed.body.applications;
+    };
+    await control(application.id, 'start').expect(200);
+    assert.equal((await assertCleanList('em andamento')).length, 1);
+    await control(application.id, 'pause').expect(200);
+    await assertCleanList('pausada');
+    await control(application.id, 'resume').expect(200);
+
+    await request(app).post('/api/student/validate-exam-token').set('x-session-token', token)
+        .send({ email: 'ana@sigilo.local', studentClass: classA, courseId: courseA, examKey, applicationId: application.id, token: 'ABCDE' }).expect(200);
+    const started = await request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`).set('x-session-token', token).send({}).expect(200);
+    await assertCleanList('com a tentativa iniciada');
+    const submitted = await request(app).post('/api/student/submit').set('x-session-token', token).send({
+        studentClass: classA, courseId: courseA, examKey, applicationId: application.id, attemptId: started.body.attemptId,
+        answers: { 1: 'B', 2: 'B' }, questionNumbers: [1, 2], examConfigVersion: started.body.examConfigVersion,
+    });
+    assert.equal(submitted.status, 200, submitted.body && submitted.body.error);
+    assert.equal(submitted.body.message, 'Prova enviada. A nota será exibida após a publicação do professor.');
+    assert.equal(JSON.stringify(submitted.body).includes('score'), false);
+    // Anulação depois do envio recorrige a nota e guarda a anterior no histórico.
+    await request(app).post('/api/admin/annul-question').set('x-admin-session', adminToken)
+        .send({ applicationId: application.id, questionNumber: 2, mode: 'ponto_para_todos', reason: 'teste' }).expect(200);
+    const stored = db.memory.submissions.find(item => item.applicationId === application.id);
+    assert.ok(stored.scoreHistory && stored.scoreHistory.length, 'a recorreção guardou a nota anterior');
+
+    // Nota não publicada e gabarito não liberado: nada de nota, histórico nem gabarito.
+    const mine = await request(app).post('/api/student/my-submissions').set('x-session-token', token).send({ courseId: courseA, studentClass: classA }).expect(200);
+    const own = mine.body.submissions.find(item => item.applicationId === application.id);
+    assert.ok(own);
+    assert.equal(own.gradePublished, false);
+    assert.equal(own.answerKeyReleased, false);
+    assert.equal(own.score, undefined);
+    assert.equal(own.scoreHistory, undefined, 'o histórico da nota revelava a nota antes da publicação');
+    const raw = JSON.stringify(mine.body);
+    for (const field of ['correctAnswer', 'isCorrect', 'examSnapshot', 'versionSnapshots', '"answerKey"', '"from"', '"to"']) {
+        assert.equal(raw.includes(field), false, `minhas entregas: ${field} não pode ir ao aluno antes da liberação`);
+    }
+    assert.deepEqual(own.gradedAnswers.map(answer => Object.keys(answer).sort()), [['questionNumber', 'studentChoice'], ['questionNumber', 'studentChoice']]);
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' }).expect(200);
+});
+
 test('[UC-SIGILO-001] questões só chegam depois do início real da tentativa e só da versão do aluno (AVA-02)', async () => {
     const application = await prepareApplication({ tokenEnabled: true });
     const token = await loginStudent('ana@sigilo.local');

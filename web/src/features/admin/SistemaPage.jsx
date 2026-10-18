@@ -138,11 +138,47 @@ function TrashCard() {
 
 function _bkAuth() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
 
+const BACKUP_ACTION_LABEL = {
+  backup_restored: 'Restauração concluída',
+  backup_restore_failed: 'Restauração com falha',
+  backup_server_created: 'Cópia gerada no servidor',
+  backup_downloaded: 'Backup baixado',
+}
+
+// Histórico de backup (só o administrador vê): restaurações, falhas, cópias e downloads.
+export function BackupHistory({ entries }) {
+  if (!entries) return null
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-semibold text-text">Histórico de backup</p>
+      {entries.length === 0 ? <p className="text-xs text-muted">Nenhum registro ainda.</p> : (
+        <ul className="divide-y divide-border rounded-lg border border-border" aria-label="Histórico de backup">
+          {entries.slice(0, 10).map((entry) => (
+            <li key={entry.id || `${entry.action}-${entry.timestamp}`} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2 text-xs">
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-text">
+                  {BACKUP_ACTION_LABEL[entry.action] || 'Backup'}
+                  {entry.action === 'backup_downloaded' && entry.format ? ` (${entry.format.toUpperCase()})` : ''}
+                  {entry.file ? <span className="font-normal text-muted"> · {entry.file}</span> : null}
+                </p>
+                {entry.error && <p className="text-danger">{entry.error}</p>}
+                <p className="text-subtle">{entry.timestamp ? new Date(entry.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {entry.actor || '—'}{entry.ip ? ` · IP ${entry.ip}` : ''}</p>
+              </div>
+              {entry.action === 'backup_restore_failed' ? <Badge tone="danger">Falhou</Badge> : entry.action === 'backup_restored' ? <Badge tone="success">Restaurado</Badge> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // Baixar e restaurar backup é só do administrador: o arquivo leva todos os alunos e
 // os hashes de senha das contas (SEG-X1). Professor com "Executar manutenção" só gera
 // a cópia de segurança, que fica guardada no servidor.
 function BackupCard({ isAdmin }) {
   const toast = useToast()
+  const history = useApi(isAdmin ? '/api/admin/backup/history' : null, [isAdmin])
   const [file, setFile] = useState(null)
   const [confirmTxt, setConfirmTxt] = useState('')
   const [replaceAccounts, setReplaceAccounts] = useState(false)
@@ -152,7 +188,8 @@ function BackupCard({ isAdmin }) {
     setServerBusy(true)
     try {
       const r = await api.post('/api/admin/backup/server', {})
-      toast.success(`Cópia de segurança gerada no servidor (${r.fileName}).`)
+      toast.success(`Cópia de segurança gerada no servidor (${r.fileName}). Ficam as ${r.kept || 20} cópias manuais mais recentes.`)
+      if (isAdmin) history.refetch(true)
     } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
   }
   async function download(kind) {
@@ -164,6 +201,7 @@ function BackupCard({ isAdmin }) {
       const m = cd.match(/filename="([^"]+)"/)
       const name = m ? m[1] : (kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
       const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url)
+      history.refetch(true)
     } catch (e) { toast.error(e.message) }
   }
   async function restore() {
@@ -183,7 +221,11 @@ function BackupCard({ isAdmin }) {
         ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".`
         : 'Backup restaurado. Recarregue a página para ver os dados.')
       setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
-    } catch (e) { toast.error(e.message) } finally { setBusy(false) }
+    } catch (e) {
+      toast.error(e.message)
+      // A falha fica no histórico (a restauração bem-sucedida encerra as sessões).
+      history.refetch(true)
+    } finally { setBusy(false) }
   }
   return (
     <Card>
@@ -205,6 +247,7 @@ function BackupCard({ isAdmin }) {
             <Button variant="destructive" icon={Upload} loading={busy} onClick={restore}>Restaurar</Button>
           </div>
         </div>}
+        {isAdmin && <BackupHistory entries={history.data?.entries} />}
       </CardBody>
     </Card>
   )

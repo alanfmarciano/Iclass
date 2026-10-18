@@ -1104,23 +1104,23 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
     const text = String(req.body?.text || '').trim();
     const number = Number(req.body?.questionNumber);
     if (!applicationId || !attemptId || !Number.isFinite(number) || !QUESTION_REPORT_REASONS.has(reason)) {
-        return res.status(400).json({ error: 'Dados da contestacao invalidos.' });
+        return res.status(400).json({ error: 'Dados da contestação inválidos.' });
     }
-    if (text.length > 300) return res.status(400).json({ error: 'O detalhe deve ter no maximo 300 caracteres.' });
+    if (text.length > 300) return res.status(400).json({ error: 'O detalhe deve ter no máximo 300 caracteres.' });
 
     const application = findExamApplication(db.memory.examApplications, applicationId);
     if (!application) return res.status(404).json({ error: 'Aplicacao de prova nao encontrada.' });
     if (!['waiting', 'running', 'paused'].includes(application.status)) {
-        return res.status(409).json({ error: 'Esta aplicacao ja foi encerrada.' });
+        return res.status(409).json({ error: 'Esta aplicação já foi encerrada.' });
     }
     const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
     if (!cls || !studentBelongsToClass(req.studentAccount, cls)) {
-        return res.status(403).json({ error: 'Aplicacao nao autorizada para este estudante.' });
+        return res.status(403).json({ error: 'Aplicação não autorizada para este estudante.' });
     }
     const context = attemptContextForStudent({ application, studentEmail: req.studentEmail, examKey: application.examKey });
     const state = context.state;
     if (!state?.startedAt || state.attemptId !== attemptId) {
-        return res.status(409).json({ error: 'A contestacao nao corresponde a tentativa ativa.' });
+        return res.status(409).json({ error: 'A contestação não corresponde à tentativa ativa.' });
     }
     const resolved = questionsForAttempt({
         application,
@@ -1129,7 +1129,7 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
         evaluation: db.memory.evaluations?.[application.examKey],
     });
     if (!resolved.assignedNumbers.includes(number)) {
-        return res.status(400).json({ error: 'Esta questao nao pertence a tentativa do aluno.' });
+        return res.status(400).json({ error: 'Esta questão não pertence à tentativa do aluno.' });
     }
 
     if (!Array.isArray(application.questionReports)) application.questionReports = [];
@@ -1137,13 +1137,13 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
         String(report.studentEmail || '').toLowerCase() === req.studentEmail
         && Number(report.questionNumber) === number);
     if (duplicate) {
-        return res.status(409).json({ error: 'Voce ja reportou esta questao.', alreadyReported: true, report: duplicate });
+        return res.status(409).json({ error: 'Você já reportou esta questão.', alreadyReported: true, report: duplicate });
     }
     const oneMinuteAgo = Date.now() - 60000;
     const recentCount = application.questionReports.filter(report =>
         String(report.studentEmail || '').toLowerCase() === req.studentEmail
         && new Date(report.createdAt || 0).getTime() >= oneMinuteAgo).length;
-    if (recentCount >= 5) return res.status(429).json({ error: 'Aguarde um minuto antes de enviar novas contestacoes.' });
+    if (recentCount >= 5) return res.status(429).json({ error: 'Aguarde um minuto antes de enviar novas contestações.' });
 
     const now = new Date().toISOString();
     const report = {
@@ -1371,7 +1371,7 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         submissionId: submissionObj.id,
         applicationId: application?.id || null,
         attemptId: submissionObj.attemptId,
-        message: 'Prova enviada. A nota sera exibida apos a publicacao do professor.',
+        message: 'Prova enviada. A nota será exibida após a publicação do professor.',
         examConfigVersion: currentExamConfigVersion
     });
 });

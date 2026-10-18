@@ -43,10 +43,15 @@ function normalizedLabel(html) {
         .toLowerCase();
 }
 
-// Marca de material do professor junto da palavra "gabarito" (ou "respostas",
-// "resolução", "solução": "## Respostas (professor)").
-const TEACHER_MARKER = /\b(oficial|professor|professora|prof|docente|instrutor|instrutora|exclusivo)\b/;
-const ANSWER_WORD = /\b(gabarito|respostas?|resolucao|resolucoes|solucao|solucoes)\b/;
+// Marcador forte do gabarito do professor: a palavra "gabarito" (ou "chave de
+// respostas"/"chave de correção"), junto de uma marca de material do professor
+// ("oficial", "professor", "prof.", "docente", "instrutor", "exclusivo"). "Resposta"
+// ou "solução" com "professor" não basta: "## Perguntas e respostas com o professor",
+// "## Solução proposta pelo instrutor" e "<summary>Resposta do professor</summary>"
+// são material do aluno e ficam.
+const TEACHER_MARKER = /\b(oficial|professor|professora|prof|docente|instrutor|instrutora|exclusivo|exclusiva)\b/;
+const ANSWER_KEY_WORD = /\b(gabaritos?|chaves? de (respostas?|correcao))\b/;
+const BARE_ANSWER_KEY = /^(gabaritos?|chaves? de (respostas?|correcao))$/;
 
 // Título de bloco que marca o gabarito do professor, nos formatos dos arquivos de
 // avaliação: "GABARITO EXCLUSIVO DO PROFESSOR", "GABARITO OFICIAL", "Gabarito do prof."
@@ -54,15 +59,16 @@ const ANSWER_WORD = /\b(gabarito|respostas?|resolucao|resolucoes|solucao|solucoe
 // exercícios", "Ver resposta") não casa e continua na apostila.
 function isTeacherAnswerKeySummary(summaryHtml) {
     const text = normalizedLabel(summaryHtml);
-    if (text === 'gabarito') return true;
-    return ANSWER_WORD.test(text) && TEACHER_MARKER.test(text);
+    if (BARE_ANSWER_KEY.test(text)) return true;
+    return ANSWER_KEY_WORD.test(text) && TEACHER_MARKER.test(text);
 }
 
-// Título Markdown de seção do professor ("## GABARITO EXCLUSIVO DO PROFESSOR"). Aqui
-// "Gabarito" sozinho não basta: uma seção assim pode ser a autocorreção do aluno.
+// Título de seção do professor ("## GABARITO EXCLUSIVO DO PROFESSOR", "<h2>GABARITO DO
+// PROFESSOR</h2>", "**GABARITO DO PROFESSOR**"). Aqui "Gabarito" sozinho não basta:
+// uma seção assim pode ser a autocorreção do aluno.
 function isTeacherAnswerKeyHeading(headingText) {
     const text = normalizedLabel(headingText);
-    return ANSWER_WORD.test(text) && TEACHER_MARKER.test(text);
+    return ANSWER_KEY_WORD.test(text) && TEACHER_MARKER.test(text);
 }
 
 // Remove <details> do professor inteiro, inclusive com <details> aninhado dentro (a
@@ -100,42 +106,82 @@ function stripTeacherDetails(markdown) {
 // Título setext ("GABARITO DO PROFESSOR" sublinhado com === ou ---): nível 1 ou 2.
 function setextHeadingLevel(line, next) {
     if (!line || !line.trim() || next === undefined) return 0;
-    if (/^\s{0,3}(#{1,6}(\s|$)|[-*+]\s|\d+[.)]\s|```|~~~)/.test(line)) return 0;
+    if (/^\s{0,3}(#{1,6}(\s|$)|[-*+]\s|\d+[.)]\s|```|~~~|>)/.test(line)) return 0;
     const underline = /^\s{0,3}(=+|-+)\s*$/.exec(next);
     if (!underline) return 0;
     return underline[1][0] === '=' ? 1 : 2;
 }
 
-// Remove a seção Markdown do professor até o próximo título do mesmo nível ou acima
-// (títulos com # e títulos sublinhados). Títulos dentro de bloco de código não contam.
+// Parágrafo só em negrito ("**GABARITO DO PROFESSOR**", "<p><strong>...</strong></p>")
+// funciona como título: nível 7, abaixo de qualquer título de verdade.
+const BOLD_LINE_LEVEL = 7;
+const MARKDOWN_BOLD_LINE = /^\s{0,3}(\*\*|__)(?!\s)((?:(?!\1).)+)\1\s*:?\s*$/;
+const HTML_BOLD_LINE = /^\s{0,3}(?:<p\b[^>]*>\s*)?<(strong|b)\b[^>]*>([\s\S]+?)<\/\1>\s*:?\s*(?:<\/p>)?\s*$/i;
+const HTML_HEADING_LINE = /^\s{0,3}<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>\s*$/i;
+const THEMATIC_BREAK = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
+// Negrito que é item do próprio gabarito ("**Questão 2**", "**1.**") não encerra o bloco.
+const ANSWER_ITEM_LABEL = /^(\d|q\s*\d|questao|questoes|item|letra|alternativa|resposta|exercicio)/;
+
+const BLOCKQUOTE_PREFIX = /^(?:\s{0,3}>\s?)+/;
+function quoteDepth(line) {
+    const prefix = BLOCKQUOTE_PREFIX.exec(line);
+    return prefix ? (prefix[0].match(/>/g) || []).length : 0;
+}
+
+// Título da linha (já sem o "> " de citação): nível, texto e quantas linhas ocupa.
+function lineHeading(inner, nextInner) {
+    const atx = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(inner);
+    if (atx) return { level: atx[1].length, text: atx[2], span: 1 };
+    const html = HTML_HEADING_LINE.exec(inner);
+    if (html) return { level: Number(html[1]), text: html[2], span: 1 };
+    const setext = setextHeadingLevel(inner, nextInner);
+    if (setext) return { level: setext, text: inner, span: 2 };
+    const bold = MARKDOWN_BOLD_LINE.exec(inner) || HTML_BOLD_LINE.exec(inner);
+    if (bold && normalizedLabel(bold[2])) return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true };
+    return null;
+}
+
+// Remove a seção do professor até o próximo título do mesmo nível ou acima (títulos
+// com #, sublinhados, <h1>-<h6> e parágrafos só em negrito). Dentro de citação
+// ("> ## GABARITO DO PROFESSOR") a seção acaba também quando a citação termina.
+// Títulos dentro de bloco de código não contam.
 function stripTeacherHeadingSections(markdown) {
     const lines = String(markdown || '').split('\n');
     const output = [];
-    let skipLevel = 0;
+    let skip = null;
     let inFence = false;
+    let previousBlank = false;
     for (let index = 0; index < lines.length; index++) {
         const line = lines[index];
-        if (/^\s{0,3}(```|~~~)/.test(line)) {
+        const depth = quoteDepth(line);
+        const inner = line.replace(BLOCKQUOTE_PREFIX, '');
+        const blank = !inner.trim();
+        // Saiu da citação onde o gabarito começou (linha sem ">" depois de uma em branco).
+        if (skip && skip.depth > 0 && !blank && depth < skip.depth && previousBlank && !inFence) skip = null;
+        if (/^\s{0,3}(```|~~~)/.test(inner)) {
             inFence = !inFence;
-            if (!skipLevel) output.push(line);
+            if (!skip) output.push(line);
+            previousBlank = false;
             continue;
         }
-        let level = 0;
-        let text = '';
         let span = 1;
-        const heading = !inFence && /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
-        if (heading) {
-            level = heading[1].length;
-            text = heading[2];
-        } else if (!inFence) {
-            level = setextHeadingLevel(line, lines[index + 1]);
-            if (level) { text = line; span = 2; }
+        if (!inFence) {
+            const nextLine = lines[index + 1];
+            const nextInner = nextLine !== undefined && quoteDepth(nextLine) === depth ? nextLine.replace(BLOCKQUOTE_PREFIX, '') : undefined;
+            const heading = lineHeading(inner, nextInner);
+            if (heading) {
+                span = heading.span;
+                if (skip && heading.level <= skip.level && depth <= skip.depth
+                    && !(heading.bold && skip.level === BOLD_LINE_LEVEL && ANSWER_ITEM_LABEL.test(normalizedLabel(heading.text)))) {
+                    skip = null;
+                }
+                if (!skip && isTeacherAnswerKeyHeading(heading.text)) skip = { level: heading.level, depth };
+            } else if (skip && skip.level === BOLD_LINE_LEVEL && depth <= skip.depth && THEMATIC_BREAK.test(inner)) {
+                skip = null;
+            }
         }
-        if (level) {
-            if (skipLevel && level <= skipLevel) skipLevel = 0;
-            if (!skipLevel && isTeacherAnswerKeyHeading(text)) skipLevel = level;
-        }
-        if (!skipLevel) output.push(...lines.slice(index, index + span));
+        if (!skip) output.push(...lines.slice(index, index + span));
+        previousBlank = blank;
         index += span - 1;
     }
     return output.join('\n');
@@ -189,12 +235,35 @@ async function findContentFile(key) {
     return match ? path.join(runtimePaths.CONTENT_DIR, match) : null;
 }
 
-// Remove ?access=<sessão> de links /uploads e /imagens (o editor antigo gravava a
-// sessão do instrutor na apostila). contentMedia.js reexporta para o editor.
-function stripStoredAccessTokens(markdown) {
-    return String(markdown || '').replace(/(\/(?:uploads|imagens)\/[^\s)"'<>?#]+)\?([^\s)"'<>#]*)/g, (match, base, query) => {
+// Host do próprio servidor: o app roda na máquina do professor e é aberto pela rede
+// da sala (localhost, IP da rede local, nome da máquina sem domínio ou .local), além
+// dos hosts informados (o Host da requisição). Site externo (drive.example.com) não é.
+const LOCAL_NETWORK_HOST = /^(localhost|127(?:\.\d{1,3}){3}|::1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|[a-z0-9-]+|[a-z0-9.-]+\.local)$/i;
+
+function hostWithoutPort(value) {
+    const host = String(value || '').trim().toLowerCase();
+    if (host.startsWith('[')) return host.slice(1, host.indexOf(']') > 0 ? host.indexOf(']') : undefined);
+    return host.replace(/:\d+$/, '');
+}
+
+function isOwnHost(host, ownHosts) {
+    const bare = hostWithoutPort(host);
+    if (!bare) return false;
+    return LOCAL_NETWORK_HOST.test(bare) || (ownHosts || []).some(item => hostWithoutPort(item) === bare);
+}
+
+// Remove ?access=<sessão> de links /uploads e /imagens do PRÓPRIO site (o editor
+// antigo gravava a sessão do instrutor na apostila): caminho que começa em /uploads/
+// ou /imagens/, ou com a origem do próprio servidor. Link externo que por acaso tem
+// /uploads/ no caminho (https://drive.example.com/uploads/doc.pdf?access=X) fica
+// intacto. contentMedia.js reexporta para o editor.
+const STORED_FILE_LINK = /(^|[\s("'<>=\[,])((?:https?:)?\/\/([^\s/)"'<>?#]+))?(\/(?:uploads|imagens)\/[^\s)"'<>?#]+)\?([^\s)"'<>#]*)/gi;
+
+function stripStoredAccessTokens(markdown, { ownHosts = [] } = {}) {
+    return String(markdown || '').replace(STORED_FILE_LINK, (match, lead, origin, host, filePath, query) => {
+        if (origin && !isOwnHost(host, ownHosts)) return match;
         const kept = query.split(/&(?:amp;)?/).filter(part => part && !/^access=/i.test(part));
-        return kept.length ? `${base}?${kept.join('&')}` : base;
+        return `${lead}${origin || ''}${filePath}${kept.length ? `?${kept.join('&')}` : ''}`;
     });
 }
 

@@ -268,8 +268,85 @@ async function restoreFromFile(absPath, originalName, { replaceAccounts = false 
     return { ok: true, replaceAccounts, ...summary };
 }
 
+// SEG-X1: um .json/.zip em /uploads pode ser o banco inteiro (backup com os hashes
+// das senhas), venha ele da lixeira, de um envio ou de um vínculo que o próprio
+// professor criou na estrutura da turma. Por isso a decisão é pelo CONTEÚDO, não
+// pelo vínculo: marca do backup ("type": "iclass-backup-data"), hash de senha
+// (scrypt$...) ou, num ZIP, o backup-data.json, um banco .db/.sqlite ou um .json
+// interno com essas marcas. Resultado em cache por caminho + data + tamanho.
+const BACKUP_TEXT_MARKERS = [/"type"\s*:\s*"iclass-backup-data"/, /scrypt\$[A-Za-z0-9+/=]{8,}\$/];
+const BACKUP_ZIP_ENTRY = /(^|\/)(backup-data\.json|[^/]+\.(?:db|sqlite3?))$/i;
+const BACKUP_SCAN_CHUNK = 1024 * 1024;
+const BACKUP_SCAN_OVERLAP = 256;
+const MAX_ZIP_JSON_SCAN_BYTES = 128 * 1024 * 1024;
+const backupContentCache = new Map();
+
+function textHasBackupMarker(text) {
+    return BACKUP_TEXT_MARKERS.some(marker => marker.test(text));
+}
+
+async function fileHasBackupMarker(filePath, extraLiterals = []) {
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+        const buffer = Buffer.alloc(BACKUP_SCAN_CHUNK);
+        let carry = '';
+        let position = 0;
+        for (;;) {
+            const { bytesRead } = await handle.read(buffer, 0, BACKUP_SCAN_CHUNK, position);
+            if (!bytesRead) return false;
+            position += bytesRead;
+            // latin1 mantém um caractere por byte: as marcas são ASCII.
+            const text = carry + buffer.toString('latin1', 0, bytesRead);
+            if (textHasBackupMarker(text) || extraLiterals.some(literal => text.includes(literal))) return true;
+            carry = text.slice(-BACKUP_SCAN_OVERLAP);
+        }
+    } finally {
+        await handle.close();
+    }
+}
+
+function zipHasBackupEntry(filePath) {
+    const AdmZip = getZipLib();
+    if (!AdmZip) return null;
+    let entries;
+    try { entries = new AdmZip(filePath).getEntries(); } catch (error) { return null; }
+    let scanned = 0;
+    for (const entry of entries) {
+        const name = String(entry.entryName || '').replace(/\\/g, '/');
+        if (BACKUP_ZIP_ENTRY.test(name)) return true;
+        if (entry.isDirectory || !/\.json$/i.test(name)) continue;
+        const size = Number(entry.header && entry.header.size || 0);
+        if (scanned + size > MAX_ZIP_JSON_SCAN_BYTES) return true; // grande demais para conferir: na dúvida, só o administrador
+        scanned += size;
+        let data;
+        try { data = entry.getData(); } catch (error) { continue; }
+        if (data && textHasBackupMarker(data.toString('latin1'))) return true;
+    }
+    return false;
+}
+
+async function fileLooksLikeBackup(filePath) {
+    let stat;
+    try { stat = await fs.promises.stat(filePath); } catch (error) { return false; }
+    if (!stat.isFile()) return false;
+    const key = `${filePath}|${stat.mtimeMs}|${stat.size}`;
+    if (backupContentCache.has(key)) return backupContentCache.get(key);
+    let result;
+    if (path.extname(filePath).toLowerCase() === '.zip') {
+        const fromEntries = zipHasBackupEntry(filePath);
+        // ZIP que não abre: procura os nomes e as marcas nos bytes (entrada sem compressão).
+        result = fromEntries === null ? await fileHasBackupMarker(filePath, ['backup-data.json']) : fromEntries;
+    } else {
+        result = await fileHasBackupMarker(filePath);
+    }
+    if (backupContentCache.size > 500) backupContentCache.clear();
+    backupContentCache.set(key, result);
+    return result;
+}
+
 module.exports = {
     COLLECTIONS, buildDataSnapshot, validateDataSnapshot, restoreDataSnapshot, saveServerBackup,
     runAutomaticBackup, lastAutomaticBackupAt,
     buildFullZipBuffer, streamFullZip, saveServerFullBackup, restoreFullZip, restoreFromFile, getZipLib, validateZip,
+    fileLooksLikeBackup,
 };

@@ -1,7 +1,7 @@
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ProvasPage from './ProvasPage'
+import ProvasPage, { buildExamPrintHtml } from './ProvasPage'
 
 const mocks = vi.hoisted(() => ({ post: vi.fn(), submissions: [] }))
 
@@ -51,5 +51,20 @@ describe('Provas do aluno · média', () => {
     expect(materia.previousSibling).toHaveTextContent('8,5')
     expect(screen.getByText('Em revisão')).toBeInTheDocument()
     expect(screen.getByText('Melhor nota').parentElement).toHaveTextContent('10,0')
+  })
+})
+
+describe('Provas do aluno · impressão da prova', () => {
+  it('[UC-NOTAS-003] a nota impressa sai com vírgula e a questão com acento', () => {
+    // Antes a impressão mostrava "Nota 7.5".
+    const detail = { gradePublished: true, score: 75, correctCount: 3, totalCount: 4, examKey: 'Avaliacao_FUTEC_1', assignedVersion: 'A' }
+    const questions = [{ number: 1, text: 'Enunciado', alternatives: [{ letter: 'A', text: 'Um' }, { letter: 'B', text: 'Dois' }] }]
+    const answers = new Map([[1, { studentChoice: 'B', correctAnswer: 'B', isCorrect: true }]])
+    const html = buildExamPrintHtml(detail, questions, answers)
+    expect(html).toContain('<span>Nota</span><b>7,5</b>')
+    expect(html).not.toContain('7.5')
+    expect(html).toContain('Questão 1')
+    // Nota não publicada nunca aparece na impressão.
+    expect(buildExamPrintHtml({ ...detail, gradePublished: false }, questions, answers)).toContain('<span>Nota</span><b>—</b>')
   })
 })

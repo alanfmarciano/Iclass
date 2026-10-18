@@ -555,6 +555,42 @@ function recordGradeAudit(memory, { req, actor, submission, action, field = 'Not
     return entry;
 }
 
+// Aluno excluído (delete-student): as cópias das notas dele na lixeira
+// (auditLogs[].details.deletedSubmission) perdem nome, e-mail, matrícula e o
+// resto do cadastro que a entrega online copiava; ficam a prova, a nota, os
+// acertos, as respostas e o curso/turma, para a estatística. A cópia anonimizada
+// não volta para Resultados (não há a quem devolver). Devolve quantas mudaram.
+const ANONYMIZED_STUDENT_NAME = 'Aluno excluído';
+const PERSONAL_SUBMISSION_FIELDS = ['studentEmail', 'studentName', 'studentMatricula', 'matricula', 'nomeSocial', 'email', 'name'];
+
+function anonymizeDeletedGradeCopies(memory, email, { at = new Date().toISOString() } = {}) {
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!memory || !normalized || !Array.isArray(memory.auditLogs)) return 0;
+    let changed = 0;
+    memory.auditLogs.forEach(entry => {
+        const copy = entry && entry.details && entry.details.deletedSubmission;
+        if (!copy || typeof copy !== 'object' || copy.anonymized === true) return;
+        const student = copy.student && typeof copy.student === 'object' ? copy.student : {};
+        const copyEmail = String(student.email || copy.studentEmail || '').trim().toLowerCase();
+        // A troca de e-mail antiga renomeava só o studentEmail da auditoria.
+        const auditEmail = String(entry.studentEmail || '').trim().toLowerCase();
+        if (copyEmail !== normalized && auditEmail !== normalized) return;
+        const anonymized = { ...copy };
+        PERSONAL_SUBMISSION_FIELDS.forEach(field => { delete anonymized[field]; });
+        anonymized.student = {
+            name: ANONYMIZED_STUDENT_NAME,
+            email: '',
+            courseId: student.courseId || copy.courseId || null,
+            studentClass: student.studentClass || copy.studentClass || '',
+        };
+        anonymized.anonymized = true;
+        anonymized.anonymizedAt = at;
+        entry.details = { ...entry.details, deletedSubmission: anonymized };
+        changed += 1;
+    });
+    return changed;
+}
+
 // "Avaliação X: 7,0 (7/10 acertos)" para os textos de auditoria.
 function describeSubmissionGrade(submission, title) {
     const grade = formatGradeBR(submission?.score);
@@ -584,11 +620,13 @@ function describeExamAudit(entry) {
     const join = (...parts) => parts.filter(Boolean).join(' · ');
     switch (entry.type) {
         case 'exam_application_finished':
+            // Sem prova em andamento no encerramento, não há o que dizer (antes saía
+            // "0 tentativas em andamento descartadas").
             return {
                 title: 'Aplicação encerrada',
-                detail: details.policy === 'submit'
+                detail: details.policy === 'submit' && Number(details.submitted) > 0
                     ? `${countLabel(details.submitted, 'prova em andamento enviada', 'provas em andamento enviadas')} pelo professor`
-                    : (details.policy === 'discard' ? countLabel(details.discarded, 'tentativa em andamento descartada', 'tentativas em andamento descartadas') : ''),
+                    : (details.policy === 'discard' && Number(details.discarded) > 0 ? countLabel(details.discarded, 'tentativa em andamento descartada', 'tentativas em andamento descartadas') : ''),
             };
         case 'exam_question_annulled':
             return {
@@ -659,12 +697,14 @@ function buildApplicationAuditTrail(application, auditLogs = [], { students = []
 }
 
 module.exports = {
+    ANONYMIZED_STUDENT_NAME,
     CSV_BOM,
     GRADE_MAX,
     MANUAL_TYPES,
     buildClassGradebook,
     buildCsv,
     buildGradeGroups,
+    anonymizeDeletedGradeCopies,
     buildApplicationAuditTrail,
     buildStudentReportModules,
     createResolvedGroupKey,

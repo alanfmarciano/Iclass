@@ -572,7 +572,8 @@ export default function ResultadosPage() {
   async function exportCsv(row) {
     const studentClass = row.studentClass || row.student?.studentClass
     if (!studentClass || !row.examKey) return toast.error('Registro sem turma/prova para exportar')
-    const query = new URLSearchParams({ courseId: activeCourseId || '' })
+    // O servidor exige o curso (turmas homônimas em cursos diferentes).
+    const query = new URLSearchParams({ courseId: activeCourseId || row.courseId || row.student?.courseId || '' })
     if (row.applicationId) query.set('applicationId', row.applicationId)
     try {
       await downloadFile(`/api/admin/export-grades/${encodeURIComponent(studentClass)}/${encodeURIComponent(row.examKey)}?${query}`, `notas_${studentClass}_${row.examKey}.csv`)

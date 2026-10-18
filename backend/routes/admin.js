@@ -68,6 +68,7 @@ const {
     scoreFromCounts,
     scoreFromGrade,
     structureExamIndex,
+    anonymizeDeletedGradeCopies,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const {
@@ -348,7 +349,9 @@ router.post('/api/admin/delete-student', (req, res) => {
         if (db.memory.annotations) delete db.memory.annotations[normalizedEmail];
         if (db.memory.sessions) delete db.memory.sessions[normalizedEmail];
         // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
-        // certificados, logs de prova e de login). O log de auditoria é mantido como histórico.
+        // certificados, logs de prova e de login). O log de auditoria é mantido como histórico,
+        // mas as cópias das notas na lixeira ficam sem nome, e-mail e matrícula (só prova e nota).
+        anonymizeDeletedGradeCopies(db.memory, normalizedEmail);
         const ownedBy = item => item && String(item.studentEmail || item.email || '').toLowerCase() === normalizedEmail;
         ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs', 'forum']
             .forEach(collection => { if (Array.isArray(db.memory[collection])) db.memory[collection] = db.memory[collection].filter(item => !ownedBy(item)); });
@@ -678,6 +681,9 @@ function registeredStudentByEmail(email) {
 // studentEmail da auditoria, então ele vale quando o e-mail da cópia saiu do cadastro.
 function deletedCopyWithCurrentEmail(entry) {
     const copy = entry.details.deletedSubmission;
+    // Cópia anonimizada (aluno excluído) não ganha de volta o e-mail da auditoria,
+    // nem se outra conta for criada com ele.
+    if (copy.anonymized === true) return copy;
     const copyEmail = String(copy.student?.email || copy.studentEmail || '').trim().toLowerCase();
     const auditEmail = String(entry.studentEmail || '').trim().toLowerCase();
     if (!auditEmail || auditEmail === copyEmail || registeredStudentByEmail(copyEmail) || !registeredStudentByEmail(auditEmail)) return copy;
@@ -713,7 +719,7 @@ router.get('/api/admin/submissions/deleted', (req, res) => {
                 grade: formatGradeBR(copy.score) || null,
                 gradePublished: copy.gradePublished === true,
                 timestamp: copy.timestamp || null,
-                canRestore: !!student,
+                canRestore: !!student && copy.anonymized !== true,
             };
         }).sort((a, b) => Number(b.deletedAt || 0) - Number(a.deletedAt || 0));
         res.json({ success: true, items });
@@ -734,6 +740,7 @@ router.post('/api/admin/submissions/restore', (req, res) => {
         if (!deletedGradeEntries().some(item => item.id === entry.id)) {
             return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
         }
+        if (copy.anonymized === true) return res.status(409).json({ error: 'O aluno foi excluído e a nota ficou sem identificação; ela não pode voltar.' });
         const student = registeredStudentByEmail(copy.student?.email || copy.studentEmail);
         if (!student) return res.status(409).json({ error: 'O aluno não está mais no cadastro; a nota não pode voltar.' });
 
@@ -2579,7 +2586,7 @@ router.put('/api/admin/material/:key', (req, res) => {
             }
             
             // A sessão do instrutor nunca fica gravada nos links de imagem (UXA-X2).
-            fs.writeFileSync(filePath, stripFileAccessTokens(markdownText), 'utf8');
+            fs.writeFileSync(filePath, stripFileAccessTokens(markdownText, { ownHosts: [req.get('host')] }), 'utf8');
             recordAcademicAudit(req, matchedAdmin, 'content_material_updated', { courseId, className: studentClass, key, scope }, null, { affectedClasses });
             db.save();
             const resolved = courseId ? effectiveStructure(courseId, studentClass) : null;
@@ -3989,6 +3996,9 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
         const courseId = String(req.query.courseId || '').trim();
         const applicationId = String(req.query.applicationId || '').trim();
         if (!studentClass || !examKey) return res.status(400).json({ error: 'Turma e prova são obrigatórias.' });
+        // Sem o curso, registros antigos sem curso de uma turma homônima de outro curso
+        // entravam na planilha: o curso é obrigatório, como no quadro de notas.
+        if (!courseId) return res.status(400).json({ error: 'Curso é obrigatório para exportar as notas.' });
         if (!adminCanAccessClass(matchedAdmin, studentClass, courseId)) return res.status(403).json({ error: 'Turma não autorizada para esta conta.' });
 
         const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), gradeScope(courseId, studentClass))
@@ -4013,7 +4023,8 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
             sub.scoreInvalid ? 'nota inválida' : formatGradeBR(sub.score),
             sub.resultStatus === 'archived' ? 'Desconsiderada' : (sub.countsTowardResult ? 'Sim' : 'Não'),
             formatGradeBR(sub.consolidatedScore),
-            sub.gradePublished === true ? 'Sim' : 'Não',
+            // Nota inválida não é mostrada ao aluno nem entra na média, mesmo marcada como publicada.
+            sub.scoreInvalid ? 'Não (nota inválida)' : (sub.gradePublished === true ? 'Sim' : 'Não'),
             formatDateTimeBR(sub.timestamp || sub.submittedAt),
         ]);
 

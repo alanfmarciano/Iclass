@@ -208,7 +208,7 @@ router.get('/:key.md', async (req, res, next) => {
         }
         try {
             // Links antigos com a sessão de outro instrutor gravada saem limpos (UXA-X2).
-            const content = stripStoredAccessTokens(await fs.promises.readFile(filePath, 'utf8'));
+            const content = stripStoredAccessTokens(await fs.promises.readFile(filePath, 'utf8'), { ownHosts: [req.get('host')] });
             res.type('text/markdown').send(content);
         } catch (err) {
             console.error('Erro ao ler apostila:', err && err.message, 'filePath:', filePath);

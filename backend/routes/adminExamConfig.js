@@ -270,7 +270,7 @@ function normalizeLiveQuestion(payload = {}) {
     let correctAnswer = String(payload.correctAnswer || '').toUpperCase();
     if (!correctAnswer) correctAnswer = alternatives.find(alternative => alternative.isCorrect)?.letter || '';
     alternatives.forEach(alternative => { alternative.isCorrect = alternative.letter === correctAnswer; });
-    if (!text) throw Object.assign(new Error('O enunciado da questao e obrigatorio.'), { status: 400 });
+    if (!text) throw Object.assign(new Error('O enunciado da questão é obrigatório.'), { status: 400 });
     if (alternatives.length < 2) throw Object.assign(new Error('Informe pelo menos duas alternativas.'), { status: 400 });
     if (!alternatives.some(alternative => alternative.letter === correctAnswer)) {
         throw Object.assign(new Error('Selecione uma alternativa correta valida.'), { status: 400 });
@@ -280,9 +280,9 @@ function normalizeLiveQuestion(payload = {}) {
 
 function applicationForAdminRequest(applicationId) {
     const application = findExamApplication(db.memory.examApplications, applicationId);
-    if (!application) throw Object.assign(new Error('Aplicacao de prova nao encontrada.'), { status: 404 });
+    if (!application) throw Object.assign(new Error('Aplicação de prova não encontrada.'), { status: 404 });
     const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
-    if (!cls) throw Object.assign(new Error('Turma da aplicacao nao encontrada.'), { status: 404 });
+    if (!cls) throw Object.assign(new Error('Turma da aplicação não encontrada.'), { status: 404 });
     return { application, cls };
 }
 
@@ -338,7 +338,7 @@ function createAdminExamConfigRouter() {
     router.get('/api/admin/exam-applications/:applicationId/finish-summary', (req, res) => {
         validateAdmin(req, res, () => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
-            if (!application) return res.status(404).json({ error: 'Aplicacao de prova nao encontrada.' });
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
             res.json({ success: true, summary: finishSummary(application) });
         });
     });
@@ -375,7 +375,7 @@ function createAdminExamConfigRouter() {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
-            if (!cls) return res.status(404).json({ error: 'Turma da aplicacao nao encontrada.' });
+            if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });
             let processedFinish = null;
             if (req.body.action === 'finish' || req.body.action === 'stop') {
                 const summary = finishSummary(application);
@@ -489,10 +489,10 @@ function createAdminExamConfigRouter() {
                 const { application, cls } = applicationForAdminRequest(req.query.applicationId);
                 if (application.studentClass.toLowerCase() !== String(req.params.class || '').trim().toLowerCase()
                     || application.examKey !== String(req.params.examKey || '').trim()) {
-                    return res.status(404).json({ error: 'Aplicacao nao encontrada para a turma e prova informadas.' });
+                    return res.status(404).json({ error: 'Aplicação não encontrada para a turma e prova informadas.' });
                 }
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
-                    return res.status(403).json({ error: 'Aplicacao fora do escopo desta conta.' });
+                    return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
                 const openReports = (application.questionReports || []).filter(report => report.status === 'open');
                 const byQuestion = new Map();
@@ -536,11 +536,11 @@ function createAdminExamConfigRouter() {
             try {
                 const { application } = applicationForAdminRequest(req.body.applicationId);
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
-                    return res.status(403).json({ error: 'Aplicacao fora do escopo desta conta.' });
+                    return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
                 const reportIds = Array.isArray(req.body.reportIds) ? req.body.reportIds : null;
                 const number = Number(req.body.questionNumber);
-                if (!reportIds && !Number.isFinite(number)) return res.status(400).json({ error: 'Informe a questao ou as contestacoes.' });
+                if (!reportIds && !Number.isFinite(number)) return res.status(400).json({ error: 'Informe a questão ou as contestações.' });
                 const updated = markQuestionReports(application, number, 'reviewed', adminActor(req), reportIds);
                 recordExamAudit('exam_question_reports_reviewed', application, adminActor(req), { questionNumber: number, reportIds, updated });
                 await db.save();
@@ -556,10 +556,10 @@ function createAdminExamConfigRouter() {
             try {
                 const { application, cls } = applicationForAdminRequest(req.body.applicationId);
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
-                    return res.status(403).json({ error: 'Aplicacao fora do escopo desta conta.' });
+                    return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
                 if (!['waiting', 'running', 'paused'].includes(application.status)) {
-                    return res.status(409).json({ error: 'A aplicacao precisa estar ativa para corrigir a questao ao vivo.' });
+                    return res.status(409).json({ error: 'A aplicação precisa estar ativa para corrigir a questão ao vivo.' });
                 }
                 const number = Number(req.body.questionNumber);
                 const normalized = normalizeLiveQuestion(req.body.question || {});
@@ -576,7 +576,7 @@ function createAdminExamConfigRouter() {
                         };
                     });
                 });
-                if (updatedSnapshots === 0) return res.status(404).json({ error: 'Questao nao encontrada nesta aplicacao.' });
+                if (updatedSnapshots === 0) return res.status(404).json({ error: 'Questão não encontrada nesta aplicação.' });
                 application.updatedAt = new Date().toISOString();
                 markQuestionReports(application, number, 'corrected', adminActor(req));
                 const onlineConfig = syncApplicationConfig(cls, application);
@@ -596,11 +596,11 @@ function createAdminExamConfigRouter() {
             try {
                 const { application, cls } = applicationForAdminRequest(req.body.applicationId);
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
-                    return res.status(403).json({ error: 'Aplicacao fora do escopo desta conta.' });
+                    return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
                 const number = Number(req.body.questionNumber);
                 const mode = req.body.mode === 'ponto_para_todos' ? 'ponto_para_todos' : 'remover_do_total';
-                if (!liveQuestion(application, number)) return res.status(404).json({ error: 'Questao nao encontrada nesta aplicacao.' });
+                if (!liveQuestion(application, number)) return res.status(404).json({ error: 'Questão não encontrada nesta aplicação.' });
                 if (!Array.isArray(application.annulledQuestions)) application.annulledQuestions = [];
                 const existing = application.annulledQuestions.find(item => Number(item.questionNumber) === number);
                 const entry = {
@@ -636,22 +636,22 @@ function createAdminExamConfigRouter() {
             try {
                 const { application, cls } = applicationForAdminRequest(req.body.applicationId);
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
-                    return res.status(403).json({ error: 'Aplicacao fora do escopo desta conta.' });
+                    return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
                 if (application.status !== 'running') {
-                    return res.status(409).json({ error: 'A prova precisa estar em andamento para substituir uma questao.' });
+                    return res.status(409).json({ error: 'A prova precisa estar em andamento para substituir uma questão.' });
                 }
                 const activeStates = applicationStateEntries(application.id).map(([, state]) => state).filter(state => state.startedAt);
                 const remainingValues = activeStates
                     .filter(state => Number(state.deadlineAt) > 0)
                     .map(state => Math.max(0, Math.ceil((Number(state.deadlineAt) - Date.now()) / 1000)));
                 if (remainingValues.length && Math.min(...remainingValues) < 300) {
-                    return res.status(409).json({ error: 'Nao e possivel substituir: um ou mais alunos tem menos de 5 minutos restantes.' });
+                    return res.status(409).json({ error: 'Não é possível substituir: um ou mais alunos têm menos de 5 minutos restantes.' });
                 }
                 const originalNumber = Number(req.body.questionNumber);
-                if (!liveQuestion(application, originalNumber)) return res.status(404).json({ error: 'Questao original nao encontrada.' });
+                if (!liveQuestion(application, originalNumber)) return res.status(404).json({ error: 'Questão original não encontrada.' });
                 const bank = (db.memory.questionBank || []).find(question => question.key === req.body.bankQuestionKey);
-                if (!bank) return res.status(404).json({ error: 'Questao do banco nao encontrada.' });
+                if (!bank) return res.status(404).json({ error: 'Questão do banco não encontrada.' });
                 const extraMinutes = Math.max(0, Math.min(30, Number(req.body.extraMinutes) || 0));
                 const allNumbers = (application.versionSnapshots || []).flatMap(snapshot =>
                     (snapshot.questions || []).map((question, index) => questionNumber(question, index)).filter(Number.isFinite));
@@ -678,7 +678,7 @@ function createAdminExamConfigRouter() {
                     application.annulledQuestions.push({
                         questionNumber: originalNumber,
                         mode: 'remover_do_total',
-                        reason: 'Questao substituida durante a aplicacao.',
+                        reason: 'Questão substituída durante a aplicação.',
                         by: adminActor(req),
                         at: new Date().toISOString(),
                     });
@@ -694,7 +694,7 @@ function createAdminExamConfigRouter() {
                 markQuestionReports(application, originalNumber, 'replaced', adminActor(req));
                 const onlineConfig = syncApplicationConfig(cls, application);
                 const regraded = regradeApplicationSubmissions(application, cls, { req, reason: `troca da questão ${originalNumber}` });
-                pushExamMessage(application, adminActor(req), `A questao ${originalNumber} foi anulada e uma questao adicional foi inserida no final da prova.${extraMinutes ? ` Foram acrescentados ${extraMinutes} minutos.` : ''}`);
+                pushExamMessage(application, adminActor(req), `A questão ${originalNumber} foi anulada e uma questão adicional foi inserida no final da prova.${extraMinutes ? ` Foram acrescentados ${extraMinutes} minutos.` : ''}`);
                 recordExamAudit('exam_question_replaced', application, adminActor(req), {
                     questionNumber: originalNumber,
                     replacementNumber,
