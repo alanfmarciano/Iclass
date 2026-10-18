@@ -12,6 +12,7 @@ const {
     findOpenAttemptState,
 } = require('../utils/examApplications.js');
 const { attemptOverdueMs } = require('../utils/examDeadline.js');
+const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 
@@ -470,6 +471,11 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
         const cfg = cls && cls.onlineExamConfigs ? cls.onlineExamConfigs[examKey.trim()] : null;
         const application = applicationForClass(cls, examKey.trim(), applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+        // Aplicação encerrada ou cancelada não abre tentativa nova: validar o token ali
+        // criava uma tentativa sem início que bagunçava o encerramento já decidido.
+        if (application && !OPEN_APPLICATION_STATUSES.has(application.status)) {
+            return res.status(409).json({ error: 'Esta aplicação da prova já foi encerrada.', applicationClosed: true });
+        }
         const requiredToken = normalizeExamToken(cfg && cfg.accessToken);
         const requiredTokenHash = application?.accessTokenHash || cfg?.accessTokenHash || null;
 

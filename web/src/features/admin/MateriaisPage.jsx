@@ -77,7 +77,7 @@ function examRowHint(status) {
 }
 
 function answerKeyLockHint(status) {
-  if (status === 'prepared') return 'Bloqueado: a prova tem uma aplicação preparada. Libere depois de aplicá-la (ou finalizá-la) no Monitor.'
+  if (status === 'prepared') return 'Bloqueado: a prova tem uma aplicação preparada. Libere depois que ela for encerrada no Monitor.'
   return 'Disponível depois que a aplicação da prova for encerrada no Monitor.'
 }
 

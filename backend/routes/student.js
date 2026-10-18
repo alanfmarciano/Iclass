@@ -17,7 +17,7 @@ const {
     sanitizeSubmissionForStudent,
     sanitizeOnlineExamConfigsForStudent,
     canStudentViewAnswerKey,
-    getReleasedItemsForClass,
+    getStudentReleasedItems,
     findClassByNameAndCourse,
     initializeExamState,
     accessibilityExtraMinutes,
@@ -334,7 +334,7 @@ router.get('/api/status', validateAnySession, (req, res) => {
     res.json({
         examConfigs: cls.examConfigs || {},
         onlineExamConfigs: sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs),
-        releasedItems: getReleasedItemsForClass(cls, studentEmail),
+        releasedItems: getStudentReleasedItems(cls, studentEmail),
         releaseMeta: cls.releaseMeta || {}
     });
 });
@@ -446,7 +446,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         }
 
         const sanitizedConfigs = sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs);
-        const releasedItems = getReleasedItemsForClass(cls, email);
+        const releasedItems = getStudentReleasedItems(cls, email);
 
         let state = null;
         let messages = [];
@@ -561,12 +561,17 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                         && submission.resultStatus !== 'invalidated')
                     .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
                 const savedByInstructor = ownDeliveries.some(submission => submission.submissionSource === 'instructor_finish');
-                const resolution = application.finishResolution || {};
-                const policyDiscard = resolution.policy === 'discard';
+                // A decisão do encerramento e as de sobras resolvidas depois (histórico):
+                // quem teve a tentativa desconsiderada continua vendo o aviso.
+                const discardResolutions = [application.finishResolution, ...(Array.isArray(application.previousFinishResolutions) ? application.previousFinishResolutions : [])]
+                    .filter(resolution => resolution && resolution.policy === 'discard');
+                const policyDiscard = discardResolutions.length > 0;
                 // Encerramentos gravados a partir desta versão listam as tentativas em andamento
                 // que foram desconsideradas; os antigos não, e aí só vale a tentativa que este
                 // navegador conhecia e que não virou entrega.
-                const discardedList = Array.isArray(resolution.discardedAttempts) ? resolution.discardedAttempts : null;
+                const discardedList = discardResolutions.every(resolution => Array.isArray(resolution.discardedAttempts))
+                    ? discardResolutions.flatMap(resolution => resolution.discardedAttempts)
+                    : null;
                 const knownAttemptDiscarded = policyDiscard && !!knownAttemptId && !attemptOutcome
                     && (!discardedList || discardedList.some(item => item?.attemptId === knownAttemptId));
                 const studentDiscarded = discardedList
@@ -1662,7 +1667,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     const course = (db.memory.courses || []).find(item => item.id === courseId) || null;
     const structure = effectiveStructure(courseId, className)?.structure || [];
     const completed = db.memory.progress[email] || {};
-    const released = cls ? getReleasedItemsForClass(cls, email) : {};
+    const released = cls ? getStudentReleasedItems(cls, email) : {};
     const submissions = readJSON(DB_SUBMISSIONS_FILE)
         .filter(item => item.student?.email && item.student.email.toLowerCase() === email)
         .filter(item => (!courseId || !item.student?.courseId || item.student.courseId === courseId)

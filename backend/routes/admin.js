@@ -2932,6 +2932,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
                 return res.status(error.status || 400).json({ error: error.message });
             }
             if (plan.unchanged) {
+                if (plan.droppedLeftovers) db.save();
                 return res.json({ success: true, unchanged: true, application, config: currentConfig });
             }
             if (plan.resolve) {

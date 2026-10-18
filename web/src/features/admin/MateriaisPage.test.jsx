@@ -101,7 +101,7 @@ describe('MateriaisPage', () => {
     const row = screen.getByTestId('exam-row-Avaliacao_U1')
     expect(within(row).getByText(/Preparada e ainda sem alunos/)).toBeVisible()
     expect(within(row).queryByText(/salvando ou desconsiderando/)).not.toBeInTheDocument()
-    expect(screen.getByText(/a prova tem uma aplicação preparada/)).toBeVisible()
+    expect(screen.getByText('Bloqueado: a prova tem uma aplicação preparada. Libere depois que ela for encerrada no Monitor.')).toBeVisible()
     await user.click(within(row).getByRole('button', { name: 'Abrir Monitor' }))
     expect(mocks.navigate).toHaveBeenCalledWith(expect.stringMatching(/applicationId=app-prep/))
   })

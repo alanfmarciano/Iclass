@@ -106,6 +106,8 @@ describe('SistemaPage · manutenção', () => {
     expect(await screen.findByText(/Prova W/)).toBeVisible()
     expect(screen.getByText(/4 tentativas em andamento/)).toBeVisible()
     expect(screen.getByText(/6 alunos desconectados/)).toBeVisible()
+    // O backup é de todos os dados: restaurá-lo volta todas as turmas, e isso fica dito.
+    expect(screen.getByText(/a restauração volta todas as turmas ao momento do reset/)).toBeVisible()
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }))

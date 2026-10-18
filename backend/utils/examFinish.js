@@ -188,22 +188,34 @@ function syncClassWithApplication(cls, application) {
 
 const CLOSING_STATUSES = new Set(['finished', 'cancelled']);
 
+// Numa aplicação já encerrada, a tentativa que nem começou (aluno que só validou o
+// token ou abriu as instruções depois do encerramento) não tem resposta a decidir: é
+// descartada sem tocar na decisão gravada no encerramento. Devolve quantas saíram.
+function dropUnstartedLeftovers(memory, application) {
+    if (!application || !CLOSING_STATUSES.has(application.status)) return 0;
+    const unstarted = applicationStateEntries(memory, application.id).filter(([, state]) => !state.startedAt);
+    unstarted.forEach(([key]) => { delete memory.studentExamState[key]; });
+    return unstarted.length;
+}
+
 // O que uma ação de controle (Monitor ou controle antigo por turma) faz com as
 // tentativas. A transição é conferida ANTES de mexer em qualquer coisa: ação
 // impossível lança o erro e nada muda. Repetir o encerramento de uma aplicação já
-// encerrada, sem tentativa pendente, não muda nada (unchanged): a decisão gravada no
-// primeiro encerramento fica. resolve diz se as tentativas precisam ser resolvidas.
+// encerrada, sem tentativa começada pendente, não muda nada (unchanged): a decisão
+// gravada no primeiro encerramento fica. resolve diz se as tentativas precisam ser
+// resolvidas; droppedLeftovers conta as sobras sem início descartadas (para gravar).
 function planControlAction(memory, application, action) {
     const check = checkExamApplicationTransition(application, action);
     const closing = CLOSING_STATUSES.has(check.target);
+    const droppedLeftovers = closing && check.unchanged ? dropUnstartedLeftovers(memory, application) : 0;
     const pending = closing ? applicationStateEntries(memory, application.id).length : 0;
-    if (closing && check.unchanged && pending === 0) return { ...check, closing, resolve: false, unchanged: true };
+    if (closing && check.unchanged && pending === 0) return { ...check, closing, resolve: false, unchanged: true, droppedLeftovers };
     const resolve = closing && (
         (check.target === 'finished' && !check.unchanged)
         || ACTIVE_APPLICATION_STATUSES.has(application.status)
         || pending > 0
     );
-    return { ...check, closing, resolve, unchanged: false };
+    return { ...check, closing, resolve, unchanged: false, droppedLeftovers };
 }
 
 // Encerra de vez uma aplicação em andamento: resolve as tentativas (com a política
@@ -232,6 +244,7 @@ module.exports = {
     activeExamApplication,
     applicationStateEntries,
     classExamApplications,
+    dropUnstartedLeftovers,
     finishApplication,
     finishSummary,
     planControlAction,

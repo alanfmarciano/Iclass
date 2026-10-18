@@ -22,6 +22,27 @@ const TRANSITIONS = Object.freeze({
     cancelled: new Set(),
 });
 
+// Como cada status aparece nas mensagens ao professor ("A aplicação está encerrada e
+// não pode ser cancelada."): nunca o nome interno em inglês.
+const STATUS_LABELS = Object.freeze({
+    draft: 'em rascunho',
+    prepared: 'preparada',
+    waiting: 'em sala de espera',
+    running: 'em andamento',
+    paused: 'pausada',
+    finished: 'encerrada',
+    cancelled: 'cancelada',
+});
+const TARGET_LABELS = Object.freeze({
+    draft: 'devolvida a rascunho',
+    prepared: 'preparada de novo',
+    waiting: 'colocada em sala de espera',
+    running: 'iniciada',
+    paused: 'pausada',
+    finished: 'encerrada',
+    cancelled: 'cancelada',
+});
+
 function clone(value) {
     return value == null ? value : JSON.parse(JSON.stringify(value));
 }
@@ -80,6 +101,9 @@ function createExamApplication({
         versionSnapshots: clone(Array.isArray(config.versionSnapshots) ? config.versionSnapshots : []),
         contentVersion: config.updatedAt || timestamp,
         accessTokenHash: config.accessTokenHash || null,
+        // Marca da versão do token (muda a cada troca): a aba que guardou o token em
+        // texto puro percebe que ele foi trocado em outra tela e deixa de mostrá-lo.
+        accessTokenIssuedAt: config.accessTokenHash ? (config.accessTokenIssuedAt || timestamp) : null,
         tokenEnabled: config.tokenEnabled === true || !!config.accessTokenHash || !!config.accessToken,
         globalTimeAdjustment: Number(config.globalTimeAdjustment || 0),
         studentAdjustments: clone(config.studentAdjustments || {}),
@@ -287,7 +311,7 @@ function checkExamApplicationTransition(application, action) {
     if (!APPLICATION_STATUSES.includes(target)) throw Object.assign(new Error('Estado de aplicação inválido.'), { status: 400 });
     if (current === target) return { current, target, unchanged: true };
     if (!TRANSITIONS[current] || !TRANSITIONS[current].has(target)) {
-        throw Object.assign(new Error(`Não é possível alterar a aplicação de ${current} para ${target}.`), { status: 409 });
+        throw Object.assign(new Error(`A aplicação está ${STATUS_LABELS[current] || current} e não pode ser ${TARGET_LABELS[target] || target}.`), { status: 409 });
     }
     return { current, target, unchanged: false };
 }

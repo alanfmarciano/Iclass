@@ -18,6 +18,7 @@ import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
 import { deliveryLabel, deliveryTone } from './attemptDelivery'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
+import { controlResultMessage } from './applicationControl'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, examLeftLabel, focusLogLabel, isSuspiciousItem, suspiciousCount } from './monitorLogs'
 
@@ -393,6 +394,9 @@ export default function MonitorPage() {
   const [examKey, setExamKey] = useState('')
   const [applicationId, setApplicationId] = useState('')
   const [applications, setApplications] = useState([])
+  // Turma cujas aplicações já chegaram do servidor: antes disso a lista vazia não quer
+  // dizer "sem aplicação" e a aplicação pedida no link (Materiais, Provas) não se perde.
+  const [applicationsLoadedFor, setApplicationsLoadedFor] = useState('')
   const [applicationCatalog, setApplicationCatalog] = useState([])
   const [applicationChooserOpen, setApplicationChooserOpen] = useState(false)
   const [applicationChooserLoading, setApplicationChooserLoading] = useState(false)
@@ -433,6 +437,12 @@ export default function MonitorPage() {
     .sort((a, b) => (ACTIVE_EXAM_STATUS_PRIORITY[a.status] ?? 99) - (ACTIVE_EXAM_STATUS_PRIORITY[b.status] ?? 99) || applicationTime(b) - applicationTime(a)), [activeApplicationsRequest.data])
   const selectedClass = useMemo(() => courseClasses.find((c) => c.name === className && (!courseId || c.courseId === courseId)), [courseClasses, className, courseId])
   const selectedApplication = useMemo(() => applications.find((item) => item.id === applicationId) || null, [applications, applicationId])
+  // Versão atual do token no servidor (a lista da turma é consultada a cada 5 s): se
+  // outro navegador trocou o token, o painel deixa de mostrar o guardado nesta aba.
+  const tokenIssuedAt = useMemo(() => {
+    const live = (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId)
+    return (live || selectedApplication)?.accessTokenIssuedAt || ''
+  }, [activeApplicationsRequest.data, applicationId, selectedApplication])
   const selectedConfig = useMemo(() => {
     const current = selectedClass?.onlineExamConfigs?.[examKey] || {}
     if (!selectedApplication) return current
@@ -516,14 +526,21 @@ export default function MonitorPage() {
       return () => { cancelled = true }
     }
     const params = new URLSearchParams({ studentClass: selectedClass.name, courseId: selectedClass.courseId || courseId })
-    api.get(`/api/admin/exam-applications?${params.toString()}`)
-      .then((response) => { if (!cancelled) setApplications(response.applications || []) })
+    const loadedKey = params.toString()
+    api.get(`/api/admin/exam-applications?${loadedKey}`)
+      .then((response) => {
+        if (cancelled) return
+        setApplications(response.applications || [])
+        setApplicationsLoadedFor(loadedKey)
+      })
       .catch((error) => { if (!cancelled) setErr(error) })
     return () => { cancelled = true }
   }, [selectedClass, courseId])
 
   useEffect(() => {
     if (!selectedClass) return
+    const classKey = new URLSearchParams({ studentClass: selectedClass.name, courseId: selectedClass.courseId || courseId }).toString()
+    if (applicationsLoadedFor !== classKey) return
     const selected = activeExamOptions.find((item) => item.application.id === applicationId)
     if (selected) {
       if (examKey !== selected.key) setExamKey(selected.key)
@@ -537,7 +554,7 @@ export default function MonitorPage() {
       setExamKey('')
       setRows([])
     }
-  }, [selectedClass, activeExamOptions, applicationId, examKey])
+  }, [selectedClass, activeExamOptions, applicationId, examKey, applicationsLoadedFor, courseId])
 
   useEffect(() => {
     setWaitMinutes(DEFAULT_WAITING_ROOM_MINUTES)
@@ -625,14 +642,10 @@ export default function MonitorPage() {
       if (response.application) {
         setApplications((items) => items.map((item) => item.id === response.application.id ? response.application : item))
       }
-      const messages = {
-        start: 'Prova iniciada. O aviso já está disponível para os alunos.',
-        resume: 'Prova retomada. O aviso aos alunos continua ativo.',
-        pause: 'Prova pausada. Os alunos verão o estado de pausa.',
-        waiting: 'Sala de espera aberta. Os alunos já podem entrar.',
-        adjust_waiting: 'Tempo da sala de espera ajustado.',
-      }
-      toast.success(messages[action] || `Ação concluída: ${action}`)
+      // Encerramento repetido (outra aba já encerrou): avisa que nada mudou.
+      const result = controlResultMessage(action, response)
+      if (result.tone === 'info') toast.info(result.text)
+      else toast.success(result.text)
       await refetchClasses(true)
       await activeApplicationsRequest.refetch(true)
       poll()
@@ -1112,7 +1125,7 @@ export default function MonitorPage() {
                     </p>
                   )}
                 </div>
-                <ApplicationTokenPanel applicationId={applicationId} requiresToken={!!selectedConfig.requiresToken} closed={applicationFinished || selectedConfig.status === 'cancelled'} legacyToken={selectedConfig.accessToken || ''} />
+                <ApplicationTokenPanel applicationId={applicationId} requiresToken={!!selectedConfig.requiresToken} closed={applicationFinished || selectedConfig.status === 'cancelled'} legacyToken={selectedConfig.accessToken || ''} tokenIssuedAt={tokenIssuedAt} />
               </div>
             </div>
           </Card>

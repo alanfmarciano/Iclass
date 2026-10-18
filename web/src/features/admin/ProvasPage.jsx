@@ -16,6 +16,8 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { FinishApplicationModal } from './FinishApplicationModal'
+import { rememberApplicationToken } from './ApplicationTokenPanel'
+import { controlResultMessage } from './applicationControl'
 import { ExamApplicationDetail } from './ExamApplicationDetail'
 import '../../styles/provas-board.css'
 import {
@@ -419,7 +421,7 @@ export default function ProvasPage() {
             maxAttempts: parsedMaxAttempts.value,
           },
         })
-        if (prepared.accessToken) sessionStorage.setItem(`exam-token:${prepared.application.id}`, prepared.accessToken)
+        rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
         toast.success('Aplicação preparada. Inicie pelo monitor quando a turma estiver pronta.')
         notifyPrepared(prepared)
         await loadExamState()
@@ -496,7 +498,7 @@ export default function ProvasPage() {
           maxAttempts: parsedMaxAttempts.value,
         },
       })
-      if (prepared.accessToken) sessionStorage.setItem(`exam-token:${prepared.application.id}`, prepared.accessToken)
+      rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
       toast.success('Nova aplicação preparada. Abrindo o Monitor Online.')
       notifyPrepared(prepared)
       setApplyHistory(null)
@@ -550,12 +552,12 @@ export default function ProvasPage() {
     if (!className || !courseId || !examKey) return
     setBusy(action)
     try {
-      if (activeApplication) {
-        await api.post(`/api/admin/exam-applications/${encodeURIComponent(activeApplication.id)}/control`, { action, ...extra })
-      } else {
-        await api.post('/api/admin/server-exam-control', { studentClass: className, courseId, examKey, action })
-      }
-      toast.success('Estado atualizado')
+      const response = activeApplication
+        ? await api.post(`/api/admin/exam-applications/${encodeURIComponent(activeApplication.id)}/control`, { action, ...extra })
+        : await api.post('/api/admin/server-exam-control', { studentClass: className, courseId, examKey, action })
+      const result = controlResultMessage(action, response)
+      if (result.tone === 'info') toast.info(result.text)
+      else toast.success(result.text)
       await loadExamState()
       return true
     } catch (e) {
@@ -1010,7 +1012,7 @@ export default function ProvasPage() {
                         <div className="flex items-center gap-2">
                           <span className="w-8 h-8 grid place-items-center rounded-md bg-success-soft text-success"><CheckCircle2 size={17} /></span>
                           <div>
-                            <h3 className="text-sm font-bold text-text">Aplicacao online</h3>
+                            <h3 className="text-sm font-bold text-text">Aplicação online</h3>
                             <p className="text-xs text-muted">Salvar, preparar e depois iniciar pelo monitor</p>
                           </div>
                         </div>
@@ -1037,7 +1039,7 @@ export default function ProvasPage() {
                         <div className="flex items-center gap-2">
                           <span className="w-8 h-8 grid place-items-center rounded-md bg-info-soft text-info"><Printer size={17} /></span>
                           <div>
-                            <h3 className="text-sm font-bold text-text">Aplicacao impressa</h3>
+                            <h3 className="text-sm font-bold text-text">Aplicação impressa</h3>
                             <p className="text-xs text-muted">Gerar prova e gabarito</p>
                           </div>
                         </div>

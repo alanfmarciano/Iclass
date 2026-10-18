@@ -352,6 +352,7 @@ function createAdminExamConfigRouter() {
             const actor = adminActor(req);
             application.accessTokenHash = hashExamToken(accessToken);
             application.updatedAt = new Date().toISOString();
+            application.accessTokenIssuedAt = application.updatedAt;
             application.updatedBy = actor;
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
             const classConfig = cls?.onlineExamConfigs?.[application.examKey];
@@ -362,7 +363,7 @@ function createAdminExamConfigRouter() {
             // O token nunca vai para a auditoria: só o registro de que foi trocado.
             recordExamAudit('exam_application_token_regenerated', application, actor, { status: application.status });
             await db.save();
-            res.json({ success: true, accessToken, applicationId: application.id });
+            res.json({ success: true, accessToken, accessTokenIssuedAt: application.accessTokenIssuedAt, applicationId: application.id });
         });
     });
 
@@ -415,6 +416,7 @@ function createAdminExamConfigRouter() {
                 return res.status(error.status || 400).json({ error: error.message });
             }
             if (plan.unchanged) {
+                if (plan.droppedLeftovers) await db.save();
                 return res.json({ success: true, unchanged: true, application, config: cls.onlineExamConfigs?.[application.examKey] || null, finish: null });
             }
             if (plan.resolve) {

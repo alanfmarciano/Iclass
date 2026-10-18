@@ -388,7 +388,7 @@ export default function SistemaPage() {
         </div>
       </Modal>
 
-      <Modal open={dialog === 'reset'} onClose={closeDialog} title={`Resetar sala · turma ${classLabel}`} description="Um backup dos dados (com as aplicações de prova) é salvo antes; desfazer exige restaurar esse backup."
+      <Modal open={dialog === 'reset'} onClose={closeDialog} title={`Resetar sala · turma ${classLabel}`} description="Um backup dos dados (com as aplicações de prova) é salvo antes do reset."
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!resetPlan || confirmText.trim().toUpperCase() !== 'RESETAR'} onClick={reset}>Confirmar reset</Button></>}>
         <div className="space-y-4">
           {previewError && <p className="text-sm text-danger">{previewError}</p>}
@@ -406,6 +406,7 @@ export default function SistemaPage() {
               <p className="text-text">{_plural(resetPlan.counts.sessions, 'aluno desconectado', 'alunos desconectados')} · {_plural(resetPlan.counts.examStates, 'estado de prova limpo', 'estados de prova limpos')} · {_plural(resetPlan.counts.messages, 'mensagem limpa', 'mensagens limpas')}.</p>
               {resetPlan.counts.keptInOtherExam > 0 && <p className="text-muted">{_plural(resetPlan.counts.keptInOtherExam, 'aluno continua conectado', 'alunos continuam conectados')} por estar fazendo prova em outra turma.</p>}
               <p className="text-muted">Outras turmas, conteúdos liberados, notas e logs de monitoramento não são afetados.</p>
+              <p className="text-xs text-warning">Desfazer exige restaurar esse backup, e a restauração volta todas as turmas ao momento do reset: entregas, notas e mudanças feitas depois, em qualquer turma, se perdem.</p>
             </div>
           )}
           {resetPlan && <TypedConfirm id="reset-confirm" word="RESETAR" value={confirmText} onChange={setConfirmText} />}

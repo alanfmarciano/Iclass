@@ -476,7 +476,8 @@ test('[UC-APLICACAO-001] repetir o encerramento não sobrescreve a decisão grav
         .send({ studentClass: classA, courseId, examKey, applicationId: application.id, action: 'finish' })
         .expect(200);
     // Ação impossível é recusada antes de mexer em qualquer coisa.
-    await control(application.id, { action: 'cancel', inProgressPolicy: 'discard' }).expect(409);
+    const impossible = await control(application.id, { action: 'cancel', inProgressPolicy: 'discard' }).expect(409);
+    assert.equal(impossible.body.error, 'A aplicação está encerrada e não pode ser cancelada.');
     assert.deepEqual(applicationOf(application.id).finishResolution, first);
     assert.equal(finishedAudits(), 1);
     assert.equal(db.memory.submissions.filter(item => item.attemptId === started.attemptId).length, 1);
@@ -513,10 +514,18 @@ test('[UC-APLICACAO-001] token perdido: o professor gera outro sem preparar de n
         .expect(200);
     assert.equal((await validate(ana, 'ABCDE')).body.valid, true);
 
+    const preparedIssuedAt = created.body.application.accessTokenIssuedAt;
+    assert.ok(preparedIssuedAt, 'a preparação marca a versão do token');
     const generated = await admin('post', `/api/admin/exam-applications/${applicationId}/access-token`).send({}).expect(200);
     assert.match(generated.body.accessToken, /^[A-Z]{5}$/);
+    await new Promise(resolve => setTimeout(resolve, 5));
     const chosen = await admin('post', `/api/admin/exam-applications/${applicationId}/access-token`).send({ accessToken: 'fghij' }).expect(200);
     assert.equal(chosen.body.accessToken, 'FGHIJ');
+    // A troca muda a marca da versão, que a outra aba vê na lista de aplicações do Monitor.
+    assert.notEqual(generated.body.accessTokenIssuedAt, preparedIssuedAt);
+    assert.notEqual(chosen.body.accessTokenIssuedAt, generated.body.accessTokenIssuedAt);
+    const listed = await admin('get', '/api/admin/exam-applications').query({ studentClass: classA, courseId, examKey }).expect(200);
+    assert.equal(listed.body.applications.find(item => item.id === applicationId).accessTokenIssuedAt, chosen.body.accessTokenIssuedAt);
     await admin('post', `/api/admin/exam-applications/${applicationId}/access-token`).send({ accessToken: 'AB1' }).expect(400);
 
     // A prova seguiu: mesma aplicação, ninguém perdeu a validação; o token antigo deixou de valer.
@@ -562,4 +571,124 @@ test('[UC-MANUT-001] resetar sala mantém conectado quem faz prova em outra turm
     resetSessions();
     await control(appB.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
     db.memory.students = db.memory.students.filter(student => student.email !== davi.email);
+});
+
+test('[UC-APLICACAO-001] aluno em duas turmas não vê o gabarito enquanto faz a mesma prova na outra turma', async () => {
+    const gabiA = { email: 'gabi@guards.local', token: 'token-gabi', studentClass: classA };
+    const gabiB = { ...gabiA, studentClass: classB };
+    db.memory.students.push({ name: 'Gabi', email: gabiA.email, status: 'Ativo', classes: [{ name: classA, courseId }, { name: classB, courseId }] });
+    resetSessions();
+    db.memory.sessions[gabiA.email] = { token: gabiA.token, lastSeen: Date.now(), ip: '127.0.0.1' };
+
+    // Prova feita na Turma A, nota publicada e gabarito liberado na Turma A.
+    const { application: appA } = await prepareAndStart(classA);
+    const startedA = await startAttempt(gabiA, appA.id);
+    await submit(gabiA, appA.id, startedA, { 1: 'A', 2: 'B' }).expect(200);
+    await control(appA.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    const delivered = db.memory.submissions.find(item => item.attemptId === startedA.attemptId);
+    await admin('post', '/api/admin/submissions/publish').send({ ids: [delivered.id], published: true }).expect(200);
+    await admin('post', '/api/admin/release-item').send({ studentClass: classA, courseId, itemKey: answerKey, released: true }).expect(200);
+    const viewA = async () => (await mySubmissions(gabiA)).body.submissions.find(item => item.id === delivered.id);
+    const statusA = async () => (await request(app)
+        .get('/api/status')
+        .set('x-session-token', gabiA.token)
+        .query({ studentClass: classA, courseId, studentEmail: gabiA.email })
+        .expect(200)).body.releasedItems[answerKey];
+    assert.equal((await viewA()).answerKeyReleased, true);
+    assert.equal(await statusA(), true);
+
+    // A mesma prova preparada e iniciada na Turma B: pela Turma A o gabarito some para ela.
+    const historyB = await createHistory(classB);
+    const preparedB = await prepare(classB, historyB).expect(201);
+    let view = await viewA();
+    assert.equal(view.answerKeyReleased, false);
+    assert.equal(view.gradedAnswers.some(answer => 'correctAnswer' in answer || 'isCorrect' in answer), false);
+    assert.equal(await statusA(), false);
+    const appB = (await control(preparedB.body.application.id, { action: 'start' }).expect(200)).body.application;
+    await startAttempt(gabiB, appB.id);
+    view = await viewA();
+    assert.equal(view.answerKeyReleased, false);
+    assert.equal(view.gradedAnswers.some(answer => 'correctAnswer' in answer || 'isCorrect' in answer), false);
+    assert.equal(view.examQuestions, undefined);
+    const sync = await request(app)
+        .get('/api/student/sync')
+        .set('x-session-token', gabiA.token)
+        .query({ email: gabiA.email, studentClass: classA, courseId })
+        .expect(200);
+    assert.equal(sync.body.releasedItems[answerKey], false);
+    // Quem só está na Turma A continua vendo o gabarito liberado para a turma dele.
+    const anaView = (await mySubmissions(students.ana)).body.submissions.find(item => item.examKey === examKey && item.answerKeyReleased);
+    assert.ok(anaView, 'colega só da Turma A mantém o gabarito liberado');
+
+    // Mesmo saindo da Turma B no cadastro, a tentativa dela ainda aberta mantém o bloqueio.
+    const gabiRecord = db.memory.students.find(student => student.email === gabiA.email);
+    gabiRecord.classes = [{ name: classA, courseId }];
+    assert.equal((await viewA()).answerKeyReleased, false);
+    gabiRecord.classes = [{ name: classA, courseId }, { name: classB, courseId }];
+
+    // Encerrada a aplicação da Turma B, o gabarito liberado na Turma A volta a valer.
+    await control(appB.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    assert.equal((await viewA()).answerKeyReleased, true);
+    assert.equal(await statusA(), true);
+    db.memory.students = db.memory.students.filter(student => student.email !== gabiA.email);
+    delete db.memory.sessions[gabiA.email];
+});
+
+test('[UC-APLICACAO-001] token validado depois do encerramento não abre tentativa nem muda a decisão gravada', async () => {
+    const { ana, bruno } = students;
+    const historyId = await createHistory(classA);
+    const created = await admin('post', '/api/admin/exam-applications').send({
+        studentClass: classA,
+        courseId,
+        examKey,
+        historyId,
+        applicationOptions: { timerMode: 'per_attempt', waitingRoomMinutes: 0, maxAttempts: 1, tokenEnabled: true, accessToken: 'KLMNO' },
+    }).expect(201);
+    const applicationId = created.body.application.id;
+    await control(applicationId, { action: 'start' }).expect(200);
+    const validate = student => request(app)
+        .post('/api/student/validate-exam-token')
+        .set('x-session-token', student.token)
+        .send({ email: student.email, studentClass: classA, courseId, examKey, applicationId, token: 'KLMNO' });
+    const finishOutcome = async student => (await request(app)
+        .get('/api/student/sync')
+        .set('x-session-token', student.token)
+        .query({ email: student.email, studentClass: classA, courseId, examKey, applicationId })
+        .expect(200)).body.finishOutcome;
+    assert.equal((await validate(ana).expect(200)).body.valid, true);
+    const started = await startAttempt(ana, applicationId);
+    await autosave(ana, applicationId, started.attemptId, { 1: 'A' });
+    await control(applicationId, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    const first = { ...applicationOf(applicationId).finishResolution };
+    assert.equal(first.policy, 'discard');
+    assert.equal(await finishOutcome(ana), 'discarded');
+
+    // Token certo numa aplicação encerrada: recusado, sem tentativa nova.
+    const late = await validate(bruno).expect(409);
+    assert.equal(late.body.applicationClosed, true);
+    assert.equal(openStatesOf(bruno, applicationId).length, 0);
+
+    // Sobra sem início (gravada por versões antigas): sai sem trocar a decisão do encerramento.
+    db.memory.studentExamState['sobra-sem-inicio'] = {
+        id: 'attempt-sem-inicio', attemptId: 'attempt-sem-inicio', applicationId, studentEmail: bruno.email,
+        studentClass: classA, courseId, examKey, attemptNumber: 1, status: 'instructions', answers: {}, startedAt: null,
+    };
+    const again = await control(applicationId, { action: 'finish' }).expect(200);
+    assert.equal(again.body.unchanged, true);
+    assert.equal(db.memory.studentExamState['sobra-sem-inicio'], undefined);
+    assert.deepEqual(applicationOf(applicationId).finishResolution, first);
+    assert.equal(applicationOf(applicationId).previousFinishResolutions, undefined);
+    assert.equal(await finishOutcome(ana), 'discarded');
+
+    // Sobra começada resolvida depois com "salvar": quem foi desconsiderado continua sabendo.
+    db.memory.studentExamState['sobra-iniciada'] = {
+        id: 'attempt-sobra-iniciada', attemptId: 'attempt-sobra-iniciada', applicationId, studentEmail: bruno.email,
+        studentClass: classA, courseId, examKey, attemptNumber: 1, status: 'active', answers: { 1: 'B' },
+        startedAt: Date.now() - 1000, assignedVersion: 'A',
+    };
+    await control(applicationId, { action: 'finish', inProgressPolicy: 'submit' }).expect(200);
+    assert.deepEqual(applicationOf(applicationId).previousFinishResolutions, [first]);
+    assert.equal(applicationOf(applicationId).finishResolution.policy, 'submit');
+    assert.equal(await finishOutcome(ana), 'discarded');
+    assert.equal(await finishOutcome(bruno), 'submitted');
 });

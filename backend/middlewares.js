@@ -736,8 +736,47 @@ function examHasOpenApplication(cls, examKey) {
     }).length > 0;
 }
 
+// Matrícula do aluno na turma da aplicação (classes como texto ou { name, courseId }).
+function studentEnrolledInApplicationClass(student, application) {
+    const memberships = student && Array.isArray(student.classes) && student.classes.length
+        ? student.classes
+        : (student && student.studentClass ? [student.studentClass] : []);
+    const className = String(application.studentClass || '').trim();
+    const courseId = String(application.courseId || '').trim();
+    return memberships.some(item => {
+        if (typeof item === 'string') return item.trim() === className;
+        if (!item || typeof item !== 'object') return false;
+        const itemCourseId = String(item.courseId || '').trim();
+        return String(item.name || item.className || '').trim() === className
+            && (!itemCourseId || !courseId || itemCourseId === courseId);
+    });
+}
+
+// A prova está aberta para o aluno em alguma turma dele: aplicação preparada ou em
+// andamento numa turma em que ele está matriculado (aluno em duas turmas do curso,
+// dependência) ou tentativa dele ainda não entregue numa aplicação aberta. Enquanto
+// isso, o gabarito dessa prova não sai para ele por nenhuma turma.
+function studentHasOpenExamApplication(studentEmail, examKey) {
+    const email = String(studentEmail || '').trim().toLowerCase();
+    if (!email || !examKey) return false;
+    const openApplications = listExamApplications(db.memory.examApplications, { examKey, statuses: ANSWER_KEY_BLOCKING_STATUSES });
+    if (!openApplications.length) return false;
+    const student = (db.memory.students || []).find(item => item && item.email && String(item.email).trim().toLowerCase() === email);
+    if (student && openApplications.some(application => studentEnrolledInApplicationClass(student, application))) return true;
+    const openIds = new Set(openApplications.map(application => application.id));
+    return Object.values(db.memory.studentExamState || {}).some(state => state
+        && openIds.has(state.applicationId)
+        && String(state.studentEmail || '').trim().toLowerCase() === email
+        && !['submitted', 'invalidated'].includes(state.status));
+}
+
+function answerKeyBlockedForStudent(cls, examKey, studentEmail) {
+    return examHasOpenApplication(cls, examKey) || studentHasOpenExamApplication(studentEmail, examKey);
+}
+
 // Verifica se o aluno pode visualizar o gabarito: só da tentativa com nota publicada,
-// com o gabarito liberado e sem nova aplicação da mesma prova preparada ou rodando.
+// com o gabarito liberado e sem nova aplicação da mesma prova preparada ou rodando
+// na turma da entrega ou em outra turma do aluno.
 function canStudentViewAnswerKey(submission, studentEmail) {
     if (!submission || !submission.examKey) return false;
     if (submission.gradePublished !== true) return false;
@@ -749,10 +788,21 @@ function canStudentViewAnswerKey(submission, studentEmail) {
     const cls = findClassByNameAndCourse(classes, submittedClass, submittedCourseId);
 
     if (!cls) return false;
-    if (examHasOpenApplication(cls, submission.examKey)) return false;
+    if (answerKeyBlockedForStudent(cls, submission.examKey, normalizedEmail)) return false;
 
     const releasedItems = getReleasedItemsForClass(cls, normalizedEmail);
     return releasedItems[getAnswerKeyReleaseKey(submission.examKey)] === true;
+}
+
+// Itens liberados como o aluno os vê: o gabarito de uma prova que está aberta para
+// ele (nesta turma ou em outra dele) aparece bloqueado até a aplicação ser encerrada.
+function getStudentReleasedItems(cls, studentEmail) {
+    const released = getReleasedItemsForClass(cls, studentEmail);
+    Object.keys(released).forEach(key => {
+        if (!key.startsWith('Gabarito_') || released[key] !== true) return;
+        if (answerKeyBlockedForStudent(cls, key.slice('Gabarito_'.length), studentEmail)) released[key] = false;
+    });
+    return released;
 }
 
 function getReleasedItemsForClass(cls, studentEmail) {
@@ -942,6 +992,7 @@ module.exports = {
     sanitizeSubmissionForStudent,
     sanitizeOnlineExamConfigsForStudent,
     canStudentViewAnswerKey,
+    getStudentReleasedItems,
     getReleasedItemsForClass,
     normalizeIdentifier,
     findClassByNameAndCourse,

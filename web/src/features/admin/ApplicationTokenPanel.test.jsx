@@ -42,6 +42,36 @@ describe('ApplicationTokenPanel · token perdido', () => {
     expect(screen.queryByRole('button', { name: 'Gerar novo token' })).not.toBeInTheDocument()
   })
 
+  it('[UC-APLICACAO-001] esconde o token desta aba quando ele foi trocado em outro navegador', async () => {
+    const user = userEvent.setup()
+    sessionStorage.setItem('exam-token:app-1', 'ABCDE')
+    sessionStorage.setItem('exam-token-issued:app-1', '2026-10-18T10:00:00.000Z')
+    const { rerender } = render(<ApplicationTokenPanel applicationId="app-1" requiresToken closed={false} tokenIssuedAt="2026-10-18T10:00:00.000Z" />)
+    expect(screen.getByText('ABCDE')).toBeVisible()
+
+    // Outro navegador gerou um token novo: a marca do servidor ficou mais nova.
+    rerender(<ApplicationTokenPanel applicationId="app-1" requiresToken closed={false} tokenIssuedAt="2026-10-18T10:05:00.000Z" />)
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copiar' })).not.toBeInTheDocument()
+    expect(screen.getByText('Trocado em outra tela')).toBeVisible()
+    expect(screen.getByText(/foi trocado em outro navegador e não vale mais/)).toBeVisible()
+
+    // Gerar de novo aqui volta a mostrar o token, mesmo antes da lista do Monitor atualizar.
+    mocks.post.mockResolvedValue({ success: true, accessToken: 'ZXCVB', accessTokenIssuedAt: '2026-10-18T10:06:00.000Z', applicationId: 'app-1' })
+    await user.click(screen.getByRole('button', { name: 'Gerar novo token' }))
+    await user.click(screen.getAllByRole('button', { name: 'Gerar novo token' }).at(-1))
+    expect(await screen.findByText('ZXCVB')).toBeVisible()
+    expect(sessionStorage.getItem('exam-token-issued:app-1')).toBe('2026-10-18T10:06:00.000Z')
+  })
+
+  it('token guardado antes da marca de versão some depois de uma troca em outra tela', () => {
+    sessionStorage.setItem('exam-token:app-1', 'ABCDE')
+    const { rerender } = render(<ApplicationTokenPanel applicationId="app-1" requiresToken closed={false} />)
+    expect(screen.getByText('ABCDE')).toBeVisible()
+    rerender(<ApplicationTokenPanel applicationId="app-1" requiresToken closed={false} tokenIssuedAt="2026-10-18T10:05:00.000Z" />)
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument()
+  })
+
   it('mostra o token guardado na aba que preparou e permite trocá-lo', () => {
     sessionStorage.setItem('exam-token:app-1', 'ABCDE')
     render(<ApplicationTokenPanel applicationId="app-1" requiresToken closed={false} />)
