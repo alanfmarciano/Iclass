@@ -87,7 +87,7 @@ async function finishOpenApplications() {
     }
 }
 
-async function createApplication({ maxAttempts = 1, start = true } = {}) {
+async function createApplication({ maxAttempts = 1, start = true, timerMode = 'per_attempt' } = {}) {
     await finishOpenApplications();
     const history = await admin('post', '/api/admin/exam-history/add')
         .send({
@@ -115,7 +115,7 @@ async function createApplication({ maxAttempts = 1, start = true } = {}) {
             courseId,
             examKey,
             historyId: history.body.entry.id,
-            applicationOptions: { timerMode: 'per_attempt', waitingRoomMinutes: 0, maxAttempts },
+            applicationOptions: { timerMode, waitingRoomMinutes: 0, maxAttempts },
         })
         .expect(201);
     if (!start) return created.body.application;
@@ -413,5 +413,46 @@ test('[UC-TENTATIVA-001] cronômetro por aluno: quem não começou aparece sem t
 
     await startAttempt(diego, application.id);
     assert.equal((await summaryOf()).waitingToStart, 2);
+    await finishOpenApplications();
+});
+
+test('[UC-TENTATIVA-001] cronômetro coletivo pausado: quem ainda não começou fica congelado com o mesmo tempo dos colegas', async () => {
+    const { ana, bruno, carla } = students;
+    const application = await createApplication({ timerMode: 'collective' });
+    const stored = db.memory.examApplications.find(item => item.id === application.id);
+    const started = await startAttempt(ana, application.id);
+    // A prova começou há 10 min e está pausada há 5 min: restam 25 min para todos,
+    // congelados. A Carla tem +3 min esperando a primeira tentativa dela.
+    await admin('post', `/api/admin/exam-applications/${application.id}/control`).send({ action: 'pause' }).expect(200);
+    const now = Date.now();
+    stored.startsAt = now - 10 * 60000;
+    stored.pauses = [{ pausedAt: now - 5 * 60000, resumedAt: null }];
+    stored.pausedAt = now - 5 * 60000;
+    stored.studentAdjustments = { [carla.email]: 3 };
+    const cls = db.memory.classes.find(item => item.name === studentClass);
+    cls.onlineExamConfigs[examKey].startTime = stored.startsAt;
+    const anaState = Object.values(db.memory.studentExamState).find(state => state.attemptId === started.attemptId);
+    anaState.startedAt = stored.startsAt;
+
+    const read = async () => Object.fromEntries(await Promise.all([ana, bruno, carla]
+        .map(async student => [student.email, (await monitorRow(student, application.id)).timerRemaining])));
+    const first = await read();
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    const second = await read();
+    assert.ok(Math.abs(first[ana.email] - 25 * 60) <= 2, `Ana: ${first[ana.email]}`);
+    // Antes o Bruno aparecia com 20 min (contados desde o início, sem a pausa) e
+    // continuava descendo durante a pausa.
+    assert.ok(Math.abs(first[bruno.email] - first[ana.email]) <= 1, `Bruno ${first[bruno.email]} x Ana ${first[ana.email]}`);
+    assert.ok(Math.abs(first[carla.email] - (first[ana.email] + 3 * 60)) <= 1, `Carla com o +3 min: ${first[carla.email]}`);
+    [ana, bruno, carla].forEach(student => {
+        assert.ok(Math.abs(second[student.email] - first[student.email]) <= 0.5, `${student.email} congelado na pausa: ${first[student.email]} -> ${second[student.email]}`);
+    });
+
+    // Retomada: o Bruno começa com o mesmo tempo que aparecia para ele.
+    await admin('post', `/api/admin/exam-applications/${application.id}/control`).send({ action: 'resume' }).expect(200);
+    await startAttempt(bruno, application.id);
+    const brunoRow = await monitorRow(bruno, application.id);
+    assert.equal(brunoRow.attemptStarted, true);
+    assert.ok(Math.abs(brunoRow.timerRemaining - first[bruno.email]) <= 2, `Bruno começou com ${brunoRow.timerRemaining}`);
     await finishOpenApplications();
 });

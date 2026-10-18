@@ -37,7 +37,8 @@ const LEGACY_BACKUP_WARNING = 'Este backup é de uma versão anterior do IClass 
     + 'Ao restaurar, as aplicações de prova atuais serão descartadas (inclusive as criadas depois do backup) e refeitas '
     + 'a partir das turmas do backup. Voltam: a última prova preparada ou aplicada de cada turma, com as tentativas, as '
     + 'respostas e as entregas dos alunos, o token de acesso e a versão escolhida no Monitor para quem ainda não tinha '
-    + 'começado. Prova que estava pausada continua pausada desde o momento do backup. '
+    + 'começado. Prova que estava pausada continua pausada, mas a pausa passa a contar do momento do backup, porque '
+    + 'esse backup não guardava a hora da pausa: o tempo entre a pausa e o backup é descontado do tempo dos alunos. '
     + 'Não voltam, porque esse backup não as guardava: as contestações de questão feitas pelos alunos e o "+N min" dado '
     + 'a um aluno que ainda não tinha começado a tentativa. O horário de encerramento das provas já encerradas é '
     + 'aproximado pela última entrega. Um backup de segurança dos dados atuais é criado antes.';

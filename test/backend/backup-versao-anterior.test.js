@@ -102,7 +102,9 @@ test('[UC-BACKUP-001] backup de versão anterior (sem as aplicações) volta àq
     assert.doesNotMatch(warned.body.error, /volta como estava/);
     assert.match(warned.body.error, /token de acesso/);
     assert.match(warned.body.error, /versão escolhida no Monitor/);
-    assert.match(warned.body.error, /pausada continua pausada desde o momento do backup/);
+    assert.match(warned.body.error, /pausada continua pausada, mas a pausa passa a contar do momento do backup/);
+    // Diz que o tempo entre a pausa e o backup sai do tempo dos alunos (antes não dizia).
+    assert.match(warned.body.error, /tempo entre a pausa e o backup é descontado do tempo dos alunos/);
     assert.match(warned.body.error, /Não voltam[^.]*contestações de questão[^.]*"\+N min"/);
     assert.match(warned.body.error, /encerramento[^.]*aproximado pela última entrega/);
     assert.deepEqual(applicationIds(), [...atBackup, third.id].sort(), 'nada foi restaurado');
@@ -190,6 +192,13 @@ test('[UC-BACKUP-001] backup de versão anterior: o token, a versão escolhida n
     assert.equal(withToken.accessTokenHash, configOf('2DES').accessTokenHash);
     // Versão escolhida no Monitor para a Isabela, que ainda não tinha começado.
     assert.deepEqual(withToken.studentVersions, { [studentEmails.isabela]: 'B' });
+    // Data da preparação que estava no backup (antes, a hora da restauração; a da
+    // aplicação em andamento era a do início da prova).
+    assert.equal(withToken.createdAt, configOf('2DES').preparedAt);
+    assert.equal(withToken.preparedAt, configOf('2DES').preparedAt);
+    assert.equal(db.memory.classes.find(item => item.name === '2DES').onlineExamConfigs[examKey].preparedAt, configOf('2DES').preparedAt);
+    assert.equal(byId(second).createdAt, configOf('1DES').preparedAt);
+    assert.equal(byId(second).startsAt, configOf('1DES').startTime);
 
     await admin('post', `/api/admin/exam-applications/${tokenApp}/control`).send({ action: 'start' }).expect(200);
     const startAttempt = id => as(id)('post', `/api/student/exam-applications/${tokenApp}/start-attempt`).send({});
@@ -294,6 +303,97 @@ db.init().then(async () => {
         });
         // Idempotente: o boot seguinte não tira de novo.
         assert.deepEqual(bootOutput(read, env), firstBoot);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
+test('[UC-APLICACAO-001] atualização: a versão escolhida no Monitor da versão anterior para quem não começou continua, com o "+N min" dado antes de começar', () => {
+    // O banco como a versão anterior o deixou (com as aplicações). Na 2DES (preparada,
+    // com token) o Monitor escolheu a versão B para a Isabela, que ainda não tinha
+    // entrado, e deu +7 min a ela: a versão anterior gravava as duas coisas na aplicação
+    // e no estado avulso "<email>_<prova>" (versionAssigned, individualTimeAdjustment),
+    // como faz adjust-student-time em 5b69148. Antes, depois da atualização, o estado
+    // avulso virava a tentativa dela e era reiniciado: versão sorteada de novo (metade
+    // das vezes A) e o +7 sumia da tentativa, parado em application.studentAdjustments.
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-versao-anterior-monitor-test-'));
+    const env = { ...process.env, ICLASS_DATA_DIR: dataDir, ICLASS_CONTENT_DIR: path.join(dataDir, 'content'), ICLASS_ARCHIVE_DIR: path.join(dataDir, 'archives') };
+    const isabela = studentEmails.isabela;
+    const looseKey = `${isabela}_${examKey}`;
+    try {
+        bootOutput(`const db = require(${databasePath});
+const fixture = require(${JSON.stringify(path.join(__dirname, 'fixtures', 'backup-versao-anterior.json'))});
+db.init().then(async () => {
+    const secret = db.memory.config.examAnswerSecret;
+    Object.assign(db.memory, fixture.backup.data);
+    db.memory.config = { ...db.memory.config, examAnswerSecret: secret };
+    db.memory.examApplications = fixture.applicationsAtBackup;
+    const application = db.memory.examApplications.find(item => item.id === ${JSON.stringify(tokenApp)});
+    application.studentAdjustments = { ${JSON.stringify(isabela)}: 7 };
+    db.memory.studentExamState[${JSON.stringify(looseKey)}].individualTimeAdjustment = 7;
+    await db.save();
+    process.stdout.write('@@{}');
+    await db.close();
+});`, env);
+        const read = `const db = require(${databasePath});
+db.init().then(async () => {
+    const application = db.memory.examApplications.find(item => item.id === ${JSON.stringify(tokenApp)});
+    process.stdout.write('@@' + JSON.stringify({
+        applications: db.memory.examApplications,
+        states: db.memory.studentExamState,
+        loose: db.memory.studentExamState[${JSON.stringify(looseKey)}],
+        studentVersions: application.studentVersions,
+        studentAdjustments: application.studentAdjustments,
+    }));
+    await db.close();
+});`;
+        const firstBoot = bootOutput(read, env);
+        assert.deepEqual(firstBoot.studentVersions, { [isabela]: 'B' });
+        assert.deepEqual(firstBoot.studentAdjustments, { [isabela]: 7 });
+        assert.equal(firstBoot.loose.versionAssigned, false, 'o estado avulso deixa de ser a tentativa dela');
+        assert.equal(firstBoot.loose.assignedVersion, 'B', 'nada é apagado do estado avulso');
+        // Idempotente: o boot seguinte não muda nada.
+        const secondBoot = bootOutput(read, env);
+        assert.deepEqual(secondBoot.applications, firstBoot.applications);
+        assert.deepEqual(secondBoot.states, firstBoot.states);
+
+        // O professor inicia a prova; a Isabela valida o token e começa: versão B e +7 min,
+        // sempre (antes dependia do sorteio).
+        const started = bootOutput(`const db = require(${databasePath});
+const request = require(${JSON.stringify(require.resolve('supertest'))});
+const { createApp } = require(${JSON.stringify(require.resolve('../../backend/server.js'))});
+db.init().then(async () => {
+    const app = createApp();
+    db.memory.adminSessions = { admin: { email: 'admin@antigo.local', createdAt: Date.now(), lastSeen: Date.now() } };
+    db.memory.sessions[${JSON.stringify(isabela)}] = { token: 'isabela', lastSeen: Date.now(), ip: '127.0.0.1' };
+    const control = await request(app).post('/api/admin/exam-applications/${tokenApp}/control').set('x-admin-session', 'admin').send({ action: 'start' });
+    const validate = await request(app).post('/api/student/validate-exam-token').set('x-session-token', 'isabela')
+        .send({ email: ${JSON.stringify(isabela)}, studentClass: '2DES', courseId: ${JSON.stringify(courseId)}, examKey: ${JSON.stringify(examKey)}, applicationId: ${JSON.stringify(tokenApp)}, token: ${JSON.stringify(fixture.accessToken)} });
+    const start = await request(app).post('/api/student/exam-applications/${tokenApp}/start-attempt').set('x-session-token', 'isabela').send({});
+    const application = db.memory.examApplications.find(item => item.id === ${JSON.stringify(tokenApp)});
+    const attempt = Object.values(db.memory.studentExamState).find(state => state.applicationId === application.id && state.studentEmail === ${JSON.stringify(isabela)});
+    process.stdout.write('@@' + JSON.stringify({
+        control: control.status,
+        valid: validate.body.valid,
+        start: start.status,
+        version: attempt.assignedVersion,
+        versionAssigned: attempt.versionAssigned,
+        adjustment: attempt.individualTimeAdjustment,
+        minutes: Math.round((attempt.deadlineAt - attempt.startedAt) / 60000),
+        duration: application.durationMinutes,
+        pending: application.studentAdjustments,
+    }));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await db.close();
+});`, env);
+        assert.equal(started.control, 200);
+        assert.equal(started.valid, true);
+        assert.equal(started.start, 200);
+        assert.equal(started.version, 'B', 'antes a versão era sorteada de novo');
+        assert.equal(started.versionAssigned, true);
+        assert.equal(started.adjustment, 7, 'antes o +7 min sumia da tentativa');
+        assert.equal(started.minutes, started.duration + 7);
+        assert.deepEqual(started.pending, {}, 'o +7 min vale para esta tentativa e não fica parado na aplicação');
     } finally {
         fs.rmSync(dataDir, { recursive: true, force: true });
     }

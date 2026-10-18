@@ -24,7 +24,8 @@ const {
     filterSubmissionsForAdmin,
     filterSchoolsForAdmin,
     adminCanAccessStudent,
-    isCourseExamKey
+    isCourseExamKey,
+    accessibilityExtraMinutes
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
@@ -4101,11 +4102,28 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 && currentConfig.startTime
                 && Number(currentConfig.durationMinutes) > 0
             ) {
-                const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Number(currentConfig.startTime)) / 1000));
-                const totalSeconds = (Number(currentConfig.durationMinutes) * 60)
-                    + (Number(currentConfig.globalTimeAdjustment || 0) * 60)
-                    + (Number(state.individualTimeAdjustment || 0) * 60);
-                timerRemaining = Math.max(0, totalSeconds - elapsedSeconds);
+                if (application) {
+                    // Cronômetro coletivo de quem ainda não começou: o tempo que a tentativa
+                    // dele recebe ao começar agora (a mesma conta do servidor, com o "+N min"
+                    // que espera por ele e o tempo de acessibilidade), congelado durante a
+                    // pausa. Antes contava desde o início sem as pausas: com a aplicação
+                    // pausada, só esse aluno aparecia com o tempo correndo.
+                    const { deadlineAt } = attemptOverdueMs({
+                        // Na sala de espera, a duração inteira (o início ainda não chegou).
+                        startedAt: Math.min(Number(application.startsAt) || Number(currentConfig.startTime), monitorNow),
+                        individualTimeAdjustment: openAttempt
+                            ? Number(state.individualTimeAdjustment || 0)
+                            : Number(application.studentAdjustments?.[email] || 0),
+                        accessibilityExtraMinutes: accessibilityExtraMinutes(email, application.durationMinutes),
+                    }, application, monitorNow);
+                    timerRemaining = deadlineAt == null ? null : Math.max(0, Math.ceil((deadlineAt - monitorNow) / 1000));
+                } else {
+                    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Number(currentConfig.startTime)) / 1000));
+                    const totalSeconds = (Number(currentConfig.durationMinutes) * 60)
+                        + (Number(currentConfig.globalTimeAdjustment || 0) * 60)
+                        + (Number(state.individualTimeAdjustment || 0) * 60);
+                    timerRemaining = Math.max(0, totalSeconds - elapsedSeconds);
+                }
             }
             // Cronômetro por aluno: quem ainda não começou não tem tempo correndo. Antes
             // aparecia o tempo contado desde a abertura da aplicação, que entrava em "Menor

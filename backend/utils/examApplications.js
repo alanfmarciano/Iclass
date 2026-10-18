@@ -236,7 +236,12 @@ function closeApplicationPause(application, now = Date.now()) {
 }
 
 // Aplicações pausadas por versões antigas não registravam o início da pausa. Usa o
-// último updatedAt (gravado na transição) como melhor estimativa. Idempotente.
+// último updatedAt (gravado na transição) como melhor estimativa. Na versão anterior
+// (5b69148) a pausa não deixava outro registro de horário, e o que o professor fez
+// durante a pausa (corrigir, anular ou substituir questão, "+N min") também gravava
+// updatedAt: então a pausa pode contar de um pouco depois do real e esse intervalo sai
+// do tempo dos alunos. Nunca conta de antes (ninguém ganha de volta tempo já usado).
+// Idempotente.
 function normalizeLegacyApplicationPause(application, now = Date.now()) {
     if (!application || application.status !== 'paused') return false;
     if (applicationPauses(application).some(pause => !pause.resumedAt)) return false;

@@ -485,13 +485,16 @@ function studentRecordInClass(email, cls) {
 // versionAssigned. O backup daquela versão não levava as aplicações; a escolha volta
 // pelo estado avulso (só o desta preparação da prova e de aluno da turma). O estado
 // avulso deixa de marcar a versão (ela fica na aplicação, que a tentativa nova lê);
-// sem isso ele virava uma "tentativa em uso" que era reiniciada com outra versão.
+// sem isso ele virava uma "tentativa em uso" que era reiniciada com outra versão e sem
+// o "+N min" que o aluno tinha ganhado antes de começar. Devolve as versões escolhidas
+// e quantos estados avulsos deixaram de marcar a versão.
 function legacyMonitorVersions(cls, examKey, cfg) {
     const versions = new Set((Array.isArray(cfg.versionSnapshots) ? cfg.versionSnapshots : [])
         .map(snapshot => String((snapshot && snapshot.version) || '').trim().toUpperCase())
         .filter(Boolean));
     const configVersion = cfg.updatedAt || cfg.preparedAt || cfg.activeHistoryId || null;
     const chosen = {};
+    let released = 0;
     Object.entries(memoryDB.studentExamState || {}).forEach(([key, state]) => {
         if (!state || typeof state !== 'object' || state.applicationId || state.versionAssigned !== true) return;
         const email = String(state.studentEmail || '').trim().toLowerCase();
@@ -504,9 +507,12 @@ function legacyMonitorVersions(cls, examKey, cfg) {
             && typeof state.timerRemaining !== 'number'
             && !(state.answers && typeof state.answers === 'object' && Object.keys(state.answers).length)
             && state.tokenValidated !== true;
-        if (onlyTheChoice) state.versionAssigned = false;
+        if (onlyTheChoice) {
+            state.versionAssigned = false;
+            released += 1;
+        }
     });
-    return chosen;
+    return { chosen, released };
 }
 
 // Momento aproximado do encerramento de uma aplicação refeita de um backup antigo: a
@@ -554,6 +560,7 @@ function migrateLegacyExamApplications(options = {}) {
             const cfg = cls.onlineExamConfigs[examKey];
             if (!cfg) return;
             let application = findExamApplication(memoryDB.examApplications, cfg.applicationId);
+            const existed = !!application;
             const hasPreparedContent = cfg.activeHistoryId
                 && Array.isArray(cfg.versionSnapshots)
                 && cfg.versionSnapshots.length > 0;
@@ -573,13 +580,20 @@ function migrateLegacyExamApplications(options = {}) {
                         // descartado e qualquer aluno começava sem token.
                         accessTokenHash: cfg.accessTokenHash || hashExamToken(cfg.accessToken),
                         tokenEnabled: cfg.tokenEnabled === true || !!cfg.accessTokenHash || !!cfg.accessToken,
-                        studentVersions: { ...(cfg.studentVersions || {}), ...legacyMonitorVersions(cls, examKey, cfg) },
+                        studentVersions: { ...(cfg.studentVersions || {}), ...legacyMonitorVersions(cls, examKey, cfg).chosen },
                     },
                     actor: 'migração automática',
                     status: legacyStatus,
                     now: cfg.startTime || Date.now(),
                 });
                 if (cfg.startTime) application.startsAt = Number(cfg.startTime);
+                // Preparada quando a configuração diz (o Monitor lista as aplicações por essa
+                // data). Antes ficava a hora da restauração, ou a do início da prova.
+                const preparedAt = Date.parse(cfg.preparedAt || '');
+                if (Number.isFinite(preparedAt) && preparedAt > 0 && preparedAt <= Date.parse(application.createdAt)) {
+                    application.createdAt = new Date(preparedAt).toISOString();
+                    application.preparedAt = application.createdAt;
+                }
                 if (legacyStatus === 'paused') {
                     // Pausada desde o momento do backup (ou de agora): nunca desde o
                     // início da prova, que devolveria a todos o tempo já usado.
@@ -606,6 +620,26 @@ function migrateLegacyExamApplications(options = {}) {
                 changed = true;
             }
             if (!application) return;
+            // Banco da versão anterior atualizado (a aplicação existe): a versão escolhida
+            // no Monitor para quem ainda não tinha começado fica na aplicação e o estado
+            // avulso deixa de marcá-la, como na restauração do backup. Antes ele virava a
+            // tentativa do aluno, que era reiniciada com outra versão sorteada e sem o
+            // "+N min" dado antes de começar (que ficava parado na aplicação). Idempotente.
+            if (existed && application.status !== 'finished' && application.status !== 'cancelled') {
+                const legacy = legacyMonitorVersions(cls, examKey, {
+                    ...cfg,
+                    versionSnapshots: Array.isArray(application.versionSnapshots) && application.versionSnapshots.length
+                        ? application.versionSnapshots
+                        : cfg.versionSnapshots,
+                });
+                if (legacy.released) changed = true;
+                Object.entries(legacy.chosen).forEach(([email, version]) => {
+                    if (!application.studentVersions || typeof application.studentVersions !== 'object') application.studentVersions = {};
+                    if (application.studentVersions[email]) return;
+                    application.studentVersions[email] = version;
+                    changed = true;
+                });
+            }
             cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cfg);
             const active = ACTIVE_APPLICATION_STATUSES.has(application.status);
             if (!cls.releasedItems) cls.releasedItems = {};
