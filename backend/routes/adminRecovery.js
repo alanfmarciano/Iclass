@@ -184,13 +184,30 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         validateAdmin(req, res, (config, matchedAdmin) => {
             if (rejectProfessor(res, matchedAdmin)) return;
             uploadForRequest().single('file')(req, res, async (error) => {
-                if (error) return res.status(400).json({ error: `Erro no upload: ${error.message}` });
+                // Recusas antes da restauração (arquivo grande demais, formato inválido,
+                // sem a confirmação) também ficam no histórico de backup.
+                const uploadInfo = () => (req.file ? { file: String(req.file.originalname || '').slice(0, 200), size: req.file.size || 0 } : {});
+                const recordRefusal = async message => {
+                    recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...uploadInfo(), error: String(message || '').slice(0, 300) });
+                    await db.save().catch(() => {});
+                };
+                if (error) {
+                    const message = `Erro no upload: ${error.message}`;
+                    await recordRefusal(message);
+                    return res.status(400).json({ error: message });
+                }
                 if (!req.file) return res.status(400).json({ error: 'Envie o arquivo de backup (.json ou .zip).' });
-                if (rejectInvalidUpload(req, res, { discard: true })) return;
+                const refusedFile = uploadInfo();
+                if (rejectInvalidUpload(req, res, { discard: true })) {
+                    recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...refusedFile, error: 'Arquivo recusado (formato ou conteúdo inválido).' });
+                    await db.save().catch(() => {});
+                    return;
+                }
 
                 const temporaryFile = path.join(uploadDir, req.file.filename);
                 if (String(req.body.confirm || '').trim().toUpperCase() !== 'RESTAURAR') {
                     discardUpload(temporaryFile);
+                    await recordRefusal('Restauração sem a confirmação RESTAURAR.');
                     return res.status(400).json({ error: 'Confirme digitando RESTAURAR.' });
                 }
                 // Contas de acesso atuais ficam como estão, salvo pedido explícito.

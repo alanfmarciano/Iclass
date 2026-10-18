@@ -5,6 +5,7 @@ const db = require('../database.js');
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
 const { normalizeStoredStudentClasses } = require('./students.js');
+const zipInspect = require('./zipInspect.js');
 
 const CONTENT_DIR = runtimePaths.CONTENT_DIR;
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -271,58 +272,146 @@ async function restoreFromFile(absPath, originalName, { replaceAccounts = false 
 // SEG-X1: um .json/.zip em /uploads pode ser o banco inteiro (backup com os hashes
 // das senhas), venha ele da lixeira, de um envio ou de um vínculo que o próprio
 // professor criou na estrutura da turma. Por isso a decisão é pelo CONTEÚDO, não
-// pelo vínculo: marca do backup ("type": "iclass-backup-data"), hash de senha
-// (scrypt$...) ou, num ZIP, o backup-data.json, um banco .db/.sqlite ou um .json
-// interno com essas marcas. Resultado em cache por caminho + data + tamanho.
-const BACKUP_TEXT_MARKERS = [/"type"\s*:\s*"iclass-backup-data"/, /scrypt\$[A-Za-z0-9+/=]{8,}\$/];
-const BACKUP_ZIP_ENTRY = /(^|\/)(backup-data\.json|[^/]+\.(?:db|sqlite3?))$/i;
+// pelo vínculo nem pela extensão: marca do backup ("type": "iclass-backup-data"),
+// hash de senha (scrypt$...) ou a tabela de contas do banco do iClass; um ZIP (pela
+// assinatura, mesmo gravado como .json) com backup-data.json ou com um .json, um
+// banco SQLite ou outro ZIP dentro que tenha essas marcas. Um banco .db/.sqlite de
+// exemplo (material de aula) não é backup. O ZIP é lido aos pedaços, sem travar o
+// servidor. Resultado em cache por caminho + data + tamanho.
+const BACKUP_TEXT_MARKERS = [
+    /"type"\s*:\s*"iclass-backup-data"/,
+    /scrypt\$[A-Za-z0-9+/=]{8,}\$/,
+    // Esquema chave-valor do banco do iClass (database.js), como o SQLite o grava.
+    /CREATE TABLE "?admins"? \(key TEXT PRIMARY KEY, value TEXT\)/,
+];
+const BACKUP_DATA_ENTRY = /(^|\/)backup-data\.json$/i;
+const ZIP_ENTRY_KIND_BY_NAME = [
+    [/\.zip$/i, 'zip'],
+    [/\.json$/i, 'text'],
+    [/\.(?:db|db3|sqlite|sqlite3)$/i, 'text'],
+];
+// Arquivos de mídia comuns em material de aula: não são conferidos por dentro.
+const MEDIA_ENTRY = /\.(?:png|jpe?g|gif|webp|svg|bmp|ico|tiff?|mp4|m4v|webm|mov|avi|mkv|mp3|wav|ogg|m4a|flac|pdf|ttf|otf|woff2?)$/i;
 const BACKUP_SCAN_CHUNK = 1024 * 1024;
 const BACKUP_SCAN_OVERLAP = 256;
-const MAX_ZIP_JSON_SCAN_BYTES = 128 * 1024 * 1024;
+// Total descomprimido conferido por arquivo (mídia não entra na conta).
+const MAX_ZIP_SCAN_BYTES = MAX_UNCOMPRESSED_BYTES;
+const MAX_NESTED_ZIP_BYTES = 32 * 1024 * 1024;
+const MAX_NESTED_ZIP_DEPTH = 2;
+const MAX_SNIFFED_ZIP_ENTRIES = 1000;
 const backupContentCache = new Map();
 
 function textHasBackupMarker(text) {
     return BACKUP_TEXT_MARKERS.some(marker => marker.test(text));
 }
 
+// Procura as marcas em pedaços sucessivos (com sobreposição entre eles).
+function backupMarkerScanner(extraLiterals = []) {
+    let carry = '';
+    return chunk => {
+        // latin1 mantém um caractere por byte: as marcas são ASCII.
+        const text = carry + (typeof chunk === 'string' ? chunk : chunk.toString('latin1'));
+        if (textHasBackupMarker(text) || extraLiterals.some(literal => text.includes(literal))) return true;
+        carry = text.slice(-BACKUP_SCAN_OVERLAP);
+        return false;
+    };
+}
+
 async function fileHasBackupMarker(filePath, extraLiterals = []) {
     const handle = await fs.promises.open(filePath, 'r');
     try {
         const buffer = Buffer.alloc(BACKUP_SCAN_CHUNK);
-        let carry = '';
+        const scan = backupMarkerScanner(extraLiterals);
         let position = 0;
         for (;;) {
             const { bytesRead } = await handle.read(buffer, 0, BACKUP_SCAN_CHUNK, position);
             if (!bytesRead) return false;
             position += bytesRead;
-            // latin1 mantém um caractere por byte: as marcas são ASCII.
-            const text = carry + buffer.toString('latin1', 0, bytesRead);
-            if (textHasBackupMarker(text) || extraLiterals.some(literal => text.includes(literal))) return true;
-            carry = text.slice(-BACKUP_SCAN_OVERLAP);
+            if (scan(buffer.subarray(0, bytesRead))) return true;
         }
     } finally {
         await handle.close();
     }
 }
 
-function zipHasBackupEntry(filePath) {
-    const AdmZip = getZipLib();
-    if (!AdmZip) return null;
-    let entries;
-    try { entries = new AdmZip(filePath).getEntries(); } catch (error) { return null; }
-    let scanned = 0;
-    for (const entry of entries) {
-        const name = String(entry.entryName || '').replace(/\\/g, '/');
-        if (BACKUP_ZIP_ENTRY.test(name)) return true;
-        if (entry.isDirectory || !/\.json$/i.test(name)) continue;
-        const size = Number(entry.header && entry.header.size || 0);
-        if (scanned + size > MAX_ZIP_JSON_SCAN_BYTES) return true; // grande demais para conferir: na dúvida, só o administrador
-        scanned += size;
-        let data;
-        try { data = entry.getData(); } catch (error) { continue; }
-        if (data && textHasBackupMarker(data.toString('latin1'))) return true;
+// Tipo da entrada pelo conteúdo (para nomes que não dizem nada): ZIP, banco SQLite ou JSON.
+function entryKindFromHead(head) {
+    if (!head || !head.length) return null;
+    if (zipInspect.hasZipMagic(head)) return 'zip';
+    if (head.toString('latin1', 0, 15) === 'SQLite format 3') return 'text';
+    const first = head.toString('latin1').replace(/^\uFEFF|^\xEF\xBB\xBF/, '').trimStart()[0];
+    return first === '{' || first === '[' ? 'text' : null;
+}
+
+// true: backup (ou não dá para conferir uma entrada que poderia ser); false: não é;
+// null: a fonte não é um ZIP legível. As entradas são lidas aos pedaços (sem limite
+// de memória); `budget.left` limita o total descomprimido conferido (ZIP-bomba: na
+// dúvida, só o administrador). ZIP dentro de ZIP (inclusive .docx/.pptx, que também
+// são ZIP) é aberto na memória até MAX_NESTED_ZIP_BYTES e MAX_NESTED_ZIP_DEPTH níveis;
+// além disso, os nomes das entradas internas são procurados nos bytes.
+async function zipLooksLikeBackup(source, depth, budget) {
+    const directory = await zipInspect.readZipDirectory(source);
+    if (!directory) return null;
+    let sniffed = 0;
+    const scanEntry = async (entry, extraLiterals = []) => {
+        const result = await zipInspect.scanZipEntry(source, directory, entry, backupMarkerScanner(extraLiterals), { maxBytes: budget.left });
+        if (result === 'done') budget.left -= entry.size;
+        return result;
+    };
+    for (const entry of directory.entries) {
+        if (BACKUP_DATA_ENTRY.test(entry.name)) return true;
+        if (entry.isDirectory) continue;
+        const byName = (ZIP_ENTRY_KIND_BY_NAME.find(([pattern]) => pattern.test(entry.name)) || [])[1] || null;
+        let kind = byName;
+        if (!kind) {
+            if (MEDIA_ENTRY.test(entry.name) || sniffed >= MAX_SNIFFED_ZIP_ENTRIES) continue;
+            sniffed += 1;
+            kind = entryKindFromHead(await zipInspect.readZipEntryHead(source, directory, entry, 16));
+            if (!kind) continue;
+        }
+        if (kind === 'zip') {
+            const fitsInMemory = depth < MAX_NESTED_ZIP_DEPTH && entry.size <= MAX_NESTED_ZIP_BYTES && entry.size <= budget.left;
+            const buffer = fitsInMemory ? await zipInspect.readZipEntryBuffer(source, directory, entry, Math.min(MAX_NESTED_ZIP_BYTES, budget.left)) : null;
+            if (buffer) {
+                budget.left -= buffer.length;
+                const nested = await zipLooksLikeBackup(zipInspect.bufferSource(buffer), depth + 1, budget);
+                if (nested === true) return true;
+                if (nested === null && backupMarkerScanner(['backup-data.json'])(buffer)) return true;
+                continue;
+            }
+            // ZIP interno grande ou fundo demais: os nomes das entradas dele ficam sem
+            // compressão nos bytes descomprimidos desta entrada.
+            const result = await scanEntry(entry, ['backup-data.json']);
+            if (result === 'found' || result === 'limit') return true;
+            if (result === null && byName) return true; // .zip que não dá para ler
+            continue;
+        }
+        // JSON ou banco SQLite: confere o conteúdo inteiro. Cifrado ou ilegível: na
+        // dúvida, só o administrador.
+        const result = await scanEntry(entry);
+        if (result !== 'done') return true;
     }
     return false;
+}
+
+async function inspectBackupFile(filePath, stat) {
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+        const source = zipInspect.fileSource(filePath, handle, stat.size);
+        const head = await source.read(0, 4);
+        const zipByName = path.extname(filePath).toLowerCase() === '.zip';
+        // Um ZIP gravado como .json também é aberto como ZIP (assinatura PK, ou o
+        // diretório central no fim quando há bytes antes do ZIP).
+        if (zipByName || zipInspect.hasZipMagic(head) || !/^[\s{[\uFEFF\xEF]/.test(head.toString('latin1', 0, 1))) {
+            const result = await zipLooksLikeBackup(source, 0, { left: MAX_ZIP_SCAN_BYTES });
+            if (result !== null) return result;
+            // ZIP que não abre: procura os nomes e as marcas nos bytes.
+            if (zipByName || zipInspect.hasZipMagic(head)) return fileHasBackupMarker(filePath, ['backup-data.json']);
+        }
+    } finally {
+        await handle.close();
+    }
+    return fileHasBackupMarker(filePath);
 }
 
 async function fileLooksLikeBackup(filePath) {
@@ -331,17 +420,12 @@ async function fileLooksLikeBackup(filePath) {
     if (!stat.isFile()) return false;
     const key = `${filePath}|${stat.mtimeMs}|${stat.size}`;
     if (backupContentCache.has(key)) return backupContentCache.get(key);
-    let result;
-    if (path.extname(filePath).toLowerCase() === '.zip') {
-        const fromEntries = zipHasBackupEntry(filePath);
-        // ZIP que não abre: procura os nomes e as marcas nos bytes (entrada sem compressão).
-        result = fromEntries === null ? await fileHasBackupMarker(filePath, ['backup-data.json']) : fromEntries;
-    } else {
-        result = await fileHasBackupMarker(filePath);
-    }
+    // Pedidos simultâneos do mesmo arquivo esperam a mesma conferência.
+    const pending = inspectBackupFile(filePath, stat);
     if (backupContentCache.size > 500) backupContentCache.clear();
-    backupContentCache.set(key, result);
-    return result;
+    backupContentCache.set(key, pending);
+    pending.catch(() => backupContentCache.delete(key));
+    return pending;
 }
 
 module.exports = {

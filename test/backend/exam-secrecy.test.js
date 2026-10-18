@@ -379,6 +379,24 @@ test('[UC-SIGILO-001] lista de aplicações e entregas do aluno não levam snaps
         assert.equal(raw.includes(field), false, `minhas entregas: ${field} não pode ir ao aluno antes da liberação`);
     }
     assert.deepEqual(own.gradedAnswers.map(answer => Object.keys(answer).sort()), [['questionNumber', 'studentChoice'], ['questionNumber', 'studentChoice']]);
+
+    // Os outros caminhos do aluno também não levam gabarito, snapshot nem a nota antes da publicação.
+    const others = {
+        'estado da prova': await request(app).get(`/api/student/exam-state?email=ana@sigilo.local&studentClass=${encodeURIComponent(classA)}&courseId=${courseA}&examKey=${examKey}`).set('x-session-token', token),
+        sync: await sync(token, { applicationId: application.id }),
+        status: await request(app).get(`/api/status?studentClass=${encodeURIComponent(classA)}&courseId=${courseA}`).set('x-session-token', token),
+        notificações: await request(app).get(`/api/student/notifications?studentClass=${encodeURIComponent(classA)}&courseId=${courseA}`).set('x-session-token', token),
+        painel: await request(app).get(`/api/student/dashboard?studentClass=${encodeURIComponent(classA)}&courseId=${courseA}`).set('x-session-token', token),
+        aplicações: await request(app).get('/api/student/exam-applications').set('x-session-token', token),
+    };
+    for (const [label, response] of Object.entries(others)) {
+        assert.equal(response.status, 200, `${label}: ${response.status} ${JSON.stringify(response.body)}`);
+        const text = JSON.stringify(response.body);
+        for (const field of ['correctAnswer', 'isCorrect', 'answerKey', 'versionSnapshots', 'examSnapshot', 'GABARITO', 'scoreHistory']) {
+            assert.equal(text.includes(field), false, `${label}: ${field} não pode ir ao aluno antes da liberação`);
+        }
+        assert.equal(/"score"\s*:\s*\d/.test(text), false, `${label}: nota antes da publicação`);
+    }
     await control(application.id, 'finish', { inProgressPolicy: 'discard' }).expect(200);
 });
 

@@ -382,10 +382,11 @@ export default function ProvasPage() {
       .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
       .map((s) => ({ value: Number(toGrade(s.score).toFixed(1)), label: shortLabel(s.examKey) }))
     const buckets = [
-      { k: '9-10', lo: 9, hi: 10.01, cls: 'bg-success' },
-      { k: '7-8.9', lo: 7, hi: 9, cls: 'bg-info' },
-      { k: '6-6.9', lo: 6, hi: 7, cls: 'bg-warning' },
-      { k: '0-5.9', lo: 0, hi: 6, cls: 'bg-danger' },
+      // Rótulos com vírgula decimal (pt-BR), como as notas do resto do portal.
+      { k: '9–10', lo: 9, hi: 10.01, cls: 'bg-success' },
+      { k: '7–8,9', lo: 7, hi: 9, cls: 'bg-info' },
+      { k: '6–6,9', lo: 6, hi: 7, cls: 'bg-warning' },
+      { k: '0–5,9', lo: 0, hi: 6, cls: 'bg-danger' },
     ].map((b) => ({ ...b, n: grades.filter((g) => g >= b.lo && b.hi > g).length }))
     const maxBucket = Math.max(1, ...buckets.map((b) => b.n))
     return { avg, best, bestSub, compoem, total: mine.length, chartPoints, buckets, maxBucket, hasData: mine.length > 0 }

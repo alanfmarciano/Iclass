@@ -12,7 +12,8 @@ const {
     findExamApplication,
 } = require('./utils/examApplications.js');
 const { hashExamToken } = require('./utils/examToken.js');
-const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
+const { DATA_DIR, CONTENT_DIR, ARCHIVE_DIR } = require('./runtimePaths.js');
+const { anonymizeAuditOfRemovedStudents } = require('./utils/gradebook.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
@@ -454,6 +455,22 @@ function populateDefaultsIfEmpty() {
 }
 
 // Inicialização Assíncrona do Banco
+// E-mails dos alunos guardados nos cursos arquivados (podem voltar ao desarquivar).
+function archivedStudentEmails() {
+    const emails = new Set();
+    if (!ARCHIVE_DIR || !fs.existsSync(ARCHIVE_DIR)) return emails;
+    fs.readdirSync(ARCHIVE_DIR, { withFileTypes: true }).filter(entry => entry.isDirectory()).forEach(entry => {
+        const file = path.join(ARCHIVE_DIR, entry.name, 'curso.json');
+        if (!fs.existsSync(file)) return;
+        const bundle = JSON.parse(fs.readFileSync(file, 'utf8'));
+        (bundle.students || []).forEach(student => {
+            const email = String(student && student.email || '').trim().toLowerCase();
+            if (email) emails.add(email);
+        });
+    });
+    return emails;
+}
+
 function migrateLegacyExamApplications() {
     if (!Array.isArray(memoryDB.examApplications)) memoryDB.examApplications = [];
     let changed = false;
@@ -688,6 +705,9 @@ async function init() {
             if (normalizeStoredStudentClasses(student)) needsSave = true;
         });
     }
+    // Alunos excluídos antes da anonimização na exclusão: as cópias das notas na
+    // lixeira e o histórico de auditoria perdem a ligação com a pessoa (idempotente).
+    if (anonymizeAuditOfRemovedStudents(memoryDB, { archivedEmails: archivedStudentEmails }) > 0) needsSave = true;
     if (memoryDB.config && memoryDB.config.adminPassword && !isHashed(memoryDB.config.adminPassword)) {
         memoryDB.config.adminPassword = hashPassword(memoryDB.config.adminPassword);
         needsSave = true;

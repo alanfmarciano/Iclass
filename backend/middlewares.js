@@ -90,7 +90,7 @@ function validateStudentSession(req, res, next) {
     if (typeof session !== 'object' || !session.token) {
         delete db.memory.sessions[normalizedEmail];
         return res.status(401).json({
-            error: 'Sessao expirada. Faca login novamente.',
+            error: 'Sessão expirada. Faça login novamente.',
             sessionRevoked: true
         });
     }
@@ -125,7 +125,7 @@ function validateStudentSession(req, res, next) {
         // Cap ABSOLUTO no servidor (backstop). A ociosidade e enforced no cliente.
         if (nowTs - liveSession.createdAt > absoluteTtlMs()) {
             delete db.memory.sessions[normalizedEmail];
-            return res.status(401).json({ error: 'Sessao expirada (limite maximo atingido). Faca login novamente.', sessionRevoked: true });
+            return res.status(401).json({ error: 'Sessão expirada (limite máximo atingido). Faça login novamente.', sessionRevoked: true });
         }
         liveSession.lastSeen = nowTs;
     }
@@ -366,13 +366,13 @@ function validateAdmin(req, res, callback) {
         const now = Date.now();
         if (now - (sess.createdAt || now) > absoluteTtlMs()) {
             delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Sessao expirada. Faca login novamente.', sessionRevoked: true });
+            return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true });
         }
         const adminsList = readJSON(DB_ADMINS_FILE);
         const tokenAdmin = adminsList.find(a => a.email && a.email.toLowerCase() === sess.email);
         if (!tokenAdmin) {
             delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Conta nao encontrada. Faca login novamente.', sessionRevoked: true });
+            return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
         }
         sess.lastSeen = now;
         req.adminSessionToken = adminSessionToken;

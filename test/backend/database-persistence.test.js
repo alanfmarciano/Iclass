@@ -429,3 +429,23 @@ test('acesso rapido local escolhe somente as contas oficiais de teste', async ()
     expiredApp.use(createSetupModeRouter({ enabled: true, setupToken, now: () => currentTime, startedAt: 5000 }));
     await request(expiredApp).post('/api/setup/quick-session').send({ token: setupToken, profile: 'admin' }).expect(410);
 });
+
+test('[UC-NOTAS-004] no boot, cópias de nota e histórico de aluno já excluído ficam anonimizados', async () => {
+    db.memory.students = [{ name: 'Ativa', email: 'ativa@teste.local', status: 'Ativo', classes: [] }];
+    db.memory.submissions = [];
+    db.memory.auditLogs = [{
+        id: 'audit_grade_boot', actor: 'admin@teste.local', studentEmail: 'gabriela.lima@teste.local', action: 'grade_delete', field: 'Nota',
+        oldValue: 'Avaliação 1: 6,3 (3/4 acertos) · tentativa 1 · publicada', newValue: 'excluída', category: 'grade', submissionId: 'sub_boot', timestamp: 1,
+        details: { deletedSubmission: { id: 'sub_boot', examKey: 'Avaliacao_FUTEC_1', score: 63, student: { name: 'Gabriela Lima', email: 'gabriela.lima@teste.local', matricula: '2026-0042', courseId: 'curso-1', studentClass: '1DES' } } },
+    }];
+    await db.save();
+    // Outro processo sobe o banco gravado (como o servidor ao ligar).
+    const script = `const db = require(${JSON.stringify(require.resolve('../../backend/database.js'))});
+db.init().then(async () => { process.stdout.write(JSON.stringify(db.memory.auditLogs.find(item => item.id === 'audit_grade_boot'))); await db.close(); });`;
+    const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
+    const entry = JSON.parse(output.slice(output.indexOf('{"id"')));
+    assert.equal(entry.studentEmail, '');
+    assert.equal(entry.details.deletedSubmission.anonymized, true);
+    assert.equal(entry.details.deletedSubmission.score, 63);
+    assert.equal(/gabriela|2026-0042/i.test(JSON.stringify(entry)), false);
+});

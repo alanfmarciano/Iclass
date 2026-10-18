@@ -219,6 +219,39 @@ test('[UC-IMAGENS-001] só links do próprio site perdem o access=; link externo
     assert.ok(studentView.text.includes('https://drive.example.com/uploads/doc.pdf?access=chave-do-drive'));
 });
 
+test('[UC-IMAGENS-001] access= sai de link relativo (../uploads), do nome do próprio servidor no caminho do aluno e de sessão de instrutor válida em qualquer endereço', async () => {
+    const relative = stripStoredAccessTokens('![a](../uploads/a.png?access=TOK) ![b](uploads/b.png?v=1&access=TOK) <img src="./imagens/c.svg?access=TOK">');
+    // Antes do ajuste anterior a regex removia o token do ../uploads; depois deixou de remover.
+    assert.equal(relative, '![a](../uploads/a.png) ![b](uploads/b.png?v=1) <img src="./imagens/c.svg">');
+
+    // Apostila gravada pelo editor antigo, com o nome do próprio servidor (com pontos) e a sessão.
+    fs.writeFileSync(path.join(CONTENT_DIR, 'Apostila_POR_1.md'), [
+        '# Unidade 1',
+        '![Própria](https://iclass.escola.com.br/uploads/editor-img.png?access=sessao-velha)',
+        `![Sessão viva](https://outro-nome.escola.com.br/uploads/editor-img.png?access=${adminToken})`,
+        '[Drive](https://drive.example.com/uploads/doc.pdf?access=chave-do-drive)',
+        '![Relativa](../uploads/editor-img.png?access=sessao-velha-2)',
+    ].join('\n\n'));
+    const viaOwnName = await request(app).get('/Apostila_POR_1.md').set('x-session-token', tokens.ana).set('Host', 'iclass.escola.com.br');
+    assert.equal(viaOwnName.status, 200);
+    assert.ok(viaOwnName.text.includes('(https://iclass.escola.com.br/uploads/editor-img.png)'), 'o aluno recebia o token do instrutor no link com o nome do servidor');
+    assert.doesNotMatch(viaOwnName.text, new RegExp(adminToken));
+    assert.doesNotMatch(viaOwnName.text, /sessao-velha/);
+    assert.ok(viaOwnName.text.includes('https://drive.example.com/uploads/doc.pdf?access=chave-do-drive'), 'link externo fica intacto');
+
+    // Também pelo /api/data.js (mesmo leitor de apostila do aluno).
+    const data = await request(app).get(`/api/data.js?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', tokens.ana).set('Host', 'iclass.escola.com.br');
+    assert.equal(data.status, 200);
+    assert.doesNotMatch(data.text, new RegExp(adminToken));
+    assert.doesNotMatch(data.text, /sessao-velha/);
+
+    // Pelo IP da sala o nome com pontos não é reconhecido, mas a sessão viva sai mesmo assim.
+    const viaIp = await request(app).get('/Apostila_POR_1.md').set('x-session-token', tokens.ana).set('Host', '192.168.0.10:3000');
+    assert.doesNotMatch(viaIp.text, new RegExp(adminToken));
+    assert.ok(viaIp.text.includes('https://drive.example.com/uploads/doc.pdf?access=chave-do-drive'));
+
+});
+
 // ---------------------------------------------------------------- FUN-X2 / CRIT-02
 
 function setTodayGrade(className, startMinutes) {
@@ -478,7 +511,10 @@ test('[UC-SIGILO-001] "resposta do professor" sem a palavra gabarito fica; gabar
         '<h2>Leitura complementar</h2>', 'visível-6',
         '> ## GABARITO DO PROFESSOR', '> 1. B segredo-5', '> 2. C segredo-6', '',
         'visível-7 depois da citação',
-        '<p><strong>Gabarito oficial</strong></p>', 'segredo-7', '', '---', 'visível-8',
+        // "---" no meio das respostas não encerra o gabarito em negrito (antes encerrava e
+        // o resto vazava); ele vai até o próximo título de verdade.
+        '<p><strong>Gabarito oficial</strong></p>', 'segredo-7', '', '---', 'segredo-7b',
+        '## Depois do gabarito', 'visível-8',
         '**Respostas do gabarito (professor)**', 'segredo-8', '## Fim', 'visível-9',
         'Texto com **negrito** e **outro** visível-10',
     ].join('\n');
@@ -489,4 +525,85 @@ test('[UC-SIGILO-001] "resposta do professor" sem a palavra gabarito fica; gabar
         assert.ok(out.includes(title), `sumiu o título: ${title}`);
     }
     assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
+});
+
+test('[UC-SIGILO-001] gabarito em negrito com subtítulos e "---", <h2> no meio da linha ou em várias linhas e em itálico sai; aviso em negrito fica', async () => {
+    const markdown = [
+        '# Redes',
+        '',
+        'Intro',
+        '',
+        // Aviso em negrito que cita o gabarito: é frase, não título (antes sumia tudo até o próximo título).
+        '**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**',
+        '',
+        'Parágrafo legítimo 1 sobre o tema.',
+        '',
+        '![diagrama](/imagens/redes/diagrama.png)',
+        '',
+        'Mais conteúdo legítimo.',
+        '',
+        '## Exercícios',
+        '',
+        '1. Quanto é 2 + 2?',
+        '',
+        '**GABARITO DO PROFESSOR**',
+        '',
+        '**Parte objetiva**',
+        '',
+        '1. B SEGREDO_1',
+        '',
+        '---',
+        '',
+        '**Seção A**',
+        '',
+        '**Parte discursiva**',
+        '',
+        'Resposta esperada SEGREDO_2',
+        '',
+        '## Leitura complementar',
+        '',
+        'visível-1',
+        '',
+        '<div><h2>GABARITO DO PROFESSOR</h2><p>1. B SEGREDO_3</p></div>',
+        '<p>2. C SEGREDO_4</p>',
+        '<h2>Próxima parte</h2><p>visível-2</p>',
+        '',
+        '<h2 class="gab">',
+        '  GABARITO DO PROFESSOR',
+        '</h2>',
+        '<p>1. D SEGREDO_5</p>',
+        '',
+        '## Anexo',
+        '',
+        'visível-3',
+        '',
+        '*GABARITO DO PROFESSOR*',
+        '',
+        '1. A SEGREDO_6',
+        '',
+        '## Fim',
+        '',
+        'visível-4',
+        '',
+        '```html',
+        '<h2>Gabarito do professor</h2> exemplo de HTML visível-5',
+        '```',
+    ].join('\n');
+    const out = stripAnswerKeyBlocks(markdown);
+    assert.doesNotMatch(out, /SEGREDO_\d/);
+    for (const kept of ['Atenção: o gabarito oficial será divulgado pelo professor após a prova.', 'Parágrafo legítimo 1 sobre o tema.', '![diagrama](/imagens/redes/diagrama.png)', 'Mais conteúdo legítimo.', '1. Quanto é 2 + 2?', '## Leitura complementar', '<h2>Próxima parte</h2>', 'visível-1', 'visível-2', 'visível-3', 'visível-4', '<h2>Gabarito do professor</h2> exemplo de HTML visível-5']) {
+        assert.ok(out.includes(kept), `sumiu: ${kept}`);
+    }
+    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
+    // Sem gabarito, o texto não muda (nem as quebras de linha do HTML).
+    const plain = '# Título\n\n<div><h2>Resumo</h2><p>texto</p></div>\n\n**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**\n\nfim';
+    assert.equal(stripAnswerKeyBlocks(plain), plain);
+
+    // Caminho do aluno: apostila salva pelo administrador e lida pelo aluno (/:key.md e /api/data.js).
+    const saved = await request(app).put('/api/admin/material/Apostila_POR_1').set('x-admin-session', adminToken).send({ markdownText: markdown });
+    assert.equal(saved.status, 200, saved.body && saved.body.error);
+    const studentView = await request(app).get('/Apostila_POR_1.md').set('x-session-token', tokens.ana);
+    assert.equal(studentView.status, 200);
+    assert.doesNotMatch(studentView.text, /SEGREDO_\d/);
+    assert.ok(studentView.text.includes('Parágrafo legítimo 1 sobre o tema.'));
 });

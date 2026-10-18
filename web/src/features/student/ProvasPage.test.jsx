@@ -54,6 +54,21 @@ describe('Provas do aluno · média', () => {
   })
 })
 
+describe('Provas do aluno · distribuição por faixa', () => {
+  it('[UC-NOTAS-003] faixas de nota com vírgula decimal, sem ponto', async () => {
+    // Antes os rótulos eram '7-8.9', '6-6.9' e '0-5.9'.
+    mocks.submissions = [
+      sub('a1', { score: 95 }),
+      sub('b1', { examKey: 'Avaliacao_FUTEC_2', score: 75 }),
+      sub('c1', { examKey: 'Avaliacao_FUTEC_3', score: 50 }),
+    ]
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    const card = (await screen.findByText('Por faixa de nota')).parentElement
+    for (const label of ['9–10', '7–8,9', '6–6,9', '0–5,9']) expect(within(card).getByText(label)).toBeInTheDocument()
+    expect(card.textContent).not.toMatch(/\d\.\d/)
+  })
+})
+
 describe('Provas do aluno · impressão da prova', () => {
   it('[UC-NOTAS-003] a nota impressa sai com vírgula e a questão com acento', () => {
     // Antes a impressão mostrava "Nota 7.5".

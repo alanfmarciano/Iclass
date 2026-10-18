@@ -255,6 +255,12 @@ test('[UC-BACKUP-001] o arquivo enviado para restaurar é apagado (não vai para
     assert.equal(failure.details.file, 'backup.json');
     assert.ok(failure.details.error);
     assert.equal(failure.type, undefined);
+    // As recusas antes da restauração (sem confirmação, formato inválido) também ficam
+    // no histórico; antes só a falha dentro da restauração era registrada.
+    const failures = db.memory.auditLogs.filter(entry => entry.action === 'backup_restore_failed');
+    assert.equal(failures.length, 3);
+    assert.deepEqual(failures.map(entry => entry.details.file), ['backup.json', 'backup.png', 'backup.json']);
+    assert.match(failures[0].details.error, /RESTAURAR/);
     db.memory.adminSessions = { [adminToken]: { email: 'admin@g6.local', createdAt: Date.now(), lastSeen: Date.now() } };
 
     const response = await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
@@ -399,6 +405,122 @@ test('[UC-BACKUP-001] professor que liga um backup à estrutura da turma ou a um
     const asStudent = await request(app).get(`/uploads/${files.json}`).set('x-session-token', login.body.sessionToken);
     assert.equal(asStudent.status, 403);
     db.memory.library = [];
+});
+
+function sqliteFile(statements) {
+    const file = path.join(tempRoot, `exemplo-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    return new Promise((resolve, reject) => {
+        const database = new sqlite3.Database(file);
+        database.serialize(() => statements.forEach(sql => database.run(sql)));
+        database.close(error => {
+            if (error) return reject(error);
+            const bytes = fs.readFileSync(file);
+            fs.rmSync(file, { force: true });
+            resolve(bytes);
+        });
+    });
+}
+
+test('[UC-BACKUP-001] ZIP gravado como .json, ZIP com bytes antes, ZIP dentro de ZIP e pasta de dados com o banco: só o administrador', async () => {
+    const fileStore = require('../../backend/utils/storage.js');
+    const AdmZip = require('adm-zip');
+    await db.save();
+    const stamp = Date.now();
+    const fullZip = backup.buildFullZipBuffer();
+    const inner = new AdmZip();
+    inner.addFile('copia.json', Buffer.from(JSON.stringify(backup.buildDataSnapshot())));
+    const nested = new AdmZip();
+    nested.addFile('pacote/material.zip', inner.toBuffer());
+    // Banco do iClass (mesmo esquema de database.js), sem nenhum hash dentro.
+    const iclassDb = await sqliteFile(['CREATE TABLE IF NOT EXISTS admins (key TEXT PRIMARY KEY, value TEXT)', 'CREATE TABLE IF NOT EXISTS students (key TEXT PRIMARY KEY, value TEXT)']);
+    const dataFolder = new AdmZip();
+    dataFolder.addFile('data/database.db', iclassDb);
+    const disguisedDb = new AdmZip();
+    disguisedDb.addFile('notas/planilha.bin', iclassDb);
+    const files = {
+        // Achado da revisão: o backup completo gravado com nome .json passava (200).
+        zipAsJson: [`${stamp}-601.json`, fullZip],
+        prefixedZip: [`${stamp}-602.json`, Buffer.concat([Buffer.from('MZ-autoextraivel-'), fullZip])],
+        nestedZip: [`${stamp}-603.zip`, nested.toBuffer()],
+        dataFolder: [`${stamp}-604.zip`, dataFolder.toBuffer()],
+        disguisedDb: [`${stamp}-605.zip`, disguisedDb.toBuffer()],
+        rawDbAsJson: [`${stamp}-606.json`, iclassDb],
+    };
+    Object.values(files).forEach(([name, bytes]) => fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, name), bytes));
+    const unitFiles = Object.values(files).map(([name], index) => ({ id: `z${index}`, name, path: `/uploads/${name}`, type: 'other' }));
+    const saved = await request(app).post(`/api/admin/courses/${courseA}/structure`).set('x-admin-session', professorToken)
+        .send({ scope: 'class', studentClass: 'TURMA A', structure: [{ id: 'm1', name: 'Módulo', units: [{ id: 'u1', name: 'Unidade', apostilaKey: 'Apostila_G6', files: unitFiles }] }] });
+    assert.equal(saved.status, 200, saved.body && saved.body.error);
+    const login = await request(app).post('/api/student/login').send({ email: 'ana@g6.local', password: '123' });
+    assert.equal(login.status, 200, login.body && login.body.error);
+    db.memory.library = Object.values(files).map(([name], index) => ({ id: `lib-z${index}`, kind: 'file', courseId: courseA, filename: name, url: `/uploads/${name}` }));
+    for (const [label, [name]] of Object.entries(files)) {
+        const asProfessor = await request(app).get(`/uploads/${name}`).set('x-admin-session', professorToken);
+        assert.equal(asProfessor.status, 403, `${label}: o professor baixava`);
+        const asStudent = await request(app).get(`/uploads/${name}`).set('x-session-token', login.body.sessionToken);
+        assert.equal(asStudent.status, 403, `${label}: o aluno baixava`);
+        // O ZIP gravado como .json sai com Content-Type de JSON: lê o corpo sem interpretar.
+        const ignoreBody = (res, callback) => { res.on('data', () => {}); res.on('end', () => callback(null, null)); };
+        await request(app).get(`/uploads/${name}`).set('x-admin-session', adminToken).parse(ignoreBody).expect(200);
+    }
+    db.memory.library = [];
+});
+
+test('[UC-BACKUP-001] material de aula em ZIP com um banco SQLite de exemplo continua liberado ao aluno e ao professor', async () => {
+    const fileStore = require('../../backend/utils/storage.js');
+    const AdmZip = require('adm-zip');
+    const lojaDb = await sqliteFile([
+        'CREATE TABLE produtos (id INTEGER PRIMARY KEY, nome TEXT, preco REAL)',
+        "INSERT INTO produtos (nome, preco) VALUES ('Caderno', 12.5), ('Caneta', 3.2)",
+        'CREATE TABLE usuarios (id INTEGER PRIMARY KEY, login TEXT, senha TEXT)',
+        "INSERT INTO usuarios (login, senha) VALUES ('admin', '1234')",
+    ]);
+    const zip = new AdmZip();
+    zip.addFile('aula-sql/loja.db', lojaDb);
+    zip.addFile('aula-sql/loja.sqlite3', lojaDb);
+    zip.addFile('aula-sql/roteiro.txt', Buffer.from('Faça SELECT * FROM produtos;'));
+    zip.addFile('aula-sql/dados.json', Buffer.from(JSON.stringify({ produtos: [{ nome: 'Caderno' }] })));
+    // Slides (.pptx é ZIP) com uma planilha (.xlsx, outro ZIP) dentro: três níveis de ZIP legítimos.
+    const xlsx = new AdmZip();
+    xlsx.addFile('xl/workbook.xml', Buffer.from('<?xml version="1.0"?><workbook/>'));
+    const pptx = new AdmZip();
+    pptx.addFile('ppt/presentation.xml', Buffer.from('<?xml version="1.0"?><presentation/>'));
+    pptx.addFile('ppt/embeddings/Planilha.xlsx', xlsx.toBuffer());
+    const inner = new AdmZip();
+    inner.addFile('slides/aula.pptx', pptx.toBuffer());
+    zip.addFile('aula-sql/extras.zip', inner.toBuffer());
+    const name = `${Date.now()}-701.zip`;
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, name), zip.toBuffer());
+    db.memory.library = [{ id: 'lib-sql', kind: 'file', courseId: courseA, filename: name, url: `/uploads/${name}` }];
+    const login = await request(app).post('/api/student/login').send({ email: 'ana@g6.local', password: '123' });
+    // Antes: 403 "Arquivo disponível só para o administrador." para aluno e professor.
+    const asStudent = await request(app).get(`/uploads/${name}`).set('x-session-token', login.body.sessionToken);
+    assert.equal(asStudent.status, 200, asStudent.body && asStudent.body.error);
+    const asProfessor = await request(app).get(`/uploads/${name}`).set('x-admin-session', professorToken);
+    assert.equal(asProfessor.status, 200, asProfessor.body && asProfessor.body.error);
+    db.memory.library = [];
+});
+
+test('[UC-BACKUP-001] a conferência do ZIP não lê o arquivo inteiro de forma síncrona (não trava o servidor)', async () => {
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip();
+    zip.addFile('video/aula.mp4', Buffer.alloc(4 * 1024 * 1024, 7));
+    zip.addFile('exercicios.json', Buffer.from(JSON.stringify({ lista: [1, 2, 3] })));
+    const file = path.join(tempRoot, `${Date.now()}-sync.zip`);
+    fs.writeFileSync(file, zip.toBuffer());
+    const originalReadFileSync = fs.readFileSync;
+    const syncReads = [];
+    fs.readFileSync = function patched(target, ...args) {
+        if (String(target) === file) syncReads.push(target);
+        return originalReadFileSync.call(this, target, ...args);
+    };
+    try {
+        assert.equal(await backup.fileLooksLikeBackup(file), false);
+    } finally {
+        fs.readFileSync = originalReadFileSync;
+    }
+    // Antes o adm-zip lia o ZIP inteiro com readFileSync no primeiro pedido.
+    assert.deepEqual(syncReads, []);
 });
 
 // ---------------------------------------------------------------- SEG-04

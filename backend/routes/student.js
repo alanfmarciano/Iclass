@@ -1109,7 +1109,7 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
     if (text.length > 300) return res.status(400).json({ error: 'O detalhe deve ter no máximo 300 caracteres.' });
 
     const application = findExamApplication(db.memory.examApplications, applicationId);
-    if (!application) return res.status(404).json({ error: 'Aplicacao de prova nao encontrada.' });
+    if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
     if (!['waiting', 'running', 'paused'].includes(application.status)) {
         return res.status(409).json({ error: 'Esta aplicação já foi encerrada.' });
     }
@@ -1534,7 +1534,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     const courseId = String(req.query.courseId || '').trim();
     const className = String(req.query.studentClass || '').trim();
     const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === email);
-    if (!student) return res.status(404).json({ error: 'Aluno nao encontrado.' });
+    if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
 
     const classes = readJSON(DB_CLASSES_FILE);
     const cls = findClassByNameAndCourse(classes, className, courseId);
@@ -1561,7 +1561,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         const done = unitKeys.filter(key => completed[key]).length;
         return {
             id: module.id || module.key || `module_${moduleIndex}`,
-            name: module.name || module.title || `Modulo ${moduleIndex + 1}`,
+            name: module.name || module.title || `Módulo ${moduleIndex + 1}`,
             done,
             total: unitKeys.length,
             progress: unitKeys.length ? Math.round((done / unitKeys.length) * 100) : 0,
@@ -2102,9 +2102,9 @@ router.post('/api/admin/forum/resolve', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { commentId, resolved } = req.body;
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
-        if (!comment) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta duvida.' });
+        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         if (resolved) {
             comment.status = 'resolvida';
             comment.resolvedBy = matchedAdmin.email;
@@ -2125,9 +2125,9 @@ router.post('/api/admin/forum/faq', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { commentId, faq } = req.body;
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
-        if (!comment) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta duvida.' });
+        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         comment.isFaq = !!faq;
         comment.faqBy = faq ? matchedAdmin.email : null;
         comment.faqAt = faq ? new Date().toISOString() : null;
@@ -2141,12 +2141,12 @@ router.post('/api/admin/forum/restore', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { commentId, replyId } = req.body;
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
-        if (!comment) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta duvida.' });
+        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         if (replyId) {
             const reply = (comment.replies || []).find(r => r.id === replyId);
-            if (!reply) return res.status(404).json({ error: 'Resposta nao encontrada.' });
+            if (!reply) return res.status(404).json({ error: 'Resposta não encontrada.' });
             reply.deleted = false; reply.deletedAt = null; reply.deletedBy = null;
             logForumEvent(comment, 'restore_reply', adminActor(matchedAdmin));
         } else {
@@ -2163,7 +2163,7 @@ router.post('/api/admin/forum/purge', (req, res) => {
         if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores podem apagar definitivamente.' });
         const { commentId, replyId } = req.body;
         const idx = (db.memory.forum || []).findIndex(c => c.id === commentId);
-        if (idx === -1) return res.status(404).json({ error: 'Duvida nao encontrada.' });
+        if (idx === -1) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, db.memory.forum[idx])) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
         if (replyId) {
             const comment = db.memory.forum[idx];

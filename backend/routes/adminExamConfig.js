@@ -273,7 +273,7 @@ function normalizeLiveQuestion(payload = {}) {
     if (!text) throw Object.assign(new Error('O enunciado da questão é obrigatório.'), { status: 400 });
     if (alternatives.length < 2) throw Object.assign(new Error('Informe pelo menos duas alternativas.'), { status: 400 });
     if (!alternatives.some(alternative => alternative.letter === correctAnswer)) {
-        throw Object.assign(new Error('Selecione uma alternativa correta valida.'), { status: 400 });
+        throw Object.assign(new Error('Selecione uma alternativa correta válida.'), { status: 400 });
     }
     return { text, questionText: text, alternatives, correctAnswer };
 }

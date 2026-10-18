@@ -555,38 +555,155 @@ function recordGradeAudit(memory, { req, actor, submission, action, field = 'Not
     return entry;
 }
 
-// Aluno excluído (delete-student): as cópias das notas dele na lixeira
+// Aluno excluído (delete-student): o registro de auditoria fica como histórico,
+// mas sem ligação com a pessoa. As cópias das notas dele na lixeira
 // (auditLogs[].details.deletedSubmission) perdem nome, e-mail, matrícula e o
 // resto do cadastro que a entrega online copiava; ficam a prova, a nota, os
-// acertos, as respostas e o curso/turma, para a estatística. A cópia anonimizada
-// não volta para Resultados (não há a quem devolver). Devolve quantas mudaram.
+// acertos, as respostas e o curso/turma, para a estatística. As entradas do aluno
+// perdem o studentEmail (senão a busca da ficha pelo e-mail religava a cópia ao
+// aluno) e qualquer citação do e-mail, do nome ou da matrícula; nas alterações do
+// cadastro, o valor antigo/novo é o próprio dado pessoal e sai. A cópia anonimizada
+// não volta para Resultados (não há a quem devolver). Devolve quantas entradas mudaram.
 const ANONYMIZED_STUDENT_NAME = 'Aluno excluído';
+const ANONYMIZED_ACTOR = 'aluno excluído';
 const PERSONAL_SUBMISSION_FIELDS = ['studentEmail', 'studentName', 'studentMatricula', 'matricula', 'nomeSocial', 'email', 'name'];
 
-function anonymizeDeletedGradeCopies(memory, email, { at = new Date().toISOString() } = {}) {
-    const normalized = String(email || '').trim().toLowerCase();
-    if (!memory || !normalized || !Array.isArray(memory.auditLogs)) return 0;
-    let changed = 0;
+function normalizeEmailValue(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function deletedCopyEmail(copy) {
+    if (!copy || typeof copy !== 'object') return '';
+    const student = copy.student && typeof copy.student === 'object' ? copy.student : {};
+    return normalizeEmailValue(student.email || copy.studentEmail);
+}
+
+function anonymizeDeletedCopy(copy, at) {
+    const student = copy.student && typeof copy.student === 'object' ? copy.student : {};
+    const anonymized = { ...copy };
+    PERSONAL_SUBMISSION_FIELDS.forEach(field => { delete anonymized[field]; });
+    anonymized.student = {
+        name: ANONYMIZED_STUDENT_NAME,
+        email: '',
+        courseId: student.courseId || copy.courseId || null,
+        studentClass: student.studentClass || copy.studentClass || '',
+    };
+    anonymized.anonymized = true;
+    anonymized.anonymizedAt = at;
+    return anonymized;
+}
+
+// Troca, em qualquer texto da entrada, o e-mail, o nome e a matrícula do aluno.
+function scrubPersonalText(value, identity, key) {
+    if (typeof value === 'string') {
+        const lowered = value.trim().toLowerCase();
+        if (identity.emails.has(lowered)) return key === 'actor' ? ANONYMIZED_ACTOR : '';
+        if (identity.matriculas.has(value.trim())) return '';
+        let text = value;
+        identity.emails.forEach(email => { text = text.replace(new RegExp(escapeRegExp(email), 'gi'), ANONYMIZED_ACTOR); });
+        identity.names.forEach(name => {
+            text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), `$1${ANONYMIZED_STUDENT_NAME}`);
+        });
+        identity.matriculas.forEach(matricula => {
+            text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(matricula)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), '$1');
+        });
+        return text;
+    }
+    if (Array.isArray(value)) return value.map(item => scrubPersonalText(item, identity, key));
+    if (value && typeof value === 'object') {
+        const out = {};
+        Object.entries(value).forEach(([childKey, child]) => {
+            out[childKey] = childKey === 'id' ? child : scrubPersonalText(child, identity, childKey);
+        });
+        return out;
+    }
+    return value;
+}
+
+// identity: { emails, names, matriculas } do aluno excluído (o e-mail atual e,
+// se houve troca na versão antiga, o e-mail que ficou nas cópias).
+function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toISOString() } = {}) {
+    if (!memory || !Array.isArray(memory.auditLogs)) return 0;
+    const emails = new Set((identity.emails || []).map(normalizeEmailValue).filter(Boolean));
+    if (!emails.size) return 0;
+    const names = new Set((identity.names || []).map(name => String(name || '').trim()).filter(name => name.length >= 3));
+    const matriculas = new Set((identity.matriculas || []).map(value => String(value || '').trim()).filter(value => value.length >= 3));
+    // Nome e matrícula que as cópias da lixeira guardavam (o cadastro pode ter mudado depois).
     memory.auditLogs.forEach(entry => {
         const copy = entry && entry.details && entry.details.deletedSubmission;
         if (!copy || typeof copy !== 'object' || copy.anonymized === true) return;
+        if (!emails.has(deletedCopyEmail(copy)) && !emails.has(normalizeEmailValue(entry.studentEmail))) return;
         const student = copy.student && typeof copy.student === 'object' ? copy.student : {};
-        const copyEmail = String(student.email || copy.studentEmail || '').trim().toLowerCase();
-        // A troca de e-mail antiga renomeava só o studentEmail da auditoria.
-        const auditEmail = String(entry.studentEmail || '').trim().toLowerCase();
-        if (copyEmail !== normalized && auditEmail !== normalized) return;
-        const anonymized = { ...copy };
-        PERSONAL_SUBMISSION_FIELDS.forEach(field => { delete anonymized[field]; });
-        anonymized.student = {
-            name: ANONYMIZED_STUDENT_NAME,
-            email: '',
-            courseId: student.courseId || copy.courseId || null,
-            studentClass: student.studentClass || copy.studentClass || '',
-        };
-        anonymized.anonymized = true;
-        anonymized.anonymizedAt = at;
-        entry.details = { ...entry.details, deletedSubmission: anonymized };
+        [student.name, student.nomeSocial, copy.studentName, copy.nomeSocial].forEach(name => { if (String(name || '').trim().length >= 3) names.add(String(name).trim()); });
+        [student.matricula, copy.matricula, copy.studentMatricula].forEach(value => { if (String(value || '').trim().length >= 3) matriculas.add(String(value).trim()); });
+    });
+    const scrubIdentity = { emails, names: [...names].sort((a, b) => b.length - a.length), matriculas };
+    let changed = 0;
+    memory.auditLogs.forEach((entry, index) => {
+        if (!entry || typeof entry !== 'object') return;
+        const copy = entry.details && entry.details.deletedSubmission;
+        const auditEmail = normalizeEmailValue(entry.studentEmail);
+        const ownsEntry = emails.has(auditEmail) || (copy && emails.has(deletedCopyEmail(copy)));
+        const serialized = JSON.stringify(entry).toLowerCase();
+        const mentions = [...emails].some(email => serialized.includes(email));
+        if (!ownsEntry && !mentions) return;
+        let next = { ...entry };
+        if (copy && typeof copy === 'object' && copy.anonymized !== true && ownsEntry) {
+            next.details = { ...next.details, deletedSubmission: anonymizeDeletedCopy(copy, at) };
+        }
+        // Alteração do cadastro (recordStudentAudit): o valor é o próprio dado pessoal.
+        const profileChange = ownsEntry && !next.type && next.category !== 'grade' && !String(next.action || '').startsWith('grade_') && 'field' in next;
+        if (profileChange) { next.oldValue = ''; next.newValue = ''; }
+        next = scrubPersonalText(next, scrubIdentity, '');
+        if (ownsEntry) {
+            next.studentEmail = '';
+            next.studentAnonymized = true;
+            if (!next.anonymizedAt) next.anonymizedAt = at;
+        }
+        memory.auditLogs[index] = next;
         changed += 1;
+    });
+    return changed;
+}
+
+// Migração (boot, idempotente): alunos excluídos antes desta correção deixaram as
+// cópias completas na lixeira e o histórico ligado ao e-mail. Um e-mail conta como
+// de aluno excluído quando sumiu do cadastro, não tem nenhuma entrega e não está num
+// curso arquivado (o arquivamento tira o aluno do cadastro, mas ele pode voltar).
+// archivedEmails: função chamada só se houver candidatos (lê os cursos arquivados).
+function anonymizeAuditOfRemovedStudents(memory, { archivedEmails = () => new Set(), at = new Date().toISOString() } = {}) {
+    if (!memory || !Array.isArray(memory.auditLogs) || !memory.auditLogs.length) return 0;
+    const registered = new Set((memory.students || []).map(student => normalizeEmailValue(student && student.email)).filter(Boolean));
+    // Cadastro vazio (banco novo ou tabela que não carregou): sem base para comparar, não mexe.
+    if (!registered.size) return 0;
+    const withSubmissions = new Set((memory.submissions || []).map(item => normalizeEmailValue(item && ((item.student && item.student.email) || item.studentEmail))).filter(Boolean));
+    const alive = email => registered.has(email) || withSubmissions.has(email);
+    // Grupos de e-mails do mesmo aluno: a cópia da lixeira pode ter o e-mail antigo
+    // e a auditoria o novo (troca de e-mail na versão antiga).
+    const groups = [];
+    memory.auditLogs.forEach(entry => {
+        if (!entry || typeof entry !== 'object' || entry.studentAnonymized === true) return;
+        const copy = entry.details && entry.details.deletedSubmission;
+        const emails = [normalizeEmailValue(entry.studentEmail), copy && copy.anonymized !== true ? deletedCopyEmail(copy) : '']
+            .filter(email => email && email.includes('@'));
+        if (emails.length) groups.push([...new Set(emails)]);
+    });
+    const candidates = groups.filter(emails => !emails.some(alive));
+    if (!candidates.length) return 0;
+    let archived;
+    try { archived = archivedEmails() || new Set(); } catch (error) { return 0; }
+    const done = new Set();
+    let changed = 0;
+    candidates.forEach(emails => {
+        if (emails.some(email => archived.has(email))) return;
+        const key = emails.slice().sort().join('|');
+        if (done.has(key)) return;
+        done.add(key);
+        changed += anonymizeStudentAuditTrail(memory, { emails }, { at });
     });
     return changed;
 }
@@ -605,6 +722,14 @@ function describeSubmissionGrade(submission, title) {
 // prova gravados por recordExamAudit (encerramento, anulação, troca e correção de
 // questão, contestações) e as alterações de nota das entregas dessa aplicação.
 const ANNUL_MODE_LABELS = { ponto_para_todos: 'ponto para todos', remover_do_total: 'removida do total' };
+// Mesmos rótulos do Monitor (MonitorPage.jsx).
+const REPORT_REASON_LABELS = {
+    sem_resposta_correta: 'Nenhuma resposta correta',
+    duas_corretas: 'Mais de uma resposta correta',
+    enunciado_confuso: 'Enunciado confuso',
+    erro_digitacao: 'Erro de digitação',
+    outro: 'Outro',
+};
 
 function countLabel(count, one, many) {
     const n = Number(count) || 0;
@@ -640,6 +765,14 @@ function describeExamAudit(entry) {
             };
         case 'exam_question_corrected_live':
             return { title: `Questão ${details.questionNumber} corrigida durante a aplicação`, detail: regradedLabel(details.regraded) };
+        case 'exam_question_reported':
+            // Antes caía no padrão e mostrava a chave técnica "exam_question_reported".
+            return {
+                title: Number.isFinite(Number(details.questionNumber)) && details.questionNumber !== null
+                    ? `Questão ${details.questionNumber} contestada pelo aluno`
+                    : 'Questão contestada pelo aluno',
+                detail: REPORT_REASON_LABELS[details.reason] || '',
+            };
         case 'exam_question_reports_reviewed':
             return {
                 title: Number.isFinite(Number(details.questionNumber)) && details.questionNumber !== null
@@ -682,7 +815,7 @@ function buildApplicationAuditTrail(application, auditLogs = [], { students = []
             at: auditTime(entry.timestamp),
             actor: entry.actor || '',
             kind: 'grade',
-            title: `${entry.field || 'Nota'} · ${nameByEmail.get(email) || email || 'aluno'}`,
+            title: `${entry.field || 'Nota'} · ${nameByEmail.get(email) || email || (entry.studentAnonymized ? ANONYMIZED_STUDENT_NAME : 'aluno')}`,
             detail: entry.oldValue ? `${entry.oldValue} → ${entry.newValue}` : String(entry.newValue || ''),
             studentEmail: email || null,
             submissionId: entry.submissionId || null,
@@ -704,7 +837,8 @@ module.exports = {
     buildClassGradebook,
     buildCsv,
     buildGradeGroups,
-    anonymizeDeletedGradeCopies,
+    anonymizeAuditOfRemovedStudents,
+    anonymizeStudentAuditTrail,
     buildApplicationAuditTrail,
     buildStudentReportModules,
     createResolvedGroupKey,

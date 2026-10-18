@@ -112,15 +112,24 @@ function setextHeadingLevel(line, next) {
     return underline[1][0] === '=' ? 1 : 2;
 }
 
-// Parágrafo só em negrito ("**GABARITO DO PROFESSOR**", "<p><strong>...</strong></p>")
-// funciona como título: nível 7, abaixo de qualquer título de verdade.
+// Parágrafo só em negrito ou itálico ("**GABARITO DO PROFESSOR**", "*Gabarito
+// oficial*", "<p><strong>...</strong></p>") funciona como título: nível 7, abaixo de
+// qualquer título de verdade. Só conta se parecer título (curto e sem ponto final):
+// "**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**" é um
+// aviso, não o começo do gabarito.
 const BOLD_LINE_LEVEL = 7;
-const MARKDOWN_BOLD_LINE = /^\s{0,3}(\*\*|__)(?!\s)((?:(?!\1).)+)\1\s*:?\s*$/;
-const HTML_BOLD_LINE = /^\s{0,3}(?:<p\b[^>]*>\s*)?<(strong|b)\b[^>]*>([\s\S]+?)<\/\1>\s*:?\s*(?:<\/p>)?\s*$/i;
+const MARKDOWN_BOLD_LINE = /^\s{0,3}(\*{1,3}|_{1,3})(?!\s)((?:(?!\1).)+)\1\s*:?\s*$/;
+const HTML_BOLD_LINE = /^\s{0,3}(?:<p\b[^>]*>\s*)?<(strong|b|em|i)\b[^>]*>([\s\S]+?)<\/\1>\s*:?\s*(?:<\/p>)?\s*$/i;
 const HTML_HEADING_LINE = /^\s{0,3}<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>\s*$/i;
-const THEMATIC_BREAK = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
-// Negrito que é item do próprio gabarito ("**Questão 2**", "**1.**") não encerra o bloco.
-const ANSWER_ITEM_LABEL = /^(\d|q\s*\d|questao|questoes|item|letra|alternativa|resposta|exercicio)/;
+const MAX_BOLD_TITLE_WORDS = 8;
+
+function looksLikeTitle(text) {
+    const plain = decodeHtmlEntities(String(text || '').replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+    const words = normalizedLabel(plain).split(' ').filter(Boolean);
+    if (!words.length || words.length > MAX_BOLD_TITLE_WORDS) return false;
+    // Frase terminada em ponto é aviso; "Gabarito do prof." é abreviação.
+    return !/[.!?…]\s*$/.test(plain) || /\bprof\.\s*$/i.test(plain);
+}
 
 const BLOCKQUOTE_PREFIX = /^(?:\s{0,3}>\s?)+/;
 function quoteDepth(line) {
@@ -137,16 +146,59 @@ function lineHeading(inner, nextInner) {
     const setext = setextHeadingLevel(inner, nextInner);
     if (setext) return { level: setext, text: inner, span: 2 };
     const bold = MARKDOWN_BOLD_LINE.exec(inner) || HTML_BOLD_LINE.exec(inner);
-    if (bold && normalizedLabel(bold[2])) return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true };
+    if (bold && normalizedLabel(bold[2]) && looksLikeTitle(bold[2])) return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true };
     return null;
 }
 
+// Título HTML do gabarito no meio de uma linha ("<div><h2>GABARITO DO PROFESSOR</h2>
+// <p>1. B</p></div>") ou quebrado em várias linhas ("<h2>\nGABARITO\n</h2>"): quando
+// o texto tem um, cada <h1>-<h6> passa a ocupar uma linha inteira, para a seção ser
+// reconhecida e terminar no título seguinte. Blocos de código não mudam.
+const HTML_HEADING_ANYWHERE = /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi;
+const FENCE_LINE = /^(?:\s{0,3}>\s?)*\s{0,3}(```|~~~)/;
+
+function isolateHtmlHeadings(markdown) {
+    const source = String(markdown || '');
+    const hasTeacherHtmlHeading = [...source.matchAll(HTML_HEADING_ANYWHERE)].some(match => isTeacherAnswerKeyHeading(match[2]));
+    if (!hasTeacherHtmlHeading) return source;
+    const lines = source.split('\n');
+    const output = [];
+    let segment = [];
+    const flush = () => {
+        if (!segment.length) return;
+        const text = segment.join('\n').replace(HTML_HEADING_ANYWHERE, (match, level, inner, offset, whole) => {
+            const heading = match.replace(/\s*\n\s*/g, ' ');
+            const before = offset > 0 && whole[offset - 1] !== '\n' ? '\n' : '';
+            const afterIndex = offset + match.length;
+            const after = afterIndex < whole.length && whole[afterIndex] !== '\n' ? '\n' : '';
+            return `${before}${heading}${after}`;
+        });
+        output.push(text);
+        segment = [];
+    };
+    let inFence = false;
+    lines.forEach(line => {
+        if (FENCE_LINE.test(line)) {
+            if (!inFence) flush();
+            inFence = !inFence;
+            output.push(line);
+            return;
+        }
+        if (inFence) output.push(line);
+        else segment.push(line);
+    });
+    flush();
+    return output.join('\n');
+}
+
 // Remove a seção do professor até o próximo título do mesmo nível ou acima (títulos
-// com #, sublinhados, <h1>-<h6> e parágrafos só em negrito). Dentro de citação
-// ("> ## GABARITO DO PROFESSOR") a seção acaba também quando a citação termina.
-// Títulos dentro de bloco de código não contam.
+// com #, sublinhados, <h1>-<h6> e parágrafos só em negrito). A seção aberta por um
+// parágrafo em negrito vai até o próximo título de verdade: subtítulos em negrito
+// ("**Parte objetiva**") e linhas "---" no meio das respostas não a encerram. Dentro
+// de citação ("> ## GABARITO DO PROFESSOR") a seção acaba também quando a citação
+// termina. Títulos dentro de bloco de código não contam.
 function stripTeacherHeadingSections(markdown) {
-    const lines = String(markdown || '').split('\n');
+    const lines = isolateHtmlHeadings(markdown).split('\n');
     const output = [];
     let skip = null;
     let inFence = false;
@@ -171,13 +223,9 @@ function stripTeacherHeadingSections(markdown) {
             const heading = lineHeading(inner, nextInner);
             if (heading) {
                 span = heading.span;
-                if (skip && heading.level <= skip.level && depth <= skip.depth
-                    && !(heading.bold && skip.level === BOLD_LINE_LEVEL && ANSWER_ITEM_LABEL.test(normalizedLabel(heading.text)))) {
-                    skip = null;
-                }
+                const closes = !!skip && (skip.level === BOLD_LINE_LEVEL ? heading.level < BOLD_LINE_LEVEL : heading.level <= skip.level);
+                if (closes && depth <= skip.depth) skip = null;
                 if (!skip && isTeacherAnswerKeyHeading(heading.text)) skip = { level: heading.level, depth };
-            } else if (skip && skip.level === BOLD_LINE_LEVEL && depth <= skip.depth && THEMATIC_BREAK.test(inner)) {
-                skip = null;
             }
         }
         if (!skip) output.push(...lines.slice(index, index + span));
@@ -254,24 +302,45 @@ function isOwnHost(host, ownHosts) {
 
 // Remove ?access=<sessão> de links /uploads e /imagens do PRÓPRIO site (o editor
 // antigo gravava a sessão do instrutor na apostila): caminho que começa em /uploads/
-// ou /imagens/, ou com a origem do próprio servidor. Link externo que por acaso tem
-// /uploads/ no caminho (https://drive.example.com/uploads/doc.pdf?access=X) fica
-// intacto. contentMedia.js reexporta para o editor.
-const STORED_FILE_LINK = /(^|[\s("'<>=\[,])((?:https?:)?\/\/([^\s/)"'<>?#]+))?(\/(?:uploads|imagens)\/[^\s)"'<>?#]+)\?([^\s)"'<>#]*)/gi;
+// ou /imagens/, caminho relativo (uploads/, ./uploads/, ../uploads/) ou com a origem
+// do próprio servidor (rede da sala, nome da máquina ou o Host da requisição). Link
+// externo que por acaso tem /uploads/ no caminho
+// (https://drive.example.com/uploads/doc.pdf?access=X) fica intacto, a não ser que o
+// access= seja uma sessão de instrutor ainda válida: essa nunca sai para o aluno,
+// qualquer que seja o endereço gravado. contentMedia.js reexporta para o editor.
+const STORED_FILE_LINK = /(^|[\s("'<>=\[,])(?:((?:https?:)?\/\/([^\s/)"'<>?#]+))(\/(?:uploads|imagens)\/[^\s)"'<>?#]+)|((?:\.{1,2}\/)*\/?(?:uploads|imagens)\/[^\s)"'<>?#]+))\?([^\s)"'<>#]*)/gi;
 
-function stripStoredAccessTokens(markdown, { ownHosts = [] } = {}) {
-    return String(markdown || '').replace(STORED_FILE_LINK, (match, lead, origin, host, filePath, query) => {
-        if (origin && !isOwnHost(host, ownHosts)) return match;
-        const kept = query.split(/&(?:amp;)?/).filter(part => part && !/^access=/i.test(part));
+function liveInstructorSessionTokens() {
+    return new Set(Object.keys((db.memory && db.memory.adminSessions) || {}).filter(Boolean));
+}
+
+function decodedParamValue(part) {
+    const value = part.slice(part.indexOf('=') + 1);
+    try { return decodeURIComponent(value.replace(/\+/g, ' ')); } catch (error) { return value; }
+}
+
+function stripStoredAccessTokens(markdown, { ownHosts = [], sessionTokens = liveInstructorSessionTokens() } = {}) {
+    return String(markdown || '').replace(STORED_FILE_LINK, (match, lead, origin, host, absolutePath, relativePath, query) => {
+        const filePath = absolutePath || relativePath;
+        const parts = query.split(/&(?:amp;)?/);
+        const isAccess = part => /^access=/i.test(part);
+        const external = origin && !isOwnHost(host, ownHosts);
+        const drop = external
+            ? part => isAccess(part) && sessionTokens.has(decodedParamValue(part))
+            : isAccess;
+        if (!parts.some(part => part && drop(part))) return match;
+        const kept = parts.filter(part => part && !drop(part));
         return `${lead}${origin || ''}${filePath}${kept.length ? `?${kept.join('&')}` : ''}`;
     });
 }
 
-async function readApostila(key) {
+// ownHosts: o Host da requisição do aluno, para links gravados com o nome do próprio
+// servidor (https://iclass.escola.com.br/uploads/x.png?access=...).
+async function readApostila(key, { ownHosts = [] } = {}) {
     const filePath = await findContentFile(key);
     if (!filePath) return null;
     try {
-        return stripStoredAccessTokens(stripAnswerKeyBlocks(await fs.promises.readFile(filePath, 'utf8')));
+        return stripStoredAccessTokens(stripAnswerKeyBlocks(await fs.promises.readFile(filePath, 'utf8')), { ownHosts });
     } catch (error) {
         return null;
     }

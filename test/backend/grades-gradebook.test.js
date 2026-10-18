@@ -18,6 +18,7 @@ const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { errorHandler } = require('../../backend/middlewares.js');
 const { regradeSubmission } = require('../../backend/utils/examGrading.js');
+const { anonymizeAuditOfRemovedStudents } = require('../../backend/utils/gradebook.js');
 
 let app;
 // Funções de nota da interface (web/src/lib/grades.js), para comparar com o que a tela mostra.
@@ -887,6 +888,19 @@ test('[UC-NOTAS-004] excluir o aluno anonimiza as cópias das notas dele na lixe
     // A ficha de auditoria pelo e-mail antigo também não devolve mais o cadastro.
     const audit = await admin(request(app).get('/api/admin/student/audit?email=ana@notas.local'));
     assert.equal(JSON.stringify(audit.body).includes('MAT-2026-001'), false);
+    // Nem religa a cópia ao aluno: a própria entrada da exclusão perdia só a cópia e
+    // continuava com studentEmail, e a busca da ficha pelo e-mail devolvia nota e prova.
+    assert.equal(entry.studentEmail, '');
+    assert.equal(entry.studentAnonymized, true);
+    assert.equal(audit.body.some(item => item.id === entry.id), false);
+    assert.deepEqual(audit.body, []);
+    const anaTrail = db.memory.auditLogs.filter(item => item.submissionId === 'ana_online');
+    assert.ok(anaTrail.length >= 1);
+    for (const item of anaTrail) {
+        const text = JSON.stringify(item);
+        assert.equal(text.includes('ana@notas.local'), false, `${item.action} ainda tem o e-mail`);
+        assert.equal(item.studentEmail, '');
+    }
 
     // A nota da Bia (outra aluna) continua completa e restaurável.
     const bia = db.memory.auditLogs.find(item => item.action === 'grade_delete' && item.details.deletedSubmission.id === 'bia_p1');
@@ -953,4 +967,95 @@ test('[UC-NOTAS-004] registro da aplicação não fala em "0 tentativas descarta
     db.memory.auditLogs = [finishEntry('fin_submit_1', { policy: 'submit', submitted: 1, discarded: 0 })];
     trail = await admin(request(app).get('/api/admin/exam-applications/app_1/audit'));
     assert.equal(trail.body.entries.find(entry => entry.title === 'Aplicação encerrada').detail, '1 prova em andamento enviada pelo professor');
+
+    // Contestação do aluno: antes aparecia como "Evento da prova · exam_question_reported".
+    db.memory.auditLogs = [{ ...finishEntry('rep_1', { reportId: 'r1', questionNumber: 3, reason: 'duas_corretas' }), type: 'exam_question_reported', actor: 'ana@notas.local' }];
+    trail = await admin(request(app).get('/api/admin/exam-applications/app_1/audit'));
+    const reported = trail.body.entries.find(entry => entry.id === 'rep_1');
+    assert.equal(reported.title, 'Questão 3 contestada pelo aluno');
+    assert.equal(reported.detail, 'Mais de uma resposta correta');
+    assert.equal(JSON.stringify(trail.body.entries).includes('exam_question_reported'), false);
+});
+
+test('[UC-NOTAS-004] excluir o aluno tira o e-mail, o nome e o cadastro de todo o histórico dele na auditoria', async () => {
+    db.memory.students[0].matricula = 'MAT-2026-001';
+    // Alteração de cadastro (Nome) feita pela ficha: valores são dado pessoal.
+    const updated = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: 'ana@notas.local', email: 'ana@notas.local', name: 'Ana Souza', matricula: 'MAT-2026-001', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    assert.equal(updated.status, 200, updated.body.error);
+    const profile = db.memory.auditLogs.find(item => item.field === 'Nome completo' && item.studentEmail === 'ana@notas.local');
+    assert.ok(profile, 'a troca de nome gera auditoria');
+    db.memory.auditLogs.push(
+        { id: 'audit_exam_report_x', type: 'exam_question_reported', actor: 'ana@notas.local', applicationId: 'app_1', examKey: 'Avaliacao_P1', studentClass: '1DES', courseId: COURSE_A, details: { reportId: 'r1', questionNumber: 1, reason: 'outro' }, timestamp: Date.now() },
+        { id: 'audit_exam_finish_x', type: 'exam_application_finished', actor: 'admin@notas.local', applicationId: 'app_1', examKey: 'Avaliacao_P1', studentClass: '1DES', courseId: COURSE_A, details: { policy: 'submit', submitted: 2, students: [{ email: 'ana@notas.local', answeredQuestions: 3 }, { email: 'bia@notas.local', answeredQuestions: 4 }] }, timestamp: Date.now() },
+        { id: 'audit_bia_x', actor: 'admin@notas.local', studentEmail: 'bia@notas.local', action: 'update', field: 'Nome', oldValue: 'Bia', newValue: 'Bia Lima', timestamp: Date.now() },
+    );
+    db.memory.submissions = [submission('ana_p1', { name: 'Ana Souza', score: 63, extra: { correctCount: 3, totalCount: 4 } })];
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_p1' })).status, 200);
+
+    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' })).status, 200);
+
+    const leaks = db.memory.auditLogs.filter(item => /ana@notas\.local|Ana Souza|MAT-2026-001/i.test(JSON.stringify(item)));
+    assert.deepEqual(leaks.map(item => item.id), [], 'nenhuma entrada cita o e-mail, o nome ou a matrícula');
+    const profileAfter = db.memory.auditLogs.find(item => item.id === profile.id);
+    assert.equal(profileAfter.studentEmail, '');
+    assert.equal(profileAfter.oldValue, '');
+    assert.equal(profileAfter.newValue, '');
+    assert.equal(profileAfter.field, 'Nome completo', 'o tipo da alteração e quem fez continuam no histórico');
+    assert.equal(profileAfter.actor, 'admin@notas.local');
+    assert.equal(db.memory.auditLogs.find(item => item.id === 'audit_exam_report_x').actor, 'aluno excluído');
+    const finish = db.memory.auditLogs.find(item => item.id === 'audit_exam_finish_x');
+    assert.deepEqual(finish.details.students, [{ email: '', answeredQuestions: 3 }, { email: 'bia@notas.local', answeredQuestions: 4 }]);
+    // A nota (prova e valor) continua para a estatística.
+    const deletion = db.memory.auditLogs.find(item => item.action === 'grade_delete' && item.submissionId === 'ana_p1');
+    assert.equal(deletion.details.deletedSubmission.score, 63);
+    assert.equal(deletion.examKey, 'Avaliacao_P1');
+    assert.match(deletion.oldValue, /6,3/);
+    // Outra aluna não muda.
+    assert.deepEqual(db.memory.auditLogs.find(item => item.id === 'audit_bia_x'), { id: 'audit_bia_x', actor: 'admin@notas.local', studentEmail: 'bia@notas.local', action: 'update', field: 'Nome', oldValue: 'Bia', newValue: 'Bia Lima', timestamp: db.memory.auditLogs.find(item => item.id === 'audit_bia_x').timestamp });
+    const audit = await admin(request(app).get('/api/admin/student/audit?email=ana@notas.local'));
+    assert.deepEqual(audit.body, []);
+});
+
+test('[UC-NOTAS-004] migração: aluno excluído antes da correção tem as cópias e o histórico anonimizados; arquivado e ativo, não', () => {
+    const copy = (id, email, name, extra = {}) => ({
+        id: `audit_del_${id}`, actor: 'admin@notas.local', studentEmail: email, action: 'grade_delete', field: 'Nota',
+        oldValue: `Prova 1 — Fundamentos: 6,3 (3/4 acertos) · ${name}`, newValue: 'excluída', category: 'grade', submissionId: id, examKey: 'Avaliacao_P1',
+        details: { deletedSubmission: { id, examKey: 'Avaliacao_P1', score: 63, student: { name, email, matricula: `MAT-${id}`, courseId: COURSE_A, studentClass: '1DES' }, ...extra } },
+    });
+    const memory = {
+        students: [{ email: 'viva@notas.local', name: 'Viva' }, { email: 'nova@notas.local', name: 'Troca' }],
+        submissions: [{ id: 's1', student: { email: 'semconta@notas.local' }, score: 50 }],
+        auditLogs: [
+            copy('del', 'apagada@notas.local', 'Gabriela Lima'),
+            { id: 'audit_perfil', actor: 'admin@notas.local', studentEmail: 'apagada@notas.local', action: 'update', field: 'Telefone', oldValue: '(11) 98888-7777', newValue: '(11) 97777-6666', timestamp: 1 },
+            copy('arq', 'arquivada@notas.local', 'Arquivada'),
+            copy('viva', 'viva@notas.local', 'Viva'),
+            // Troca de e-mail na versão antiga: a cópia ficou com o e-mail velho e a auditoria com o novo.
+            { ...copy('troca', 'velha@notas.local', 'Troca'), studentEmail: 'nova@notas.local' },
+            // Sem conta, mas com entrega: não foi excluído pela ficha.
+            copy('semconta', 'semconta@notas.local', 'Sem Conta'),
+        ],
+    };
+    const changed = anonymizeAuditOfRemovedStudents(memory, { archivedEmails: () => new Set(['arquivada@notas.local']) });
+    assert.equal(changed, 2);
+    const byId = id => memory.auditLogs.find(item => item.id === id);
+    const gone = byId('audit_del_del');
+    assert.equal(gone.studentEmail, '');
+    assert.equal(gone.details.deletedSubmission.anonymized, true);
+    assert.deepEqual(gone.details.deletedSubmission.student, { name: 'Aluno excluído', email: '', courseId: COURSE_A, studentClass: '1DES' });
+    assert.equal(gone.details.deletedSubmission.score, 63);
+    assert.equal(/Gabriela Lima|apagada@|MAT-del/.test(JSON.stringify(gone)), false);
+    assert.equal(byId('audit_perfil').studentEmail, '');
+    assert.equal(byId('audit_perfil').oldValue, '');
+    for (const id of ['audit_del_arq', 'audit_del_viva', 'audit_del_troca', 'audit_del_semconta']) {
+        assert.notEqual(byId(id).details.deletedSubmission.anonymized, true, `${id} não deveria mudar`);
+    }
+    // Idempotente.
+    assert.equal(anonymizeAuditOfRemovedStudents(memory, { archivedEmails: () => new Set(['arquivada@notas.local']) }), 0);
+    // Sem conseguir ler os cursos arquivados, ou com o cadastro vazio, não mexe em nada.
+    const empty = { students: [], submissions: [], auditLogs: [copy('y', 'y@notas.local', 'Ypsilon')] };
+    assert.equal(anonymizeAuditOfRemovedStudents(empty, { archivedEmails: () => new Set() }), 0);
+    const other = { students: [{ email: 'viva@notas.local' }], submissions: [], auditLogs: [copy('x', 'x@notas.local', 'Xis')] };
+    assert.equal(anonymizeAuditOfRemovedStudents(other, { archivedEmails: () => { throw new Error('arquivo corrompido'); } }), 0);
+    assert.equal(other.auditLogs[0].details.deletedSubmission.student.email, 'x@notas.local');
 });

@@ -157,7 +157,7 @@ async function sendStudentCourseData(req, res) {
     const dataObj = {};
     const releasedKeys = releasedApostilaKeysForClass(cls, req.studentEmail, getReleasedItemsForClass);
     await Promise.all(releasedKeys.map(async (key) => {
-        const content = await readApostila(key);
+        const content = await readApostila(key, { ownHosts: [req.get('host')] });
         if (content !== null) dataObj[key] = content;
     }));
     dataObj.courseStructure = [];
@@ -197,7 +197,7 @@ router.get('/:key.md', async (req, res, next) => {
             if (!canonicalKey) {
                 return res.status(403).type('text/plain').send('Material não liberado para a sua turma.');
             }
-            const content = await readApostila(canonicalKey);
+            const content = await readApostila(canonicalKey, { ownHosts: [req.get('host')] });
             if (content === null) return res.status(404).type('text/plain').send('');
             return res.type('text/markdown').send(content);
         }
@@ -337,7 +337,7 @@ router.delete('/api/courses/:id', (req, res) => {
         if (!db.memory.courses) db.memory.courses = [];
         const idx = db.memory.courses.findIndex(c => c.id === courseId);
         if (idx === -1) {
-            return res.status(404).json({ error: 'Curso nÃ£o encontrado.' });
+            return res.status(404).json({ error: 'Curso não encontrado.' });
         }
         db.memory.courses[idx] = {
             ...db.memory.courses[idx],

@@ -24,7 +24,7 @@ function normalizeUnit(mod, unit, index) {
     examKey: unit.avaliacaoKey,
     title: unit.name || unit.title || `Unidade ${index + 1}`,
     moduleKey: mod.id || mod.key || mod.title || mod.name || 'module',
-    moduleTitle: mod.title || mod.name || mod.id || 'Modulo',
+    moduleTitle: mod.title || mod.name || mod.id || 'Módulo',
   }
 }
 
@@ -114,7 +114,7 @@ export default function ModulosPage() {
     try {
       await api.post('/api/student/progress', { email, completedUnits: next })
       progress.refetch()
-      toast.success(done ? 'Unidade concluida' : 'Conclusao removida')
+      toast.success(done ? 'Unidade concluída' : 'Conclusão removida')
     } catch (e) {
       toast.error(e.message)
     }
@@ -221,7 +221,7 @@ export default function ModulosPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-text">Progresso deste módulo</p>
-                <p className="text-xs text-muted">{openModuleDone} de {openModuleTotal} topicos concluidos em {openUnit.moduleTitle}</p>
+                <p className="text-xs text-muted">{openModuleDone} de {openModuleTotal} tópicos concluídos em {openUnit.moduleTitle}</p>
               </div>
               <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{openModulePct}%</Badge>
             </div>
@@ -230,7 +230,7 @@ export default function ModulosPage() {
             </div>
             <div className="mt-4 flex justify-end">
               <Button icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>
-                {completed[openUnit.key] ? 'Desmarcar topico' : 'Marcar topico como concluido'}
+                {completed[openUnit.key] ? 'Desmarcar tópico' : 'Marcar tópico como concluído'}
               </Button>
             </div>
           </div>

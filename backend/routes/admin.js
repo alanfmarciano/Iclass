@@ -68,7 +68,7 @@ const {
     scoreFromCounts,
     scoreFromGrade,
     structureExamIndex,
-    anonymizeDeletedGradeCopies,
+    anonymizeStudentAuditTrail,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const {
@@ -350,8 +350,13 @@ router.post('/api/admin/delete-student', (req, res) => {
         if (db.memory.sessions) delete db.memory.sessions[normalizedEmail];
         // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
         // certificados, logs de prova e de login). O log de auditoria é mantido como histórico,
-        // mas as cópias das notas na lixeira ficam sem nome, e-mail e matrícula (só prova e nota).
-        anonymizeDeletedGradeCopies(db.memory, normalizedEmail);
+        // mas sem ligação com o aluno: as entradas perdem o e-mail, o nome e a matrícula e as
+        // cópias das notas na lixeira ficam só com prova e nota (para a estatística).
+        anonymizeStudentAuditTrail(db.memory, {
+            emails: [normalizedEmail],
+            names: [studentObjToDelete && studentObjToDelete.name, studentObjToDelete && studentObjToDelete.nomeSocial],
+            matriculas: [studentObjToDelete && studentObjToDelete.matricula],
+        });
         const ownedBy = item => item && String(item.studentEmail || item.email || '').toLowerCase() === normalizedEmail;
         ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs', 'forum']
             .forEach(collection => { if (Array.isArray(db.memory[collection])) db.memory[collection] = db.memory[collection].filter(item => !ownedBy(item)); });
@@ -2154,7 +2159,7 @@ router.post('/api/admin/announcements/calendar', (req, res) => {
         const target = body.target === 'turma' ? 'turma' : 'curso';
         const targetValue = target === 'curso' ? courseId : String(body.targetValue || '').trim();
         if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate) || !courseId || !targetValue) {
-            return res.status(400).json({ error: 'Titulo, data, curso e destino sao obrigatorios.' });
+            return res.status(400).json({ error: 'Título, data, curso e destino são obrigatórios.' });
         }
         if (!_calendarTargetAllowed(matchedAdmin, target, targetValue, courseId)) return res.status(403).json({ error: 'Destino fora do seu escopo.' });
         if (!Array.isArray(db.memory.announcements)) db.memory.announcements = [];
@@ -2185,14 +2190,14 @@ router.post('/api/admin/announcements/calendar/update', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const body = req.body || {};
         const item = (db.memory.announcements || []).find(entry => entry.id === body.id && entry.kind === 'calendar');
-        if (!item) return res.status(404).json({ error: 'Evento nao encontrado.' });
+        if (!item) return res.status(404).json({ error: 'Evento não encontrado.' });
         if (!_annInScope(item, matchedAdmin)) return res.status(403).json({ error: 'Evento fora do seu escopo.' });
         const target = body.target === 'turma' ? 'turma' : 'curso';
         const courseId = String(body.courseId || item.courseId || '').trim();
         const targetValue = target === 'curso' ? courseId : String(body.targetValue || '').trim();
         if (!_calendarTargetAllowed(matchedAdmin, target, targetValue, courseId)) return res.status(403).json({ error: 'Destino fora do seu escopo.' });
         if (!String(body.title || '').trim() || !/^\d{4}-\d{2}-\d{2}$/.test(body.eventDate || '') || !courseId || !targetValue) {
-            return res.status(400).json({ error: 'Titulo, data, curso e destino sao obrigatorios.' });
+            return res.status(400).json({ error: 'Título, data, curso e destino são obrigatórios.' });
         }
         item.title = String(body.title).trim().slice(0, 200);
         item.message = String(body.description || '').slice(0, 5000);
@@ -2213,7 +2218,7 @@ router.post('/api/admin/announcements/calendar/delete', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const id = String(req.body?.id || '');
         const item = (db.memory.announcements || []).find(entry => entry.id === id && entry.kind === 'calendar');
-        if (!item) return res.status(404).json({ error: 'Evento nao encontrado.' });
+        if (!item) return res.status(404).json({ error: 'Evento não encontrado.' });
         if (!_annInScope(item, matchedAdmin)) return res.status(403).json({ error: 'Evento fora do seu escopo.' });
         db.memory.announcements = db.memory.announcements.filter(entry => entry.id !== id);
         db.save();
@@ -3432,7 +3437,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             && currentConfig.versionSnapshots.length > 0;
         if (actionStartsExam && !hasPreparedSnapshot) {
             return res.status(400).json({
-                error: 'Prepare a prova online a partir do historico antes de iniciar pelo Monitor.'
+                error: 'Prepare a prova online a partir do histórico antes de iniciar pelo Monitor.'
             });
         }
         const previousStatus = currentConfig.status;
@@ -3600,7 +3605,7 @@ router.post('/api/admin/unlock-student-focus', (req, res) => {
     validateAdmin(req, res, (config, currentAdmin) => {
         const { studentEmail, studentClass, courseId, examKey, applicationId } = req.body;
         if (!studentEmail || !examKey) {
-            return res.status(400).json({ error: 'E-mail do aluno e prova sÃ£o obrigatÃ³rios.' });
+            return res.status(400).json({ error: 'E-mail do aluno e prova são obrigatórios.' });
         }
 
         const email = studentEmail.trim().toLowerCase();
@@ -4166,7 +4171,7 @@ router.post('/api/admin/question-bank/create', (req, res) => {
     validateAdmin(req, res, () => {
         const { category, type, questionText, alternatives, correctAnswer, sourceExamKey, curriculumKey } = req.body;
         if (!questionText || String(questionText).trim() === '') {
-            return res.status(400).json({ error: 'Texto da questÃ£o Ã© obrigatÃ³rio.' });
+            return res.status(400).json({ error: 'Texto da questão é obrigatório.' });
         }
         let normalizedQuestion;
         try {
@@ -4535,15 +4540,15 @@ router.get('/api/admin/dashboard/trends', (req, res) => {
 router.post('/api/admin/courses/:id/clone', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         if (!canAccessAdminPermission(matchedAdmin, 'course.manage')) {
-            return res.status(403).json({ error: 'Sua conta nao possui permissao para esta operacao.' });
+            return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
         }
         const src = (db.memory.courses || []).find(c => c.id === req.params.id);
-        if (!src) return res.status(404).json({ error: 'Curso de origem nao encontrado.' });
+        if (!src) return res.status(404).json({ error: 'Curso de origem não encontrado.' });
         const newId = String(req.body.newId || '').trim().toUpperCase();
         const newName = String(req.body.newName || '').trim();
         const schoolId = req.body.schoolId || src.schoolId || 'escola_default';
         if (!newId || !newName) return res.status(400).json({ error: 'Informe ID e nome do novo curso.' });
-        if ((db.memory.courses || []).some(c => c.id === newId)) return res.status(400).json({ error: 'Ja existe um curso com esse ID.' });
+        if ((db.memory.courses || []).some(c => c.id === newId)) return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
 
         function copyContentFile(oldKey, newKey) {
             const oldP = path.join(runtimePaths.CONTENT_DIR, `${oldKey}.md`);

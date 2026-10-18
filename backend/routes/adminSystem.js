@@ -28,7 +28,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             if (studentClass) {
                 const classes = readJSON(DB_CLASSES_FILE);
                 const cls = findClassByNameAndCourse(classes, studentClass, courseId);
-                if (!cls) return res.status(404).json({ error: 'Turma nÃ£o encontrada.' });
+                if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
                 responseData.activeExamKey = cls.activeExamKey;
                 responseData.activeExamQuestionCount = cls.activeExamQuestionCount || 20;
                 responseData.examConfigs = cls.examConfigs || {};
