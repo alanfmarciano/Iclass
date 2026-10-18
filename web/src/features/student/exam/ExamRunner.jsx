@@ -823,7 +823,7 @@ export default function ExamRunner() {
       {Number(result?.lateBySeconds) > 0 && (
         <p className="text-xs text-warning mt-1 max-w-sm text-center">O envio chegou {Number(result.lateBySeconds)} s depois do fim do tempo. O professor verá esse atraso.</p>
       )}
-      <Button className="mt-5" onClick={() => nav('/aluno')}>Voltar ao inicio</Button>
+      <Button className="mt-5" onClick={() => nav('/aluno')}>Voltar ao início</Button>
     </Center>
   )
 

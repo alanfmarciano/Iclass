@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveMonitorTimer } from './monitorTimer'
+import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
 
 describe('cronometro do monitor', () => {
   it('acompanha o cronometro coletivo a partir do inicio da aplicacao', () => {
@@ -41,5 +41,18 @@ describe('cronometro do monitor', () => {
     expect(duringPause.remaining).toBe(3540)
     const afterResume = resolveMonitorTimer({ config: { ...config, pauses: [{ pausedAt: 61000, resumedAt: 301000 }] }, now: 361000 })
     expect(afterResume.remaining).toBe(3480)
+  })
+})
+
+describe('[UC-TENTATIVA-001] +5 min para a turma depois do fim do tempo', () => {
+  it('avisa o professor de quem já estava sem tempo e foi entregue sem o extra (AVA-03)', () => {
+    expect(classTimeExtraFeedback({ success: true, deliveredAtDeadline: 0 })).toEqual({ tone: 'success', message: '+5 min para a turma' })
+    expect(classTimeExtraFeedback({ success: true })).toEqual({ tone: 'success', message: '+5 min para a turma' })
+    const one = classTimeExtraFeedback({ success: true, deliveredAtDeadline: 1 })
+    expect(one.tone).toBe('warning')
+    expect(one.message).toBe('+5 min para a turma. 1 aluno já estava sem tempo e foi entregue automaticamente com as respostas salvas, sem o tempo extra.')
+    const two = classTimeExtraFeedback({ success: true, deliveredAtDeadline: 2 }, 10)
+    expect(two.tone).toBe('warning')
+    expect(two.message).toMatch(/^\+10 min para a turma\. 2 alunos já estavam sem tempo e foram entregues automaticamente/)
   })
 })

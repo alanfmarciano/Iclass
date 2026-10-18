@@ -58,3 +58,16 @@ export function resolveMonitorTimer({ config = {}, rows = [], now = Date.now(), 
     activeCount: individualTimes.length,
   }
 }
+
+// Retorno do "+N min" para a turma: quem já estava com o tempo esgotado foi entregue
+// automaticamente com as respostas salvas e não recebe o tempo extra (o professor
+// precisa saber disso, não só ver "sucesso").
+export function classTimeExtraFeedback(response, minutes = 5) {
+  const base = `+${minutes} min para a turma`
+  const delivered = Math.max(0, Math.floor(Number(response?.deliveredAtDeadline) || 0))
+  if (!delivered) return { tone: 'success', message: base }
+  const who = delivered === 1
+    ? '1 aluno já estava sem tempo e foi entregue'
+    : `${delivered} alunos já estavam sem tempo e foram entregues`
+  return { tone: 'warning', message: `${base}. ${who} automaticamente com as respostas salvas, sem o tempo extra.` }
+}

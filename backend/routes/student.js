@@ -559,10 +559,17 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                         && submission.resultStatus !== 'invalidated')
                     .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
                 const savedByInstructor = ownDeliveries.some(submission => submission.submissionSource === 'instructor_finish');
-                // A tentativa que este navegador conhecia não virou entrega: foi ela que o
-                // professor desconsiderou ao encerrar.
-                const knownAttemptDiscarded = !!knownAttemptId && !attemptOutcome
-                    && application.finishResolution?.policy === 'discard';
+                const resolution = application.finishResolution || {};
+                const policyDiscard = resolution.policy === 'discard';
+                // Encerramentos gravados a partir desta versão listam as tentativas em andamento
+                // que foram desconsideradas; os antigos não, e aí só vale a tentativa que este
+                // navegador conhecia e que não virou entrega.
+                const discardedList = Array.isArray(resolution.discardedAttempts) ? resolution.discardedAttempts : null;
+                const knownAttemptDiscarded = policyDiscard && !!knownAttemptId && !attemptOutcome
+                    && (!discardedList || discardedList.some(item => item?.attemptId === knownAttemptId));
+                const studentDiscarded = discardedList
+                    ? policyDiscard && discardedList.some(item => String(item?.studentEmail || '').toLowerCase() === email)
+                    : knownAttemptDiscarded;
                 if (savedByInstructor) {
                     finishOutcome = 'submitted';
                 } else if (ownDeliveries.length && !knownAttemptDiscarded) {
@@ -571,7 +578,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                     finishOutcome = 'delivered';
                     if (!attemptOutcome) attemptOutcome = attemptOutcomeFor(application, email, ownDeliveries[0].attemptId);
                 } else {
-                    finishOutcome = application.finishResolution?.policy === 'discard' ? 'discarded' : null;
+                    // Quem nunca abriu a prova (ou só leu as instruções) não teve nada
+                    // desconsiderado: vê apenas que a aplicação foi encerrada.
+                    finishOutcome = studentDiscarded ? 'discarded' : null;
                 }
             }
         }
@@ -1357,6 +1366,7 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         const finalized = application
             ? finalizeAttemptState(db.memory, { key: stateKey, state: lockedState, application, now: nowTs, deadlineAt: timing.deadlineAt })
             : null;
+        if (finalized && auto !== true) finalized.lateManualSubmitRefused = true;
         if (finalized) await db.save();
         return res.status(408).json({
             error: finalized

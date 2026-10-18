@@ -246,6 +246,9 @@ function canReplaceServerFinalization(submission, { auto = false, answers, now =
     if (auto !== true || submission.gradePublished === true || submission.resultStatus === 'archived') return false;
     // Prova bloqueada por foco no fim do tempo: vale o que estava salvo antes do bloqueio.
     if (submission.focusLockedAtDeadline === true || submission.recoveredAfterFinish === true) return false;
+    // Finalizada porque um envio MANUAL chegou fora do atraso aceito: um envio
+    // "automático" depois disso não troca as respostas (o navegador real não faz isso).
+    if (submission.lateManualSubmitRefused === true) return false;
     const deadlineAt = Number(submission.deadlineAt);
     if (!(deadlineAt > 0) || now - deadlineAt > LATE_AUTO_SUBMIT_TOLERANCE_MS) return false;
     return !sameAnswers(submission.gradedAnswers, answers);

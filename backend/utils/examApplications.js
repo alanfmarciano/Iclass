@@ -308,8 +308,10 @@ function transitionExamApplication(application, action, options = {}) {
     if (target === 'running') {
         if (current === 'paused') {
             // Retomar não reinicia o relógio: o início original fica e o tempo pausado é
-            // somado ao prazo de cada tentativa. Só uma pausa ainda na sala de espera
-            // (início no futuro) começa a prova agora, como antes.
+            // somado ao prazo de cada tentativa. Uma pausa ainda na sala de espera (início
+            // no futuro) começa a prova agora: o status 'running' já liberava o início
+            // nos dois modos (no modo por tentativa o startsAt antigo ficava no futuro,
+            // mas o aluno já podia iniciar); aqui o startsAt passa a dizer a verdade.
             closeApplicationPause(application, now);
             const startsAt = Number(application.startsAt);
             if (!(startsAt > 0) || startsAt > now) application.startsAt = now;

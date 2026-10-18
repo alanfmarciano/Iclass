@@ -357,6 +357,7 @@ function createAdminExamConfigRouter() {
                 const entries = applicationStateEntries(application.id);
                 let submitted = 0;
                 let discarded = 0;
+                let discardedAttempts = [];
                 if (policy === 'submit') {
                     for (const [, state] of entries) {
                         if (!state.startedAt) continue;
@@ -388,6 +389,14 @@ function createAdminExamConfigRouter() {
                     }
                 } else if (policy === 'discard') {
                     discarded = summary.inProgressAttempts;
+                    // Quem de fato tinha tentativa em andamento desconsiderada: só esses alunos
+                    // veem "o professor desconsiderou" ao abrir a prova depois.
+                    discardedAttempts = entries
+                        .filter(([, state]) => !!state.startedAt)
+                        .map(([, state]) => ({
+                            studentEmail: String(state.studentEmail || '').trim().toLowerCase(),
+                            attemptId: state.attemptId || state.id || null,
+                        }));
                 }
                 entries.forEach(([key]) => { delete db.memory.studentExamState[key]; });
                 processedFinish = { policy: policy || 'none', submitted, discarded, deliveredAtDeadline, summary };
@@ -396,6 +405,7 @@ function createAdminExamConfigRouter() {
                     submitted,
                     discarded,
                     deliveredAtDeadline,
+                    ...(policy === 'discard' ? { discardedAttempts } : {}),
                     at: new Date().toISOString(),
                     by: adminActor(req),
                 };
@@ -462,7 +472,8 @@ function createAdminExamConfigRouter() {
             application.updatedAt = new Date().toISOString();
             application.updatedBy = adminActor(req);
             await db.save();
-            res.json({ success: true, application });
+            // Ajuste da turma: quantos já estavam sem tempo e foram entregues sem o extra.
+            res.json({ success: true, application, deliveredAtDeadline: targetEmail ? 0 : settled.finalized.length });
         });
     });
 

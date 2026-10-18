@@ -3016,6 +3016,8 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
         const application = findExamApplication(db.memory.examApplications, applicationId || scopedClass?.onlineExamConfigs?.[examKey]?.applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
         // Tempo extra nunca reabre tentativa vencida: ela é entregue (respostas salvas) antes do ajuste.
+        // No ajuste da turma, o professor fica sabendo quantos já estavam sem tempo.
+        let deliveredAtDeadline = 0;
         if (application) {
             const settled = settleExpiredAttempts(db.memory, {
                 applicationId: application.id,
@@ -3029,6 +3031,7 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
                     attemptFinalized: true,
                 });
             }
+            deliveredAtDeadline = settled.finalized.length;
         }
 
         if (targetEmail) {
@@ -3092,7 +3095,7 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
         }
 
         db.save();
-        res.json({ success: true });
+        res.json(targetEmail ? { success: true } : { success: true, deliveredAtDeadline });
     });
 });
 

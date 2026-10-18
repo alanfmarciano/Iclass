@@ -14,7 +14,7 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { resolveMonitorTimer } from './monitorTimer'
+import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
 import { deliveryLabel, deliveryTone } from './attemptDelivery'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { StudentAnswersModal } from './StudentAnswersModal'
@@ -803,7 +803,11 @@ export default function MonitorPage() {
     try {
       const r = await api.post('/api/admin/adjust-student-time', { studentClass: className, courseId, examKey, applicationId, targetEmail, adjustmentMinutes })
       if (r?.appliesToNextAttempt) toast.info('Ajuste registrado: vale quando o aluno iniciar a tentativa.')
-      else toast.success(targetEmail ? 'Tempo do aluno ajustado' : '+5 min para a turma')
+      else if (targetEmail) toast.success('Tempo do aluno ajustado')
+      else {
+        const feedback = classTimeExtraFeedback(r, adjustmentMinutes)
+        toast[feedback.tone](feedback.message)
+      }
       if (!targetEmail) await refetchClasses(true)
       poll()
     } catch (e) { toast.error(e.message) }

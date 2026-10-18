@@ -34,6 +34,7 @@ const students = {
     ana: { email: 'ana@lifecycle.local', token: 'token-ana' },
     bruno: { email: 'bruno@lifecycle.local', token: 'token-bruno' },
     carla: { email: 'carla@lifecycle.local', token: 'token-carla' },
+    diego: { email: 'diego@lifecycle.local', token: 'token-diego' },
 };
 
 test.before(async () => {
@@ -281,6 +282,31 @@ test('[UC-TENTATIVA-001] celular sem rede no fim do tempo: o envio atrasado do n
     assert.equal(delivered.correctCount, 2);
     assert.equal(delivered.serverFinalization.answeredCount, 1);
 
+    // O registro da entrega substituída (com a nota daquela versão) é só do professor:
+    // o aluno não vê nota nenhuma antes da publicação, nem por esse campo.
+    const mine = await request(app)
+        .post('/api/student/my-submissions')
+        .set('x-session-token', carla.token)
+        .send({ studentClass, courseId })
+        .expect(200);
+    const own = mine.body.submissions.find(item => item.attemptId === started.attemptId);
+    assert.ok(own, 'a entrega aparece para a aluna');
+    assert.equal(own.gradePublished, false);
+    assert.equal(own.score, undefined);
+    assert.equal(own.serverFinalization, undefined);
+    assert.equal(JSON.stringify(mine.body).includes('serverFinalization'), false);
+    assert.equal(own.lateBySeconds, late.body.lateBySeconds, 'o atraso continua visível para a aluna');
+    delivered.gradePublished = true;
+    const published = await request(app)
+        .post('/api/student/my-submissions')
+        .set('x-session-token', carla.token)
+        .send({ studentClass, courseId })
+        .expect(200);
+    const ownPublished = published.body.submissions.find(item => item.attemptId === started.attemptId);
+    assert.equal(ownPublished.score, delivered.score, 'publicada, vale a nota da entrega que conta');
+    assert.equal(ownPublished.serverFinalization, undefined);
+    delivered.gradePublished = false;
+
     // Reenvio (resposta perdida na rede) é idempotente.
     const retry = await submit(carla, application.id, started, { 1: 'A', 2: 'B' }).expect(200);
     assert.equal(retry.body.duplicate, true);
@@ -357,8 +383,11 @@ test('[UC-TENTATIVA-001] cronômetro coletivo esgotado: a tentativa vencida vira
 });
 
 test('[UC-TENTATIVA-001] encerrar entrega quem estava com tempo esgotado em qualquer escolha (CONF-02, CONF-X4)', async () => {
-    const { ana, bruno } = students;
+    const { ana, bruno, carla, diego } = students;
     const application = await createApplication({ timerMode: 'per_attempt' });
+    // Diego só abriu as instruções (a tentativa existe, mas não começou).
+    const diegoOpened = await sync(diego, application.id);
+    assert.ok(diegoOpened.body.attemptId);
     const startedAna = await startAttempt(ana, application.id);
     await autosave(ana, application.id, startedAna.attemptId, { 1: 'A' }).expect(200);
     expireAttempt(startedAna.attemptId, 5000);
@@ -392,6 +421,22 @@ test('[UC-TENTATIVA-001] encerrar entrega quem estava com tempo esgotado em qual
     assert.equal(brunoKnown.body.finishOutcome, 'discarded');
     const brunoElsewhere = await sync(bruno, application.id);
     assert.equal(brunoElsewhere.body.finishOutcome, 'discarded');
+
+    // Só quem tinha tentativa em andamento ouve que o professor desconsiderou: quem nunca
+    // abriu a prova ou só leu as instruções vê apenas que a aplicação foi encerrada.
+    assert.deepEqual(applicationOf(application.id).finishResolution.discardedAttempts,
+        [{ studentEmail: bruno.email, attemptId: startedBruno.attemptId }]);
+    const carlaNeverOpened = await sync(carla, application.id);
+    assert.equal(carlaNeverOpened.body.finishOutcome, null);
+    const diegoInstructions = await sync(diego, application.id, diegoOpened.body.attemptId);
+    assert.equal(diegoInstructions.body.finishOutcome, null);
+    assert.equal((await sync(diego, application.id)).body.finishOutcome, null);
+
+    // Encerramento gravado por versão anterior (sem a lista): vale a tentativa conhecida.
+    delete applicationOf(application.id).finishResolution.discardedAttempts;
+    assert.equal((await sync(bruno, application.id, startedBruno.attemptId)).body.finishOutcome, 'discarded');
+    assert.equal((await sync(carla, application.id)).body.finishOutcome, null);
+    assert.equal((await sync(ana, application.id)).body.finishOutcome, 'delivered');
 });
 
 test('[UC-TENTATIVA-001] aluno travado por perda de foco no fim do tempo tem as respostas salvas entregues (AVA-03)', async () => {
@@ -491,6 +536,16 @@ test('[UC-TENTATIVA-001] envio manual depois do prazo só vale dentro do atraso 
     const [deliveredBruno] = submissionsOf(bruno, application.id);
     assert.equal(deliveredBruno.submissionSource, 'deadline_server_auto_submit');
     assert.equal(deliveredBruno.correctCount, 1);
+
+    // Repetir o mesmo envio marcado como "automático" não contorna o limite do manual:
+    // a entrega do servidor fica, sem troca de respostas.
+    const forged = await submit(bruno, application.id, startedBruno, { 1: 'A', 2: 'B', 3: 'C' }, true).expect(200);
+    assert.equal(forged.body.duplicate, true);
+    assert.equal(forged.body.replacedServerFinalization, undefined);
+    assert.equal(submissionsOf(bruno, application.id).length, 1);
+    assert.equal(submissionsOf(bruno, application.id)[0].correctCount, 1);
+    assert.equal(submissionsOf(bruno, application.id)[0].submissionSource, 'deadline_server_auto_submit');
+    assert.equal(submissionsOf(bruno, application.id)[0].serverFinalization, undefined);
     await control(application.id, 'finish');
 });
 
@@ -574,16 +629,36 @@ test('[UC-TENTATIVA-001] tempo extra do professor não reabre tentativa vencida 
         .expect(409);
     assert.equal(submissionsOf(bruno, application.id).length, 1);
 
-    // +5 min para a turma também não ressuscita quem já estava sem tempo.
+    // +5 min para a turma também não ressuscita quem já estava sem tempo, e a resposta
+    // diz ao professor quantos foram entregues sem o extra.
     const startedCarla = await startAttempt(carla, application.id);
     expireAttempt(startedCarla.attemptId, 3000);
-    await request(app)
+    const classAdjust = await request(app)
         .post(`/api/admin/exam-applications/${application.id}/time-adjustment`)
         .set('x-admin-session', adminToken)
         .send({ adjustmentMinutes: 5 })
         .expect(200);
+    assert.equal(classAdjust.body.deliveredAtDeadline, 1);
     assert.equal(submissionsOf(carla, application.id).length, 1);
     assert.equal(openStatesOf(carla, application.id).length, 0);
+
+    // O "+5 min" do Monitor (turma inteira) logo depois do fim do tempo.
+    const startedDiego = await startAttempt(students.diego, application.id);
+    stateOf(startedDiego.attemptId).startedAt = Date.now() - (DURATION_MIN + 5) * MIN - 2000;
+    const monitorAdjust = await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, adjustmentMinutes: 5 })
+        .expect(200);
+    assert.equal(monitorAdjust.body.success, true);
+    assert.equal(monitorAdjust.body.deliveredAtDeadline, 1);
+    assert.equal(submissionsOf(students.diego, application.id)[0].submissionSource, 'deadline_server_auto_submit');
+    const nobodyLate = await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, adjustmentMinutes: 5 })
+        .expect(200);
+    assert.equal(nobodyLate.body.deliveredAtDeadline, 0);
     await control(application.id, 'finish');
 });
 
@@ -618,6 +693,17 @@ test('[UC-TENTATIVA-001] regras puras de pausa e tolerância', () => {
     assert.equal(normalizeLegacyApplicationPause(legacyPaused, now), false, 'migração idempotente');
     transitionExamApplication(legacyPaused, 'resume', { now: 5 * MIN });
     assert.equal(legacyPaused.pauses[0].resumedAt, 5 * MIN);
+
+    // Pausa ainda na sala de espera, nos dois modos: retomar libera o início agora (o
+    // status 'running' já liberava antes) e a pausa não empurra prazos de quem começa depois.
+    for (const timerMode of ['per_attempt', 'collective']) {
+        const waitingApp = { status: 'waiting', timerMode, startsAt: 3 * MIN };
+        transitionExamApplication(waitingApp, 'pause', { now: MIN });
+        transitionExamApplication(waitingApp, 'resume', { now: 2 * MIN });
+        assert.equal(waitingApp.status, 'running');
+        assert.equal(waitingApp.startsAt, 2 * MIN, `${timerMode}: início = retomada`);
+        assert.equal(extendDeadlineByPauses(waitingApp, 2 * MIN, 32 * MIN, now), 32 * MIN);
+    }
 
     assert.deepEqual(lateSubmitDecision({ overdueMs: 2000, auto: true }), { accept: true, lateMs: 0 });
     assert.deepEqual(lateSubmitDecision({ overdueMs: 3000, auto: false }), { accept: true, lateMs: 0 });

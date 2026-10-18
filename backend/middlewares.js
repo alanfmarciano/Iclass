@@ -679,6 +679,9 @@ function sanitizeSubmissionForStudent(submission, canViewAnswerKey) {
     const gradePublished = submission && submission.gradePublished === true;
     const { examSnapshot, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };
+    // Registro da entrega do servidor que o envio atrasado substituiu: é auditoria do
+    // professor e guarda a nota daquela versão, então nunca vai para o aluno.
+    delete safeGrade.serverFinalization;
     if (!gradePublished) {
         delete safeGrade.score;
         delete safeGrade.correctCount;
