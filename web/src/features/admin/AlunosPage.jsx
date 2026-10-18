@@ -621,7 +621,7 @@ export function StudentFormTabs({ value, onChange, classes, courses, schools, on
       {tab === 'link' && (multiCourse ? (
         <div className="space-y-3">
           <Input label="Unidade/instituição" value={value.unidade} onChange={(e) => set({ unidade: e.target.value })} />
-          <p className="text-sm font-medium text-text">Matriculas — turmas por curso</p>
+          <p className="text-sm font-medium text-text">Matrículas — turmas por curso</p>
           <div className="space-y-3 max-h-72 overflow-auto pr-1">
             {(courses || []).map((course) => {
               const turmas = (classes || []).filter((c) => c.courseId === course.id)

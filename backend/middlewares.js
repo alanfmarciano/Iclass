@@ -11,6 +11,7 @@ const { SERVER_INSTANCE_ID, ABSOLUTE_TTL_MS } = require('./utils/sessionConfig.j
 const settingsUtil = require('./utils/settings.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
+const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -675,17 +676,31 @@ function validateProfessorRequestScope(req, account) {
 function adminRbacGuard(req, res, next) {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const permission = resolveAdminApiPermission(req.method, req.path);
+        // Restauração de backup recusada aqui (antes da rota) também é evento de
+        // segurança: fica no histórico de backup, como as recusas da própria rota.
+        const refuse = body => {
+            if (!isBackupRestoreRequest(req)) return res.status(403).json(body);
+            try {
+                recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', {
+                    error: `Tentativa de restauração recusada: ${String(body.error || '').slice(0, 200)}`,
+                });
+            } catch (_) { /* o registro não pode impedir a recusa */ }
+            return Promise.resolve()
+                .then(() => db.save())
+                .catch(() => {})
+                .then(() => res.status(403).json(body));
+        };
         if (matchedAdmin.mustChangePassword === true && !['/whoami', '/change-password'].includes(req.path)) {
-            return res.status(403).json({ error: 'Troque a senha temporária antes de continuar.', passwordChangeRequired: true });
+            return refuse({ error: 'Troque a senha temporária antes de continuar.', passwordChangeRequired: true });
         }
         if (permission === undefined && isProfessorAccount(matchedAdmin)) {
-            return res.status(403).json({ error: 'Esta operação administrativa não está liberada para professores.' });
+            return refuse({ error: 'Esta operação administrativa não está liberada para professores.' });
         }
         if (!canAccessAdminPermission(matchedAdmin, permission)) {
-            return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
+            return refuse({ error: 'Sua conta não possui permissão para esta operação.' });
         }
         const scopeError = validateProfessorRequestScope(req, matchedAdmin);
-        if (scopeError) return res.status(403).json({ error: scopeError });
+        if (scopeError) return refuse({ error: scopeError });
         next();
     });
 }

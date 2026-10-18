@@ -456,12 +456,12 @@ function populateDefaultsIfEmpty() {
 
 // Inicialização Assíncrona do Banco
 // E-mails dos alunos guardados nos cursos arquivados (podem voltar ao desarquivar).
+// Pasta de arquivo sem curso.json legível lança erro: quem chama trata como dúvida.
 function archivedStudentEmails() {
     const emails = new Set();
     if (!ARCHIVE_DIR || !fs.existsSync(ARCHIVE_DIR)) return emails;
     fs.readdirSync(ARCHIVE_DIR, { withFileTypes: true }).filter(entry => entry.isDirectory()).forEach(entry => {
         const file = path.join(ARCHIVE_DIR, entry.name, 'curso.json');
-        if (!fs.existsSync(file)) return;
         const bundle = JSON.parse(fs.readFileSync(file, 'utf8'));
         (bundle.students || []).forEach(student => {
             const email = String(student && student.email || '').trim().toLowerCase();

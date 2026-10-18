@@ -69,6 +69,7 @@ const {
     scoreFromGrade,
     structureExamIndex,
     anonymizeStudentAuditTrail,
+    anonymizeStudentExamRecords,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const {
@@ -357,6 +358,8 @@ router.post('/api/admin/delete-student', (req, res) => {
             names: [studentObjToDelete && studentObjToDelete.name, studentObjToDelete && studentObjToDelete.nomeSocial],
             matriculas: [studentObjToDelete && studentObjToDelete.matricula],
         });
+        // Contestações de questão (com o texto livre do aluno), tempo extra e versão da prova.
+        anonymizeStudentExamRecords(db.memory, { emails: [normalizedEmail] });
         const ownedBy = item => item && String(item.studentEmail || item.email || '').toLowerCase() === normalizedEmail;
         ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs', 'forum']
             .forEach(collection => { if (Array.isArray(db.memory[collection])) db.memory[collection] = db.memory[collection].filter(item => !ownedBy(item)); });
@@ -2927,6 +2930,22 @@ function uploadForRequest() {
     });
 }
 
+// Mensagem do envio recusado em português (o multer responde em inglês: "Unexpected
+// field", "File too large"). O tipo bloqueado (.exe, .bat...) chega como LIMIT_UNEXPECTED_FILE.
+const UPLOAD_ERROR_MESSAGES = {
+    LIMIT_UNEXPECTED_FILE: 'tipo de arquivo não permitido.',
+    LIMIT_FILE_SIZE: 'arquivo maior que o limite de envio.',
+    LIMIT_FILE_COUNT: 'envie um arquivo por vez.',
+    LIMIT_PART_COUNT: 'envio com partes demais.',
+    LIMIT_FIELD_COUNT: 'envio com campos demais.',
+    LIMIT_FIELD_KEY: 'nome de campo grande demais.',
+    LIMIT_FIELD_VALUE: 'campo grande demais.',
+};
+function uploadErrorMessage(err) {
+    const detail = (err && UPLOAD_ERROR_MESSAGES[err.code]) || 'o arquivo não pôde ser recebido.';
+    return `Erro no upload: ${detail}`;
+}
+
 // `discard`: apaga o arquivo recusado em vez de mandá-lo para a lixeira (arquivo de
 // backup leva o banco inteiro e não pode reaparecer pela lixeira, SEG-X1).
 function rejectInvalidUpload(req, res, { discard = false } = {}) {
@@ -2940,7 +2959,7 @@ function rejectInvalidUpload(req, res, { discard = false } = {}) {
     return true;
 }
 
-router.use(createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadDir }));
+router.use(createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage, uploadDir }));
 router.use(createAdminArchiveRouter({ studentClassNames }));
 router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
@@ -2951,7 +2970,7 @@ router.use(createAdminExamConfigRouter());
 router.post('/api/admin/attendance/justification-upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         uploadForRequest().single('file')(req, res, async (err) => {
-            if (err) return res.status(400).json({ error: 'Erro no upload: ' + err.message });
+            if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
             const requestedCourseId = String(req.body.courseId || '').trim();
@@ -3050,7 +3069,7 @@ router.get('/api/admin/library', (req, res) => {
 router.post('/api/admin/library/upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         uploadForRequest().single('file')(req, res, (err) => {
-            if (err) return res.status(400).json({ error: 'Erro no upload: ' + err.message });
+            if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
             const ext = path.extname(req.file.originalname).toLowerCase();

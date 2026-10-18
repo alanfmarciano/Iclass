@@ -24,16 +24,16 @@ function moduleUnits(mod) {
 }
 
 function moduleItems(mod) { return moduleUnits(mod).flatMap((u) => u.items) }
-function moduleTitle(mod, i) { return mod.title || mod.name || `Modulo ${i + 1}` }
+function moduleTitle(mod, i) { return mod.title || mod.name || `Módulo ${i + 1}` }
 
 function relTime(iso) {
   if (!iso) return ''
   const d = new Date(iso); const s = (Date.now() - d.getTime()) / 1000
   if (s < 60) return 'agora'
-  if (s < 3600) return `ha ${Math.floor(s / 60)} min`
-  if (s < 86400) return `ha ${Math.floor(s / 3600)} h`
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`
+  if (s < 86400) return `há ${Math.floor(s / 3600)} h`
   const days = Math.floor(s / 86400)
-  if (days < 30) return `ha ${days} ${days === 1 ? 'dia' : 'dias'}`
+  if (days < 30) return `há ${days} ${days === 1 ? 'dia' : 'dias'}`
   return d.toLocaleDateString('pt-BR')
 }
 
@@ -126,7 +126,7 @@ export default function MateriaisPage() {
       <div className="max-w-xl rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm text-text"><span className="text-subtle">Contexto:</span> <strong>{courseName || courseId} · {className}</strong></div>
 
       {!courseId ? (
-        <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Unlock} title="Escolha um curso" description="Selecione o curso de trabalho para gerenciar liberacoes." /></div>
+        <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Unlock} title="Escolha um curso" description="Selecione o curso de trabalho para gerenciar liberações." /></div>
       ) : !className ? (
         <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Layers} title="Selecione uma turma" description="Escolha a turma acima para ver e liberar os materiais." /></div>
       ) : (
@@ -139,7 +139,7 @@ export default function MateriaisPage() {
                 <Ring pct={pct} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-text">{totals.on} de {totals.total} itens liberados</p>
-                  <p className="text-xs text-muted mt-0.5">{modules.length} modulo{modules.length > 1 ? 's' : ''} - turma {className}</p>
+                  <p className="text-xs text-muted mt-0.5">{modules.length} módulo{modules.length > 1 ? 's' : ''} - turma {className}</p>
                 </div>
               </div>
 

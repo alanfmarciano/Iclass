@@ -449,3 +449,22 @@ db.init().then(async () => { process.stdout.write(JSON.stringify(db.memory.audit
     assert.equal(entry.details.deletedSubmission.score, 63);
     assert.equal(/gabriela|2026-0042/i.test(JSON.stringify(entry)), false);
 });
+
+test('[UC-NOTAS-004] no boot, histórico de aluna ativa que trocou de e-mail na versão antiga não é anonimizado', async () => {
+    // Formato das versões 2a69f47..68115bc: a troca de e-mail não atualizava auditLogs[].studentEmail.
+    db.memory.students = [{ name: 'Ana Maria Souza', email: 'ana.souza@escola.br', matricula: '2025-77', status: 'Ativo', classes: [{ name: '1DES', courseId: 'c1' }], studentClass: '1DES' }];
+    db.memory.submissions = [{ id: 's1', examKey: 'Avaliacao_X', score: 80, student: { name: 'Ana Maria Souza', email: 'ana.souza@escola.br', courseId: 'c1', studentClass: '1DES' } }];
+    const logs = [
+        { id: 'boot_a1', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Nome completo', oldValue: 'Ana Souza', newValue: 'Ana Maria Souza', timestamp: 1, ip: '10.0.0.1' },
+        { id: 'boot_a2', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Status', oldValue: 'Trancado', newValue: 'Ativo', timestamp: 2, ip: '10.0.0.1' },
+        { id: 'boot_a3', actor: 'admin@escola.br', studentEmail: 'ana.souza@escola.br', action: 'update', field: 'E-mail/login', oldValue: 'ana@escola.br', newValue: 'ana.souza@escola.br', timestamp: 3, ip: '10.0.0.1' },
+    ];
+    db.memory.auditLogs = JSON.parse(JSON.stringify(logs));
+    await db.save();
+    const script = `const db = require(${JSON.stringify(require.resolve('../../backend/database.js'))});
+db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(db.memory.auditLogs.filter(item => String(item.id).startsWith('boot_a')))); await db.close(); });`;
+    const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
+    const after = JSON.parse(output.slice(output.indexOf('@@') + 2));
+    // Antes: a1 e a2 ficavam com studentEmail '', oldValue '' e newValue ''; a3 perdia o e-mail antigo.
+    assert.deepEqual(after, logs);
+});

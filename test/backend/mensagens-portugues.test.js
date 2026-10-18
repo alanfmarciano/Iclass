@@ -20,7 +20,22 @@ const { createApp } = require('../../backend/server.js');
 
 const root = path.resolve(__dirname, '..', '..');
 // Palavras que nunca se escrevem sem acento em português (não são formas verbais válidas).
-const UNACCENTED = /(^|[^\wÀ-ÿ])(nao|Nao|sao|questao|Questao|questoes|aplicacao|Aplicacao|duvida|Duvida|duvidas|sessao|Sessao|permissao|operacao|obrigatorio|obrigatoria|obrigatorios|obrigatorias|historico|Titulo|titulo|Ja|maximo|minimo|Modulo|topico|topicos|concluido|concluida|concluidos|Conclusao|Faca|voce|Voce|disponivel|possivel|codigo|usuario|matricula|Matricula)(?=[^\wÀ-ÿ]|$)/;
+// Fora da lista entram as terminações -cao/-coes/-soes (sempre -ção/-ções/-sões).
+const WORDS = [
+    'nao', 'sao', 'questao', 'questoes', 'aplicacao', 'aplicacoes', 'duvida', 'duvidas', 'sessao', 'permissao', 'operacao',
+    'obrigatorio', 'obrigatoria', 'obrigatorios', 'obrigatorias', 'historico', 'titulo', 'titulos', 'ja', 'ha', 'maximo', 'minimo',
+    'modulo', 'modulos', 'topico', 'topicos', 'concluido', 'concluida', 'concluidos', 'concluidas', 'conclusao', 'faca', 'voce', 'voces',
+    'disponivel', 'disponiveis', 'indisponivel', 'possivel', 'impossivel', 'codigo', 'usuario', 'usuarios', 'matricula', 'matriculas',
+    'materia', 'materias', 'anotacao', 'anotacoes', 'informacao', 'informacoes', 'mes', 'meses', 'proximo', 'proxima', 'proximos', 'proximas',
+    'paragrafo', 'paragrafos', 'conteudo', 'conteudos', 'avaliacao', 'avaliacoes', 'medio', 'ultimo', 'ultima', 'ultimos', 'ultimas',
+    'periodo', 'horario', 'horarios', 'calendario', 'presenca', 'presencas', 'frequencia', 'pagina', 'paginas', 'numero', 'valido', 'valida',
+    'invalido', 'invalida', 'atencao', 'descricao', 'exercicio', 'exercicios', 'tambem', 'apos', 'sera', 'serao', 'ninguem', 'alguem', 'porem',
+    'unico', 'unica', 'publico', 'publica', 'edicao', 'selecao', 'opcao', 'opcoes', 'acao', 'acoes', 'secao', 'secoes', 'versao', 'versoes',
+    'correcao', 'nivel', 'padrao', 'rapido', 'rapida', 'rapidos', 'rapidas', 'cartao', 'reutilizaveis', 'inicio',
+];
+const UNACCENTED = new RegExp(`(^|[^\\w.@\\-À-ÿ])(${WORDS.map(word => `${word}|${word[0].toUpperCase()}${word.slice(1)}`).join('|')}|[A-Za-z]+(?:cao|coes|soes))(?=[^\\wÀ-ÿ]|$)`);
+// "Termina as 10:00" (crase antes de hora).
+const HOUR_WITHOUT_CRASE = /\b(termina|começa|inicia|encerra|abre|fecha)\s+as\s*(\d|$)/i;
 // Texto UTF-8 lido como Latin-1 ("questÃ£o", "Ã©").
 const MOJIBAKE = /Ã[\u0080-¿]|Ã[£¡©³§ªµº‰]/;
 
@@ -33,11 +48,13 @@ function walk(directory, pattern) {
     });
 }
 
-function userFacingStrings(line) {
+// singleWords: nas telas, uma palavra só com inicial maiúscula ('Concluida') é rótulo
+// visível; chaves técnicas ('nao', 'observacao') são minúsculas e ficam de fora.
+function userFacingStrings(line, { singleWords = false } = {}) {
     const found = [];
     line.replace(/(['"`])((?:\\.|(?!\1)[^\n])*)\1/g, (_, quote, text) => { found.push(text.replace(/\$\{[^}]*\}/g, '0')); return ''; });
     // Só frases (com espaço); chaves técnicas como 'nao' ou `duvida:${id}` ficam de fora.
-    return found.filter(text => /\s/.test(text.trim()));
+    return found.filter(text => /\s/.test(text.trim()) || (singleWords && /^[A-ZÀ-Ý][a-zà-ÿ]+$/.test(text.trim())));
 }
 
 function scan(files, { jsxText = false } = {}) {
@@ -48,10 +65,11 @@ function scan(files, { jsxText = false } = {}) {
             if (/^(\/\/|\*|\/\*|\{\/\*)/.test(trimmed)) return;
             if (/console\.(log|error|warn|info)\(/.test(line)) return;
             const code = line.replace(/\s\/\/\s.*$/, '');
-            const texts = userFacingStrings(code);
-            if (jsxText) code.replace(/>([^<>{}=]+)</g, (_, text) => { texts.push(text); return ''; });
+            const texts = userFacingStrings(code, { singleWords: jsxText });
+            // Texto do JSX entre tags e expressões: <p>Termina as {hora}</p>, {n} materia{s}.
+            if (jsxText) code.replace(/[>}]([^<>{}=]+)[<{]/g, (_, text) => { texts.push(text); return ''; });
             texts.forEach(text => {
-                if (UNACCENTED.test(text) || MOJIBAKE.test(text)) problems.push(`${path.relative(root, file)}:${index + 1}: ${text.trim().slice(0, 120)}`);
+                if (UNACCENTED.test(text) || HOUR_WITHOUT_CRASE.test(text) || MOJIBAKE.test(text)) problems.push(`${path.relative(root, file)}:${index + 1}: ${text.trim().slice(0, 120)}`);
             });
         });
     }
@@ -68,10 +86,32 @@ test('mensagens do servidor ficam em português com acentos e sem codificação 
     assert.deepEqual(scan(files), []);
 });
 
-test('telas do aluno ficam em português com acentos', () => {
-    const files = walk(path.join(root, 'web', 'src', 'features', 'student'), /\.jsx?$/)
+// Revisão do ajuste 1: 'Concluida', 'Anotacao salva', 'Termina as', 'Mes anterior' e
+// 'materia(s)' passavam (palavra solta, texto entre chaves, palavras fora da lista).
+// Vale para todas as telas (aluno, instrutor e componentes comuns).
+test('telas ficam em português com acentos', () => {
+    const files = walk(path.join(root, 'web', 'src'), /\.jsx?$/)
         .filter(file => !/\.test\.jsx?$/.test(file));
     assert.deepEqual(scan(files, { jsxText: true }), []);
+});
+
+test('a varredura de acentos pega os casos que escapavam', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-acentos-'));
+    const file = path.join(tmp, 'Tela.jsx');
+    fs.writeFileSync(file, [
+        "<Badge>{feito ? 'Concluida' : 'Em estudo'}</Badge>",
+        "toast.success('Anotacao salva')",
+        '<p><Clock size={15} /> Termina as {detail.endTime}</p>',
+        '<Button aria-label="Mes anterior" />',
+        "<div>Mostrando <b>{n}</b> em <b>{m}</b> materia{m !== 1 ? 's' : ''}</div>",
+        "<Badge>{usados} ja usadas</Badge>",
+        "<p>Sem informacoes adicionais.</p>",
+        // Ficam de fora: chave técnica minúscula, propriedade, CSS e frase correta.
+        "const radius = 'padrao'; const x = o.media; const css = '@media print'; const y = 'encerra as provas em andamento'",
+    ].join('\n'));
+    const problems = scan([file], { jsxText: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+    assert.equal(problems.length, 7, problems.join('\n'));
 });
 
 let app;

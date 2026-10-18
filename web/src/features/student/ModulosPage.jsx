@@ -150,7 +150,7 @@ export default function ModulosPage() {
       await api.post('/api/student/annotation', { email, key: openUnit.key, ...annotation })
       setAnnotation(null)
       loadAnnotations(openUnit.key)
-      toast.success('Anotacao salva')
+      toast.success('Anotação salva')
     } catch (e) {
       toast.error(e.message)
     }
@@ -210,7 +210,7 @@ export default function ModulosPage() {
     <div className="max-w-6xl mx-auto space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" icon={ArrowLeft} onClick={() => setOpenUnit(null)}>Voltar aos módulos</Button>
-        <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluida' : 'Em estudo'}</Badge>
+        <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluída' : 'Em estudo'}</Badge>
         <Button size="sm" variant="secondary" icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
       </div>
 
@@ -273,7 +273,7 @@ export default function ModulosPage() {
         </div>
       </div>
 
-      <Modal open={!!annotation} onClose={() => setAnnotation(null)} title="Anotacao do paragrafo" description={annotation?.highlightedText?.slice(0, 120)}>
+      <Modal open={!!annotation} onClose={() => setAnnotation(null)} title="Anotação do parágrafo" description={annotation?.highlightedText?.slice(0, 120)}>
         <Textarea id="ann" value={annotation?.note || ''} onChange={(e) => setAnnotation((a) => ({ ...a, note: e.target.value }))} className="min-h-[140px]" />
         <div className="mt-3 flex justify-end gap-2">
           <Button variant="destructive" icon={Trash2} onClick={deleteAnnotation}>Excluir</Button>

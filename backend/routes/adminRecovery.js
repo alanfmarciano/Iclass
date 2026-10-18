@@ -5,8 +5,9 @@ const db = require('../database.js');
 const { validateAdmin, isProfessorAccount } = require('../middlewares.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
+const backupAudit = require('../utils/backupAudit.js');
 
-function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadDir }) {
+function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage = error => `Erro no upload: ${error.message}`, uploadDir }) {
     if (typeof uploadForRequest !== 'function' || typeof rejectInvalidUpload !== 'function' || !uploadDir) {
         throw new Error('Dependências de upload inválidas para adminRecovery.');
     }
@@ -71,24 +72,10 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         return true;
     }
 
-    // Registro de backup no mesmo formato dos outros registros de auditoria
-    // (action/actor/timestamp, como notas e cadastro), com os dados em `details`.
     // Registros antigos (type/actorEmail/at, dados soltos) são lidos por
-    // normalizeBackupAuditEntry.
+    // normalizeBackupAuditEntry; os novos saem de utils/backupAudit.js.
     function recordBackupAudit(req, matchedAdmin, action, details = {}) {
-        if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-        const entry = {
-            id: `audit_backup_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-            action,
-            actor: (matchedAdmin && matchedAdmin.email) || 'admin',
-            timestamp: Date.now(),
-            ip: req.ip || (req.socket && req.socket.remoteAddress) || '',
-            device: (req.headers && req.headers['user-agent']) || '',
-            category: 'backup',
-            details,
-        };
-        db.memory.auditLogs.push(entry);
-        return entry;
+        return backupAudit.recordBackupAudit(req, matchedAdmin, action, details);
     }
 
     function isBackupAuditEntry(entry) {
@@ -181,8 +168,14 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     }
 
     router.post('/api/admin/backup/restore', (req, res) => {
-        validateAdmin(req, res, (config, matchedAdmin) => {
-            if (rejectProfessor(res, matchedAdmin)) return;
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            // Tentativa de restaurar sem ser administrador é evento de segurança: fica no histórico.
+            if (isProfessorAccount(matchedAdmin)) {
+                recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { error: 'Tentativa de restauração por conta de professor (recusada).' });
+                await db.save().catch(() => {});
+                rejectProfessor(res, matchedAdmin);
+                return;
+            }
             uploadForRequest().single('file')(req, res, async (error) => {
                 // Recusas antes da restauração (arquivo grande demais, formato inválido,
                 // sem a confirmação) também ficam no histórico de backup.
@@ -192,11 +185,14 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                     await db.save().catch(() => {});
                 };
                 if (error) {
-                    const message = `Erro no upload: ${error.message}`;
+                    const message = uploadErrorMessage(error);
                     await recordRefusal(message);
                     return res.status(400).json({ error: message });
                 }
-                if (!req.file) return res.status(400).json({ error: 'Envie o arquivo de backup (.json ou .zip).' });
+                if (!req.file) {
+                    await recordRefusal('Restauração sem arquivo de backup.');
+                    return res.status(400).json({ error: 'Envie o arquivo de backup (.json ou .zip).' });
+                }
                 const refusedFile = uploadInfo();
                 if (rejectInvalidUpload(req, res, { discard: true })) {
                     recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...refusedFile, error: 'Arquivo recusado (formato ou conteúdo inválido).' });

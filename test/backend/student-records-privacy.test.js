@@ -316,6 +316,41 @@ test('[UC-BACKUP-001] histórico de backup na tela do administrador (formato nov
     );
 });
 
+test('[UC-BACKUP-001] tentativa do professor, restauração sem arquivo e tipo bloqueado ficam no histórico, em português', async () => {
+    db.memory.auditLogs = [];
+    const asProfessor = await request(app).post('/api/admin/backup/restore').set('x-admin-session', professorToken)
+        .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{"type":"iclass-backup-data"}'), 'backup.json');
+    assert.equal(asProfessor.status, 403);
+    // Professora sem "Executar manutenção": a guarda de permissões recusa antes da rota.
+    const withoutPermission = await request(app).post('/api/admin/backup/restore').set('x-admin-session', otherProfessorToken)
+        .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{"type":"iclass-backup-data"}'), 'backup.json');
+    assert.equal(withoutPermission.status, 403);
+    const noFile = await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken).field('confirm', 'RESTAURAR');
+    assert.equal(noFile.status, 400);
+    const blocked = await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
+        .field('confirm', 'RESTAURAR').attach('file', Buffer.from('MZ'), 'programa.exe');
+    assert.equal(blocked.status, 400);
+    assert.equal(blocked.body.error, 'Erro no upload: tipo de arquivo não permitido.', 'antes: "Erro no upload: Unexpected field"');
+
+    const history = await request(app).get('/api/admin/backup/history').set('x-admin-session', adminToken);
+    assert.equal(history.status, 200);
+    const failures = history.body.entries.filter(entry => entry.action === 'backup_restore_failed');
+    assert.equal(failures.length, 4, 'antes as tentativas dos professores e a restauração sem arquivo não eram registradas');
+    const byActor = failures.find(entry => entry.actor === 'prof@g6.local');
+    assert.ok(byActor, 'tentativa do professor registrada com quem tentou');
+    assert.match(byActor.error, /professor/);
+    const byGuard = failures.find(entry => entry.actor === 'prof2@g6.local');
+    assert.ok(byGuard, 'tentativa recusada pela guarda de permissões também fica no histórico');
+    assert.match(byGuard.error, /^Tentativa de restauração recusada: /);
+    // Só a restauração é registrada pela guarda; outras recusas não viram histórico de backup.
+    await request(app).get('/api/admin/backup/full').set('x-admin-session', otherProfessorToken).expect(403);
+    const after = await request(app).get('/api/admin/backup/history').set('x-admin-session', adminToken);
+    assert.equal(after.body.entries.filter(entry => entry.action === 'backup_restore_failed').length, 4);
+    assert.ok(failures.some(entry => /sem arquivo/.test(entry.error)));
+    assert.ok(failures.some(entry => entry.error === 'Erro no upload: tipo de arquivo não permitido.'));
+    assert.equal(JSON.stringify(history.body).includes('Unexpected field'), false);
+});
+
 test('[UC-BACKUP-001] backup que já estava na lixeira (versões anteriores) não volta para o professor nem é baixado em /uploads', async () => {
     const fileStore = require('../../backend/utils/storage.js');
     await db.save();
@@ -463,6 +498,51 @@ test('[UC-BACKUP-001] ZIP gravado como .json, ZIP com bytes antes, ZIP dentro de
         const ignoreBody = (res, callback) => { res.on('data', () => {}); res.on('end', () => callback(null, null)); };
         await request(app).get(`/uploads/${name}`).set('x-admin-session', adminToken).parse(ignoreBody).expect(200);
     }
+    db.memory.library = [];
+});
+
+test('[UC-BACKUP-001] backup compactado com gzip ou salvo em UTF-16 também é só do administrador; aula com .gz comum continua liberada', async () => {
+    const fileStore = require('../../backend/utils/storage.js');
+    const AdmZip = require('adm-zip');
+    const zlib = require('node:zlib');
+    await db.save();
+    const stamp = Date.now();
+    const json = JSON.stringify(backup.buildDataSnapshot());
+    const gz = zlib.gzipSync(Buffer.from(json));
+    const zipWithGz = new AdmZip();
+    zipWithGz.addFile('dados.json.gz', gz);
+    const zipWithBin = new AdmZip();
+    zipWithBin.addFile('pasta/dados.bin', gz);
+    const zipWithGzAsJson = new AdmZip();
+    zipWithGzAsJson.addFile('dados.json', gz);
+    const files = {
+        gzipAsJson: [`${stamp}-801.json`, gz],
+        utf16AsJson: [`${stamp}-802.json`, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(json, 'utf16le')])],
+        zipWithGz: [`${stamp}-803.zip`, zipWithGz.toBuffer()],
+        zipWithBin: [`${stamp}-804.zip`, zipWithBin.toBuffer()],
+        zipWithGzAsJson: [`${stamp}-805.zip`, zipWithGzAsJson.toBuffer()],
+    };
+    Object.values(files).forEach(([name, bytes]) => fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, name), bytes));
+    db.memory.library = Object.values(files).map(([name], index) => ({ id: `lib-gz${index}`, kind: 'file', courseId: courseA, filename: name, url: `/uploads/${name}` }));
+    for (const [label, [name]] of Object.entries(files)) {
+        const asProfessor = await request(app).get(`/uploads/${name}`).set('x-admin-session', professorToken);
+        assert.equal(asProfessor.status, 403, `${label}: o professor baixava (antes 200)`);
+    }
+    // Material de aula com um .gz comum (dados de exemplo) continua liberado.
+    const lesson = new AdmZip();
+    lesson.addFile('aula/vendas.csv.gz', zlib.gzipSync(Buffer.from('produto;valor\nCaderno;12,50\n')));
+    lesson.addFile('aula/roteiro.json', Buffer.from(JSON.stringify({ passos: ['abrir', 'somar'] })));
+    const lessonName = `${stamp}-806.zip`;
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, lessonName), lesson.toBuffer());
+    const plainGzName = `${stamp}-807.json`;
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, plainGzName), zlib.gzipSync(Buffer.from(JSON.stringify({ exercicio: 1 }))));
+    db.memory.library.push(
+        { id: 'lib-gz-aula', kind: 'file', courseId: courseA, filename: lessonName, url: `/uploads/${lessonName}` },
+        { id: 'lib-gz-json', kind: 'file', courseId: courseA, filename: plainGzName, url: `/uploads/${plainGzName}` },
+    );
+    const ignoreBody = (res, callback) => { res.on('data', () => {}); res.on('end', () => callback(null, null)); };
+    await request(app).get(`/uploads/${lessonName}`).set('x-admin-session', professorToken).parse(ignoreBody).expect(200);
+    await request(app).get(`/uploads/${plainGzName}`).set('x-admin-session', professorToken).parse(ignoreBody).expect(200);
     db.memory.library = [];
 });
 

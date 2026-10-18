@@ -44,9 +44,9 @@ export default function CalendarioPage() {
       <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.title || 'Evento'} description={detail ? `${new Date(`${detail.eventDate}T12:00:00`).toLocaleDateString('pt-BR')}${detail.startTime ? ` - ${detail.startTime}` : ''}` : ''}>
         {detail && <div className="space-y-4">
           <div className="flex flex-wrap gap-2"><Badge tone="neutral">{TYPE_LABELS[detail.eventType] || 'Evento'}</Badge><Badge tone="info">{detail.target === 'turma' ? detail.targetValue : 'Curso inteiro'}</Badge></div>
-          {detail.endTime && <p className="flex items-center gap-2 text-sm text-muted"><Clock size={15} /> Termina as {detail.endTime}</p>}
+          {detail.endTime && <p className="flex items-center gap-2 text-sm text-muted"><Clock size={15} /> Termina às {detail.endTime}</p>}
           <p className="flex items-center gap-2 text-sm text-muted"><Users size={15} /> {detail.target === 'turma' ? `Turma ${detail.targetValue}` : 'Todos os alunos do curso'}</p>
-          {detail.description ? <p className="whitespace-pre-wrap text-sm text-text">{detail.description}</p> : <p className="text-sm text-muted">Sem informacoes adicionais.</p>}
+          {detail.description ? <p className="whitespace-pre-wrap text-sm text-text">{detail.description}</p> : <p className="text-sm text-muted">Sem informações adicionais.</p>}
         </div>}
       </Modal>
     </div>

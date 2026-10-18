@@ -131,25 +131,38 @@ async function readZipDirectory(source) {
 
 // Bytes descomprimidos de uma entrada, em pedaços. null: método não suportado,
 // entrada cifrada ou cabeçalho local inválido (não dá para conferir).
-async function openEntryStream(source, directory, entry) {
+// gunzip: a entrada é um .gz (dados.json.gz) e os pedaços saem já descompactados.
+async function openEntryStream(source, directory, entry, { gunzip = false } = {}) {
     if (entry.encrypted || (entry.method !== 0 && entry.method !== 8)) return null;
     const localStart = entry.localOffset + directory.delta;
     const header = await source.read(localStart, 30);
     if (header.length < 30 || header.readUInt32LE(0) !== LOCAL_SIGNATURE) return null;
     const dataStart = localStart + 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
-    const raw = source.stream(dataStart, entry.compressedSize);
-    if (entry.method === 0) return raw;
-    const inflate = zlib.createInflateRaw({ chunkSize: STREAM_CHUNK });
-    pipeline(raw, inflate, () => {});
-    return inflate;
+    let stream = source.stream(dataStart, entry.compressedSize);
+    if (entry.method === 8) {
+        const inflate = zlib.createInflateRaw({ chunkSize: STREAM_CHUNK });
+        pipeline(stream, inflate, () => {});
+        stream = inflate;
+    }
+    if (gunzip) {
+        const unzip = zlib.createGunzip({ chunkSize: STREAM_CHUNK });
+        pipeline(stream, unzip, () => {});
+        stream = unzip;
+    }
+    return stream;
 }
 
 // Passa os pedaços da entrada para `onChunk` até ele devolver true (achou), o fim ou
 // `maxBytes`. Devolve 'found', 'done', 'limit' ou null (não deu para ler).
-async function scanZipEntry(source, directory, entry, onChunk, { maxBytes = Infinity } = {}) {
+async function scanZipEntry(source, directory, entry, onChunk, { maxBytes = Infinity, gunzip = false } = {}) {
     let stream;
-    try { stream = await openEntryStream(source, directory, entry); } catch (error) { return null; }
+    try { stream = await openEntryStream(source, directory, entry, { gunzip }); } catch (error) { return null; }
     if (!stream) return null;
+    return scanStream(stream, onChunk, { maxBytes });
+}
+
+// Mesmo laço para qualquer fluxo (arquivo .gz solto, entrada do ZIP).
+async function scanStream(stream, onChunk, { maxBytes = Infinity } = {}) {
     let total = 0;
     try {
         for await (const chunk of stream) {
@@ -192,5 +205,6 @@ module.exports = {
     readZipDirectory,
     readZipEntryBuffer,
     readZipEntryHead,
+    scanStream,
     scanZipEntry,
 };

@@ -642,11 +642,15 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
         [student.matricula, copy.matricula, copy.studentMatricula].forEach(value => { if (String(value || '').trim().length >= 3) matriculas.add(String(value).trim()); });
     });
     const scrubIdentity = { emails, names: [...names].sort((a, b) => b.length - a.length), matriculas };
+    // Entrada de outro aluno cadastrado nunca muda (ex.: e-mail antigo reaproveitado
+    // por outra pessoa, que é excluída depois; o histórico do aluno vivo fica intacto).
+    const living = new Set((memory.students || []).map(student => normalizeEmailValue(student && student.email)).filter(email => email && !emails.has(email)));
     let changed = 0;
     memory.auditLogs.forEach((entry, index) => {
         if (!entry || typeof entry !== 'object') return;
         const copy = entry.details && entry.details.deletedSubmission;
         const auditEmail = normalizeEmailValue(entry.studentEmail);
+        if (living.has(auditEmail)) return;
         const ownsEntry = emails.has(auditEmail) || (copy && emails.has(deletedCopyEmail(copy)));
         const serialized = JSON.stringify(entry).toLowerCase();
         const mentions = [...emails].some(email => serialized.includes(email));
@@ -670,40 +674,121 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
     return changed;
 }
 
+// Aluno excluído (delete-student): nas aplicações de prova (e na configuração da
+// prova na turma, formato antigo) as contestações dele perdem e-mail, nome e o texto
+// livre (que o aluno escreve e pode ter nome, matrícula, telefone); ficam a questão, o
+// motivo e o andamento, para o professor revisar a questão. Tempo extra e versão
+// atribuídos pelo e-mail saem (não há mais a quem aplicar). Devolve quantos itens mudaram.
+function anonymizeStudentExamRecords(memory, { emails = [] } = {}, { at = new Date().toISOString() } = {}) {
+    const wanted = new Set(emails.map(normalizeEmailValue).filter(Boolean));
+    if (!memory || !wanted.size) return 0;
+    let changed = 0;
+    const clean = holder => {
+        if (!holder || typeof holder !== 'object') return;
+        (Array.isArray(holder.questionReports) ? holder.questionReports : []).forEach(report => {
+            if (!report || !wanted.has(normalizeEmailValue(report.studentEmail))) return;
+            report.studentEmail = '';
+            report.studentName = ANONYMIZED_STUDENT_NAME;
+            report.text = '';
+            report.studentAnonymized = true;
+            if (!report.anonymizedAt) report.anonymizedAt = at;
+            changed += 1;
+        });
+        ['studentAdjustments', 'studentVersions'].forEach(field => {
+            const map = holder[field];
+            if (!map || typeof map !== 'object') return;
+            Object.keys(map).forEach(key => {
+                if (wanted.has(normalizeEmailValue(key))) { delete map[key]; changed += 1; }
+            });
+        });
+    };
+    (memory.examApplications || []).forEach(clean);
+    (memory.classes || []).forEach(cls => {
+        Object.values((cls && cls.onlineExamConfigs) || {}).forEach(clean);
+    });
+    return changed;
+}
+
 // Migração (boot, idempotente): alunos excluídos antes desta correção deixaram as
-// cópias completas na lixeira e o histórico ligado ao e-mail. Um e-mail conta como
-// de aluno excluído quando sumiu do cadastro, não tem nenhuma entrega e não está num
-// curso arquivado (o arquivamento tira o aluno do cadastro, mas ele pode voltar).
+// cópias completas na lixeira e o histórico ligado ao e-mail. Só anonimiza quando a
+// exclusão é certa; na dúvida, não mexe (melhor ficar um dado antigo do que apagar o
+// histórico de um aluno vivo). Um grupo de e-mails do mesmo aluno conta como excluído
+// só quando, ao mesmo tempo:
+// - nenhum e-mail do grupo está no cadastro nem em entrega;
+// - nenhum aparece em outro lugar do banco (presença, progresso, sessões, aplicações,
+//   logs, turmas...): a exclusão antiga deixava parte disso e o arquivamento também;
+//   qualquer rastro é dúvida;
+// - o grupo inclui as trocas de e-mail registradas na auditoria (valor antigo → novo).
+//   Antes de 585a6bd a troca não atualizava auditLogs[].studentEmail, então o histórico
+//   antigo de um aluno ativo ficou com o e-mail velho, que não está em lugar nenhum;
+// - não está num curso arquivado (o arquivamento tira o aluno do cadastro, mas ele pode
+//   voltar). Arquivo que não dá para ler inteiro também é dúvida.
 // archivedEmails: função chamada só se houver candidatos (lê os cursos arquivados).
+function looksLikeEmail(value) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 function anonymizeAuditOfRemovedStudents(memory, { archivedEmails = () => new Set(), at = new Date().toISOString() } = {}) {
     if (!memory || !Array.isArray(memory.auditLogs) || !memory.auditLogs.length) return 0;
     const registered = new Set((memory.students || []).map(student => normalizeEmailValue(student && student.email)).filter(Boolean));
     // Cadastro vazio (banco novo ou tabela que não carregou): sem base para comparar, não mexe.
     if (!registered.size) return 0;
     const withSubmissions = new Set((memory.submissions || []).map(item => normalizeEmailValue(item && ((item.student && item.student.email) || item.studentEmail))).filter(Boolean));
-    const alive = email => registered.has(email) || withSubmissions.has(email);
-    // Grupos de e-mails do mesmo aluno: a cópia da lixeira pode ter o e-mail antigo
-    // e a auditoria o novo (troca de e-mail na versão antiga).
-    const groups = [];
+
+    // Grupos de e-mails do mesmo aluno (união): o e-mail da entrada, o da cópia da
+    // lixeira (pode ter ficado o antigo) e os dois lados de qualquer troca registrada.
+    const parent = new Map();
+    const find = email => {
+        if (!parent.has(email)) parent.set(email, email);
+        let root = email;
+        while (parent.get(root) !== root) root = parent.get(root);
+        let node = email;
+        while (parent.get(node) !== root) { const next = parent.get(node); parent.set(node, root); node = next; }
+        return root;
+    };
+    const union = (a, b) => { const ra = find(a); const rb = find(b); if (ra !== rb) parent.set(rb, ra); };
+    const owners = new Set();
     memory.auditLogs.forEach(entry => {
-        if (!entry || typeof entry !== 'object' || entry.studentAnonymized === true) return;
+        if (!entry || typeof entry !== 'object') return;
         const copy = entry.details && entry.details.deletedSubmission;
-        const emails = [normalizeEmailValue(entry.studentEmail), copy && copy.anonymized !== true ? deletedCopyEmail(copy) : '']
-            .filter(email => email && email.includes('@'));
-        if (emails.length) groups.push([...new Set(emails)]);
+        const owned = [normalizeEmailValue(entry.studentEmail), copy && typeof copy === 'object' ? deletedCopyEmail(copy) : '']
+            .filter(looksLikeEmail);
+        const linked = [...owned];
+        const oldValue = normalizeEmailValue(entry.oldValue);
+        const newValue = normalizeEmailValue(entry.newValue);
+        if (looksLikeEmail(oldValue) && looksLikeEmail(newValue)) linked.push(oldValue, newValue);
+        linked.forEach(email => union(linked[0], email));
+        // Entrada já anonimizada não tem mais dono (o e-mail dela ficou vazio).
+        if (entry.studentAnonymized !== true) owned.forEach(email => owners.add(email));
     });
-    const candidates = groups.filter(emails => !emails.some(alive));
+    const groups = new Map();
+    [...parent.keys()].forEach(email => {
+        const root = find(email);
+        if (!groups.has(root)) groups.set(root, new Set());
+        groups.get(root).add(email);
+    });
+    const alive = email => registered.has(email) || withSubmissions.has(email);
+    let candidates = [...groups.values()]
+        .map(members => [...members])
+        .filter(members => members.some(email => owners.has(email)) && !members.some(alive));
     if (!candidates.length) return 0;
+
+    // Qualquer menção ao e-mail fora da auditoria é rastro de aluno (ou dúvida).
+    let elsewhere;
+    try {
+        elsewhere = Object.keys(memory)
+            .filter(key => key !== 'auditLogs')
+            .map(key => (JSON.stringify(memory[key]) || '').toLowerCase());
+    } catch (error) { return 0; }
+    candidates = candidates.filter(members => !members.some(email => elsewhere.some(text => text.includes(email))));
+    if (!candidates.length) return 0;
+
     let archived;
     try { archived = archivedEmails() || new Set(); } catch (error) { return 0; }
-    const done = new Set();
     let changed = 0;
-    candidates.forEach(emails => {
-        if (emails.some(email => archived.has(email))) return;
-        const key = emails.slice().sort().join('|');
-        if (done.has(key)) return;
-        done.add(key);
-        changed += anonymizeStudentAuditTrail(memory, { emails }, { at });
+    candidates.forEach(members => {
+        if (members.some(email => archived.has(email))) return;
+        changed += anonymizeStudentAuditTrail(memory, { emails: members }, { at });
     });
     return changed;
 }
@@ -839,6 +924,7 @@ module.exports = {
     buildGradeGroups,
     anonymizeAuditOfRemovedStudents,
     anonymizeStudentAuditTrail,
+    anonymizeStudentExamRecords,
     buildApplicationAuditTrail,
     buildStudentReportModules,
     createResolvedGroupKey,

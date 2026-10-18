@@ -17,7 +17,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { boletimChoiceOptions, boletimContext, fmtGrade, gradeOf } from '../../lib/grades'
+import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf } from '../../lib/grades'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -46,12 +46,12 @@ function Kpi({ label, value, sub, children }) {
   )
 }
 
-function CompareBar({ label, me, them, max = 100, suffix = '' }) {
+function CompareBar({ label, me, them, max = 100, suffix = '', format = (value) => value }) {
   const pm = Math.min(100, (Number(me) / max) * 100)
   const pt = Math.min(100, (Number(them) / max) * 100)
   return (
     <div>
-      <div className="flex justify-between text-xs mb-1"><span className="text-text">{label}</span><span className="text-muted">você {me}{suffix} · turma {them}{suffix}</span></div>
+      <div className="flex justify-between text-xs mb-1"><span className="text-text">{label}</span><span className="text-muted">aluno {format(me)}{suffix} · turma {format(them)}{suffix}</span></div>
       <div className="space-y-1">
         <div className="h-2 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: pm + '%' }} /></div>
         <div className="h-2 rounded bg-surface-2 overflow-hidden"><div className="h-full" style={{ width: pt + '%', background: 'var(--text-muted)' }} /></div>
@@ -187,14 +187,14 @@ export default function AlunoDetailPage() {
                   }><MiniLineChart points={notas} /></Card>
                   <Card title="Desempenho por módulo">
                     {modulos.length ? <div className="space-y-3">{modulos.map((m) => (
-                      <div key={m.m}><div className="flex justify-between text-xs mb-1"><span className="text-text">{m.m}</span><span className="text-muted">{m.media.toFixed(1)}</span></div><div className="h-1.5 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: `${m.media * 10}%` }} /></div></div>
+                      <div key={m.m}><div className="flex justify-between text-xs mb-1"><span className="text-text">{m.m}</span><span className="text-muted">{fmtGradeValue(m.media)}</span></div><div className="h-1.5 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: `${m.media * 10}%` }} /></div></div>
                     ))}</div> : <p className="text-sm text-muted">Sem notas ainda.</p>}
                   </Card>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   <Card title="Comparativo com a turma">
                     <div className="space-y-4">
-                      <CompareBar label="Média" me={dash?.comparativo?.studentMedia ?? 0} them={dash?.comparativo?.turmaMedia ?? 0} max={10} />
+                      <CompareBar label="Média" me={dash?.comparativo?.studentMedia ?? 0} them={dash?.comparativo?.turmaMedia ?? 0} max={10} format={(value) => fmtGradeValue(value, '0,0')} />
                       <CompareBar label="Frequência" me={dash?.comparativo?.studentFreq ?? 0} them={dash?.comparativo?.turmaFreq ?? 0} max={100} suffix="%" />
                       <p className="text-xs text-subtle">Comparado com {dash?.comparativo?.turmaSize ?? 0} aluno(s) da turma.</p>
                     </div>
@@ -231,7 +231,7 @@ export default function AlunoDetailPage() {
                       <div className="bg-surface-2 rounded-lg p-3"><p className="text-xs text-muted mb-1">Recorde</p><p className="text-xl font-semibold text-text">{dash?.streak?.recorde ?? 0} <span className="text-xs text-muted font-normal">dias</span></p></div>
                     </div>
                     <div className="mt-3 space-y-1.5 text-sm">
-                      <div className="flex justify-between"><span className="text-muted">Média (mês atual vs anterior)</span><span className="text-text">{(dash?.temporal?.mediaAtual ?? 0).toFixed(1)} vs {(dash?.temporal?.mediaAnterior ?? 0).toFixed(1)}</span></div>
+                      <div className="flex justify-between"><span className="text-muted">Média (mês atual vs anterior)</span><span className="text-text">{fmtGradeValue(dash?.temporal?.mediaAtual ?? 0)} vs {fmtGradeValue(dash?.temporal?.mediaAnterior ?? 0)}</span></div>
                       <div className="flex justify-between"><span className="text-muted">Presenças (mês)</span><span className="text-text">{dash?.temporal?.presencaAtual ?? 0} vs {dash?.temporal?.presencaAnterior ?? 0}</span></div>
                     </div>
                   </Card>

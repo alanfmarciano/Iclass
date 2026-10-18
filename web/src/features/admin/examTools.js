@@ -169,10 +169,10 @@ function printDocumentHtml({ title, snapshots, answerKey, includeAnswerKey = fal
       : snapshot.questions.slice(0, count).map((q, index) => `<div class="question"><p><b>${index + 1}.</b> ${escapeHtml(q.text)}</p>${(q.alternatives || []).map((alt) => `<p class="alt">${escapeHtml((alt.displayLetter || alt.letter || '').toLowerCase())}) ${escapeHtml(alt.text)}</p>`).join('')}</div>`).join('')
 
     return `<section class="page">
-      <header><strong>${answerKey ? 'GABARITO DO PROFESSOR' : 'AVALIACAO'}</strong><span>Codigo ${escapeHtml(code)} - ${date}</span></header>
+      <header><strong>${answerKey ? 'GABARITO DO PROFESSOR' : 'AVALIAÇÃO'}</strong><span>Código ${escapeHtml(code)} - ${date}</span></header>
       ${answerKey ? '' : '<div class="student"><span>Nome:</span><span>Turma:</span><span>Data:</span><span>Nota:</span></div>'}
-      <div class="meta">${escapeHtml(title)} - Versao ${escapeHtml(snapshot.version || VERSION_LABELS[versionIndex])} - ${count} questoes</div>
-      <div class="sheet"><b>${answerKey ? 'Gabarito rapido' : 'Cartao resposta'}</b><div class="sheet-grid">${bubbleRows}</div></div>
+      <div class="meta">${escapeHtml(title)} - Versão ${escapeHtml(snapshot.version || VERSION_LABELS[versionIndex])} - ${count} questões</div>
+      <div class="sheet"><b>${answerKey ? 'Gabarito rápido' : 'Cartão-resposta'}</b><div class="sheet-grid">${bubbleRows}</div></div>
       ${questionsHtml}
     </section>`
   }).join('')

@@ -1,6 +1,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
+const { pipeline } = require('stream');
 const db = require('../database.js');
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
@@ -305,17 +307,22 @@ function textHasBackupMarker(text) {
     return BACKUP_TEXT_MARKERS.some(marker => marker.test(text));
 }
 
-// Procura as marcas em pedaços sucessivos (com sobreposição entre eles).
+// Procura as marcas em pedaços sucessivos (com sobreposição entre eles). Texto em
+// UTF-16 (backup salvo pelo Bloco de Notas como "Unicode") tem um byte zero entre os
+// caracteres ASCII: as marcas são procuradas também sem eles.
 function backupMarkerScanner(extraLiterals = []) {
     let carry = '';
+    const hasMarker = text => textHasBackupMarker(text) || extraLiterals.some(literal => text.includes(literal));
     return chunk => {
         // latin1 mantém um caractere por byte: as marcas são ASCII.
         const text = carry + (typeof chunk === 'string' ? chunk : chunk.toString('latin1'));
-        if (textHasBackupMarker(text) || extraLiterals.some(literal => text.includes(literal))) return true;
-        carry = text.slice(-BACKUP_SCAN_OVERLAP);
+        if (hasMarker(text) || (text.includes('\0') && hasMarker(text.replace(/\0/g, '')))) return true;
+        carry = text.slice(-BACKUP_SCAN_OVERLAP * 2);
         return false;
     };
 }
+
+const GZIP_MAGIC = head => !!head && head.length >= 2 && head[0] === 0x1f && head[1] === 0x8b;
 
 async function fileHasBackupMarker(filePath, extraLiterals = []) {
     const handle = await fs.promises.open(filePath, 'r');
@@ -338,8 +345,10 @@ async function fileHasBackupMarker(filePath, extraLiterals = []) {
 function entryKindFromHead(head) {
     if (!head || !head.length) return null;
     if (zipInspect.hasZipMagic(head)) return 'zip';
+    // Compactado com gzip (dados.json.gz, ou .bin/.json que é gzip por dentro).
+    if (GZIP_MAGIC(head)) return 'gzip';
     if (head.toString('latin1', 0, 15) === 'SQLite format 3') return 'text';
-    const first = head.toString('latin1').replace(/^\uFEFF|^\xEF\xBB\xBF/, '').trimStart()[0];
+    const first = head.toString('latin1').replace(/\0/g, '').replace(/^\uFEFF|^\xEF\xBB\xBF|^\xFF\xFE|^\xFE\xFF/, '').trimStart()[0];
     return first === '{' || first === '[' ? 'text' : null;
 }
 
@@ -353,8 +362,8 @@ async function zipLooksLikeBackup(source, depth, budget) {
     const directory = await zipInspect.readZipDirectory(source);
     if (!directory) return null;
     let sniffed = 0;
-    const scanEntry = async (entry, extraLiterals = []) => {
-        const result = await zipInspect.scanZipEntry(source, directory, entry, backupMarkerScanner(extraLiterals), { maxBytes: budget.left });
+    const scanEntry = async (entry, extraLiterals = [], { gunzip = false } = {}) => {
+        const result = await zipInspect.scanZipEntry(source, directory, entry, backupMarkerScanner(extraLiterals), { maxBytes: budget.left, gunzip });
         if (result === 'done') budget.left -= entry.size;
         return result;
     };
@@ -368,6 +377,16 @@ async function zipLooksLikeBackup(source, depth, budget) {
             sniffed += 1;
             kind = entryKindFromHead(await zipInspect.readZipEntryHead(source, directory, entry, 16));
             if (!kind) continue;
+        } else if (kind === 'text' && GZIP_MAGIC(await zipInspect.readZipEntryHead(source, directory, entry, 2))) {
+            kind = 'gzip'; // .json/.db que na verdade é gzip
+        }
+        if (kind === 'gzip') {
+            // Descompacta aos pedaços (com o mesmo limite total) e procura as marcas e o
+            // nome do backup (um .tar.gz guarda os nomes sem compressão por dentro).
+            // gzip que não abre: na dúvida, só o administrador.
+            const result = await scanEntry(entry, ['backup-data.json'], { gunzip: true });
+            if (result !== 'done') return true;
+            continue;
         }
         if (kind === 'zip') {
             const fitsInMemory = depth < MAX_NESTED_ZIP_DEPTH && entry.size <= MAX_NESTED_ZIP_BYTES && entry.size <= budget.left;
@@ -400,6 +419,14 @@ async function inspectBackupFile(filePath, stat) {
         const source = zipInspect.fileSource(filePath, handle, stat.size);
         const head = await source.read(0, 4);
         const zipByName = path.extname(filePath).toLowerCase() === '.zip';
+        // Backup compactado com gzip e gravado como .json: confere descompactado, aos
+        // pedaços e com o mesmo limite do ZIP. gzip que não abre: na dúvida, só o administrador.
+        if (GZIP_MAGIC(head)) {
+            const stream = zlib.createGunzip();
+            pipeline(fs.createReadStream(filePath), stream, () => {});
+            const result = await zipInspect.scanStream(stream, backupMarkerScanner(['backup-data.json']), { maxBytes: MAX_ZIP_SCAN_BYTES });
+            return result !== 'done';
+        }
         // Um ZIP gravado como .json também é aberto como ZIP (assinatura PK, ou o
         // diretório central no fim quando há bytes antes do ZIP).
         if (zipByName || zipInspect.hasZipMagic(head) || !/^[\s{[\uFEFF\xEF]/.test(head.toString('latin1', 0, 1))) {

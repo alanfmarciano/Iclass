@@ -252,6 +252,19 @@ test('[UC-IMAGENS-001] access= sai de link relativo (../uploads), do nome do pr�
 
 });
 
+test('[UC-IMAGENS-001] /uploads/ dentro da query de um link externo é parte do link externo: o access= dele fica', () => {
+    const tokens = new Set(['sessao-viva']);
+    const external = '[Drive](https://drive.example.com/view?u=/uploads/doc.pdf?access=chave-do-drive)';
+    assert.equal(stripStoredAccessTokens(external, { sessionTokens: tokens }), external, 'antes perdia o access= do Drive');
+    // Sessão de instrutor válida sai em qualquer endereço.
+    assert.equal(
+        stripStoredAccessTokens('[Drive](https://drive.example.com/view?u=/uploads/doc.pdf?access=sessao-viva)', { sessionTokens: tokens }),
+        '[Drive](https://drive.example.com/view?u=/uploads/doc.pdf)',
+    );
+    // Atributo HTML sem aspas e links do próprio site continuam limpos.
+    assert.equal(stripStoredAccessTokens('<img src=/uploads/x.png?access=velha> ![a](/uploads/a.png?access=velha)', { sessionTokens: tokens }), '<img src=/uploads/x.png> ![a](/uploads/a.png)');
+});
+
 // ---------------------------------------------------------------- FUN-X2 / CRIT-02
 
 function setTodayGrade(className, startMinutes) {
@@ -511,10 +524,10 @@ test('[UC-SIGILO-001] "resposta do professor" sem a palavra gabarito fica; gabar
         '<h2>Leitura complementar</h2>', 'visível-6',
         '> ## GABARITO DO PROFESSOR', '> 1. B segredo-5', '> 2. C segredo-6', '',
         'visível-7 depois da citação',
-        // "---" no meio das respostas não encerra o gabarito em negrito (antes encerrava e
-        // o resto vazava); ele vai até o próximo título de verdade.
-        '<p><strong>Gabarito oficial</strong></p>', 'segredo-7', '', '---', 'segredo-7b',
-        '## Depois do gabarito', 'visível-8',
+        // "---" depois do gabarito em negrito encerra quando o que vem depois não é
+        // resposta (o ajuste anterior apagava o texto do aluno até o próximo título);
+        // seguido de mais respostas ("2. C"), o gabarito continua.
+        '<p><strong>Gabarito oficial</strong></p>', 'segredo-7', '', '---', '2. C - segredo-7b', '', '---', 'visível-8',
         '**Respostas do gabarito (professor)**', 'segredo-8', '## Fim', 'visível-9',
         'Texto com **negrito** e **outro** visível-10',
     ].join('\n');
@@ -606,4 +619,100 @@ test('[UC-SIGILO-001] gabarito em negrito com subtítulos e "---", <h2> no meio 
     assert.equal(studentView.status, 200);
     assert.doesNotMatch(studentView.text, /SEGREDO_\d/);
     assert.ok(studentView.text.includes('Parágrafo legítimo 1 sobre o tema.'));
+});
+
+test('[UC-SIGILO-001] rótulo do gabarito em negrito com as respostas na mesma linha sai; aviso curto, "---" e negrito seguinte não levam o texto do aluno', async () => {
+    const markdown = [
+        '# Unidade 1',
+        '',
+        'Texto antes.',
+        '',
+        // Jeito mais compacto de escrever o gabarito: rótulo e respostas no mesmo parágrafo.
+        '**GABARITO DO PROFESSOR:** 1-B (ls -la), 2-C SEGREDO_1',
+        '',
+        'visível-1',
+        '',
+        '**Gabarito do professor**: 1-B SEGREDO_2',
+        '3-D SEGREDO_3',
+        '',
+        '**Gabarito do professor:** 1. B (SEGREDO_13)',
+        '2. C - SEGREDO_14',
+        '3. D',
+        '',
+        '<strong>GABARITO DO PROFESSOR</strong><br>1. B SEGREDO_4',
+        '',
+        '1. Questão sobre o comando ls',
+        '   **Gabarito do professor:** B SEGREDO_5',
+        '2. Questão LEGITIMO_1 seguinte da lista',
+        '',
+        // Rótulo com ponto final ou comprido continua sendo o gabarito.
+        '**GABARITO OFICIAL.**',
+        '',
+        '1. B SEGREDO_6',
+        '',
+        '## Exercícios',
+        '',
+        '**GABARITO EXCLUSIVO DO PROFESSOR - NÃO DIVULGAR PARA OS ALUNOS**',
+        '',
+        '1. C SEGREDO_7',
+        '',
+        '## Para casa',
+        '',
+        // Aviso curto que começa com o rótulo: sai o aviso, o exercício seguinte fica.
+        '**Gabarito oficial disponível com o professor**',
+        '',
+        '1. Exercício LEGITIMO_2 para casa',
+        '',
+        '**Gabarito do professor**',
+        '',
+        '1. A SEGREDO_8',
+        '',
+        // Negrito que não é subtítulo do gabarito encerra a seção em negrito.
+        '**Exercício extra**',
+        '',
+        'Texto LEGITIMO_3 depois',
+        '',
+        '*Gabarito do professor*',
+        '',
+        '1. D SEGREDO_9',
+        '',
+        '---',
+        '',
+        'Texto LEGITIMO_4 depois do separador',
+        '',
+        'GABARITO DO PROFESSOR',
+        '',
+        '1. E SEGREDO_10',
+        '',
+        '## Fim',
+        '',
+        'visível-2',
+    ].join('\n');
+    const out = stripAnswerKeyBlocks(markdown);
+    assert.doesNotMatch(out, /SEGREDO_\d+/, 'antes vazavam o rótulo na mesma linha, o ponto final, o rótulo longo e o <strong> com <br>');
+    for (const kept of ['Texto antes.', 'visível-1', '1. Questão sobre o comando ls', 'LEGITIMO_1', 'LEGITIMO_2', 'LEGITIMO_3', 'LEGITIMO_4', '## Exercícios', '## Para casa', '**Exercício extra**', 'visível-2']) {
+        assert.ok(out.includes(kept), `sumiu: ${kept}`);
+    }
+    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
+
+    // Gabarito dentro de <div>: a tag que fecha o contêiner fica, seguida de linha em
+    // branco, e o "## Próximo" volta a ser título (antes o <div> ficava aberto).
+    const boxed = stripAnswerKeyBlocks('Intro\n\n<div class="box"><h2>GABARITO DO PROFESSOR</h2><p>1. SEGREDO_11</p></div>\n\n## Próximo\nvisível-3');
+    assert.doesNotMatch(boxed, /SEGREDO_11/);
+    assert.match(boxed, /<div class="box">\n<\/div>\n\n## Próximo\nvisível-3/);
+    const sections = stripAnswerKeyBlocks('<section><h3>Gabarito do professor</h3><ol><li>SEGREDO_12</li></ol></section>\n<section><h3>Atividade</h3><p>LEGITIMO_5</p></section>');
+    assert.doesNotMatch(sections, /SEGREDO_12/);
+    assert.equal((sections.match(/<section>/g) || []).length, (sections.match(/<\/section>/g) || []).length, 'contêineres continuam balanceados');
+    assert.match(sections, /<h3>Atividade<\/h3>\n<p>LEGITIMO_5<\/p><\/section>/);
+
+    // Caminho do aluno: /Apostila_X.md e /api/data.js.
+    const saved = await request(app).put('/api/admin/material/Apostila_POR_1').set('x-admin-session', adminToken).send({ markdownText: markdown });
+    assert.equal(saved.status, 200, saved.body && saved.body.error);
+    const studentView = await request(app).get('/Apostila_POR_1.md').set('x-session-token', tokens.ana);
+    assert.equal(studentView.status, 200);
+    assert.doesNotMatch(studentView.text, /SEGREDO_\d+/);
+    assert.ok(studentView.text.includes('Exercício LEGITIMO_2 para casa'));
+    const data = await request(app).get(`/api/data.js?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', tokens.ana);
+    assert.equal(data.status, 200);
+    assert.doesNotMatch(data.text, /SEGREDO_\d+/);
 });

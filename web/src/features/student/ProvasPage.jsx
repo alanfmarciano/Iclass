@@ -556,7 +556,7 @@ export default function ProvasPage() {
                   <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar avaliação..." aria-label="Buscar avaliação" />
                 </label>
                 <div className="pvb-filter">
-                  <span className="pvb-flabel">Materia</span>
+                  <span className="pvb-flabel">Matéria</span>
                   <button type="button" className={`pvb-chip ${mat === 'all' ? 'active' : ''}`} onClick={() => setMat('all')}>Todas <span className="pvb-count">{statusFiltered.length}</span></button>
                   {materias.map((m) => (
                     <button type="button" key={m} className={`pvb-chip ${mat === m ? 'active' : ''}`} style={{ '--sc': accentOf(m) }} onClick={() => setMat(m)}>
@@ -570,7 +570,7 @@ export default function ProvasPage() {
                 </div>
               </div>
 
-              <div className="pvb-resultmeta">Mostrando <b>{visible.length}</b> tentativa{visible.length !== 1 ? 's' : ''} em <b>{board.length}</b> materia{board.length !== 1 ? 's' : ''}</div>
+              <div className="pvb-resultmeta">Mostrando <b>{visible.length}</b> tentativa{visible.length !== 1 ? 's' : ''} em <b>{board.length}</b> matéria{board.length !== 1 ? 's' : ''}</div>
 
               {board.length === 0 ? (
                 <Card><EmptyState icon={ClipboardList} title="Nenhuma prova nesta categoria" description="Ajuste os filtros para ver outras avaliações." /></Card>

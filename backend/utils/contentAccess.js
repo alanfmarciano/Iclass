@@ -114,14 +114,36 @@ function setextHeadingLevel(line, next) {
 
 // Parágrafo só em negrito ou itálico ("**GABARITO DO PROFESSOR**", "*Gabarito
 // oficial*", "<p><strong>...</strong></p>") funciona como título: nível 7, abaixo de
-// qualquer título de verdade. Só conta se parecer título (curto e sem ponto final):
-// "**Atenção: o gabarito oficial será divulgado pelo professor após a prova.**" é um
-// aviso, não o começo do gabarito.
+// qualquer título de verdade. Quando o texto em negrito começa com "gabarito" (ou
+// "chave de respostas") e tem a marca do professor, é o rótulo do gabarito, com
+// qualquer tamanho ou pontuação ("**GABARITO OFICIAL.**", "**GABARITO EXCLUSIVO DO
+// PROFESSOR - NÃO DIVULGAR PARA OS ALUNOS**"). Os outros só contam se parecerem
+// título (curtos e sem ponto final): "**Atenção: o gabarito oficial será divulgado
+// pelo professor após a prova.**" é um aviso, não o começo do gabarito.
 const BOLD_LINE_LEVEL = 7;
 const MARKDOWN_BOLD_LINE = /^\s{0,3}(\*{1,3}|_{1,3})(?!\s)((?:(?!\1).)+)\1\s*:?\s*$/;
 const HTML_BOLD_LINE = /^\s{0,3}(?:<p\b[^>]*>\s*)?<(strong|b|em|i)\b[^>]*>([\s\S]+?)<\/\1>\s*:?\s*(?:<\/p>)?\s*$/i;
 const HTML_HEADING_LINE = /^\s{0,3}<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>\s*$/i;
 const MAX_BOLD_TITLE_WORDS = 8;
+// O rótulo começa com o nome do gabarito ("Gabarito do professor", "Chave de respostas").
+const ANSWER_KEY_START = /^(gabaritos?|chaves? de (respostas?|correcao))\b/;
+// Rótulo que só diz onde o gabarito está ("**Gabarito oficial disponível com o
+// professor**"): sai o próprio parágrafo, mas o conteúdo seguinte é do aluno.
+const ANSWER_KEY_NOTICE = /\b(disponive(l|is)|divulgad[oa]s?|publicad[oa]s?|sera|serao|estara|estarao|fica|ficam|ficara|ficarao|entregues?|solicite|solicitar|peca|pedir|consulte|consultar|procure|procurar|secretaria|mural|coordenacao)\b|\bcom (o|a) (professor|professora|docente|instrutor|instrutora|prof)\b/;
+// Subtítulo em negrito dentro do gabarito ("**Parte objetiva**", "**Seção A**",
+// "**Questão 2**"): não encerra o gabarito aberto por negrito. Outro negrito
+// ("**Exercício extra**") encerra.
+const ANSWER_KEY_SUBPART = /^(partes?|secao|secoes|bloco|questao|questoes|q ?\d+|itens?|letra|versao|versoes|resolucao|resolucoes|respostas?|comentarios?|justificativas?|criterios?|correcao|rubrica|objetivas?|discursivas?|dissertativas?|[a-e]|\d+)\b/;
+// Linha de resposta ("1. B", "2) c", "Questão 3 - D", "4. E (ls -la)"). "2. A rede..."
+// é texto, não resposta.
+const ANSWER_LINE = /^\s*(?:[-*+]\s+)?(?:(?:quest[aã]o|q)\s*)?\d{1,3}\s*[).:\-–—]\s*(?:letra\s+)?\(?[a-e]\)?(?=\s*(?:$|[,;.:)(\-–—]))/i;
+const THEMATIC_BREAK = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
+const LIST_ITEM = /^\s*(?:[-*+]|\d{1,9}[.)])\s+/;
+const HTML_BLOCK_START = /^\s{0,3}<\/?(p|div|section|article|aside|main|h[1-6]|ul|ol|li|table|blockquote|details|figure|hr)\b/i;
+// Rótulo em negrito no começo da linha, com texto depois na mesma linha ("**GABARITO
+// DO PROFESSOR:** 1-B, 2-C", "<strong>Gabarito oficial</strong><br>1. B"), também
+// dentro de item de lista.
+const LEADING_BOLD_LABEL = /^\s*(?:(?:[-*+]|\d{1,9}[.)])\s+)?(?:<p\b[^>]*>\s*)?(?:(\*{1,3}|_{1,3})(?!\s)((?:(?!\1).)+?)\1|<(strong|b|em|i)\b[^>]*>([\s\S]+?)<\/\3>)/i;
 
 function looksLikeTitle(text) {
     const plain = decodeHtmlEntities(String(text || '').replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
@@ -131,23 +153,57 @@ function looksLikeTitle(text) {
     return !/[.!?…]\s*$/.test(plain) || /\bprof\.\s*$/i.test(plain);
 }
 
+// Rótulo do gabarito do professor: começa com "gabarito" e tem a marca do professor.
+function isAnswerKeyLabel(text) {
+    const label = normalizedLabel(text);
+    return ANSWER_KEY_START.test(label) && TEACHER_MARKER.test(label);
+}
+
 const BLOCKQUOTE_PREFIX = /^(?:\s{0,3}>\s?)+/;
 function quoteDepth(line) {
     const prefix = BLOCKQUOTE_PREFIX.exec(line);
     return prefix ? (prefix[0].match(/>/g) || []).length : 0;
 }
 
+function indentOf(line) {
+    return (/^\s*/.exec(line)[0] || '').replace(/\t/g, '    ').length;
+}
+
 // Título da linha (já sem o "> " de citação): nível, texto e quantas linhas ocupa.
-function lineHeading(inner, nextInner) {
+// allowSetext: falso quando a linha continua um item de lista ("1. B\nQuestão 3: C\n---"
+// não é título sublinhado; o "---" ali é só uma linha).
+function lineHeading(inner, nextInner, { allowSetext = true } = {}) {
     const atx = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(inner);
     if (atx) return { level: atx[1].length, text: atx[2], span: 1 };
     const html = HTML_HEADING_LINE.exec(inner);
     if (html) return { level: Number(html[1]), text: html[2], span: 1 };
-    const setext = setextHeadingLevel(inner, nextInner);
+    const setext = allowSetext ? setextHeadingLevel(inner, nextInner) : 0;
     if (setext) return { level: setext, text: inner, span: 2 };
     const bold = MARKDOWN_BOLD_LINE.exec(inner) || HTML_BOLD_LINE.exec(inner);
-    if (bold && normalizedLabel(bold[2]) && looksLikeTitle(bold[2])) return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true };
+    if (bold && normalizedLabel(bold[2])) {
+        if (isAnswerKeyLabel(bold[2])) {
+            return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true, notice: ANSWER_KEY_NOTICE.test(normalizedLabel(bold[2])) };
+        }
+        if (looksLikeTitle(bold[2])) return { level: BOLD_LINE_LEVEL, text: bold[2], span: 1, bold: true };
+    }
     return null;
+}
+
+// Rótulo do gabarito no começo da linha com as respostas na mesma linha.
+function leadingAnswerKeyLabel(inner) {
+    const match = LEADING_BOLD_LABEL.exec(inner);
+    return !!match && isAnswerKeyLabel(match[2] || match[4]);
+}
+
+// Linha sem negrito que é só o rótulo ("GABARITO DO PROFESSOR", "Gabarito oficial:"),
+// em maiúsculas ou terminada em dois-pontos, no começo de um parágrafo.
+function plainAnswerKeyTitle(inner) {
+    const text = inner.trim();
+    if (!text || /^[#>*_<`|\-+]|^\d+[.)]/.test(text)) return false;
+    const label = normalizedLabel(text);
+    if (!isAnswerKeyLabel(text) || ANSWER_KEY_NOTICE.test(label)) return false;
+    const letters = text.replace(/[^\p{L}]/gu, '');
+    return /:\s*$/.test(text) || (letters.length > 0 && letters === letters.toUpperCase());
 }
 
 // Título HTML do gabarito no meio de uma linha ("<div><h2>GABARITO DO PROFESSOR</h2>
@@ -191,47 +247,143 @@ function isolateHtmlHeadings(markdown) {
     return output.join('\n');
 }
 
-// Remove a seção do professor até o próximo título do mesmo nível ou acima (títulos
-// com #, sublinhados, <h1>-<h6> e parágrafos só em negrito). A seção aberta por um
-// parágrafo em negrito vai até o próximo título de verdade: subtítulos em negrito
-// ("**Parte objetiva**") e linhas "---" no meio das respostas não a encerram. Dentro
-// de citação ("> ## GABARITO DO PROFESSOR") a seção acaba também quando a citação
-// termina. Títulos dentro de bloco de código não contam.
+// Contêineres HTML de bloco. O gabarito dentro de um <div>/<section> sai, mas as tags
+// que abrem ou fecham o contêiner de fora continuam no texto: sem isso o <div> ficava
+// aberto e o "## Próximo" seguinte aparecia como texto cru.
+const CONTAINER_TAG = /<(\/?)(div|section|article|aside|main|header|footer|nav|details|figure|blockquote|table)\b[^>]*?(\/?)>/gi;
+
+// Remove a seção do professor:
+// - aberta por título (#, sublinhado, <h1>-<h6>): até o próximo título do mesmo nível
+//   ou acima;
+// - aberta por parágrafo em negrito: até o próximo título de verdade, outro negrito que
+//   não seja subtítulo do gabarito ("**Exercício extra**" encerra, "**Parte objetiva**"
+//   não) ou um "---" que não seja seguido de mais respostas;
+// - rótulo com as respostas na mesma linha ("**GABARITO DO PROFESSOR:** 1-B") ou aviso
+//   que começa com o rótulo: só o parágrafo.
+// Dentro de citação ("> ## GABARITO DO PROFESSOR") a seção acaba também quando a
+// citação termina; dentro de item de lista, quando o item termina. Títulos dentro de
+// bloco de código não contam.
 function stripTeacherHeadingSections(markdown) {
     const lines = isolateHtmlHeadings(markdown).split('\n');
     const output = [];
     let skip = null;
     let inFence = false;
-    let previousBlank = false;
+    let previousBlank = true;
+    let paragraphIsList = false;
+    let htmlDepth = 0;
+
+    const startSkip = (kind, fields) => {
+        skip = { kind, ...fields, htmlDepth, minDepth: htmlDepth, opened: [] };
+    };
+    const endSkip = () => {
+        // Contêiner aberto dentro do trecho removido e fechado depois: reabre aqui.
+        if (skip && skip.opened.length) output.push(...skip.opened);
+        skip = null;
+    };
+    // Atualiza a profundidade dos contêineres HTML; dentro do trecho removido, guarda as
+    // tags que fecham contêineres de fora (voltam ao texto, seguidas de linha em branco).
+    const trackContainers = line => {
+        const kept = [];
+        line.replace(CONTAINER_TAG, (tag, closing, name, selfClosing) => {
+            if (selfClosing) return tag;
+            if (!closing) {
+                htmlDepth += 1;
+                if (skip) skip.opened.push(tag);
+                return tag;
+            }
+            htmlDepth = Math.max(0, htmlDepth - 1);
+            if (skip) {
+                if (skip.opened.length) skip.opened.pop();
+                else if (htmlDepth < skip.minDepth) { skip.minDepth = htmlDepth; kept.push(tag); }
+            }
+            return tag;
+        });
+        return kept;
+    };
+    const nextNonBlank = from => {
+        for (let index = from; index < lines.length; index++) {
+            if (lines[index].replace(BLOCKQUOTE_PREFIX, '').trim()) return index;
+        }
+        return -1;
+    };
+    // Depois de um "---" no gabarito em negrito: continua se vier mais resposta.
+    const continuesAnswerKey = index => {
+        if (index < 0) return false;
+        const inner = lines[index].replace(BLOCKQUOTE_PREFIX, '');
+        if (ANSWER_LINE.test(inner) || leadingAnswerKeyLabel(inner)) return true;
+        const heading = lineHeading(inner, undefined, { allowSetext: false });
+        return !!heading && heading.bold && (ANSWER_KEY_SUBPART.test(normalizedLabel(heading.text)) || isTeacherAnswerKeyHeading(heading.text));
+    };
+
     for (let index = 0; index < lines.length; index++) {
         const line = lines[index];
         const depth = quoteDepth(line);
         const inner = line.replace(BLOCKQUOTE_PREFIX, '');
         const blank = !inner.trim();
+        if (!blank && previousBlank) paragraphIsList = LIST_ITEM.test(inner);
         // Saiu da citação onde o gabarito começou (linha sem ">" depois de uma em branco).
-        if (skip && skip.depth > 0 && !blank && depth < skip.depth && previousBlank && !inFence) skip = null;
+        if (skip && skip.depth > 0 && !blank && depth < skip.depth && previousBlank && !inFence) endSkip();
+        // Saiu do item de lista onde o rótulo estava.
+        if (skip && skip.indent > 0 && !blank && !inFence && indentOf(inner) < skip.indent) endSkip();
         if (/^\s{0,3}(```|~~~)/.test(inner)) {
             inFence = !inFence;
             if (!skip) output.push(line);
             previousBlank = false;
             continue;
         }
+        if (inFence) {
+            if (!skip) output.push(line);
+            previousBlank = false;
+            continue;
+        }
+        // Rótulo com as respostas na mesma linha: o parágrafo acaba na linha em branco.
+        if (skip && skip.kind === 'paragraph') {
+            // Mais respostas na linha seguinte ("2. C") continuam no mesmo parágrafo.
+            // Bloco HTML novo (<p>, <div>...) também começa outro parágrafo.
+            const startsBlock = blank || (LIST_ITEM.test(inner) && indentOf(inner) <= skip.listIndent && !ANSWER_LINE.test(inner))
+                || HTML_BLOCK_START.test(inner) || !!lineHeading(inner, undefined, { allowSetext: false }) || depth !== skip.depth;
+            if (startsBlock) endSkip();
+        }
         let span = 1;
-        if (!inFence) {
-            const nextLine = lines[index + 1];
-            const nextInner = nextLine !== undefined && quoteDepth(nextLine) === depth ? nextLine.replace(BLOCKQUOTE_PREFIX, '') : undefined;
-            const heading = lineHeading(inner, nextInner);
-            if (heading) {
-                span = heading.span;
-                const closes = !!skip && (skip.level === BOLD_LINE_LEVEL ? heading.level < BOLD_LINE_LEVEL : heading.level <= skip.level);
-                if (closes && depth <= skip.depth) skip = null;
-                if (!skip && isTeacherAnswerKeyHeading(heading.text)) skip = { level: heading.level, depth };
+        const nextLine = lines[index + 1];
+        const nextInner = nextLine !== undefined && quoteDepth(nextLine) === depth ? nextLine.replace(BLOCKQUOTE_PREFIX, '') : undefined;
+        const heading = blank ? null : lineHeading(inner, nextInner, { allowSetext: previousBlank || !paragraphIsList });
+        if (skip && skip.kind === 'section') {
+            let closes = false;
+            if (heading && depth <= skip.depth) {
+                if (skip.level !== BOLD_LINE_LEVEL) closes = heading.level <= skip.level;
+                else if (heading.level < BOLD_LINE_LEVEL) closes = true;
+                else closes = !ANSWER_KEY_SUBPART.test(normalizedLabel(heading.text)) && !isTeacherAnswerKeyHeading(heading.text);
+            } else if (skip.level === BOLD_LINE_LEVEL && THEMATIC_BREAK.test(inner) && depth <= skip.depth) {
+                closes = !continuesAnswerKey(nextNonBlank(index + 1));
+            }
+            if (closes) endSkip();
+        }
+        if (!skip && !blank) {
+            const listIndent = LIST_ITEM.test(inner) ? indentOf(inner) : -1;
+            const indent = indentOf(inner) >= 2 ? indentOf(inner) : 0;
+            if (heading && isTeacherAnswerKeyHeading(heading.text)) {
+                if (heading.bold && heading.notice) startSkip('paragraph', { depth, listIndent: Math.max(listIndent, indentOf(inner)), indent: 0 });
+                else startSkip('section', { level: heading.level, depth, indent: heading.bold ? indent : 0 });
+            } else if (!heading && leadingAnswerKeyLabel(inner)) {
+                startSkip('paragraph', { depth, listIndent: Math.max(listIndent, indentOf(inner)), indent: 0 });
+            } else if (!heading && previousBlank && plainAnswerKeyTitle(inner)) {
+                startSkip('section', { level: BOLD_LINE_LEVEL, depth, indent });
             }
         }
-        if (!skip) output.push(...lines.slice(index, index + span));
+        if (heading) span = heading.span;
+        const chunk = lines.slice(index, index + span);
+        if (!skip) {
+            chunk.forEach(trackContainers);
+            output.push(...chunk);
+        } else {
+            const kept = chunk.flatMap(trackContainers);
+            if (kept.length) output.push(kept.join(''), '');
+        }
         previousBlank = blank;
         index += span - 1;
     }
+    if (skip) skip.opened = [];
     return output.join('\n');
 }
 
@@ -319,12 +471,20 @@ function decodedParamValue(part) {
     try { return decodeURIComponent(value.replace(/\+/g, ' ')); } catch (error) { return value; }
 }
 
+// "/uploads/..." dentro da query de outro endereço
+// (https://drive.example.com/view?u=/uploads/doc.pdf?access=X) é parte do link externo.
+function insideOtherUrl(text, offset) {
+    let start = offset;
+    while (start > 0 && !/[\s"'<>()[\]]/.test(text[start - 1])) start -= 1;
+    return /\?|&|:\/\//.test(text.slice(start, offset));
+}
+
 function stripStoredAccessTokens(markdown, { ownHosts = [], sessionTokens = liveInstructorSessionTokens() } = {}) {
-    return String(markdown || '').replace(STORED_FILE_LINK, (match, lead, origin, host, absolutePath, relativePath, query) => {
+    return String(markdown || '').replace(STORED_FILE_LINK, (match, lead, origin, host, absolutePath, relativePath, query, offset, whole) => {
         const filePath = absolutePath || relativePath;
         const parts = query.split(/&(?:amp;)?/);
         const isAccess = part => /^access=/i.test(part);
-        const external = origin && !isOwnHost(host, ownHosts);
+        const external = origin ? !isOwnHost(host, ownHosts) : insideOtherUrl(whole, offset + lead.length);
         const drop = external
             ? part => isAccess(part) && sessionTokens.has(decodedParamValue(part))
             : isAccess;

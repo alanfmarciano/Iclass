@@ -84,3 +84,42 @@ describe('Ficha do aluno · boletim', () => {
     await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/admin/student/report?email=bia%40x.local&courseId=DES&studentClass=1DES'))
   })
 })
+
+describe('Ficha do aluno · notas com vírgula', () => {
+  it('[UC-NOTAS-003] desempenho por módulo, comparativo e média do mês aparecem com vírgula (antes "7.8", "7.5 vs 6.3")', async () => {
+    const fallback = mocks.get.getMockImplementation()
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/student/academic')) {
+        return {
+          submissions: [
+            { id: 's1', examKey: 'Avaliacao_FUTEC_1', score: 75, timestamp: '2026-03-01T12:00:00.000Z' },
+            { id: 's2', examKey: 'Avaliacao_FUTEC_2', score: 80, timestamp: '2026-03-10T12:00:00.000Z' },
+          ],
+          progress: { completedCount: 0 }, moduleAccess: [], attendance: { count: 0, recent: [] }, certificates: [],
+        }
+      }
+      if (path.startsWith('/api/admin/student/dashboard')) {
+        return {
+          kpis: { media: 7.75, provasFeitas: 2, provasTotais: 4, frequencia: 90, progresso: 10 },
+          comparativo: { studentMedia: 7.75, turmaMedia: 6.84, studentFreq: 90, turmaFreq: 85, turmaSize: 12 },
+          risco: { level: 'baixo', reasons: [] },
+          engajamento: { weeks: [], diasAtivos: 3 },
+          streak: { atual: 1, recorde: 2 },
+          temporal: { mediaAtual: 7.5, mediaAnterior: 6.25, presencaAtual: 3, presencaAnterior: 2 },
+        }
+      }
+      return fallback(path)
+    })
+    render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('7,5 vs 6,3')).toBeInTheDocument()
+    expect(screen.getByText('aluno 7,8 · turma 6,8')).toBeInTheDocument()
+    const modulo = screen.getByText('Desempenho por módulo').closest('div').parentElement
+    expect(within(modulo).getByText('7,8')).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/\b\d\.\d\b/)
+  })
+})
+

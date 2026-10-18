@@ -31,7 +31,7 @@ export default function CalendarioPage() {
   const set = (patch) => setForm((current) => ({ ...current, ...patch }))
 
   async function save() {
-    if (!form.title.trim() || !form.eventDate) return toast.error('Informe titulo e data')
+    if (!form.title.trim() || !form.eventDate) return toast.error('Informe título e data')
     if (form.target === 'turma' && !form.targetValue) return toast.error('Selecione a turma')
     setBusy(true)
     try {
@@ -81,7 +81,7 @@ export default function CalendarioPage() {
           <Input id="cal-title" label="Título" value={form.title} onChange={(event) => set({ title: event.target.value })} placeholder="Ex.: Avaliação de FECOP" />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1.5"><label htmlFor="cal-date" className="text-sm font-medium text-text">Data</label><input id="cal-date" type="date" value={form.eventDate} onChange={(event) => set({ eventDate: event.target.value })} className="h-[38px] rounded-md border border-border bg-surface px-3 text-sm text-text" /></div>
-            <div className="flex flex-col gap-1.5"><label htmlFor="cal-start" className="text-sm font-medium text-text">Inicio</label><input id="cal-start" type="time" value={form.startTime} onChange={(event) => set({ startTime: event.target.value })} className="h-[38px] rounded-md border border-border bg-surface px-3 text-sm text-text" /></div>
+            <div className="flex flex-col gap-1.5"><label htmlFor="cal-start" className="text-sm font-medium text-text">Início</label><input id="cal-start" type="time" value={form.startTime} onChange={(event) => set({ startTime: event.target.value })} className="h-[38px] rounded-md border border-border bg-surface px-3 text-sm text-text" /></div>
             <div className="flex flex-col gap-1.5"><label htmlFor="cal-end" className="text-sm font-medium text-text">Fim</label><input id="cal-end" type="time" value={form.endTime} onChange={(event) => set({ endTime: event.target.value })} className="h-[38px] rounded-md border border-border bg-surface px-3 text-sm text-text" /></div>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
