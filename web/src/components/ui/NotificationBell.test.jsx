@@ -40,6 +40,46 @@ describe('Sino de notificações', () => {
     })
   })
 
+  it('[UC-NOTIF-001] no modo instituição o curso e a turma ficam em linha própria e a descrição continua visível', async () => {
+    mocks.get.mockResolvedValue({
+      unread: 1,
+      items: [{
+        id: 'sem_avaliacao@c1::1DES', key: 'c1::1DES::sem_avaliacao:2', type: 'sem_avaliacao', count: 2, unread: true,
+        title: 'Alunos sem nenhuma avaliação', text: 'nunca entregaram prova neste curso · Resultados',
+        context: 'Curso Técnico em TI (Legado) · 1DES',
+      }],
+    })
+    render(<MemoryRouter><NotificationBell endpoint="/api/admin/notifications" seenEndpoint="/api/admin/notifications/seen" /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Notificações: 1 nova' }))
+    const context = screen.getByText('Curso Técnico em TI (Legado) · 1DES')
+    const text = screen.getByText('nunca entregaram prova neste curso · Resultados')
+    expect(context).not.toBe(text)
+    expect(text.className).toContain('line-clamp-2')
+    expect(text.className).not.toContain('truncate')
+  })
+
+  it('[UC-NOTIF-001] no celular o painel é deslocado para caber na tela (o sino não fica na borda)', async () => {
+    const originalWidth = window.innerWidth
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ left: 160, right: 200, top: 8, bottom: 48, width: 40, height: 40, x: 160, y: 8 })
+    try {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+      render(<MemoryRouter><NotificationBell endpoint="/api/student/notifications" seenEndpoint="/api/student/notifications/seen" /></MemoryRouter>)
+      fireEvent.click(await screen.findByRole('button', { name: 'Notificações: 2 novas' }))
+      // Painel de 358px ancorado à direita do sino (x=200) começava em x=-158; agora começa em x=16.
+      expect(screen.getByRole('dialog', { name: 'Notificações' }).style.right).toBe('-174px')
+      cleanup()
+
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 })
+      rect.mockReturnValue({ left: 1160, right: 1200, top: 8, bottom: 48, width: 40, height: 40, x: 1160, y: 8 })
+      render(<MemoryRouter><NotificationBell endpoint="/api/student/notifications" seenEndpoint="/api/student/notifications/seen" /></MemoryRouter>)
+      fireEvent.click(await screen.findByRole('button', { name: 'Notificações: 2 novas' }))
+      expect(screen.getByRole('dialog', { name: 'Notificações' }).style.right).toBe('0px')
+    } finally {
+      rect.mockRestore()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
+    }
+  })
+
   it('[UC-NOTIF-001] abrir um item passa por onOpenItem e, se ele marcou como lido, o contador baixa na hora', async () => {
     const onOpenItem = vi.fn(async () => true)
     render(<MemoryRouter><NotificationBell endpoint="/api/student/notifications" seenEndpoint="/api/student/notifications/seen" onOpenItem={onOpenItem} /></MemoryRouter>)

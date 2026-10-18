@@ -299,7 +299,9 @@ test('[UC-NOTIF-001] fora de turma (modo instituição) cada pendência diz de q
     semAvaliacao.forEach(item => {
         assert.equal(item.href, '/resultados');
         assert.ok(item.courseName);
-        assert.match(item.text, new RegExp(`· ${item.studentClass} — `));
+        // Curso e turma vêm em campo próprio; a descrição da pendência fica inteira.
+        assert.equal(item.context, `${item.courseName} · ${item.studentClass}`);
+        assert.equal(item.text, 'nunca entregaram prova neste curso · Resultados');
     });
     const matriculas = res.body.items.filter(item => item.type === 'matriculas');
     assert.deepEqual(matriculas.map(item => [item.studentClass, item.count]).sort(), [['TURMA A', 1], ['TURMA C', 1]]);
@@ -394,5 +396,36 @@ test('[UC-SIGILO-001] gabarito do professor sai da apostila em todas as grafias,
     assert.match(out, /## Próxima seção\n\ncontinua visível/);
     assert.match(out, /## Gabarito dos exercícios\n\nautocorreção visível/);
     assert.match(out, /dentro de código fica/);
+    assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
+});
+
+test('[UC-SIGILO-001] gabarito do professor também sai com título sublinhado, <summary> depois de texto e "Respostas (professor)"', () => {
+    const markdown = [
+        '# Unidade',
+        'GABARITO DO PROFESSOR',
+        '=====================',
+        'segredo-1',
+        '# Próximo capítulo',
+        'visível-1',
+        'Respostas comentadas',
+        '--------------------',
+        'visível-2 (título sublinhado do aluno fica)',
+        'Gabarito oficial',
+        '----------------',
+        'segredo-2',
+        '## Seção seguinte',
+        'visível-3',
+        '<details>\nAbra só na correção: <summary>Gabarito oficial</summary>segredo-3\n</details>',
+        '<details><summary>👀 Ver Resposta e Explicação</summary>42</details>',
+        '## Respostas (professor)',
+        'segredo-4',
+        '## Resolução do exercício',
+        'visível-4',
+    ].join('\n');
+    const out = stripAnswerKeyBlocks(markdown);
+    assert.doesNotMatch(out, /segredo-\d/);
+    for (const marker of ['visível-1', 'visível-2', 'visível-3', 'visível-4', 'Ver Resposta e Explicação</summary>42', '# Próximo capítulo']) {
+        assert.ok(out.includes(marker), `sumiu: ${marker}`);
+    }
     assert.equal(stripAnswerKeyBlocks(out), out, 'idempotente');
 });

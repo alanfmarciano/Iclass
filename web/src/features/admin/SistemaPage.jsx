@@ -178,7 +178,10 @@ function BackupCard({ isAdmin }) {
       const res = await fetch('/api/admin/backup/restore', { method: 'POST', headers: _bkAuth(), body: fd })
       const d = await res.json().catch(() => null)
       if (!res.ok) throw new Error((d && d.error) || 'Falha ao restaurar')
-      toast.success('Backup restaurado. Recarregue a página para ver os dados.')
+      const skipped = Number(d && d.accountsNotRestored) || 0
+      toast.success(skipped > 0
+        ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".`
+        : 'Backup restaurado. Recarregue a página para ver os dados.')
       setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
@@ -194,7 +197,7 @@ function BackupCard({ isAdmin }) {
         {!isAdmin && <p className="text-xs text-muted">Baixar e restaurar backup é exclusivo do administrador, porque o arquivo traz os dados de todos os alunos e as senhas protegidas das contas.</p>}
         {isAdmin && <div className="p-4 rounded-lg border border-danger/40 bg-danger-soft space-y-3">
           <p className="text-sm font-semibold text-text">Restaurar de um arquivo</p>
-          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo.</p>
+          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo. Numa instalação nova (troca de computador), marque a opção para trazer os professores do backup.</p>
           <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
           <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
           <div className="flex flex-wrap items-center gap-3">

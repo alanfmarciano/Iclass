@@ -43,8 +43,10 @@ function normalizedLabel(html) {
         .toLowerCase();
 }
 
-// Marca de material do professor junto da palavra "gabarito".
+// Marca de material do professor junto da palavra "gabarito" (ou "respostas",
+// "resolução", "solução": "## Respostas (professor)").
 const TEACHER_MARKER = /\b(oficial|professor|professora|prof|docente|instrutor|instrutora|exclusivo)\b/;
+const ANSWER_WORD = /\b(gabarito|respostas?|resolucao|resolucoes|solucao|solucoes)\b/;
 
 // Título de bloco que marca o gabarito do professor, nos formatos dos arquivos de
 // avaliação: "GABARITO EXCLUSIVO DO PROFESSOR", "GABARITO OFICIAL", "Gabarito do prof."
@@ -52,15 +54,15 @@ const TEACHER_MARKER = /\b(oficial|professor|professora|prof|docente|instrutor|i
 // exercícios", "Ver resposta") não casa e continua na apostila.
 function isTeacherAnswerKeySummary(summaryHtml) {
     const text = normalizedLabel(summaryHtml);
-    if (!/\bgabarito\b/.test(text)) return false;
-    return text === 'gabarito' || TEACHER_MARKER.test(text);
+    if (text === 'gabarito') return true;
+    return ANSWER_WORD.test(text) && TEACHER_MARKER.test(text);
 }
 
 // Título Markdown de seção do professor ("## GABARITO EXCLUSIVO DO PROFESSOR"). Aqui
 // "Gabarito" sozinho não basta: uma seção assim pode ser a autocorreção do aluno.
 function isTeacherAnswerKeyHeading(headingText) {
     const text = normalizedLabel(headingText);
-    return /\bgabarito\b/.test(text) && TEACHER_MARKER.test(text);
+    return ANSWER_WORD.test(text) && TEACHER_MARKER.test(text);
 }
 
 // Remove <details> do professor inteiro, inclusive com <details> aninhado dentro (a
@@ -78,7 +80,11 @@ function stripTeacherDetails(markdown) {
     // <details> sem fechamento vai até o fim do texto (mesmo efeito de antes).
     stack.forEach(open => blocks.push({ ...open, end: source.length }));
     const remove = blocks.filter(block => {
-        const summary = /^\s*<summary\b[^>]*>([\s\S]*?)<\/summary>/i.exec(source.slice(block.openEnd, block.end));
+        // O <summary> do próprio bloco: o primeiro antes de algum <details> aninhado,
+        // mesmo que venha depois de outro texto.
+        const inner = source.slice(block.openEnd, block.end);
+        const nested = inner.search(/<details\b/i);
+        const summary = /<summary\b[^>]*>([\s\S]*?)<\/summary>/i.exec(nested >= 0 ? inner.slice(0, nested) : inner);
         return !!summary && isTeacherAnswerKeySummary(summary[1]);
     }).sort((a, b) => a.start - b.start);
     let output = '';
@@ -91,30 +97,47 @@ function stripTeacherDetails(markdown) {
     return output + source.slice(cursor);
 }
 
-// Remove a seção Markdown do professor até o próximo título do mesmo nível ou acima.
-// Títulos dentro de bloco de código não contam.
+// Título setext ("GABARITO DO PROFESSOR" sublinhado com === ou ---): nível 1 ou 2.
+function setextHeadingLevel(line, next) {
+    if (!line || !line.trim() || next === undefined) return 0;
+    if (/^\s{0,3}(#{1,6}(\s|$)|[-*+]\s|\d+[.)]\s|```|~~~)/.test(line)) return 0;
+    const underline = /^\s{0,3}(=+|-+)\s*$/.exec(next);
+    if (!underline) return 0;
+    return underline[1][0] === '=' ? 1 : 2;
+}
+
+// Remove a seção Markdown do professor até o próximo título do mesmo nível ou acima
+// (títulos com # e títulos sublinhados). Títulos dentro de bloco de código não contam.
 function stripTeacherHeadingSections(markdown) {
     const lines = String(markdown || '').split('\n');
     const output = [];
     let skipLevel = 0;
     let inFence = false;
-    lines.forEach(line => {
+    for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
         if (/^\s{0,3}(```|~~~)/.test(line)) {
             inFence = !inFence;
             if (!skipLevel) output.push(line);
-            return;
+            continue;
         }
+        let level = 0;
+        let text = '';
+        let span = 1;
         const heading = !inFence && /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
         if (heading) {
-            const level = heading[1].length;
-            if (skipLevel && level <= skipLevel) skipLevel = 0;
-            if (!skipLevel && isTeacherAnswerKeyHeading(heading[2])) {
-                skipLevel = level;
-                return;
-            }
+            level = heading[1].length;
+            text = heading[2];
+        } else if (!inFence) {
+            level = setextHeadingLevel(line, lines[index + 1]);
+            if (level) { text = line; span = 2; }
         }
-        if (!skipLevel) output.push(line);
-    });
+        if (level) {
+            if (skipLevel && level <= skipLevel) skipLevel = 0;
+            if (!skipLevel && isTeacherAnswerKeyHeading(text)) skipLevel = level;
+        }
+        if (!skipLevel) output.push(...lines.slice(index, index + span));
+        index += span - 1;
+    }
     return output.join('\n');
 }
 

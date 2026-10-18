@@ -2915,10 +2915,15 @@ function uploadForRequest() {
     });
 }
 
-function rejectInvalidUpload(req, res) {
+// `discard`: apaga o arquivo recusado em vez de mandá-lo para a lixeira (arquivo de
+// backup leva o banco inteiro e não pode reaparecer pela lixeira, SEG-X1).
+function rejectInvalidUpload(req, res, { discard = false } = {}) {
     const result = validateUploadedFile(req.file);
     if (result.valid) return false;
-    try { fileStore.moveToTrash(req.file.path); } catch (e) {}
+    try {
+        if (discard) fs.rmSync(req.file.path, { force: true });
+        else fileStore.moveToTrash(req.file.path);
+    } catch (e) {}
     res.status(400).json({ error: result.reason });
     return true;
 }
@@ -4469,7 +4474,9 @@ router.get('/api/admin/notifications', (req, res) => {
                     id: `${item.id}@${courseId}::${studentClass}`,
                     type: item.tipo,
                     title: item.titulo,
-                    text: multiClass ? [`${courseName} · ${studentClass}`, item.detalhe || item.descricao || ''].filter(Boolean).join(' — ') : (item.detalhe || item.descricao || ''),
+                    text: item.detalhe || item.descricao || '',
+                    // Modo instituição: curso e turma em linha própria, sem tomar o lugar da descrição.
+                    context: multiClass ? [courseName, studentClass].filter(Boolean).join(' · ') : '',
                     count: item.count || 0,
                     tone: item.tone,
                     href: item.href,

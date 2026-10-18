@@ -158,6 +158,21 @@ function validateRestoredAccounts(snapshot) {
     if (!admins.some(account => account.role !== 'professor')) throw new Error('O backup não tem nenhuma conta de administrador. Restaure sem substituir as contas.');
 }
 
+// O que foi restaurado, para o registro de auditoria e para a tela avisar das contas
+// do backup que ficaram de fora (instalação nova, troca de computador).
+function snapshotSummary(snapshot, format) {
+    const data = (snapshot && snapshot.data) || {};
+    return {
+        format,
+        exportedAt: String((snapshot && snapshot.exportedAt) || ''),
+        version: String((snapshot && snapshot.version) || ''),
+        collections: COLLECTIONS.filter(key => data[key] !== undefined),
+        accountEmails: Array.isArray(data.admins)
+            ? data.admins.map(account => String((account && account.email) || '').trim().toLowerCase()).filter(Boolean)
+            : [],
+    };
+}
+
 async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
     COLLECTIONS.forEach(key => {
@@ -187,6 +202,7 @@ async function restoreDataSnapshot(snapshot, { replaceAccounts = false } = {}) {
         }
         staged.forEach(file => fs.renameSync(file.temporary, file.target));
         await applySnapshot(snapshot, { replaceAccounts });
+        return snapshotSummary(snapshot, 'json');
     } catch (error) {
         staged.forEach(file => {
             try {
@@ -225,6 +241,7 @@ async function restoreFullZip(buffer, { replaceAccounts = false } = {}) {
             moved.push({ target, recovery });
         }
         await applySnapshot(snapshot, { replaceAccounts });
+        return snapshotSummary(snapshot, 'zip');
     } catch (error) {
         for (const item of moved.reverse()) {
             try {
@@ -245,9 +262,10 @@ async function restoreFromFile(absPath, originalName, { replaceAccounts = false 
     await saveServerFullBackup();
     const buffer = fs.readFileSync(absPath);
     const isZip = /\.zip$/i.test(originalName || '') || buffer.subarray(0, 2).toString() === 'PK';
-    if (isZip) await restoreFullZip(buffer, { replaceAccounts });
-    else await restoreDataSnapshot(JSON.parse(buffer.toString('utf8')), { replaceAccounts });
-    return { ok: true, replaceAccounts };
+    const summary = isZip
+        ? await restoreFullZip(buffer, { replaceAccounts })
+        : await restoreDataSnapshot(JSON.parse(buffer.toString('utf8')), { replaceAccounts });
+    return { ok: true, replaceAccounts, ...summary };
 }
 
 module.exports = {

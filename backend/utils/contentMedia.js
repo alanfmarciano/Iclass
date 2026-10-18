@@ -69,8 +69,25 @@ async function uploadReferencedInReleasedContent({ student, studentEmail, filena
     return false;
 }
 
+// SEG-X1: .json/.zip em /uploads só tem uso para o professor quando está ligado a um
+// item da biblioteca ou a um arquivo de unidade (curso ou conteúdo da turma). Sem esse
+// vínculo pode ser um arquivo de backup (as versões anteriores mandavam o arquivo da
+// restauração para a lixeira, de onde ele voltava para /uploads).
+function uploadAttachedToContent(filename) {
+    const name = String(filename || '');
+    if (!name) return false;
+    if ((db.memory.library || []).some(entry => entry && entry.filename === name)) return true;
+    const reference = `/uploads/${name}`;
+    return [db.memory.courses, db.memory.courseStructure, db.memory.classes].some(collection => {
+        let text = '';
+        try { text = JSON.stringify(collection || []); } catch (error) { return false; }
+        return text.includes(`${reference}"`) || text.includes(`${reference}?`);
+    });
+}
+
 module.exports = {
     safeImageSegments,
+    uploadAttachedToContent,
     referencedUploads,
     uploadReferencedInReleasedContent,
     studentHasApprovedClass,

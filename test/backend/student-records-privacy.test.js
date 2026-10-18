@@ -230,6 +230,82 @@ test('[UC-BACKUP-001] substituir as contas exige backup com administrador e senh
     assert.deepEqual(db.memory.admins.map(a => a.email), ['outro-admin@g6.local']);
 });
 
+test('[UC-BACKUP-001] o arquivo enviado para restaurar é apagado (não vai para a lixeira) e a restauração fica registrada', async () => {
+    const fileStore = require('../../backend/utils/storage.js');
+    const uploadsBefore = new Set(fs.readdirSync(fileStore.UPLOADS_DIR));
+    const backupTrashItems = () => fileStore.listTrash().filter(entry => /^uploads\/.+\.(json|zip)$/.test(entry.originalRel));
+    const trashBefore = backupTrashItems().length;
+    await db.save();
+    const snapshot = structuredClone(backup.buildDataSnapshot());
+    snapshot.data.admins = [...snapshot.data.admins, { email: 'antigo@g6.local', name: 'Antigo', role: 'professor', password: db.hashPassword('x') }];
+
+    // Sem a confirmação e com arquivo inválido: recusado, e o arquivo some.
+    await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
+        .field('confirm', 'nao').attach('file', Buffer.from(JSON.stringify(snapshot)), 'backup.json').expect(400);
+    await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
+        .field('confirm', 'RESTAURAR').attach('file', Buffer.from('PK nada'), 'backup.png').expect(400);
+    const failed = await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
+        .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{"type":"outro"}'), 'backup.json');
+    assert.equal(failed.status, 400);
+    const failure = db.memory.auditLogs.find(entry => entry.type === 'backup_restore_failed');
+    assert.ok(failure, 'a falha também fica registrada');
+    assert.equal(failure.actorEmail, 'admin@g6.local');
+    db.memory.adminSessions = { [adminToken]: { email: 'admin@g6.local', createdAt: Date.now(), lastSeen: Date.now() } };
+
+    const response = await request(app).post('/api/admin/backup/restore').set('x-admin-session', adminToken)
+        .field('confirm', 'RESTAURAR').attach('file', Buffer.from(JSON.stringify(snapshot)), 'backup-da-escola.json');
+    assert.equal(response.status, 200, response.body && response.body.error);
+    assert.equal(response.body.accountsNotRestored, 1, 'a tela avisa da conta do backup que ficou de fora');
+
+    assert.equal(backupTrashItems().length, trashBefore, 'o backup enviado ia para a lixeira, de onde o professor o restaurava');
+    const leftovers = fs.readdirSync(fileStore.UPLOADS_DIR).filter(name => !uploadsBefore.has(name));
+    assert.deepEqual(leftovers, [], 'nenhum arquivo enviado fica em /uploads');
+
+    const audit = db.memory.auditLogs.filter(entry => entry.type === 'backup_restored');
+    assert.equal(audit.length, 1, 'a restauração vai para o registro de auditoria');
+    assert.equal(audit[0].actorEmail, 'admin@g6.local');
+    assert.equal(audit[0].file, 'backup-da-escola.json');
+    assert.equal(audit[0].format, 'json');
+    assert.ok(audit[0].ip);
+    assert.ok(audit[0].collections.includes('students'));
+});
+
+test('[UC-BACKUP-001] backup que já estava na lixeira (versões anteriores) não volta para o professor nem é baixado em /uploads', async () => {
+    const fileStore = require('../../backend/utils/storage.js');
+    await db.save();
+    const legacyName = `${Date.now()}-123456.json`;
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, legacyName), JSON.stringify(backup.buildDataSnapshot()));
+    const trashId = fileStore.moveToTrash(path.join(fileStore.UPLOADS_DIR, legacyName));
+    assert.ok(trashId);
+
+    const professorList = await request(app).get('/api/admin/trash').set('x-admin-session', professorToken);
+    assert.equal(professorList.status, 200);
+    assert.ok(!professorList.body.some(entry => entry.id === trashId), 'o professor via o backup na lixeira');
+    await request(app).post('/api/admin/trash/restore').set('x-admin-session', professorToken).send({ id: trashId }).expect(403);
+    await request(app).post('/api/admin/trash/delete').set('x-admin-session', professorToken).send({ id: trashId }).expect(403);
+    await request(app).post('/api/admin/trash/empty').set('x-admin-session', professorToken).send({}).expect(200);
+    const adminList = await request(app).get('/api/admin/trash').set('x-admin-session', adminToken);
+    assert.ok(adminList.body.some(entry => entry.id === trashId), 'o administrador continua vendo o item');
+
+    // Se o arquivo já voltou para /uploads, o professor não o baixa; o administrador sim.
+    const restored = await request(app).post('/api/admin/trash/restore').set('x-admin-session', adminToken).send({ id: trashId });
+    assert.equal(restored.status, 200, restored.body && restored.body.error);
+    const restoredName = path.basename(restored.body.restoredTo);
+    const asProfessor = await request(app).get(`/uploads/${restoredName}`).set('x-admin-session', professorToken);
+    assert.equal(asProfessor.status, 403, 'o professor baixava o banco com os hashes');
+    assert.doesNotMatch(asProfessor.text, /scrypt\$/);
+    await request(app).get(`/uploads/${restoredName}`).set('x-admin-session', adminToken).expect(200);
+
+    // .json/.zip ligado ao conteúdo (biblioteca ou arquivo de unidade) continua aberto ao professor.
+    const unitZip = `${Date.now()}-777.zip`;
+    fs.writeFileSync(path.join(fileStore.UPLOADS_DIR, unitZip), 'PK\u0003\u0004');
+    db.memory.courses[0].structure = [{ id: 'm1', units: [{ id: 'u1', apostilaKey: 'Apostila_G6', files: [{ id: 'f1', name: 'projeto.zip', path: `/uploads/${unitZip}`, type: 'other' }] }] }];
+    await request(app).get(`/uploads/${unitZip}`).set('x-admin-session', professorToken).expect(200);
+    db.memory.library = [{ id: 'lib1', kind: 'file', courseId: courseA, filename: restoredName, url: `/uploads/${restoredName}` }];
+    await request(app).get(`/uploads/${restoredName}`).set('x-admin-session', professorToken).expect(200);
+    db.memory.library = [];
+});
+
 // ---------------------------------------------------------------- SEG-04
 
 test('[UC-PRIVACIDADE-001] observação restrita e de acessibilidade só para o administrador e o autor', async () => {
