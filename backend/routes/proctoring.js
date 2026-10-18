@@ -423,7 +423,11 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
                     courseId: cls.courseId || courseId,
                 });
                 // Sorteia a versão da prova (uma vez) se ela está ativa e tem múltiplas versões.
-                if ((maxAttempts === null || attemptsUsed < maxAttempts) && initializeExamState(state, onlineCfg)) {
+                // Prova com aplicação: a tentativa de verdade nasce no sync, com a versão
+                // escolhida no Monitor. Um estado avulso gravado aqui era adotado depois como
+                // tentativa antiga, zerado e sorteado de novo: a escolha do professor se perdia.
+                const withApplication = !!findExamApplication(db.memory.examApplications, onlineCfg.applicationId);
+                if (!withApplication && (maxAttempts === null || attemptsUsed < maxAttempts) && initializeExamState(state, onlineCfg)) {
                     state.studentEmail = normalizedEmail;
                     state.examKey = examKey.trim();
                     state.studentClass = cls.name;

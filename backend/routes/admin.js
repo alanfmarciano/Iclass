@@ -3771,6 +3771,17 @@ router.post('/api/admin/assign-student-version', (req, res) => {
         if (application) {
             if (!application.studentVersions) application.studentVersions = {};
             application.studentVersions[email] = version.trim().toUpperCase();
+            // Aluno que ainda não entrou: a tentativa nasce com esta versão
+            // (createAttemptState lê studentVersions). Antes era gravado aqui um estado
+            // avulso sem aplicação, que o sync adotava como tentativa antiga e zerava,
+            // sorteando outra versão: a escolha do professor se perdia.
+            if (!openAttempt) {
+                db.save();
+                return res.json({ success: true });
+            }
+            // Tentativa já aberta: a ordem das questões passa a ser a da versão nova
+            // (recalculada no próximo sync), não a da versão sorteada antes.
+            openAttempt.state.assignedQuestionNumbers = null;
         }
         if (!db.memory.studentExamState[key]) {
             db.memory.studentExamState[key] = {
@@ -3965,7 +3976,8 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             const state = openAttempt?.state || db.memory.studentExamState[stateKey] || {
                 answers: {},
                 timerRemaining: null,
-                assignedVersion: 'A',
+                // Versão escolhida no Monitor para quem ainda não entrou (a tentativa nasce com ela).
+                assignedVersion: application?.studentVersions?.[email] || 'A',
                 individualTimeAdjustment: 0
             };
 
