@@ -17,7 +17,7 @@ const {
     listExamApplications,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
-const { describeSubmissionGrade, examTitle, recordGradeAudit } = require('../utils/gradebook.js');
+const { buildApplicationAuditTrail, describeSubmissionGrade, examTitle, recordGradeAudit } = require('../utils/gradebook.js');
 const {
     validateAdmin,
     adminCanAccessClass,
@@ -310,6 +310,31 @@ function createAdminExamConfigRouter() {
         });
     });
 
+    // Registro da aplicação (AVA-08): ciclo, eventos da prova e alterações de nota
+    // das entregas desta aplicação, para o professor conferir o que mudou e quando.
+    router.get('/api/admin/exam-applications/:applicationId/audit', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
+                return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
+            }
+            res.json({
+                success: true,
+                application: {
+                    id: application.id,
+                    examKey: application.examKey,
+                    examTitle: examTitle(application.examKey, { evaluations: db.memory.evaluations }),
+                    studentClass: application.studentClass,
+                    courseId: application.courseId || null,
+                    status: application.status,
+                    createdAt: application.createdAt || null,
+                },
+                entries: buildApplicationAuditTrail(application, db.memory.auditLogs || [], { students: db.memory.students || [] }),
+            });
+        });
+    });
+
     router.get('/api/admin/exam-applications/:applicationId/finish-summary', (req, res) => {
         validateAdmin(req, res, () => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
@@ -590,7 +615,12 @@ function createAdminExamConfigRouter() {
                 application.updatedAt = entry.at;
                 markQuestionReports(application, number, 'annulled', adminActor(req));
                 const onlineConfig = syncApplicationConfig(cls, application);
-                const regraded = regradeApplicationSubmissions(application, cls, { req, reason: `anulação da questão ${number}` });
+                // O motivo digitado pelo professor vai junto para o histórico da nota (AVA-08).
+                const modeLabel = mode === 'ponto_para_todos' ? 'ponto para todos' : 'removida do total';
+                const regraded = regradeApplicationSubmissions(application, cls, {
+                    req,
+                    reason: `anulação da questão ${number} (${modeLabel})${entry.reason ? ` · motivo: ${entry.reason}` : ''}`,
+                });
                 pushExamMessage(application, adminActor(req), `A questao ${number} foi anulada pelo professor e nao prejudicara sua nota.`);
                 recordExamAudit('exam_question_annulled', application, adminActor(req), { ...entry, regraded });
                 await db.save();

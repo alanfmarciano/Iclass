@@ -10,6 +10,7 @@ import { MiniLineChart } from '../../components/ui/MiniLineChart'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
+import { fmtGradeValue } from '../../lib/grades'
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -28,7 +29,8 @@ const materiaOf = (key = '') => (String(key).replace(/^Avaliacao_?/i, '').match(
 const groupKeyOf = (s) => String(s.applicationId || s.examKey || '')
 const POLICY_LABEL = { highest: 'Maior nota', latest: 'Última tentativa', average: 'Média das tentativas', selected: 'Selecionada pelo professor' }
 const MOD_ACCENTS = ['var(--info)', 'var(--success)', 'var(--warning)', 'var(--primary)', 'var(--danger)']
-const fmtGrade = (n) => (n == null ? '—' : Number(n).toFixed(1).replace('.', ','))
+// Mesmo arredondamento do boletim e de Resultados (7,35 -> 7,4).
+const fmtGrade = (n) => fmtGradeValue(n)
 const gradeBand = (g) => (g == null ? '' : g >= 9 ? 'g-success' : g >= 7 ? 'g-info' : g >= 6 ? 'g-warning' : 'g-danger')
 const fmtDate = (t) => (t ? new Date(t).toLocaleDateString('pt-BR') : '')
 
@@ -603,11 +605,11 @@ export default function ProvasPage() {
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-3 sm:grid-cols-4">
               <div>
                 <dt className="text-xs text-muted">Nota</dt>
-                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? (Number(detail.score || 0) / 10).toFixed(1) : 'Em revisao'}</dd>
+                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : 'Em revisao'}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">Resultado</dt>
-                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true && detail.consolidatedScore != null ? (Number(detail.consolidatedScore) / 10).toFixed(1) : '-'}</dd>
+                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true && detail.consolidatedScore != null ? fmtGrade(toGrade(detail.consolidatedScore)) : '-'}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">Acertos</dt>

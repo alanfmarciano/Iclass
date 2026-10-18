@@ -5,22 +5,43 @@
 
 export const GRADE_MAX = 10
 
-// 0-100 -> número 0-10, ou null quando não há nota válida.
-export function gradeOf(score) {
+function validScore(score) {
   if (score === null || score === undefined || score === '' || typeof score === 'boolean') return null
   const n = Number(score)
   if (!Number.isFinite(n) || n < 0 || n > 100) return null
-  return n / 10
+  return n
+}
+
+// 0-100 -> número 0-10, ou null quando não há nota válida.
+export function gradeOf(score) {
+  const n = validScore(score)
+  return n === null ? null : n / 10
 }
 
 export function isValidScore(score) {
   return gradeOf(score) !== null
 }
 
+// 0-100 -> 0 a 10 com uma casa, "metade para cima" (73,5 -> 7,4). É a mesma conta
+// de roundGrade (backend/utils/submissionAttempts.js), usada no boletim, no quadro,
+// nas planilhas e no portal do aluno: a mesma média aparece igual em todo lugar.
+// O toFixed(6) tira o ruído de ponto flutuante das médias (7,35 virava 7,3).
+export function roundGrade(score) {
+  const n = validScore(score)
+  return n === null ? null : Math.round(Number(n.toFixed(6))) / 10
+}
+
 // "8,5" (ou "—" sem nota válida).
 export function fmtGrade(score, empty = '—') {
-  const g = gradeOf(score)
+  const g = roundGrade(score)
   return g === null ? empty : g.toFixed(1).replace('.', ',')
+}
+
+// Nota já na escala 0 a 10 (ex.: média calculada pelo servidor) -> "8,5".
+export function fmtGradeValue(grade, empty = '—') {
+  if (grade === null || grade === undefined || grade === '') return empty
+  const n = Number(grade)
+  return Number.isFinite(n) ? fmtGrade(n * 10, empty) : empty
 }
 
 // Texto digitado pelo professor (0 a 10, vírgula ou ponto) -> número, ou NaN.
@@ -38,20 +59,40 @@ function parseCount(text) {
   return /^\d{1,4}$/.test(raw) ? Number(raw) : NaN
 }
 
+// Nota digitada e acertos juntos precisam conferir: só o arredondamento (menos de
+// 0,1) pode separar a nota da conta acertos/total. Mesma regra do servidor
+// (gradeCountsMismatch em backend/utils/gradebook.js).
+export function gradeMatchesCounts(grade, correctCount, totalCount) {
+  if (grade == null || correctCount == null || !totalCount) return true
+  return Math.abs(grade - (correctCount / totalCount) * GRADE_MAX) < 0.1 - 1e-9
+}
+
 // Validação do lançamento rápido (mesmas regras do servidor). Devolve
 // { errors: { campo: mensagem }, payload } — payload só quando não há erro.
-export function validateQuickGrade({ grade, correctCount, totalCount }, { maxQuestions = null } = {}) {
+// maxQuestions: questões da prova (limite do "Total de questões").
+// defaultTotal: total que o servidor usa quando o campo fica vazio — a
+// "Quantidade de questões" da turma, sem as excluídas (rota manual-context).
+export function validateQuickGrade({ grade, correctCount, totalCount }, { maxQuestions = null, defaultTotal = null } = {}) {
   const errors = {}
   const g = parseGradeInput(grade)
   const c = parseCount(correctCount)
   const t = parseCount(totalCount)
+  const fallbackTotal = defaultTotal || maxQuestions || null
   if (Number.isNaN(g)) errors.grade = 'Use um número de 0 a 10 (ex.: 8,5).'
   if (Number.isNaN(c)) errors.correctCount = 'Use um número inteiro (0 ou mais).'
   if (Number.isNaN(t) || t === 0) errors.totalCount = 'Use um número inteiro maior que zero.'
   else if (t != null && maxQuestions && t > maxQuestions) errors.totalCount = `A prova tem ${maxQuestions} questões.`
   if (!errors.correctCount && !errors.totalCount && c != null && t != null && c > t) errors.correctCount = `Não pode passar do total (${t}).`
-  if (!errors.correctCount && !errors.totalCount && c != null && t == null && maxQuestions && c > maxQuestions) errors.correctCount = `A prova tem ${maxQuestions} questões.`
+  if (!errors.correctCount && !errors.totalCount && c != null && t == null && fallbackTotal && c > fallbackTotal) {
+    errors.correctCount = maxQuestions && fallbackTotal < maxQuestions
+      ? `Nesta turma a prova tem ${fallbackTotal} questões.`
+      : `A prova tem ${fallbackTotal} questões.`
+  }
   if (g == null && c == null && !errors.grade && !errors.correctCount) errors.grade = 'Informe a nota (0 a 10) ou os acertos.'
+  const total = t ?? fallbackTotal
+  if (!errors.grade && !errors.correctCount && !errors.totalCount && !gradeMatchesCounts(g, c, total)) {
+    errors.grade = `Não confere com ${c} de ${total} acertos (${fmtGrade((c / total) * 100)}). Deixe a nota em branco para calcular pelos acertos, ou apague os acertos.`
+  }
   if (Object.keys(errors).length) return { errors }
   const payload = {}
   if (g != null) payload.grade = g
@@ -60,10 +101,11 @@ export function validateQuickGrade({ grade, correctCount, totalCount }, { maxQue
   return { errors: {}, payload }
 }
 
-// Nota que o lançamento vai gravar (para mostrar antes de salvar).
+// Nota (0 a 10) que o lançamento vai gravar, para mostrar antes de salvar. Sem
+// total digitado, usa o total da turma (defaultTotal), como o servidor.
 export function previewQuickGrade(payload, defaultTotal = null) {
   if (!payload) return null
-  if (payload.grade != null) return payload.grade
+  if (payload.grade != null) return roundGrade(payload.grade * 10)
   const total = payload.totalCount ?? defaultTotal
   if (payload.correctCount != null && total) return Math.round((payload.correctCount / total) * 100) / 10
   return null

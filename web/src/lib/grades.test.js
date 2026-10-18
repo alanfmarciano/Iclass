@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boletimContext, fmtGrade, gradeOf, parseGradeInput, previewQuickGrade, validateQuickGrade } from './grades'
+import { boletimContext, fmtGrade, fmtGradeValue, gradeOf, parseGradeInput, previewQuickGrade, roundGrade, validateQuickGrade } from './grades'
 
 describe('notas na interface', () => {
   it('[UC-NOTAS-001] formata 0 a 100 como 0 a 10 com vírgula e esconde nota inválida', () => {
@@ -42,5 +42,32 @@ describe('notas na interface', () => {
     expect(boletimContext(bia, { courseId: 'DES', className: '1DES' })).toEqual({ courseId: 'DES', studentClass: '1DES' })
     expect(boletimContext(bia, { courseId: 'OUTRO', className: 'X' }).choose).toHaveLength(2)
     expect(boletimContext({ classes: [{ name: '1DES', courseId: 'DES' }] }, {})).toEqual({ courseId: 'DES', studentClass: '1DES' })
+  })
+
+  it('[UC-NOTAS-003] arredonda como o boletim e as planilhas (metade para cima, sem ruído de ponto flutuante)', () => {
+    expect(fmtGrade(73.5)).toBe('7,4')
+    expect(fmtGrade(84.95)).toBe('8,5')
+    expect(fmtGrade((60 + 87) / 2)).toBe('7,4')
+    expect(roundGrade(200 / 3)).toBe(6.7)
+    expect(fmtGradeValue(7.35)).toBe('7,4')
+    expect(fmtGradeValue(null)).toBe('—')
+    expect(fmtGradeValue(15)).toBe('—')
+  })
+
+  it('[UC-NOTAS-001] sem total digitado, usa o total da turma (quantidade configurada) na validação e na prévia', () => {
+    const limits = { maxQuestions: 4, defaultTotal: 2 }
+    const ok = validateQuickGrade({ grade: '', correctCount: '2', totalCount: '' }, limits)
+    expect(ok.errors).toEqual({})
+    expect(previewQuickGrade(ok.payload, limits.defaultTotal)).toBe(10)
+    expect(validateQuickGrade({ grade: '', correctCount: '3', totalCount: '' }, limits).errors.correctCount).toMatch(/Nesta turma a prova tem 2 questões/)
+    expect(validateQuickGrade({ grade: '', correctCount: '3', totalCount: '4' }, limits).errors).toEqual({})
+    expect(validateQuickGrade({ grade: '', correctCount: '2', totalCount: '5' }, limits).errors.totalCount).toMatch(/4 questões/)
+  })
+
+  it('[UC-NOTAS-001] recusa nota que não confere com os acertos', () => {
+    expect(validateQuickGrade({ grade: '10', correctCount: '0', totalCount: '4' }).errors.grade).toMatch(/Não confere com 0 de 4 acertos \(0,0\)/)
+    expect(validateQuickGrade({ grade: '7,5', correctCount: '3', totalCount: '' }, { maxQuestions: 4 }).errors).toEqual({})
+    expect(validateQuickGrade({ grade: '6,7', correctCount: '2', totalCount: '3' }).errors).toEqual({})
+    expect(validateQuickGrade({ grade: '8', correctCount: '', totalCount: '' }).errors).toEqual({})
   })
 })

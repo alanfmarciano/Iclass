@@ -109,6 +109,8 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET', 'POST'], pattern: /^\/backup(?:\/.*)?$/, permission: 'system.manage' },
     { methods: ['POST'], pattern: /^\/config$/, permission: 'page.dashboard' },
     { methods: ['POST'], pattern: /^\/(exam-config|online-exam-config)$/, permission: 'page.exams' },
+    // Registro da aplicação é lido na tela Resultados (AVA-08).
+    { methods: ['GET'], pattern: /^\/exam-applications\/[^/]+\/audit$/, permission: 'page.results' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-applications(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-history(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/release-item$/, permission: 'page.materials' },

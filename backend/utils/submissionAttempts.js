@@ -12,6 +12,17 @@ function normalizeScore(value) {
     return number;
 }
 
+// Nota (0-100) -> 0 a 10 com uma casa, arredondando "metade para cima"
+// (73,5 -> 7,4). É a única regra de arredondamento de nota do sistema: boletim,
+// quadro, planilhas, portal do aluno e telas usam esta conta (a mesma de
+// web/src/lib/grades.js). O toFixed(6) tira o ruído de ponto flutuante das
+// médias, que fazia toFixed(1) mostrar 7,3 para 7,35.
+function roundGrade(score) {
+    const normalized = normalizeScore(score);
+    if (normalized === null) return null;
+    return Math.round(Number(normalized.toFixed(6))) / 10;
+}
+
 // Toda entrega deveria ter nota: vazia, texto ou fora de 0 a 100 é registro inválido.
 function isScoreInvalid(submission) {
     return normalizeScore(submission?.score) === null;
@@ -115,5 +126,6 @@ module.exports = {
     isArchived,
     isScoreInvalid,
     normalizeScore,
+    roundGrade,
     submissionEmail,
 };

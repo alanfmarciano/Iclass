@@ -72,7 +72,13 @@ export default function AlunoDetailPage() {
   // do curso ativo: o professor escolhe a matrícula.
   async function openBoletim(context) {
     const ctx = context || boletimContext(student, { courseId: workspace.courseId, className: workspace.className })
-    if (ctx.choose) { setBoletimChoices(ctx.choose); return }
+    if (ctx.choose) {
+      // Nome do curso no seletor (o id técnico não diz nada ao professor).
+      const summaries = await api.get('/api/admin/course-summaries').catch(() => [])
+      const names = new Map((Array.isArray(summaries) ? summaries : summaries?.courses || []).map((course) => [String(course.id), course.name]))
+      setBoletimChoices(ctx.choose.map((m) => ({ ...m, courseName: names.get(String(m.courseId)) || (m.courseId === workspace.courseId ? workspace.courseName : '') })))
+      return
+    }
     setBoletimChoices(null)
     try {
       const query = new URLSearchParams({ email, courseId: ctx.courseId || '', studentClass: ctx.studentClass || '' })
@@ -287,7 +293,7 @@ export default function AlunoDetailPage() {
               <div className="grid gap-2">
                 {(boletimChoices || []).map((m) => (
                   <Button key={`${m.courseId}:${m.name}`} variant="secondary" onClick={() => openBoletim({ courseId: m.courseId, studentClass: m.name })}>
-                    Turma {m.name}{m.courseId ? ` · ${m.courseId}` : ''}
+                    Turma {m.name}{m.courseName || m.courseId ? ` · ${m.courseName || m.courseId}` : ''}
                   </Button>
                 ))}
               </div>

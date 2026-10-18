@@ -9,6 +9,7 @@ const {
     SCORE_MAX,
     consolidateSubmissions,
     normalizeScore,
+    roundGrade,
 } = require('./submissionAttempts.js');
 const { getClientIp } = require('./students.js');
 
@@ -48,17 +49,25 @@ function scoreFromCounts(correctCount, totalCount) {
     return Math.round((correctCount / totalCount) * SCORE_MAX);
 }
 
-// 0-100 -> 0-10 (null quando a nota é inválida ou não existe).
+// Nota digitada e acertos informados juntos precisam conferir: a nota pode diferir
+// da conta acertos/total só pelo arredondamento (menos de 0,1). Devolve a mensagem
+// de erro, ou null quando confere (ou quando falta um dos dois).
+function gradeCountsMismatch(grade, correctCount, totalCount) {
+    if (grade === null || grade === undefined || correctCount === null || correctCount === undefined || !totalCount) return null;
+    const exact = (correctCount / totalCount) * GRADE_MAX;
+    if (Math.abs(grade - exact) < 0.1 - 1e-9) return null;
+    return `A nota ${String(grade).replace('.', ',')} não confere com ${correctCount} de ${totalCount} acertos (${formatGradeBR(exact * 10)}). Deixe a nota em branco para calcular pelos acertos, ou apague os acertos para lançar só a nota.`;
+}
+
+// 0-100 -> 0-10 com uma casa (null quando a nota é inválida ou não existe).
 function gradeFromScore(score) {
-    const normalized = normalizeScore(score);
-    return normalized === null ? null : Math.round(normalized) / 10;
+    return roundGrade(score);
 }
 
 // Nota para texto em pt-BR ("8,5"). Vazio quando não há nota válida.
 function formatGradeBR(score) {
-    const normalized = normalizeScore(score);
-    if (normalized === null) return '';
-    return (normalized / 10).toFixed(1).replace('.', ',');
+    const grade = roundGrade(score);
+    return grade === null ? '' : grade.toFixed(1).replace('.', ',');
 }
 
 function average(values) {
@@ -112,34 +121,82 @@ function submissionClassName(submission) {
     return String(submission?.studentClass || submission?.student?.studentClass || '').trim();
 }
 
-// A entrega pertence ao curso/turma do contexto? Registros antigos sem curso ou
-// sem turma são aceitos quando o outro campo confere (nunca os dois vazios).
-function submissionMatchesContext(submission, { courseId = '', studentClass = '' } = {}) {
+// Matrículas do aluno como { name, courseId } (formato antigo: turma em texto e
+// curso no cadastro do aluno).
+function studentMemberships(student) {
+    const raw = student && Array.isArray(student.classes) && student.classes.length
+        ? student.classes
+        : (student && student.studentClass ? [student.studentClass] : []);
+    const fallbackCourse = String((student && (student.courseId || student.currentCourseId)) || '').trim();
+    return raw
+        .map(entry => (typeof entry === 'string'
+            ? { name: entry.trim(), courseId: fallbackCourse }
+            : { name: String((entry && (entry.name || entry.className)) || '').trim(), courseId: String((entry && entry.courseId) || fallbackCourse).trim() }))
+        .filter(entry => entry.name);
+}
+
+// Curso e turma de cada entrega. Registro antigo sem curso (ou sem turma) recebe o
+// da matrícula do aluno naquela turma; sem matrícula com curso, o da primeira turma
+// cadastrada com esse nome (a original: o clone de curso cria turmas homônimas
+// depois). Assim o registro antigo pertence a UM curso só e não aparece no curso
+// vizinho que tem turma com o mesmo nome, nem cria linha para quem não é da turma.
+function createSubmissionContextResolver({ students = [], classes = [] } = {}) {
+    const studentsByEmail = new Map();
+    (students || []).forEach(student => {
+        const email = String((student && student.email) || '').trim().toLowerCase();
+        if (email && !studentsByEmail.has(email)) studentsByEmail.set(email, student);
+    });
+    return (submission) => {
+        let courseId = submissionCourseId(submission);
+        let studentClass = submissionClassName(submission);
+        if (courseId && studentClass) return { courseId, studentClass };
+        const email = String(submission?.student?.email || submission?.studentEmail || '').trim().toLowerCase();
+        const candidates = studentMemberships(studentsByEmail.get(email))
+            .filter(entry => (!studentClass || entry.name === studentClass) && (!courseId || !entry.courseId || entry.courseId === courseId));
+        if (!courseId) {
+            const enrolled = candidates.find(entry => entry.courseId);
+            const className = studentClass || (candidates[0] && candidates[0].name) || '';
+            const original = !enrolled && className ? (classes || []).find(cls => cls && cls.name === className && cls.courseId) : null;
+            courseId = enrolled ? enrolled.courseId : (original ? String(original.courseId) : '');
+        }
+        if (!studentClass) {
+            const entry = candidates.find(item => !courseId || !item.courseId || item.courseId === courseId);
+            if (entry) studentClass = entry.name;
+        }
+        return { courseId, studentClass };
+    };
+}
+
+// A entrega pertence ao curso/turma do contexto? Comparação exata depois de
+// completar curso/turma de registros antigos (sem `resolve`, o registro sem curso
+// fica fora de um filtro por curso, como antes).
+function submissionMatchesContext(submission, { courseId = '', studentClass = '' } = {}, resolve = null) {
     const expectedCourse = String(courseId || '').trim();
     const expectedClass = String(studentClass || '').trim();
     if (!expectedCourse && !expectedClass) return true;
-    const rowCourse = submissionCourseId(submission);
-    const rowClass = submissionClassName(submission);
-    const courseOk = !expectedCourse || !rowCourse || rowCourse === expectedCourse;
-    const classOk = !expectedClass || !rowClass || rowClass === expectedClass;
-    const anchored = (expectedCourse && rowCourse === expectedCourse) || (expectedClass && rowClass === expectedClass);
-    return courseOk && classOk && !!anchored;
+    const row = resolve ? resolve(submission) : { courseId: submissionCourseId(submission), studentClass: submissionClassName(submission) };
+    return (!expectedCourse || row.courseId === expectedCourse) && (!expectedClass || row.studentClass === expectedClass);
 }
 
 // Filtra pelo contexto e completa curso/turma ausentes (cópias, o banco não muda),
 // para que registros antigos caiam no mesmo grupo de tentativas dos atuais.
+// context: { courseId, studentClass, students, classes } — alunos e turmas servem
+// para descobrir a qual curso um registro antigo pertence.
 function scopeSubmissionsToContext(submissions, context = {}) {
     const courseId = String(context.courseId || '').trim();
     const studentClass = String(context.studentClass || '').trim();
-    return (submissions || []).filter(item => submissionMatchesContext(item, { courseId, studentClass })).map(item => {
+    const resolve = createSubmissionContextResolver({ students: context.students, classes: context.classes });
+    return (submissions || []).filter(item => submissionMatchesContext(item, { courseId, studentClass }, resolve)).map(item => {
         const student = item.student || {};
-        if ((student.courseId || !courseId) && (student.studentClass || !studentClass)) return item;
+        if (student.courseId && student.studentClass) return item;
+        const row = resolve(item);
+        if (!row.courseId && !row.studentClass) return item;
         return {
             ...item,
             student: {
                 ...student,
-                courseId: student.courseId || item.courseId || courseId || null,
-                studentClass: student.studentClass || item.studentClass || studentClass || '',
+                courseId: student.courseId || row.courseId || null,
+                studentClass: student.studentClass || row.studentClass || '',
             },
         };
     });
@@ -268,7 +325,7 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
             title: multiple ? `${title} (${scopeLabel(group, applicationsById)})` : title,
             attempts: group.attempts.length,
             pendingAttempts: pendingFor(group.examKey, multiple ? group.scopeId : null),
-            grade: Math.round(group.score) / 10,
+            grade: roundGrade(group.score),
             policy: group.policy,
             lastAt: group.lastAt,
         });
@@ -309,10 +366,10 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
                 id: module.id,
                 name: module.name,
                 exams: module.exams,
-                average: moduleAverage === null ? null : Math.round(moduleAverage) / 10,
+                average: roundGrade(moduleAverage),
             };
         }),
-        overallAverage: overall === null ? null : Math.round(overall) / 10,
+        overallAverage: roundGrade(overall),
         gradedCount: allScores.length,
     };
 }
@@ -403,7 +460,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         const avg = average(row.scores);
         const cells = {};
         Object.entries(row.cells).forEach(([id, cell]) => {
-            cells[id] = { score: cell.score, grade: Math.round(cell.score) / 10, pending: cell.pending };
+            cells[id] = { score: cell.score, grade: roundGrade(cell.score), pending: cell.pending };
         });
         return {
             email: row.email,
@@ -411,7 +468,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
             matricula: row.matricula,
             status: row.status,
             cells,
-            average: avg === null ? null : Math.round(avg) / 10,
+            average: roundGrade(avg),
             averageScore: avg,
             gradedCount: row.scores.length,
             pendingCount: row.pendingCount,
@@ -476,6 +533,100 @@ function describeSubmissionGrade(submission, title) {
     return `${title || submission?.examKey || 'Avaliação'}: ${grade || 'sem nota válida'}${counts}`;
 }
 
+// ------------------------------------------- registro da aplicação
+// Registro de uma aplicação de prova (AVA-08): o ciclo da aplicação, os eventos da
+// prova gravados por recordExamAudit (encerramento, anulação, troca e correção de
+// questão, contestações) e as alterações de nota das entregas dessa aplicação.
+const ANNUL_MODE_LABELS = { ponto_para_todos: 'ponto para todos', remover_do_total: 'removida do total' };
+
+function countLabel(count, one, many) {
+    const n = Number(count) || 0;
+    return `${n} ${n === 1 ? one : many}`;
+}
+
+function regradedLabel(count) {
+    return Number(count) > 0 ? countLabel(count, 'entrega recorrigida', 'entregas recorrigidas') : '';
+}
+
+function describeExamAudit(entry) {
+    const details = entry.details || {};
+    const join = (...parts) => parts.filter(Boolean).join(' · ');
+    switch (entry.type) {
+        case 'exam_application_finished':
+            return {
+                title: 'Aplicação encerrada',
+                detail: details.policy === 'submit'
+                    ? `${countLabel(details.submitted, 'prova em andamento enviada', 'provas em andamento enviadas')} pelo professor`
+                    : (details.policy === 'discard' ? countLabel(details.discarded, 'tentativa em andamento descartada', 'tentativas em andamento descartadas') : ''),
+            };
+        case 'exam_question_annulled':
+            return {
+                title: `Questão ${details.questionNumber} anulada (${ANNUL_MODE_LABELS[details.mode] || 'anulada'})`,
+                detail: join(details.reason ? `motivo: ${details.reason}` : '', regradedLabel(details.regraded)),
+            };
+        case 'exam_question_replaced':
+            return {
+                title: `Questão ${details.questionNumber} trocada pela questão ${details.replacementNumber}`,
+                detail: join(details.extraMinutes ? `+${details.extraMinutes} min para a turma` : '', regradedLabel(details.regraded)),
+            };
+        case 'exam_question_corrected_live':
+            return { title: `Questão ${details.questionNumber} corrigida durante a aplicação`, detail: regradedLabel(details.regraded) };
+        case 'exam_question_reports_reviewed':
+            return {
+                title: Number.isFinite(Number(details.questionNumber)) && details.questionNumber !== null
+                    ? `Contestações da questão ${details.questionNumber} revisadas`
+                    : 'Contestações revisadas',
+                detail: details.updated != null ? countLabel(details.updated, 'contestação', 'contestações') : '',
+            };
+        default:
+            return { title: 'Evento da prova', detail: String(entry.type || '') };
+    }
+}
+
+function auditTime(value) {
+    if (value === null || value === undefined || value === '') return 0;
+    const number = typeof value === 'number' ? value : Date.parse(value);
+    return Number.isFinite(number) ? number : 0;
+}
+
+function buildApplicationAuditTrail(application, auditLogs = [], { students = [] } = {}) {
+    if (!application) return [];
+    const nameByEmail = new Map((students || []).map(student => [String(student.email || '').trim().toLowerCase(), (student.nomeSocial && student.nomeSocial.trim()) || student.name || student.email]));
+    const own = (auditLogs || []).filter(entry => entry && String(entry.applicationId || '') === String(application.id));
+    const rows = [];
+    const lifecycle = (id, at, actor, title) => { if (at) rows.push({ id, at: auditTime(at), actor: actor || '', kind: 'application', title, detail: '' }); };
+    lifecycle('application_created', application.createdAt, application.createdBy, 'Aplicação criada');
+    lifecycle('application_started', application.startedAt, '', 'Prova iniciada');
+    lifecycle('application_cancelled', application.cancelledAt, application.updatedBy, 'Aplicação cancelada');
+    if (application.finishedAt && !own.some(entry => entry.type === 'exam_application_finished')) {
+        lifecycle('application_finished', application.finishedAt, application.updatedBy, 'Aplicação encerrada');
+    }
+    own.forEach(entry => {
+        if (entry.type) {
+            rows.push({ id: entry.id, at: auditTime(entry.timestamp), actor: entry.actor || '', kind: 'exam', ...describeExamAudit(entry) });
+            return;
+        }
+        if (entry.category !== 'grade' && !String(entry.action || '').startsWith('grade_')) return;
+        const email = String(entry.studentEmail || '').trim().toLowerCase();
+        rows.push({
+            id: entry.id,
+            at: auditTime(entry.timestamp),
+            actor: entry.actor || '',
+            kind: 'grade',
+            title: `${entry.field || 'Nota'} · ${nameByEmail.get(email) || email || 'aluno'}`,
+            detail: entry.oldValue ? `${entry.oldValue} → ${entry.newValue}` : String(entry.newValue || ''),
+            studentEmail: email || null,
+            submissionId: entry.submissionId || null,
+        });
+    });
+    // Ordem cronológica por segundo; no mesmo segundo, a causa antes do efeito
+    // (aplicação, depois o evento da prova, depois as notas recorrigidas por ele).
+    const rank = { application: 0, exam: 1, grade: 2 };
+    return rows.sort((a, b) => Math.floor(a.at / 1000) - Math.floor(b.at / 1000)
+        || rank[a.kind] - rank[b.kind]
+        || a.at - b.at);
+}
+
 module.exports = {
     CSV_BOM,
     GRADE_MAX,
@@ -483,14 +634,18 @@ module.exports = {
     buildClassGradebook,
     buildCsv,
     buildGradeGroups,
+    buildApplicationAuditTrail,
     buildStudentReportModules,
+    createSubmissionContextResolver,
     csvRow,
     csvSafe,
+    describeExamAudit,
     describeSubmissionGrade,
     examTitle,
     formatDateBR,
     formatDateTimeBR,
     formatGradeBR,
+    gradeCountsMismatch,
     gradeFromScore,
     gradebookCsv,
     isEmptyInput,
@@ -502,5 +657,6 @@ module.exports = {
     scopeSubmissionsToContext,
     scoreFromCounts,
     structureExamIndex,
+    studentMemberships,
     submissionMatchesContext,
 };

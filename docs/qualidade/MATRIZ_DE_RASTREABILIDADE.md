@@ -16,9 +16,10 @@
 | UC-DASH-002 | Automatizado | `/` (Dashboard) | fila "Precisa de você" com snooze de 24h | `dashboard-aggregates.test.js` |
 | UC-DASH-003 | Automatizado | `/` (Dashboard) | Pulso: janelas móveis de 30 dias, sem dado ≠ zero | `dashboard-aggregates.test.js` |
 | UC-DASH-004 | Automatizado | `/` (Dashboard) | escopo de professor e permissões nas rotas /now /queue /trends | `dashboard-aggregates.test.js` |
-| UC-NOTAS-001 | Automatizado | `/resultados` | lançamento manual de nota validado (0 a 10, vírgula, acertos ≤ total, nota pelos acertos), auditoria das alterações de nota, nota inválida antiga fora das médias | `grades-gradebook.test.js`, `ResultadosPage.test.jsx`, `grades.test.js` |
+| UC-NOTAS-001 | Automatizado | `/resultados` | lançamento manual de nota validado (0 a 10, vírgula, acertos ≤ total da turma, nota pelos acertos, nota que confere com os acertos), prévia igual ao que o servidor grava, auditoria das alterações de nota, nota inválida antiga fora das médias | `grades-gradebook.test.js`, `ResultadosPage.test.jsx`, `grades.test.js` |
 | UC-NOTAS-002 | Automatizado | `/resultados` | exportação autenticada: planilha da turma (aluno × prova + média) e CSV da prova no padrão do Excel pt-BR | `grades-gradebook.test.js`, `ResultadosPage.test.jsx`, `api.test.js` |
-| UC-NOTAS-003 | Automatizado | `/resultados`, `/alunos/:id` | boletim com a mesma consolidação de Resultados e o curso ativo | `grades-gradebook.test.js`, `grades.test.js` |
+| UC-NOTAS-003 | Automatizado | `/resultados`, `/alunos/:id` | boletim com a mesma consolidação e o mesmo arredondamento de Resultados, do quadro, das planilhas e do portal do aluno; curso ativo (seletor com o nome do curso); registro antigo sem curso só no curso da matrícula | `grades-gradebook.test.js`, `grades.test.js`, `AlunoDetailPage.test.jsx` |
+| UC-NOTAS-004 | Automatizado | `/resultados` | lixeira de notas (exclusão restaurável) e registro da aplicação (criação, encerramento, anulação com motivo, troca/correção de questão e alterações de nota) | `grades-gradebook.test.js`, `ResultadosPage.test.jsx` |
 | UC-CONTEUDO-001 | Adiado | apostilas/unidades | nova arquitetura pendente | sem novos testes nesta etapa |
 
 Ao adicionar ou renomear um teste, esta matriz deve ser atualizada no mesmo conjunto de mudanças.

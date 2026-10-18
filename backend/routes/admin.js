@@ -50,6 +50,7 @@ const {
     examTitle,
     formatDateTimeBR,
     formatGradeBR,
+    gradeCountsMismatch,
     gradeFromScore,
     gradebookCsv,
     isEmptyInput,
@@ -161,6 +162,12 @@ function studentBelongsToClass(student, className, courseId) {
         const entryCourseId = String(typeof entry === 'object' && entry ? entry.courseId || fallbackCourseId : fallbackCourseId).trim();
         return !expectedCourseId || !entryCourseId || entryCourseId === expectedCourseId;
     });
+}
+
+// Contexto curso/turma das notas (Resultados, quadro, planilhas e boletim), com os
+// alunos e turmas para situar registros antigos sem curso (ver gradebook.js).
+function gradeScope(courseId, studentClass) {
+    return { courseId, studentClass, students: db.memory.students || [], classes: db.memory.classes || [] };
 }
 
 // ----------------------------------------------------
@@ -309,7 +316,7 @@ router.post('/api/admin/delete-student', (req, res) => {
     validateAdmin(req, res, () => {
         const { email } = req.body || {};
         if (typeof email !== 'string' || email.trim() === '') {
-            return res.status(400).json({ error: 'E-mail do estudante nao informado.' });
+            return res.status(400).json({ error: 'E-mail do estudante não informado.' });
         }
 
         const normalizedEmail = email.trim().toLowerCase();
@@ -318,7 +325,7 @@ router.post('/api/admin/delete-student', (req, res) => {
         const studentObjToDelete = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
 
         if (!studentExists) {
-            return res.status(404).json({ error: 'Estudante nao encontrado.' });
+            return res.status(404).json({ error: 'Estudante não encontrado.' });
         }
 
         db.memory.students = students.filter(s => !s.email || s.email.toLowerCase() !== normalizedEmail);
@@ -362,9 +369,9 @@ router.get('/api/admin/submissions', (req, res) => {
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
-        // Mesmo recorte do boletim e da planilha (registros antigos sem curso ou
-        // turma entram pelo campo que confere).
-        const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(submissions, matchedAdmin), { courseId, studentClass });
+        // Mesmo recorte do boletim e da planilha: registro antigo sem curso entra
+        // só no curso da matrícula do aluno naquela turma.
+        const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(submissions, matchedAdmin), gradeScope(courseId, studentClass));
         res.json(enrichSubmissionsWithAttemptResult(scoped));
     });
 });
@@ -586,8 +593,9 @@ router.post('/api/admin/submissions/publish', (req, res) => {
     });
 });
 
-// Excluir registro de submissão. A exclusão é definitiva, mas fica registrada na
-// auditoria do aluno com uma cópia completa do registro removido (AVA-08).
+// Excluir registro de submissão. A entrega sai das listas e vai para a lixeira de
+// notas: a auditoria do aluno guarda uma cópia completa do registro, de onde ele
+// pode ser restaurado (AVA-08).
 router.post('/api/admin/submissions/delete', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { id, studentEmail, examKey } = req.body || {};
@@ -626,6 +634,164 @@ router.post('/api/admin/submissions/delete', (req, res) => {
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions.filter(item => !removedSet.has(item)));
         res.json({ success: true, removed: removed.length, message: 'Registro de prova excluído com sucesso!' });
+    });
+});
+
+// Lixeira de notas (AVA-08): exclusões (grade_delete) com a cópia do registro que
+// ainda não voltaram. "Voltou" = existe um grade_restore apontando para aquela
+// exclusão (a auditoria nunca é reescrita) ou a entrega já está de novo na lista.
+function deletedGradeEntries() {
+    const logs = db.memory.auditLogs || [];
+    const restored = new Set(logs
+        .filter(entry => entry && entry.action === 'grade_restore' && entry.details && entry.details.fromAuditId)
+        .map(entry => String(entry.details.fromAuditId)));
+    const current = new Set((db.memory.submissions || []).map(item => String(item && item.id)));
+    return logs.filter(entry => entry && entry.action === 'grade_delete'
+        && entry.details && entry.details.deletedSubmission && entry.details.deletedSubmission.id != null
+        && !restored.has(String(entry.id))
+        && !current.has(String(entry.details.deletedSubmission.id)));
+}
+
+function registeredStudentByEmail(email) {
+    const normalized = String(email || '').trim().toLowerCase();
+    return normalized ? (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === normalized) || null : null;
+}
+
+// Notas excluídas da turma (lixeira), com quem excluiu e quando.
+router.get('/api/admin/submissions/deleted', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const courseId = String(req.query.courseId || '').trim();
+        const studentClass = String(req.query.studentClass || '').trim();
+        const entries = deletedGradeEntries();
+        const entryBySubmission = new Map(entries.map(entry => [String(entry.details.deletedSubmission.id), entry]));
+        const copies = entries.map(entry => entry.details.deletedSubmission);
+        const visible = scopeSubmissionsToContext(filterSubmissionsForAdmin(copies, matchedAdmin), gradeScope(courseId, studentClass));
+        const items = visible.map(copy => {
+            const entry = entryBySubmission.get(String(copy.id));
+            const email = String(copy.student?.email || copy.studentEmail || '').trim().toLowerCase();
+            const student = registeredStudentByEmail(email);
+            return {
+                auditId: entry.id,
+                deletedAt: entry.timestamp,
+                deletedBy: entry.actor,
+                submissionId: copy.id,
+                studentEmail: email,
+                studentName: (student && student.name) || copy.student?.name || copy.studentName || email,
+                examKey: copy.examKey || '',
+                examTitle: examTitle(copy.examKey, { evaluations: db.memory.evaluations }),
+                applicationId: copy.applicationId || null,
+                attemptNumber: copy.attemptNumber || 1,
+                type: copy.type || '',
+                score: normalizeScore(copy.score),
+                grade: formatGradeBR(copy.score) || null,
+                gradePublished: copy.gradePublished === true,
+                timestamp: copy.timestamp || null,
+                canRestore: !!student,
+            };
+        }).sort((a, b) => Number(b.deletedAt || 0) - Number(a.deletedAt || 0));
+        res.json({ success: true, items });
+    });
+});
+
+// Restaura uma nota excluída exatamente como estava (inclusive publicada ou não).
+router.post('/api/admin/submissions/restore', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const auditId = typeof req.body?.auditId === 'string' ? req.body.auditId.trim() : '';
+        if (!auditId) return res.status(400).json({ error: 'Informe a nota excluída que deve voltar.' });
+        const entry = (db.memory.auditLogs || []).find(item => item && String(item.id) === auditId
+            && item.action === 'grade_delete' && item.details && item.details.deletedSubmission);
+        if (!entry || filterSubmissionsForAdmin([entry.details.deletedSubmission], matchedAdmin).length === 0) {
+            return res.status(404).json({ error: 'Nota excluída não encontrada.' });
+        }
+        if (!deletedGradeEntries().some(item => item.id === entry.id)) {
+            return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+        }
+        const copy = entry.details.deletedSubmission;
+        const student = registeredStudentByEmail(copy.student?.email || copy.studentEmail);
+        if (!student) return res.status(409).json({ error: 'O aluno não está mais no cadastro; a nota não pode voltar.' });
+
+        const restored = {
+            ...JSON.parse(JSON.stringify(copy)),
+            restoredAt: new Date().toISOString(),
+            restoredBy: matchedAdmin?.email || 'admin',
+        };
+        const submissions = readJSON(DB_SUBMISSIONS_FILE);
+        submissions.push(restored);
+        recordGradeAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            submission: restored,
+            action: 'grade_restore',
+            field: 'Nota',
+            oldValue: 'registro excluído',
+            newValue: `${describeSubmissionGrade(restored, examTitle(restored.examKey, { evaluations: db.memory.evaluations }))} · restaurada da lixeira (${restored.gradePublished === true ? 'publicada' : 'em revisão'})`,
+            details: { fromAuditId: entry.id },
+        });
+        writeJSON(DB_SUBMISSIONS_FILE, submissions);
+        res.json({
+            success: true,
+            submissionId: restored.id,
+            message: `Nota de ${student.name || student.email} restaurada (${restored.gradePublished === true ? 'publicada' : 'em revisão'}).`,
+        });
+    });
+});
+
+// Questões da prova para o lançamento manual (banco do sistema ou .md legado),
+// numeradas pelo número original. Lista vazia quando a prova não existe.
+function loadManualExamQuestions(examKey) {
+    let questions = [];
+    const evaluation = db.memory.evaluations[examKey];
+    if (evaluation) {
+        questions = evaluation.questions;
+    } else if (/^[A-Za-z0-9_-]+$/.test(examKey)) {
+        const filePath = path.join(runtimePaths.CONTENT_DIR, `${examKey}.md`);
+        if (fs.existsSync(filePath)) {
+            const parsedObj = parseEvaluationMarkdown(fs.readFileSync(filePath, 'utf8'), examKey);
+            questions = parsedObj ? parsedObj.questions : [];
+        }
+    }
+    if (!Array.isArray(questions)) return [];
+    return questions.map((question, index) => ({
+        ...question,
+        originalNumber: Number(question.originalNumber || question.number || index + 1)
+    }));
+}
+
+// Total de questões que a turma usa nesta prova: a "Quantidade de questões" da
+// configuração da prova na turma, sem as questões excluídas. É o total padrão do
+// lançamento rápido e também o da prévia da tela (ENG-01), que o lê da rota
+// manual-context para nunca divergir do que o servidor grava.
+function manualExamTotals(cls, examKey, questions) {
+    const examConfig = (cls && cls.examConfigs && cls.examConfigs[examKey]) || {};
+    const excludedQuestions = new Set((examConfig.excludedQuestions || []).map(Number));
+    const availableQuestions = questions.filter(q => !excludedQuestions.has(Number(q.originalNumber)));
+    const configuredCount = parseInt(examConfig.questionCount, 10) || null;
+    const defaultTotal = Math.min(configuredCount || availableQuestions.length, availableQuestions.length) || questions.length;
+    return {
+        availableQuestions,
+        defaultTotal,
+        questionCount: questions.length,
+        configuredCount,
+        excludedCount: questions.length - availableQuestions.length,
+    };
+}
+
+// Totais da prova para a tela de lançamento (prévia "Nota que será gravada",
+// placeholder do total e validação dos acertos), calculados como no lançamento.
+router.get('/api/admin/submissions/manual-context', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const examKey = String(req.query.examKey || '').trim();
+        const studentClass = String(req.query.studentClass || '').trim();
+        const courseId = String(req.query.courseId || '').trim();
+        if (!examKey || !studentClass) return res.status(400).json({ error: 'Turma e prova são obrigatórias.' });
+        if (!adminCanAccessClass(matchedAdmin, studentClass, courseId)) return res.status(403).json({ error: 'Turma não autorizada para esta conta.' });
+        const classes = readJSON(DB_CLASSES_FILE);
+        const cls = findClassByNameAndCourse(classes, studentClass, courseId);
+        if (!cls) return res.status(404).json({ error: 'Turma não encontrada neste curso.' });
+        const questions = loadManualExamQuestions(examKey);
+        if (questions.length === 0) return res.status(404).json({ error: 'Avaliação não encontrada ou sem questões cadastradas.' });
+        const { defaultTotal, questionCount, configuredCount, excludedCount } = manualExamTotals(cls, examKey, questions);
+        res.json({ examKey, studentClass: cls.name, courseId: cls.courseId || courseId, questionCount, defaultTotal, configuredCount, excludedCount });
     });
 });
 
@@ -679,27 +845,10 @@ router.post('/api/admin/submissions/create', (req, res) => {
         const studentCourseId = membership.courseId || requestedCourse || registeredStudent.courseId || null;
 
         // Busca informações sobre a avaliação para correção ou contagem
-        let questions = [];
-        const evaluation = db.memory.evaluations[examKey];
-        if (evaluation) {
-            questions = evaluation.questions;
-        } else if (/^[A-Za-z0-9_-]+$/.test(examKey)) {
-            const filePath = path.join(runtimePaths.CONTENT_DIR, `${examKey}.md`);
-            if (fs.existsSync(filePath)) {
-                const mdContent = fs.readFileSync(filePath, 'utf8');
-                const parsedObj = parseEvaluationMarkdown(mdContent, examKey);
-                questions = parsedObj ? parsedObj.questions : [];
-            }
-        }
-
-        if (!Array.isArray(questions) || questions.length === 0) {
+        const questions = loadManualExamQuestions(examKey);
+        if (questions.length === 0) {
             return res.status(400).json({ error: 'Avaliação não encontrada ou sem questões cadastradas.' });
         }
-
-        questions = questions.map((question, index) => ({
-            ...question,
-            originalNumber: Number(question.originalNumber || question.number || index + 1)
-        }));
         const questionByNumber = new Map(questions.map(question => [question.originalNumber, question]));
 
         // Verifica configurações da prova para a turma
@@ -713,14 +862,10 @@ router.post('/api/admin/submissions/create', (req, res) => {
                 return res.status(400).json({ error: 'Esta prova não faz parte do curso da turma do aluno.' });
             }
         }
-        const examConfig = (cls && cls.examConfigs && cls.examConfigs[examKey]) || {};
-        const excludedQuestions = new Set((examConfig.excludedQuestions || []).map(Number));
-        const availableQuestions = questions.filter(q => !excludedQuestions.has(Number(q.originalNumber)));
-
-        const configuredCount = parseInt(examConfig.questionCount, 10) || availableQuestions.length;
-        const totalCount = Math.min(configuredCount, availableQuestions.length) || questions.length;
+        const { availableQuestions, defaultTotal: totalCount } = manualExamTotals(cls, examKey, questions);
 
         let finalScore = 0;
+        let ignoredQuestionNumbers = [];
         let finalCorrectCount = null;
         let finalTotalCount = null;
         let gradedAnswers = [];
@@ -737,9 +882,24 @@ router.post('/api/admin/submissions/create', (req, res) => {
         if (answeredEntries.length > 0) {
             // Correção baseada no cartão-resposta (respostas fornecidas)
             entryMode = 'card';
+            if (reqQuestionNumbers !== undefined && reqQuestionNumbers !== null && !Array.isArray(reqQuestionNumbers)) {
+                return res.status(400).json({ error: 'Lista de questões da versão em formato inválido.' });
+            }
+            const providedNumbers = Array.isArray(reqQuestionNumbers)
+                ? [...new Set(reqQuestionNumbers.map(Number))]
+                : [];
+            if (providedNumbers.some(number => !Number.isInteger(number) || number < 1)) {
+                return res.status(400).json({ error: 'Lista de questões da versão em formato inválido.' });
+            }
+            // Versão impressa (histórico) com questão que saiu do banco depois da
+            // impressão: sem gabarito, ela fica fora da nota (como antes) e o
+            // professor é avisado na resposta, em vez de o lançamento falhar.
+            const missingFromBank = new Set(providedNumbers.filter(number => !questionByNumber.has(number)));
+            ignoredQuestionNumbers = [...missingFromBank].sort((a, b) => a - b);
             const normalizedAnswers = {};
             for (const [rawNumber, letter] of answeredEntries) {
                 const number = Number(rawNumber);
+                if (missingFromBank.has(number)) continue;
                 if (!Number.isInteger(number) || !questionByNumber.has(number)) {
                     return res.status(400).json({ error: `A questão ${rawNumber} não existe nesta prova.` });
                 }
@@ -748,14 +908,8 @@ router.post('/api/admin/submissions/create', (req, res) => {
                 }
                 normalizedAnswers[number] = letter.trim().toUpperCase();
             }
-            if (reqQuestionNumbers !== undefined && reqQuestionNumbers !== null && !Array.isArray(reqQuestionNumbers)) {
-                return res.status(400).json({ error: 'Lista de questões da versão em formato inválido.' });
-            }
-            const providedNumbers = Array.isArray(reqQuestionNumbers)
-                ? [...new Set(reqQuestionNumbers.map(Number))]
-                : [];
-            if (providedNumbers.some(number => !Number.isInteger(number) || !questionByNumber.has(number))) {
-                return res.status(400).json({ error: 'A versão informada tem questões que não existem nesta prova.' });
+            if (Object.keys(normalizedAnswers).length === 0) {
+                return res.status(400).json({ error: 'Marque ao menos uma resposta em questão que ainda existe nesta prova.' });
             }
 
             let selectedQuestions;
@@ -817,6 +971,9 @@ router.post('/api/admin/submissions/create', (req, res) => {
             if (!correctInput.empty && correctInput.value > effectiveTotal) {
                 return res.status(400).json({ error: `Os acertos (${correctInput.value}) não podem passar do total de questões (${effectiveTotal}).` });
             }
+            // Nota e acertos juntos precisam conferir (ex.: 10 com 0 de 4 acertos é erro de digitação).
+            const mismatch = gradeCountsMismatch(gradeInput.empty ? null : gradeInput.value, correctInput.empty ? null : correctInput.value, effectiveTotal);
+            if (mismatch) return res.status(400).json({ error: mismatch });
             finalScore = gradeInput.empty
                 ? scoreFromCounts(correctInput.value, effectiveTotal)
                 : Math.round(gradeInput.value * 10);
@@ -852,6 +1009,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
             type,
             entryMode,
             launchedBy: matchedAdmin?.email || 'admin',
+            ...(ignoredQuestionNumbers.length ? { ignoredQuestionNumbers } : {}),
             attemptNumber: previousAttempts.length + 1,
             resultStatus: 'considered',
             aggregationPolicy: previousPolicy,
@@ -861,6 +1019,9 @@ router.post('/api/admin/submissions/create', (req, res) => {
         };
 
         submissions.push(submissionObj);
+        const ignoredNote = ignoredQuestionNumbers.length
+            ? `${ignoredQuestionNumbers.length === 1 ? 'a questão' : 'as questões'} ${ignoredQuestionNumbers.join(', ')} da versão impressa não ${ignoredQuestionNumbers.length === 1 ? 'existe' : 'existem'} mais na prova e ${ignoredQuestionNumbers.length === 1 ? 'ficou' : 'ficaram'} fora da nota`
+            : '';
         recordGradeAudit(db.memory, {
             req,
             actor: matchedAdmin,
@@ -868,18 +1029,19 @@ router.post('/api/admin/submissions/create', (req, res) => {
             action: 'grade_create',
             field: 'Nota',
             oldValue: '',
-            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})`,
+            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})${ignoredNote ? ` · ${ignoredNote}` : ''}`,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
 
         res.json({
             success: true,
-            message: `Nota ${formatGradeBR(finalScore)} lançada para ${registeredStudent.name || studentEmail}.`,
+            message: `Nota ${formatGradeBR(finalScore)} lançada para ${registeredStudent.name || studentEmail}.${ignoredNote ? ` Atenção: ${ignoredNote}.` : ''}`,
             submissionId: submissionObj.id,
             score: finalScore,
             grade: gradeFromScore(finalScore),
             correctCount: finalCorrectCount,
-            totalCount: finalTotalCount
+            totalCount: finalTotalCount,
+            ignoredQuestionNumbers,
         });
     });
 });
@@ -1408,7 +1570,7 @@ router.get('/api/admin/student/report', (req, res) => {
         const structure = effectiveStructure(courseId, cls?.name)?.structure || course?.structure || [];
 
         const ownSubmissions = (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
-        const contextSubmissions = scopeSubmissionsToContext(ownSubmissions, { courseId, studentClass: className });
+        const contextSubmissions = scopeSubmissionsToContext(ownSubmissions, gradeScope(courseId, className));
         const { modules, overallAverage } = buildStudentReportModules({
             submissions: contextSubmissions.filter(s => s.gradePublished === true),
             allSubmissions: contextSubmissions,
@@ -3703,7 +3865,7 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
         if (!studentClass || !examKey) return res.status(400).json({ error: 'Turma e prova são obrigatórias.' });
         if (!adminCanAccessClass(matchedAdmin, studentClass, courseId)) return res.status(403).json({ error: 'Turma não autorizada para esta conta.' });
 
-        const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), { courseId, studentClass })
+        const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), gradeScope(courseId, studentClass))
             .filter(sub => String(sub.examKey || '') === examKey && (!applicationId || sub.applicationId === applicationId));
         const submissions = enrichSubmissionsWithAttemptResult(scoped).sort((a, b) =>
             String(a.student?.name || a.studentName || '').localeCompare(String(b.student?.name || b.studentName || ''), 'pt-BR')
@@ -3749,7 +3911,7 @@ router.get('/api/admin/gradebook', (req, res) => {
 
         const course = (db.memory.courses || []).find(item => String(item.id) === courseId) || null;
         const structure = effectiveStructure(courseId, studentClass)?.structure || course?.structure || [];
-        const submissions = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), { courseId, studentClass });
+        const submissions = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), gradeScope(courseId, studentClass));
         const students = filterStudentsForAdmin(db.memory.students || [], matchedAdmin)
             .filter(student => studentBelongsToClass(student, studentClass, courseId));
         const gradebook = buildClassGradebook({
@@ -3837,9 +3999,11 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
             examKey,
             applicationId: applicationId || null,
             totalSubmissions: submissions.length,
+            // Sem nota válida, a média fica vazia (o Monitor mostra "—", não 0,0).
             averageScore: validScores.length
                 ? Math.round(validScores.reduce((sum, score) => sum + score, 0) / validScores.length)
-                : 0,
+                : null,
+            validScoreCount: validScores.length,
             gradeBuckets,
             proctoringSummary: {
                 totalFocusLosses: focusLossLogs.length,

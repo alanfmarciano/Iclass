@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const request = require('supertest');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-grades-test-'));
@@ -19,6 +20,8 @@ const { errorHandler } = require('../../backend/middlewares.js');
 const { regradeSubmission } = require('../../backend/utils/examGrading.js');
 
 let app;
+// Funções de nota da interface (web/src/lib/grades.js), para comparar com o que a tela mostra.
+let webGrades;
 const adminToken = 'admin-token-grades';
 const professorToken = 'professor-token-grades';
 const COURSE_A = 'curso-a';
@@ -110,7 +113,9 @@ const admin = (req) => req.set('x-admin-session', adminToken);
 const professor = (req) => req.set('x-admin-session', professorToken);
 const createGrade = (body) => admin(request(app).post('/api/admin/submissions/create')).send({ studentEmail: 'ana@notas.local', courseId: COURSE_A, studentClass: '1DES', type: 'impressa', ...body });
 
-// Média da tela Resultados: consolida por grupo (aluno+curso+turma+aplicação) e tira a média dos grupos.
+// Média da tela Resultados (0 a 100, sem arredondar): consolida por grupo
+// (aluno+curso+turma+aplicação) e tira a média dos grupos. A tela mostra
+// fmtGrade(média) — compare com resultadosAverageText.
 function resultadosAverage(rows, email) {
     const groups = new Map();
     rows.filter(row => row.student.email === email).forEach(row => {
@@ -118,7 +123,12 @@ function resultadosAverage(rows, email) {
         if (row.consolidatedScore != null) groups.set(key, row.consolidatedScore);
     });
     const scores = [...groups.values()];
-    return scores.length ? Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length) / 10 : null;
+    return scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null;
+}
+
+// Texto que a tela Resultados mostra para a média do aluno (lógica real da tela).
+function resultadosAverageText(rows, email) {
+    return webGrades.fmtGrade(resultadosAverage(rows, email), '-');
 }
 
 function parseCsv(text) {
@@ -126,7 +136,11 @@ function parseCsv(text) {
     return text.slice(1).trim().split(/\r\n/).map(line => line.split(';'));
 }
 
-test.before(async () => { await db.init(); app = createApp(); });
+test.before(async () => {
+    await db.init();
+    app = createApp();
+    webGrades = await import(pathToFileURL(path.join(__dirname, '..', '..', 'web', 'src', 'lib', 'grades.js')).href);
+});
 test.beforeEach(() => { seed(); });
 test.after(async () => {
     await new Promise(resolve => setTimeout(resolve, 1500));
@@ -325,7 +339,7 @@ test('[UC-NOTAS-003] boletim usa a mesma consolidação de Resultados com duas a
     db.memory.submissions = db.memory.submissions.filter(item => item.id !== 'p3_pend');
     const list = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`));
     const again = await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`));
-    assert.equal(again.body.overallAverage, resultadosAverage(list.body, 'ana@notas.local'));
+    assert.equal(webGrades.fmtGradeValue(again.body.overallAverage), resultadosAverageText(list.body, 'ana@notas.local'));
     assert.equal(again.body.overallAverage, 7);
 });
 
@@ -366,7 +380,7 @@ test('[UC-NOTAS-002] planilha da turma: uma linha por aluno, coluna por prova, m
     assert.deepEqual(json.body.rows.map(row => row.email).sort(), ['ana@notas.local', 'bia@notas.local', 'hack@notas.local'], 'Caio é de 1DES de outro curso');
     const ana = json.body.rows.find(row => row.email === 'ana@notas.local');
     const list = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`));
-    assert.equal(ana.average, resultadosAverage(list.body, 'ana@notas.local'));
+    assert.equal(webGrades.fmtGradeValue(ana.average), resultadosAverageText(list.body, 'ana@notas.local'));
     assert.equal(ana.average, 7.2);
     assert.equal(ana.pendingCount, 1);
 
@@ -460,4 +474,235 @@ test('[UC-NOTAS-001] entradas com tipo errado dão 400, não 500 com mensagem in
     try { errorHandler(new TypeError('email.trim is not a function'), {}, res, () => {}); } finally { console.error = originalError; }
     assert.equal(res.code, 500);
     assert.equal(sent.error, 'Ocorreu um erro interno no servidor.');
+});
+
+// ---------------------------------------------------------------------------
+// Rodada de ajuste 1 (revisão): total da turma na prévia, nota × acertos,
+// cartão com questão que saiu do banco, escopo de registros antigos,
+// arredondamento único, lixeira de notas e registro da aplicação.
+
+test('[UC-NOTAS-001] total padrão do lançamento é o da turma (quantidade configurada, sem excluídas), igual na tela e no servidor', async () => {
+    db.memory.classes[0].examConfigs = { Avaliacao_P1: { questionCount: 2 }, Avaliacao_P3: { excludedQuestions: [1, 2] } };
+    const context = await admin(request(app).get(`/api/admin/submissions/manual-context?courseId=${COURSE_A}&studentClass=1DES&examKey=Avaliacao_P1`));
+    assert.equal(context.status, 200, context.body.error);
+    assert.equal(context.body.questionCount, 4);
+    assert.equal(context.body.defaultTotal, 2, 'a turma usa 2 das 4 questões');
+    const excluded = await admin(request(app).get(`/api/admin/submissions/manual-context?courseId=${COURSE_A}&studentClass=1DES&examKey=Avaliacao_P3`));
+    assert.equal(excluded.body.defaultTotal, 3, '5 questões menos 2 excluídas');
+
+    // A prévia da tela (lógica real) mostra o que o servidor grava.
+    const limits = { maxQuestions: context.body.questionCount, defaultTotal: context.body.defaultTotal };
+    const quick = webGrades.validateQuickGrade({ grade: '', correctCount: '2', totalCount: '' }, limits);
+    assert.deepEqual(quick.errors, {});
+    const preview = webGrades.previewQuickGrade(quick.payload, limits.defaultTotal);
+    const saved = await createGrade({ examKey: 'Avaliacao_P1', ...quick.payload });
+    assert.equal(saved.status, 200, saved.body.error);
+    assert.equal(saved.body.score, 100, '2 de 2 acertos');
+    assert.equal(webGrades.fmtGradeValue(preview), webGrades.fmtGrade(saved.body.score), 'antes a tela dizia 5,0 e o servidor gravava 10,0');
+
+    // Acertos acima do total da turma: a tela barra antes de enviar e o servidor também.
+    assert.match(webGrades.validateQuickGrade({ grade: '', correctCount: '3', totalCount: '' }, limits).errors.correctCount, /Nesta turma a prova tem 2 questões/);
+    const over = await createGrade({ examKey: 'Avaliacao_P1', correctCount: 3 });
+    assert.equal(over.status, 400);
+
+    assert.equal((await professor(request(app).get(`/api/admin/submissions/manual-context?courseId=${COURSE_B}&studentClass=2RED&examKey=Avaliacao_P1`))).status, 403);
+    assert.equal((await admin(request(app).get(`/api/admin/submissions/manual-context?courseId=${COURSE_A}&studentClass=1DES&examKey=Avaliacao_NAO_EXISTE`))).status, 404);
+});
+
+test('[UC-NOTAS-001] nota digitada que não confere com os acertos é recusada (na tela e no servidor)', async () => {
+    const wrong = await createGrade({ examKey: 'Avaliacao_P1', grade: 10, correctCount: 0, totalCount: 4 });
+    assert.equal(wrong.status, 400);
+    assert.match(wrong.body.error, /não confere com 0 de 4 acertos/);
+    assert.match(webGrades.validateQuickGrade({ grade: '10', correctCount: '0', totalCount: '4' }).errors.grade, /Não confere/);
+    const ok = await createGrade({ examKey: 'Avaliacao_P1', grade: '7,5', correctCount: 3 });
+    assert.equal(ok.status, 200, ok.body.error);
+    const rounded = await createGrade({ examKey: 'Avaliacao_P3', grade: '6,7', correctCount: 2, totalCount: 3 });
+    assert.equal(rounded.status, 200, 'diferença só de arredondamento (6,67) é aceita');
+    assert.deepEqual(webGrades.validateQuickGrade({ grade: '6,7', correctCount: '2', totalCount: '3' }).errors, {});
+    assert.equal(db.memory.submissions.length, 2);
+});
+
+test('[UC-NOTAS-001] cartão-resposta de versão impressa com questão que saiu do banco: corrige as existentes e avisa', async () => {
+    const res = await createGrade({ examKey: 'Avaliacao_P1', mode: 'card', answers: { 1: 'B', 2: 'A', 5: 'C' }, questionNumbers: [1, 2, 3, 4, 5] });
+    assert.equal(res.status, 200, res.body.error);
+    assert.equal(res.body.totalCount, 4, 'a questão 5 não tem gabarito e fica fora do total');
+    assert.equal(res.body.correctCount, 2);
+    assert.deepEqual(res.body.ignoredQuestionNumbers, [5]);
+    assert.match(res.body.message, /Atenção: a questão 5 da versão impressa não existe mais/);
+    const stored = db.memory.submissions.find(item => item.id === res.body.submissionId);
+    assert.deepEqual(stored.ignoredQuestionNumbers, [5]);
+    const audit = db.memory.auditLogs.find(entry => entry.action === 'grade_create');
+    assert.match(audit.newValue, /questão 5 da versão impressa/);
+
+    const onlyMissing = await createGrade({ examKey: 'Avaliacao_P1', mode: 'card', answers: { 5: 'C' }, questionNumbers: [1, 5] });
+    assert.equal(onlyMissing.status, 400);
+    assert.match(onlyMissing.body.error, /questão que ainda existe/);
+});
+
+test('[UC-NOTAS-003] registro antigo sem curso fica só no curso da matrícula do aluno (não vaza para turma homônima)', async () => {
+    const legacy = (id, email, name, score) => ({ ...submission(id, { email, name, score }), student: { name, email, studentClass: '1DES' } });
+    db.memory.submissions = [
+        legacy('caio_antigo', 'caio@notas.local', 'Caio', 30),
+        legacy('ana_antiga', 'ana@notas.local', 'Ana', 80),
+        legacy('ex_aluno', 'saiu@notas.local', 'Ex-aluno', 50),
+    ];
+    const listA = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`));
+    assert.deepEqual(listA.body.map(item => item.id).sort(), ['ana_antiga', 'ex_aluno'], 'Caio é da 1DES do curso B');
+    assert.equal(listA.body.find(item => item.id === 'ana_antiga').student.courseId, COURSE_A);
+    const listB = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_B}&studentClass=1DES`));
+    assert.deepEqual(listB.body.map(item => item.id), ['caio_antigo']);
+    assert.equal(listB.body[0].student.courseId, COURSE_B);
+
+    const bookA = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES`));
+    assert.equal(bookA.body.rows.some(row => row.email === 'caio@notas.local'), false, 'antes Caio ganhava linha no curso A');
+    const bookB = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_B}&studentClass=1DES`));
+    assert.equal(bookB.body.rows.find(row => row.email === 'caio@notas.local').average, 3);
+
+    const csvA = await admin(request(app).get(`/api/admin/export-grades/1DES/Avaliacao_P1?courseId=${COURSE_A}`));
+    assert.equal(csvA.text.includes('caio@notas.local'), false);
+    const report = await admin(request(app).get(`/api/admin/student/report?email=caio@notas.local&courseId=${COURSE_B}&studentClass=1DES`));
+    assert.equal(report.status, 200, report.body.error);
+    assert.equal(report.body.overallAverage, 3);
+});
+
+test('[UC-NOTAS-003] a mesma média aparece igual no boletim, no quadro, na planilha, no portal do aluno e em Resultados', async () => {
+    // 6,0 e 8,7 publicadas: média 73,5 -> 7,4 em todo lugar (antes 7,4 no boletim e 7,3 no resto).
+    db.memory.submissions = [
+        submission('rui_p1', { score: 60 }),
+        submission('rui_p2', { examKey: 'Avaliacao_P2', score: 87 }),
+    ];
+    const report = await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`));
+    assert.equal(report.body.overallAverage, 7.4);
+    const list = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`));
+    assert.equal(resultadosAverageText(list.body, 'ana@notas.local'), '7,4', 'tela Resultados');
+    const book = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES`));
+    const anaRow = book.body.rows.find(row => row.email === 'ana@notas.local');
+    assert.equal(anaRow.average, 7.4);
+    assert.equal(webGrades.fmtGrade(anaRow.averageScore), '7,4', 'quadro de notas na tela');
+    const csv = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES&format=csv`));
+    assert.equal(parseCsv(csv.text).find(line => line[1] === 'ana@notas.local').slice(-2)[0], '7,4');
+
+    const login = await request(app).post('/api/student/login').send({ email: 'ana@notas.local', password: '123' });
+    const dashboard = await request(app).get(`/api/student/dashboard?courseId=${COURSE_A}&studentClass=1DES`).set('x-session-token', login.body.sessionToken);
+    assert.equal(dashboard.status, 200, dashboard.body.error);
+    assert.equal(dashboard.body.overallNote, 7.4);
+
+    // Servidor (roundGrade/formatGradeBR) e tela (fmtGrade) arredondam do mesmo jeito.
+    const { formatGradeBR } = require('../../backend/utils/gradebook.js');
+    for (let tenths = 0; tenths <= 1000; tenths += 5) {
+        const score = tenths / 10;
+        assert.equal(webGrades.fmtGrade(score), formatGradeBR(score), `nota ${score}`);
+    }
+    for (const score of [200 / 3, 100 / 3, 73.5, 84.95, 0.05, 99.95]) assert.equal(webGrades.fmtGrade(score), formatGradeBR(score), `nota ${score}`);
+});
+
+test('[UC-NOTAS-001] colega só com nota inválida não puxa a média da turma; análise sem nota válida não mostra 0,0', async () => {
+    db.memory.submissions = [
+        submission('ana_ok', { score: 80 }),
+        submission('bia_invalida', { email: 'bia@notas.local', name: 'Bia', score: 150 }),
+    ];
+    const dash = await admin(request(app).get('/api/admin/student/dashboard?email=ana@notas.local'));
+    assert.equal(dash.status, 200);
+    assert.equal(dash.body.comparativo.turmaMedia, 8, 'antes a nota inválida da Bia contava como 0 (média 4)');
+
+    db.memory.submissions = [submission('so_invalida', { examKey: 'Avaliacao_P3', score: 150 })];
+    const analytics = await admin(request(app).get('/api/admin/exam-analytics/1DES/Avaliacao_P3'));
+    assert.equal(analytics.status, 200);
+    assert.equal(analytics.body.averageScore, null);
+    assert.equal(analytics.body.validScoreCount, 0);
+    assert.equal(webGrades.fmtGrade(analytics.body.averageScore), '—', 'o Monitor mostra "—"');
+});
+
+test('[UC-NOTAS-004] lixeira de notas: a exclusão pode ser desfeita e fica registrada', async () => {
+    const created = await createGrade({ examKey: 'Avaliacao_P2', correctCount: 7, totalCount: 10 });
+    const id = created.body.submissionId;
+    await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: [id], published: true });
+    const removed = await professor(request(app).post('/api/admin/submissions/delete')).send({ id });
+    assert.equal(removed.status, 200);
+    assert.equal(db.memory.submissions.some(item => item.id === id), false);
+
+    const trash = await professor(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_A}&studentClass=1DES`));
+    assert.equal(trash.status, 200, trash.body.error);
+    assert.equal(trash.body.items.length, 1);
+    const item = trash.body.items[0];
+    assert.equal(item.submissionId, id);
+    assert.equal(item.deletedBy, 'prof@notas.local');
+    assert.equal(item.grade, '7,0');
+    assert.equal(item.gradePublished, true);
+    assert.equal(item.canRestore, true);
+    assert.equal((await admin(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_B}&studentClass=2RED`))).body.items.length, 0, 'só a turma pedida');
+
+    const restored = await professor(request(app).post('/api/admin/submissions/restore')).send({ auditId: item.auditId });
+    assert.equal(restored.status, 200, restored.body.error);
+    const back = db.memory.submissions.find(sub => sub.id === id);
+    assert.equal(back.score, 70);
+    assert.equal(back.gradePublished, true, 'volta como estava');
+    assert.equal(back.restoredBy, 'prof@notas.local');
+    assert.equal((await professor(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_A}&studentClass=1DES`))).body.items.length, 0);
+    assert.equal((await professor(request(app).post('/api/admin/submissions/restore')).send({ auditId: item.auditId })).status, 409, 'não restaura duas vezes');
+    assert.equal((await admin(request(app).post('/api/admin/submissions/restore')).send({ auditId: 'nao-existe' })).status, 404);
+    assert.equal((await admin(request(app).post('/api/admin/submissions/restore')).send({})).status, 400);
+
+    const audit = await admin(request(app).get('/api/admin/student/audit?email=ana@notas.local'));
+    const restoreEntry = audit.body.find(entry => entry.action === 'grade_restore');
+    assert.ok(restoreEntry, 'restauração na auditoria do aluno');
+    assert.match(restoreEntry.newValue, /restaurada da lixeira \(publicada\)/);
+    const review = await admin(request(app).get(`/api/admin/submissions/${id}/review`));
+    assert.ok(review.body.history.some(entry => /restaurada/.test(entry.newValue)), 'histórico da nota mostra a volta');
+
+    // Professor não vê nem restaura nota excluída de aluno de outro curso (mesma regra da exclusão).
+    const caio = await admin(request(app).post('/api/admin/submissions/create')).send({ studentEmail: 'caio@notas.local', examKey: 'Avaliacao_P1', grade: 6, courseId: COURSE_B, studentClass: '1DES' });
+    assert.equal(caio.status, 200, caio.body.error);
+    await admin(request(app).post('/api/admin/submissions/delete')).send({ id: caio.body.submissionId });
+    const caioEntry = db.memory.auditLogs.find(entry => entry.action === 'grade_delete' && entry.submissionId === caio.body.submissionId);
+    assert.equal((await professor(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_B}&studentClass=1DES`))).status, 403, 'turma fora do escopo do professor');
+    assert.equal((await professor(request(app).get('/api/admin/submissions/deleted'))).body.items.some(entry => entry.studentEmail === 'caio@notas.local'), false);
+    assert.equal((await admin(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_B}&studentClass=1DES`))).body.items.length, 1);
+    assert.equal((await professor(request(app).post('/api/admin/submissions/restore')).send({ auditId: caioEntry.id })).status, 404);
+});
+
+test('[UC-NOTAS-004] anulação guarda o motivo no histórico da nota e o registro da aplicação mostra tudo', async () => {
+    const application = db.memory.examApplications[0];
+    application.versionSnapshots = [{ version: 'A', questions: db.memory.evaluations.Avaliacao_P1.questions.map(item => ({ ...item })) }];
+    application.createdBy = 'prof@notas.local';
+    application.finishedAt = '2026-03-01T11:00:00.000Z';
+    db.memory.examApplications.push({ id: 'app_red', examKey: 'Avaliacao_P1', studentClass: '2RED', courseId: COURSE_B, status: 'finished', createdAt: '2026-03-02T10:00:00.000Z' });
+    db.memory.submissions = [submission('ana_app1', { applicationId: 'app_1', score: 50, extra: {
+        correctCount: 2,
+        totalCount: 4,
+        assignedVersion: 'A',
+        gradedAnswers: [
+            { questionNumber: 1, studentChoice: 'B' }, { questionNumber: 2, studentChoice: 'A' },
+            { questionNumber: 3, studentChoice: 'A' }, { questionNumber: 4, studentChoice: 'A' },
+        ],
+    } })];
+
+    const annul = await professor(request(app).post('/api/admin/annul-question')).send({ applicationId: 'app_1', questionNumber: 3, mode: 'ponto_para_todos', reason: 'enunciado ambíguo' });
+    assert.equal(annul.status, 200, annul.body.error);
+    const sub = db.memory.submissions.find(item => item.id === 'ana_app1');
+    assert.equal(sub.score, 75);
+    assert.match(sub.scoreHistory[0].reason, /anulação da questão 3 \(ponto para todos\) · motivo: enunciado ambíguo/);
+    const regradeAudit = db.memory.auditLogs.find(entry => entry.action === 'grade_regrade');
+    assert.match(regradeAudit.newValue, /motivo: enunciado ambíguo/, 'antes o histórico dizia só "anulação da questão 3"');
+
+    const trail = await professor(request(app).get('/api/admin/exam-applications/app_1/audit'));
+    assert.equal(trail.status, 200, trail.body.error);
+    assert.equal(trail.body.application.examTitle, 'Prova 1 — Fundamentos');
+    const titles = trail.body.entries.map(entry => entry.title);
+    assert.ok(titles.includes('Aplicação criada'));
+    assert.ok(titles.includes('Prova iniciada'));
+    assert.ok(titles.includes('Aplicação encerrada'));
+    const annulEntry = trail.body.entries.find(entry => entry.kind === 'exam');
+    assert.equal(annulEntry.title, 'Questão 3 anulada (ponto para todos)');
+    assert.match(annulEntry.detail, /motivo: enunciado ambíguo · 1 entrega recorrigida/);
+    assert.equal(annulEntry.actor, 'prof@notas.local');
+    const gradeEntry = trail.body.entries.find(entry => entry.kind === 'grade');
+    assert.equal(gradeEntry.title, 'Nota · Ana');
+    assert.match(gradeEntry.detail, /5,0 \(2\/4 acertos\) → .*7,5 \(3\/4 acertos\)/);
+    const seconds = trail.body.entries.map(entry => Math.floor(entry.at / 1000));
+    assert.deepEqual(seconds, [...seconds].sort((a, b) => a - b), 'em ordem cronológica');
+    assert.ok(trail.body.entries.indexOf(annulEntry) < trail.body.entries.indexOf(gradeEntry), 'a anulação aparece antes da nota que ela recorrigiu');
+
+    assert.equal((await professor(request(app).get('/api/admin/exam-applications/app_red/audit'))).status, 403, 'aplicação de outro curso');
+    assert.equal((await admin(request(app).get('/api/admin/exam-applications/nao_existe/audit'))).status, 404);
 });

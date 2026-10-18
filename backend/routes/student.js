@@ -53,7 +53,8 @@ const {
     filterStudentExamAttempts,
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
-const { consolidateSubmissions, enrichSubmissionsWithAttemptResult } = require('../utils/submissionAttempts.js');
+const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, roundGrade } = require('../utils/submissionAttempts.js');
+const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
 const {
     createSubmissionFromAttempt,
@@ -1494,10 +1495,12 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     const structure = effectiveStructure(courseId, className)?.structure || [];
     const completed = db.memory.progress[email] || {};
     const released = cls ? getReleasedItemsForClass(cls, email) : {};
-    const submissions = readJSON(DB_SUBMISSIONS_FILE)
-        .filter(item => item.student?.email && item.student.email.toLowerCase() === email)
-        .filter(item => (!courseId || !item.student?.courseId || item.student.courseId === courseId)
-            && (!className || !item.student?.studentClass || item.student.studentClass === className));
+    // Mesmo recorte curso/turma do boletim e de Resultados: registro antigo sem curso
+    // conta só no curso da matrícula do aluno naquela turma.
+    const submissions = scopeSubmissionsToContext(
+        readJSON(DB_SUBMISSIONS_FILE).filter(item => item.student?.email && item.student.email.toLowerCase() === email),
+        { courseId, studentClass: className, students: db.memory.students || [], classes: db.memory.classes || [] },
+    );
 
     const modules = structure.map((module, moduleIndex) => {
         const units = module.units || module.items || [];
@@ -1506,7 +1509,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         const moduleSubmissions = submissions.filter(item => examKeys.has(item.examKey));
         const published = moduleSubmissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score)));
         const consolidated = consolidateSubmissions(published).filter(item => item.score != null);
-        const note = consolidated.length ? consolidated.reduce((sum, item) => sum + Number(item.score), 0) / consolidated.length / 10 : null;
+        const note = consolidated.length ? roundGrade(consolidated.reduce((sum, item) => sum + Number(item.score), 0) / consolidated.length) : null;
         const done = unitKeys.filter(key => completed[key]).length;
         return {
             id: module.id || module.key || `module_${moduleIndex}`,
@@ -1514,7 +1517,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
             done,
             total: unitKeys.length,
             progress: unitKeys.length ? Math.round((done / unitKeys.length) * 100) : 0,
-            note: note == null ? null : Number(note.toFixed(1)),
+            note,
             noteStatus: note != null ? 'published' : moduleSubmissions.length ? 'review' : 'none',
         };
     });
@@ -1567,7 +1570,8 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         progress: totalUnits.length ? Math.round((completedCount / totalUnits.length) * 100) : 0,
         completedCount,
         totalUnits: totalUnits.length,
-        overallNote: publishedSubmissions.length ? Number((publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length / 10).toFixed(1)) : null,
+        // Mesmo arredondamento do boletim, do quadro e das planilhas (roundGrade).
+        overallNote: publishedSubmissions.length ? roundGrade(publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length) : null,
         frequency,
         pendingCount,
         continueItem,
@@ -1577,7 +1581,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         performance: publishedSubmissions
             .map(group => {
                 const latest = [...group.attempts].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0] || {};
-                return { id: latest.id, examKey: latest.examKey, timestamp: latest.timestamp, note: Number((Number(group.score) / 10).toFixed(1)) };
+                return { id: latest.id, examKey: latest.examKey, timestamp: latest.timestamp, note: roundGrade(group.score) };
             })
             .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
             .slice(-5)

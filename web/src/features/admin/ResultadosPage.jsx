@@ -12,8 +12,9 @@ import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api, downloadFile } from '../../lib/api'
-import { fmtGrade, gradeOf, isValidScore, previewQuickGrade, validateQuickGrade } from '../../lib/grades'
+import { fmtGrade, fmtGradeValue, gradeOf, isValidScore, previewQuickGrade, validateQuickGrade } from '../../lib/grades'
 import { GradebookPanel } from './GradebookPanel'
+import { ApplicationAuditModal, DeletedGradesModal } from './GradeAuditPanels'
 import { printBoletim } from './boletimPrint'
 import { useToast } from '../../context/ToastProvider'
 import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
@@ -203,6 +204,9 @@ export default function ResultadosPage() {
   const [structure, setStructure] = useState([])
   const [courseStructure, setCourseStructure] = useState([])
   const [evaluation, setEvaluation] = useState(null)
+  // Totais da prova na turma (quantidade configurada, questões excluídas): os
+  // mesmos que o servidor usa ao gravar (ENG-01).
+  const [manualContext, setManualContext] = useState(null)
   const [history, setHistory] = useState([])
   const [loadingManual, setLoadingManual] = useState(false)
   const [filterClass] = useState(activeClassName)
@@ -214,6 +218,8 @@ export default function ResultadosPage() {
   const [manualErrors, setManualErrors] = useState({})
   const [savingManual, setSavingManual] = useState(false)
   const [view, setView] = useState('alunos')
+  const [deletedOpen, setDeletedOpen] = useState(false)
+  const [auditApplicationId, setAuditApplicationId] = useState(null)
   const toast = useToast()
 
   const courseClasses = useMemo(() => (classes || []).filter((c) => c.courseId === activeCourseId && c.name === activeClassName), [classes, activeCourseId, activeClassName])
@@ -355,7 +361,8 @@ export default function ResultadosPage() {
     const approved = scores.filter((x) => x >= 60).length
     const buckets = [0, 0, 0, 0]
     scores.forEach((x) => { const i = x < 50 ? 0 : x < 70 ? 1 : x < 90 ? 2 : 3; buckets[i]++ })
-    return { avg: avg / 10, aprov: scores.length ? Math.round((approved / scores.length) * 100) : 0, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets) }
+    // Sem nota válida (só registros antigos inválidos), a média fica "-", não 0,0.
+    return { avg: scores.length ? avg / 10 : null, aprov: scores.length ? Math.round((approved / scores.length) * 100) : 0, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets) }
   }, [filteredRows])
   const avgCount = useCountUp(analytics.avg)
   const aprovCount = useCountUp(analytics.aprov)
@@ -373,9 +380,11 @@ export default function ResultadosPage() {
   const fallbackExams = [...new Set(rows.map((r) => r.examKey).filter(Boolean))].map((key) => ({ key, label: key }))
   const exams = examsFromStructure.length > 0 ? examsFromStructure : fallbackExams
   const normalizedEval = useMemo(() => evaluation ? normalizeEvaluation(evaluation) : null, [evaluation])
-  const manualQuestionCount = normalizedEval?.questions?.length || null
-  const manualQuick = manual.mode === 'quick' ? validateQuickGrade(manual, { maxQuestions: manualQuestionCount }) : null
-  const manualPreview = manualQuick && !Object.keys(manualQuick.errors).length ? previewQuickGrade(manualQuick.payload, manualQuestionCount) : null
+  const manualQuestionCount = manualContext?.questionCount || normalizedEval?.questions?.length || null
+  const manualDefaultTotal = manualContext?.defaultTotal || manualQuestionCount
+  const manualLimits = { maxQuestions: manualQuestionCount, defaultTotal: manualDefaultTotal }
+  const manualQuick = manual.mode === 'quick' ? validateQuickGrade(manual, manualLimits) : null
+  const manualPreview = manualQuick && !Object.keys(manualQuick.errors).length ? previewQuickGrade(manualQuick.payload, manualDefaultTotal) : null
   const snapshots = useMemo(() => snapshotOptions(history), [history])
   const selectedSnapshot = snapshots.find((item) => item.id === manual.snapshotId)?.snapshot || null
   const cardRows = selectedSnapshot
@@ -423,19 +432,26 @@ export default function ResultadosPage() {
     if (!manual.examKey) {
       setEvaluation(null)
       setHistory([])
+      setManualContext(null)
       return
     }
     let active = true
     setLoadingManual(true)
+    setManualContext(null)
+    const examQuery = `studentClass=${encodeURIComponent(manual.className)}&courseId=${encodeURIComponent(manual.courseId)}&examKey=${encodeURIComponent(manual.examKey)}`
     Promise.all([
       api.get(`/api/admin/evaluation/${encodeURIComponent(manual.examKey)}`).catch(() => null),
       manual.className
-        ? api.get(`/api/admin/exam-history?studentClass=${encodeURIComponent(manual.className)}&courseId=${encodeURIComponent(manual.courseId)}&examKey=${encodeURIComponent(manual.examKey)}`).catch(() => ({ history: [] }))
+        ? api.get(`/api/admin/exam-history?${examQuery}`).catch(() => ({ history: [] }))
         : Promise.resolve({ history: [] }),
-    ]).then(([ev, hist]) => {
+      manual.className
+        ? api.get(`/api/admin/submissions/manual-context?${examQuery}`).catch(() => null)
+        : Promise.resolve(null),
+    ]).then(([ev, hist, totals]) => {
       if (!active) return
       setEvaluation(ev?.evaluation || ev)
       setHistory(hist?.history || [])
+      setManualContext(totals && totals.defaultTotal ? totals : null)
       setManual((m) => ({ ...m, answers: {}, snapshotId: '' }))
     }).finally(() => active && setLoadingManual(false))
     return () => { active = false }
@@ -463,7 +479,7 @@ export default function ResultadosPage() {
         studentEmail: del.studentEmail || del.email || del.student?.email,
         examKey: del.examKey,
       })
-      toast.success('Registro excluído')
+      toast.success('Entrega excluída. Ela pode ser restaurada em "Notas excluídas".')
       setDel(null)
       if (submissionId) navigate(selectedStudentPath)
       else await refetch()
@@ -516,7 +532,7 @@ export default function ResultadosPage() {
       if (blanks > 0 && !window.confirm(`${blanks} questão(ões) em branco serão contadas como erradas. Continuar?`)) return
       body = { ...context, type: 'impressa', mode: 'card', answers, questionNumbers }
     } else {
-      const quick = validateQuickGrade(manual, { maxQuestions: manualQuestionCount })
+      const quick = validateQuickGrade(manual, manualLimits)
       Object.assign(errors, quick.errors)
       if (Object.keys(errors).length) { setManualErrors(errors); return }
       body = { ...context, type: manual.type || 'impressa', ...quick.payload }
@@ -651,6 +667,9 @@ export default function ResultadosPage() {
         <div className="rb-detail">
           <div className="rb-dtop">
             <span className="rb-dlabel">Composição da nota</span>
+            {exam.applicationId && (
+              <button type="button" className="rb-btn" title="O que aconteceu nesta aplicação" onClick={() => setAuditApplicationId(exam.applicationId)}><History size={13} /><span>Registro da aplicação</span></button>
+            )}
             <span className="rb-polsel">
               <span className="rb-pollab">Regra</span>
               <select className="rb-sel" value={policy} disabled={busy} onClick={(e) => e.stopPropagation()} onChange={(event) => controlAttempt(attempts[0], 'policy', event.target.value)} aria-label={`Regra de cálculo de ${exam.examName || exam.examKey}`}>
@@ -745,6 +764,7 @@ export default function ResultadosPage() {
         <Button variant="secondary" icon={Eye} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished !== true), true)}>Publicar notas</Button>
         <Button variant="secondary" icon={EyeOff} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished === true), false)}>Ocultar notas</Button>
         <Button variant="secondary" icon={Download} onClick={exportGradebook}>Exportar planilha (CSV)</Button>
+        <Button variant="secondary" icon={Trash2} onClick={() => setDeletedOpen(true)}>Notas excluídas</Button>
         <Button icon={FilePlus2} onClick={openManual}>Lançar nota</Button>
       </PageHeader>
 
@@ -762,6 +782,8 @@ export default function ResultadosPage() {
             </option>
           ))}
         </select>
+        <Button variant="secondary" icon={History} disabled={!filterApplication} onClick={() => setAuditApplicationId(filterApplication)}
+          title={filterApplication ? 'O que aconteceu nesta aplicação: anulações, trocas de questão, encerramento e alterações de nota' : 'Escolha uma aplicação no filtro'}>Registro da aplicação</Button>
       </div>
 
       <div className="stagger-grid grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -770,7 +792,7 @@ export default function ResultadosPage() {
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary-soft text-primary"><TrendingUp size={18} /></span>
             <span className="text-xs font-medium text-muted">Média geral</span>
           </div>
-          <p className="mt-3 text-3xl font-semibold tabular-nums text-text">{analytics.count ? avgCount.toFixed(1).replace('.', ',') : '-'}</p>
+          <p className="mt-3 text-3xl font-semibold tabular-nums text-text">{analytics.avg != null ? fmtGradeValue(avgCount, '-') : '-'}</p>
           <p className="mt-1 text-[11px] text-subtle">de 10,0</p>
         </div>
         <div className="premium-card rounded-xl border border-border bg-surface p-4">
@@ -1112,12 +1134,15 @@ export default function ResultadosPage() {
                   onChange={(e) => { setManual({ ...manual, grade: e.target.value }); setManualErrors((err) => ({ ...err, grade: undefined })) }} />
                 <Input label="Acertos" inputMode="numeric" value={manual.correctCount} error={manualErrors.correctCount}
                   onChange={(e) => { setManual({ ...manual, correctCount: e.target.value }); setManualErrors((err) => ({ ...err, correctCount: undefined })) }} />
-                <Input label="Total de questões" inputMode="numeric" placeholder={manualQuestionCount ? String(manualQuestionCount) : ''} value={manual.totalCount} error={manualErrors.totalCount}
+                <Input label="Total de questões" inputMode="numeric" placeholder={manualDefaultTotal ? String(manualDefaultTotal) : ''} value={manual.totalCount} error={manualErrors.totalCount}
                   onChange={(e) => { setManual({ ...manual, totalCount: e.target.value }); setManualErrors((err) => ({ ...err, totalCount: undefined })) }} />
               </div>
+              {manualQuestionCount && manualDefaultTotal && manualDefaultTotal < manualQuestionCount && (
+                <p className="text-xs text-subtle">Nesta turma a prova usa {manualDefaultTotal} de {manualQuestionCount} questões (configuração da prova). Sem total digitado, a nota é calculada sobre {manualDefaultTotal}.</p>
+              )}
               <p className="text-xs text-subtle" aria-live="polite">
                 {manualPreview != null
-                  ? `Nota que será gravada: ${manualPreview.toFixed(1).replace('.', ',')}${manual.grade.trim() ? '' : ' (calculada pelos acertos)'}.`
+                  ? `Nota que será gravada: ${fmtGradeValue(manualPreview)}${manual.grade.trim() ? '' : ' (calculada pelos acertos)'}.`
                   : 'Informe a nota de 0 a 10 ou só os acertos (a nota é calculada pelos acertos).'}
               </p>
               <Select label="Tipo" value={manual.type} onChange={(e) => setManual({ ...manual, type: e.target.value })}>
@@ -1156,7 +1181,10 @@ export default function ResultadosPage() {
       </Modal>
 
       <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir registro"
-        title="Excluir esta entrega?" description={`${del?.studentName || del?.studentEmail || del?.student?.email} - ${del?.examKey} · nota ${fmtGrade(del?.score)}. A exclusão fica registrada na auditoria do aluno, com uma cópia do registro.`} />
+        title="Excluir esta entrega?" description={`${del?.studentName || del?.studentEmail || del?.student?.email} - ${del?.examKey} · nota ${fmtGrade(del?.score)}.`}
+        note={'A entrega sai de Resultados e vai para "Notas excluídas", de onde pode ser restaurada.'} />
+      <DeletedGradesModal open={deletedOpen} onClose={() => setDeletedOpen(false)} courseId={activeCourseId} studentClass={activeClassName} onRestored={refetch} />
+      <ApplicationAuditModal open={!!auditApplicationId} onClose={() => setAuditApplicationId(null)} applicationId={auditApplicationId} />
     </div>
   )
 }

@@ -133,7 +133,9 @@ function computeStudentDashboard(memory, email) {
     turma.forEach(s => {
         const e = s.email.toLowerCase();
         const ss = (memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === e);
-        if (ss.length) turmaMedias.push(mediaOf(ss));
+        // Colega só com notas inválidas (registro antigo) não tem média: não entra como 0.
+        const media = ss.length ? mediaOf(ss) : null;
+        if (media !== null) turmaMedias.push(media);
         const f = freqPct(memory, e, courseId);
         if (f != null) turmaFreqs.push(f);
     });
