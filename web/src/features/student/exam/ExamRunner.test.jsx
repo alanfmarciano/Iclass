@@ -122,3 +122,34 @@ describe('[UC-SIGILO-001] ExamRunner — questões da tentativa', () => {
     expect(screen.getByText('Questão da tentativa')).toBeInTheDocument()
   }, 10000)
 })
+
+describe('[UC-NOTAS-001] ExamRunner — nota no fim da prova', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+  afterEach(() => {
+    cleanup()
+    delete document.fullscreenElement
+    delete document.documentElement.requestFullscreen
+  })
+
+  it('nota publicada no fim da prova aparece com vírgula (antes 7.5)', async () => {
+    const enterFullscreen = simulateFullscreen()
+    mocks.get.mockResolvedValue(syncResponse({
+      state: { startedAt: Date.now() - 1000, assignedVersion: 'A', timerRemaining: 600, answers: {} },
+      questions: attemptQuestions,
+      questionsVersion: 'v1',
+    }))
+    mocks.post.mockImplementation(async (path) => (path === '/api/student/submit' ? { success: true, gradePublished: true, score: 75 } : { success: true }))
+    const user = userEvent.setup()
+    renderRunner()
+    await waitFor(() => expect(mocks.get).toHaveBeenCalled())
+    act(() => enterFullscreen())
+    await screen.findByText('Questão da tentativa')
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    expect(await screen.findByText('7,5')).toBeInTheDocument()
+    expect(screen.queryByText('7.5')).not.toBeInTheDocument()
+  })
+})
+

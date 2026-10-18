@@ -12,6 +12,7 @@ import { api } from '../../../lib/api'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { normQuestion, fmtTime } from './examUtils'
+import { fmtGrade } from '../../../lib/grades'
 
 const SYNC_MS = 4000
 const AUTOSAVE_MS = 15000
@@ -571,9 +572,9 @@ export default function ExamRunner() {
       <div className="w-16 h-16 grid place-items-center rounded-full bg-success-soft text-success mb-3"><CheckCircle2 size={32} /></div>
       <h2 className="text-xl font-bold text-text">{result?.submittedByInstructor ? 'Respostas salvas e entregues' : 'Prova enviada!'}</h2>
       {result?.gradePublished === true
-        ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{(Number(result.score) / 10).toFixed(1)}</p>
+        ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{fmtGrade(result.score)}</p>
         : <p className="text-sm text-muted mt-3">{result?.submittedByInstructor ? 'O professor encerrou a aplicação e salvou o que você havia respondido.' : 'Sua nota será exibida depois da publicação pelo professor.'}</p>}
-      <Button className="mt-5" onClick={() => nav('/aluno')}>Voltar ao inicio</Button>
+      <Button className="mt-5" onClick={() => nav('/aluno')}>Voltar ao início</Button>
     </Center>
   )
 

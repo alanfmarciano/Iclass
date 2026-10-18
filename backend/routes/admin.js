@@ -40,12 +40,13 @@ const {
     OBSERVATION_VISIBILITY,
 } = require('../utils/students.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
-const { VALID_POLICIES, attemptGroupKey, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
+const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
     MANUAL_TYPES,
     buildClassGradebook,
     buildCsv,
     buildStudentReportModules,
+    createResolvedGroupKey,
     describeSubmissionGrade,
     examTitle,
     formatDateTimeBR,
@@ -61,6 +62,7 @@ const {
     scopeLabel,
     scopeSubmissionsToContext,
     scoreFromCounts,
+    scoreFromGrade,
     structureExamIndex,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
@@ -388,10 +390,16 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
         const target = submissions.find(item => String(item.id) === String(submissionId) && allowedIds.has(String(item.id)));
         if (!target) return res.status(404).json({ error: 'Tentativa não encontrada.' });
 
-        const groupKey = attemptGroupKey(target);
-        const group = submissions.filter(item => attemptGroupKey(item) === groupKey && allowedIds.has(String(item.id)));
+        // Mesmo grupo que Resultados, boletim e quadro mostram: registro antigo sem
+        // curso entra no grupo do lançamento novo da mesma prova (curso/turma
+        // completados pela matrícula). Antes a ação mexia só em parte do grupo e a
+        // nota mostrada não mudava.
+        const groups = createResolvedGroupKey(gradeScope('', ''));
+        const groupKey = groups.key(target);
+        const group = submissions.filter(item => allowedIds.has(String(item.id)) && groups.key(item) === groupKey);
         if (group.length === 0) return res.status(404).json({ error: 'Tentativas não encontradas.' });
-        const before = enrichSubmissionsWithAttemptResult(group).find(item => String(item.id) === String(target.id));
+        const groupResult = () => enrichSubmissionsWithAttemptResult(group.map(groups.resolved));
+        const before = groupResult().find(item => String(item.id) === String(target.id));
 
         if (action === 'archive') {
             target.resultStatus = 'archived';
@@ -421,7 +429,7 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
             return res.status(400).json({ error: 'Ação de resultado inválida.' });
         }
 
-        const refreshed = enrichSubmissionsWithAttemptResult(group);
+        const refreshed = groupResult();
         const after = refreshed.find(item => String(item.id) === String(target.id));
         const title = examTitle(target.examKey, { evaluations: db.memory.evaluations });
         const policyLabel = value => RESULT_POLICY_LABELS[value] || value || 'Melhor nota';
@@ -657,6 +665,17 @@ function registeredStudentByEmail(email) {
     return normalized ? (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === normalized) || null : null;
 }
 
+// Cópia da nota excluída com o e-mail atual do aluno. A troca de e-mail renomeia a
+// cópia (renameStudentEmailEverywhere); trocas feitas antes disso só renomearam o
+// studentEmail da auditoria, então ele vale quando o e-mail da cópia saiu do cadastro.
+function deletedCopyWithCurrentEmail(entry) {
+    const copy = entry.details.deletedSubmission;
+    const copyEmail = String(copy.student?.email || copy.studentEmail || '').trim().toLowerCase();
+    const auditEmail = String(entry.studentEmail || '').trim().toLowerCase();
+    if (!auditEmail || auditEmail === copyEmail || registeredStudentByEmail(copyEmail) || !registeredStudentByEmail(auditEmail)) return copy;
+    return { ...copy, student: { ...(copy.student || {}), email: auditEmail } };
+}
+
 // Notas excluídas da turma (lixeira), com quem excluiu e quando.
 router.get('/api/admin/submissions/deleted', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
@@ -664,7 +683,7 @@ router.get('/api/admin/submissions/deleted', (req, res) => {
         const studentClass = String(req.query.studentClass || '').trim();
         const entries = deletedGradeEntries();
         const entryBySubmission = new Map(entries.map(entry => [String(entry.details.deletedSubmission.id), entry]));
-        const copies = entries.map(entry => entry.details.deletedSubmission);
+        const copies = entries.map(deletedCopyWithCurrentEmail);
         const visible = scopeSubmissionsToContext(filterSubmissionsForAdmin(copies, matchedAdmin), gradeScope(courseId, studentClass));
         const items = visible.map(copy => {
             const entry = entryBySubmission.get(String(copy.id));
@@ -700,13 +719,13 @@ router.post('/api/admin/submissions/restore', (req, res) => {
         if (!auditId) return res.status(400).json({ error: 'Informe a nota excluída que deve voltar.' });
         const entry = (db.memory.auditLogs || []).find(item => item && String(item.id) === auditId
             && item.action === 'grade_delete' && item.details && item.details.deletedSubmission);
-        if (!entry || filterSubmissionsForAdmin([entry.details.deletedSubmission], matchedAdmin).length === 0) {
+        const copy = entry ? deletedCopyWithCurrentEmail(entry) : null;
+        if (!entry || filterSubmissionsForAdmin([copy], matchedAdmin).length === 0) {
             return res.status(404).json({ error: 'Nota excluída não encontrada.' });
         }
         if (!deletedGradeEntries().some(item => item.id === entry.id)) {
             return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
         }
-        const copy = entry.details.deletedSubmission;
         const student = registeredStudentByEmail(copy.student?.email || copy.studentEmail);
         if (!student) return res.status(409).json({ error: 'O aluno não está mais no cadastro; a nota não pode voltar.' });
 
@@ -715,7 +734,35 @@ router.post('/api/admin/submissions/restore', (req, res) => {
             restoredAt: new Date().toISOString(),
             restoredBy: matchedAdmin?.email || 'admin',
         };
+        if (restored.student) restored.student.name = student.name || restored.student.name;
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
+
+        // A nota volta para o grupo de tentativas como ele está hoje: enquanto ela
+        // estava na lixeira o professor pode ter lançado outra tentativa (que pegou o
+        // mesmo número), escolhido outra nota ou mudado a regra.
+        const groups = createResolvedGroupKey(gradeScope('', ''));
+        const groupKey = groups.key(restored);
+        const group = submissions.filter(item => groups.key(item) === groupKey);
+        const notes = [];
+        const originalAttempt = Number(restored.attemptNumber) || 1;
+        if (group.some(item => (Number(item.attemptNumber) || 1) === originalAttempt)) {
+            // Mesmo recorte do número de tentativa do lançamento manual (aluno + prova + curso).
+            const restoredCourse = groups.resolved(restored).student?.courseId || null;
+            const sameExam = submissions.filter(item => String(item.student?.email || '').toLowerCase() === String(restored.student?.email || '').toLowerCase()
+                && item.examKey === restored.examKey
+                && (!item.student?.courseId || !restoredCourse || String(item.student.courseId) === String(restoredCourse)));
+            restored.attemptNumber = Math.max(...[...group, ...sameExam].map(item => Number(item.attemptNumber) || 1)) + 1;
+            restored.restoredFromAttemptNumber = originalAttempt;
+            notes.push(`volta como tentativa ${restored.attemptNumber} (o número ${originalAttempt} já estava em uso)`);
+        }
+        if (group.length > 0) {
+            const current = calculateAttemptResult(group.map(groups.resolved));
+            if (VALID_POLICIES.has(current.policy) && restored.aggregationPolicy !== current.policy) restored.aggregationPolicy = current.policy;
+            if (restored.selectedForResult === true && group.some(item => item.selectedForResult === true && item.resultStatus !== 'archived')) {
+                restored.selectedForResult = false;
+                notes.push('outra tentativa continua escolhida para a nota');
+            }
+        }
         submissions.push(restored);
         recordGradeAudit(db.memory, {
             req,
@@ -724,14 +771,15 @@ router.post('/api/admin/submissions/restore', (req, res) => {
             action: 'grade_restore',
             field: 'Nota',
             oldValue: 'registro excluído',
-            newValue: `${describeSubmissionGrade(restored, examTitle(restored.examKey, { evaluations: db.memory.evaluations }))} · restaurada da lixeira (${restored.gradePublished === true ? 'publicada' : 'em revisão'})`,
+            newValue: `${describeSubmissionGrade(restored, examTitle(restored.examKey, { evaluations: db.memory.evaluations }))} · restaurada da lixeira (${restored.gradePublished === true ? 'publicada' : 'em revisão'})${notes.length ? ` · ${notes.join(' · ')}` : ''}`,
             details: { fromAuditId: entry.id },
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
         res.json({
             success: true,
             submissionId: restored.id,
-            message: `Nota de ${student.name || student.email} restaurada (${restored.gradePublished === true ? 'publicada' : 'em revisão'}).`,
+            attemptNumber: restored.attemptNumber || 1,
+            message: `Nota de ${student.name || student.email} restaurada (${restored.gradePublished === true ? 'publicada' : 'em revisão'})${restored.restoredFromAttemptNumber ? `, como tentativa ${restored.attemptNumber}` : ''}.`,
         });
     });
 });
@@ -976,7 +1024,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
             if (mismatch) return res.status(400).json({ error: mismatch });
             finalScore = gradeInput.empty
                 ? scoreFromCounts(correctInput.value, effectiveTotal)
-                : Math.round(gradeInput.value * 10);
+                : scoreFromGrade(gradeInput.value);
             // Sem acertos informados, não inventa acertos a partir da nota.
             finalCorrectCount = correctInput.empty ? null : correctInput.value;
             finalTotalCount = correctInput.empty && totalInput.empty ? null : effectiveTotal;
@@ -1010,7 +1058,8 @@ router.post('/api/admin/submissions/create', (req, res) => {
             entryMode,
             launchedBy: matchedAdmin?.email || 'admin',
             ...(ignoredQuestionNumbers.length ? { ignoredQuestionNumbers } : {}),
-            attemptNumber: previousAttempts.length + 1,
+            // Maior número + 1 (contar as tentativas repetia o número depois de uma exclusão).
+            attemptNumber: Math.max(previousAttempts.length, ...previousAttempts.map(item => Number(item.attemptNumber) || 0)) + 1,
             resultStatus: 'considered',
             aggregationPolicy: previousPolicy,
             selectedForResult: false,
@@ -1243,6 +1292,12 @@ function renameStudentEmailEverywhere(oldEmail, newEmail) {
     if (memory.sessions) delete memory.sessions[oldEmail];
     ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'forum', 'auditLogs']
         .forEach(collection => (memory[collection] || []).forEach(item => { if (item && same(item.studentEmail)) item.studentEmail = newEmail; }));
+    // Notas na lixeira: a cópia guardada na auditoria acompanha o novo e-mail, senão a
+    // nota excluída aparece como "aluno fora do cadastro" e não pode ser restaurada.
+    (memory.auditLogs || []).forEach(item => {
+        const copy = item && item.details && item.details.deletedSubmission;
+        if (copy && copy.student && same(copy.student.email)) copy.student.email = newEmail;
+    });
     (memory.broadcastMessages || []).forEach(message => {
         if (!message) return;
         if (same(message.targetEmail)) message.targetEmail = newEmail;

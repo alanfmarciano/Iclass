@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const {
     SCORE_MAX,
+    attemptGroupKey,
     consolidateSubmissions,
     normalizeScore,
     roundGrade,
@@ -49,14 +50,27 @@ function scoreFromCounts(correctCount, totalCount) {
     return Math.round((correctCount / totalCount) * SCORE_MAX);
 }
 
-// Nota digitada e acertos informados juntos precisam conferir: a nota pode diferir
-// da conta acertos/total só pelo arredondamento (menos de 0,1). Devolve a mensagem
-// de erro, ou null quando confere (ou quando falta um dos dois).
+// Nota digitada (0 a 10, até duas casas) -> score gravado (0 a 100, inteiro, uma
+// casa na tela). O toFixed(6) tira o ruído de ponto flutuante (8,15 * 10 =
+// 81,50000000000001). É a mesma conta da prévia da tela (web/src/lib/grades.js).
+function scoreFromGrade(grade) {
+    return Math.round(Number((grade * GRADE_MAX).toFixed(6)));
+}
+
+// Nota digitada e acertos informados juntos precisam conferir: a nota GRAVADA pode
+// diferir da conta acertos/total só pelo arredondamento (menos de 0,1). Compara o
+// que vai ser gravado, não o que foi digitado: 7,41 com 3 de 4 vira 7,4 e é
+// recusada como 7,4. Devolve a mensagem de erro, ou null quando confere (ou
+// quando falta um dos dois).
 function gradeCountsMismatch(grade, correctCount, totalCount) {
     if (grade === null || grade === undefined || correctCount === null || correctCount === undefined || !totalCount) return null;
-    const exact = (correctCount / totalCount) * GRADE_MAX;
-    if (Math.abs(grade - exact) < 0.1 - 1e-9) return null;
-    return `A nota ${String(grade).replace('.', ',')} não confere com ${correctCount} de ${totalCount} acertos (${formatGradeBR(exact * 10)}). Deixe a nota em branco para calcular pelos acertos, ou apague os acertos para lançar só a nota.`;
+    const exact = (correctCount / totalCount) * SCORE_MAX;
+    const stored = scoreFromGrade(grade);
+    if (Math.abs(stored - exact) < 1 - 1e-9) return null;
+    // Nota com duas casas é gravada com uma: diz qual nota foi comparada.
+    const typed = String(grade).replace('.', ',');
+    const gradeText = Math.abs(stored - grade * GRADE_MAX) < 1e-6 ? typed : `${typed} (gravada como ${formatGradeBR(stored)})`;
+    return `A nota ${gradeText} não confere com ${correctCount} de ${totalCount} acertos (${formatGradeBR(exact)}). Deixe a nota em branco para calcular pelos acertos, ou apague os acertos para lançar só a nota.`;
 }
 
 // 0-100 -> 0-10 com uma casa (null quando a nota é inválida ou não existe).
@@ -178,6 +192,23 @@ function submissionMatchesContext(submission, { courseId = '', studentClass = ''
     return (!expectedCourse || row.courseId === expectedCourse) && (!expectedClass || row.studentClass === expectedClass);
 }
 
+// Cópia da entrega com curso/turma ausentes completados pelo resolvedor (o banco
+// não muda). Entrega já completa volta como está.
+function withResolvedContext(submission, resolve) {
+    const student = (submission && submission.student) || {};
+    if (student.courseId && student.studentClass) return submission;
+    const row = resolve(submission);
+    if (!row.courseId && !row.studentClass) return submission;
+    return {
+        ...submission,
+        student: {
+            ...student,
+            courseId: student.courseId || row.courseId || null,
+            studentClass: student.studentClass || row.studentClass || '',
+        },
+    };
+}
+
 // Filtra pelo contexto e completa curso/turma ausentes (cópias, o banco não muda),
 // para que registros antigos caiam no mesmo grupo de tentativas dos atuais.
 // context: { courseId, studentClass, students, classes } — alunos e turmas servem
@@ -186,20 +217,20 @@ function scopeSubmissionsToContext(submissions, context = {}) {
     const courseId = String(context.courseId || '').trim();
     const studentClass = String(context.studentClass || '').trim();
     const resolve = createSubmissionContextResolver({ students: context.students, classes: context.classes });
-    return (submissions || []).filter(item => submissionMatchesContext(item, { courseId, studentClass }, resolve)).map(item => {
-        const student = item.student || {};
-        if (student.courseId && student.studentClass) return item;
-        const row = resolve(item);
-        if (!row.courseId && !row.studentClass) return item;
-        return {
-            ...item,
-            student: {
-                ...student,
-                courseId: student.courseId || row.courseId || null,
-                studentClass: student.studentClass || row.studentClass || '',
-            },
-        };
-    });
+    return (submissions || [])
+        .filter(item => submissionMatchesContext(item, { courseId, studentClass }, resolve))
+        .map(item => withResolvedContext(item, resolve));
+}
+
+// Chave do grupo de tentativas depois de completar curso/turma, igual à usada por
+// Resultados, boletim e quadro: o registro antigo sem curso e o lançamento novo da
+// mesma prova formam UM grupo também nas ações sobre o grupo (regra, "Usar esta
+// nota", lixeira). context: { students, classes }.
+function createResolvedGroupKey(context = {}) {
+    const resolve = createSubmissionContextResolver(context);
+    const resolved = submission => withResolvedContext(submission, resolve);
+    const key = submission => attemptGroupKey(resolved(submission));
+    return { key, resolved };
 }
 
 // --------------------------------------------------- consolidação
@@ -636,6 +667,7 @@ module.exports = {
     buildGradeGroups,
     buildApplicationAuditTrail,
     buildStudentReportModules,
+    createResolvedGroupKey,
     createSubmissionContextResolver,
     csvRow,
     csvSafe,
@@ -656,7 +688,9 @@ module.exports = {
     scopeLabel,
     scopeSubmissionsToContext,
     scoreFromCounts,
+    scoreFromGrade,
     structureExamIndex,
     studentMemberships,
     submissionMatchesContext,
+    withResolvedContext,
 };

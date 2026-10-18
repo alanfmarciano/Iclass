@@ -1349,8 +1349,13 @@ router.post('/api/student/my-submissions', validateStudentSession, (req, res) =>
     const submissions = readJSON(DB_SUBMISSIONS_FILE);
     const normalizedEmail = email.trim().toLowerCase();
     
-    const ownSubmissions = submissions.filter(s => s.student && s.student.email && s.student.email.toLowerCase() === normalizedEmail)
-        .filter(s => String(s.student?.courseId || s.courseId || '') === courseId && String(s.student?.studentClass || s.studentClass || '') === studentClass);
+    // Mesmo recorte do painel do aluno e do boletim: registro antigo sem curso entra
+    // no curso da matrícula do aluno naquela turma (antes ficava fora desta lista e a
+    // "Média das consideradas" divergia da média do painel).
+    const ownSubmissions = scopeSubmissionsToContext(
+        submissions.filter(s => s.student && s.student.email && s.student.email.toLowerCase() === normalizedEmail),
+        { courseId, studentClass, students: db.memory.students || [], classes: db.memory.classes || [] },
+    );
     const publishedResultById = new Map(
         enrichSubmissionsWithAttemptResult(ownSubmissions.filter(item => item.gradePublished === true))
             .map(item => [String(item.id), item])

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boletimContext, fmtGrade, fmtGradeValue, gradeOf, parseGradeInput, previewQuickGrade, roundGrade, validateQuickGrade } from './grades'
+import { boletimChoiceOptions, boletimContext, consolidatedAverage, fmtGrade, fmtGradeValue, gradeOf, parseGradeInput, previewQuickGrade, roundGrade, scoreFromGrade, validateQuickGrade } from './grades'
 
 describe('notas na interface', () => {
   it('[UC-NOTAS-001] formata 0 a 100 como 0 a 10 com vírgula e esconde nota inválida', () => {
@@ -69,5 +69,41 @@ describe('notas na interface', () => {
     expect(validateQuickGrade({ grade: '7,5', correctCount: '3', totalCount: '' }, { maxQuestions: 4 }).errors).toEqual({})
     expect(validateQuickGrade({ grade: '6,7', correctCount: '2', totalCount: '3' }).errors).toEqual({})
     expect(validateQuickGrade({ grade: '8', correctCount: '', totalCount: '' }).errors).toEqual({})
+  })
+
+  it('[UC-NOTAS-001] confere nota e acertos pela nota que será gravada (7,41 vira 7,4)', () => {
+    expect(scoreFromGrade(7.41)).toBe(74)
+    expect(scoreFromGrade(8.15)).toBe(82)
+    expect(validateQuickGrade({ grade: '7,41', correctCount: '3', totalCount: '4' }).errors.grade).toMatch(/Não confere \(gravada como 7,4\) com 3 de 4 acertos \(7,5\)/)
+    expect(validateQuickGrade({ grade: '7,59', correctCount: '3', totalCount: '4' }).errors.grade).toMatch(/gravada como 7,6/)
+    expect(validateQuickGrade({ grade: '7,4', correctCount: '3', totalCount: '4' }).errors.grade).toMatch(/^Não confere com 3 de 4/)
+    const ok = validateQuickGrade({ grade: '7,45', correctCount: '3', totalCount: '4' })
+    expect(ok.errors).toEqual({})
+    expect(previewQuickGrade(ok.payload)).toBe(7.5)
+    expect(validateQuickGrade({ grade: '6,6', correctCount: '2', totalCount: '3' }).errors).toEqual({})
+  })
+
+  it('[UC-NOTAS-003] média do aluno: uma nota por prova (a consolidada), como no painel e no boletim', () => {
+    const subs = [
+      { id: 'a1', examKey: 'P1', applicationId: null, gradePublished: true, score: 60, consolidatedScore: 70 },
+      { id: 'a2', examKey: 'P1', applicationId: null, gradePublished: true, score: 80, consolidatedScore: 70 },
+      { id: 'b1', examKey: 'P2', applicationId: 'app_1', gradePublished: true, score: 100, consolidatedScore: 100 },
+      { id: 'c1', examKey: 'P3', applicationId: null, gradePublished: false, score: 20, consolidatedScore: null },
+    ]
+    expect(consolidatedAverage(subs)).toBe(85)
+    expect(fmtGrade(consolidatedAverage(subs))).toBe('8,5')
+    expect(consolidatedAverage([{ examKey: 'P1', gradePublished: true, consolidatedScore: 150 }])).toBeNull()
+    expect(consolidatedAverage([])).toBeNull()
+  })
+
+  it('[UC-NOTAS-003] seletor do boletim: nome do curso e, para o professor, só as matrículas do seu escopo', () => {
+    const memberships = [{ name: '1DES', courseId: 'DES' }, { name: '2RED', courseId: 'RED' }]
+    const summaries = [{ id: 'DES', name: 'Técnico em Desenvolvimento', classes: [{ name: '1DES' }] }]
+    expect(boletimChoiceOptions(memberships, summaries, { restricted: true })).toEqual([
+      { name: '1DES', courseId: 'DES', courseName: 'Técnico em Desenvolvimento', allowed: true },
+      { name: '2RED', courseId: 'RED', courseName: '', allowed: false },
+    ])
+    expect(boletimChoiceOptions([{ name: '2DES', courseId: 'DES' }], summaries, { restricted: true })[0].allowed).toBe(false)
+    expect(boletimChoiceOptions(memberships, summaries).map((m) => m.allowed)).toEqual([true, true])
   })
 })

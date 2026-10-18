@@ -684,6 +684,8 @@ test('[UC-NOTAS-004] anulação guarda o motivo no histórico da nota e o regist
     assert.match(sub.scoreHistory[0].reason, /anulação da questão 3 \(ponto para todos\) · motivo: enunciado ambíguo/);
     const regradeAudit = db.memory.auditLogs.find(entry => entry.action === 'grade_regrade');
     assert.match(regradeAudit.newValue, /motivo: enunciado ambíguo/, 'antes o histórico dizia só "anulação da questão 3"');
+    const studentMessage = (db.memory.broadcastMessages || []).find(message => message.applicationId === 'app_1');
+    assert.equal(studentMessage.messageText, 'A questão 3 foi anulada pelo professor e não prejudicará sua nota.', 'aviso ao aluno com acentos');
 
     const trail = await professor(request(app).get('/api/admin/exam-applications/app_1/audit'));
     assert.equal(trail.status, 200, trail.body.error);
@@ -705,4 +707,146 @@ test('[UC-NOTAS-004] anulação guarda o motivo no histórico da nota e o regist
 
     assert.equal((await professor(request(app).get('/api/admin/exam-applications/app_red/audit'))).status, 403, 'aplicação de outro curso');
     assert.equal((await admin(request(app).get('/api/admin/exam-applications/nao_existe/audit'))).status, 404);
+});
+
+test('[UC-NOTAS-001] regra e "Usar esta nota" valem para o grupo inteiro, inclusive o registro antigo sem curso', async () => {
+    // Registro antigo (lançamento da versão anterior, sem curso) + lançamento novo da
+    // mesma prova: Resultados e boletim mostram UM grupo. Antes a ação na tentativa
+    // antiga mexia só nela e a nota mostrada não mudava (a auditoria gravava uma nota que não valia).
+    db.memory.submissions = [{ ...submission('antiga', { score: 90 }), student: { name: 'Ana', email: 'ana@notas.local', studentClass: '1DES', courseId: null } }];
+    const created = await createGrade({ examKey: 'Avaliacao_P1', grade: '5' });
+    assert.equal(created.status, 200, created.body.error);
+    const novo = created.body.submissionId;
+    assert.equal(db.memory.submissions.find(item => item.id === novo).attemptNumber, 2);
+    await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: [novo], published: true });
+    const list = async () => (await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`))).body;
+    const report = async () => (await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`))).body.overallAverage;
+    assert.deepEqual((await list()).map(item => item.consolidatedScore), [90, 90], 'um grupo, maior nota');
+
+    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: novo, action: 'policy', policy: 'average' });
+    assert.equal(policy.status, 200, policy.body.error);
+    assert.deepEqual(policy.body.submissions.map(item => [item.id, item.consolidatedScore]).sort(), [['antiga', 70], [novo, 70]], 'a resposta traz o grupo inteiro');
+    assert.equal(db.memory.submissions.find(item => item.id === 'antiga').aggregationPolicy, 'average');
+    assert.equal(await report(), 7);
+
+    const select = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: 'antiga', action: 'select' });
+    assert.equal(select.status, 200, select.body.error);
+    assert.deepEqual(select.body.submissions.map(item => [item.id, item.consolidatedScore]).sort(), [['antiga', 90], [novo, 90]]);
+    const rows = await list();
+    assert.deepEqual(rows.map(item => [item.id, item.consolidatedScore, item.countsTowardResult]).sort(), [['antiga', 90, true], [novo, 90, false]], 'antes continuava 7,0 (média)');
+    assert.equal(await report(), 9, 'boletim igual a Resultados');
+    const audit = db.memory.auditLogs.filter(entry => entry.action === 'grade_result_select').pop();
+    assert.match(audit.oldValue, /7,0 \(regra: Média das consideradas\)/);
+    assert.match(audit.newValue, /9,0 · tentativa 1 escolhida para a nota/);
+    assert.equal(db.memory.submissions.find(item => item.id === 'antiga').student.courseId, null, 'o registro antigo não é reescrito');
+});
+
+test('[UC-NOTAS-004] nota na lixeira acompanha a troca de e-mail do aluno', async () => {
+    const created = await createGrade({ examKey: 'Avaliacao_P2', grade: '7' });
+    const id = created.body.submissionId;
+    assert.equal((await professor(request(app).post('/api/admin/submissions/delete')).send({ id })).status, 200);
+    const update = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: 'ana@notas.local', email: 'ana.nova@notas.local', name: 'Ana', classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
+    assert.equal(update.status, 200, update.body.error);
+
+    const trash = await professor(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_A}&studentClass=1DES`));
+    assert.equal(trash.body.items.length, 1);
+    assert.equal(trash.body.items[0].studentEmail, 'ana.nova@notas.local');
+    assert.equal(trash.body.items[0].canRestore, true, 'antes: "Aluno fora do cadastro"');
+    const restored = await professor(request(app).post('/api/admin/submissions/restore')).send({ auditId: trash.body.items[0].auditId });
+    assert.equal(restored.status, 200, restored.body.error);
+    assert.equal(db.memory.submissions.find(item => item.id === id).student.email, 'ana.nova@notas.local');
+
+    // Dado gravado antes desta correção: a troca de e-mail renomeou só a auditoria, não a cópia.
+    const other = await createGrade({ studentEmail: 'ana.nova@notas.local', examKey: 'Avaliacao_P3', grade: '6' });
+    await admin(request(app).post('/api/admin/submissions/delete')).send({ id: other.body.submissionId });
+    const entry = db.memory.auditLogs.find(item => item.action === 'grade_delete' && item.submissionId === other.body.submissionId);
+    entry.details.deletedSubmission.student.email = 'ana.antiga@notas.local';
+    const legacyTrash = await admin(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE_A}&studentClass=1DES`));
+    assert.deepEqual(legacyTrash.body.items.map(item => [item.studentEmail, item.canRestore]), [['ana.nova@notas.local', true]]);
+    const legacyRestore = await admin(request(app).post('/api/admin/submissions/restore')).send({ auditId: entry.id });
+    assert.equal(legacyRestore.status, 200, legacyRestore.body.error);
+    assert.equal(db.memory.submissions.find(item => item.id === other.body.submissionId).student.email, 'ana.nova@notas.local');
+});
+
+test('[UC-NOTAS-004] restaurar depois de lançar outra tentativa não repete o número nem deixa duas escolhidas', async () => {
+    const first = await createGrade({ examKey: 'Avaliacao_P2', grade: '7' });
+    await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: first.body.submissionId, action: 'select' });
+    await admin(request(app).post('/api/admin/submissions/delete')).send({ id: first.body.submissionId });
+    const second = await createGrade({ examKey: 'Avaliacao_P2', grade: '9' });
+    assert.equal(db.memory.submissions.find(item => item.id === second.body.submissionId).attemptNumber, 1);
+    await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: second.body.submissionId, action: 'select' });
+
+    const auditId = db.memory.auditLogs.find(entry => entry.action === 'grade_delete').id;
+    const restored = await admin(request(app).post('/api/admin/submissions/restore')).send({ auditId });
+    assert.equal(restored.status, 200, restored.body.error);
+    assert.equal(restored.body.attemptNumber, 2);
+    assert.match(restored.body.message, /como tentativa 2/);
+    const rows = (await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`))).body;
+    assert.deepEqual(rows.map(item => item.attemptNumber).sort(), [1, 2], 'antes: duas "Tentativa 1"');
+    assert.equal(rows.filter(item => item.selectedForResult === true).length, 1, 'só a escolhida depois continua escolhida');
+    assert.ok(rows.every(item => item.consolidatedScore === 90));
+    const audit = db.memory.auditLogs.find(entry => entry.action === 'grade_restore');
+    assert.match(audit.newValue, /volta como tentativa 2 \(o número 1 já estava em uso\) · outra tentativa continua escolhida para a nota/);
+
+    // Lançar depois de excluir uma tentativa do meio usa o maior número + 1 (antes repetia o 2).
+    const third = await createGrade({ examKey: 'Avaliacao_P2', grade: '8' });
+    assert.equal(db.memory.submissions.find(item => item.id === third.body.submissionId).attemptNumber, 3);
+    await admin(request(app).post('/api/admin/submissions/delete')).send({ id: second.body.submissionId });
+    const fourth = await createGrade({ examKey: 'Avaliacao_P2', grade: '6' });
+    assert.equal(db.memory.submissions.find(item => item.id === fourth.body.submissionId).attemptNumber, 4);
+});
+
+test('[UC-NOTAS-001] nota e acertos conferem pela nota gravada, não pela digitada (na tela e no servidor)', async () => {
+    const cases = [
+        { grade: '7,4', ok: false }, { grade: '7,41', ok: false }, { grade: '7,45', ok: true, score: 75 },
+        { grade: '7,5', ok: true, score: 75 }, { grade: '7,55', ok: false }, { grade: '7,59', ok: false }, { grade: '7,6', ok: false },
+    ];
+    for (const item of cases) {
+        const res = await createGrade({ examKey: 'Avaliacao_P1', grade: item.grade, correctCount: 3, totalCount: 4 });
+        assert.equal(res.status, item.ok ? 200 : 400, `${item.grade} com 3 de 4: ${res.body.error || res.body.score}`);
+        if (item.ok) assert.equal(res.body.score, item.score);
+        const front = webGrades.validateQuickGrade({ grade: item.grade, correctCount: '3', totalCount: '4' }, { maxQuestions: 4, defaultTotal: 4 });
+        assert.equal(!front.errors.grade, item.ok, `tela: ${item.grade}`);
+    }
+    const twoDecimals = await createGrade({ examKey: 'Avaliacao_P1', grade: '7,41', correctCount: 3, totalCount: 4 });
+    assert.match(twoDecimals.body.error, /A nota 7,41 \(gravada como 7,4\) não confere com 3 de 4 acertos \(7,5\)/);
+    assert.match(webGrades.validateQuickGrade({ grade: '7,59', correctCount: '3', totalCount: '4' }).errors.grade, /gravada como 7,6/);
+    // 2 de 3 = 6,67: 6,6 e 6,7 são arredondamentos aceitos.
+    for (const grade of ['6,6', '6,7']) {
+        assert.equal((await createGrade({ examKey: 'Avaliacao_P3', grade, correctCount: 2, totalCount: 3 })).status, 200, grade);
+    }
+    // Servidor e tela gravam/mostram a mesma nota para qualquer nota digitada de 0,00 a 10,00.
+    const { scoreFromGrade } = require('../../backend/utils/gradebook.js');
+    for (let hundredths = 0; hundredths <= 1000; hundredths++) {
+        const grade = hundredths / 100;
+        assert.equal(webGrades.scoreFromGrade(grade), scoreFromGrade(grade), `nota ${grade}`);
+        assert.equal(webGrades.previewQuickGrade({ grade }), scoreFromGrade(grade) / 10, `prévia ${grade}`);
+    }
+});
+
+test('[UC-NOTAS-003] portal do aluno (Provas) faz a média como o painel e o boletim, com regra "média" e registro antigo', async () => {
+    db.memory.submissions = [
+        submission('p1_a', { score: 60, extra: { aggregationPolicy: 'average', attemptNumber: 1 } }),
+        submission('p1_b', { score: 80, timestamp: '2026-03-02T12:00:00.000Z', extra: { aggregationPolicy: 'average', attemptNumber: 2 } }),
+        submission('p2', { examKey: 'Avaliacao_P2', score: 100 }),
+        { ...submission('p3_antiga', { examKey: 'Avaliacao_P3', score: 40 }), student: { name: 'Ana', email: 'ana@notas.local', studentClass: '1DES' } },
+    ];
+    const login = await request(app).post('/api/student/login').send({ email: 'ana@notas.local', password: '123' });
+    const token = login.body.sessionToken;
+    const mine = await request(app).post('/api/student/my-submissions').set('x-session-token', token).send({ courseId: COURSE_A, studentClass: '1DES' });
+    assert.equal(mine.status, 200, mine.body.error);
+    assert.ok(mine.body.submissions.some(item => item.id === 'p3_antiga'), 'registro antigo sem curso aparece no curso da matrícula');
+    const dashboard = await request(app).get(`/api/student/dashboard?courseId=${COURSE_A}&studentClass=1DES`).set('x-session-token', token);
+    const report = await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`));
+    // (média(6,0; 8,0) + 10,0 + 4,0) / 3 = 7,0 no painel e no boletim. Antes a tela
+    // Provas não recebia o registro antigo e fazia a média por tentativa: (6+8+10)/3 = 8,0.
+    assert.equal(dashboard.body.overallNote, 7);
+    assert.equal(report.body.overallAverage, 7);
+    assert.equal(webGrades.fmtGrade(webGrades.consolidatedAverage(mine.body.submissions)), '7,0');
+
+    db.memory.submissions = db.memory.submissions.filter(item => item.id !== 'p3_antiga');
+    const mine2 = await request(app).post('/api/student/my-submissions').set('x-session-token', token).send({ courseId: COURSE_A, studentClass: '1DES' });
+    const dashboard2 = await request(app).get(`/api/student/dashboard?courseId=${COURSE_A}&studentClass=1DES`).set('x-session-token', token);
+    assert.equal(dashboard2.body.overallNote, 8.5);
+    assert.equal(webGrades.fmtGrade(webGrades.consolidatedAverage(mine2.body.submissions)), '8,5', 'antes a tela Provas mostrava 8,0');
 });

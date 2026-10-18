@@ -59,12 +59,19 @@ function parseCount(text) {
   return /^\d{1,4}$/.test(raw) ? Number(raw) : NaN
 }
 
+// Nota digitada (0 a 10, até duas casas) -> score gravado (0 a 100, inteiro).
+// Mesma conta do servidor (scoreFromGrade em backend/utils/gradebook.js).
+export function scoreFromGrade(grade) {
+  return Math.round(Number((grade * GRADE_MAX).toFixed(6)))
+}
+
 // Nota digitada e acertos juntos precisam conferir: só o arredondamento (menos de
-// 0,1) pode separar a nota da conta acertos/total. Mesma regra do servidor
-// (gradeCountsMismatch em backend/utils/gradebook.js).
+// 0,1) pode separar a nota GRAVADA da conta acertos/total — 7,41 com 3 de 4 vira
+// 7,4 e é recusada como 7,4. Mesma regra do servidor (gradeCountsMismatch em
+// backend/utils/gradebook.js).
 export function gradeMatchesCounts(grade, correctCount, totalCount) {
   if (grade == null || correctCount == null || !totalCount) return true
-  return Math.abs(grade - (correctCount / totalCount) * GRADE_MAX) < 0.1 - 1e-9
+  return Math.abs(scoreFromGrade(grade) - (correctCount / totalCount) * 100) < 1 - 1e-9
 }
 
 // Validação do lançamento rápido (mesmas regras do servidor). Devolve
@@ -91,7 +98,9 @@ export function validateQuickGrade({ grade, correctCount, totalCount }, { maxQue
   if (g == null && c == null && !errors.grade && !errors.correctCount) errors.grade = 'Informe a nota (0 a 10) ou os acertos.'
   const total = t ?? fallbackTotal
   if (!errors.grade && !errors.correctCount && !errors.totalCount && !gradeMatchesCounts(g, c, total)) {
-    errors.grade = `Não confere com ${c} de ${total} acertos (${fmtGrade((c / total) * 100)}). Deixe a nota em branco para calcular pelos acertos, ou apague os acertos.`
+    // Nota com duas casas é gravada com uma: diz qual nota foi comparada.
+    const asStored = Math.abs(scoreFromGrade(g) - g * 10) < 1e-6 ? '' : ` (gravada como ${fmtGrade(scoreFromGrade(g))})`
+    errors.grade = `Não confere${asStored} com ${c} de ${total} acertos (${fmtGrade((c / total) * 100)}). Deixe a nota em branco para calcular pelos acertos, ou apague os acertos.`
   }
   if (Object.keys(errors).length) return { errors }
   const payload = {}
@@ -105,10 +114,46 @@ export function validateQuickGrade({ grade, correctCount, totalCount }, { maxQue
 // total digitado, usa o total da turma (defaultTotal), como o servidor.
 export function previewQuickGrade(payload, defaultTotal = null) {
   if (!payload) return null
-  if (payload.grade != null) return roundGrade(payload.grade * 10)
+  if (payload.grade != null) return scoreFromGrade(payload.grade) / 10
   const total = payload.totalCount ?? defaultTotal
   if (payload.correctCount != null && total) return Math.round((payload.correctCount / total) * 100) / 10
   return null
+}
+
+// Chave do grupo de tentativas dentro de uma turma (aplicação; sem aplicação, a
+// prova), como attemptGroupKey do servidor.
+export function attemptGroupOf(submission) {
+  return submission?.applicationId ? `application:${submission.applicationId}` : `legacy-exam:${submission?.examKey || ''}`
+}
+
+// Média das provas publicadas como no painel do aluno, no boletim e em Resultados:
+// uma nota por grupo de tentativas (a consolidada pela regra do professor) e a média
+// simples dos grupos. Fazer a média por tentativa contava duas vezes a prova
+// refeita. Devolve 0 a 100, ou null sem nota válida.
+export function consolidatedAverage(submissions) {
+  const groups = new Map()
+  ;(submissions || []).forEach((submission) => {
+    if (submission?.gradePublished !== true) return
+    const score = validScore(submission.consolidatedScore)
+    const key = attemptGroupOf(submission)
+    if (score !== null && !groups.has(key)) groups.set(key, score)
+  })
+  const scores = [...groups.values()]
+  return scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null
+}
+
+// Opções do seletor de boletim (aluno em mais de um curso): o nome do curso, nunca
+// o id técnico, e, para o professor (restricted), só as matrículas que ele pode
+// abrir. A lista de cursos dele (course-summaries) traz só os cursos e as turmas
+// do seu escopo; as outras opções aparecem desativadas.
+export function boletimChoiceOptions(memberships, summaries, { restricted = false, workspace = {} } = {}) {
+  const courses = new Map((Array.isArray(summaries) ? summaries : []).map((course) => [String(course?.id), course]))
+  return (memberships || []).map((membership) => {
+    const course = courses.get(String(membership.courseId))
+    const courseName = course?.name || (membership.courseId && membership.courseId === workspace.courseId ? workspace.courseName || '' : '')
+    const allowed = !restricted || (!!course && (!Array.isArray(course.classes) || course.classes.some((cls) => cls?.name === membership.name)))
+    return { ...membership, courseName, allowed }
+  })
 }
 
 // Matrículas do aluno como { name, courseId }.

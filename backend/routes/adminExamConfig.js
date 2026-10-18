@@ -581,7 +581,7 @@ function createAdminExamConfigRouter() {
                 markQuestionReports(application, number, 'corrected', adminActor(req));
                 const onlineConfig = syncApplicationConfig(cls, application);
                 const regraded = regradeApplicationSubmissions(application, cls, { req, reason: `correção da questão ${number} durante a aplicação` });
-                pushExamMessage(application, adminActor(req), `A questao ${number} foi corrigida pelo professor. Revise o enunciado e as alternativas antes de enviar.`);
+                pushExamMessage(application, adminActor(req), `A questão ${number} foi corrigida pelo professor. Revise o enunciado e as alternativas antes de enviar.`);
                 recordExamAudit('exam_question_corrected_live', application, adminActor(req), { questionNumber: number, regraded });
                 await db.save();
                 res.json({ success: true, question: liveQuestion(application, number), regraded, config: onlineConfig });
@@ -621,7 +621,7 @@ function createAdminExamConfigRouter() {
                     req,
                     reason: `anulação da questão ${number} (${modeLabel})${entry.reason ? ` · motivo: ${entry.reason}` : ''}`,
                 });
-                pushExamMessage(application, adminActor(req), `A questao ${number} foi anulada pelo professor e nao prejudicara sua nota.`);
+                pushExamMessage(application, adminActor(req), `A questão ${number} foi anulada pelo professor e não prejudicará sua nota.`);
                 recordExamAudit('exam_question_annulled', application, adminActor(req), { ...entry, regraded });
                 await db.save();
                 res.json({ success: true, annulment: entry, regraded, config: onlineConfig });

@@ -17,7 +17,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { boletimContext, fmtGrade, gradeOf } from '../../lib/grades'
+import { boletimChoiceOptions, boletimContext, fmtGrade, gradeOf } from '../../lib/grades'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -73,10 +73,11 @@ export default function AlunoDetailPage() {
   async function openBoletim(context) {
     const ctx = context || boletimContext(student, { courseId: workspace.courseId, className: workspace.className })
     if (ctx.choose) {
-      // Nome do curso no seletor (o id técnico não diz nada ao professor).
+      // Nome do curso no seletor (o id técnico não diz nada ao professor); matrícula
+      // em curso fora do escopo do professor aparece desativada (o boletim dela daria 403).
       const summaries = await api.get('/api/admin/course-summaries').catch(() => [])
-      const names = new Map((Array.isArray(summaries) ? summaries : summaries?.courses || []).map((course) => [String(course.id), course.name]))
-      setBoletimChoices(ctx.choose.map((m) => ({ ...m, courseName: names.get(String(m.courseId)) || (m.courseId === workspace.courseId ? workspace.courseName : '') })))
+      const list = Array.isArray(summaries) ? summaries : summaries?.courses || []
+      setBoletimChoices(boletimChoiceOptions(ctx.choose, list, { restricted: auth.accountRole === 'professor', workspace }))
       return
     }
     setBoletimChoices(null)
@@ -292,8 +293,8 @@ export default function AlunoDetailPage() {
             <Modal open={!!boletimChoices} onClose={() => setBoletimChoices(null)} title="Boletim de qual curso?" description="O aluno tem matrícula em mais de um curso. Escolha a turma do boletim.">
               <div className="grid gap-2">
                 {(boletimChoices || []).map((m) => (
-                  <Button key={`${m.courseId}:${m.name}`} variant="secondary" onClick={() => openBoletim({ courseId: m.courseId, studentClass: m.name })}>
-                    Turma {m.name}{m.courseName || m.courseId ? ` · ${m.courseName || m.courseId}` : ''}
+                  <Button key={`${m.courseId}:${m.name}`} variant="secondary" disabled={!m.allowed} onClick={() => openBoletim({ courseId: m.courseId, studentClass: m.name })}>
+                    Turma {m.name}{m.allowed ? (m.courseName ? ` · ${m.courseName}` : '') : ' · curso fora do seu acesso'}
                   </Button>
                 ))}
               </div>
