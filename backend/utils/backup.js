@@ -15,6 +15,10 @@ const COLLECTIONS = [
     'proctoringLogs', 'studentExamState', 'broadcastMessages', 'questionBank', 'auditLogs',
     'loginLogs', 'pedagogicalObservations', 'attendance', 'certificates', 'moduleAccess',
     'schools', 'announcements', 'library',
+    // Aplicações de prova: sem elas, restaurar um backup (por exemplo o salvo antes de
+    // "Resetar sala") voltava as entregas e a turma, mas não o status das aplicações.
+    // Backups antigos sem a coleção mantêm as aplicações atuais.
+    'examApplications',
 ];
 
 function getZipLib() { try { return require('adm-zip'); } catch (e) { return null; } }

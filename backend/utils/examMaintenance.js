@@ -138,6 +138,26 @@ function applyExamStateFlush(memory, plan) {
     return { removedStates: plan.stateKeys.length, removedMessages: plan.messageIndexes.length };
 }
 
+// Alunos da turma que o reset desconecta. A sessão é por e-mail (não por turma): quem
+// também está matriculado em outra turma e está fazendo uma prova em andamento lá
+// continua conectado, para não perder a prova da outra turma.
+function classSessionsToDrop(memory, cls, isClassStudent) {
+    const busyElsewhere = new Set();
+    const activeElsewhere = new Set((Array.isArray(memory?.examApplications) ? memory.examApplications : [])
+        .filter(application => application && ACTIVE_APPLICATION_STATUSES.has(application.status) && !applicationBelongsToClass(application, cls))
+        .map(application => application.id));
+    Object.values(memory?.studentExamState || {}).forEach(state => {
+        if (state && activeElsewhere.has(state.applicationId) && !CLOSED_ATTEMPT_STATUSES.has(state.status)) {
+            busyElsewhere.add(normalizedEmail(state.studentEmail));
+        }
+    });
+    const classEmails = Object.keys(memory?.sessions || {}).filter(email => isClassStudent && isClassStudent(email));
+    return {
+        drop: classEmails.filter(email => !busyElsewhere.has(normalizedEmail(email))),
+        keptInOtherExam: classEmails.filter(email => busyElsewhere.has(normalizedEmail(email))),
+    };
+}
+
 // O que "Resetar sala" faria na turma: encerra as aplicações em andamento salvando
 // as respostas, limpa os estados de prova que sobrarem e as mensagens da turma e
 // desconecta os alunos matriculados nela.
@@ -149,7 +169,8 @@ function planClassReset(memory, { cls, courseExamKeys, isClassStudent, examTitle
     // Os estados das aplicações em andamento viram entrega (ou ficam marcados como vencidos)
     // ao encerrar: só os que sobram contam como "limpos".
     const leftoverStateKeys = flush.stateKeys.filter(key => !activeIds.has(memory.studentExamState[key]?.applicationId));
-    const sessionEmails = Object.keys(memory.sessions || {}).filter(email => isClassStudent && isClassStudent(email));
+    const sessions = classSessionsToDrop(memory, cls, isClassStudent);
+    const sessionEmails = sessions.drop;
     return {
         studentClass: cls.name,
         courseId: cls.courseId || null,
@@ -172,6 +193,7 @@ function planClassReset(memory, { cls, courseExamKeys, isClassStudent, examTitle
             examStates: leftoverStateKeys.length,
             messages: flush.messageIndexes.length,
             sessions: sessionEmails.length,
+            keptInOtherExam: sessions.keptInOtherExam.length,
         },
         preserved: flush.preserved,
     };
@@ -182,6 +204,7 @@ module.exports = {
     applicationSummary,
     applyExamStateFlush,
     classApplications,
+    classSessionsToDrop,
     planClassReset,
     planExamStateFlush,
     sameClassName,

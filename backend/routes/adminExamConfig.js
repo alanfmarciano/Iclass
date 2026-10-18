@@ -25,6 +25,7 @@ const {
     applicationStateEntries: sharedApplicationStateEntries,
     classExamApplications,
     finishSummary: sharedFinishSummary,
+    planControlAction,
     recordExamAudit: sharedRecordExamAudit,
     resolveInProgressAttempts,
 } = require('../utils/examFinish.js');
@@ -326,6 +327,45 @@ function createAdminExamConfigRouter() {
         });
     });
 
+    // Novo token para uma aplicação preparada ou em andamento. O token só existe em
+    // texto puro na aba que preparou a prova; quem perdeu (outra máquina, aba fechada)
+    // gera outro aqui, sem preparar de novo nem encerrar a prova. Quem já validou o
+    // token continua na prova; o anterior deixa de valer para quem ainda vai entrar.
+    router.post('/api/admin/exam-applications/:applicationId/access-token', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
+                return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
+            }
+            if (!OPEN_APPLICATION_STATUSES.has(application.status)) {
+                return res.status(409).json({ error: 'Esta aplicação já foi encerrada; não há token para gerar.' });
+            }
+            if (application.tokenEnabled !== true) {
+                return res.status(400).json({ error: 'Esta aplicação não exige token de acesso.' });
+            }
+            const requested = req.body && req.body.accessToken;
+            if (requested && !normalizeExamToken(requested)) {
+                return res.status(400).json({ error: 'O token deve conter exatamente 5 letras maiúsculas.' });
+            }
+            const accessToken = ensureExamToken(requested);
+            const actor = adminActor(req);
+            application.accessTokenHash = hashExamToken(accessToken);
+            application.updatedAt = new Date().toISOString();
+            application.updatedBy = actor;
+            const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
+            const classConfig = cls?.onlineExamConfigs?.[application.examKey];
+            if (classConfig && classConfig.applicationId === application.id) {
+                classConfig.accessTokenHash = application.accessTokenHash;
+                classConfig.tokenEnabled = true;
+            }
+            // O token nunca vai para a auditoria: só o registro de que foi trocado.
+            recordExamAudit('exam_application_token_regenerated', application, actor, { status: application.status });
+            await db.save();
+            res.json({ success: true, accessToken, applicationId: application.id });
+        });
+    });
+
     router.post('/api/admin/exam-applications', (req, res) => {
         validateAdmin(req, res, async () => {
             const { studentClass, courseId, examKey, historyId } = req.body || {};
@@ -364,12 +404,20 @@ function createAdminExamConfigRouter() {
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
             if (!cls) return res.status(404).json({ error: 'Turma da aplicacao nao encontrada.' });
             let processedFinish = null;
-            // Encerrar ou cancelar (com qualquer nome de ação) uma aplicação em andamento
-            // passa sempre pela decisão sobre as respostas de quem está fazendo a prova.
-            const closingTarget = { finish: 'finished', stop: 'finished', finished: 'finished', cancel: 'cancelled', cancelled: 'cancelled' }[req.body.action];
-            const closesRunningApplication = closingTarget
-                && (ACTIVE_APPLICATION_STATUSES.has(application.status) || applicationStateEntries(application.id).length > 0);
-            if (req.body.action === 'finish' || req.body.action === 'stop' || closesRunningApplication) {
+            // A transição é conferida antes de mexer nas tentativas. Encerrar ou cancelar
+            // (com qualquer nome de ação) uma aplicação em andamento passa sempre pela
+            // decisão sobre as respostas de quem está fazendo a prova; repetir o
+            // encerramento de uma aplicação já encerrada não muda nada.
+            let plan;
+            try {
+                plan = planControlAction(db.memory, application, req.body.action);
+            } catch (error) {
+                return res.status(error.status || 400).json({ error: error.message });
+            }
+            if (plan.unchanged) {
+                return res.json({ success: true, unchanged: true, application, config: cls.onlineExamConfigs?.[application.examKey] || null, finish: null });
+            }
+            if (plan.resolve) {
                 try {
                     processedFinish = resolveInProgressAttempts(db.memory, {
                         application,

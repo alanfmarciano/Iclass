@@ -1016,7 +1016,7 @@ export default function ProvasPage() {
                         </div>
                         {runningApplication && (
                           <div role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-3 space-y-2">
-                            <p className="text-sm text-text"><b>Prova em andamento nesta turma.</b> Encerre-a pelo Monitor (salvando ou desconsiderando as respostas) antes de preparar outra aplicação.</p>
+                            <p className="text-sm text-text"><b>Prova em andamento nesta turma.</b> Encerre-a pelo Monitor (salvando ou desconsiderando as respostas) antes de preparar outra aplicação. Perdeu o token? Gere outro no Monitor, sem encerrar a prova.</p>
                             <Button size="sm" variant="secondary" icon={Play} onClick={openRunningMonitor}>Abrir Monitor</Button>
                           </div>
                         )}

@@ -1,22 +1,35 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import SistemaPage from './SistemaPage'
+import SistemaPage, { maintenanceClassOptions } from './SistemaPage'
+
+const IN_CLASS = { courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }
+const INSTITUTION = { courseId: '', courseName: '', className: '' }
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+  workspace: null,
+  apiData: {
+    '/api/admin/classes': [
+      { name: '1DES', courseId: 'DES' },
+      { name: '2DES', courseId: 'DES' },
+      { name: '1ADM', courseId: 'ADM' },
+      { name: 'Antiga', courseId: 'DES', deletedAt: '2026-01-01' },
+    ],
+    '/api/courses': [{ id: 'DES', name: 'Técnico em TI' }, { id: 'ADM', name: 'Administração' }],
+  },
 }))
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
-vi.mock('../../hooks/useApi', () => ({ useApi: () => ({ data: null, loading: false, error: null, refetch: vi.fn() }) }))
+vi.mock('../../hooks/useApi', () => ({ useApi: (path) => ({ data: (path && mocks.apiData[path]) || null, loading: false, error: null, refetch: vi.fn() }) }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 vi.mock('../../context/AuthProvider', () => ({
-  useAuth: () => ({ auth: { role: 'admin', accountRole: 'admin', activeWorkspace: { courseId: 'DES', className: '1DES' } } }),
+  useAuth: () => ({ auth: { role: 'admin', accountRole: 'admin', activeWorkspace: mocks.workspace?.className ? mocks.workspace : null } }),
 }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
-  useAdminWorkspace: () => ({ courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }),
+  useAdminWorkspace: () => mocks.workspace,
 }))
 
 function preview({ blocked = false } = {}) {
@@ -40,6 +53,7 @@ function preview({ blocked = false } = {}) {
 describe('SistemaPage · manutenção', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.workspace = IN_CLASS
     mocks.get.mockResolvedValue(preview())
     mocks.post.mockResolvedValue({ success: true, message: 'ok' })
   })
@@ -87,7 +101,7 @@ describe('SistemaPage · manutenção', () => {
   it('[UC-MANUT-001] "Resetar sala" nomeia a turma, mostra as provas que serão encerradas e envia a confirmação ao servidor (CONF-X3)', async () => {
     const user = userEvent.setup()
     render(<SistemaPage />)
-    expect(screen.getByText(/Só na turma 1DES/)).toBeVisible()
+    expect(screen.getByText(/Só na turma 1DES · Técnico em TI/)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Resetar sala' }))
     expect(await screen.findByText(/Prova W/)).toBeVisible()
     expect(screen.getByText(/4 tentativas em andamento/)).toBeVisible()
@@ -95,5 +109,44 @@ describe('SistemaPage · manutenção', () => {
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }))
+  })
+
+  it('[UC-MANUT-001] no Ambiente da instituição (sem turma ativa) a turma é escolhida no próprio card de Manutenção (UXI-02, OPS-X3, CONF-X3)', async () => {
+    const user = userEvent.setup()
+    mocks.workspace = INSTITUTION
+    render(<SistemaPage />)
+    const flushButton = screen.getByRole('button', { name: 'Limpar estado de prova' })
+    const resetButton = screen.getByRole('button', { name: 'Resetar sala' })
+    expect(flushButton).toBeDisabled()
+    expect(resetButton).toBeDisabled()
+    expect(screen.queryByText(/no topo/)).not.toBeInTheDocument()
+
+    const select = screen.getByLabelText('Turma')
+    expect([...select.options].map((option) => option.textContent)).toEqual(['Escolha a turma…', '1ADM · Administração', '1DES · Técnico em TI', '2DES · Técnico em TI'])
+    await user.selectOptions(select, 'DES::2DES')
+    expect(flushButton).toBeEnabled()
+    expect(resetButton).toBeEnabled()
+    expect(screen.getByText(/Só na turma 2DES · Técnico em TI/)).toBeVisible()
+
+    await user.click(flushButton)
+    await screen.findByText(/3 estados de tentativa sem entrega/)
+    expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/studentClass=2DES&courseId=DES/))
+    await user.type(screen.getByLabelText('Digite LIMPAR para confirmar'), 'LIMPAR')
+    await user.click(screen.getByRole('button', { name: 'Limpar estado' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '2DES', courseId: 'DES', confirm: 'LIMPAR' })))
+
+    await user.selectOptions(select, 'ADM::1ADM')
+    await user.click(resetButton)
+    await screen.findByText(/Prova W/)
+    await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
+    await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1ADM', courseId: 'ADM', confirm: 'RESETAR' }))
+  })
+
+  it('opções de turma: sem turmas excluídas, com o nome do curso e com a turma ativa mesmo antes da lista carregar', () => {
+    const options = maintenanceClassOptions(mocks.apiData['/api/admin/classes'], mocks.apiData['/api/courses'], null)
+    expect(options.map((option) => option.key)).toEqual(['ADM::1ADM', 'DES::1DES', 'DES::2DES'])
+    const early = maintenanceClassOptions(null, null, { courseId: 'DES', className: '1DES', courseName: 'Técnico em TI' })
+    expect(early).toEqual([{ key: 'DES::1DES', className: '1DES', courseId: 'DES', courseName: 'Técnico em TI' }])
   })
 })

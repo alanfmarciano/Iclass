@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import MateriaisPage, { batchReleaseKeys } from './MateriaisPage'
+import MateriaisPage, { batchReleaseKeys, examApplicationState } from './MateriaisPage'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -29,9 +29,10 @@ const STRUCTURE = [{
   ],
 }]
 
-function mockServer({ released = {}, configs = {} } = {}) {
+function mockServer({ released = {}, configs = {}, applications = [] } = {}) {
   mocks.get.mockImplementation(async (url) => {
     if (url.includes('/structure')) return { structure: STRUCTURE }
+    if (url.startsWith('/api/admin/exam-applications')) return { success: true, applications }
     return { releasedItems: released, releaseMeta: {}, onlineExamConfigs: configs }
   })
   mocks.post.mockResolvedValue({ success: true })
@@ -68,9 +69,13 @@ describe('MateriaisPage', () => {
 
   it('[UC-APLICACAO-001] prova em andamento aparece com o status e leva ao Monitor, sem chave de liga/desliga', async () => {
     const user = userEvent.setup()
-    mockServer({ configs: { Avaliacao_U1: { status: 'running', applicationId: 'app-1' } } })
+    mockServer({
+      configs: { Avaliacao_U1: { status: 'running', applicationId: 'app-1' } },
+      applications: [{ id: 'app-1', examKey: 'Avaliacao_U1', status: 'running', createdAt: '2026-10-18T10:00:00Z' }],
+    })
     render(<MateriaisPage />)
     expect(await screen.findByText('Em andamento')).toBeVisible()
+    expect(mocks.get).toHaveBeenCalledWith('/api/admin/exam-applications?studentClass=1DES&courseId=DES')
     expect(screen.getByText('Não aplicada')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Abrir Monitor' }))
     expect(mocks.navigate).toHaveBeenCalledWith(expect.stringMatching(/^\/monitor\?.*applicationId=app-1/))
@@ -80,6 +85,50 @@ describe('MateriaisPage', () => {
     const unitOne = screen.getByText('Unidade 1').closest('.border-b')
     const switches = within(unitOne).getAllByRole('switch')
     expect(switches[switches.length - 1]).toBeDisabled()
-    expect(within(unitOne).getByText('Disponível depois que a aplicação da prova for encerrada.')).toBeVisible()
+    expect(within(unitOne).getByText('Disponível depois que a aplicação da prova for encerrada no Monitor.')).toBeVisible()
+    // No celular o selo e o botão descem para a linha de baixo em vez de espremer o texto.
+    const row = screen.getByTestId('exam-row-Avaliacao_U1')
+    expect(row.className).toContain('flex-wrap')
+    expect(within(row).getByText(/Controlada pelo Monitor/).parentElement.className).toContain('min-w-[12rem]')
+    expect(within(row).getByRole('button', { name: 'Abrir Monitor' }).parentElement.className).toContain('ml-auto')
+  })
+
+  it('[UC-APLICACAO-001] aplicação só preparada: texto de preparada, Monitor da aplicação e gabarito com o motivo certo', async () => {
+    const user = userEvent.setup()
+    mockServer({ applications: [{ id: 'app-prep', examKey: 'Avaliacao_U1', status: 'prepared', createdAt: '2026-10-18T10:00:00Z' }] })
+    render(<MateriaisPage />)
+    expect(await screen.findByText('Preparada')).toBeVisible()
+    const row = screen.getByTestId('exam-row-Avaliacao_U1')
+    expect(within(row).getByText(/Preparada e ainda sem alunos/)).toBeVisible()
+    expect(within(row).queryByText(/salvando ou desconsiderando/)).not.toBeInTheDocument()
+    expect(screen.getByText(/a prova tem uma aplicação preparada/)).toBeVisible()
+    await user.click(within(row).getByRole('button', { name: 'Abrir Monitor' }))
+    expect(mocks.navigate).toHaveBeenCalledWith(expect.stringMatching(/applicationId=app-prep/))
+  })
+
+  it('[UC-APLICACAO-001] configuração antiga "preparada" sem aplicação não trava o gabarito nem leva ao Monitor', async () => {
+    const user = userEvent.setup()
+    mockServer({ configs: { Avaliacao_U1: { status: 'prepared', onlineActive: false } }, applications: [] })
+    render(<MateriaisPage />)
+    const row = await screen.findByTestId('exam-row-Avaliacao_U1')
+    expect(within(row).getByText('Não aplicada')).toBeVisible()
+    expect(screen.queryByText('Preparada')).not.toBeInTheDocument()
+    const unitOne = screen.getByText('Unidade 1').closest('.border-b')
+    const switches = within(unitOne).getAllByRole('switch')
+    expect(switches[switches.length - 1]).toBeEnabled()
+    await user.click(within(row).getByRole('button', { name: 'Ir para Provas' }))
+    expect(mocks.navigate).toHaveBeenCalledWith('/provas')
+  })
+
+  it('situação da prova vem da aplicação mais recente; cancelada não conta', () => {
+    const applications = [
+      { id: 'a1', examKey: 'Avaliacao_U1', status: 'finished', createdAt: '2026-10-01T10:00:00Z' },
+      { id: 'a2', examKey: 'Avaliacao_U1', status: 'cancelled', createdAt: '2026-10-02T10:00:00Z' },
+      { id: 'a3', examKey: 'Avaliacao_U2', status: 'cancelled', createdAt: '2026-10-02T10:00:00Z' },
+    ]
+    expect(examApplicationState(applications, 'Avaliacao_U1')).toEqual({ status: 'finished', applicationId: 'a1' })
+    expect(examApplicationState(applications, 'Avaliacao_U2')).toEqual({ status: 'none', applicationId: null })
+    expect(examApplicationState([...applications, { id: 'a4', examKey: 'Avaliacao_U1', status: 'paused', createdAt: '2026-09-01T10:00:00Z' }], 'Avaliacao_U1'))
+      .toEqual({ status: 'paused', applicationId: 'a4' })
   })
 })

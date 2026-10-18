@@ -21,6 +21,7 @@ const {
     applicationSummary,
     applyExamStateFlush,
     classApplications,
+    classSessionsToDrop,
     planClassReset,
     planExamStateFlush,
     sameClassName,
@@ -287,6 +288,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 .filter(application => ACTIVE_APPLICATION_STATUSES.has(application.status))
                 .forEach(application => {
                     const processed = finishApplication(db.memory, { application, cls, policy: 'submit', actor, reason: 'reset_sala' });
+                    if (!processed) return;
                     finished.push({ applicationId: application.id, examKey: application.examKey, submitted: processed.submitted, deliveredAtDeadline: processed.deliveredAtDeadline });
                 });
 
@@ -314,7 +316,9 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 cls.activeApplicationId = null;
             }
 
-            const disconnected = Object.keys(db.memory.sessions || {}).filter(email => helpers.isClassStudent(email));
+            // Quem também faz prova em andamento em outra turma continua conectado.
+            const sessions = classSessionsToDrop(db.memory, cls, helpers.isClassStudent);
+            const disconnected = sessions.drop;
             disconnected.forEach(email => { delete db.memory.sessions[email]; });
 
             const submitted = finished.reduce((total, item) => total + item.submitted + item.deliveredAtDeadline, 0);
@@ -322,6 +326,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 finishedApplications: finished,
                 ...removed,
                 disconnectedStudents: disconnected.length,
+                keptInOtherExam: sessions.keptInOtherExam.length,
                 legacyConfigs,
                 backup: backup.file,
             });
@@ -332,8 +337,9 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 submitted,
                 ...removed,
                 disconnectedStudents: disconnected.length,
+                keptInOtherExam: sessions.keptInOtherExam.length,
                 backup: backup.file,
-                message: `Sala ${cls.name} resetada: ${finished.length} prova(s) em andamento encerrada(s) com as respostas salvas (${submitted} entrega(s)), ${disconnected.length} aluno(s) desconectado(s), ${removed.removedStates} estado(s) de prova e ${removed.removedMessages} mensagem(ns) limpos. Conteúdos liberados, notas e logs foram preservados.`,
+                message: `Sala ${cls.name} resetada: ${finished.length} prova(s) em andamento encerrada(s) com as respostas salvas (${submitted} entrega(s)), ${disconnected.length} aluno(s) desconectado(s)${sessions.keptInOtherExam.length ? ` (${sessions.keptInOtherExam.length} continua(m) conectado(s) por estar(em) em prova de outra turma)` : ''}, ${removed.removedStates} estado(s) de prova e ${removed.removedMessages} mensagem(ns) limpos. Conteúdos liberados, notas e logs foram preservados.`,
             });
         });
     });

@@ -455,3 +455,111 @@ test('[UC-MANUT-001] reiniciar o servidor exige confirmação explícita', async
     }
     assert.equal(exited, false);
 });
+
+test('[UC-APLICACAO-001] repetir o encerramento não sobrescreve a decisão gravada no primeiro', async () => {
+    const { ana } = students;
+    const { application } = await prepareAndStart(classA);
+    const started = await startAttempt(ana, application.id);
+    await autosave(ana, application.id, started.attemptId, { 1: 'B' });
+    await control(application.id, { action: 'finish', inProgressPolicy: 'submit' }).expect(200);
+    const first = { ...applicationOf(application.id).finishResolution };
+    assert.equal(first.policy, 'submit');
+    assert.equal(first.submitted, 1);
+    const finishedAudits = () => db.memory.auditLogs.filter(log => log.type === 'exam_application_finished' && log.applicationId === application.id).length;
+    assert.equal(finishedAudits(), 1);
+
+    // Duplo clique, controle antigo por turma: nada muda, nem a auditoria.
+    const again = await control(application.id, { action: 'finish' }).expect(200);
+    assert.equal(again.body.unchanged, true);
+    await control(application.id, { action: 'stop', inProgressPolicy: 'discard' }).expect(200);
+    await admin('post', '/api/admin/server-exam-control')
+        .send({ studentClass: classA, courseId, examKey, applicationId: application.id, action: 'finish' })
+        .expect(200);
+    // Ação impossível é recusada antes de mexer em qualquer coisa.
+    await control(application.id, { action: 'cancel', inProgressPolicy: 'discard' }).expect(409);
+    assert.deepEqual(applicationOf(application.id).finishResolution, first);
+    assert.equal(finishedAudits(), 1);
+    assert.equal(db.memory.submissions.filter(item => item.attemptId === started.attemptId).length, 1);
+
+    // Sobra de tentativa (dados antigos) resolvida depois: a primeira decisão fica no histórico.
+    db.memory.studentExamState['sobra-guardas'] = {
+        id: 'attempt-sobra', attemptId: 'attempt-sobra', applicationId: application.id, studentEmail: students.bruno.email,
+        studentClass: classA, courseId, examKey, attemptNumber: 1, status: 'active', answers: { 1: 'A' },
+        startedAt: Date.now() - 1000, assignedVersion: 'A',
+    };
+    await control(application.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    const resolved = applicationOf(application.id);
+    assert.deepEqual(resolved.previousFinishResolutions, [first]);
+    assert.equal(resolved.status, 'finished');
+    assert.equal(db.memory.studentExamState['sobra-guardas'], undefined);
+});
+
+test('[UC-APLICACAO-001] token perdido: o professor gera outro sem preparar de novo nem encerrar a prova', async () => {
+    const { ana, bruno } = students;
+    const historyId = await createHistory(classA);
+    const created = await admin('post', '/api/admin/exam-applications').send({
+        studentClass: classA,
+        courseId,
+        examKey,
+        historyId,
+        applicationOptions: { timerMode: 'per_attempt', waitingRoomMinutes: 0, maxAttempts: 1, tokenEnabled: true, accessToken: 'ABCDE' },
+    }).expect(201);
+    const applicationId = created.body.application.id;
+    await control(applicationId, { action: 'start' }).expect(200);
+    const validate = (student, token) => request(app)
+        .post('/api/student/validate-exam-token')
+        .set('x-session-token', student.token)
+        .send({ email: student.email, studentClass: classA, courseId, examKey, applicationId, token })
+        .expect(200);
+    assert.equal((await validate(ana, 'ABCDE')).body.valid, true);
+
+    const generated = await admin('post', `/api/admin/exam-applications/${applicationId}/access-token`).send({}).expect(200);
+    assert.match(generated.body.accessToken, /^[A-Z]{5}$/);
+    const chosen = await admin('post', `/api/admin/exam-applications/${applicationId}/access-token`).send({ accessToken: 'fghij' }).expect(200);
+    assert.equal(chosen.body.accessToken, 'FGHIJ');
+    await admin('post', `/api/admin/exam-applications/${applicationId}/access-token`).send({ accessToken: 'AB1' }).expect(400);
+
+    // A prova seguiu: mesma aplicação, ninguém perdeu a validação; o token antigo deixou de valer.
+    assert.equal(applicationOf(applicationId).status, 'running');
+    assert.equal(db.memory.examApplications.filter(item => item.studentClass === classA && ['prepared', 'running'].includes(item.status)).length, 1);
+    assert.equal(Object.values(db.memory.studentExamState).find(state => state.applicationId === applicationId && state.studentEmail === ana.email).tokenValidated, true);
+    assert.equal((await validate(bruno, 'ABCDE')).body.valid, false);
+    assert.equal((await validate(bruno, 'FGHIJ')).body.valid, true);
+    const audits = db.memory.auditLogs.filter(log => log.type === 'exam_application_token_regenerated' && log.applicationId === applicationId);
+    assert.equal(audits.length, 2);
+    assert.equal(JSON.stringify(audits).includes('FGHIJ'), false);
+
+    await control(applicationId, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    await admin('post', `/api/admin/exam-applications/${applicationId}/access-token`).send({}).expect(409);
+});
+
+test('[UC-MANUT-001] resetar sala mantém conectado quem faz prova em outra turma e o backup guarda as aplicações (CONF-X3)', async () => {
+    const davi = { email: 'davi@guards.local', token: 'token-davi', studentClass: classB };
+    db.memory.students.push({ name: 'Davi', email: davi.email, status: 'Ativo', classes: [{ name: classA, courseId }, { name: classB, courseId }] });
+    resetSessions();
+    db.memory.sessions[davi.email] = { token: davi.token, lastSeen: Date.now(), ip: '127.0.0.1' };
+    const { application: appA } = await prepareAndStart(classA);
+    const { application: appB } = await prepareAndStart(classB);
+    const startedDavi = await startAttempt(davi, appB.id);
+    await autosave(davi, appB.id, startedDavi.attemptId, { 1: 'C' });
+
+    const preview = await admin('get', '/api/admin/maintenance/preview').query({ studentClass: classA, courseId }).expect(200);
+    assert.equal(preview.body.reset.counts.keptInOtherExam, 1);
+    assert.equal(preview.body.reset.counts.sessions, 2);
+
+    const reset = await admin('post', '/api/admin/reset').send({ studentClass: classA, courseId, confirm: 'RESETAR' }).expect(200);
+    assert.equal(reset.body.disconnectedStudents, 2);
+    assert.equal(reset.body.keptInOtherExam, 1);
+    assert.ok(db.memory.sessions[davi.email], 'quem está em prova de outra turma continua conectado');
+    assert.equal(db.memory.sessions[students.ana.email], undefined);
+    assert.deepEqual(openStatesOf(davi, appB.id)[0].answers, { 1: 'C' });
+    assert.equal(applicationOf(appA.id).status, 'finished');
+
+    // O backup salvo antes do reset traz as aplicações como estavam: restaurá-lo desfaz o encerramento.
+    const snapshot = JSON.parse(fs.readFileSync(path.join(runtimePaths.BACKUPS_DIR, reset.body.backup), 'utf8'));
+    assert.equal(snapshot.data.examApplications.find(item => item.id === appA.id).status, 'running');
+
+    resetSessions();
+    await control(appB.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    db.memory.students = db.memory.students.filter(student => student.email !== davi.email);
+});

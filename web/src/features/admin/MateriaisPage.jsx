@@ -47,7 +47,39 @@ const EXAM_STATUS = {
   finished: { label: 'Finalizada', tone: 'neutral' },
 }
 const OPEN_EXAM_STATUSES = new Set(['prepared', 'waiting', 'running', 'paused'])
-function examStatusOf(configs, examKey) { return configs?.[examKey]?.status || 'none' }
+const ACTIVE_EXAM_STATUSES = new Set(['waiting', 'running', 'paused'])
+
+// Situação da prova online na turma, sempre pela aplicação (a mesma regra do servidor).
+// Uma configuração antiga da turma sem aplicação ("preparada" de versões anteriores)
+// não conta como preparada, não leva ao Monitor e não trava o gabarito.
+export function examApplicationState(applications, examKey) {
+  const own = (Array.isArray(applications) ? applications : [])
+    .filter((application) => application && application.examKey === examKey)
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+  const open = own.find((application) => OPEN_EXAM_STATUSES.has(application.status))
+  if (open) return { status: open.status, applicationId: open.id }
+  const finished = own.find((application) => application.status === 'finished')
+  return finished ? { status: 'finished', applicationId: finished.id } : { status: 'none', applicationId: null }
+}
+
+// Aplicações vistas pela configuração da turma: só quando a lista de aplicações não
+// carregou, e só as configurações ligadas a uma aplicação.
+function applicationsFromConfigs(configs) {
+  return Object.entries(configs || {})
+    .filter(([, config]) => config && config.applicationId)
+    .map(([examKey, config]) => ({ id: config.applicationId, examKey, status: config.status, createdAt: config.preparedAt || '' }))
+}
+
+function examRowHint(status) {
+  if (status === 'prepared') return 'Preparada e ainda sem alunos: inicie pelo Monitor quando a turma estiver pronta.'
+  if (ACTIVE_EXAM_STATUSES.has(status)) return 'Controlada pelo Monitor: encerre por lá, salvando ou desconsiderando as respostas.'
+  return 'Prepare em Provas e inicie pelo Monitor.'
+}
+
+function answerKeyLockHint(status) {
+  if (status === 'prepared') return 'Bloqueado: a prova tem uma aplicação preparada. Libere depois de aplicá-la (ou finalizá-la) no Monitor.'
+  return 'Disponível depois que a aplicação da prova for encerrada no Monitor.'
+}
 
 function relTime(iso) {
   if (!iso) return ''
@@ -77,7 +109,7 @@ export default function MateriaisPage() {
   const [structure, setStructure] = useState(null)
   const [released, setReleased] = useState({})
   const [releaseMeta, setReleaseMeta] = useState({})
-  const [examConfigs, setExamConfigs] = useState({})
+  const [examApplications, setExamApplications] = useState([])
   const [selIdx, setSelIdx] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -91,11 +123,15 @@ export default function MateriaisPage() {
       const s = await api.get(`/api/admin/courses/${courseId}/structure?studentClass=${encodeURIComponent(className)}`)
       setStructure(s.structure || [])
       if (className) {
-        const st = await api.get(`/api/status?studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(courseId)}`)
+        const query = `studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(courseId)}`
+        const [st, list] = await Promise.all([
+          api.get(`/api/status?${query}`),
+          api.get(`/api/admin/exam-applications?${query}`).catch(() => null),
+        ])
         setReleased(st.releasedItems || {})
         setReleaseMeta(st.releaseMeta || {})
-        setExamConfigs(st.onlineExamConfigs || {})
-      } else { setReleased({}); setReleaseMeta({}); setExamConfigs({}) }
+        setExamApplications(list && Array.isArray(list.applications) ? list.applications : applicationsFromConfigs(st.onlineExamConfigs))
+      } else { setReleased({}); setReleaseMeta({}); setExamApplications([]) }
     } catch (e) { setError(e) } finally { setLoading(false) }
   }
 
@@ -133,9 +169,9 @@ export default function MateriaisPage() {
   }
 
   function openExam(examKey) {
-    const cfg = examConfigs[examKey]
-    if (cfg && OPEN_EXAM_STATUSES.has(cfg.status) && cfg.applicationId) {
-      const params = new URLSearchParams({ courseId, className, examKey, applicationId: cfg.applicationId })
+    const state = examApplicationState(examApplications, examKey)
+    if (OPEN_EXAM_STATUSES.has(state.status) && state.applicationId) {
+      const params = new URLSearchParams({ courseId, className, examKey, applicationId: state.applicationId })
       navigate(`/monitor?${params.toString()}`)
     } else navigate('/provas')
   }
@@ -237,31 +273,36 @@ export default function MateriaisPage() {
                         {unit.items.map((item) => {
                           const isOn = !!released[item.key]; const Icon = TYPE_ICON[item.type] || BookOpen; const meta = releaseMeta[item.key]
                           if (item.type === 'Prova online') {
-                            const status = examStatusOf(examConfigs, item.key)
+                            const { status } = examApplicationState(examApplications, item.key)
                             const info = EXAM_STATUS[status] || { label: 'Não aplicada', tone: 'neutral' }
                             const open = OPEN_EXAM_STATUSES.has(status)
+                            // No celular, o selo e o botão descem para a linha de baixo em vez
+                            // de espremer o texto (min-w no bloco de texto).
                             return (
-                              <div key={item.key} className="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-3 pl-8 sm:pl-10 border-b border-border/50 last:border-0">
+                              <div key={item.key} data-testid={`exam-row-${item.key}`} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 sm:px-5 py-3 pl-8 sm:pl-10 border-b border-border/50 last:border-0">
                                 <Icon size={18} className={open ? 'text-text' : 'text-subtle'} />
-                                <div className="flex-1 min-w-0">
+                                <div className="flex-1 min-w-[12rem]">
                                   <p className="text-sm text-text">{item.type}</p>
-                                  <p className="text-xs text-muted mt-0.5">{open ? 'Controlada pelo Monitor: encerre por lá, salvando ou desconsiderando as respostas.' : 'Prepare em Provas e inicie pelo Monitor.'}</p>
+                                  <p className="text-xs text-muted mt-0.5">{examRowHint(status)}</p>
                                 </div>
-                                <Badge tone={info.tone}>{info.label}</Badge>
-                                <Button size="sm" variant="secondary" icon={MonitorPlay} onClick={() => openExam(item.key)}>{open ? 'Abrir Monitor' : 'Ir para Provas'}</Button>
+                                <div className="ml-auto flex shrink-0 items-center gap-2">
+                                  <Badge tone={info.tone}>{info.label}</Badge>
+                                  <Button size="sm" variant="secondary" icon={MonitorPlay} onClick={() => openExam(item.key)}>{open ? 'Abrir Monitor' : 'Ir para Provas'}</Button>
+                                </div>
                               </div>
                             )
                           }
                           // Gabarito só depois que a aplicação da prova termina.
                           const examKey = item.type === 'Gabarito' ? item.key.replace(/^Gabarito_/, '') : null
-                          const lockedByExam = !!examKey && OPEN_EXAM_STATUSES.has(examStatusOf(examConfigs, examKey)) && !isOn
+                          const examState = examKey ? examApplicationState(examApplications, examKey) : null
+                          const lockedByExam = !!examState && OPEN_EXAM_STATUSES.has(examState.status) && !isOn
                           return (
                             <div key={item.key} className="flex items-center gap-3 px-4 sm:px-5 py-3 pl-8 sm:pl-10 border-b border-border/50 last:border-0">
                               <Icon size={18} className={isOn ? 'text-text' : 'text-subtle'} />
                               <div className="flex-1 min-w-0">
                                 <p className="text-sm text-text">{item.type}</p>
                                 {isOn && meta?.by && <p className="text-xs text-muted mt-0.5">liberado por {meta.by} {relTime(meta.at)}</p>}
-                                {lockedByExam && <p className="text-xs text-muted mt-0.5">Disponível depois que a aplicação da prova for encerrada.</p>}
+                                {lockedByExam && <p className="text-xs text-muted mt-0.5">{answerKeyLockHint(examState.status)}</p>}
                               </div>
                               <span className={`text-xs mr-2 shrink-0 ${isOn ? 'text-success' : 'text-muted'}`}>{isOn ? 'Liberado' : 'Bloqueado'}</span>
                               <Switch checked={isOn} disabled={lockedByExam} onChange={(v) => toggle(item.key, v)} />

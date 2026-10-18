@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { RefreshCw, Trash2, Wifi, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
@@ -194,6 +194,23 @@ const APPLICATION_STATUS = { prepared: 'Preparada', waiting: 'Sala de espera', r
 function _plural(n, one, many) { return `${n} ${n === 1 ? one : many}` }
 function _appLabel(a) { return `${a.examTitle || a.examKey} · ${APPLICATION_STATUS[a.status] || a.status}${a.createdAt ? ' · ' + _when(a.createdAt) : ''}` }
 
+function _classKey(courseId, name) { return `${courseId || ''}::${name || ''}` }
+
+// Turmas que a conta pode manter, com o nome do curso, para o seletor da Manutenção.
+// A tela Sistema fica no Ambiente da instituição (sem turma ativa): a turma das ações
+// por turma é escolhida aqui, e a turma ativa (quando houver) já vem escolhida.
+export function maintenanceClassOptions(classes, courses, current) {
+  const courseNames = new Map((Array.isArray(courses) ? courses : []).map((course) => [String(course.id), course.name || course.id]))
+  const options = (Array.isArray(classes) ? classes : [])
+    .filter((cls) => cls && cls.name && !cls.deletedAt && cls.status !== 'deleted')
+    .map((cls) => ({ key: _classKey(cls.courseId, cls.name), className: cls.name, courseId: cls.courseId || '', courseName: courseNames.get(String(cls.courseId)) || cls.courseId || '' }))
+    .sort((a, b) => a.courseName.localeCompare(b.courseName, 'pt-BR') || a.className.localeCompare(b.className, 'pt-BR'))
+  if (current?.className && !options.some((option) => option.key === _classKey(current.courseId, current.className))) {
+    options.unshift({ key: _classKey(current.courseId, current.className), className: current.className, courseId: current.courseId || '', courseName: current.courseName || current.courseId || '' })
+  }
+  return options
+}
+
 // Confirmação digitada no padrão do app (RESETAR, RESTAURAR...): o botão só funciona
 // com a palavra certa, e o servidor confere de novo.
 function TypedConfirm({ id, word, value, onChange }) {
@@ -207,8 +224,21 @@ function TypedConfirm({ id, word, value, onChange }) {
 
 export default function SistemaPage() {
   const { auth } = useAuth()
-  const { courseId, className } = useAdminWorkspace()
+  const workspace = useAdminWorkspace()
   const { data: net } = useApi('/api/admin/network-info')
+  const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.SYSTEM_MANAGE)
+  const { data: classList } = useApi(canManage ? '/api/admin/classes' : null)
+  const { data: courseList } = useApi(canManage ? '/api/courses' : null)
+  // Turma das ações de manutenção (limpar estado de prova e resetar sala).
+  const [target, setTarget] = useState(() => workspace.className ? { courseId: workspace.courseId, className: workspace.className, courseName: workspace.courseName } : null)
+  useEffect(() => {
+    if (workspace.className) setTarget({ courseId: workspace.courseId, className: workspace.className, courseName: workspace.courseName })
+  }, [workspace.courseId, workspace.className, workspace.courseName])
+  const classOptions = useMemo(() => maintenanceClassOptions(classList, courseList, target), [classList, courseList, target])
+  const targetOption = target ? classOptions.find((option) => option.key === _classKey(target.courseId, target.className)) : null
+  const courseId = target?.courseId || ''
+  const className = target?.className || ''
+  const classLabel = targetOption ? `${targetOption.className}${targetOption.courseName ? ` · ${targetOption.courseName}` : ''}` : className
   const [preview, setPreview] = useState(null)
   const [previewError, setPreviewError] = useState(null)
   const [dialog, setDialog] = useState(null) // 'restart' | 'flush' | 'reset'
@@ -216,7 +246,6 @@ export default function SistemaPage() {
   const [flushApplication, setFlushApplication] = useState('')
   const [busy, setBusy] = useState(false)
   const toast = useToast()
-  const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.SYSTEM_MANAGE)
   const ips = (net && (net.addresses || net.ips || net)) || []
   const list = Array.isArray(ips) ? ips : []
 
@@ -290,10 +319,20 @@ export default function SistemaPage() {
       {canManage && <BackupCard />}
 
       {canManage && <Card>
-        <CardHeader title="Manutenção" subtitle={noClass ? 'Selecione uma turma no topo para limpar o estado de prova.' : `Turma de trabalho: ${className}`} />
-        <CardBody className="flex flex-wrap gap-3">
-          <Button variant="secondary" icon={RefreshCw} onClick={() => openDialog('restart')}>Reiniciar servidor</Button>
-          <Button variant="secondary" icon={Trash2} disabled={noClass} onClick={() => openDialog('flush')}>Limpar estado de prova</Button>
+        <CardHeader title="Manutenção" subtitle="Limpar o estado de prova e resetar a sala valem só para a turma escolhida aqui." />
+        <CardBody className="space-y-4">
+          <div className="max-w-md">
+            <Select id="maintenance-class" label="Turma" value={target ? _classKey(target.courseId, target.className) : ''}
+              onChange={(e) => { const option = classOptions.find((item) => item.key === e.target.value); setTarget(option ? { courseId: option.courseId, className: option.className, courseName: option.courseName } : null) }}>
+              <option value="">Escolha a turma…</option>
+              {classOptions.map((option) => <option key={option.key} value={option.key}>{option.className}{option.courseName ? ` · ${option.courseName}` : ''}</option>)}
+            </Select>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Button variant="secondary" icon={RefreshCw} onClick={() => openDialog('restart')}>Reiniciar servidor</Button>
+            <Button variant="secondary" icon={Trash2} disabled={noClass} title={noClass ? 'Escolha a turma acima' : undefined} onClick={() => openDialog('flush')}>Limpar estado de prova</Button>
+          </div>
+          {noClass && <p className="text-xs text-subtle">Escolha a turma acima para limpar o estado de prova ou resetar a sala. Reiniciar o servidor vale para todas as turmas.</p>}
         </CardBody>
       </Card>}
 
@@ -302,7 +341,7 @@ export default function SistemaPage() {
         <CardBody>
           <div className="flex flex-wrap items-center gap-3 p-4 rounded-lg border border-danger/40 bg-danger-soft">
             <AlertTriangle className="text-danger" size={22} />
-            <div className="flex-1 min-w-[220px]"><p className="font-semibold text-text">Resetar sala</p><p className="text-sm text-muted">{noClass ? 'Selecione uma turma no topo.' : `Só na turma ${className}: encerra as provas em andamento salvando as respostas, desconecta os alunos dela e limpa as mensagens de prova. Não afeta conteúdos liberados, notas nem logs.`}</p></div>
+            <div className="flex-1 min-w-[220px]"><p className="font-semibold text-text">Resetar sala</p><p className="text-sm text-muted">{noClass ? 'Escolha a turma em Manutenção, acima.' : `Só na turma ${classLabel}: encerra as provas em andamento salvando as respostas, desconecta os alunos dela e limpa as mensagens de prova. Não afeta conteúdos liberados, notas nem logs.`}</p></div>
             <Button variant="destructive" disabled={noClass} onClick={() => openDialog('reset')}>Resetar sala</Button>
           </div>
         </CardBody>
@@ -324,7 +363,7 @@ export default function SistemaPage() {
         ) : <p className="text-sm text-muted">{preview ? 'Nenhuma prova em andamento agora.' : 'Conferindo as provas em andamento…'}</p>}
       </Modal>
 
-      <Modal open={dialog === 'flush'} onClose={closeDialog} title={`Limpar estado de prova · turma ${className}`} description="Apaga só o estado de tentativas e as mensagens de prova da turma escolhida."
+      <Modal open={dialog === 'flush'} onClose={closeDialog} title={`Limpar estado de prova · turma ${classLabel}`} description="Apaga só o estado de tentativas e as mensagens de prova da turma escolhida."
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!flushPlan || flushBlocked || flushEmpty || confirmText.trim().toUpperCase() !== 'LIMPAR'} onClick={flush}>Limpar estado</Button></>}>
         <div className="space-y-4">
           <Select label="Aplicação" value={flushApplication} onChange={(e) => { setFlushApplication(e.target.value); loadPreview(e.target.value) }}>
@@ -349,7 +388,7 @@ export default function SistemaPage() {
         </div>
       </Modal>
 
-      <Modal open={dialog === 'reset'} onClose={closeDialog} title={`Resetar sala · turma ${className}`} description="Ação irreversível. Um backup dos dados é salvo antes."
+      <Modal open={dialog === 'reset'} onClose={closeDialog} title={`Resetar sala · turma ${classLabel}`} description="Um backup dos dados (com as aplicações de prova) é salvo antes; desfazer exige restaurar esse backup."
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!resetPlan || confirmText.trim().toUpperCase() !== 'RESETAR'} onClick={reset}>Confirmar reset</Button></>}>
         <div className="space-y-4">
           {previewError && <p className="text-sm text-danger">{previewError}</p>}
@@ -365,6 +404,7 @@ export default function SistemaPage() {
                 </div>
               ) : <p className="text-muted">Nenhuma prova em andamento nesta turma.</p>}
               <p className="text-text">{_plural(resetPlan.counts.sessions, 'aluno desconectado', 'alunos desconectados')} · {_plural(resetPlan.counts.examStates, 'estado de prova limpo', 'estados de prova limpos')} · {_plural(resetPlan.counts.messages, 'mensagem limpa', 'mensagens limpas')}.</p>
+              {resetPlan.counts.keptInOtherExam > 0 && <p className="text-muted">{_plural(resetPlan.counts.keptInOtherExam, 'aluno continua conectado', 'alunos continuam conectados')} por estar fazendo prova em outra turma.</p>}
               <p className="text-muted">Outras turmas, conteúdos liberados, notas e logs de monitoramento não são afetados.</p>
             </div>
           )}

@@ -51,7 +51,7 @@ const {
     transitionExamApplication,
 } = require('../utils/examApplications.js');
 const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, settleExpiredAttempts } = require('../utils/examDeadline.js');
-const { applicationStateEntries, resolveInProgressAttempts } = require('../utils/examFinish.js');
+const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
 
 function rejectInvalidBranding(res, body) {
     const validationError = validateBrandingPatch(body);
@@ -2924,8 +2924,17 @@ router.post('/api/admin/server-exam-control', (req, res) => {
         if (application) {
             // Encerrar ou cancelar uma aplicação em andamento pelo controle antigo segue a
             // mesma regra do Monitor: sem decisão sobre as respostas, nada é encerrado (AVA-04).
-            const closing = action === 'finished' || action === 'cancelled' || action === 'cancel';
-            if (closing && (ACTIVE_APPLICATION_STATUSES.has(application.status) || applicationStateEntries(db.memory, application.id).length > 0)) {
+            // A transição é conferida antes; repetir o encerramento não muda nada.
+            let plan;
+            try {
+                plan = planControlAction(db.memory, application, action);
+            } catch (error) {
+                return res.status(error.status || 400).json({ error: error.message });
+            }
+            if (plan.unchanged) {
+                return res.json({ success: true, unchanged: true, application, config: currentConfig });
+            }
+            if (plan.resolve) {
                 try {
                     resolveInProgressAttempts(db.memory, {
                         application,

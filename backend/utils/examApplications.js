@@ -268,16 +268,36 @@ function createAttemptState({ application, studentEmail, attemptNumber, studentC
     return state;
 }
 
-function transitionExamApplication(application, action, options = {}) {
+const ACTION_ALIASES = Object.freeze({ start: 'running', resume: 'running', pause: 'paused', finish: 'finished', stop: 'finished', cancel: 'cancelled' });
+
+// Confere, sem mudar nada, se a ação é possível no status atual da aplicação. Devolve
+// o status de destino e se a aplicação já está nele (a ação não mudaria nada). As
+// rotas de controle chamam antes de mexer nas tentativas: uma ação impossível não
+// pode deixar entrega gerada nem decisão de encerramento sobrescrita pelo caminho.
+function checkExamApplicationTransition(application, action) {
     if (!application) throw Object.assign(new Error('Aplicação não encontrada.'), { status: 404 });
     const current = normalizeApplicationStatus(application.status);
-    const now = Number(options.now || Date.now());
-    const timestamp = new Date(now).toISOString();
-
     if (action === 'adjust_waiting') {
         if (current !== 'waiting') {
             throw Object.assign(new Error('A prova não está em sala de espera.'), { status: 409 });
         }
+        return { current, target: current, unchanged: false };
+    }
+    const target = ACTION_ALIASES[action] || action;
+    if (!APPLICATION_STATUSES.includes(target)) throw Object.assign(new Error('Estado de aplicação inválido.'), { status: 400 });
+    if (current === target) return { current, target, unchanged: true };
+    if (!TRANSITIONS[current] || !TRANSITIONS[current].has(target)) {
+        throw Object.assign(new Error(`Não é possível alterar a aplicação de ${current} para ${target}.`), { status: 409 });
+    }
+    return { current, target, unchanged: false };
+}
+
+function transitionExamApplication(application, action, options = {}) {
+    const { current, target, unchanged } = checkExamApplicationTransition(application, action);
+    const now = Number(options.now || Date.now());
+    const timestamp = new Date(now).toISOString();
+
+    if (action === 'adjust_waiting') {
         const adjustmentSeconds = Number(options.adjustmentSeconds);
         if (!Number.isFinite(adjustmentSeconds)) {
             throw Object.assign(new Error('Ajuste de tempo inválido.'), { status: 400 });
@@ -293,13 +313,7 @@ function transitionExamApplication(application, action, options = {}) {
         return application;
     }
 
-    const aliases = { start: 'running', resume: 'running', pause: 'paused', finish: 'finished', stop: 'finished', cancel: 'cancelled' };
-    const target = aliases[action] || action;
-    if (!APPLICATION_STATUSES.includes(target)) throw Object.assign(new Error('Estado de aplicação inválido.'), { status: 400 });
-    if (current === target) return application;
-    if (!TRANSITIONS[current] || !TRANSITIONS[current].has(target)) {
-        throw Object.assign(new Error(`Não é possível alterar a aplicação de ${current} para ${target}.`), { status: 409 });
-    }
+    if (unchanged) return application;
 
     if (target === 'waiting') {
         const waitingSeconds = Math.max(0, Number(options.waitingRoomDuration ?? application.waitingRoomDuration ?? 0));
@@ -344,6 +358,7 @@ module.exports = {
     applicationPauses,
     applicationToOnlineConfig,
     attemptStatesForApplication,
+    checkExamApplicationTransition,
     closeApplicationPause,
     extendDeadlineByPauses,
     createAttemptState,

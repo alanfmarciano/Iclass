@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, Ban, CheckCircle2, Clock, Copy, Eye, GitBranch, History, Keyboard, Library, ListFilter, MonitorPlay, Pause, Pencil, Play, Send, Square, Trash2, Unlock, Users } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Ban, CheckCircle2, Clock, Eye, GitBranch, History, Keyboard, Library, ListFilter, MonitorPlay, Pause, Pencil, Play, Send, Square, Trash2, Unlock, Users } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -17,6 +17,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
 import { deliveryLabel, deliveryTone } from './attemptDelivery'
 import { FinishApplicationModal } from './FinishApplicationModal'
+import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, examLeftLabel, focusLogLabel, isSuspiciousItem, suspiciousCount } from './monitorLogs'
 
@@ -877,13 +878,6 @@ export default function MonitorPage() {
     selectApplication(application, activeApplicationsRequest.data?.applications || activeApplications)
   }
 
-  async function copyToken() {
-    const token = applicationId ? sessionStorage.getItem(`exam-token:${applicationId}`) || '' : selectedConfig.accessToken || ''
-    if (!token) return toast.info('O token está desativado nesta prova')
-    try { await navigator.clipboard.writeText(token); toast.success('Token copiado') }
-    catch { toast.error('Não foi possível copiar') }
-  }
-
   async function unlock(email) {
     try { await api.post('/api/admin/unlock-student-focus', { studentEmail: email, studentClass: className, courseId, examKey, applicationId }); toast.success('Aluno desbloqueado'); poll() }
     catch (e) { toast.error(e.message) }
@@ -942,7 +936,6 @@ export default function MonitorPage() {
   const started = rows.filter((r) => !['absent', 'ausente'].includes(r.status)).length
   const alerts = rows.filter((r) => r.status === 'blur' || r.status === 'focus_locked' || r.focusLocked).length
   const absent = rows.filter((r) => ['absent', 'ausente'].includes(r.status)).length
-  const applicationToken = applicationId ? sessionStorage.getItem(`exam-token:${applicationId}`) || '' : selectedConfig.accessToken || ''
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -1119,13 +1112,7 @@ export default function MonitorPage() {
                     </p>
                   )}
                 </div>
-                <div className="rounded-lg border border-border bg-surface-2 px-4 py-3 min-w-[190px]">
-                  <p className="text-[11px] font-semibold uppercase text-muted">Token de acesso</p>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className={`font-mono font-bold ${applicationToken ? 'text-lg tracking-[0.2em] text-warning' : 'text-sm text-muted'}`}>{applicationToken || (selectedConfig.requiresToken ? 'Definido na preparação' : 'Desativado')}</span>
-                    {applicationToken && <Button size="sm" variant="ghost" icon={Copy} onClick={copyToken}>Copiar</Button>}
-                  </div>
-                </div>
+                <ApplicationTokenPanel applicationId={applicationId} requiresToken={!!selectedConfig.requiresToken} closed={applicationFinished || selectedConfig.status === 'cancelled'} legacyToken={selectedConfig.accessToken || ''} />
               </div>
             </div>
           </Card>

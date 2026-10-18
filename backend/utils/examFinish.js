@@ -10,6 +10,7 @@ const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
     applicationToOnlineConfig,
+    checkExamApplicationTransition,
     listExamApplications,
     transitionExamApplication,
 } = require('./examApplications.js');
@@ -148,6 +149,14 @@ function resolveInProgressAttempts(memory, { application, onlineConfig = null, p
     }
     entries.forEach(([key]) => { delete memory.studentExamState[key]; });
     const processed = { policy: policy || 'none', submitted, discarded, deliveredAtDeadline, summary };
+    // Uma segunda resolução (sobras de tentativa numa aplicação já encerrada) nunca
+    // apaga a decisão do primeiro encerramento: ela fica guardada no histórico.
+    if (application.finishResolution) {
+        application.previousFinishResolutions = [
+            ...(Array.isArray(application.previousFinishResolutions) ? application.previousFinishResolutions : []),
+            application.finishResolution,
+        ];
+    }
     application.finishResolution = {
         policy: processed.policy,
         submitted,
@@ -177,9 +186,31 @@ function syncClassWithApplication(cls, application) {
     cls.activeApplicationId = active ? application.id : (cls.activeApplicationId === application.id ? null : cls.activeApplicationId);
 }
 
+const CLOSING_STATUSES = new Set(['finished', 'cancelled']);
+
+// O que uma ação de controle (Monitor ou controle antigo por turma) faz com as
+// tentativas. A transição é conferida ANTES de mexer em qualquer coisa: ação
+// impossível lança o erro e nada muda. Repetir o encerramento de uma aplicação já
+// encerrada, sem tentativa pendente, não muda nada (unchanged): a decisão gravada no
+// primeiro encerramento fica. resolve diz se as tentativas precisam ser resolvidas.
+function planControlAction(memory, application, action) {
+    const check = checkExamApplicationTransition(application, action);
+    const closing = CLOSING_STATUSES.has(check.target);
+    const pending = closing ? applicationStateEntries(memory, application.id).length : 0;
+    if (closing && check.unchanged && pending === 0) return { ...check, closing, resolve: false, unchanged: true };
+    const resolve = closing && (
+        (check.target === 'finished' && !check.unchanged)
+        || ACTIVE_APPLICATION_STATUSES.has(application.status)
+        || pending > 0
+    );
+    return { ...check, closing, resolve, unchanged: false };
+}
+
 // Encerra de vez uma aplicação em andamento: resolve as tentativas (com a política
 // informada) e muda o status para "finished".
 function finishApplication(memory, { application, cls, policy, actor, reason = null, now = Date.now() } = {}) {
+    const plan = planControlAction(memory, application, 'finish');
+    if (plan.unchanged) return null;
     const processed = resolveInProgressAttempts(memory, {
         application,
         onlineConfig: cls?.onlineExamConfigs?.[application.examKey] || null,
@@ -203,6 +234,7 @@ module.exports = {
     classExamApplications,
     finishApplication,
     finishSummary,
+    planControlAction,
     recordExamAudit,
     resolveInProgressAttempts,
     syncClassWithApplication,
