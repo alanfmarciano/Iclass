@@ -8,7 +8,7 @@
 // em ms. Toda normalização acontece AQUI, na entrada — nunca no consumidor.
 
 const attendanceUtil = require('./attendance.js');
-const { normalizeScore } = require('./submissionAttempts.js');
+const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -302,20 +302,26 @@ function computeTrends({ memory, students, course, cls, now }) {
     const comChamada = new Set(dedupedAll.map(r => lower(r.studentEmail))).size;
 
     // ---- Média das provas (timestamp ISO normalizado na entrada) ----
-    const subsScoped = (memory.submissions || []).filter(s => s.student && emails.has(lower(s.student.email))
-        && (!courseId || !s.student.courseId || String(s.student.courseId) === courseId));
-    // Nota inválida de registro antigo (vazia ou fora de 0 a 100) não entra na média.
-    const mediaOf = (subs) => {
-        const scores = subs.map(s => normalizeScore(s.score)).filter(score => score !== null);
-        if (!scores.length) return null;
-        return Math.round(scores.reduce((a, score) => a + score, 0) / scores.length / 10 * 10) / 10;
+    // A mesma consolidação de Resultados, do quadro, da ficha e do boletim
+    // (backend/utils/gradebook.js): cada aplicação da prova conta uma vez por aluno, pela
+    // regra escolhida (maior, última, média ou escolhida), e nota inválida de registro
+    // antigo fica fora. Antes era a média simples de todas as entregas: o aluno com várias
+    // tentativas pesava várias vezes. A nota consolidada entra na janela da última tentativa.
+    const subsScoped = scopeSubmissionsToContext(
+        (memory.submissions || []).filter(s => s.student && emails.has(lower(s.student.email))),
+        { courseId, studentClass: cls ? cls.name : '', students: memory.students || [], classes: memory.classes || [] },
+    );
+    const gradedGroups = buildGradeGroups(subsScoped).filter(group => group.score !== null);
+    const mediaOf = (groups) => {
+        if (!groups.length) return null;
+        return Math.round(groups.reduce((a, group) => a + group.score, 0) / groups.length / 10 * 10) / 10;
     };
-    const subsIn = (startDaysAgo, endDaysAgo) => subsScoped.filter(s => inWin(tsOf(s.timestamp), startDaysAgo, endDaysAgo));
-    const mediaAtual = mediaOf(subsIn(30, 0));
-    const mediaAnterior = mediaOf(subsIn(60, 30));
+    const groupsIn = (startDaysAgo, endDaysAgo) => gradedGroups.filter(group => inWin(group.lastAt, startDaysAgo, endDaysAgo));
+    const mediaAtual = mediaOf(groupsIn(30, 0));
+    const mediaAnterior = mediaOf(groupsIn(60, 30));
     const mediaSerie = [];
-    for (let i = 5; i >= 0; i--) mediaSerie.push({ label: sliceLabel(i * 5 + 5), valor: mediaOf(subsIn(i * 5 + 5, i * 5)) });
-    const alunosAvaliados = new Set(subsScoped.map(s => lower(s.student.email))).size;
+    for (let i = 5; i >= 0; i--) mediaSerie.push({ label: sliceLabel(i * 5 + 5), valor: mediaOf(groupsIn(i * 5 + 5, i * 5)) });
+    const alunosAvaliados = new Set(gradedGroups.map(group => group.email)).size;
 
     // ---- Engajamento (moduleAccess em ms + presença como acesso) ----
     const accScoped = (memory.moduleAccess || []).filter(m => emails.has(lower(m.studentEmail)));
@@ -368,7 +374,7 @@ function computeTrends({ memory, students, course, cls, now }) {
         media: {
             atual: mediaAtual, anterior: mediaAnterior,
             delta: (mediaAtual != null && mediaAnterior != null) ? round1(mediaAtual - mediaAnterior) : null,
-            serie: mediaSerie, base: { provas: subsScoped.length, alunos: alunosAvaliados },
+            serie: mediaSerie, base: { provas: gradedGroups.length, alunos: alunosAvaliados },
         },
         engajamento: {
             atual: engAtual, total: students.length, anterior: engAnterior,

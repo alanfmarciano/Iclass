@@ -325,6 +325,48 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     expect(postsTo('/api/student/submit')).toHaveLength(1)
   }, 15000)
 
+  it('reaberta pelo "+N min" depois do salvamento que falhou no fim do tempo: sem "Falha no último salvamento" quando o servidor tem tudo', async () => {
+    const user = userEvent.setup()
+    let delivered = false
+    apiMock.get.mockImplementation(async () => (delivered
+      ? syncResponse({ timerRemaining: 300, answers: { 1: 'A' }, reopenedAt: Date.now() })
+      : syncResponse({ timerRemaining: 6 })))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/autosave-progress') {
+        throw Object.assign(new Error('O prazo da prova terminou.'), { status: 408, data: { deadlineExceeded: true } })
+      }
+      if (url !== '/api/student/submit') return { success: true }
+      delivered = true
+      return { success: true, gradePublished: false, answeredCount: 1 }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    // O salvamento da sincronização caiu depois do prazo (408): a entrega automática saiu.
+    await waitFor(() => expect(postsTo('/api/student/autosave-progress').length).toBeGreaterThan(0), { timeout: 6000 })
+    await waitFor(() => expect(postsTo('/api/student/submit')).toHaveLength(1), { timeout: 6000 })
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 8000 })).toBeVisible()
+    expect(screen.getByText('1/1 respondidas')).toBeVisible()
+    expect(screen.queryByText('Falha no último salvamento')).not.toBeInTheDocument()
+  }, 25000)
+
+  it('aplicação só preparada mostra que a prova ainda não começou, sem "Iniciar prova"; quando o professor inicia, abre as instruções', async () => {
+    let status = 'prepared'
+    apiMock.get.mockImplementation(async () => {
+      const response = syncResponse({ startedAt: null, status })
+      response.onlineExamConfigs[EXAM].onlineActive = status !== 'prepared'
+      return response
+    })
+    renderRunner()
+    expect(await screen.findByText('A prova ainda não começou')).toBeVisible()
+    expect(screen.getByText('Aguardando o professor iniciar...')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Iniciar prova' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    status = 'running'
+    expect(await screen.findByRole('button', { name: 'Iniciar prova' }, { timeout: 6000 })).toBeInTheDocument()
+    expect(screen.queryByText('A prova ainda não começou')).not.toBeInTheDocument()
+  }, 15000)
+
   it('página aberta depois da entrega ("Tentativas esgotadas") volta às questões quando o "+N min" da turma reabre a tentativa (G1-mais5)', async () => {
     let reopened = false
     apiMock.get.mockImplementation(async () => (reopened
@@ -915,14 +957,26 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     const send = screen.getByRole('button', { name: 'Enviar', exact: true })
     expect(send).toHaveTextContent('Enviar')
     expect(send.parentElement).toHaveClass('shrink-0')
-    // Celular: duas linhas (título e cronômetro; contagem e botões). A contagem não fica
-    // mais embaixo do título, na coluna estreita ao lado do cronômetro (320 px).
+    // Celular: título e cronômetro numa linha; contagem e botões na outra, e os botões
+    // descem para a linha de baixo quando não cabem ao lado da contagem. Antes a 2ª linha
+    // era uma grade fixa (contagem | botões) que, com zoom de 200% num celular de 390 px
+    // (195 px CSS), passava da tela: Enviar e cronômetro cortados e a contagem embaixo dos
+    // botões. O layout medido no navegador fica no e2e exam-zoom.spec.js.
     const counter = screen.getByText('0/1 respondidas')
-    expect(heading.parentElement).not.toContainElement(counter)
-    expect(heading.parentElement).toHaveClass('col-span-2', 'row-start-1')
-    expect(counter.parentElement).toHaveClass('row-start-2', 'min-w-0')
-    expect(send.parentElement).toHaveClass('row-start-2')
-    expect(screen.getByTitle('Tempo restante')).toHaveClass('row-start-1')
+    const timer = screen.getByTitle('Tempo restante')
+    const firstLine = heading.parentElement.parentElement
+    expect(firstLine).toContainElement(timer)
+    expect(firstLine).not.toContainElement(counter)
+    expect(heading.parentElement).toHaveClass('min-w-0', 'flex-1')
+    expect(timer).toHaveClass('shrink-0', 'whitespace-nowrap')
+    const secondLine = counter.parentElement.parentElement
+    expect(secondLine).toHaveClass('flex-wrap')
+    expect(secondLine).toContainElement(send)
+    expect(counter.parentElement).toHaveClass('min-w-0')
+    expect(send.parentElement).toHaveClass('ml-auto', 'shrink-0')
+    // Botões compactos abaixo de 640 px (Sair e Mensagens só ícone).
+    expect(screen.getByRole('button', { name: 'Sair', exact: true })).toHaveClass('!px-2')
+    expect(send).toHaveClass('!px-2.5')
   })
 })
 

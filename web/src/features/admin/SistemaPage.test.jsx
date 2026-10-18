@@ -196,3 +196,48 @@ describe('Sistema · histórico de backup', () => {
     expect(screen.getByText('Nenhum registro ainda.')).toBeInTheDocument()
   })
 })
+
+describe('Sistema · restaurar backup de versão anterior', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.workspace = INSTITUTION
+    mocks.get.mockResolvedValue(preview())
+  })
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('[UC-BACKUP-001] avisa antes que o backup é de versão anterior e o que acontece com as aplicações; só restaura depois de confirmar', async () => {
+    const warning = 'Este backup é de uma versão anterior do IClass e não traz as aplicações de prova. Ao restaurar, as aplicações de prova atuais serão descartadas.'
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ error: warning, legacyBackup: true, exportedAt: '2026-10-18T20:08:31.000Z' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, accountsNotRestored: 0, legacyApplications: true, applicationsDiscarded: 3, applicationsRebuilt: 1 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const user = userEvent.setup()
+    const { container } = render(<SistemaPage />)
+    await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup-antigo.json', { type: 'application/json' }))
+    await user.type(screen.getByPlaceholderText('Digite RESTAURAR'), 'RESTAURAR')
+    await user.click(screen.getByRole('button', { name: 'Restaurar' }))
+
+    // 1º envio: o servidor não restaura e devolve o aviso, que a tela mostra.
+    const dialog = await screen.findByRole('dialog', { name: 'Backup de uma versão anterior' })
+    expect(dialog).toHaveTextContent('versão anterior do IClass')
+    expect(dialog).toHaveTextContent('aplicações de prova atuais serão descartadas')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][1].body.get('acceptLegacy')).toBeNull()
+    expect(mocks.toast.success).not.toHaveBeenCalled()
+    expect(mocks.toast.error).not.toHaveBeenCalled()
+
+    // Confirmado no aviso: manda de novo com a confirmação e informa o que foi feito.
+    await user.click(within(dialog).getByRole('button', { name: 'Restaurar mesmo assim' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock.mock.calls[1][1].body.get('acceptLegacy')).toBe('1')
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
+    expect(mocks.toast.success.mock.calls[0][0]).toMatch(/aplicações de prova foram refeitas a partir das turmas do backup \(3 aplicações atuais descartadas, 1 refeita\)/)
+    expect(window.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('[UC-BACKUP-001] histórico anota a restauração de backup de versão anterior', () => {
+    render(<BackupHistory entries={[{ id: 'r1', action: 'backup_restored', actor: 'admin@x.local', timestamp: Date.parse('2026-10-18T11:00:00Z'), file: 'antigo.json', legacyApplications: true, applicationsDiscarded: 1, applicationsRebuilt: 2 }]} />)
+    expect(screen.getByRole('listitem')).toHaveTextContent('Backup de versão anterior: as aplicações de prova foram refeitas a partir das turmas do backup (1 aplicação atual descartada, 2 refeitas).')
+  })
+})

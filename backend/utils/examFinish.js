@@ -15,6 +15,7 @@ const {
     transitionExamApplication,
 } = require('./examApplications.js');
 const { isAttemptPastDeadline, restoreReopenedDelivery, settleExpiredAttempts } = require('./examDeadline.js');
+const { studentInClass } = require('./students.js');
 
 const IN_PROGRESS_POLICIES = new Set(['submit', 'discard']);
 // Aplicação que ocupa a prova na turma: preparada (ainda sem alunos) ou em andamento.
@@ -32,6 +33,38 @@ function applicationStateEntries(memory, applicationId) {
         state && state.applicationId === applicationId && !CLOSED_ATTEMPT_STATUSES.has(state.status));
 }
 
+function activeStudentAccount(student) {
+    const status = String(student?.status || '').trim().toLowerCase();
+    return !status || status === 'ativo' || status === 'active';
+}
+
+// "Ainda não iniciaram": alunos ativos da turma (a mesma lista do Monitor) sem tentativa
+// iniciada nem entrega nesta aplicação, mais quem está nas instruções e já saiu da lista.
+// Quem entregou a tentativa 1 e está na tela de envio (com 2+ tentativas a seguinte nasce
+// nas instruções) já começou; quem nunca abriu a prova ainda não. Antes a conta era só a
+// das tentativas paradas nas instruções e trocava um caso pelo outro.
+function notStartedCount(memory, application, entries) {
+    const begun = new Set();
+    entries.forEach(([, state]) => { if (state.startedAt) begun.add(normalizedEmail(state.studentEmail)); });
+    (memory?.submissions || []).forEach(submission => {
+        if (submission && submission.applicationId === application.id) {
+            begun.add(normalizedEmail(submission.student?.email || submission.studentEmail));
+        }
+    });
+    const waiting = new Set();
+    (memory?.students || []).forEach(student => {
+        if (!student?.email || !activeStudentAccount(student)) return;
+        if (!studentInClass(student, application.studentClass, application.courseId)) return;
+        const email = normalizedEmail(student.email);
+        if (!begun.has(email)) waiting.add(email);
+    });
+    entries.forEach(([, state]) => {
+        const email = normalizedEmail(state.studentEmail);
+        if (!state.startedAt && !begun.has(email)) waiting.add(email);
+    });
+    return waiting.size;
+}
+
 function finishSummary(memory, application, now = Date.now()) {
     const entries = applicationStateEntries(memory, application.id);
     const started = entries.filter(([, state]) => !!state.startedAt);
@@ -46,7 +79,9 @@ function finishSummary(memory, application, now = Date.now()) {
         inProgressAttempts: inProgress.length,
         reopenedAttempts: reopened.length,
         answeredQuestions: inProgress.reduce((total, [, state]) => total + Object.keys(state.answers || {}).length, 0),
-        waitingToStart: entries.length - started.length,
+        waitingToStart: notStartedCount(memory, application, entries),
+        // Tentativas paradas nas instruções (o "Resetar sala" as limpa).
+        instructionsAttempts: entries.length - started.length,
         timeOverAttempts: timeOver.length,
         students: inProgress.map(([, state]) => ({
             email: state.studentEmail,

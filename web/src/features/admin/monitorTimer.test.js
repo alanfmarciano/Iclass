@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
+import { classTimeExtraFeedback, resolveMonitorTimer, rowStartedAttempt, rowTimerLabel } from './monitorTimer'
 
 describe('cronometro do monitor', () => {
   it('acompanha o cronometro coletivo a partir do inicio da aplicacao', () => {
@@ -33,6 +33,43 @@ describe('cronometro do monitor', () => {
     })
     expect(timer.started).toBe(false)
     expect(timer.remaining).toBe(3600)
+  })
+
+  it('[UC-TENTATIVA-001] cronometro por aluno: quem nao comecou fica fora do menor tempo e da contagem', () => {
+    const timer = resolveMonitorTimer({
+      config: { timerMode: 'per_attempt', timerEnabled: true, durationMinutes: 2 },
+      rows: [
+        { status: 'online', attemptStarted: true, timerRemaining: 20 },
+        // Linhas antigas com o tempo contado desde a abertura da aplicação.
+        { status: 'online', attemptStarted: false, timerRemaining: 0 },
+        { status: 'online', attemptStarted: false, timerRemaining: null },
+        { status: 'finished', attemptStarted: true, timerRemaining: 5 },
+      ],
+      now: 10000,
+      rowsSyncedAt: 10000,
+    })
+    expect(timer.activeCount).toBe(1)
+    expect(timer.remaining).toBe(20)
+    const nobody = resolveMonitorTimer({
+      config: { timerMode: 'per_attempt', timerEnabled: true, durationMinutes: 2 },
+      rows: [{ status: 'online', attemptStarted: false, timerRemaining: 95 }],
+    })
+    expect(nobody.started).toBe(false)
+    expect(nobody.remaining).toBe(120)
+  })
+
+  it('[UC-TENTATIVA-001] "Iniciaram" conta so quem comecou nesta aplicacao e a coluna Tempo diz "Nao iniciou"', () => {
+    expect(rowStartedAttempt({ status: 'online', attemptStarted: false })).toBe(false)
+    expect(rowStartedAttempt({ status: 'online', attemptStarted: true })).toBe(true)
+    expect(rowStartedAttempt({ status: 'finished' })).toBe(true)
+    expect(rowStartedAttempt({ status: 'time_over' })).toBe(true)
+    expect(rowStartedAttempt({ status: 'absent' })).toBe(false)
+    const fmt = (value) => (value == null ? '-' : `${value}s`)
+    const perAttempt = { collective: false, enabled: true }
+    expect(rowTimerLabel({ status: 'online', attemptStarted: false, timerRemaining: null }, perAttempt, fmt)).toBe('Não iniciou')
+    expect(rowTimerLabel({ status: 'online', attemptStarted: true, timerRemaining: 30 }, perAttempt, fmt)).toBe('30s')
+    expect(rowTimerLabel({ status: 'finished', timerRemaining: null }, perAttempt, fmt)).toBe('-')
+    expect(rowTimerLabel({ status: 'online', attemptStarted: false, timerRemaining: 300 }, { collective: true, enabled: true }, fmt)).toBe('300s')
   })
 
   it('[UC-TENTATIVA-001] pausar congela o cronometro coletivo e a retomada nao devolve tempo cheio (AVA-10)', () => {

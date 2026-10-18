@@ -51,6 +51,7 @@ const {
     buildClassGradebook,
     buildCsv,
     buildStudentReportModules,
+    consolidatedStudentAverage,
     createResolvedGroupKey,
     describeSubmissionGrade,
     examTitle,
@@ -3704,13 +3705,13 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
                 ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
                 : null;
             const key = openAttempt?.key || examStateKey({ studentEmail: email, examKey: examKey.trim() });
-            if (application) {
-                if (!application.studentAdjustments) application.studentAdjustments = {};
-                application.studentAdjustments[email] = Number(application.studentAdjustments[email] || 0) + adjustmentMinutes;
-            }
             if (application && !openAttempt) {
                 // Ainda sem tentativa aberta: o ajuste fica na aplicação e entra na
                 // tentativa quando ela for criada (sem estado avulso fora da aplicação).
+                // Com tentativa aberta, ele vale só para ela: antes ia também para a
+                // aplicação e a tentativa seguinte (2+ tentativas) já nascia com o extra.
+                if (!application.studentAdjustments) application.studentAdjustments = {};
+                application.studentAdjustments[email] = Number(application.studentAdjustments[email] || 0) + adjustmentMinutes;
                 db.save();
                 return res.json({ success: true, appliesToNextAttempt: true });
             }
@@ -3972,6 +3973,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         const students = (db.memory.students || []).filter(s => s && s.email && studentInClass(s, studentClass, monitorCourseId));
 
         const monitorMaxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? currentConfig.maxAttempts);
+        const perAttemptTimer = (application?.timerMode || currentConfig.timerMode) === 'per_attempt';
 
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
@@ -4003,6 +4005,10 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             // Tentativa ATUAL (maxAttempts > 1): quem entregou a tentativa 1 e já começou a
             // 2 aparece com a 2 (situação, progresso, tempo e trava), não como "Finalizou".
             const attemptInProgress = !!(openAttempt && Number(openAttempt.state.startedAt) > 0);
+            // Começou uma tentativa nesta aplicação (a atual ou uma já entregue): é o que o
+            // cartão "Iniciaram" conta (quem só está com o portal aberto não entra).
+            const attemptStarted = attemptInProgress || deliveries.length > 0
+                || (!application && Number(state.startedAt) > 0);
             const submission = attemptInProgress ? null : latestDelivery;
             const timing = application && state.startedAt && !submission
                 ? attemptOverdueMs(state, application, monitorNow)
@@ -4092,6 +4098,10 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     + (Number(state.individualTimeAdjustment || 0) * 60);
                 timerRemaining = Math.max(0, totalSeconds - elapsedSeconds);
             }
+            // Cronômetro por aluno: quem ainda não começou não tem tempo correndo. Antes
+            // aparecia o tempo contado desde a abertura da aplicação, que entrava em "Menor
+            // tempo restante" e chegava a 0:00 com alunos que ainda teriam o tempo inteiro.
+            if (perAttemptTimer && status !== 'finished' && !(Number(state.startedAt) > 0)) timerRemaining = null;
 
             return {
                 email: s.email,
@@ -4103,6 +4113,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 maxAttempts: monitorMaxAttempts,
                 deliveredAttempts,
                 attemptInProgress,
+                attemptStarted,
                 assignedVersion: (submission && submission.assignedVersion) || state.assignedVersion,
                 timerRemaining,
                 progress,
@@ -4401,15 +4412,29 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
         const byQuestion = {};
         const gradeBuckets = { baixo: 0, medio: 0, alto: 0 };
 
-        // Nota inválida de registro antigo (vazia ou fora de 0 a 100) não entra nas faixas nem na média.
-        const validScores = submissions.map(sub => normalizeScore(sub.score)).filter(score => score !== null);
+        // Média e faixas: a nota consolidada de cada aluno, como em Resultados, no quadro
+        // e no painel (backend/utils/gradebook.js: um grupo por aplicação, regra
+        // maior/última/média/escolhida, nota inválida de registro antigo fora). Cada aluno
+        // conta uma vez; antes cada entrega contava, e quem fez várias tentativas pesava
+        // várias vezes. As estatísticas por questão continuam com todas as tentativas.
+        const { resolved } = createResolvedGroupKey(gradeScope('', ''));
+        const submissionsByStudent = new Map();
         submissions.forEach(sub => {
-            const score = normalizeScore(sub.score);
-            if (score === null) { /* sem nota válida */ }
-            else if (score < 60) gradeBuckets.baixo++;
+            const email = String(sub.student?.email || sub.studentEmail || '').trim().toLowerCase();
+            if (!email) return;
+            if (!submissionsByStudent.has(email)) submissionsByStudent.set(email, []);
+            submissionsByStudent.get(email).push(resolved(sub));
+        });
+        const validScores = [...submissionsByStudent.values()]
+            .map(list => consolidatedStudentAverage(list).average)
+            .filter(score => score !== null);
+        validScores.forEach(score => {
+            if (score < 60) gradeBuckets.baixo++;
             else if (score < 85) gradeBuckets.medio++;
             else gradeBuckets.alto++;
+        });
 
+        submissions.forEach(sub => {
             (sub.gradedAnswers || []).forEach(answer => {
                 const qn = String(answer.questionNumber);
                 if (!byQuestion[qn]) {
@@ -4443,6 +4468,7 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
             examKey,
             applicationId: applicationId || null,
             totalSubmissions: submissions.length,
+            studentCount: submissionsByStudent.size,
             // Sem nota válida, a média fica vazia (o Monitor mostra "—", não 0,0).
             averageScore: validScores.length
                 ? Math.round(validScores.reduce((sum, score) => sum + score, 0) / validScores.length)

@@ -21,9 +21,20 @@ const COLLECTIONS = [
     'schools', 'announcements', 'library',
     // Aplicações de prova: sem elas, restaurar um backup (por exemplo o salvo antes de
     // "Resetar sala") voltava as entregas e a turma, mas não o status das aplicações.
-    // Backups antigos sem a coleção mantêm as aplicações atuais.
+    // Backup de versão anterior sem a coleção: as aplicações atuais são descartadas e
+    // refeitas a partir das turmas do backup (ver legacyApplications).
     'examApplications',
 ];
+
+// Backup gerado por versão anterior do IClass, que não guardava as aplicações de prova.
+function hasLegacyApplications(snapshot) {
+    return !!(snapshot && snapshot.data && typeof snapshot.data === 'object' && snapshot.data.examApplications === undefined);
+}
+
+const LEGACY_BACKUP_WARNING = 'Este backup é de uma versão anterior do IClass e não traz as aplicações de prova. '
+    + 'Ao restaurar, as aplicações de prova atuais serão descartadas (inclusive as criadas depois do backup) e refeitas '
+    + 'a partir das turmas do backup: a prova que estava em andamento naquele momento volta como estava, com as tentativas '
+    + 'dos alunos. Um backup de segurança dos dados atuais é criado antes.';
 
 function getZipLib() { try { return require('adm-zip'); } catch (e) { return null; } }
 
@@ -174,6 +185,7 @@ function snapshotSummary(snapshot, format) {
         exportedAt: String((snapshot && snapshot.exportedAt) || ''),
         version: String((snapshot && snapshot.version) || ''),
         collections: COLLECTIONS.filter(key => data[key] !== undefined),
+        legacyApplications: hasLegacyApplications(snapshot),
         accountEmails: Array.isArray(data.admins)
             ? data.admins.map(account => String((account && account.email) || '').trim().toLowerCase()).filter(Boolean)
             : [],
@@ -189,9 +201,18 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     });
     // Backups antigos podem trazer `studentClass` em objeto (DES-03).
     (db.memory.students || []).forEach(student => normalizeStoredStudentClasses(student));
+    // Backup de versão anterior: aplicações refeitas a partir das turmas restauradas,
+    // pelo mesmo caminho do boot para dados antigos (database.js).
+    const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses() : null;
     db.memory.sessions = {};
     db.memory.adminSessions = {};
     await db.save();
+    return applications;
+}
+
+function withApplications(summary, applications) {
+    if (!applications) return summary;
+    return { ...summary, applicationsDiscarded: applications.discarded, applicationsRebuilt: applications.rebuilt };
 }
 
 async function restoreDataSnapshot(snapshot, { replaceAccounts = false } = {}) {
@@ -208,8 +229,8 @@ async function restoreDataSnapshot(snapshot, { replaceAccounts = false } = {}) {
             staged.push({ target, temporary, previous: fs.existsSync(target) ? fs.readFileSync(target) : null });
         }
         staged.forEach(file => fs.renameSync(file.temporary, file.target));
-        await applySnapshot(snapshot, { replaceAccounts });
-        return snapshotSummary(snapshot, 'json');
+        const applications = await applySnapshot(snapshot, { replaceAccounts });
+        return withApplications(snapshotSummary(snapshot, 'json'), applications);
     } catch (error) {
         staged.forEach(file => {
             try {
@@ -247,8 +268,8 @@ async function restoreFullZip(buffer, { replaceAccounts = false } = {}) {
             fs.renameSync(staged, target);
             moved.push({ target, recovery });
         }
-        await applySnapshot(snapshot, { replaceAccounts });
-        return snapshotSummary(snapshot, 'zip');
+        const applications = await applySnapshot(snapshot, { replaceAccounts });
+        return withApplications(snapshotSummary(snapshot, 'zip'), applications);
     } catch (error) {
         for (const item of moved.reverse()) {
             try {
@@ -264,14 +285,26 @@ async function restoreFullZip(buffer, { replaceAccounts = false } = {}) {
     }
 }
 
-async function restoreFromFile(absPath, originalName, { replaceAccounts = false } = {}) {
-    await db.save();
-    await saveServerFullBackup();
+// Backup de versão anterior só é restaurado depois de o administrador ver o aviso do
+// que acontece com as aplicações de prova (acceptLegacy). Sem isso, nada muda: a tela
+// mostra o aviso e manda de novo com a confirmação.
+function legacyBackupError(snapshot) {
+    return Object.assign(new Error(LEGACY_BACKUP_WARNING), {
+        legacyBackup: true,
+        exportedAt: String((snapshot && snapshot.exportedAt) || ''),
+    });
+}
+
+async function restoreFromFile(absPath, originalName, { replaceAccounts = false, acceptLegacy = false } = {}) {
     const buffer = fs.readFileSync(absPath);
     const isZip = /\.zip$/i.test(originalName || '') || buffer.subarray(0, 2).toString() === 'PK';
+    const snapshot = isZip ? validateZip(buffer).snapshot : validateDataSnapshot(JSON.parse(buffer.toString('utf8')));
+    if (hasLegacyApplications(snapshot) && !acceptLegacy) throw legacyBackupError(snapshot);
+    await db.save();
+    await saveServerFullBackup();
     const summary = isZip
         ? await restoreFullZip(buffer, { replaceAccounts })
-        : await restoreDataSnapshot(JSON.parse(buffer.toString('utf8')), { replaceAccounts });
+        : await restoreDataSnapshot(snapshot, { replaceAccounts });
     return { ok: true, replaceAccounts, ...summary };
 }
 
@@ -460,7 +493,8 @@ async function fileLooksLikeBackup(filePath) {
 }
 
 module.exports = {
-    COLLECTIONS, buildDataSnapshot, validateDataSnapshot, restoreDataSnapshot, saveServerBackup,
+    COLLECTIONS, LEGACY_BACKUP_WARNING, hasLegacyApplications,
+    buildDataSnapshot, validateDataSnapshot, restoreDataSnapshot, saveServerBackup,
     runAutomaticBackup, lastAutomaticBackupAt,
     buildFullZipBuffer, streamFullZip, saveServerFullBackup, restoreFullZip, restoreFromFile, getZipLib, validateZip,
     fileLooksLikeBackup,

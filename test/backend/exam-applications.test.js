@@ -559,6 +559,44 @@ test('aluno contesta e professor corrige a questao ao vivo antes do envio', asyn
         .set('x-admin-session', adminToken).send({ action: 'finish' }).expect(200);
 });
 
+test('[UC-APLICACAO-001] correção ao vivo mantém a ordem embaralhada de cada versão', async () => {
+    const history = await request(app).post('/api/admin/exam-history/add').set('x-admin-session', adminToken).send({
+        studentClass, courseId, examKey, type: 'online', questionNumbers: [1],
+        printSnapshot: [
+            { version: 'A', answerKey: { 1: 'A' }, questions: [{ originalNumber: 1, examNumber: 1, text: 'Questão de isolamento', correctAnswer: 'A',
+                alternatives: [{ letter: 'A', displayLetter: 'A', text: 'Correta' }, { letter: 'B', displayLetter: 'B', text: 'Incorreta' }] }] },
+            // Versão B com as alternativas embaralhadas: a original B aparece primeiro.
+            { version: 'B', answerKey: { 1: 'B' }, questions: [{ originalNumber: 1, examNumber: 1, text: 'Questão de isolamento', correctAnswer: 'A',
+                alternatives: [{ letter: 'B', displayLetter: 'A', text: 'Incorreta' }, { letter: 'A', displayLetter: 'B', text: 'Correta' }] }] },
+        ],
+        durationMinutes: 30, waitingRoomMinutes: 0, maxAttempts: 1,
+    }).expect(200);
+    const application = await createAndStartApplication(history.body.entry.id);
+    const versionB = () => db.memory.examApplications.find(item => item.id === application.id).versionSnapshots.find(snapshot => snapshot.version === 'B');
+    assert.deepEqual(versionB().questions[0].alternatives.map(alternative => alternative.letter), ['B', 'A'], 'versão B embaralhada antes da correção');
+
+    // O formulário manda as alternativas na ordem original (A, B) e troca o gabarito para B.
+    await request(app).post('/api/admin/correct-live-question').set('x-admin-session', adminToken).send({
+        applicationId: application.id,
+        questionNumber: 1,
+        question: { text: 'Enunciado corrigido', alternatives: [{ letter: 'A', text: 'Agora incorreta' }, { letter: 'B', text: 'Agora correta' }], correctAnswer: 'B' },
+    }).expect(200);
+
+    const stored = db.memory.examApplications.find(item => item.id === application.id);
+    const [snapA, snapB] = ['A', 'B'].map(version => stored.versionSnapshots.find(snapshot => snapshot.version === version));
+    assert.deepEqual(snapA.questions[0].alternatives.map(alternative => [alternative.letter, alternative.displayLetter, alternative.text, alternative.isCorrect]),
+        [['A', 'A', 'Agora incorreta', false], ['B', 'B', 'Agora correta', true]]);
+    // Antes a versão B voltava para A, B: o aluno via as alternativas trocarem de lugar.
+    assert.deepEqual(snapB.questions[0].alternatives.map(alternative => [alternative.letter, alternative.displayLetter, alternative.text, alternative.isCorrect]),
+        [['B', 'A', 'Agora correta', true], ['A', 'B', 'Agora incorreta', false]]);
+    assert.equal(snapB.questions[0].text, 'Enunciado corrigido');
+    assert.equal(snapB.questions[0].correctAnswer, 'B');
+    assert.deepEqual([snapA.answerKey[1], snapB.answerKey[1]], ['B', 'A'], 'gabarito impresso de cada versão acompanha a correção');
+
+    await request(app).post(`/api/admin/exam-applications/${application.id}/control`)
+        .set('x-admin-session', adminToken).send({ action: 'finish' }).expect(200);
+});
+
 test('anula e substitui questao para tentativas ativas com tempo extra', async () => {
     const historyId = await createHistory();
     const application = await createAndStartApplication(historyId);

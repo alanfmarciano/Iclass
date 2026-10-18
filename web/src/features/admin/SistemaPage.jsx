@@ -146,6 +146,14 @@ const BACKUP_ACTION_LABEL = {
   backup_downloaded: 'Backup baixado',
 }
 
+// Restauração de backup de versão anterior (sem as aplicações de prova): o que
+// aconteceu com as aplicações, no histórico e no aviso de sucesso.
+export function legacyRestoreNote({ applicationsDiscarded = 0, applicationsRebuilt = 0 } = {}) {
+  const discarded = Number(applicationsDiscarded) || 0
+  const rebuilt = Number(applicationsRebuilt) || 0
+  return `Backup de versão anterior: as aplicações de prova foram refeitas a partir das turmas do backup (${discarded === 1 ? '1 aplicação atual descartada' : `${discarded} aplicações atuais descartadas`}, ${rebuilt === 1 ? '1 refeita' : `${rebuilt} refeitas`}).`
+}
+
 // Histórico de backup (só o administrador vê): restaurações, falhas, cópias e downloads.
 export function BackupHistory({ entries }) {
   if (!entries) return null
@@ -163,6 +171,7 @@ export function BackupHistory({ entries }) {
                   {entry.file ? <span className="font-normal text-muted"> · {entry.file}</span> : null}
                 </p>
                 {entry.error && <p className="text-danger">{entry.error}</p>}
+                {entry.legacyApplications && <p className="text-muted">{legacyRestoreNote(entry)}</p>}
                 <p className="text-subtle">{entry.timestamp ? new Date(entry.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {entry.actor || '—'}{entry.ip ? ` · IP ${entry.ip}` : ''}</p>
               </div>
               {entry.action === 'backup_restore_failed' ? <Badge tone="danger">Falhou</Badge> : entry.action === 'backup_restored' ? <Badge tone="success">Restaurado</Badge> : null}
@@ -185,6 +194,9 @@ function BackupCard({ isAdmin }) {
   const [replaceAccounts, setReplaceAccounts] = useState(false)
   const [busy, setBusy] = useState(false)
   const [serverBusy, setServerBusy] = useState(false)
+  // Backup de versão anterior: o servidor não restaura sem antes a tela mostrar o que
+  // acontece com as aplicações de prova (409 legacyBackup) e o administrador confirmar.
+  const [legacyWarning, setLegacyWarning] = useState(null)
   async function serverBackup() {
     setServerBusy(true)
     try {
@@ -205,22 +217,29 @@ function BackupCard({ isAdmin }) {
       history.refetch(true)
     } catch (e) { toast.error(e.message) }
   }
-  async function restore() {
+  async function restore({ acceptLegacy = false } = {}) {
     if (!file) return toast.error('Escolha o arquivo de backup')
     if (confirmTxt.trim().toUpperCase() !== 'RESTAURAR') return toast.error('Digite RESTAURAR para confirmar')
-    if (!window.confirm(replaceAccounts
+    if (!acceptLegacy && !window.confirm(replaceAccounts
       ? 'Isto substitui TODOS os dados atuais, inclusive as contas de acesso. Um backup de segurança será criado antes. Continuar?'
       : 'Isto substitui TODOS os dados atuais (as contas de acesso continuam as de hoje). Um backup de segurança será criado antes. Continuar?')) return
     const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt); fd.append('replaceAccounts', replaceAccounts ? '1' : '0')
+    if (acceptLegacy) fd.append('acceptLegacy', '1')
+    setLegacyWarning(null)
     setBusy(true)
     try {
       const res = await fetch('/api/admin/backup/restore', { method: 'POST', headers: _bkAuth(), body: fd })
       const d = await res.json().catch(() => null)
+      if (res.status === 409 && d?.legacyBackup) {
+        setLegacyWarning({ message: d.error, exportedAt: d.exportedAt || '' })
+        return
+      }
       if (!res.ok) throw new Error((d && d.error) || 'Falha ao restaurar')
       const skipped = Number(d && d.accountsNotRestored) || 0
+      const legacy = d?.legacyApplications ? ` ${legacyRestoreNote(d)}` : ''
       toast.success(skipped > 0
-        ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".`
-        : 'Backup restaurado. Recarregue a página para ver os dados.')
+        ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".${legacy}`
+        : `Backup restaurado. Recarregue a página para ver os dados.${legacy}`)
       setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
     } catch (e) {
       toast.error(e.message)
@@ -245,10 +264,22 @@ function BackupCard({ isAdmin }) {
           <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
           <div className="flex flex-wrap items-center gap-3">
             <Input id="bk-confirm" value={confirmTxt} onChange={(e) => setConfirmTxt(e.target.value)} placeholder="Digite RESTAURAR" />
-            <Button variant="destructive" icon={Upload} loading={busy} onClick={restore}>Restaurar</Button>
+            <Button variant="destructive" icon={Upload} loading={busy} onClick={() => restore()}>Restaurar</Button>
           </div>
         </div>}
         {isAdmin && <BackupHistory entries={history.data?.entries} />}
+        <Modal
+          open={!!legacyWarning}
+          onClose={() => !busy && setLegacyWarning(null)}
+          title="Backup de uma versão anterior"
+          description={legacyWarning?.exportedAt ? `Gerado em ${new Date(legacyWarning.exportedAt).toLocaleString('pt-BR')}` : undefined}
+          footer={<><Button variant="ghost" onClick={() => setLegacyWarning(null)} disabled={busy}>Cancelar</Button><Button variant="destructive" icon={Upload} loading={busy} onClick={() => restore({ acceptLegacy: true })}>Restaurar mesmo assim</Button></>}
+        >
+          <div className="flex items-start gap-2 text-sm text-text">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <p>{legacyWarning?.message}</p>
+          </div>
+        </Modal>
       </CardBody>
     </Card>
   )

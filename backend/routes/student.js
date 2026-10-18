@@ -43,7 +43,6 @@ const { normalizeExamToken } = require('../utils/examToken.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
-    createAttemptState,
     examStateKey,
     findExamApplication,
     findOpenAttemptState,
@@ -64,7 +63,6 @@ const {
 const {
     AUTO_SUBMIT_EARLY_TOLERANCE_MS,
     SERVER_DEADLINE_SOURCE,
-    SERVER_FINALIZE_DELAY_MS,
     attemptOverdueMs,
     attemptStateForReopen,
     canReplaceServerFinalization,
@@ -74,12 +72,16 @@ const {
     lateSubmitDecision,
     markLateSubmission,
     replaceServerFinalization,
-    settleExpiredAttempts,
 } = require('../utils/examDeadline.js');
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
+const {
+    attemptContextForStudent,
+    collectiveTimeOverForNewAttempt,
+    settleStudentAttempt,
+} = require('../utils/studentAttemptContext.js');
 
 // Marca a presença automática do dia (origem "login", exibida como "Automática"),
 // no máx. 1x/dia por turma, respeitando a config (liga/desliga + janela + fuso).
@@ -156,97 +158,6 @@ function applicationForClass(cls, examKey, applicationId) {
     if (application.studentClass !== cls.name) return null;
     if (application.courseId && cls.courseId && application.courseId !== cls.courseId) return null;
     return application;
-}
-
-// Estado da interface antiga (sem aplicação) que é uma tentativa de verdade.
-function isLegacyAttemptInUse(state) {
-    if (!state || typeof state !== 'object') return false;
-    if (Number(state.startedAt) > 0) return true;
-    // Cronômetro já rodando na interface antiga (o estado avulso tinha timerRemaining null).
-    if (typeof state.timerRemaining === 'number') return true;
-    if (state.answers && typeof state.answers === 'object' && Object.keys(state.answers).length > 0) return true;
-    return state.tokenValidated === true || state.versionAssigned === true;
-}
-
-function attemptContextForStudent({ application, studentEmail, examKey, create = false, studentClass, courseId } = {}) {
-    if (!application) {
-        const key = examStateKey({ studentEmail, examKey });
-        return { key, state: db.memory.studentExamState[key] || null };
-    }
-    const open = findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail });
-    if (open) return open;
-
-    // Migração transparente: uma tentativa aberta pela interface antiga é vinculada
-    // à aplicação atual na primeira requisição nova. Só vale para tentativa de verdade
-    // (iniciada, com respostas, token validado ou versão escolhida no Monitor): o estado
-    // avulso que versões anteriores gravavam com um evento de foco ou um desbloqueio
-    // depois da entrega virava uma tentativa fantasma travada ("Bloqueado" para quem já
-    // tinha entregado). Ele fica onde está, sem efeito.
-    const legacyKey = examStateKey({ studentEmail, examKey });
-    const legacyState = db.memory.studentExamState[legacyKey];
-    if (legacyState && !legacyState.applicationId && isLegacyAttemptInUse(legacyState)) {
-        const previousAttempts = filterStudentExamAttempts(db.memory.submissions, {
-            studentEmail,
-            examKey,
-            courseId,
-            applicationId: application.id,
-        });
-        legacyState.applicationId = application.id;
-        legacyState.attemptNumber = previousAttempts.length + 1;
-        legacyState.attemptId = legacyState.attemptId || `attempt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-        legacyState.id = legacyState.attemptId;
-        legacyState.status = legacyState.startedAt ? 'active' : 'instructions';
-        const key = examStateKey({ applicationId: application.id, studentEmail, attemptNumber: legacyState.attemptNumber });
-        db.memory.studentExamState[key] = legacyState;
-        delete db.memory.studentExamState[legacyKey];
-        return { key, state: legacyState };
-    }
-    if (!create) return { key: null, state: null };
-
-    const attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
-        studentEmail,
-        examKey,
-        courseId,
-        applicationId: application.id,
-    });
-    const state = createAttemptState({
-        application,
-        studentEmail,
-        attemptNumber: attemptsUsed + 1,
-        studentClass,
-        courseId,
-    });
-    const key = examStateKey({ applicationId: application.id, studentEmail, attemptNumber: state.attemptNumber });
-    db.memory.studentExamState[key] = state;
-    return { key, state };
-}
-
-// Finaliza a tentativa vencida do aluno nesta aplicação (nunca a recria). Com
-// graceMs 0 finaliza na hora; no sync espera o atraso normal do envio automático.
-function settleStudentAttempt(application, studentEmail, graceMs = SERVER_FINALIZE_DELAY_MS) {
-    if (!application) return [];
-    const { finalized, changed } = settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail, graceMs });
-    if (changed) db.save().catch(() => {});
-    return finalized;
-}
-
-// Cronômetro coletivo: uma tentativa nova começa no início da aplicação. Depois que
-// o tempo coletivo acabou, ela já nasceria vencida, então não é criada.
-function collectiveTimeOverForNewAttempt(application, studentEmail, now = Date.now()) {
-    if (!application || application.timerMode === 'per_attempt' || application.timerEnabled === false) return false;
-    const startsAt = Number(application.startsAt);
-    if (!(startsAt > 0) || startsAt > now) return false;
-    const email = String(studentEmail || '').trim().toLowerCase();
-    const deadlineAt = computeAttemptDeadline({
-        application,
-        state: {
-            startedAt: startsAt,
-            individualTimeAdjustment: Number(application.studentAdjustments?.[email] || 0),
-            accessibilityExtraMinutes: accessibilityExtraMinutes(email, application.durationMinutes),
-        },
-        now,
-    });
-    return deadlineAt !== null && deadlineAt <= now;
 }
 
 // A mesma sessão voltou à página da prova logo depois de recarregar ou sair dela: a
@@ -598,6 +509,14 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             if (req.query.applicationId && !application) {
                 return res.status(404).json({ error: 'Aplicação de prova não encontrada para esta turma.' });
             }
+            // Link antigo (aba aberta, link salvo) de uma aplicação já encerrada enquanto outra
+            // aplicação da mesma prova está em andamento: a configuração da turma é a da nova.
+            // A tela recebe a situação da aplicação que abriu; antes mostrava as instruções da
+            // nova com um "Iniciar prova" que só devolvia "já foi encerrada".
+            if (application && studentConfigs[examKey] && ['finished', 'cancelled'].includes(application.status)
+                && onlineCfg?.applicationId !== application.id) {
+                studentConfigs[examKey] = { ...studentConfigs[examKey], applicationId: application.id, status: application.status, onlineActive: false };
+            }
             // Tentativa vencida vira entrega (com as respostas salvas) antes de qualquer
             // outra decisão: assim ela conta como usada e nunca é recriada vazia.
             settleStudentAttempt(application, email);
@@ -614,7 +533,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             const openAttempt = application
                 ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
                 : null;
-            timeOver = !!application && !openAttempt?.state?.startedAt && collectiveTimeOverForNewAttempt(application, email);
+            timeOver = !!application && !openAttempt?.state?.startedAt && collectiveTimeOverForNewAttempt(application, email, Date.now(), openAttempt?.state || null);
             const context = application
                 ? attemptContextForStudent({
                     application,
@@ -1210,8 +1129,13 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     if (application.status === 'paused') {
         return res.status(409).json({ error: 'A prova está pausada pelo professor.', paused: true });
     }
+    // Encerrada ou cancelada: a prova já foi aplicada (link salvo, aba antiga). Antes a
+    // mensagem dizia que ela "ainda não foi iniciada".
+    if (['finished', 'cancelled'].includes(application.status)) {
+        return res.status(409).json({ error: 'Esta aplicação já foi encerrada pelo professor.', applicationClosed: true });
+    }
     if (!mayStart || !config?.onlineActive) {
-        return res.status(409).json({ error: 'A prova ainda não foi iniciada pelo professor.' });
+        return res.status(409).json({ error: 'A prova ainda não foi iniciada pelo professor.', notStarted: true });
     }
 
     const previousAttempts = filterStudentExamAttempts(db.memory.submissions, {
@@ -1230,14 +1154,26 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         });
     }
 
-    const context = attemptContextForStudent({
+    const attemptScope = {
         application,
         studentEmail: req.studentEmail,
         examKey: application.examKey,
         studentClass: cls.name,
         courseId: cls.courseId,
-        create: true,
-    });
+    };
+    let context = attemptContextForStudent(attemptScope);
+    if (!context.state) {
+        // Sem tentativa aberta, a nova só é criada quando pode começar de fato: antes
+        // ela era gravada e só depois vinham as recusas (token, tempo coletivo acabado),
+        // e o estado parado nas instruções contava em "Ainda não iniciaram".
+        if (application.tokenEnabled === true) {
+            return res.status(403).json({ error: 'Valide o token antes de iniciar a tentativa.', tokenRequired: true });
+        }
+        if (collectiveTimeOverForNewAttempt(application, req.studentEmail, now)) {
+            return res.status(409).json({ error: 'O tempo desta aplicação já terminou.', timeOver: true });
+        }
+        context = attemptContextForStudent({ ...attemptScope, create: true });
+    }
     const state = context.state;
     if (application.tokenEnabled === true && state.tokenValidated !== true) {
         return res.status(403).json({ error: 'Valide o token antes de iniciar a tentativa.', tokenRequired: true });
@@ -1811,10 +1747,15 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
             });
         });
 
-    // Só nota que o aluno de fato vê (Notas e boletim descartam nota vazia ou fora de 0 a 10).
-    (db.memory.submissions || [])
-        .filter(s => s && s.gradePublished === true && normalizeScore(s.score) !== null && String(s.student?.email || '').toLowerCase() === email
-            && (!s.student?.courseId || String(s.student.courseId) === courseId) && (!s.student?.studentClass || String(s.student.studentClass) === className))
+    // Só nota que o aluno de fato vê (Notas e boletim descartam nota vazia ou fora de 0 a 10),
+    // com o mesmo recorte de contexto da tela Notas (my-submissions): registro antigo sem
+    // curso ou turma entra só no contexto da matrícula do aluno. Antes ele aparecia no sino
+    // de todas as turmas do aluno, e o clique levava a uma tela Notas sem aquela nota.
+    scopeSubmissionsToContext(
+        (db.memory.submissions || []).filter(s => s && s.gradePublished === true && normalizeScore(s.score) !== null
+            && String(s.student?.email || '').toLowerCase() === email),
+        { courseId, studentClass: className, students: db.memory.students || [], classes: db.memory.classes || [] },
+    )
         .forEach(s => {
             const at = Number(s.gradePublishedAt || Date.parse(s.timestamp) || 0);
             items.push({ id: `nota:${s.id}`, type: 'nota', title: 'Nota publicada', text: studentApplicationLabel({ examKey: s.examKey }, cls), at, href: '/aluno/provas', unread: at > seenAt });

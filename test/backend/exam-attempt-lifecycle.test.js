@@ -86,7 +86,7 @@ test.after(async () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-async function createApplication({ timerMode = 'per_attempt', maxAttempts = 1 } = {}) {
+async function createApplication({ timerMode = 'per_attempt', maxAttempts = 1, start = true, ...extraOptions } = {}) {
     const history = await request(app)
         .post('/api/admin/exam-history/add')
         .set('x-admin-session', adminToken)
@@ -117,11 +117,27 @@ async function createApplication({ timerMode = 'per_attempt', maxAttempts = 1 } 
             courseId,
             examKey,
             historyId: history.body.entry.id,
-            applicationOptions: { timerMode, waitingRoomMinutes: 0, maxAttempts },
+            applicationOptions: { timerMode, waitingRoomMinutes: 0, maxAttempts, ...extraOptions },
         })
         .expect(201);
+    if (!start) return created.body.application;
     const started = await control(created.body.application.id, 'start');
     return started.body.application;
+}
+
+function validateToken(student, applicationId, token, attemptId = '') {
+    return request(app)
+        .post('/api/student/validate-exam-token')
+        .set('x-session-token', student.token)
+        .send({ email: student.email, studentClass, courseId, examKey, applicationId, attemptId, token });
+}
+
+function finishSummaryOf(applicationId) {
+    return request(app)
+        .get(`/api/admin/exam-applications/${applicationId}/finish-summary`)
+        .set('x-admin-session', adminToken)
+        .expect(200)
+        .then(response => response.body.summary);
 }
 
 function control(applicationId, action, extra = {}) {
@@ -566,8 +582,10 @@ test('[UC-TENTATIVA-001] pausar congela o cronômetro; pausa maior que o tempo r
     await control(application.id, 'pause');
     const stored = applicationOf(application.id);
     assert.equal(stored.pauses.length, 1);
-    stored.pauses[0].pausedAt = Date.now() - 5 * MIN;
-    stateOf(started.attemptId).startedAt = Date.now() - 5 * MIN - (DURATION_MIN * MIN - 60000);
+    // Um único "agora" para a pausa e o início (dois Date.now() seguidos davam 61 s às vezes).
+    const pausedNow = Date.now();
+    stored.pauses[0].pausedAt = pausedNow - 5 * MIN;
+    stateOf(started.attemptId).startedAt = pausedNow - 5 * MIN - (DURATION_MIN * MIN - 60000);
 
     const duringPause = await sync(ana, application.id, started.attemptId);
     assert.equal(duringPause.body.attemptId, started.attemptId);
@@ -1495,5 +1513,191 @@ test('[UC-TENTATIVA-001] recarregar pelo botão da tela de erro da prova é even
     assert.deepEqual(logged.map(log => log.eventType), ['exam_error_reload']);
     const row = (await monitorRows(application.id)).body.find(item => item.email === ana.email);
     assert.notEqual(row.status, 'focus_locked');
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] log-activity recusa com 400 tipo de evento desconhecido, forjado ou que não é texto', async () => {
+    const { ana } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const started = await startAttempt(ana, application.id);
+    const send = (body) => request(app).post('/api/student/log-activity').set('x-session-token', ana.token)
+        .send({ email: ana.email, studentClass, courseId, examKey, applicationId: application.id, attemptId: started.attemptId, ...body });
+    const before = db.memory.proctoringLogs.length;
+    for (const eventType of ['qualquer_coisa', 'focus_unlocked', 'page_return', '<script>']) {
+        const res = await send({ eventType, details: 'x' });
+        assert.equal(res.status, 400, `${eventType}: tipo fora da lista`);
+        assert.equal(res.body.error, 'Tipo de evento inválido.');
+    }
+    // Antes estes derrubavam a rota com 500 (trim de um valor que não é texto).
+    assert.equal((await send({ eventType: ['tab_blur'], details: 'x' })).status, 400);
+    assert.equal((await send({ eventType: { a: 1 }, details: 'x' })).status, 400);
+    assert.equal((await send({ eventType: 'exam_render_error', details: { message: 'x' } })).status, 400);
+    assert.equal(db.memory.proctoringLogs.length, before, 'nada gravado');
+    assert.equal(stateOf(started.attemptId).focusLocked, false);
+    // Evento válido continua aceito, com o detalhe limitado.
+    await send({ eventType: 'exam_render_error', details: 'e'.repeat(2000) }).expect(200);
+    const logged = db.memory.proctoringLogs.filter(log => log.attemptId === started.attemptId);
+    assert.deepEqual(logged.map(log => log.eventType), ['exam_render_error']);
+    assert.equal(logged[0].details.length, 500);
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] validar o token com o identificador de outra tentativa devolve a tentativa aberta: respostas e prazo ficam como estavam (CONF-02, AVA-03)', async () => {
+    // Cenário do revisor: cronômetro por aluno, token ABCDE, o aluno responde e, com uma
+    // requisição montada à mão, valida o token de novo com outro attemptId.
+    const { ana } = students;
+    const application = await createApplication({ timerMode: 'per_attempt', maxAttempts: 1, tokenEnabled: true, accessToken: 'ABCDE' });
+    await sync(ana, application.id);
+    const first = await validateToken(ana, application.id, 'ABCDE').expect(200);
+    assert.equal(first.body.valid, true);
+    const started = await startAttempt(ana, application.id);
+    assert.equal(started.attemptId, first.body.attemptId);
+    await autosave(ana, application.id, started.attemptId, { 1: 'A', 2: 'B', 3: 'C' }).expect(200);
+    const deadlineBefore = stateOf(started.attemptId).deadlineAt;
+
+    const forged = await validateToken(ana, application.id, 'ABCDE', 'attempt_qualquer').expect(200);
+    assert.equal(forged.body.valid, true);
+    assert.equal(forged.body.attemptId, started.attemptId, 'devolve a tentativa aberta, não cria outra');
+    assert.equal(openStatesOf(ana, application.id).length, 1);
+    const afterForged = await sync(ana, application.id, forged.body.attemptId);
+    assert.equal(afterForged.body.attemptId, started.attemptId);
+    assert.equal(afterForged.body.state.status, 'active');
+    assert.deepEqual(afterForged.body.state.answers, asStudentAnswers(application.id, { 1: 'A', 2: 'B', 3: 'C' }));
+    // Começar de novo não dá prazo novo: é a mesma tentativa, com o mesmo prazo.
+    const restart = await request(app)
+        .post(`/api/student/exam-applications/${application.id}/start-attempt`)
+        .set('x-session-token', ana.token)
+        .send({})
+        .expect(200);
+    assert.equal(restart.body.attemptId, started.attemptId);
+    assert.equal(stateOf(started.attemptId).deadlineAt, deadlineBefore);
+
+    // Vencida há 6 s (dentro da tolerância do envio automático): continua sendo a aberta.
+    expireAttempt(started.attemptId, 6000);
+    const expired = await validateToken(ana, application.id, 'ABCDE', 'attempt_qualquer').expect(200);
+    assert.equal(expired.body.attemptId, started.attemptId);
+    const afterExpired = await sync(ana, application.id, started.attemptId);
+    assert.equal(afterExpired.body.attemptId, started.attemptId);
+    assert.equal(afterExpired.body.state.timerRemaining, 0);
+    assert.deepEqual(afterExpired.body.state.answers, asStudentAnswers(application.id, { 1: 'A', 2: 'B', 3: 'C' }));
+    assert.equal(openStatesOf(ana, application.id).length, 1);
+    assert.equal(submissionsOf(ana, application.id).length, 0);
+
+    // Passada a tolerância, a tentativa vira entrega com as 3 respostas e o token não abre outra.
+    expireAttempt(started.attemptId, 45000);
+    const exhausted = await validateToken(ana, application.id, 'ABCDE', 'attempt_qualquer').expect(403);
+    assert.equal(exhausted.body.attemptsExhausted, true);
+    const [delivered] = submissionsOf(ana, application.id);
+    assert.equal(delivered.attemptId, started.attemptId);
+    assert.equal(delivered.answeredCount, 3);
+    assert.equal(delivered.submissionSource, 'deadline_server_auto_submit');
+    assert.equal(openStatesOf(ana, application.id).length, 0);
+    // "Ainda não iniciaram": só os 3 colegas que não abriram a prova (a Ana já entregou).
+    assert.equal((await finishSummaryOf(application.id)).waitingToStart, 3);
+    await control(application.id, 'finish');
+});
+
+test('[UC-TENTATIVA-001] token com as tentativas esgotadas ou o tempo coletivo acabado não cria tentativa fantasma', async () => {
+    const { bruno, carla } = students;
+    const application = await createApplication({ timerMode: 'per_attempt', maxAttempts: 1, tokenEnabled: true, accessToken: 'QWERT' });
+    await sync(bruno, application.id);
+    await validateToken(bruno, application.id, 'QWERT').expect(200);
+    const started = await startAttempt(bruno, application.id);
+    await submit(bruno, application.id, started, { 1: 'A' }, false).expect(200);
+    // Os outros 3 alunos da turma ainda não começaram; o Bruno já entregou.
+    assert.equal((await finishSummaryOf(application.id)).waitingToStart, 3);
+
+    const again = await validateToken(bruno, application.id, 'QWERT').expect(403);
+    assert.equal(again.body.attemptsExhausted, true);
+    assert.equal(openStatesOf(bruno, application.id).length, 0);
+    assert.equal((await finishSummaryOf(application.id)).waitingToStart, 3, 'o token não cria tentativa fantasma para quem já entregou');
+    // Token errado continua sendo só "inválido".
+    assert.equal((await validateToken(carla, application.id, 'ZZZZZ').expect(200)).body.valid, false);
+    assert.equal(openStatesOf(carla, application.id).length, 0);
+    await control(application.id, 'finish');
+
+    const collective = await createApplication({ timerMode: 'collective', tokenEnabled: true, accessToken: 'ASDFG' });
+    applicationOf(collective.id).startsAt -= DURATION_MIN * MIN + 40000;
+    const late = await validateToken(carla, collective.id, 'ASDFG').expect(409);
+    assert.equal(late.body.timeOver, true);
+    assert.equal(openStatesOf(carla, collective.id).length, 0);
+    // O início da tentativa também não grava nada (antes ficava um estado nas instruções).
+    const start = await request(app)
+        .post(`/api/student/exam-applications/${collective.id}/start-attempt`)
+        .set('x-session-token', carla.token)
+        .send({})
+        .expect(403);
+    assert.equal(start.body.tokenRequired, true);
+    assert.equal(openStatesOf(carla, collective.id).length, 0);
+    await control(collective.id, 'finish');
+});
+
+test('[UC-TENTATIVA-001] aplicação só preparada não aceita token nem início; encerrada diz que já foi encerrada', async () => {
+    const { diego } = students;
+    const prepared = await createApplication({ timerMode: 'per_attempt', tokenEnabled: true, accessToken: 'ZXCVB', start: false });
+    assert.equal(prepared.status, 'prepared');
+    const early = await validateToken(diego, prepared.id, 'ZXCVB').expect(409);
+    assert.equal(early.body.notStarted, true);
+    assert.equal(openStatesOf(diego, prepared.id).length, 0);
+    const startEarly = await request(app)
+        .post(`/api/student/exam-applications/${prepared.id}/start-attempt`)
+        .set('x-session-token', diego.token)
+        .send({})
+        .expect(409);
+    assert.equal(startEarly.body.error, 'A prova ainda não foi iniciada pelo professor.');
+    await control(prepared.id, 'start');
+    await control(prepared.id, 'finish');
+    const closed = await request(app)
+        .post(`/api/student/exam-applications/${prepared.id}/start-attempt`)
+        .set('x-session-token', diego.token)
+        .send({})
+        .expect(409);
+    assert.equal(closed.body.error, 'Esta aplicação já foi encerrada pelo professor.');
+    assert.equal(openStatesOf(diego, prepared.id).length, 0);
+});
+
+test('[UC-TENTATIVA-001] link antigo de aplicação encerrada com outra aplicação da prova em andamento: a tela recebe "encerrada", não as instruções da nova', async () => {
+    const { diego } = students;
+    const old = await createApplication({ timerMode: 'per_attempt' });
+    await control(old.id, 'finish');
+    const current = await createApplication({ timerMode: 'per_attempt' });
+    assert.equal(current.status, 'running');
+
+    // Antes a configuração da turma (a da aplicação nova, em andamento) ia junto com o
+    // identificador da antiga: a tela mostrava as instruções e o "Iniciar prova" só
+    // devolvia "Esta aplicação já foi encerrada pelo professor.".
+    const fromOldLink = (await sync(diego, old.id)).body;
+    assert.equal(fromOldLink.applicationId, old.id);
+    assert.equal(fromOldLink.onlineExamConfigs[examKey].status, 'finished');
+    assert.equal(fromOldLink.onlineExamConfigs[examKey].onlineActive, false);
+    assert.equal(fromOldLink.onlineExamConfigs[examKey].applicationId, old.id);
+    assert.equal(openStatesOf(diego, old.id).length, 0);
+
+    const fromCurrent = (await sync(diego, current.id)).body;
+    assert.equal(fromCurrent.applicationId, current.id);
+    assert.equal(fromCurrent.onlineExamConfigs[examKey].status, 'running');
+    assert.equal(fromCurrent.onlineExamConfigs[examKey].onlineActive, true);
+    await control(current.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] "+N min" de um aluno vale só para a tentativa em andamento, não para a seguinte', async () => {
+    const { diego } = students;
+    const application = await createApplication({ timerMode: 'per_attempt', maxAttempts: 2 });
+    const first = await startAttempt(diego, application.id);
+    assert.ok(Math.abs(Number(first.state.timerRemaining) - DURATION_MIN * 60) <= 3);
+    await request(app)
+        .post('/api/admin/adjust-student-time')
+        .set('x-admin-session', adminToken)
+        .send({ studentClass, courseId, examKey, applicationId: application.id, targetEmail: diego.email, adjustmentMinutes: 5 })
+        .expect(200);
+    const during = await sync(diego, application.id, first.attemptId);
+    assert.ok(Number(during.body.state.timerRemaining) >= (DURATION_MIN + 5) * 60 - 3);
+    await submit(diego, application.id, first, { 1: 'A' }, false).expect(200);
+    assert.equal(submissionsOf(diego, application.id)[0].individualTimeAdjustment, 5);
+
+    const second = await startAttempt(diego, application.id);
+    assert.notEqual(second.attemptId, first.attemptId);
+    const remaining = Number(second.state.timerRemaining);
+    assert.ok(remaining <= DURATION_MIN * 60 && remaining >= DURATION_MIN * 60 - 3, `a tentativa 2 nasce com a duração normal: ${remaining}`);
     await control(application.id, 'finish', { inProgressPolicy: 'discard' });
 });

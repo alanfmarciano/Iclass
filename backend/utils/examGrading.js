@@ -148,6 +148,8 @@ function createSubmissionFromAttempt({
         examSnapshot: grade.examSnapshot,
         examConfigVersion: application?.contentVersion || onlineConfig?.updatedAt || state?.examConfigVersion || null,
         attemptNumber: state?.attemptNumber || previousAttempts.length + 1,
+        // "+N min" dado a este aluno nesta tentativa (o da aplicação inteira fica nela).
+        individualTimeAdjustment: Number(state?.individualTimeAdjustment || 0),
         resultStatus: 'considered',
         aggregationPolicy: previousPolicy,
         selectedForResult: false,

@@ -15,8 +15,9 @@ import { api } from '../../lib/api'
 import { fmtGrade } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
+import { classTimeExtraFeedback, resolveMonitorTimer, rowStartedAttempt, rowTimerLabel } from './monitorTimer'
 import { attemptCountLabel, deliveryLabel, deliveryTone } from './attemptDelivery'
+import { liveCorrectionDraft } from './examTools'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
@@ -692,18 +693,7 @@ export default function MonitorPage() {
   }
 
   function openCorrection(group) {
-    const question = group.question || {}
-    const alternatives = (question.alternatives || []).map((alternative, index) => ({
-      letter: String(alternative.letter || String.fromCharCode(65 + index)).toUpperCase(),
-      text: alternative.text || '',
-    }))
-    const correctAnswer = String(question.correctAnswer || alternatives.find((alternative, index) => question.alternatives?.[index]?.isCorrect)?.letter || alternatives[0]?.letter || 'A').toUpperCase()
-    setCorrectIssue({
-      group,
-      text: question.questionText || question.text || '',
-      alternatives,
-      correctAnswer,
-    })
+    setCorrectIssue({ group, ...liveCorrectionDraft(group.question || {}) })
   }
 
   async function saveCorrection() {
@@ -947,7 +937,8 @@ export default function MonitorPage() {
   const totalStudents = rows.length
   const online = rows.filter((r) => ['online', 'active'].includes(r.status)).length
   const finished = rows.filter((r) => r.status === 'finished').length
-  const started = rows.filter((r) => !['absent', 'ausente'].includes(r.status)).length
+  // Só quem começou uma tentativa nesta aplicação (antes contava todo aluno online).
+  const started = rows.filter(rowStartedAttempt).length
   const alerts = rows.filter((r) => r.status === 'blur' || r.status === 'focus_locked' || r.focusLocked).length
   const absent = rows.filter((r) => ['absent', 'ausente'].includes(r.status)).length
 
@@ -1209,6 +1200,7 @@ export default function MonitorPage() {
                 {rows.map((r, i) => {
                   const st = STATUS[r.status] || ['neutral', r.status || '-']
                   const recentLogs = (r.logs || []).slice(-2).map(focusLogLabel)
+                  const notStarted = rowTimerLabel(r, monitorTimer, fmt) === 'Não iniciou'
                   return (
                     <tr key={r.email || i} className="border-b border-border last:border-0">
                       <td className="px-4 py-3"><div className="font-medium text-text">{r.name || r.email}</div><div className="text-xs text-muted">{r.email}</div></td>
@@ -1222,7 +1214,7 @@ export default function MonitorPage() {
                         {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLocked ? 'Reaberta com o tempo extra da turma: desbloqueie para o aluno continuar' : 'Reaberta com o tempo extra da turma'}</p>}
                       </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email)}>{r.assignedVersion || 'A'}</Button></td>
-                      <td className="px-4 py-3 font-mono text-muted">{fmt(r.timerRemaining)}</td>
+                      <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
                       <td className="px-4 py-3 font-mono text-muted">{r.progress || '-'}</td>
                       <td className="px-4 py-3">
                         <button
@@ -1320,8 +1312,9 @@ export default function MonitorPage() {
             <div className="space-y-2">
               <p className="text-sm font-medium text-text">Alternativas e gabarito</p>
               {correctIssue.alternatives.map((alternative, index) => (
-                <div key={alternative.letter} className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-border p-2">
+                <div key={alternative.letter} className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-border p-2">
                   <input type="radio" name="live-correct-answer" checked={correctIssue.correctAnswer === alternative.letter} onChange={() => setCorrectIssue((current) => ({ ...current, correctAnswer: alternative.letter }))} aria-label={`Marcar ${alternative.letter} como correta`} />
+                  <span className="w-5 text-sm font-semibold text-text" aria-hidden="true">{alternative.letter})</span>
                   <Input value={alternative.text} onChange={(event) => setCorrectIssue((current) => ({ ...current, alternatives: current.alternatives.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item) }))} aria-label={`Texto da alternativa ${alternative.letter}`} />
                 </div>
               ))}

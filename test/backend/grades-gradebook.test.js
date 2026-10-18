@@ -613,6 +613,30 @@ test('[UC-NOTAS-001] colega só com nota inválida não puxa a média da turma; 
     assert.equal(webGrades.fmtGrade(analytics.body.averageScore), '—', 'o Monitor mostra "—"');
 });
 
+test('[UC-NOTAS-001] análise da prova: média consolidada por aluno; questões contam todas as tentativas', async () => {
+    // Ana fez 3 tentativas na mesma aplicação (20, 30 e 40; regra "maior" = 40) e Bia
+    // uma (100). Média consolidada por aluno = (40 + 100) / 2 = 70. Antes era a média
+    // simples das 4 entregas: (20 + 30 + 40 + 100) / 4 = 47,5 → 48.
+    const answer = (isCorrect) => [{ questionNumber: 1, isCorrect, studentChoice: isCorrect ? 'A' : 'B' }];
+    db.memory.submissions = [
+        submission('ana_t1', { examKey: 'Avaliacao_P3', applicationId: 'app_p3', score: 20, extra: { attemptNumber: 1, gradedAnswers: answer(false) } }),
+        submission('ana_t2', { examKey: 'Avaliacao_P3', applicationId: 'app_p3', score: 30, extra: { attemptNumber: 2, gradedAnswers: answer(false) } }),
+        submission('ana_t3', { examKey: 'Avaliacao_P3', applicationId: 'app_p3', score: 40, extra: { attemptNumber: 3, gradedAnswers: answer(false) } }),
+        submission('bia_t1', { email: 'bia@notas.local', name: 'Bia', examKey: 'Avaliacao_P3', applicationId: 'app_p3', score: 100, extra: { gradedAnswers: answer(true) } }),
+    ];
+    const analytics = await admin(request(app).get('/api/admin/exam-analytics/1DES/Avaliacao_P3?applicationId=app_p3'));
+    assert.equal(analytics.status, 200, analytics.body.error);
+    assert.equal(analytics.body.totalSubmissions, 4);
+    assert.equal(analytics.body.studentCount, 2);
+    assert.equal(analytics.body.averageScore, 70, 'cada aluno conta uma vez, pela nota consolidada');
+    assert.equal(analytics.body.validScoreCount, 2);
+    assert.deepEqual(analytics.body.gradeBuckets, { baixo: 1, medio: 0, alto: 1 });
+    const q1 = analytics.body.questions.find(item => item.questionNumber === 1);
+    assert.equal(q1.attempts, 4, 'a estatística por questão continua com todas as tentativas');
+    assert.equal(q1.correct, 1);
+    assert.equal(q1.accuracyPercent, 25);
+});
+
 test('[UC-NOTAS-004] lixeira de notas: a exclusão pode ser desfeita e fica registrada', async () => {
     const created = await createGrade({ examKey: 'Avaliacao_P2', correctCount: 7, totalCount: 10 });
     const id = created.body.submissionId;

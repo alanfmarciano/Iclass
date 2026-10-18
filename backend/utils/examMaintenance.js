@@ -180,7 +180,7 @@ function planClassReset(memory, { cls, courseExamKeys, isClassStudent, examTitle
                 ...applicationSummary(item, examTitle),
                 inProgressAttempts: summary.inProgressAttempts,
                 answeredQuestions: summary.answeredQuestions,
-                waitingToStart: summary.waitingToStart,
+                waitingToStart: summary.instructionsAttempts,
                 timeOverAttempts: summary.timeOverAttempts,
             };
         }),

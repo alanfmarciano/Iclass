@@ -129,6 +129,27 @@ export function buildExamVersions(evaluation, options = {}) {
   })
 }
 
+// Formulário "Corrigir questão" do Monitor: alternativas na ordem original (A, B, C, D),
+// pelas letras do gabarito, qualquer que seja a versão em que a contestação chegou (a
+// versão embaralhada mostrava C, A, D, B). O servidor aplica a correção mantendo a
+// ordem de cada versão.
+export function liveCorrectionDraft(question = {}) {
+  const source = Array.isArray(question?.alternatives) ? question.alternatives : []
+  const alternatives = source
+    .map((alternative, index) => ({
+      letter: String(alternative?.letter || LETTERS[index] || '').toUpperCase(),
+      text: alternative?.text || '',
+      isCorrect: alternative?.isCorrect === true,
+    }))
+    .sort((a, b) => a.letter.localeCompare(b.letter))
+  const correctAnswer = String(question?.correctAnswer || alternatives.find((alternative) => alternative.isCorrect)?.letter || alternatives[0]?.letter || 'A').toUpperCase()
+  return {
+    text: question?.questionText || question?.text || '',
+    alternatives: alternatives.map(({ letter, text }) => ({ letter, text })),
+    correctAnswer,
+  }
+}
+
 // Aplicação em andamento (sala de espera, rodando ou pausada) entre as aplicações da
 // prova na turma. Enquanto ela existir não se prepara outra: o servidor recusa (409)
 // e a tela aponta para o Monitor, onde o professor decide o que fazer com as respostas.

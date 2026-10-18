@@ -221,7 +221,8 @@ test('[UC-TENTATIVA-001] evento de foco depois da entrega (limite 1) fica só no
 
     const summary = await admin('get', `/api/admin/exam-applications/${application.id}/finish-summary`).expect(200);
     const body = summary.body.summary || summary.body;
-    assert.equal(body.waitingToStart, 0, '"Ainda não iniciaram" não conta quem já entregou');
+    // "Ainda não iniciaram" não conta quem já entregou: só os 3 colegas que não abriram a prova.
+    assert.equal(body.waitingToStart, 3, '"Ainda não iniciaram" não conta quem já entregou');
     assert.equal(body.inProgressAttempts, 0);
 
     const listed = await request(app)
@@ -372,5 +373,45 @@ test('[UC-TENTATIVA-001] "Dispositivo sem tela cheia" é registrado uma vez por 
     assert.equal(logsFor().length, 2);
     const row = await monitorRow(diego, application.id);
     assert.equal(row.fullscreenUnsupported, true);
+    await finishOpenApplications();
+});
+
+test('[UC-TENTATIVA-001] cronômetro por aluno: quem não começou aparece sem tempo correndo e fora de "Iniciaram"; "Ainda não iniciaram" conta quem não começou nesta aplicação', async () => {
+    const { ana, bruno, carla, diego } = students;
+    const application = await createApplication({ maxAttempts: 2 });
+    // A aplicação abriu há 40 min (mais que os 30 da prova): quem ainda não começou
+    // continua com o tempo inteiro pela frente. Antes o Monitor mostrava 0:00 para eles.
+    const stored = db.memory.examApplications.find(item => item.id === application.id);
+    stored.startsAt -= 40 * 60000;
+    const cls = db.memory.classes.find(item => item.name === studentClass);
+    cls.onlineExamConfigs[examKey].startTime = stored.startsAt;
+
+    const first = await startAttempt(ana, application.id);
+    await sync(bruno, application.id); // parado nas instruções
+    const anaRow = await monitorRow(ana, application.id);
+    assert.equal(anaRow.attemptStarted, true);
+    assert.ok(anaRow.timerRemaining > 29 * 60, `tempo da tentativa da Ana: ${anaRow.timerRemaining}`);
+    for (const student of [bruno, carla]) {
+        const row = await monitorRow(student, application.id);
+        assert.equal(row.attemptStarted, false, `${student.email} não começou`);
+        assert.equal(row.timerRemaining, null, `${student.email} sem tempo correndo`);
+    }
+    const summaryOf = async () => (await admin('get', `/api/admin/exam-applications/${application.id}/finish-summary`).expect(200)).body.summary;
+    assert.equal((await summaryOf()).waitingToStart, 3, 'Bruno (instruções), Carla e Diego (nunca abriram)');
+
+    // A Ana entrega a tentativa 1 e fica na tela de envio: o sync dela cria a tentativa 2
+    // nas instruções, e ela continua fora de "Ainda não iniciaram".
+    await submit(ana, application.id, first, { 1: 'A' });
+    const afterDelivery = await sync(ana, application.id, first.attemptId);
+    assert.equal(afterDelivery.body.state.status, 'instructions');
+    const summary = await summaryOf();
+    assert.equal(summary.waitingToStart, 3);
+    assert.equal(summary.instructionsAttempts, 2, 'tentativas paradas nas instruções: Bruno e a 2 da Ana');
+    const delivered = await monitorRow(ana, application.id);
+    assert.equal(delivered.status, 'finished');
+    assert.equal(delivered.attemptStarted, true, 'quem já entregou nesta aplicação conta em "Iniciaram"');
+
+    await startAttempt(diego, application.id);
+    assert.equal((await summaryOf()).waitingToStart, 2);
     await finishOpenApplications();
 });

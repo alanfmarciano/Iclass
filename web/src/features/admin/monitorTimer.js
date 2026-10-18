@@ -44,8 +44,10 @@ export function resolveMonitorTimer({ config = {}, rows = [], now = Date.now(), 
   }
 
   const secondsSinceSync = Math.max(0, Math.floor((now - Number(rowsSyncedAt || now)) / 1000))
+  // Só conta quem começou a tentativa: quem ainda não começou recebe o tempo inteiro ao
+  // começar e fica fora de "Menor tempo restante" e da contagem de cronômetros.
   const individualTimes = rows
-    .filter(row => row?.status !== 'finished' && row?.timerRemaining !== null && row?.timerRemaining !== undefined)
+    .filter(row => row?.status !== 'finished' && row?.attemptStarted !== false && row?.timerRemaining !== null && row?.timerRemaining !== undefined)
     .map(row => Number(row.timerRemaining))
     .filter(value => Number.isFinite(value) && value >= 0)
     .map(value => Math.max(0, value - secondsSinceSync))
@@ -115,4 +117,18 @@ export function classTimeExtraFeedback(response, minutes = 5) {
       : `${nextStarted} alunos entregues automaticamente no fim do tempo já tinham começado a tentativa seguinte: as entregas anteriores ficaram como estavam e o tempo extra vale para a tentativa em andamento`)
   }
   return { tone: kept || reopenedLocked || nextStarted ? 'warning' : 'success', message: parts.length > 1 ? `${parts.join('. ')}.` : parts[0] }
+}
+
+// Começou uma tentativa nesta aplicação (em andamento ou já entregue). Quem só está com o
+// portal aberto, ou parado nas instruções, não conta em "Iniciaram".
+export function rowStartedAttempt(row) {
+  if (!row) return false
+  if (row.attemptStarted === true) return true
+  return ['finished', 'time_over', 'discarded'].includes(row.status)
+}
+
+// Texto da coluna "Tempo": no cronômetro por aluno, quem ainda não começou não tem tempo correndo.
+export function rowTimerLabel(row, { collective = true, enabled = true } = {}, format = (value) => String(value)) {
+  if (enabled && !collective && row?.status !== 'finished' && !rowStartedAttempt(row)) return 'Não iniciou'
+  return format(row?.timerRemaining)
 }

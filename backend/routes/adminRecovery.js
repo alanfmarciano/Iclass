@@ -96,6 +96,11 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             accountsNotRestored: Number(details.accountsNotRestored) || 0,
             exportedAt: details.exportedAt || '',
             error: details.error || '',
+            // Backup de versão anterior (sem as aplicações de prova): quantas aplicações
+            // atuais saíram e quantas foram refeitas a partir das turmas do backup.
+            legacyApplications: details.legacyApplications === true,
+            applicationsDiscarded: Number(details.applicationsDiscarded) || 0,
+            applicationsRebuilt: Number(details.applicationsRebuilt) || 0,
         };
     }
 
@@ -208,23 +213,33 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 }
                 // Contas de acesso atuais ficam como estão, salvo pedido explícito.
                 const replaceAccounts = ['1', 'true', 'sim', 'on'].includes(String(req.body.replaceAccounts || '').trim().toLowerCase());
+                // Backup de versão anterior: só depois de a tela mostrar o aviso (acceptLegacy).
+                const acceptLegacy = ['1', 'true', 'sim', 'on'].includes(String(req.body.acceptLegacy || '').trim().toLowerCase());
                 const fileInfo = { file: String(req.file.originalname || '').slice(0, 200), size: req.file.size || 0, replaceAccounts };
                 const backupHistory = (db.memory.auditLogs || []).filter(isBackupAuditEntry).map(entry => structuredClone(entry));
                 try {
-                    const summary = await backupUtil.restoreFromFile(temporaryFile, req.file.originalname, { replaceAccounts });
+                    const summary = await backupUtil.restoreFromFile(temporaryFile, req.file.originalname, { replaceAccounts, acceptLegacy });
                     discardUpload(temporaryFile);
                     keepBackupHistory(backupHistory);
                     // Contas do backup que não existem aqui e ficaram de fora (só sem a substituição).
                     const current = new Set((db.memory.admins || []).map(account => String((account && account.email) || '').toLowerCase()));
                     const accountsNotRestored = replaceAccounts ? 0 : (summary.accountEmails || []).filter(email => !current.has(email)).length;
+                    const legacyInfo = summary.legacyApplications
+                        ? { legacyApplications: true, applicationsDiscarded: summary.applicationsDiscarded || 0, applicationsRebuilt: summary.applicationsRebuilt || 0 }
+                        : {};
                     recordBackupAudit(req, matchedAdmin, 'backup_restored', {
                         ...fileInfo,
                         format: summary.format, exportedAt: summary.exportedAt, collections: summary.collections, accountsNotRestored,
+                        ...legacyInfo,
                     });
                     await db.save();
-                    res.json({ success: true, replaceAccounts, accountsNotRestored });
+                    res.json({ success: true, replaceAccounts, accountsNotRestored, ...legacyInfo });
                 } catch (restoreError) {
                     discardUpload(temporaryFile);
+                    if (restoreError.legacyBackup) {
+                        // Nada foi restaurado: a tela mostra o aviso e pede a confirmação.
+                        return res.status(409).json({ error: restoreError.message, legacyBackup: true, exportedAt: restoreError.exportedAt });
+                    }
                     keepBackupHistory(backupHistory);
                     recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...fileInfo, error: String(restoreError.message || '').slice(0, 300) });
                     await db.save().catch(() => {});

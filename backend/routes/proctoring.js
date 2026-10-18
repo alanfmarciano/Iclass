@@ -14,12 +14,12 @@ const {
 const { countStudentExamAttempts, normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { normalizeExamToken, verifyExamToken } = require('../utils/examToken.js');
 const {
-    createAttemptState,
     examStateKey,
     findExamApplication,
     findOpenAttemptState,
 } = require('../utils/examApplications.js');
-const { attemptOverdueMs } = require('../utils/examDeadline.js');
+const { attemptContextForStudent, newAttemptGate } = require('../utils/studentAttemptContext.js');
+const { SERVER_FINALIZE_DELAY_MS, attemptOverdueMs, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
@@ -34,6 +34,17 @@ const FOCUS_LOCK_EVENTS = new Set(['tab_blur', 'exam_left', 'fullscreen_exit']);
 // Eventos registrados uma vez por tentativa: recarregar a página ou voltar à prova não
 // repete "Dispositivo sem tela cheia" no Monitor e nos logs.
 const ONCE_PER_ATTEMPT_EVENTS = new Set(['fullscreen_unsupported']);
+// Eventos que o navegador do aluno pode registrar (os que a prova envia, mais os de
+// versões anteriores da tela que o Monitor ainda sabe mostrar). Os gerados pelo próprio
+// servidor (page_return, focus_unlocked) e qualquer outro texto são recusados com 400:
+// antes qualquer tipo era gravado (o aluno podia forjar "Liberado pelo professor" no
+// Monitor) e um tipo ou detalhe que não fosse texto derrubava a rota com 500.
+const STUDENT_ACTIVITY_EVENTS = new Set([
+    'tab_blur', 'tab_focus', 'exam_left', 'exam_return',
+    'fullscreen_exit', 'fullscreen_unsupported',
+    'exam_render_error', 'exam_error_reload', 'exam_update_reload',
+]);
+const ACTIVITY_DETAILS_MAX = 500;
 
 function applicationForClass(cls, examKey, applicationId) {
     const id = applicationId || cls?.onlineExamConfigs?.[examKey]?.applicationId;
@@ -95,27 +106,14 @@ function rejectForeignMessageClass(req, res, studentClass, courseId) {
     return rejectForeignClass(req, res, cls);
 }
 
-function stateContext({ application, studentEmail, examKey, attemptId, create = false, cls } = {}) {
+// Tentativa a que um evento ou rascunho se refere: a aberta do aluno, desde que seja a
+// mesma que o navegador informou. Daqui nunca nasce tentativa (a validação do token usa
+// utils/studentAttemptContext.js, como o sync e o início da tentativa).
+function stateContext({ application, studentEmail, examKey, attemptId } = {}) {
     if (application) {
         const open = findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail });
         if (open && (!attemptId || open.state.attemptId === attemptId)) return open;
-        if (!create) return { key: null, state: null };
-        const attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
-            studentEmail,
-            examKey,
-            courseId: application.courseId,
-            applicationId: application.id,
-        });
-        const state = createAttemptState({
-            application,
-            studentEmail,
-            attemptNumber: attemptsUsed + 1,
-            studentClass: application.studentClass,
-            courseId: application.courseId,
-        });
-        const key = examStateKey({ applicationId: application.id, studentEmail, attemptNumber: state.attemptNumber });
-        db.memory.studentExamState[key] = state;
-        return { key, state };
+        return { key: null, state: null };
     }
     const key = examStateKey({ studentEmail, examKey });
     return { key, state: db.memory.studentExamState[key] || null };
@@ -127,6 +125,12 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
         const { email, studentClass, courseId, examKey, applicationId, attemptId, eventType, details } = req.body;
         if (!email || !examKey || !eventType) {
             return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+        }
+        if (typeof examKey !== 'string' || typeof eventType !== 'string' || !STUDENT_ACTIVITY_EVENTS.has(eventType.trim())) {
+            return res.status(400).json({ error: 'Tipo de evento inválido.' });
+        }
+        if (details != null && typeof details !== 'string') {
+            return res.status(400).json({ error: 'Detalhes do evento inválidos.' });
         }
         const normalizedEmail = req.studentEmail;
         const normalizedExamKey = examKey.trim();
@@ -163,7 +167,7 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
             attemptId: eventAttemptId,
             timestamp: Date.now(),
             eventType: normalizedEventType,
-            details: details ? details.trim() : ''
+            details: details ? details.trim().slice(0, ACTIVITY_DETAILS_MAX) : ''
         };
         
         db.memory.proctoringLogs.push(logEntry);
@@ -305,10 +309,12 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
         const application = applicationForClass(cls, examKey.trim(), applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
         const context = stateContext({ application, studentEmail: normalizedEmail, examKey: examKey.trim(), attemptId, cls });
-        const key = context.key || examStateKey({ studentEmail: normalizedEmail, examKey: examKey.trim() });
+        // Com aplicação, o rascunho vai só para a tentativa aberta que o navegador conhece
+        // (uma aba antiga com outra tentativa recebe 409, sem cair no estado avulso).
+        const key = context.key || (application ? null : examStateKey({ studentEmail: normalizedEmail, examKey: examKey.trim() }));
 
         // Preserva campos internos já existentes (ex.: tokenValidated) ao salvar o rascunho.
-        const existing = context.state || db.memory.studentExamState[key];
+        const existing = context.state || (key ? db.memory.studentExamState[key] : null);
         if (!existing || !existing.startedAt) {
             return res.status(409).json({ error: 'A prova ainda não foi iniciada no servidor.' });
         }
@@ -553,7 +559,7 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
         if (!_rl.allowed) {
             return res.status(429).json({ error: 'Muitas tentativas. Aguarde um instante e tente novamente.' });
         }
-        const { email, studentClass, courseId, examKey, applicationId, attemptId, token } = req.body;
+        const { email, studentClass, courseId, examKey, applicationId, token } = req.body;
         if (!email || !examKey) {
             return res.status(400).json({ error: 'Campos email e examKey são obrigatórios.' });
         }
@@ -584,9 +590,52 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
             return res.json({ success: true, valid: false });
         }
 
-        const context = stateContext({ application, studentEmail: normalizedEmail, examKey: examKey.trim(), attemptId, create: true, cls });
-        const stateKey = context.key || examStateKey({ studentEmail: normalizedEmail, examKey: examKey.trim() });
-        const existing = context.state || {
+        if (application) {
+            // A tentativa aberta é sempre a que continua, qualquer que seja o identificador
+            // que o navegador mandou (aba antiga, outro aparelho, tentativa anterior): o
+            // token só é marcado nela, sem mexer em respostas nem no prazo. Antes, um
+            // identificador diferente gravava uma tentativa nova na mesma chave, as
+            // respostas sumiam e o cronômetro por aluno recomeçava do zero. A tentativa
+            // vencida que ainda espera a entrega automática também continua sendo a aberta.
+            const { changed } = settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: normalizedEmail, graceMs: SERVER_FINALIZE_DELAY_MS });
+            if (changed) db.save();
+            const scope = {
+                application,
+                studentEmail: normalizedEmail,
+                examKey: examKey.trim(),
+                studentClass: cls.name,
+                courseId: cls.courseId,
+            };
+            let context = attemptContextForStudent(scope);
+            if (!context.state) {
+                // Sem tentativa aberta, a nova só nasce quando o aluno pode começar (as
+                // mesmas regras do sync); senão nada é gravado.
+                const gate = newAttemptGate(application, { studentEmail: normalizedEmail, onlineConfig: cfg, courseId: cls.courseId });
+                if (!gate.applicationActive) {
+                    return res.status(409).json({ error: 'A prova ainda não começou. Aguarde o professor iniciar a aplicação.', notStarted: true });
+                }
+                if (gate.attemptsExhausted) {
+                    return res.status(403).json({
+                        error: 'Limite de tentativas atingido.',
+                        attemptsExhausted: true,
+                        attemptsUsed: gate.attemptsUsed,
+                        maxAttempts: gate.maxAttempts,
+                    });
+                }
+                if (gate.timeOver) {
+                    return res.status(409).json({ error: 'O tempo desta aplicação já terminou.', timeOver: true });
+                }
+                context = attemptContextForStudent({ ...scope, create: true });
+            }
+            context.state.tokenValidated = true;
+            db.memory.studentExamState[context.key] = context.state;
+            db.save();
+            return res.json({ success: true, valid: true, applicationId: application.id, attemptId: context.state.attemptId || null });
+        }
+
+        // Prova sem aplicação (interface antiga): estado avulso por aluno e prova.
+        const stateKey = examStateKey({ studentEmail: normalizedEmail, examKey: examKey.trim() });
+        const existing = db.memory.studentExamState[stateKey] || {
             studentEmail: normalizedEmail,
             examKey: examKey.trim(),
             answers: {},
@@ -595,11 +644,10 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
             individualTimeAdjustment: 0
         };
         existing.tokenValidated = true;
-        if (application) existing.applicationId = application.id;
         db.memory.studentExamState[stateKey] = existing;
         db.save();
 
-        res.json({ success: true, valid: true, applicationId: application?.id || null, attemptId: existing.attemptId || null });
+        res.json({ success: true, valid: true, applicationId: null, attemptId: existing.attemptId || null });
     } catch (err) {
         console.error('Erro ao validar token de prova:', err);
         res.status(500).json({ error: 'Erro interno no servidor.' });

@@ -318,6 +318,31 @@ function normalizeLiveQuestion(payload = {}) {
     return { text, questionText: text, alternatives, correctAnswer };
 }
 
+// Correção ao vivo de uma questão numa versão da prova: enunciado, textos e gabarito
+// novos, mas cada versão mantém a ordem das alternativas que os alunos dela estão
+// vendo. A alternativa corrigida é achada pela letra original (a do gabarito e dos
+// identificadores das respostas salvas); a que o professor acrescentou vai para o fim e a
+// que ele tirou sai. A letra impressa (displayLetter) é a da posição, como na montagem
+// das versões. Antes todas as versões recebiam as alternativas na ordem do formulário
+// (A, B, C, D) e o embaralhamento sumia no meio da prova.
+function correctedVersionQuestion(question, normalized, number) {
+    const byLetter = new Map(normalized.alternatives.map(alternative => [alternative.letter, alternative]));
+    const ordered = [];
+    (Array.isArray(question?.alternatives) ? question.alternatives : []).forEach((alternative, index) => {
+        const letter = String((alternative && alternative.letter) || String.fromCharCode(65 + index)).toUpperCase();
+        if (!byLetter.has(letter)) return;
+        ordered.push(byLetter.get(letter));
+        byLetter.delete(letter);
+    });
+    byLetter.forEach(alternative => ordered.push(alternative));
+    return {
+        ...question,
+        ...normalized,
+        originalNumber: number,
+        alternatives: ordered.map((alternative, index) => ({ ...alternative, displayLetter: String.fromCharCode(65 + index) })),
+    };
+}
+
 function applicationForAdminRequest(applicationId) {
     const application = findExamApplication(db.memory.examApplications, applicationId);
     if (!application) throw Object.assign(new Error('Aplicação de prova não encontrada.'), { status: 404 });
@@ -654,12 +679,14 @@ function createAdminExamConfigRouter() {
                     snapshot.questions = (snapshot.questions || []).map((question, index) => {
                         if (questionNumber(question, index) !== number) return question;
                         updatedSnapshots += 1;
-                        return {
-                            ...question,
-                            ...normalized,
-                            originalNumber: number,
-                            alternatives: normalized.alternatives.map(alternative => ({ ...alternative, displayLetter: alternative.letter })),
-                        };
+                        const corrected = correctedVersionQuestion(question, normalized, number);
+                        // Gabarito impresso da versão (letra da posição) acompanha a correção.
+                        if (snapshot.answerKey && typeof snapshot.answerKey === 'object') {
+                            const position = Number(question.examNumber) > 0 ? Number(question.examNumber) : index + 1;
+                            const correct = corrected.alternatives.find(alternative => alternative.isCorrect);
+                            if (correct) snapshot.answerKey[position] = correct.displayLetter;
+                        }
+                        return corrected;
                     });
                 });
                 if (updatedSnapshots === 0) return res.status(404).json({ error: 'Questão não encontrada nesta aplicação.' });

@@ -438,6 +438,35 @@ test('[UC-NOTIF-001] sino do aluno: "Nota publicada" só com nota válida e "Mar
     assert.equal((await request(app).get(urlB).set('x-session-token', tokens.ana)).body.unread, 0);
 });
 
+test('[UC-NOTIF-001] sino do aluno: "Nota publicada" tem o mesmo recorte de contexto da tela Notas', async () => {
+    const ana = db.memory.students.find(student => student.email === 'ana@portal.local');
+    ana.classes = [{ name: 'TURMA A', courseId: courseA }, { name: 'TURMA B', courseId: courseB }];
+    const grade = (id, student) => ({
+        id, examKey: `Avaliacao_${id}`, score: 80, gradePublished: true, gradePublishedAt: Date.now() - 1000, timestamp: new Date().toISOString(),
+        student: { name: 'Ana', email: 'ana@portal.local', ...student },
+    });
+    db.memory.submissions = [
+        grade('A1', { courseId: courseA, studentClass: 'TURMA A' }),
+        grade('B1', { courseId: courseB, studentClass: 'TURMA B' }),
+        // Registro antigo sem curso nem turma: a tela Notas o põe só na primeira matrícula
+        // (TURMA A). Antes o sino o mostrava nas duas turmas.
+        grade('LEG', {}),
+        // Registro antigo só com a turma B: é da TURMA B (curso B), não da A.
+        grade('LEGB', { studentClass: 'TURMA B' }),
+    ];
+    for (const [courseId, studentClass] of [[courseA, 'TURMA A'], [courseB, 'TURMA B']]) {
+        const bell = await request(app).get(`/api/student/notifications?courseId=${courseId}&studentClass=${encodeURIComponent(studentClass)}`)
+            .set('x-session-token', tokens.ana).expect(200);
+        const notas = await request(app).post('/api/student/my-submissions').set('x-session-token', tokens.ana)
+            .send({ courseId, studentClass }).expect(200);
+        const bellIds = bell.body.items.filter(item => item.type === 'nota').map(item => item.id.replace(/^nota:/, '')).sort();
+        const notasIds = notas.body.submissions.map(item => item.id).sort();
+        assert.deepEqual(bellIds, notasIds, `${studentClass}: o sino avisa só das notas que a tela Notas mostra`);
+    }
+    const inA = await request(app).get(`/api/student/notifications?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', tokens.ana);
+    assert.deepEqual(inA.body.items.filter(item => item.type === 'nota').map(item => item.id).sort(), ['nota:A1', 'nota:LEG']);
+});
+
 test('[UC-NOTIF-001] marcar aviso como lido confere a matrícula do aluno', async () => {
     db.memory.announcements = [
         { id: 'av-a', title: 'A', message: 'a', target: 'turma', targetValue: 'TURMA A', courseId: courseA, createdAt: Date.now(), readBy: [] },
@@ -456,7 +485,7 @@ test('[UC-NOTIF-001] marcar aviso como lido confere a matrícula do aluno', asyn
 test('[UC-SIGILO-001] eventos, digitação e rascunho da prova exigem turma resolvida e matrícula aprovada', async () => {
     const examKey = 'Avaliacao_POR_1';
     const activity = (token, email, studentClass) => request(app).post('/api/student/log-activity').set('x-session-token', token)
-        .send({ email, studentClass, courseId: courseA, examKey, eventType: 'blur', details: 'saiu da aba' });
+        .send({ email, studentClass, courseId: courseA, examKey, eventType: 'tab_blur', details: 'saiu da aba' });
 
     const ok = await activity(tokens.ana, 'ana@portal.local', 'turma a');
     assert.equal(ok.status, 200, ok.body && ok.body.error);

@@ -200,6 +200,9 @@ export default function ExamRunner() {
     setTimeupInfo(null)
     setResult(null)
     setSubmitConfirm(false)
+    // O aviso de falha era do salvamento que caiu no fim do tempo: a tentativa volta com
+    // as respostas do servidor, e o que ainda faltar salvar mostra o próprio estado.
+    setSaveState({ status: 'idle', at: null })
     setPhase('loading')
     toast.info(message)
   }, [toast])
@@ -672,6 +675,13 @@ export default function ExamRunner() {
         }
         return
       }
+      // Aplicação só preparada: a prova ainda não começou (antes caía nas instruções, com
+      // um "Iniciar prova" que só devolvia erro). A tela muda sozinha quando o professor iniciar.
+      if (['prepared', 'draft'].includes(c.status) && !st.startedAt) {
+        setWaitingRemaining(null)
+        setPhase('not_started')
+        return
+      }
       const resolvedMaxAttempts = Number(r.maxAttempts ?? c.maxAttempts)
       const attemptsUsed = Number(r.attemptsUsed || 0)
       if (Number.isInteger(resolvedMaxAttempts) && resolvedMaxAttempts >= 1 && attemptsUsed >= resolvedMaxAttempts) {
@@ -718,7 +728,7 @@ export default function ExamRunner() {
       } else {
         setRemaining(null)
       }
-      setPhase((p) => (['paused', 'server_paused', 'loading', 'waiting', 'token', 'instructions'].includes(p) ? 'active' : p))
+      setPhase((p) => (['paused', 'server_paused', 'loading', 'waiting', 'token', 'instructions', 'not_started'].includes(p) ? 'active' : p))
     } catch (e) {
       if (e.status === 401 || e.status === 403) {
         timeOverScreenRef.current = false
@@ -795,6 +805,8 @@ export default function ExamRunner() {
       }
     } catch (e) {
       toast.error(e.message)
+      // Tentativas esgotadas, tempo acabado ou aplicação fora de andamento: a tela segue o servidor.
+      if (e.data?.attemptsExhausted || e.data?.timeOver || e.data?.notStarted || e.data?.applicationClosed) sync()
     }
   }
 
@@ -1153,6 +1165,17 @@ export default function ExamRunner() {
     </Center>
   )
 
+  if (phase === 'not_started') return withInstructorMessage(
+    <Center>
+      <div className="w-14 h-14 grid place-items-center rounded-full bg-info-soft text-info mb-3"><Clock size={26} /></div>
+      <h2 className="text-lg font-semibold text-text">A prova ainda não começou</h2>
+      {examTitle && <p className="mt-0.5 text-sm font-medium text-text text-center">{examTitle}</p>}
+      <p className="text-sm text-muted mt-2 text-center max-w-sm">O professor preparou esta prova, mas ainda não iniciou a aplicação. Esta página abre a prova sozinha quando ela começar.</p>
+      <div className="mt-4 flex items-center gap-2 text-info" role="status" aria-live="polite"><Loader2 className="w-4 h-4 animate-spin" /><span className="text-sm">Aguardando o professor iniciar...</span></div>
+      <Button className="mt-6" variant="ghost" icon={ArrowLeft} onClick={() => nav('/aluno/provas')}>Voltar às provas</Button>
+    </Center>
+  )
+
   if (phase === 'server_paused') return withInstructorMessage(
     <Center>
       <div className="w-14 h-14 grid place-items-center rounded-full bg-warning-soft text-warning mb-3"><Clock size={26} /></div>
@@ -1231,30 +1254,35 @@ export default function ExamRunner() {
         </div>
       </Modal>
       {/* Cabeçalho que cabe no celular e com zoom de 200% a 400% (UXA-03, ACS-16). Abaixo
-          de 640 px são duas linhas: título e cronômetro em cima, contagem e botões embaixo
-          (o título ganha a largura dos botões e nada passa por baixo do cronômetro, nem em
-          320 px); Sair e Mensagens viram só ícone e o Enviar fica sempre visível. A partir
+          de 640 px: título e cronômetro na 1ª linha (o título encurta, o cronômetro fica
+          inteiro); contagem e botões na 2ª, e os botões descem para uma 3ª linha quando não
+          cabem ao lado da contagem (zoom de 200% num celular de 390 px = 195 px CSS). Sair
+          e Mensagens viram só ícone e o Enviar fica sempre visível, dentro da tela. A partir
           de 640 px, título e contagem à esquerda, cronômetro e botões à direita. */}
       <div className="sticky top-0 z-10 -mx-4 md:-mx-6 px-3 sm:px-4 md:px-6 py-2 sm:py-3 bg-surface/95 backdrop-blur border-b border-border">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-2 sm:gap-x-3 gap-y-1 sm:gap-y-0">
-          <div className={`min-w-0 row-start-1 col-start-1 sm:col-span-1 ${remaining != null ? 'col-span-2' : 'col-span-3'}`}>
-            <h1 className="truncate sm:whitespace-normal sm:line-clamp-2 text-sm sm:text-base font-bold text-text" title={examTitle || examKey.replace(/_/g, ' ')}>{examTitle || examKey.replace(/_/g, ' ')}</h1>
+        <div className="flex flex-col gap-1 sm:grid sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:gap-x-3 sm:gap-y-0">
+          <div className="flex min-w-0 items-center gap-2 sm:contents">
+            <div className="min-w-0 flex-1 sm:col-start-1 sm:row-start-1">
+              <h1 className="truncate sm:whitespace-normal sm:line-clamp-2 text-sm sm:text-base font-bold text-text" title={examTitle || examKey.replace(/_/g, ' ')}>{examTitle || examKey.replace(/_/g, ' ')}</h1>
+            </div>
+            {remaining != null && (
+              <div className={`shrink-0 whitespace-nowrap sm:col-start-2 sm:row-start-1 sm:row-span-2 sm:justify-self-end flex items-center gap-1 font-mono text-sm sm:text-base font-bold tabular-nums ${remaining < 60 ? 'text-danger' : 'text-text'}`} title="Tempo restante"><Clock size={16} aria-hidden="true" className="shrink-0" /> {fmtTime(remaining)}</div>
+            )}
           </div>
-          <div className="min-w-0 row-start-2 col-start-1 flex flex-wrap items-baseline gap-x-2">
-            <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
-            <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
-              {saveState.status === 'saving' && 'Salvando respostas...'}
-              {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
-              {saveState.status === 'error' && 'Falha no último salvamento'}
-            </p>
-          </div>
-          {remaining != null && (
-            <div className={`row-start-1 col-start-3 sm:col-start-2 sm:row-span-2 justify-self-end flex items-center gap-1 font-mono text-sm sm:text-base font-bold tabular-nums ${remaining < 60 ? 'text-danger' : 'text-text'}`} title="Tempo restante"><Clock size={16} aria-hidden="true" /> {fmtTime(remaining)}</div>
-          )}
-          <div className="row-start-2 col-start-2 col-span-2 sm:row-start-1 sm:row-span-2 sm:col-start-3 sm:col-span-1 justify-self-end flex shrink-0 items-center gap-1 sm:gap-2">
-            <Button size="sm" variant="ghost" icon={ArrowLeft} className="px-2 sm:px-3" aria-label="Sair" title="Sair da prova" onClick={() => setExitConfirm(true)}><span className="hidden sm:inline">Sair</span></Button>
-            <Button size="sm" variant="secondary" icon={History} className="px-2 sm:px-3" aria-label="Mensagens" title="Mensagens do professor" onClick={openMessageHistory}><span className="hidden sm:inline">Mensagens</span></Button>
-            <Button size="sm" icon={Send} className="px-2.5 sm:px-3" loading={submitting} onClick={() => setSubmitConfirm(true)}>Enviar</Button>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:contents">
+            <div className="min-w-0 flex-1 basis-24 sm:col-start-1 sm:row-start-2 flex flex-wrap items-baseline gap-x-2">
+              <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
+              <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
+                {saveState.status === 'saving' && 'Salvando respostas...'}
+                {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
+                {saveState.status === 'error' && 'Falha no último salvamento'}
+              </p>
+            </div>
+            <div className="ml-auto flex shrink-0 items-center gap-1 sm:col-start-3 sm:row-start-1 sm:row-span-2 sm:gap-2">
+              <Button size="sm" variant="ghost" icon={ArrowLeft} className="!px-2 sm:!px-3" aria-label="Sair" title="Sair da prova" onClick={() => setExitConfirm(true)}><span className="hidden sm:inline">Sair</span></Button>
+              <Button size="sm" variant="secondary" icon={History} className="!px-2 sm:!px-3" aria-label="Mensagens" title="Mensagens do professor" onClick={openMessageHistory}><span className="hidden sm:inline">Mensagens</span></Button>
+              <Button size="sm" icon={Send} className="!gap-1.5 !px-2.5 sm:!gap-2 sm:!px-3" loading={submitting} onClick={() => setSubmitConfirm(true)}>Enviar</Button>
+            </div>
           </div>
         </div>
         {noFullscreen && (
@@ -1264,21 +1292,24 @@ export default function ExamRunner() {
 
       <div className="py-5 space-y-4">
         {questions.map((q, i) => (
-          <Card key={q.number} className={`p-5 ${(cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number)) ? 'border-warning/60 bg-warning-soft/10' : ''}`}>
-            <div className="flex items-start gap-2 mb-3">
+          <Card key={q.number} className={`p-5 max-[359px]:p-3 ${(cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number)) ? 'border-warning/60 bg-warning-soft/10' : ''}`}>
+            {/* Tela muito estreita (abaixo de 360 px, como o celular com zoom de 200%): o número
+                e "Reportar" ficam na 1ª linha e o enunciado ganha a largura toda do cartão
+                embaixo (ao lado do número sobravam ~60 px para o texto). */}
+            <div className="flex items-start gap-2 mb-3 max-[359px]:flex-wrap">
               <span className="w-7 h-7 shrink-0 grid place-items-center rounded-md bg-primary-soft text-primary text-sm font-bold">{i + 1}</span>
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 max-[359px]:order-3 max-[359px]:basis-full">
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                   {q.isAdditional && <Badge tone="info">Questão adicional</Badge>}
                   {(cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number)) && <Badge tone="warning">Questão anulada</Badge>}
                 </div>
-                <p className="text-text font-medium">{q.text}</p>
+                <p className="text-text font-medium break-words">{q.text}</p>
               </div>
               <Button
                 size="sm"
                 variant="ghost"
                 icon={AlertTriangle}
-                className={`shrink-0 px-2 sm:px-3 ${reportedQuestions.has(Number(q.number)) ? 'text-warning' : 'text-subtle'}`}
+                className={`shrink-0 px-2 sm:px-3 max-[359px]:order-2 max-[359px]:ml-auto ${reportedQuestions.has(Number(q.number)) ? 'text-warning' : 'text-subtle'}`}
                 aria-label={reportedQuestions.has(Number(q.number)) ? 'Problema já reportado nesta questão' : 'Reportar problema nesta questão'}
                 title={reportedQuestions.has(Number(q.number)) ? 'Problema reportado' : 'Reportar problema'}
                 onClick={() => openQuestionReport(q)}
@@ -1286,7 +1317,8 @@ export default function ExamRunner() {
                 <span className="hidden sm:inline">{reportedQuestions.has(Number(q.number)) ? 'Reportada' : 'Reportar'}</span>
               </Button>
             </div>
-            <div className="space-y-2 pl-9">
+            {/* Abaixo de 360 px as alternativas usam a largura toda do cartão. */}
+            <div className="space-y-2 pl-9 max-[359px]:pl-0">
               {/* O aluno vê a letra da posição (A, B, C... nesta versão) e a resposta guarda o
                   identificador da alternativa; a letra original nunca chega aqui (AVA-05). */}
               {q.alternatives.map((alt) => {
@@ -1298,10 +1330,10 @@ export default function ExamRunner() {
                     aria-pressed={sel}
                     disabled={(remaining != null && remaining <= 0) || (cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number))}
                     onClick={() => setAnswers((a) => ({ ...a, [q.number]: alt.id }))}
-                    className={`w-full text-left flex items-center gap-3 p-3 rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-60 ${sel ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}
+                    className={`w-full min-w-0 text-left flex items-center gap-3 p-3 max-[359px]:gap-2 max-[359px]:p-2 rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-60 ${sel ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}
                   >
                     <span className={`w-6 h-6 shrink-0 grid place-items-center rounded-full text-xs font-bold ${sel ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>{alt.label}</span>
-                    <span className="text-sm text-text">{alt.text}</span>
+                    <span className="min-w-0 text-sm text-text break-words">{alt.text}</span>
                   </button>
                 )
               })}

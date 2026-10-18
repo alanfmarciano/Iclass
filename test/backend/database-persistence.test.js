@@ -78,6 +78,37 @@ test('administradores são vinculados automaticamente a todas as turmas', async 
     assert.equal(db.memory.admins[0].assignedClasses.some(item => item.className === 'Turma B'), false);
 });
 
+test('turmas atribuídas ficam numa ordem fixa, qualquer que seja a ordem das turmas no banco', async () => {
+    // Depois de restaurar um backup as turmas podem voltar em outra ordem; antes a lista
+    // de turmas das contas seguia essa ordem, mudava a cada boot e era regravada sempre.
+    const turmaA = { name: 'Turma A', courseId: 'curso-1' };
+    const turmaB = { name: 'Turma B', courseId: 'curso-2' };
+    const turmaA2 = { name: 'Turma 2', courseId: 'curso-1' };
+    db.memory.classes = [turmaB, turmaA, turmaA2];
+    db.memory.admins = [
+        { name: 'Admin', email: 'admin-ordem@teste.local', role: 'admin', assignedClasses: [] },
+        { name: 'Professor', email: 'professor-ordem@teste.local', role: 'professor', assignedClasses: [
+            { courseId: 'curso-2', className: 'Turma B' }, { courseId: 'curso-1', className: 'Turma A' },
+        ] },
+    ];
+    await db.save();
+    const expectedAdmin = [
+        { courseId: 'curso-1', className: 'Turma 2' },
+        { courseId: 'curso-1', className: 'Turma A' },
+        { courseId: 'curso-2', className: 'Turma B' },
+    ];
+    const expectedProfessor = [{ courseId: 'curso-1', className: 'Turma A' }, { courseId: 'curso-2', className: 'Turma B' }];
+    assert.deepEqual(db.memory.admins[0].assignedClasses, expectedAdmin);
+    assert.deepEqual(db.memory.admins[1].assignedClasses, expectedProfessor);
+
+    // Mesmas turmas em outra ordem: nada muda (as funções de sincronização dizem que não houve mudança).
+    db.memory.classes = [turmaA2, turmaB, turmaA];
+    assert.equal(db.syncAdminClassAssignments(), false);
+    assert.deepEqual(db.memory.admins[0].assignedClasses, expectedAdmin);
+    await db.save();
+    assert.deepEqual(db.memory.admins[1].assignedClasses, expectedProfessor);
+});
+
 test('estado da prova fixa versão, questões e prazo no servidor', () => {
     const { initializeExamState } = require('../../backend/middlewares.js');
     const now = Date.now();

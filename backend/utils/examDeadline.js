@@ -302,7 +302,14 @@ function timeEndedBeforeExtra(application, submission, email, { now, extraMinute
     if (collective) {
         const before = computeAttemptDeadline({
             application: { ...application, globalTimeAdjustment: Number(application.globalTimeAdjustment || 0) - Number(extraMinutes || 0) },
-            state: { startedAt: Number(application.startsAt), individualTimeAdjustment: Number(application.studentAdjustments?.[email] || 0) },
+            // O ajuste individual da tentativa entregue (entregas antigas, sem o campo: o
+            // total gravado na aplicação, como antes).
+            state: {
+                startedAt: Number(application.startsAt),
+                individualTimeAdjustment: Number.isFinite(Number(submission?.individualTimeAdjustment)) && submission?.individualTimeAdjustment != null
+                    ? Number(submission.individualTimeAdjustment)
+                    : Number(application.studentAdjustments?.[email] || 0),
+            },
             now,
         });
         if (before !== null) return before <= now;
@@ -381,6 +388,11 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
         // A tentativa seguinte, ainda não começada, sai: a reaberta volta a ser a atual.
         const discardedNext = pendingNext ? open.map(([key, next]) => {
             delete memory.studentExamState[key];
+            // O "+N min" que já estava na tentativa seguinte volta a esperar por ela.
+            if (Number(next.individualTimeAdjustment)) {
+                if (!application.studentAdjustments) application.studentAdjustments = {};
+                application.studentAdjustments[email] = Number(application.studentAdjustments[email] || 0) + Number(next.individualTimeAdjustment);
+            }
             return { attemptId: next.attemptId || next.id || null, attemptNumber: Number(next.attemptNumber || 0) || null };
         }) : [];
         result.discardedNextAttempts += discardedNext.length;
