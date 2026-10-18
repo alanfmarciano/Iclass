@@ -23,6 +23,12 @@ const SINGLE_LETTER_PATTERN = /^[A-Z]$/;
 // Sem a lista de questões da tentativa (registro antigo sem snapshot), no máximo esta
 // quantidade de respostas é convertida: cada identificador custa até 26 HMACs.
 const MAX_ANSWERS_WITHOUT_QUESTIONS = 200;
+// Teto de entradas lidas do objeto de respostas, com ou sem questões (uma prova real tem
+// dezenas): o corpo pode ter até 10 MB e centenas de milhares de chaves inventadas; as
+// que passam do teto nem são lidas. Resposta é texto curto (letra ou identificador de
+// 13 caracteres): valor que não é texto ou é longo demais é descartado sem processar.
+const MAX_ANSWER_ENTRIES = 10000;
+const MAX_ANSWER_VALUE_LENGTH = 64;
 
 let cachedSecret = null;
 let idCache = new Map();
@@ -115,7 +121,10 @@ function decodeStudentAnswers(answers, { scope, questions = [], positional = fal
         .map((question, index) => [questionNumberOf(question, index), question]));
     const decoded = {};
     let unknownQuestionAnswers = 0;
-    Object.entries(answers && typeof answers === 'object' && !Array.isArray(answers) ? answers : {}).forEach(([key, raw]) => {
+    let examined = 0;
+    const source = answers && typeof answers === 'object' && !Array.isArray(answers) ? answers : {};
+    const decodeEntry = (key, raw) => {
+        if (typeof raw !== 'string' || raw.length > MAX_ANSWER_VALUE_LENGTH) return;
         const number = Number(key);
         if (!Number.isFinite(number)) return;
         const question = byNumber.get(number) || null;
@@ -124,7 +133,7 @@ function decodeStudentAnswers(answers, { scope, questions = [], positional = fal
             unknownQuestionAnswers += 1;
             if (unknownQuestionAnswers > MAX_ANSWERS_WITHOUT_QUESTIONS) return;
         }
-        const value = String(raw ?? '').trim().toUpperCase();
+        const value = raw.trim().toUpperCase();
         if (!value) return;
         const letters = question
             ? alternativeList(question).map((alternative, index) => originalLetter(alternative, index)).filter(Boolean)
@@ -142,7 +151,13 @@ function decodeStudentAnswers(answers, { scope, questions = [], positional = fal
         }
         const position = LETTERS.indexOf(value);
         if (position >= 0 && letters[position]) decoded[String(number)] = letters[position];
-    });
+    };
+    for (const key in source) {
+        if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+        examined += 1;
+        if (examined > MAX_ANSWER_ENTRIES) break;
+        decodeEntry(key, source[key]);
+    }
     return decoded;
 }
 
@@ -231,6 +246,7 @@ function submissionWithSeenLetters(submission) {
 
 module.exports = {
     LETTERS,
+    MAX_ANSWER_ENTRIES,
     POSITION_LABELS,
     alternativeAnswerId,
     alternativeLabelsMode,

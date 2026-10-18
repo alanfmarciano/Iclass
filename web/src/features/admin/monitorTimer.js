@@ -71,7 +71,13 @@ export function classTimeExtraFeedback(response, minutes = 5) {
   const reopened = count(response?.reopenedAtDeadline)
   const reopenedLocked = Math.min(reopened, count(response?.reopenedLocked))
   const keptAtDeadline = count(response?.deliveredAtDeadline)
+  // Das entregas do fim do tempo que ficaram: quantas porque o tempo extra não cobre o
+  // tempo que já passou desde o fim (as outras: nota publicada ou fim há mais de 2 min).
+  const keptTooShort = Math.min(keptAtDeadline, count(response?.deliveredAtDeadlineTooShort))
+  const keptNotReopenable = keptAtDeadline - keptTooShort
   const keptByStudent = count(response?.deliveredByStudent)
+  // Já estavam na tentativa seguinte (2+ tentativas): o tempo extra vale para ela.
+  const nextStarted = count(response?.nextAttemptStarted)
   const parts = [`+${minutes} min para a turma`]
   if (reopened) {
     const back = reopened === 1
@@ -90,13 +96,23 @@ export function classTimeExtraFeedback(response, minutes = 5) {
   if (kept) {
     const reasons = []
     if (keptByStudent) reasons.push(keptByStudent === 1 ? '1 enviou a prova por conta própria' : `${keptByStudent} enviaram a prova por conta própria`)
-    if (keptAtDeadline) {
-      reasons.push(keptAtDeadline === 1
+    if (keptTooShort) {
+      reasons.push(keptTooShort === 1
+        ? `1 foi entregue automaticamente no fim do tempo e os ${minutes} min não cobrem o tempo que já passou desde o fim`
+        : `${keptTooShort} foram entregues automaticamente no fim do tempo e os ${minutes} min não cobrem o tempo que já passou desde o fim`)
+    }
+    if (keptNotReopenable) {
+      reasons.push(keptNotReopenable === 1
         ? '1 foi entregue automaticamente no fim do tempo e não pôde ser reaberto (nota publicada ou fim do tempo há mais de 2 min)'
-        : `${keptAtDeadline} foram entregues automaticamente no fim do tempo e não puderam ser reabertos (nota publicada ou fim do tempo há mais de 2 min)`)
+        : `${keptNotReopenable} foram entregues automaticamente no fim do tempo e não puderam ser reabertos (nota publicada ou fim do tempo há mais de 2 min)`)
     }
     const who = kept === 1 ? '1 aluno que já tinha entregue ficou sem o tempo extra' : `${kept} alunos que já tinham entregue ficaram sem o tempo extra`
     parts.push(`${who}: ${reasons.join('; ')}`)
   }
-  return { tone: kept || reopenedLocked ? 'warning' : 'success', message: parts.length > 1 ? `${parts.join('. ')}.` : parts[0] }
+  if (nextStarted) {
+    parts.push(nextStarted === 1
+      ? '1 aluno entregue automaticamente no fim do tempo já tinha começado a tentativa seguinte: a entrega anterior ficou como estava e o tempo extra vale para a tentativa em andamento'
+      : `${nextStarted} alunos entregues automaticamente no fim do tempo já tinham começado a tentativa seguinte: as entregas anteriores ficaram como estavam e o tempo extra vale para a tentativa em andamento`)
+  }
+  return { tone: kept || reopenedLocked || nextStarted ? 'warning' : 'success', message: parts.length > 1 ? `${parts.join('. ')}.` : parts[0] }
 }

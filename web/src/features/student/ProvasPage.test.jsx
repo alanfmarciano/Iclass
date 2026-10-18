@@ -44,7 +44,9 @@ describe('Provas do aluno · média', () => {
     ]
     render(<MemoryRouter><ProvasPage /></MemoryRouter>)
     const label = await screen.findByText('Média das consideradas')
-    expect(within(label.parentElement).getByText('8,5')).toBeInTheDocument()
+    // O cartão aparece com 0,0 antes de as entregas chegarem: espera o valor final (com a
+    // máquina carregada, o getByText imediato pegava o 0,0 e o teste falhava às vezes).
+    expect(await within(label.parentElement).findByText('8,5')).toBeInTheDocument()
     expect(screen.queryByText('8.0')).not.toBeInTheDocument()
     // Média da matéria (FUTEC) pela mesma regra, e a nota em revisão com acento.
     const materia = screen.getAllByText('média').find((el) => el.classList.contains('pvb-mk'))

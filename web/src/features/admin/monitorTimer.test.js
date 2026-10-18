@@ -59,6 +59,21 @@ describe('[UC-TENTATIVA-001] +5 min para a turma depois do fim do tempo', () => 
     expect(mixed.message).toBe('+10 min para a turma. 1 aluno entregue automaticamente no fim do tempo voltou para a prova com o tempo extra. 3 alunos que já tinham entregue ficaram sem o tempo extra: 1 enviou a prova por conta própria; 2 foram entregues automaticamente no fim do tempo e não puderam ser reabertos (nota publicada ou fim do tempo há mais de 2 min).')
   })
 
+  it('o tempo extra que não cobre o tempo já passado desde o fim é avisado com esse motivo, não com "nota publicada"', () => {
+    // Antes: +1 min 90 s depois do fim dizia "nota publicada ou fim do tempo há mais de 2 min".
+    const short = classTimeExtraFeedback({ success: true, deliveredAtDeadline: 1, deliveredAtDeadlineTooShort: 1 }, 1)
+    expect(short.tone).toBe('warning')
+    expect(short.message).toBe('+1 min para a turma. 1 aluno que já tinha entregue ficou sem o tempo extra: 1 foi entregue automaticamente no fim do tempo e os 1 min não cobrem o tempo que já passou desde o fim.')
+    const both = classTimeExtraFeedback({ success: true, deliveredAtDeadline: 3, deliveredAtDeadlineTooShort: 2 }, 1)
+    expect(both.message).toBe('+1 min para a turma. 3 alunos que já tinham entregue ficaram sem o tempo extra: 2 foram entregues automaticamente no fim do tempo e os 1 min não cobrem o tempo que já passou desde o fim; 1 foi entregue automaticamente no fim do tempo e não pôde ser reaberto (nota publicada ou fim do tempo há mais de 2 min).')
+  })
+
+  it('quem já começou a tentativa seguinte (2+ tentativas) é contado e avisado', () => {
+    const next = classTimeExtraFeedback({ success: true, nextAttemptStarted: 1 })
+    expect(next.tone).toBe('warning')
+    expect(next.message).toBe('+5 min para a turma. 1 aluno entregue automaticamente no fim do tempo já tinha começado a tentativa seguinte: a entrega anterior ficou como estava e o tempo extra vale para a tentativa em andamento.')
+  })
+
   it('no meio da prova (ninguém com o tempo acabado) o aviso é só de sucesso', () => {
     // O servidor só conta quem enviou por conta própria depois que o tempo dele acabou.
     expect(classTimeExtraFeedback({ success: true, reopenedAtDeadline: 0, deliveredAtDeadline: 0, deliveredByStudent: 0 })).toEqual({ tone: 'success', message: '+5 min para a turma' })

@@ -14,6 +14,10 @@ import { clearInterruptedExam, interruptedExam } from '../../../lib/renderErrors
 // Sair da PÁGINA (voltar para um endereço aberto antes da prova, fechar a aba) segue a
 // regra da saída da página da prova: o navegador pede confirmação, a saída fica
 // registrada e, se a mesma sessão voltar logo, a prova destrava sozinha.
+// "Recarregar a página" e "Recarregar e continuar" (os botões desta tela) não são saída:
+// vão ao Monitor como evento técnico neutro (exam_error_reload) e a prova não trava.
+export const ERROR_RELOAD_EVENT = 'exam_error_reload'
+
 export function ExamErrorScreen({ error }) {
   const [leaving, setLeaving] = useState(false)
   const actionRef = useRef(null)
@@ -27,7 +31,7 @@ export function ExamErrorScreen({ error }) {
     }
     const onPageHide = () => {
       const context = interruptedExam()
-      if (!context || !hasActiveSession()) return
+      if (reloadingRef.current || !context || !hasActiveSession()) return
       api.post('/api/student/log-activity', {
         ...context,
         eventType: 'exam_left',
@@ -61,6 +65,14 @@ export function ExamErrorScreen({ error }) {
   function reloadExam() {
     stay()
     reloadingRef.current = true
+    const context = interruptedExam()
+    if (context && hasActiveSession()) {
+      api.post('/api/student/log-activity', {
+        ...context,
+        eventType: ERROR_RELOAD_EVENT,
+        details: 'Recarregou a página da prova pelo botão da tela de erro',
+      }, { keepalive: true }).catch(() => {})
+    }
     window.location.reload()
   }
 

@@ -1404,3 +1404,96 @@ test('[UC-TENTATIVA-001] recarregar a página da prova: a mesma sessão que volt
     }
     await control(application.id, 'finish', { inProgressPolicy: 'discard' });
 });
+
+test('[UC-TENTATIVA-001] "+1 min" 90 s depois do fim avisa que o tempo extra não cobre o tempo já passado (não "nota publicada")', async () => {
+    const { ana, bruno } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const startedAna = await startAttempt(ana, application.id);
+    const startedBruno = await startAttempt(bruno, application.id);
+    await autosave(ana, application.id, startedAna.attemptId, { 1: 'A' }).expect(200);
+    // Ana: fim do tempo há 90 s (+1 min não chega a agora). Bruno: há 30 s (+1 min cobre).
+    expireAttempt(startedAna.attemptId, 90 * 1000);
+    expireAttempt(startedBruno.attemptId, 30 * 1000);
+    settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 });
+    assert.equal(submissionsOf(ana, application.id).length, 1);
+
+    const adjusted = await classExtraTime(application.id, 1);
+    assert.equal(adjusted.body.reopenedAtDeadline, 1, 'o Bruno volta para a prova');
+    assert.equal(adjusted.body.deliveredAtDeadline, 1);
+    // Antes: só deliveredAtDeadline, e o Monitor dizia "nota publicada ou fim do tempo há mais de 2 min".
+    assert.equal(adjusted.body.deliveredAtDeadlineTooShort, 1, 'a Ana ficou de fora porque 1 min não cobre os 90 s');
+    assert.equal(submissionsOf(ana, application.id).length, 1, 'a entrega da Ana fica como estava');
+    assert.equal(openStatesOf(bruno, application.id)[0].attemptId, startedBruno.attemptId);
+
+    // Nota publicada: fica de fora pelo outro motivo (não conta como "não cobre").
+    const startedCarla = await startAttempt(students.carla, application.id);
+    // O +1 min da turma já está no prazo dela.
+    expireAttempt(startedCarla.attemptId, MIN + 3000);
+    settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: students.carla.email, graceMs: 0 });
+    submissionsOf(students.carla, application.id)[0].gradePublished = true;
+    const published = await classExtraTime(application.id, 5);
+    assert.equal(published.body.deliveredAtDeadlineTooShort, 0);
+    assert.ok(published.body.deliveredAtDeadline >= 1);
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] 2+ tentativas: "+N min" da turma reabre a entrega do fim do tempo e descarta a tentativa seguinte ainda não começada; quem já começou a seguinte é avisado', async () => {
+    const { ana, bruno } = students;
+    const application = await createApplication({ timerMode: 'per_attempt', maxAttempts: 2 });
+    const firstAna = await startAttempt(ana, application.id);
+    const firstBruno = await startAttempt(bruno, application.id);
+    await autosave(ana, application.id, firstAna.attemptId, { 1: 'A', 2: 'B' }).expect(200);
+    expireAttempt(firstAna.attemptId, 3000);
+    expireAttempt(firstBruno.attemptId, 3000);
+    settleExpiredAttempts(db.memory, { applicationId: application.id, graceMs: 0 });
+    // A página da prova sincroniza de novo: o servidor cria a tentativa 2 (instruções).
+    const nextAna = await sync(ana, application.id);
+    assert.notEqual(nextAna.body.attemptId, firstAna.attemptId);
+    const pending = openStatesOf(ana, application.id);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].attemptNumber, 2);
+    assert.equal(pending[0].startedAt, null);
+    // Bruno já começou a tentativa 2.
+    const secondBruno = await startAttempt(bruno, application.id);
+    assert.notEqual(secondBruno.attemptId, firstBruno.attemptId);
+
+    const adjusted = await classExtraTime(application.id, 5);
+    // Antes: os dois ficavam de fora sem aviso nenhum (havia tentativa aberta).
+    assert.equal(adjusted.body.reopenedAtDeadline, 1, 'a Ana volta para a tentativa 1');
+    assert.equal(adjusted.body.nextAttemptStarted, 1, 'o Bruno, já na tentativa 2, é avisado');
+    const [anaOpen, ...anaOthers] = openStatesOf(ana, application.id);
+    assert.equal(anaOthers.length, 0, 'a tentativa 2 não começada saiu');
+    assert.equal(anaOpen.attemptId, firstAna.attemptId);
+    assert.equal(anaOpen.status, 'active');
+    assert.deepEqual(anaOpen.answers, { 1: 'A', 2: 'B' });
+    assert.equal(submissionsOf(ana, application.id).length, 0);
+    const reopenAudit = db.memory.auditLogs.filter(entry => entry.type === 'exam_attempt_reopened_extra_time' && entry.applicationId === application.id).at(-1);
+    assert.deepEqual(reopenAudit.details.discardedNextAttempts, [{ attemptId: nextAna.body.attemptId, attemptNumber: 2 }]);
+    // A página que estava nas instruções da tentativa 2 volta para a tentativa 1, em andamento.
+    const back = await sync(ana, application.id, nextAna.body.attemptId);
+    assert.equal(back.body.attemptId, firstAna.attemptId);
+    assert.ok(back.body.state.startedAt > 0);
+    // Bruno: a entrega da tentativa 1 fica e a tentativa 2 continua.
+    assert.equal(submissionsOf(bruno, application.id).length, 1);
+    assert.equal(openStatesOf(bruno, application.id)[0].attemptId, secondBruno.attemptId);
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});
+
+test('[UC-TENTATIVA-001] recarregar pelo botão da tela de erro da prova é evento técnico neutro: não trava nem conta como saída', async () => {
+    const { ana } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const started = await startAttempt(ana, application.id);
+    await request(app)
+        .post('/api/student/log-activity')
+        .set('x-session-token', ana.token)
+        .send({ email: ana.email, studentClass, courseId, examKey, applicationId: application.id, attemptId: started.attemptId, eventType: 'exam_error_reload', details: 'Recarregou a página da prova pelo botão da tela de erro' })
+        .expect(200);
+    const state = stateOf(started.attemptId);
+    assert.equal(state.focusLocked, false);
+    assert.equal(state.pageExit, undefined);
+    const logged = db.memory.proctoringLogs.filter(log => log.attemptId === started.attemptId);
+    assert.deepEqual(logged.map(log => log.eventType), ['exam_error_reload']);
+    const row = (await monitorRows(application.id)).body.find(item => item.email === ana.email);
+    assert.notEqual(row.status, 'focus_locked');
+    await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+});

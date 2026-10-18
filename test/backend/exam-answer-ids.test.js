@@ -19,7 +19,7 @@ process.env.TEST_MODE = '1';
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const crypto = require('node:crypto');
-const { alternativeAnswerId, decodeStudentAnswers } = require('../../backend/utils/examAnswerIds.js');
+const { MAX_ANSWER_ENTRIES, alternativeAnswerId, decodeStudentAnswers } = require('../../backend/utils/examAnswerIds.js');
 
 let app;
 const adminToken = 'admin-token-answer-ids';
@@ -439,6 +439,27 @@ test('[UC-PROVA-003] chaves de questões que não estão na tentativa são desca
     assert.deepEqual(stateOf(started.attemptId).answers, { 2: 'A' });
     assert.ok(routeCalls < 100, `o salvamento não calcula HMAC para as chaves inventadas (foram ${routeCalls})`);
     assert.ok(Date.now() - before < 5000);
+});
+
+test('[UC-PROVA-003] objeto de respostas enorme: só as primeiras entradas são lidas e valor longo ou que não é texto é descartado', () => {
+    const questions = shuffledSnapshot()[0].questions;
+    const valid = alternativeAnswerId('escopo-teste-dos', 1, 'C');
+    // Conta quantos valores a conversão lê (antes: Object.entries lia todas as chaves).
+    const total = MAX_ANSWER_ENTRIES * 30;
+    const target = { 1: valid };
+    for (let index = 0; index < total; index += 1) target[100000 + index] = 'A';
+    target['02'] = valid;
+    let reads = 0;
+    const counted = new Proxy(target, { get(object, key) { reads += 1; return object[key]; } });
+    const started = Date.now();
+    const result = decodeStudentAnswers(counted, { scope: 'escopo-teste-dos', questions, positional: true });
+    assert.deepEqual(result, { 1: 'C' }, 'a questão 1 (primeira chave) vale; "02", depois do teto, nem é lida');
+    assert.ok(reads <= MAX_ANSWER_ENTRIES, `no máximo ${MAX_ANSWER_ENTRIES} valores lidos (foram ${reads})`);
+    assert.ok(Date.now() - started < 2000, 'a conversão termina rápido');
+
+    // Valor de 1 MB, número ou lista na resposta: descartado, sem custo de texto.
+    const huge = 'C'.repeat(1024 * 1024);
+    assert.deepEqual(decodeStudentAnswers({ 1: huge, 2: 7, 3: ['A'], 4: { letter: 'A' }, 5: ' a ' }, { scope: 'escopo-teste-dos', questions: [] }), { 5: 'A' });
 });
 
 test('[UC-PROVA-003] estado criado antes da atualização (instruções abertas ou tentativa antiga vinculada) começa com a letra da posição (AVA-05)', async () => {

@@ -688,14 +688,26 @@ function studentEmailPeriods(student, changes) {
 // - tipo 'student' (campo que só guarda aluno: studentEmail, contestação, lista de
 //   leitura) ou 'anyone' (autor, actorEmail, texto livre, login de professor): e-mail
 //   que também é de professor ou administrador não conta no tipo 'anyone' (a conta de
-//   aluno com o e-mail do professor não leva a autoria do professor).
+//   aluno com o e-mail do professor não leva a autoria do professor);
+// - tipo 'renamed' (campo que a troca de e-mail renomeia, renameStudentEmailEverywhere
+//   e a cascata das notas: presença, observações, notas, fórum, auditoria do aluno...):
+//   o registro com um e-mail é de quem usa esse e-mail hoje, se essa pessoa chegou a
+//   ele por uma troca registrada, qualquer que seja a data do registro: a troca trouxe
+//   para o e-mail novo os registros antigos dela, com a data da época em que o e-mail
+//   ainda era de outro (a Ana trocou ana@ → aluno05@, que a Joana tinha largado; a
+//   presença de janeiro da Ana agora tem aluno05@ e é da Ana, não da Joana). Quem foi
+//   cadastrado direto com o e-mail não recebeu nada renomeado: aí, e para o e-mail que
+//   ninguém usa hoje, vale o período (o registro da época do outro dono é dele, como a
+//   auditoria antiga, de versões que não renomeavam). Nos campos que não são
+//   renomeados (logins, autoria, texto livre, contestação), vale sempre o período.
 function studentEmailOwnership(memory, email) {
     const current = normalizeEmailValue(email);
     if (!current) return { emails: [], owns: () => false };
     const changes = emailChanges(memory);
     const students = ((memory && memory.students) || []).filter(Boolean);
     const self = students.find(student => normalizeEmailValue(student.email) === current) || { email: current };
-    const emails = [...new Set(studentEmailPeriods(self, changes).map(period => period.email))];
+    const selfPeriods = studentEmailPeriods(self, changes);
+    const emails = [...new Set(selfPeriods.map(period => period.email))];
     const known = new Set(emails);
     const foreign = new Map();
     students.forEach(student => {
@@ -707,10 +719,20 @@ function studentEmailOwnership(memory, email) {
         });
     });
     const staff = new Set(((memory && memory.admins) || []).map(account => normalizeEmailValue(account && account.email)).filter(Boolean));
+    // Quem usa hoje cada e-mail do aluno e se chegou a ele por uma troca registrada
+    // (a cadeia de períodos tem mais de um e-mail).
+    const holders = new Map([[current, { isSelf: true, arrived: selfPeriods.length > 1 }]]);
+    students.forEach(student => {
+        const address = normalizeEmailValue(student.email);
+        if (!known.has(address) || holders.has(address)) return;
+        holders.set(address, { isSelf: false, arrived: studentEmailPeriods(student, changes).length > 1 });
+    });
     const owns = (value, record, kind = 'student') => {
         const candidate = normalizeEmailValue(value);
         if (!known.has(candidate)) return false;
         if (kind === 'anyone' && staff.has(candidate)) return false;
+        const holder = kind === 'renamed' ? holders.get(candidate) : null;
+        if (holder && holder.arrived) return holder.isSelf;
         const others = foreign.get(candidate) || [];
         if (!others.length) return true;
         const when = recordPeriod(record);
@@ -755,14 +777,24 @@ function scrubPersonalKey(key, identity, taken) {
     return unique;
 }
 
+// Campo de identificador ou de data (id, examKey, applicationId, submissionId,
+// attemptId, timestamp, anonymizedAt, date...): nome e matrícula não saem dele. A
+// matrícula "2026" não pode virar buraco em "2026-03-01" nem o nome "Ana" mudar o
+// examKey "Avaliacao_Ana"; o e-mail inteiro sai em qualquer campo.
+const IDENTIFIER_OR_DATE_KEY = /^(id|key|date|time|timestamp|at)$|(Id|Ids|Key|Keys|At|Date|Time|Timestamp)$/;
+function isIdentifierOrDateKey(key) {
+    return IDENTIFIER_OR_DATE_KEY.test(String(key || ''));
+}
+
 function scrubPersonalText(value, identity, key, owned) {
     if (typeof value === 'string') {
         const trimmed = value.trim();
         if (identity.emails.has(trimmed.toLowerCase())) return key === 'actor' ? ANONYMIZED_ACTOR : '';
-        if (owned && identity.matriculas.has(trimmed)) return '';
+        const personal = owned && !isIdentifierOrDateKey(key);
+        if (personal && identity.matriculas.has(trimmed)) return '';
         let text = value;
         identity.emailPatterns.forEach(pattern => { text = text.replace(pattern, ANONYMIZED_ACTOR); });
-        if (!owned) return text;
+        if (!personal) return text;
         identity.names.forEach(name => {
             text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), `$1${ANONYMIZED_STUDENT_NAME}`);
         });
@@ -796,10 +828,11 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
     const patterns = new Map(emails.map(email => [email, wholeEmailPattern(email)]));
     const names = new Set((identity.names || []).map(name => String(name || '').trim()).filter(name => name.length >= 3));
     const matriculas = new Set((identity.matriculas || []).map(value => String(value || '').trim()).filter(value => value.length >= 3));
-    // Entrada sobre o aluno: studentEmail ou a cópia da nota com um e-mail dele, naquela data.
+    // Entrada sobre o aluno: studentEmail ou a cópia da nota com um e-mail dele (os dois
+    // a troca de e-mail renomeia: o e-mail atual é dele em qualquer data).
     const isAboutStudent = entry => {
         const copy = entry.details && entry.details.deletedSubmission;
-        return owns(entry.studentEmail, entry, 'student') || (!!copy && typeof copy === 'object' && owns(deletedCopyEmail(copy), entry, 'student'));
+        return owns(entry.studentEmail, entry, 'renamed') || (!!copy && typeof copy === 'object' && owns(deletedCopyEmail(copy), entry, 'renamed'));
     };
     // Nome e matrícula que as cópias da lixeira guardavam (o cadastro pode ter mudado depois).
     memory.auditLogs.forEach(entry => {
@@ -861,7 +894,9 @@ function anonymizeStudentExamRecords(memory, { emails = [], owns = null } = {}, 
     if (!memory || !wanted.size) return 0;
     const isTheStudent = typeof owns === 'function' ? owns : value => wanted.has(normalizeEmailValue(value));
     let changed = 0;
-    const clean = holder => {
+    // mapKind: tempo extra e versão das aplicações a troca de e-mail renomeia ('renamed');
+    // os da configuração antiga na turma, não.
+    const clean = (holder, mapKind = 'student') => {
         if (!holder || typeof holder !== 'object') return;
         (Array.isArray(holder.questionReports) ? holder.questionReports : []).forEach(report => {
             if (!report || !isTheStudent(report.studentEmail, report, 'student')) return;
@@ -876,13 +911,13 @@ function anonymizeStudentExamRecords(memory, { emails = [], owns = null } = {}, 
             const map = holder[field];
             if (!map || typeof map !== 'object') return;
             Object.keys(map).forEach(key => {
-                if (isTheStudent(key, null, 'student')) { delete map[key]; changed += 1; }
+                if (isTheStudent(key, null, mapKind)) { delete map[key]; changed += 1; }
             });
         });
     };
-    (memory.examApplications || []).forEach(clean);
+    (memory.examApplications || []).forEach(application => clean(application, 'renamed'));
     (memory.classes || []).forEach(cls => {
-        Object.values((cls && cls.onlineExamConfigs) || {}).forEach(clean);
+        Object.values((cls && cls.onlineExamConfigs) || {}).forEach(config => clean(config, 'student'));
     });
     return changed;
 }

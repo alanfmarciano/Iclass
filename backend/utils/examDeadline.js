@@ -253,11 +253,19 @@ function settleExpiredAttempts(memory, { applicationId = null, studentEmail = nu
     return result;
 }
 
-function hasOpenAttemptInApplication(memory, applicationId, email) {
-    return Object.values(memory?.studentExamState || {}).some(state => state
+function openAttemptsInApplication(memory, applicationId, email) {
+    return Object.entries(memory?.studentExamState || {}).filter(([, state]) => state
         && state.applicationId === applicationId
         && normalizedEmail(state.studentEmail) === email
         && !CLOSED_ATTEMPT_STATUSES.has(state.status));
+}
+
+// Tentativa seguinte que o aluno ainda não começou (tela de instruções, sem resposta):
+// per_attempt com 2+ tentativas cria a próxima logo depois da entrega do fim do tempo.
+function untouchedNextAttempt(state, delivery) {
+    return !!state && !state.startedAt
+        && countAnswers(state.answers) === 0
+        && Number(state.attemptNumber || 0) > Number(delivery?.attemptNumber || 0);
 }
 
 function latestDeliveryByStudent(memory, applicationId) {
@@ -320,14 +328,30 @@ function archivedDelivery(submission) {
 // encerramento a devolve (restoreReopenedDelivery), então a entrega que o aluno já tinha
 // nunca se perde. Nunca reabre o envio feito pelo próprio aluno, entrega com nota
 // publicada ou arquivada, entrega mais antiga que a janela ou tentativa que o tempo
-// extra não alcança. Devolve as tentativas reabertas (e quantas voltaram bloqueadas por
-// perda de foco) e quantos ficaram de fora.
+// extra não alcança. Com 2+ tentativas (per_attempt), a tentativa seguinte que o aluno
+// ainda não começou (instruções, sem resposta) é descartada e a entrega reabre; se ele
+// já começou a seguinte, a entrega fica e ele é contado (o tempo extra vale para a
+// tentativa em andamento). Devolve as tentativas reabertas (e quantas voltaram
+// bloqueadas por perda de foco) e quantos ficaram de fora, com o motivo:
+// deadlineKept (entregues no fim do tempo e não reabertas; extraTooShort delas porque o
+// tempo extra não cobre o tempo que já passou desde o fim), manualKept (enviaram por
+// conta própria depois do fim do tempo) e nextAttemptStarted.
 function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor = null, windowMs = CLASS_EXTRA_TIME_REOPEN_WINDOW_MS, extraMinutes = 0 } = {}) {
-    const result = { reopened: [], reopenedLocked: 0, deadlineKept: 0, manualKept: 0 };
+    const result = { reopened: [], reopenedLocked: 0, deadlineKept: 0, extraTooShort: 0, manualKept: 0, nextAttemptStarted: 0, discardedNextAttempts: 0 };
     if (!application || !ACTIVE_APPLICATION_STATUSES.has(application.status)) return result;
     if (!memory.studentExamState || typeof memory.studentExamState !== 'object') memory.studentExamState = {};
     for (const [email, submission] of latestDeliveryByStudent(memory, application.id)) {
-        if (hasOpenAttemptInApplication(memory, application.id, email)) continue;
+        const open = openAttemptsInApplication(memory, application.id, email);
+        const pendingNext = open.length > 0 && open.every(([, state]) => untouchedNextAttempt(state, submission));
+        if (open.length && !pendingNext) {
+            // Já está na tentativa seguinte: a entrega do fim do tempo da anterior fica.
+            if (DEADLINE_DELIVERY_SOURCES.has(submission.submissionSource)
+                && Number(submission.deadlineAt) > 0 && now - Number(submission.deadlineAt) <= windowMs
+                && open.some(([, state]) => Number(state.attemptNumber || 0) > Number(submission.attemptNumber || 0))) {
+                result.nextAttemptStarted += 1;
+            }
+            continue;
+        }
         if (!DEADLINE_DELIVERY_SOURCES.has(submission.submissionSource)) {
             if (timeEndedBeforeExtra(application, submission, email, { now, extraMinutes })) result.manualKept += 1;
             continue;
@@ -349,8 +373,17 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
         const newDeadline = state ? computeAttemptDeadline({ application, state, now }) : null;
         if (!state || (newDeadline !== null && newDeadline <= now)) {
             result.deadlineKept += 1;
+            // Reabriria, mas o prazo novo já passou: o tempo extra é menor que o tempo
+            // que já passou desde o fim (ex.: +1 min 90 s depois do fim).
+            if (state) result.extraTooShort += 1;
             continue;
         }
+        // A tentativa seguinte, ainda não começada, sai: a reaberta volta a ser a atual.
+        const discardedNext = pendingNext ? open.map(([key, next]) => {
+            delete memory.studentExamState[key];
+            return { attemptId: next.attemptId || next.id || null, attemptNumber: Number(next.attemptNumber || 0) || null };
+        }) : [];
+        result.discardedNextAttempts += discardedNext.length;
         state.attemptId = state.attemptId || submission.attemptId;
         state.id = state.id || state.attemptId;
         state.attemptNumber = Number(state.attemptNumber || submission.attemptNumber || 1);
@@ -377,7 +410,7 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
         const index = memory.submissions.indexOf(submission);
         if (index >= 0) memory.submissions.splice(index, 1);
         memory.studentExamState[key] = state;
-        recordReopenedAttempt(memory, application, submission, state, actor, now);
+        recordReopenedAttempt(memory, application, submission, state, actor, now, discardedNext);
         // Travada por perda de foco no fim do tempo: volta travada, e o professor precisa
         // desbloquear no Monitor para o aluno continuar.
         if (state.focusLocked === true) result.reopenedLocked += 1;
@@ -423,7 +456,7 @@ function restoreReopenedDelivery(memory, state, { application = null, actor = nu
     return restored;
 }
 
-function recordReopenedAttempt(memory, application, submission, state, actor, now) {
+function recordReopenedAttempt(memory, application, submission, state, actor, now, discardedNext = []) {
     if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
     memory.auditLogs.push({
         id: `audit_exam_${now}_${Math.random().toString(36).slice(2, 10)}`,
@@ -443,6 +476,7 @@ function recordReopenedAttempt(memory, application, submission, state, actor, no
             newDeadlineAt: state.deadlineAt,
             answeredCount: countAnswers(state.answers),
             score: submission.score ?? null,
+            ...(discardedNext.length ? { discardedNextAttempts: discardedNext } : {}),
         },
         timestamp: new Date(now).toISOString(),
     });

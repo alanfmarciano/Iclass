@@ -1452,3 +1452,149 @@ test('[UC-NOTAS-004] e-mail antigo que hoje é o login de outro aluno: o que é 
     assert.deepEqual(db.memory.examApplications[0].questionReports[1], carlosReport);
     assert.ok(db.memory.students.some(item => item.email === 'ana@notas.local' && item.name === 'Carlos'));
 });
+
+// Cenário do revisor: a Joana largou aluno05@ (trocou para joana@) e depois a Ana passou
+// a usar aluno05@. A troca da Ana renomeou para aluno05@ os registros dela de janeiro,
+// época em que o e-mail ainda era da Joana.
+async function emailSwapScenario() {
+    const T0 = Date.parse('2026-01-01T10:00:00Z');
+    const JAN = '2026-01-15T10:00:00.000Z';
+    const T1 = Date.parse('2026-02-01T10:00:00Z');
+    const T3 = Date.parse('2026-03-01T10:00:00Z');
+    db.memory.students = [
+        { name: 'Ana Souza', email: 'ana@notas.local', matricula: 'MAT-1', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE_A }], studentClass: '1DES', createdAt: T0 },
+        { name: 'Joana Lima', email: 'aluno05@notas.local', matricula: 'MAT-2', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE_A }], studentClass: '1DES', createdAt: T0 },
+    ];
+    db.memory.attendance = [
+        { id: 'att_ana', studentEmail: 'ana@notas.local', date: JAN.slice(0, 10), status: 'falta', justificativa: { texto: 'atestado da Ana' } },
+        { id: 'att_joana', studentEmail: 'aluno05@notas.local', date: '2026-01-10', status: 'presente' },
+    ];
+    db.memory.pedagogicalObservations = [
+        { id: 'obs_ana', studentEmail: 'ana@notas.local', text: 'Ana tem dificuldade', createdAt: JAN },
+        { id: 'obs_joana', studentEmail: 'aluno05@notas.local', text: 'Joana participa', createdAt: '2026-01-10T10:00:00.000Z' },
+    ];
+    db.memory.submissions = [
+        submission('sub_ana', { email: 'ana@notas.local', name: 'Ana Souza', score: 70, timestamp: JAN }),
+        submission('sub_joana', { email: 'aluno05@notas.local', name: 'Joana Lima', score: 90, timestamp: '2026-01-10T10:00:00.000Z' }),
+    ];
+    db.memory.forum = [
+        { id: 'comment_ana', key: 'u1', studentEmail: 'ana@notas.local', studentName: 'Ana Souza', courseId: COURSE_A, studentClass: '1DES', text: 'Meu telefone é 99999', timestamp: JAN, replies: [] },
+        { id: 'comment_joana', key: 'u1', studentEmail: 'aluno05@notas.local', studentName: 'Joana Lima', courseId: COURSE_A, studentClass: '1DES', text: 'dúvida da Joana', timestamp: '2026-01-10T10:00:00.000Z', replies: [] },
+    ];
+    db.memory.progress = { 'ana@notas.local': { u1: true }, 'aluno05@notas.local': { u2: true } };
+    db.memory.auditLogs = [
+        { id: 'audit_ana_jan', actor: 'admin@notas.local', studentEmail: 'ana@notas.local', action: 'update', field: 'Telefone', oldValue: '(11) 1111', newValue: '(11) 2222', timestamp: Date.parse(JAN) },
+        { id: 'audit_joana_jan', actor: 'admin@notas.local', studentEmail: 'aluno05@notas.local', action: 'update', field: 'Telefone', oldValue: '(21) 1111', newValue: '(21) 2222', timestamp: Date.parse('2026-01-10T10:00:00.000Z') },
+    ];
+    // O log de login não é renomeado na troca: o de janeiro com aluno05@ é da Joana.
+    db.memory.loginLogs = [
+        { id: 'login_joana_jan', email: 'aluno05@notas.local', role: 'student', timestamp: '2026-01-12T10:00:00.000Z' },
+        { id: 'login_ana_mar', email: 'aluno05@notas.local', role: 'student', timestamp: '2026-03-05T10:00:00.000Z' },
+    ];
+    const swap = async (from, to, name, matricula, when) => {
+        const response = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: from, email: to, name, matricula, classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
+        assert.equal(response.status, 200, response.body.error);
+        db.memory.auditLogs.filter(entry => entry.field === 'E-mail/login' && entry.newValue === to).forEach(entry => { entry.timestamp = when; });
+    };
+    await swap('aluno05@notas.local', 'joana@notas.local', 'Joana Lima', 'MAT-2', T1);
+    await swap('ana@notas.local', 'aluno05@notas.local', 'Ana Souza', 'MAT-1', T3);
+    assert.equal(db.memory.attendance.find(item => item.id === 'att_ana').studentEmail, 'aluno05@notas.local');
+    assert.equal(db.memory.attendance.find(item => item.id === 'att_joana').studentEmail, 'joana@notas.local');
+}
+
+test('[UC-NOTAS-004] excluir a aluna que passou a usar o e-mail largado por outra apaga tudo dela, mesmo o que tem data da época da outra', async () => {
+    await emailSwapScenario();
+    const joanaBefore = JSON.parse(JSON.stringify({
+        attendance: db.memory.attendance.filter(item => item.studentEmail === 'joana@notas.local'),
+        observations: db.memory.pedagogicalObservations.filter(item => item.studentEmail === 'joana@notas.local'),
+        submissions: db.memory.submissions.filter(item => item.student.email === 'joana@notas.local'),
+        forum: db.memory.forum.filter(item => item.studentEmail === 'joana@notas.local'),
+        audit: db.memory.auditLogs.filter(item => item.studentEmail === 'joana@notas.local'),
+        progress: db.memory.progress['joana@notas.local'],
+    }));
+
+    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'aluno05@notas.local' });
+    assert.equal(deleted.status, 200, deleted.body.error);
+
+    // Antes: presença, observação, nota e dúvida de janeiro da Ana ficavam com aluno05@
+    // (a data caía na época da Joana) e a auditoria dela continuava com o telefone.
+    assert.deepEqual(db.memory.attendance.map(item => item.id), ['att_joana']);
+    assert.deepEqual(db.memory.pedagogicalObservations.map(item => item.id), ['obs_joana']);
+    assert.deepEqual(db.memory.submissions.map(item => item.id), ['sub_joana']);
+    assert.deepEqual(db.memory.forum.map(item => item.id), ['comment_joana']);
+    assert.equal(db.memory.progress['aluno05@notas.local'], undefined);
+    const anaAudit = db.memory.auditLogs.find(item => item.id === 'audit_ana_jan');
+    assert.deepEqual([anaAudit.studentEmail, anaAudit.oldValue, anaAudit.newValue, anaAudit.studentAnonymized], ['', '', '', true]);
+    // O login de janeiro com aluno05@ é da Joana (logins não são renomeados); o de março, da Ana.
+    assert.deepEqual(db.memory.loginLogs.map(item => item.id), ['login_joana_jan']);
+    // Nada da Joana mudou.
+    assert.deepEqual({
+        attendance: db.memory.attendance.filter(item => item.studentEmail === 'joana@notas.local'),
+        observations: db.memory.pedagogicalObservations.filter(item => item.studentEmail === 'joana@notas.local'),
+        submissions: db.memory.submissions.filter(item => item.student.email === 'joana@notas.local'),
+        forum: db.memory.forum.filter(item => item.studentEmail === 'joana@notas.local'),
+        audit: db.memory.auditLogs.filter(item => item.studentEmail === 'joana@notas.local'),
+        progress: db.memory.progress['joana@notas.local'],
+    }, joanaBefore);
+
+    // Nova conta com o e-mail liberado não herda nada da Ana.
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carla Nova', email: 'aluno05@notas.local', studentPassword: '12345', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    assert.equal(created.status, 200, created.body.error);
+    const query = '?email=aluno05%40notas.local';
+    assert.deepEqual((await admin(request(app).get(`/api/admin/student/observations${query}`))).body, []);
+    assert.deepEqual((await admin(request(app).get(`/api/admin/student/attendance${query}`))).body.days, {});
+    assert.deepEqual((await admin(request(app).get(`/api/admin/student/audit${query}`))).body.map(item => item.field), ['Cadastro']);
+});
+
+test('[UC-NOTAS-004] excluir a aluna que largou o e-mail não leva os registros renomeados da que passou a usá-lo', async () => {
+    await emailSwapScenario();
+    const anaBefore = JSON.parse(JSON.stringify({
+        attendance: db.memory.attendance.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        observations: db.memory.pedagogicalObservations.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        submissions: db.memory.submissions.filter(item => item.student.email === 'aluno05@notas.local'),
+        forum: db.memory.forum.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        audit: db.memory.auditLogs.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        progress: db.memory.progress['aluno05@notas.local'],
+    }));
+    assert.equal(anaBefore.attendance.length, 1);
+
+    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'joana@notas.local' });
+    assert.equal(deleted.status, 200, deleted.body.error);
+
+    // A presença de janeiro com aluno05@ é da Ana (renomeada na troca dela), mesmo com
+    // data da época em que o e-mail era da Joana.
+    assert.deepEqual({
+        attendance: db.memory.attendance.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        observations: db.memory.pedagogicalObservations.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        submissions: db.memory.submissions.filter(item => item.student.email === 'aluno05@notas.local'),
+        forum: db.memory.forum.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        audit: db.memory.auditLogs.filter(item => item.studentEmail === 'aluno05@notas.local'),
+        progress: db.memory.progress['aluno05@notas.local'],
+    }, anaBefore);
+    // O que é da Joana sai: os registros renomeados para joana@ e o login dela de janeiro.
+    assert.deepEqual(db.memory.attendance.map(item => item.id), ['att_ana']);
+    assert.deepEqual(db.memory.submissions.map(item => item.id), ['sub_ana']);
+    assert.deepEqual(db.memory.loginLogs.map(item => item.id), ['login_ana_mar']);
+    assert.equal(db.memory.auditLogs.find(item => item.id === 'audit_joana_jan').studentEmail, '');
+});
+
+test('[UC-NOTAS-004] excluir o aluno não tira nome e matrícula de identificadores e datas da auditoria (só do texto livre)', async () => {
+    db.memory.students[0].matricula = '2026';
+    db.memory.students[0].name = 'Ana';
+    db.memory.auditLogs = [{
+        id: 'grade_ana', category: 'grade', action: 'grade_updated', actor: 'admin@notas.local', studentEmail: 'ana@notas.local',
+        examKey: 'Avaliacao_Ana', applicationId: 'app_2026', timestamp: '2026-03-01T10:00:00.000Z', date: '2026-03-02',
+        details: { submissionId: 'sub_2026_Ana', attemptId: 'att_Ana_2026', startedAt: '2026-03-01T09:00:00.000Z', reason: 'Ana (matrícula 2026) pediu revisão' },
+    }];
+    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' });
+    assert.equal(deleted.status, 200, deleted.body.error);
+    const entry = db.memory.auditLogs.find(item => item.id === 'grade_ana');
+    // Antes: "2026-03-01" virava "-03-01", "Avaliacao_Ana" virava "Avaliacao_Aluno excluído".
+    assert.deepEqual(
+        [entry.examKey, entry.applicationId, entry.timestamp, entry.date, entry.details.submissionId, entry.details.attemptId, entry.details.startedAt],
+        ['Avaliacao_Ana', 'app_2026', '2026-03-01T10:00:00.000Z', '2026-03-02', 'sub_2026_Ana', 'att_Ana_2026', '2026-03-01T09:00:00.000Z'],
+    );
+    assert.equal(/\d{4}-\d{2}-\d{2}T/.test(entry.anonymizedAt), true, 'anonymizedAt fica uma data inteira');
+    assert.equal(entry.details.reason, 'Aluno excluído (matrícula ) pediu revisão', 'o texto livre perde nome e matrícula');
+    assert.equal(entry.studentEmail, '');
+});

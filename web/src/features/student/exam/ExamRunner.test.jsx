@@ -742,6 +742,61 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
     }
   })
 
+  it('depois de um erro de tela na prova, "Recarregar a página" e "Recarregar e continuar" não contam como saída: vão ao Monitor como evento técnico neutro', async () => {
+    const user = userEvent.setup()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...originalLocation, reload } })
+    clearRenderError()
+    clearInterruptedExam()
+    let quebrar = null
+    function PedacoDaProva() {
+      const [quebrado, setQuebrado] = useState(false)
+      quebrar = () => setQuebrado(true)
+      if (quebrado) throw new Error('Cannot read properties of undefined (reading \'map\')')
+      return null
+    }
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      const router = renderRunner(['/aluno'], <AppErrorBoundary fallback={ExamErrorScreen}><ExamRunner /><PedacoDaProva /></AppErrorBoundary>)
+      enterFullscreen()
+      await user.click(await screen.findByRole('button', { name: /Dois/ }))
+      act(() => { quebrar() })
+      expect(await screen.findByText('Algo deu errado nesta tela')).toBeVisible()
+
+      // Botão da tela de erro: recarrega sem o aviso "sair do site?" e sem registrar saída.
+      await user.click(screen.getByRole('button', { name: 'Recarregar a página' }))
+      expect(reload).toHaveBeenCalledTimes(1)
+      const beforeUnload = new Event('beforeunload', { cancelable: true })
+      act(() => { window.dispatchEvent(beforeUnload) })
+      expect(beforeUnload.defaultPrevented).toBe(false)
+      act(() => { window.dispatchEvent(new Event('pagehide')) })
+      // Antes: a recarga pelo botão mandava exam_left com pageExit (saída da página).
+      expect(activityLogs('exam_left')).toHaveLength(0)
+      const reloads = activityLogs('exam_error_reload')
+      expect(reloads).toHaveLength(1)
+      expect(reloads[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1', examKey: EXAM, details: 'Recarregou a página da prova pelo botão da tela de erro' })
+      expect(reloads[0][1].pageExit).toBeUndefined()
+      expect(reloads[0][2]).toMatchObject({ keepalive: true })
+
+      // "Recarregar e continuar" no aviso do voltar do navegador: também não é saída.
+      await act(async () => { router.navigate(-1) })
+      expect(await screen.findByRole('dialog', { name: 'Sair da prova agora?' })).toBeVisible()
+      await user.click(screen.getByRole('button', { name: 'Recarregar e continuar' }))
+      expect(reload).toHaveBeenCalledTimes(2)
+      act(() => { window.dispatchEvent(new Event('pagehide')) })
+      expect(activityLogs('exam_left')).toHaveLength(0)
+      expect(activityLogs('exam_error_reload')).toHaveLength(2)
+      expect(router.state.location.pathname).toBe(`/aluno/prova/${EXAM}`)
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+      consoleError.mockRestore()
+      clearRenderError()
+      clearInterruptedExam()
+    }
+  })
+
   it('alternativas sem identificador respondem com a letra da posição, nunca com a letra que veio (AVA-05)', async () => {
     const user = userEvent.setup()
     const response = syncResponse({ timerRemaining: 600 })

@@ -13,6 +13,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { StudentFormTabs } from './AlunosPage'
 import { StudentAuditPanel } from './StudentAuditPanel'
+import { STUDENT_DELETE_REMOVES, STUDENT_DELETE_KEEPS } from './studentDeletion'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
 
@@ -124,7 +125,7 @@ export default function AlunoGlobalEditPage() {
 
             {confirmDel && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/40 bg-danger-soft px-4 py-3">
-                <p className="text-sm text-text">Excluir {displayName(form)}? A conta e submissões vinculadas podem ser afetadas.</p>
+                <div className="text-sm text-text space-y-1 flex-1 min-w-[16rem]"><p className="font-medium">Excluir {displayName(form)}? Não dá para desfazer.</p><p>{STUDENT_DELETE_REMOVES}</p><p>{STUDENT_DELETE_KEEPS}</p></div>
                 <div className="flex gap-2">
                   <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancelar</Button>
                   <Button size="sm" variant="destructive" onClick={remove}>Excluir definitivo</Button>

@@ -352,17 +352,19 @@ router.post('/api/admin/delete-student', (req, res) => {
         // Antes de tirar o aluno do cadastro: a linha do tempo dos e-mails usa todos os alunos.
         const { emails, owns } = studentEmailOwnership(db.memory, normalizedEmail);
         // Registro do aluno: e-mail dele na data do registro (sem data: o e-mail atual).
+        // Nos campos que a troca de e-mail renomeia ('renamed'), o e-mail atual é sempre
+        // dele, mesmo em registro com data da época em que o e-mail era de outro aluno.
         const ownedRecord = (item, value, kind = 'student') => !!item && owns(value, item, kind);
         const studentFiles = (db.memory.attendance || [])
-            .filter(item => ownedRecord(item, item.studentEmail))
+            .filter(item => ownedRecord(item, item.studentEmail, 'renamed'))
             .map(item => item.justificativa && item.justificativa.arquivo)
             .filter(Boolean);
 
         db.memory.students = students.filter(s => !s.email || s.email.toLowerCase() !== normalizedEmail);
-        db.memory.submissions = readJSON(DB_SUBMISSIONS_FILE).filter(s => !(s && s.student && ownedRecord(s, s.student.email)));
+        db.memory.submissions = readJSON(DB_SUBMISSIONS_FILE).filter(s => !(s && s.student && ownedRecord(s, s.student.email, 'renamed')));
 
         emails.forEach(known => {
-            if (!owns(known, null, 'student')) return;
+            if (!owns(known, null, 'renamed')) return;
             ['progress', 'notes', 'annotations', 'sessions'].forEach(collection => {
                 if (db.memory[collection]) delete db.memory[collection][known];
             });
@@ -380,11 +382,13 @@ router.post('/api/admin/delete-student', (req, res) => {
         anonymizeStudentExamRecords(db.memory, { emails, owns });
         // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
         // certificados, logs de prova e de login). Login de professor com o mesmo e-mail fica.
+        // O log de login não é renomeado na troca de e-mail: vale o dono do e-mail na data.
+        const loginKind = item => (item.role && item.role !== 'student' ? 'anyone' : 'student');
         ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs']
             .forEach(collection => {
                 if (!Array.isArray(db.memory[collection])) return;
                 db.memory[collection] = db.memory[collection].filter(item => !(item && ownedRecord(item, item.studentEmail || item.email,
-                    collection === 'loginLogs' && item.role && item.role !== 'student' ? 'anyone' : 'student')));
+                    collection === 'loginLogs' ? loginKind(item) : 'renamed')));
             });
         // Fórum: as respostas dele saem; a dúvida dele sai inteira, a não ser que outra
         // pessoa tenha respondido: aí fica sem nome, e-mail e texto, com as respostas dos
@@ -400,7 +404,7 @@ router.post('/api/admin/delete-student', (req, res) => {
                 if (comment.deletedBy && ownedRecord(comment, comment.deletedBy, 'anyone')) comment.deletedBy = 'aluno excluído';
             });
             db.memory.forum = db.memory.forum.filter(comment => {
-                if (!comment || !ownedRecord(comment, comment.studentEmail)) return true;
+                if (!comment || !ownedRecord(comment, comment.studentEmail, 'renamed')) return true;
                 if (!(comment.replies || []).length) return false;
                 comment.studentEmail = '';
                 comment.studentName = 'Aluno excluído';
@@ -412,28 +416,28 @@ router.post('/api/admin/delete-student', (req, res) => {
         }
         // Mensagens da prova e avisos só para ele saem; nos outros, sai das listas de leitura.
         if (Array.isArray(db.memory.broadcastMessages)) {
-            db.memory.broadcastMessages = db.memory.broadcastMessages.filter(message => !(message && ownedRecord(message, message.targetEmail)));
+            db.memory.broadcastMessages = db.memory.broadcastMessages.filter(message => !(message && ownedRecord(message, message.targetEmail, 'renamed')));
             db.memory.broadcastMessages.forEach(message => {
                 ['acknowledgedBy', 'deletedFor'].forEach(field => {
-                    if (message && Array.isArray(message[field])) message[field] = message[field].filter(value => !owns(value, null, 'student'));
+                    if (message && Array.isArray(message[field])) message[field] = message[field].filter(value => !owns(value, null, 'renamed'));
                 });
             });
         }
         if (Array.isArray(db.memory.announcements)) {
-            db.memory.announcements = db.memory.announcements.filter(item => !(item && item.target === 'aluno' && ownedRecord(item, item.targetValue)));
+            db.memory.announcements = db.memory.announcements.filter(item => !(item && item.target === 'aluno' && ownedRecord(item, item.targetValue, 'renamed')));
             db.memory.announcements.forEach(item => {
-                if (item && Array.isArray(item.readBy)) item.readBy = item.readBy.filter(value => !owns(value, null, 'student'));
+                if (item && Array.isArray(item.readBy)) item.readBy = item.readBy.filter(value => !owns(value, null, 'renamed'));
             });
         }
         Object.keys(db.memory.studentExamState || {}).forEach(key => {
             const state = db.memory.studentExamState[key];
-            if (state && owns(state.studentEmail, null, 'student')) delete db.memory.studentExamState[key];
+            if (state && owns(state.studentEmail, null, 'renamed')) delete db.memory.studentExamState[key];
         });
 
         const classes = readJSON(DB_CLASSES_FILE);
         classes.forEach(cls => {
             Object.keys((cls && cls.studentReleasedItems) || {}).forEach(key => {
-                if (owns(key, null, 'student')) delete cls.studentReleasedItems[key];
+                if (owns(key, null, 'renamed')) delete cls.studentReleasedItems[key];
             });
         });
         db.memory.classes = classes;
@@ -3632,14 +3636,19 @@ router.post('/api/admin/server-exam-control', (req, res) => {
 // (e quantas delas voltaram bloqueadas por perda de foco) e quem já tinha entregue e
 // ficou sem ele (fim do tempo fora da janela ou nota publicada, e quem enviou por conta
 // própria depois que o tempo dele tinha acabado).
+// deliveredAtDeadlineTooShort: das entregas do fim do tempo que ficaram, quantas porque
+// o tempo extra não cobre o tempo que já passou desde o fim; nextAttemptStarted: quem
+// já tinha começado a tentativa seguinte (per_attempt com 2+ tentativas).
 function classExtraTimeResult(reopened, deliveredAtDeadline = 0) {
-    if (!reopened) return { success: true, reopenedAtDeadline: 0, reopenedLocked: 0, deliveredAtDeadline, deliveredByStudent: 0 };
+    if (!reopened) return { success: true, reopenedAtDeadline: 0, reopenedLocked: 0, deliveredAtDeadline, deliveredAtDeadlineTooShort: 0, deliveredByStudent: 0, nextAttemptStarted: 0 };
     return {
         success: true,
         reopenedAtDeadline: reopened.reopened.length,
         reopenedLocked: reopened.reopenedLocked,
         deliveredAtDeadline: reopened.deadlineKept,
+        deliveredAtDeadlineTooShort: reopened.extraTooShort,
         deliveredByStudent: reopened.manualKept,
+        nextAttemptStarted: reopened.nextAttemptStarted,
     };
 }
 

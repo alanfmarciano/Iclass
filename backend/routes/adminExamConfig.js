@@ -562,7 +562,9 @@ function createAdminExamConfigRouter() {
                 reopenedAtDeadline: reopened ? reopened.reopened.length : 0,
                 reopenedLocked: reopened ? reopened.reopenedLocked : 0,
                 deliveredAtDeadline: reopened ? reopened.deadlineKept : settled.finalized.length,
+                deliveredAtDeadlineTooShort: reopened ? reopened.extraTooShort : 0,
                 deliveredByStudent: reopened ? reopened.manualKept : 0,
+                nextAttemptStarted: reopened ? reopened.nextAttemptStarted : 0,
             });
         });
     });

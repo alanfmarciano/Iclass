@@ -35,6 +35,7 @@ export function focusLogLabel(log) {
   if (type === 'fullscreen_unsupported') return 'Dispositivo sem tela cheia'
   if (type === 'page_return') return pageReturnLabel(log?.details)
   if (type === 'exam_render_error') return 'Erro técnico na tela da prova'
+  if (type === 'exam_error_reload') return 'Recarregou depois do erro de tela'
   if (type === 'focus_unlocked') return 'Liberado pelo professor'
   return type || 'Evento'
 }
@@ -51,6 +52,8 @@ export const LOG_INFO = {
   page_return: { label: 'Recarregou ou saiu da página e voltou', icon: '↻', sev: 'info', pauses: false, informative: true, badge: 'destravou sozinha' },
   // Erro de tela na prova (falha do sistema, não do aluno): não trava a prova.
   exam_render_error: { label: 'Erro técnico na tela da prova', icon: '⚠', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
+  // Recarga pelo botão da tela de erro da prova: volta à mesma tentativa, não é saída.
+  exam_error_reload: { label: 'Recarregou depois do erro de tela', icon: '↻', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
 }
 
 const SEV_RANK = { high: 3, med: 2, low: 1 }

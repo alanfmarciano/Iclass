@@ -8,6 +8,7 @@ import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { Textarea } from '../../components/ui/Textarea'
 import { Modal, ConfirmDialog } from '../../components/ui/Modal'
+import { STUDENT_DELETE_WARNING } from './studentDeletion'
 import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
 import { useApi } from '../../hooks/useApi'
@@ -566,7 +567,7 @@ export default function AlunosPage() {
       </Modal>
 
       <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir"
-        title={`Excluir ${del ? displayName(del) : ''}?`} description="A conta e submissões vinculadas podem ser afetadas." />
+        title={`Excluir ${del ? displayName(del) : ''}?`} description={STUDENT_DELETE_WARNING} />
 
       <Modal open={!!reset} onClose={() => setReset(null)} title="Resetar senha" description={reset?.email}
         footer={<><Button variant="ghost" onClick={() => setReset(null)}>Cancelar</Button><Button onClick={doReset}>Redefinir</Button></>}>
