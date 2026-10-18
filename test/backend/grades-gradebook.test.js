@@ -1598,3 +1598,56 @@ test('[UC-NOTAS-004] excluir o aluno não tira nome e matrícula de identificado
     assert.equal(entry.details.reason, 'Aluno excluído (matrícula ) pediu revisão', 'o texto livre perde nome e matrícula');
     assert.equal(entry.studentEmail, '');
 });
+
+test('[UC-NOTAS-003] ficha do aluno, coluna "Média" de Alunos e risco do Dashboard usam a consolidação de Resultados e do boletim', async () => {
+    // Prova 1 com duas tentativas na mesma aplicação (regra "maior": vale 9,0), Prova 2
+    // lançada à mão (7,0) e uma nota inválida antiga (150) na Prova 3. Antes a ficha
+    // fazia a média simples das tentativas válidas: (2,0 + 9,0 + 7,0) / 3 = 6,0.
+    db.memory.submissions = [
+        submission('ana_p1_t1', { score: 20, applicationId: 'app_1', timestamp: '2026-03-01T10:30:00.000Z' }),
+        submission('ana_p1_t2', { score: 90, applicationId: 'app_1', timestamp: '2026-03-01T11:00:00.000Z', extra: { attemptNumber: 2 } }),
+        submission('ana_p2', { examKey: 'Avaliacao_P2', score: 70 }),
+        submission('ana_p3', { examKey: 'Avaliacao_P3', score: 150 }),
+    ];
+    const report = await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(report.body.overallAverage, 8);
+    const book = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(book.body.rows.find(row => row.email === 'ana@notas.local').average, 8);
+    const list = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(resultadosAverageText(list.body, 'ana@notas.local'), '8,0', 'tela Resultados');
+
+    const ficha = await admin(request(app).get(`/api/admin/student/dashboard?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(ficha.body.kpis.media, 8, 'Média geral da ficha do aluno');
+    assert.equal(ficha.body.kpis.provasFeitas, 3, 'duas tentativas da mesma prova contam uma prova feita');
+    assert.equal(ficha.body.comparativo.studentMedia, 8);
+    const semCurso = await admin(request(app).get('/api/admin/student/dashboard?email=ana@notas.local')).expect(200);
+    assert.equal(semCurso.body.kpis.media, 8, 'sem curso informado vale a primeira matrícula');
+
+    const overview = await admin(request(app).get(`/api/admin/dashboard/students-overview?courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(overview.body.find(row => row.email === 'ana@notas.local').media, 8, 'coluna Média de Alunos e risco do Dashboard');
+    const global = await admin(request(app).get('/api/admin/dashboard/students-overview')).expect(200);
+    assert.equal(global.body.find(row => row.email === 'ana@notas.local').media, 8);
+
+    // Nota ainda não publicada entra na visão do professor (ficha, Resultados, quadro),
+    // não no boletim, que conta só as publicadas.
+    db.memory.submissions.push(submission('ana_p2_t2', { examKey: 'Avaliacao_P2', score: 100, published: false, timestamp: '2026-03-02T12:00:00.000Z', extra: { attemptNumber: 2 } }));
+    const fichaPendente = await admin(request(app).get(`/api/admin/student/dashboard?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(fichaPendente.body.kpis.media, 9.5);
+    const bookPendente = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(bookPendente.body.rows.find(row => row.email === 'ana@notas.local').average, 9.5);
+    const reportPendente = await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(reportPendente.body.overallAverage, 8);
+});
+
+test('[UC-NOTAS-003] ficha do aluno em dois cursos mostra a média do curso ativo, como o boletim', async () => {
+    db.memory.submissions = [
+        submission('bia_a', { email: 'bia@notas.local', name: 'Bia', score: 90 }),
+        submission('bia_b', { email: 'bia@notas.local', name: 'Bia', courseId: COURSE_B, studentClass: '2RED', score: 30 }),
+    ];
+    const fichaA = await admin(request(app).get(`/api/admin/student/dashboard?email=bia@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.equal(fichaA.body.kpis.media, 9);
+    const fichaB = await admin(request(app).get(`/api/admin/student/dashboard?email=bia@notas.local&courseId=${COURSE_B}`)).expect(200);
+    assert.equal(fichaB.body.kpis.media, 3);
+    const reportB = await admin(request(app).get(`/api/admin/student/report?email=bia@notas.local&courseId=${COURSE_B}`)).expect(200);
+    assert.equal(reportB.body.overallAverage, 3);
+});

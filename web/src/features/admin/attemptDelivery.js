@@ -39,3 +39,14 @@ export function deliveryTone(item) {
   if (Number(item?.lateBySeconds || 0) > 0) return 'warning'
   return item?.submissionSource === 'deadline_server_auto_submit' ? 'warning' : 'muted'
 }
+
+// Tentativa que a linha do Monitor mostra quando a aplicação permite mais de uma
+// ("Tentativa 2 de 3"). Com uma tentativa só, nada a dizer.
+export function attemptCountLabel(row) {
+  const number = Number(row?.attemptNumber) || 0
+  const max = Number(row?.maxAttempts) || 0
+  if (!number) return ''
+  if (max > 1) return `Tentativa ${number} de ${max}`
+  if (!max && number > 1) return `Tentativa ${number}`
+  return ''
+}

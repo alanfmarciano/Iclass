@@ -3,6 +3,13 @@
 
 const attendanceUtil = require('./attendance.js');
 const { normalizeScore } = require('./submissionAttempts.js');
+const {
+    consolidatedStudentAverage,
+    createSubmissionContextResolver,
+    studentMemberships,
+    submissionMatchesContext,
+    withResolvedContext,
+} = require('./gradebook.js');
 
 function pad(n) { return String(n).padStart(2, '0'); }
 function ymd(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -28,11 +35,39 @@ function courseUnitStats(memory, courseId) {
 }
 
 // Média (0–10) das provas. null quando não há prova — "sem avaliação" não é nota zero.
-// Nota inválida de registro antigo (vazia ou fora de 0 a 100) não entra na média.
+// É a consolidação de Resultados e do boletim (backend/utils/gradebook.js): cada
+// aplicação da prova conta uma vez, pela regra escolhida (maior, última, média ou
+// escolhida), e nota inválida de registro antigo fica fora. Antes era a média simples
+// de todas as tentativas, e a ficha, Alunos e o boletim mostravam médias diferentes.
+// As entregas chegam já recortadas e com curso/turma completados (scopeSubmissions).
 function mediaOf(subs) {
-    const scores = subs.map(s => normalizeScore(s.score)).filter(score => score !== null);
-    if (!scores.length) return null;
-    return scores.reduce((a, score) => a + score, 0) / scores.length / 10;
+    const { average } = consolidatedStudentAverage(subs);
+    return average === null ? null : average / 10;
+}
+
+// Entregas do aluno no curso/turma pedidos, com curso e turma de registros antigos
+// completados como em Resultados (o banco não muda). Sem curso nem turma, todas.
+function scopeSubmissions(subs, { courseId = '', studentClass = '' } = {}, resolve) {
+    return (subs || [])
+        .filter(item => submissionMatchesContext(item, { courseId, studentClass }, resolve))
+        .map(item => withResolvedContext(item, resolve));
+}
+
+// Curso e turma da ficha: a matrícula do aluno no curso (e turma) pedidos; sem pedido
+// ou sem matrícula nele, a primeira matrícula (como o boletim).
+function studentScope(memory, student, { courseId = '', studentClass = '' } = {}) {
+    const memberships = studentMemberships(student);
+    const wantedCourse = String(courseId || '').trim();
+    const wantedClass = String(studentClass || '').trim();
+    const inCourse = item => !wantedCourse || !item.courseId || item.courseId === wantedCourse;
+    const membership = ((wantedCourse || wantedClass)
+        ? memberships.find(item => inCourse(item) && (!wantedClass || item.name === wantedClass)) || memberships.find(inCourse)
+        : null) || memberships[0] || null;
+    if (!membership) return { courseId: '', studentClass: '' };
+    const classes = memory.classes || [];
+    const cls = classes.find(c => c.name === membership.name && (!membership.courseId || String(c.courseId || '') === membership.courseId))
+        || classes.find(c => c.name === membership.name);
+    return { courseId: String((cls && cls.courseId) || membership.courseId || ''), studentClass: membership.name };
 }
 // Arredonda para 1 casa preservando null (sem dado continua sem dado).
 const round1 = (v) => v == null ? null : Math.round(v * 10) / 10;
@@ -61,7 +96,9 @@ function buildOverviewIndex(memory) {
         if (!subs.has(e)) subs.set(e, []);
         subs.get(e).push(s);
     });
-    return { att, subs };
+    // Curso/turma de registros antigos, resolvidos uma vez por requisição.
+    const resolve = createSubmissionContextResolver({ students: memory.students || [], classes: memory.classes || [] });
+    return { att, subs, resolve };
 }
 
 // Registros de presença de um aluno, opcionalmente restritos a um curso.
@@ -94,12 +131,17 @@ function absenceCount(memory, email, courseId = '') {
     return attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId)).faltasContam;
 }
 
-function computeStudentDashboard(memory, email) {
+// options: { courseId, studentClass } do curso/turma ativos (a ficha do aluno manda os
+// da área de trabalho do professor). As notas são as dessa matrícula.
+function computeStudentDashboard(memory, email, options = {}) {
     email = String(email || '').trim().toLowerCase();
     const student = (memory.students || []).find(s => s.email && s.email.toLowerCase() === email) || null;
-    const subs = (memory.submissions || []).filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email);
+    const resolve = createSubmissionContextResolver({ students: memory.students || [], classes: memory.classes || [] });
+    const scope = student ? studentScope(memory, student, options) : { courseId: '', studentClass: '' };
+    const ownSubs = (memory.submissions || []).filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email);
+    const subs = scopeSubmissions(ownSubs, scope, resolve);
     const names = student ? studentClassNames(student) : [];
-    const courseId = student ? courseIdOfStudent(memory, student) : null;
+    const courseId = scope.courseId || (student ? courseIdOfStudent(memory, student) : null);
     const unitStats = courseUnitStats(memory, courseId);
 
     const progressMap = (memory.progress && memory.progress[email]) || {};
@@ -115,7 +157,8 @@ function computeStudentDashboard(memory, email) {
         frequencia,
         media: round1(media),
         progresso: unitStats.units ? Math.round((completed / unitStats.units) * 100) : 0,
-        provasFeitas: subs.length,
+        // Provas diferentes com entrega (várias tentativas da mesma prova contam uma vez).
+        provasFeitas: consolidatedStudentAverage(subs).examsDone,
         provasTotais: unitStats.exams,
     };
 
@@ -132,7 +175,7 @@ function computeStudentDashboard(memory, email) {
     const turmaMedias = [], turmaFreqs = [];
     turma.forEach(s => {
         const e = s.email.toLowerCase();
-        const ss = (memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === e);
+        const ss = scopeSubmissions((memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === e), scope, resolve);
         // Colega só com notas inválidas (registro antigo) não tem média: não entra como 0.
         const media = ss.length ? mediaOf(ss) : null;
         if (media !== null) turmaMedias.push(media);
@@ -229,10 +272,10 @@ function studentOverview(memory, student, options = {}) {
     const todasSubs = index
         ? (index.subs.get(email) || [])
         : (memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === email);
-    // A média segue o mesmo recorte da frequência: prova de outro curso não entra.
-    const subs = courseId
-        ? todasSubs.filter(x => String(x.student && x.student.courseId || '') === String(courseId))
-        : todasSubs;
+    // A média segue o mesmo recorte da frequência (prova de outro curso não entra) e a
+    // consolidação de Resultados: registro antigo sem curso fica no curso da matrícula.
+    const resolve = (index && index.resolve) || createSubmissionContextResolver({ students: memory.students || [], classes: memory.classes || [] });
+    const subs = scopeSubmissions(todasSubs, { courseId, studentClass: options.studentClass || '' }, resolve);
     const media = round1(mediaOf(subs));
     const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId, index));
     const limiar = riskThreshold(memory, student, courseId);

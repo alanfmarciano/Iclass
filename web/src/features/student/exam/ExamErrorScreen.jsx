@@ -5,6 +5,7 @@ import { ErrorScreen } from '../../../components/ui/ErrorScreen'
 import { Modal } from '../../../components/ui/Modal'
 import { Button } from '../../../components/ui/Button'
 import { api, hasActiveSession } from '../../../lib/api'
+import { onBeforeUpdateReload, updateReloadPending, UPDATE_RELOAD_EVENT } from '../../../lib/buildVersion'
 import { clearInterruptedExam, interruptedExam } from '../../../lib/renderErrors'
 
 // Erro de tela durante a prova em andamento (G4): a tela de erro toma o lugar da prova,
@@ -16,6 +17,8 @@ import { clearInterruptedExam, interruptedExam } from '../../../lib/renderErrors
 // registrada e, se a mesma sessão voltar logo, a prova destrava sozinha.
 // "Recarregar a página" e "Recarregar e continuar" (os botões desta tela) não são saída:
 // vão ao Monitor como evento técnico neutro (exam_error_reload) e a prova não trava.
+// A recarga automática depois de uma atualização do IClass (lib/buildVersion.js) também
+// não é saída: vai como exam_update_reload.
 export const ERROR_RELOAD_EVENT = 'exam_error_reload'
 
 export function ExamErrorScreen({ error }) {
@@ -25,13 +28,13 @@ export function ExamErrorScreen({ error }) {
 
   useEffect(() => {
     const onBeforeUnload = (event) => {
-      if (reloadingRef.current || !interruptedExam() || !hasActiveSession()) return
+      if (reloadingRef.current || updateReloadPending() || !interruptedExam() || !hasActiveSession()) return
       event.preventDefault()
       event.returnValue = ''
     }
     const onPageHide = () => {
       const context = interruptedExam()
-      if (reloadingRef.current || !context || !hasActiveSession()) return
+      if (reloadingRef.current || updateReloadPending() || !context || !hasActiveSession()) return
       api.post('/api/student/log-activity', {
         ...context,
         eventType: 'exam_left',
@@ -39,9 +42,20 @@ export function ExamErrorScreen({ error }) {
         pageExit: true,
       }, { keepalive: true }).catch(() => {})
     }
+    const offUpdateReload = onBeforeUpdateReload(() => {
+      reloadingRef.current = true
+      const context = interruptedExam()
+      if (!context || !hasActiveSession()) return
+      api.post('/api/student/log-activity', {
+        ...context,
+        eventType: UPDATE_RELOAD_EVENT,
+        details: 'A página da prova recarregou sozinha com a atualização do IClass (depois de um erro de tela)',
+      }, { keepalive: true }).catch(() => {})
+    })
     window.addEventListener('beforeunload', onBeforeUnload)
     window.addEventListener('pagehide', onPageHide)
     return () => {
+      offUpdateReload()
       window.removeEventListener('beforeunload', onBeforeUnload)
       window.removeEventListener('pagehide', onPageHide)
     }

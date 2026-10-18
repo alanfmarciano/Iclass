@@ -9,6 +9,7 @@ import { Textarea } from '../../../components/ui/Textarea'
 import { Badge } from '../../../components/ui/Badge'
 import { ConfirmDialog, Modal } from '../../../components/ui/Modal'
 import { api, hasActiveSession } from '../../../lib/api'
+import { onBeforeUpdateReload, updateReloadPending, UPDATE_RELOAD_EVENT } from '../../../lib/buildVersion'
 import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '../../../lib/renderErrors'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
@@ -430,7 +431,8 @@ export default function ExamRunner() {
     const onFsChange = () => {
       const active = !!fullscreenElement()
       setIsFullscreen(active)
-      if (!active && phase === 'active') {
+      // Recarga da atualização do IClass: a saída da tela cheia da descarga não é do aluno.
+      if (!active && phase === 'active' && !submittedRef.current && !updateReloadPending()) {
         flushKeystrokes()
         api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'fullscreen_exit', details: 'Saiu do modo tela cheia da prova' }).catch(() => {})
         setPhase('paused')
@@ -459,7 +461,10 @@ export default function ExamRunner() {
     const report = (eventType, details) => {
       // A página está descarregando (recarregar, fechar): a saída da página já foi
       // registrada no pagehide; a aba oculta da descarga não é troca de aba.
-      if (pageHiddenRef.current) return
+      if (pageHiddenRef.current || updateReloadPending()) return
+      // Envio já saiu (a tela segue nas questões até a resposta chegar): a tentativa
+      // está sendo entregue, então perder o foco agora não é saída da prova.
+      if (submittedRef.current) return
       api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType, details }).catch(() => {})
       setPhase('paused')
     }
@@ -476,6 +481,8 @@ export default function ExamRunner() {
   useEffect(() => {
     if (phase !== 'active') return
     const onBeforeUnload = (event) => {
+      // Recarga automática da atualização do IClass: segue sem o "sair do site?".
+      if (updateReloadPending()) return
       event.preventDefault()
       event.returnValue = ''
     }
@@ -484,6 +491,8 @@ export default function ExamRunner() {
     // sozinho e o Monitor mostra em quanto tempo ela voltou (backend/utils/examFocusRules.js).
     const onPageHide = () => {
       pageHiddenRef.current = true
+      // A recarga da atualização já foi registrada como evento neutro (abaixo): não é saída.
+      if (updateReloadPending()) return
       api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details: 'Página da prova foi fechada ou recarregada', pageExit: true }, { keepalive: true }).catch(() => {})
     }
     // Página restaurada do cache do navegador (voltar/avançar): segue a regra de retorno.
@@ -513,6 +522,22 @@ export default function ExamRunner() {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [phase, flushKeystrokes])
+
+  // O IClass foi atualizado com a prova aberta (lib/buildVersion.js): antes da recarga
+  // automática as respostas pendentes vão com keepalive e o Monitor recebe um evento
+  // técnico neutro. A recarga não é saída da prova (mesma regra da recarga pelo botão da
+  // tela de erro): sem "sair do site?", sem registro de saída e sem travar; ao voltar, a
+  // página retoma a mesma tentativa.
+  useEffect(() => {
+    if (!['active', 'paused', 'server_paused'].includes(phase)) return
+    return onBeforeUpdateReload(() => {
+      pageHiddenRef.current = true
+      if (submittedRef.current) return
+      flushKeystrokes(true)
+      saveRef.current?.({ keepalive: true })
+      api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: UPDATE_RELOAD_EVENT, details: 'A página da prova recarregou sozinha com a atualização do IClass' }, { keepalive: true }).catch(() => {})
+    })
+  }, [phase, email, studentClass, courseId, examKey, applicationId, attemptId, flushKeystrokes])
 
   // Cópia local cifrada das respostas (sobrevive à queda da rede e à recarga da página).
   useEffect(() => {
@@ -801,6 +826,12 @@ export default function ExamRunner() {
       if (error.data?.attemptFinalized) {
         const delivered = error.data.attemptOutcome || {}
         finishDelivered({ gradePublished: false, finalizedByServer: true, answeredCount: delivered.answeredCount ?? null, lateBySeconds: delivered.lateBySeconds || 0 })
+        return
+      }
+      if (error.data?.paused) {
+        // O professor pausou entre a última sincronização e o clique: a tela de pausa
+        // volta para as instruções quando ele retomar.
+        setPhase('server_paused')
         return
       }
       toast.error(error.message)

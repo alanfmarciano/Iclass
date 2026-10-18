@@ -120,6 +120,8 @@ describe('Ficha do aluno · notas com vírgula', () => {
     const modulo = screen.getByText('Desempenho por módulo').closest('div').parentElement
     expect(within(modulo).getByText('7,8')).toBeInTheDocument()
     expect(document.body.textContent).not.toMatch(/\b\d\.\d\b/)
+    // A média da ficha é a da matrícula no curso/turma ativos (consolidada no servidor).
+    expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/admin\/student\/dashboard\?email=bia%40x\.local&courseId=OUTRO&studentClass=X$/))
   })
 })
 

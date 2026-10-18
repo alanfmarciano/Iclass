@@ -101,9 +101,11 @@ export default function AlunoDetailPage() {
   useEffect(() => {
     if (!email) return
     api.get(`/api/admin/student/academic?email=${encodeURIComponent(email)}`).then(setAcademic).catch(() => setAcademic({ submissions: [], progress: { completedCount: 0 }, moduleAccess: [], attendance: { count: 0, recent: [] }, certificates: [] }))
-    api.get(`/api/admin/student/dashboard?email=${encodeURIComponent(email)}`).then(setDash).catch(() => setDash(null))
+    // Média da matrícula no curso/turma ativos, consolidada como em Resultados.
+    const dashQuery = new URLSearchParams({ email, courseId: workspace.courseId || '', studentClass: workspace.className || '' })
+    api.get(`/api/admin/student/dashboard?${dashQuery}`).then(setDash).catch(() => setDash(null))
     api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
-  }, [email])
+  }, [email, workspace.courseId, workspace.className])
 
   const subs = academic?.submissions || []
   // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
@@ -163,7 +165,8 @@ export default function AlunoDetailPage() {
                 <p className="text-2xl font-semibold text-text">{dash?.kpis?.frequencia == null ? <span className="text-base text-muted">sem aulas</span> : `${dash.kpis.frequencia}%`}</p>
                 <div className="h-1.5 rounded bg-surface overflow-hidden mt-1.5"><div className="h-full bg-primary" style={{ width: (dash?.kpis?.frequencia ?? 0) + '%' }} /></div>
               </Kpi>
-              <Kpi label="Média geral" value={(dash?.kpis?.media ?? media).toFixed(1).replace('.', ',')} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
+              {/* Média do servidor: consolidada como em Resultados (sem nota no curso ativo, "—"). */}
+              <Kpi label="Média geral" value={dash ? fmtGradeValue(dash.kpis?.media) : fmtGradeValue(validSubs.length ? media : null)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
               <Kpi label="Progresso"><div className="flex items-center gap-2.5"><ProgressRing value={dash?.kpis?.progresso ?? 0}>{(dash?.kpis?.progresso ?? 0)}%</ProgressRing></div></Kpi>
               <Kpi label="Provas" value={`${dash?.kpis?.provasFeitas ?? subs.length}/${dash?.kpis?.provasTotais ?? 0}`} sub={`${Math.max(0, (dash?.kpis?.provasTotais ?? 0) - (dash?.kpis?.provasFeitas ?? subs.length))} pendentes`} />
             </div>

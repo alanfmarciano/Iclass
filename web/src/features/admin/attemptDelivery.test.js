@@ -31,3 +31,13 @@ describe('[UC-TENTATIVA-001] como a entrega chegou (AVA-03, UXA-01)', () => {
     expect(deliveryTone(restored)).toBe('warning')
   })
 })
+
+describe('[UC-APLICACAO-001] tentativa mostrada no Monitor', () => {
+  it('diz "Tentativa N de M" só quando a aplicação permite mais de uma', async () => {
+    const { attemptCountLabel } = await import('./attemptDelivery')
+    expect(attemptCountLabel({ attemptNumber: 2, maxAttempts: 3 })).toBe('Tentativa 2 de 3')
+    expect(attemptCountLabel({ attemptNumber: 1, maxAttempts: 1 })).toBe('')
+    expect(attemptCountLabel({ attemptNumber: 3, maxAttempts: null })).toBe('Tentativa 3')
+    expect(attemptCountLabel({ attemptNumber: null, maxAttempts: 2 })).toBe('')
+  })
+})

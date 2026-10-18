@@ -56,3 +56,35 @@ describe('MonitorPage · link para uma aplicação', () => {
     expect(monitorCalls.some((url) => url.includes('app-nova'))).toBe(false)
   })
 })
+
+describe('MonitorPage · tentativa atual com mais de uma tentativa', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) {
+        return [
+          // Entregou a tentativa 1 e está fazendo a 2: linha da tentativa 2, não "Finalizou".
+          { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 2, maxAttempts: 2, deliveredAttempts: 1, attemptInProgress: true, progress: '2/4', logs: [] },
+          { email: 'bruno@x.local', name: 'Bruno', status: 'finished', attemptNumber: 1, maxAttempts: 2, deliveredAttempts: 1, attemptInProgress: false, progress: '4/4', logs: [] },
+        ]
+      }
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(cleanup)
+
+  it('[UC-APLICACAO-001] mostra "Tentativa N de M" e conta como entregue só quem não está em outra tentativa', async () => {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('Tentativa 2 de 2')).toBeTruthy())
+    expect(screen.getByText('Tentativa 1 de 2')).toBeTruthy()
+    const delivered = screen.getByText('Entregaram').closest('div').parentElement
+    expect(delivered.textContent).toContain('1')
+    expect(delivered.textContent).not.toContain('2')
+  })
+})

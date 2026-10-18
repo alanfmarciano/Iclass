@@ -590,3 +590,29 @@ test('[UC-SIGILO-001] apostila perde só o gabarito do professor; autocorreção
         fs.writeFileSync(file, original);
     }
 });
+
+test('[UC-SIGILO-001] apostila salva com BOM UTF-8 (Bloco de Notas) também perde o gabarito do professor do começo', async () => {
+    const file = path.join(CONTENT_DIR, 'Apostila_SIG_1.md');
+    const original = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, Buffer.concat([
+        Buffer.from([0xEF, 0xBB, 0xBF]),
+        Buffer.from('## Gabarito do professor\n\n1. B (segredo do começo)\n2. C\n\n# Aula 1\n\nTexto da aula.\n', 'utf8'),
+    ]));
+    try {
+        const token = await loginStudent('ana@sigilo.local');
+        const asStudent = await request(app).get('/Apostila_SIG_1.md').set('x-session-token', token).expect(200);
+        const data = await request(app).get(`/api/data.js?courseId=${courseA}`).set('x-session-token', token).expect(200);
+        for (const [label, text] of [['apostila .md', asStudent.text], ['data.js', data.text]]) {
+            assert.equal(text.includes('segredo do começo'), false, `${label}: o gabarito do começo não chega ao aluno`);
+            assert.match(text, /Texto da aula\./, `${label}: a aula continua`);
+        }
+        assert.equal(asStudent.text.charCodeAt(0) === 0xFEFF, false, 'o BOM sai junto');
+        const { stripAnswerKeyBlocks } = require('../../backend/utils/answerKey.js');
+        assert.equal(stripAnswerKeyBlocks('﻿## Gabarito do professor\n\nSEGREDO\n'), '');
+        assert.equal(stripAnswerKeyBlocks('﻿# Aula\n\nTexto'), '# Aula\n\nTexto');
+        const asAdmin = await request(app).get('/Apostila_SIG_1.md').set('x-admin-session', adminToken).expect(200);
+        assert.match(asAdmin.text, /segredo do começo/, 'o editor do instrutor vê o arquivo como está');
+    } finally {
+        fs.writeFileSync(file, original);
+    }
+});

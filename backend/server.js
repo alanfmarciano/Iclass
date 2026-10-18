@@ -7,7 +7,7 @@ const settingsUtil = require('./utils/settings.js');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
-const { verifyBuild } = require('./utils/buildIntegrity.js');
+const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
 const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount } = require('./middlewares.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
@@ -48,6 +48,13 @@ app.use(cors({
         } catch { return cb(null, false); }
     },
 }));
+// Versão do build servido em toda resposta da API (inclusive 401 e erros): o navegador
+// com o bundle de antes de uma atualização recarrega sozinho (utils/buildIntegrity.js).
+app.use('/api', (req, res, next) => {
+    const buildId = currentBuildId();
+    if (buildId) res.set(BUILD_ID_HEADER, buildId);
+    next();
+});
 app.use(express.json({ limit: '10mb' }));
 app.use((req, res, next) => {
     if (req.path.endsWith('.html') || req.path.endsWith('.js')) {

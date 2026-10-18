@@ -29,6 +29,11 @@ const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
 // caminho). Depois disso só volta a salvar quando o professor libera.
 const FOCUS_LOCK_SAVE_GRACE_MS = 15 * 1000;
+// Eventos que travam a tentativa aberta (o professor libera pelo Monitor).
+const FOCUS_LOCK_EVENTS = new Set(['tab_blur', 'exam_left', 'fullscreen_exit']);
+// Eventos registrados uma vez por tentativa: recarregar a página ou voltar à prova não
+// repete "Dispositivo sem tela cheia" no Monitor e nos logs.
+const ONCE_PER_ATTEMPT_EVENTS = new Set(['fullscreen_unsupported']);
 
 function applicationForClass(cls, examKey, applicationId) {
     const id = applicationId || cls?.onlineExamConfigs?.[examKey]?.applicationId;
@@ -131,13 +136,22 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
         const application = applicationForClass(cls, normalizedExamKey, applicationId);
         if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
-        const duplicated = (db.memory.proctoringLogs || []).some(log =>
-            log.studentEmail === normalizedEmail
+        // Tentativa a que o evento se refere: a aberta do aluno (a mesma que o navegador
+        // informou, quando informou). Sem ela o evento vira só registro.
+        const context = stateContext({ application, studentEmail: normalizedEmail, examKey: normalizedExamKey, attemptId, cls });
+        const eventAttemptId = String(attemptId || context.state?.attemptId || '').trim() || null;
+
+        const sameScope = log => log.studentEmail === normalizedEmail
             && log.eventType === normalizedEventType
-            && (application ? log.applicationId === application.id : log.examKey === normalizedExamKey)
-            && Date.now() - Number(log.timestamp || 0) < 1000
-        );
-        if (duplicated) return res.json({ success: true, deduplicated: true });
+            && (application ? log.applicationId === application.id : log.examKey === normalizedExamKey);
+        const duplicated = (db.memory.proctoringLogs || []).some(log => sameScope(log)
+            && Date.now() - Number(log.timestamp || 0) < 1000);
+        // "Dispositivo sem tela cheia" vale uma vez por tentativa (o navegador perde a
+        // marca ao recarregar a página e mandava de novo a cada volta à prova).
+        const alreadyLoggedForAttempt = ONCE_PER_ATTEMPT_EVENTS.has(normalizedEventType)
+            && (db.memory.proctoringLogs || []).some(log => sameScope(log)
+                && (eventAttemptId ? log.attemptId === eventAttemptId : !log.attemptId));
+        if (duplicated || alreadyLoggedForAttempt) return res.json({ success: true, deduplicated: true });
 
         const logEntry = {
             id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
@@ -146,24 +160,21 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
             courseId: cls.courseId || courseId || null,
             examKey: normalizedExamKey,
             applicationId: application?.id || null,
-            attemptId: attemptId || null,
+            attemptId: eventAttemptId,
             timestamp: Date.now(),
             eventType: normalizedEventType,
             details: details ? details.trim() : ''
         };
         
         db.memory.proctoringLogs.push(logEntry);
-        if (['tab_blur', 'exam_left', 'fullscreen_exit'].includes(normalizedEventType)) {
-            const context = stateContext({ application, studentEmail: normalizedEmail, examKey: normalizedExamKey, attemptId, cls });
-            const stateKey = context.key || examStateKey({ studentEmail: normalizedEmail, examKey: normalizedExamKey });
-            const existing = context.state || {
-                studentEmail: normalizedEmail,
-                examKey: normalizedExamKey,
-                answers: {},
-                timerRemaining: null,
-                assignedVersion: 'A',
-                individualTimeAdjustment: 0
-            };
+        // Perda de foco trava só a tentativa ABERTA do aluno. Sem tentativa aberta (o
+        // evento chegou depois da entrega, ou antes de existir tentativa) fica só o log:
+        // antes era gravado um estado avulso travado, que o sync seguinte adotava como
+        // tentativa nova ("Bloqueado" no Monitor para quem já entregou, mesmo com o
+        // limite de tentativas esgotado).
+        if (FOCUS_LOCK_EVENTS.has(normalizedEventType) && context.key && context.state) {
+            const stateKey = context.key;
+            const existing = context.state;
             // Saída da PÁGINA (recarregar, fechar): a mesma sessão que volta logo à
             // tentativa destrava sozinha (regra única em utils/examFocusRules.js).
             if (normalizedEventType === 'exam_left' && req.body.pageExit === true) {

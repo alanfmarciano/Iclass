@@ -794,7 +794,9 @@ function withoutComments(source) {
 // tira e a seguinte confirma).
 const MAX_STRIP_ROUNDS = 20;
 function stripAnswerKeyBlocks(markdown) {
-    let text = String(markdown || '');
+    // Arquivo salvo com BOM UTF-8 (Bloco de Notas do Windows): sem tirar o BOM, o título
+    // "## Gabarito do professor" da primeira linha não era reconhecido e ia inteiro ao aluno.
+    let text = String(markdown || '').replace(/^\uFEFF+/, '');
     for (let round = 0; round < MAX_STRIP_ROUNDS && text; round += 1) {
         const next = stripRound(text);
         if (next === text) break;

@@ -1,6 +1,7 @@
 // Cliente único de API do IClass V3.
 // Repository pattern: nenhuma tela usa fetch cru — tudo passa por aqui.
 // As REGRAS DE NEGÓCIO permanecem no backend Express (server-authoritative).
+import { BUILD_HEADER, noteServerBuild } from './buildVersion'
 let authProvider = () => ({})
 export function setAuthProvider(fn) { authProvider = fn } // injetado pelo AuthProvider
 // Há sessão aberta neste navegador? O logout limpa o provedor na hora (antes de o portal
@@ -28,6 +29,15 @@ function authHeaders() {
   return headers
 }
 
+// Versão do build anunciada pelo servidor (autorrecuperação depois de atualizar o IClass,
+// lib/buildVersion.js). Só o portal do aluno recarrega sozinho: nas telas do professor uma
+// recarga no meio de uma edição perderia o que não foi salvo, e lá o F5 fica com ele.
+function noteBuildFrom(res, path, headers) {
+  const studentRequest = !!headers['x-session-token'] || String(path || '').startsWith('/api/student/')
+  if (!studentRequest || headers['x-admin-session'] || headers['Authorization']) return
+  noteServerBuild(res.headers?.get?.(BUILD_HEADER))
+}
+
 // keepalive: a requisição sobrevive ao fechamento/recarga da página (pagehide).
 // Diferente do sendBeacon, leva os cabeçalhos de sessão.
 async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false } = {}) {
@@ -38,6 +48,7 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
     body: body ? JSON.stringify(body) : undefined,
     ...(keepalive ? { keepalive: true } : {}),
   })
+  noteBuildFrom(res, path, headers)
   let data = null
   const ct = res.headers.get('content-type') || ''
   if (ct.includes('application/json')) data = await res.json().catch(() => null)
@@ -53,7 +64,9 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
 // cabeçalho de sessão e abria "Acesso não autorizado." (UXI-01). O Blob preserva
 // os bytes (inclusive o BOM UTF-8 que o Excel usa para os acentos).
 export async function downloadFile(path, fallbackName = 'arquivo') {
-  const res = await fetch(path, { headers: authHeaders() })
+  const headers = authHeaders()
+  const res = await fetch(path, { headers })
+  noteBuildFrom(res, path, headers)
   if (!res.ok) {
     const data = await res.json().catch(() => null)
     const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)

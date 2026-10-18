@@ -405,6 +405,39 @@ test('[UC-NOTIF-001] "Marcar como lidas" do aluno marca os avisos e o contador n
     assert.deepEqual(db.memory.announcements[1].readBy, []);
 });
 
+test('[UC-NOTIF-001] sino do aluno: "Nota publicada" só com nota válida e "Marcar como lidas" só na turma/curso do sino', async () => {
+    const ana = db.memory.students.find(student => student.email === 'ana@portal.local');
+    ana.classes = [{ name: 'TURMA A', courseId: courseA }, { name: 'TURMA B', courseId: courseB }];
+    const grade = (id, courseId, studentClass, score) => ({
+        id, examKey: `Avaliacao_${id}`, score, gradePublished: true, gradePublishedAt: Date.now() - 1000, timestamp: new Date().toISOString(),
+        student: { name: 'Ana', email: 'ana@portal.local', courseId, studentClass },
+    });
+    db.memory.submissions = [
+        grade('A1', courseA, 'TURMA A', 80),
+        // Nota inválida antiga (fora de 0 a 100): Notas e boletim não mostram, o sino também não.
+        grade('A2', courseA, 'TURMA A', 150),
+        grade('A3', courseA, 'TURMA A', null),
+        grade('B1', courseB, 'TURMA B', 70),
+    ];
+    const urlA = `/api/student/notifications?courseId=${courseA}&studentClass=TURMA%20A`;
+    const urlB = `/api/student/notifications?courseId=${courseB}&studentClass=TURMA%20B`;
+    const before = await request(app).get(urlA).set('x-session-token', tokens.ana).expect(200);
+    assert.deepEqual(before.body.items.filter(item => item.type === 'nota').map(item => item.id), ['nota:A1']);
+    assert.equal(before.body.unread, 1);
+    assert.equal((await request(app).get(urlB).set('x-session-token', tokens.ana).expect(200)).body.unread, 1);
+
+    // Marcou como lidas no sino da TURMA A: a TURMA B continua com o item novo.
+    await request(app).post(`/api/student/notifications/seen?courseId=${courseA}&studentClass=TURMA%20A`).set('x-session-token', tokens.ana)
+        .send({ keys: [], ids: before.body.items.map(item => item.id) }).expect(200);
+    assert.equal((await request(app).get(urlA).set('x-session-token', tokens.ana)).body.unread, 0);
+    assert.equal((await request(app).get(urlB).set('x-session-token', tokens.ana)).body.unread, 1, 'antes o carimbo era um só e zerava a outra turma');
+    // Turma em que não está matriculada: recusado.
+    await request(app).post(`/api/student/notifications/seen?courseId=${courseA}&studentClass=TURMA%20C`).set('x-session-token', tokens.ana).send({}).expect(403);
+    // Navegador antigo (sem turma): vale para todas, como antes.
+    await request(app).post('/api/student/notifications/seen').set('x-session-token', tokens.ana).send({}).expect(200);
+    assert.equal((await request(app).get(urlB).set('x-session-token', tokens.ana)).body.unread, 0);
+});
+
 test('[UC-NOTIF-001] marcar aviso como lido confere a matrícula do aluno', async () => {
     db.memory.announcements = [
         { id: 'av-a', title: 'A', message: 'a', target: 'turma', targetValue: 'TURMA A', courseId: courseA, createdAt: Date.now(), readBy: [] },

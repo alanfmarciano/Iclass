@@ -457,6 +457,37 @@ test('[UC-MANUT-001] reiniciar o servidor exige confirmação explícita', async
     assert.equal(exited, false);
 });
 
+test('[UC-MANUT-001] confirmação do reinício mostra todas as provas em andamento, também as de turma fora da conta', async () => {
+    const { carla } = students;
+    const { application } = await prepareAndStart(classB);
+    await startAttempt(carla, application.id);
+    // Professor só da Turma A, com permissão de manutenção (system.manage).
+    const professorToken = 'professor-token-guards-restart';
+    db.memory.admins.push({
+        email: 'prof.a@guards.local', name: 'Professor A', role: 'professor', password: db.hashPassword('x'),
+        assignedClasses: [{ courseId, className: classA }], additionalPermissions: ['system.manage'],
+    });
+    db.memory.adminSessions[professorToken] = { email: 'prof.a@guards.local', createdAt: Date.now(), lastSeen: Date.now() };
+    try {
+        const preview = await request(app).get('/api/admin/maintenance/preview').set('x-admin-session', professorToken).expect(200);
+        const listed = preview.body.restart.activeApplications;
+        assert.deepEqual(listed.map(item => item.id), [application.id], 'a prova da Turma B aparece para o professor da Turma A');
+        assert.equal(listed[0].studentClass, classB);
+        assert.equal(listed[0].examTitle, 'Prova das guardas');
+        assert.equal(listed[0].outsideScope, true);
+        // Só turma e prova: nada de aluno na prévia.
+        const text = JSON.stringify(listed);
+        assert.equal(text.includes(carla.email), false);
+        assert.equal(/answers|studentEmail|attempt/i.test(text), false);
+        const asAdmin = await admin('get', '/api/admin/maintenance/preview').expect(200);
+        assert.equal(asAdmin.body.restart.activeApplications[0].outsideScope, false);
+    } finally {
+        db.memory.admins = db.memory.admins.filter(item => item.email !== 'prof.a@guards.local');
+        delete db.memory.adminSessions[professorToken];
+        await control(application.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    }
+});
+
 test('[UC-APLICACAO-001] repetir o encerramento não sobrescreve a decisão gravada no primeiro', async () => {
     const { ana } = students;
     const { application } = await prepareAndStart(classA);

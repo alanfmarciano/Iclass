@@ -17,6 +17,7 @@ import ExamRunner from './ExamRunner'
 import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
 import { ExamErrorScreen } from './ExamErrorScreen'
 import { clearInterruptedExam, clearRenderError } from '../../../lib/renderErrors'
+import { noteServerBuild, resetUpdateReloadForTests, UPDATE_RELOAD_MESSAGE } from '../../../lib/buildVersion'
 
 const EXAM = 'Avaliacao_Ciclo'
 // Chave da cópia local que o servidor entrega ao dono da tentativa (32 bytes em base64).
@@ -791,6 +792,92 @@ describe('[UC-PROVA-003] ExamRunner: letras da posição, tela cheia e saída da
       expect(router.state.location.pathname).toBe(`/aluno/prova/${EXAM}`)
     } finally {
       Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+      consoleError.mockRestore()
+      clearRenderError()
+      clearInterruptedExam()
+    }
+  })
+
+  it('[UC-MANUT-001] o IClass foi atualizado com a prova aberta: salva, avisa e recarrega sozinho sem contar como saída nem travar', async () => {
+    const user = userEvent.setup()
+    const reload = vi.fn()
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      renderRunner()
+      enterFullscreen()
+      await user.click(await screen.findByRole('button', { name: /Onze/ }))
+      apiMock.post.mockClear()
+
+      // Resposta do servidor já atualizado (cabeçalho X-IClass-Build com outra versão).
+      let scheduled = false
+      act(() => { scheduled = noteServerBuild('versao-nova', { enabled: true, clientBuild: 'versao-velha', reload, storage: sessionStorage, delayMs: 50 }) })
+      expect(scheduled).toBe(true)
+      expect(screen.getByRole('status')).toHaveTextContent(UPDATE_RELOAD_MESSAGE)
+
+      // O que estava pendente sai com keepalive antes da recarga.
+      const saved = postsTo('/api/student/autosave-progress').find(([, , opts]) => opts?.keepalive === true)
+      expect(saved).toBeTruthy()
+      expect(saved[1]).toMatchObject({ attemptId: 'att-1', answers: { 1: 'C' } })
+      const reloads = activityLogs('exam_update_reload')
+      expect(reloads).toHaveLength(1)
+      expect(reloads[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1', examKey: EXAM })
+      expect(reloads[0][1].pageExit).toBeUndefined()
+      expect(reloads[0][2]).toMatchObject({ keepalive: true })
+
+      // A descarga da recarga: sem "sair do site?", e a tela cheia que cai, o foco que sai
+      // e a página que some não são do aluno (antes: exam_left com pageExit e prova pausada).
+      const beforeUnload = new Event('beforeunload', { cancelable: true })
+      act(() => { window.dispatchEvent(beforeUnload) })
+      expect(beforeUnload.defaultPrevented).toBe(false)
+      delete document.fullscreenElement
+      act(() => { document.dispatchEvent(new Event('fullscreenchange')) })
+      act(() => { window.dispatchEvent(new Event('blur')) })
+      act(() => { window.dispatchEvent(new Event('pagehide')) })
+      expect(activityLogs('exam_left')).toHaveLength(0)
+      expect(activityLogs('fullscreen_exit')).toHaveLength(0)
+      expect(activityLogs('tab_blur')).toHaveLength(0)
+      expect(screen.queryByText(/Prova pausada/i)).toBeNull()
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    } finally {
+      resetUpdateReloadForTests()
+      sessionStorage.clear()
+    }
+  })
+
+  it('[UC-MANUT-001] atualização do IClass com a tela de erro da prova aberta: a recarga automática é evento neutro, não saída', async () => {
+    const user = userEvent.setup()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const reload = vi.fn()
+    clearRenderError()
+    clearInterruptedExam()
+    let quebrar = null
+    function PedacoDaProva() {
+      const [quebrado, setQuebrado] = useState(false)
+      quebrar = () => setQuebrado(true)
+      if (quebrado) throw new Error('Cannot read properties of undefined (reading \'map\')')
+      return null
+    }
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      renderRunner(['/aluno'], <AppErrorBoundary fallback={ExamErrorScreen}><ExamRunner /><PedacoDaProva /></AppErrorBoundary>)
+      enterFullscreen()
+      await user.click(await screen.findByRole('button', { name: /Dois/ }))
+      act(() => { quebrar() })
+      expect(await screen.findByText('Algo deu errado nesta tela')).toBeVisible()
+
+      act(() => { noteServerBuild('versao-nova', { enabled: true, clientBuild: 'versao-velha', reload, storage: sessionStorage, delayMs: 50 }) })
+      const beforeUnload = new Event('beforeunload', { cancelable: true })
+      act(() => { window.dispatchEvent(beforeUnload) })
+      expect(beforeUnload.defaultPrevented).toBe(false)
+      act(() => { window.dispatchEvent(new Event('pagehide')) })
+      expect(activityLogs('exam_left')).toHaveLength(0)
+      const reloads = activityLogs('exam_update_reload')
+      expect(reloads).toHaveLength(1)
+      expect(reloads[0][1]).toMatchObject({ attemptId: 'att-1', applicationId: 'app-1', examKey: EXAM })
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    } finally {
+      resetUpdateReloadForTests()
+      sessionStorage.clear()
       consoleError.mockRestore()
       clearRenderError()
       clearInterruptedExam()

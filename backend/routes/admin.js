@@ -83,6 +83,7 @@ const {
     transitionExamApplication,
 } = require('../utils/examApplications.js');
 const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
 
 function rejectInvalidBranding(res, body) {
@@ -1829,7 +1830,12 @@ router.get('/api/admin/student/dashboard', (req, res) => {
     validateAdmin(req, res, () => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        res.json(computeStudentDashboard(db.memory, email));
+        // Curso/turma ativos da ficha: a média é a dessa matrícula, consolidada como em
+        // Resultados e no boletim (inclui notas ainda não publicadas: visão do professor).
+        res.json(computeStudentDashboard(db.memory, email, {
+            courseId: String(req.query.courseId || '').trim(),
+            studentClass: String(req.query.studentClass || '').trim(),
+        }));
     });
 });
 
@@ -3816,16 +3822,14 @@ router.post('/api/admin/unlock-student-focus', (req, res) => {
         const openAttempt = application
             ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
             : null;
-        const key = openAttempt?.key || examStateKey({ studentEmail: email, examKey: normalizedExamKey });
-        if (!db.memory.studentExamState[key]) {
-            db.memory.studentExamState[key] = {
-                studentEmail: email,
-                examKey: normalizedExamKey,
-                answers: {},
-                timerRemaining: null,
-                assignedVersion: 'A',
-                individualTimeAdjustment: 0
-            };
+        // Com aplicação, só a tentativa aberta do aluno é destravada. Sem tentativa (o
+        // aluno já entregou, ou ainda não entrou) não há o que destravar: antes era
+        // gravado um estado avulso, que o sync adotava como tentativa nova.
+        const key = application
+            ? openAttempt?.key || null
+            : examStateKey({ studentEmail: email, examKey: normalizedExamKey });
+        if (!key || !db.memory.studentExamState[key]) {
+            return res.json({ success: true, unchanged: true, state: null });
         }
 
         db.memory.studentExamState[key].focusLocked = false;
@@ -3967,13 +3971,17 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         const monitorCourseId = String((cls && cls.courseId) || courseId || '').trim();
         const students = (db.memory.students || []).filter(s => s && s.email && studentInClass(s, studentClass, monitorCourseId));
 
+        const monitorMaxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? currentConfig.maxAttempts);
+
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
             const openAttempt = application
                 ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
                 : null;
-            const stateKey = openAttempt?.key || examStateKey({ studentEmail: email, examKey });
-            const state = openAttempt?.state || db.memory.studentExamState[stateKey] || {
+            // Com aplicação, a linha lê só as tentativas dela: o estado avulso da interface
+            // antiga (sem aplicação) vale apenas quando a prova não tem aplicação.
+            const stateKey = openAttempt?.key || (application ? null : examStateKey({ studentEmail: email, examKey }));
+            const state = openAttempt?.state || (stateKey ? db.memory.studentExamState[stateKey] : null) || {
                 answers: {},
                 timerRemaining: null,
                 // Versão escolhida no Monitor para quem ainda não entrou (a tentativa nasce com ela).
@@ -3984,21 +3992,36 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             const session = db.memory.sessions[email];
             const isOnline = isStudentSessionOnline(session);
             
-            // Entrega mais recente do aluno nesta aplicação (a que o professor precisa ver).
-            const submission = db.memory.submissions.filter(sub =>
+            // Entregas do aluno nesta aplicação; a mais recente é a que o professor vê
+            // quando ele não está fazendo outra tentativa.
+            const deliveries = db.memory.submissions.filter(sub =>
                 (sub.studentEmail ? sub.studentEmail.toLowerCase() : ((sub.student && sub.student.email) ? sub.student.email.toLowerCase() : '')) === email && 
                 sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase() &&
                 (application ? sub.applicationId === application.id : true)
-            ).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
+            ).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+            const latestDelivery = deliveries[0];
+            // Tentativa ATUAL (maxAttempts > 1): quem entregou a tentativa 1 e já começou a
+            // 2 aparece com a 2 (situação, progresso, tempo e trava), não como "Finalizou".
+            const attemptInProgress = !!(openAttempt && Number(openAttempt.state.startedAt) > 0);
+            const submission = attemptInProgress ? null : latestDelivery;
             const timing = application && state.startedAt && !submission
                 ? attemptOverdueMs(state, application, monitorNow)
                 : null;
+            const deliveredAttempts = deliveries.filter(sub => sub.resultStatus !== 'invalidated').length;
+            const attemptNumber = submission
+                ? (Number(submission.attemptNumber) || deliveredAttempts || 1)
+                : (Number(state.attemptNumber) || (openAttempt ? deliveredAttempts + 1 : null));
 
             const studentLogs = db.memory.proctoringLogs.filter(l =>
                 l.studentEmail.toLowerCase() === email &&
                 l.examKey.toLowerCase() === examKey.toLowerCase() &&
                 (application ? l.applicationId === application.id : true)
             );
+            // "Saiu da aba" e o histórico curto do foco são da tentativa atual quando o
+            // aluno está em outra tentativa (os eventos das anteriores ficam na lista completa).
+            const currentAttemptLogs = attemptInProgress && state.attemptId
+                ? studentLogs.filter(l => !l.attemptId || l.attemptId === state.attemptId)
+                : studentLogs;
 
             const studentKeystrokes = (db.memory.examKeystrokes || []).filter(k =>
                 k.studentEmail.toLowerCase() === email &&
@@ -4022,7 +4045,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             } else if (state.focusLocked === true) {
                 status = 'focus_locked';
             } else if (isOnline) {
-                const sortedLogs = [...studentLogs].sort((a, b) => b.timestamp - a.timestamp);
+                const sortedLogs = [...currentAttemptLogs].sort((a, b) => b.timestamp - a.timestamp);
                 const lastLog = sortedLogs[0];
                 if (lastLog && ['tab_blur', 'exam_left'].includes(lastLog.eventType)) {
                     status = 'blur';
@@ -4030,7 +4053,6 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     status = 'online';
                 }
             }
-
             let progress = '0/0';
             const evaluation = db.memory.evaluations[examKey];
             if (evaluation && evaluation.questions) {
@@ -4076,14 +4098,19 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 name: s.name,
                 ip: session ? session.ip : '',
                 status,
-                assignedVersion: state.assignedVersion,
+                // Tentativa que a linha mostra ("tentativa N de M") e o limite da aplicação.
+                attemptNumber,
+                maxAttempts: monitorMaxAttempts,
+                deliveredAttempts,
+                attemptInProgress,
+                assignedVersion: (submission && submission.assignedVersion) || state.assignedVersion,
                 timerRemaining,
                 progress,
                 focusLocked: state.focusLocked === true,
                 focusLockedAt: state.focusLockedAt || null,
                 focusLockReason: state.focusLockReason || '',
                 applicationId: application?.id || null,
-                attemptId: state.attemptId || submission?.attemptId || null,
+                attemptId: (submission ? submission.attemptId : state.attemptId) || state.attemptId || null,
                 submissionSource: submission?.submissionSource || null,
                 lateBySeconds: Number(submission?.lateBySeconds || 0),
                 focusLockedAtDeadline: submission?.focusLockedAtDeadline === true,
@@ -4096,7 +4123,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     : (Number(state.reopenedAt) > 0 ? new Date(Number(state.reopenedAt)).toISOString() : null),
                 restoredAfterDiscard: !!submission?.restoredAfterDiscard,
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
-                fullscreenUnsupported: studentLogs.some(log => log.eventType === 'fullscreen_unsupported'),
+                fullscreenUnsupported: currentAttemptLogs.some(log => log.eventType === 'fullscreen_unsupported'),
                 logs: studentLogs,
                 keystrokeCount,
                 suspiciousCount,
@@ -4134,14 +4161,18 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
         const openAttempt = application
             ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail })
             : null;
-        const stateKey = openAttempt?.key || examStateKey({ studentEmail, examKey });
-        const state = openAttempt?.state || db.memory.studentExamState[stateKey] || { answers: {}, assignedVersion: 'A' };
+        const stateKey = openAttempt?.key || (application ? null : examStateKey({ studentEmail, examKey }));
+        const state = openAttempt?.state || (stateKey ? db.memory.studentExamState[stateKey] : null) || { answers: {}, assignedVersion: 'A' };
 
-        const submission = db.memory.submissions.find(sub =>
-            (sub.studentEmail ? sub.studentEmail.toLowerCase() : ((sub.student && sub.student.email) ? sub.student.email.toLowerCase() : '')) === studentEmail &&
-            sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase() &&
-            (application ? sub.applicationId === application.id : true)
-        );
+        // Mesma tentativa da linha do Monitor: a que está em andamento (tentativa 2 depois
+        // de entregar a 1) ou, sem ela, a entrega mais recente nesta aplicação.
+        const submission = openAttempt && Number(openAttempt.state.startedAt) > 0
+            ? null
+            : db.memory.submissions.filter(sub =>
+                (sub.studentEmail ? sub.studentEmail.toLowerCase() : ((sub.student && sub.student.email) ? sub.student.email.toLowerCase() : '')) === studentEmail &&
+                sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase() &&
+                (application ? sub.applicationId === application.id : true)
+            ).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
 
         const assignedVersion = String((submission && submission.assignedVersion) || state.assignedVersion || 'A').toUpperCase();
 
@@ -4617,7 +4648,7 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
             email: st.email,
             name: (st.nomeSocial && st.nomeSocial.trim()) || st.name || st.email,
             className: studentClass || scn(st)[0] || '',
-            ...studentOverview(db.memory, st, { courseId, index }),
+            ...studentOverview(db.memory, st, { courseId, studentClass, index }),
         }));
         res.json(overview);
     });

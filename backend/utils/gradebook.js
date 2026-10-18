@@ -319,6 +319,22 @@ function compareGroups(examIndex) {
     };
 }
 
+// Média do aluno na visão do professor (ficha do aluno, coluna "Média" de Alunos e
+// risco do Dashboard): a mesma consolidação de Resultados, do quadro e do boletim
+// (um grupo por aplicação da prova, regra maior/última/média/escolhida, notas
+// inválidas fora). Conta também as notas ainda não publicadas, porque é a visão do
+// professor; o boletim conta só as publicadas e pode diferir. Média de 0 a 100 (null
+// sem nota), quantos grupos têm nota e quantas provas diferentes o aluno fez.
+function consolidatedStudentAverage(submissions) {
+    const groups = buildGradeGroups(submissions);
+    const graded = groups.filter(group => group.score !== null);
+    return {
+        average: average(graded.map(group => group.score)),
+        gradedCount: graded.length,
+        examsDone: new Set(groups.map(group => group.examKey).filter(Boolean)).size,
+    };
+}
+
 // Boletim de um aluno: uma linha por prova; quando a mesma prova tem mais de
 // uma aplicação, uma linha por aplicação (é assim que entram na média em Resultados).
 // Médias = média simples das notas consolidadas de cada aplicação, sem arredondar antes.
@@ -1056,6 +1072,7 @@ module.exports = {
     studentEmailOwnership,
     buildApplicationAuditTrail,
     buildStudentReportModules,
+    consolidatedStudentAverage,
     createResolvedGroupKey,
     createSubmissionContextResolver,
     csvRow,

@@ -54,7 +54,7 @@ const {
     filterStudentExamAttempts,
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
-const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, roundGrade } = require('../utils/submissionAttempts.js');
+const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
 const {
@@ -158,6 +158,16 @@ function applicationForClass(cls, examKey, applicationId) {
     return application;
 }
 
+// Estado da interface antiga (sem aplicação) que é uma tentativa de verdade.
+function isLegacyAttemptInUse(state) {
+    if (!state || typeof state !== 'object') return false;
+    if (Number(state.startedAt) > 0) return true;
+    // Cronômetro já rodando na interface antiga (o estado avulso tinha timerRemaining null).
+    if (typeof state.timerRemaining === 'number') return true;
+    if (state.answers && typeof state.answers === 'object' && Object.keys(state.answers).length > 0) return true;
+    return state.tokenValidated === true || state.versionAssigned === true;
+}
+
 function attemptContextForStudent({ application, studentEmail, examKey, create = false, studentClass, courseId } = {}) {
     if (!application) {
         const key = examStateKey({ studentEmail, examKey });
@@ -167,10 +177,14 @@ function attemptContextForStudent({ application, studentEmail, examKey, create =
     if (open) return open;
 
     // Migração transparente: uma tentativa aberta pela interface antiga é vinculada
-    // à aplicação atual na primeira requisição nova.
+    // à aplicação atual na primeira requisição nova. Só vale para tentativa de verdade
+    // (iniciada, com respostas, token validado ou versão escolhida no Monitor): o estado
+    // avulso que versões anteriores gravavam com um evento de foco ou um desbloqueio
+    // depois da entrega virava uma tentativa fantasma travada ("Bloqueado" para quem já
+    // tinha entregado). Ele fica onde está, sem efeito.
     const legacyKey = examStateKey({ studentEmail, examKey });
     const legacyState = db.memory.studentExamState[legacyKey];
-    if (legacyState && !legacyState.applicationId) {
+    if (legacyState && !legacyState.applicationId && isLegacyAttemptInUse(legacyState)) {
         const previousAttempts = filterStudentExamAttempts(db.memory.submissions, {
             studentEmail,
             examKey,
@@ -1192,6 +1206,10 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     }
     const mayStart = application.status === 'running'
         || (application.status === 'waiting' && Number(application.startsAt || 0) <= now);
+    // Pausada: a prova já começou, só está parada (a tela do aluno mostra a pausa).
+    if (application.status === 'paused') {
+        return res.status(409).json({ error: 'A prova está pausada pelo professor.', paused: true });
+    }
     if (!mayStart || !config?.onlineActive) {
         return res.status(409).json({ error: 'A prova ainda não foi iniciada pelo professor.' });
     }
@@ -1752,6 +1770,18 @@ router.get('/api/student/progress', validateStudentSession, (req, res) => {
 
 // Sino do aluno: avisos não lidos, dúvidas respondidas, notas publicadas e prova
 // liberada na turma ativa. "Visto" é um carimbo de tempo gravado no cadastro.
+// Último "Marcar como lidas" do aluno no sino desta turma/curso. Contas gravadas antes
+// desta versão só têm o carimbo único (notificationsSeenAt), que continua valendo.
+function notificationContextKey(cls) {
+    return `${String(cls?.courseId || '')}::${String(cls?.name || '')}`;
+}
+
+function notificationsSeenAtFor(student, cls) {
+    const byContext = student?.notificationsSeenAtByContext;
+    const contextual = byContext && typeof byContext === 'object' ? Number(byContext[notificationContextKey(cls)] || 0) : 0;
+    return Math.max(contextual, Number(student?.notificationsSeenAt || 0));
+}
+
 router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.query.courseId || '').trim();
@@ -1759,7 +1789,7 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     const student = req.studentAccount;
     const cls = findClassByNameAndCourse(db.memory.classes || [], className, courseId);
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
-    const seenAt = Number(student.notificationsSeenAt || 0);
+    const seenAt = notificationsSeenAtFor(student, cls);
     const today = settingsUtil.today();
     const items = [];
 
@@ -1781,8 +1811,9 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
             });
         });
 
+    // Só nota que o aluno de fato vê (Notas e boletim descartam nota vazia ou fora de 0 a 10).
     (db.memory.submissions || [])
-        .filter(s => s && s.gradePublished === true && String(s.student?.email || '').toLowerCase() === email
+        .filter(s => s && s.gradePublished === true && normalizeScore(s.score) !== null && String(s.student?.email || '').toLowerCase() === email
             && (!s.student?.courseId || String(s.student.courseId) === courseId) && (!s.student?.studentClass || String(s.student.studentClass) === className))
         .forEach(s => {
             const at = Number(s.gradePublishedAt || Date.parse(s.timestamp) || 0);
@@ -1807,9 +1838,25 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
 
 // "Marcar como lidas" (UXA-X3): carimbo para dúvidas, notas e provas e leitura dos
 // avisos listados no sino (readBy), senão o próximo polling trazia o contador de volta.
+// O carimbo é da turma/curso do sino (aluno em duas turmas não perde os itens novos da
+// outra); sem turma informada (navegador antigo), vale para todas, como antes.
 router.post('/api/student/notifications/seen', validateStudentSession, async (req, res) => {
     const email = req.studentEmail;
-    req.studentAccount.notificationsSeenAt = Date.now();
+    const courseId = String(req.query.courseId || req.body?.courseId || '').trim();
+    const className = String(req.query.studentClass || req.body?.studentClass || '').trim();
+    const cls = className ? findClassByNameAndCourse(db.memory.classes || [], className, courseId) : null;
+    if (className && (!cls || !studentBelongsToClass(req.studentAccount, cls))) {
+        return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
+    }
+    if (cls) {
+        const byContext = req.studentAccount.notificationsSeenAtByContext && typeof req.studentAccount.notificationsSeenAtByContext === 'object'
+            ? req.studentAccount.notificationsSeenAtByContext
+            : {};
+        byContext[notificationContextKey(cls)] = Date.now();
+        req.studentAccount.notificationsSeenAtByContext = byContext;
+    } else {
+        req.studentAccount.notificationsSeenAt = Date.now();
+    }
     const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.slice(0, 100).map(String) : [];
     const announcementIds = new Set(ids.filter(id => id.startsWith('aviso:')).map(id => id.slice('aviso:'.length)));
     let marked = 0;

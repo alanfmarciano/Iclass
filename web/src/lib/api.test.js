@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { downloadFile, hasActiveSession, setAuthProvider } from './api'
+
+// A versão do build anunciada pelo servidor passa por noteServerBuild (lib/buildVersion.js).
+const buildMock = vi.hoisted(() => ({ noteServerBuild: vi.fn() }))
+vi.mock('./buildVersion', async (importOriginal) => ({ ...(await importOriginal()), noteServerBuild: buildMock.noteServerBuild }))
+
+import { api, downloadFile, hasActiveSession, setAuthProvider } from './api'
 
 afterEach(() => {
+  buildMock.noteServerBuild.mockReset()
   vi.restoreAllMocks()
   setAuthProvider(() => ({}))
   localStorage.clear()
@@ -49,5 +55,35 @@ describe('downloadFile', () => {
   it('[UC-NOTAS-002] mostra a mensagem do servidor quando o download é recusado', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'Turma não autorizada para esta conta.' }), { status: 403, headers: { 'content-type': 'application/json' } })))
     await expect(downloadFile('/api/admin/gradebook?format=csv')).rejects.toThrow('Turma não autorizada para esta conta.')
+  })
+})
+
+describe('[UC-MANUT-001] versão do build nas respostas da API', () => {
+  function jsonResponse(body, status, build = 'versao-nova') {
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'x-iclass-build': build } })
+  }
+
+  it('o portal do aluno confere a versão em toda resposta, também nas recusadas', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    vi.stubGlobal('fetch', vi.fn(async (path) => (path === '/api/student/sync' ? jsonResponse({ success: true }, 200) : jsonResponse({ error: 'Sessão expirada.' }, 401))))
+    await api.get('/api/student/sync')
+    await expect(api.get('/api/ping')).rejects.toThrow('Sessão expirada.')
+    expect(buildMock.noteServerBuild).toHaveBeenCalledTimes(2)
+    expect(buildMock.noteServerBuild).toHaveBeenNthCalledWith(1, 'versao-nova')
+    expect(buildMock.noteServerBuild).toHaveBeenNthCalledWith(2, 'versao-nova')
+  })
+
+  it('login do aluno (ainda sem sessão) também confere a versão', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ sessionToken: 't' }, 200)))
+    await api.post('/api/student/login', { email: 'a@b.c', password: 'x' }, { auth: false })
+    expect(buildMock.noteServerBuild).toHaveBeenCalledWith('versao-nova')
+  })
+
+  it('telas do professor não recarregam sozinhas (uma edição em andamento se perderia)', async () => {
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ success: true }, 200)))
+    await api.get('/api/admin/classes')
+    await api.get('/api/status?studentClass=1DES')
+    expect(buildMock.noteServerBuild).not.toHaveBeenCalled()
   })
 })

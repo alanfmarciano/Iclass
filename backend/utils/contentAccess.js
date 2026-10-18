@@ -133,7 +133,9 @@ async function readApostila(key, { ownHosts = [] } = {}) {
     const filePath = await findContentFile(key);
     if (!filePath) return null;
     try {
-        return stripStoredAccessTokens(stripAnswerKeyBlocks(await fs.promises.readFile(filePath, 'utf8')), { ownHosts });
+        // O BOM do início do arquivo sai antes da remoção do gabarito (stripAnswerKeyBlocks).
+        const raw = (await fs.promises.readFile(filePath, 'utf8')).replace(/^\uFEFF+/, '');
+        return stripStoredAccessTokens(stripAnswerKeyBlocks(raw), { ownHosts });
     } catch (error) {
         return null;
     }

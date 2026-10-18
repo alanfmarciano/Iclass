@@ -36,6 +36,7 @@ export function focusLogLabel(log) {
   if (type === 'page_return') return pageReturnLabel(log?.details)
   if (type === 'exam_render_error') return 'Erro técnico na tela da prova'
   if (type === 'exam_error_reload') return 'Recarregou depois do erro de tela'
+  if (type === 'exam_update_reload') return 'Recarregou com a atualização do IClass'
   if (type === 'focus_unlocked') return 'Liberado pelo professor'
   return type || 'Evento'
 }
@@ -54,6 +55,8 @@ export const LOG_INFO = {
   exam_render_error: { label: 'Erro técnico na tela da prova', icon: '⚠', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
   // Recarga pelo botão da tela de erro da prova: volta à mesma tentativa, não é saída.
   exam_error_reload: { label: 'Recarregou depois do erro de tela', icon: '↻', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
+  // O IClass foi atualizado com a prova aberta e a página recarregou sozinha (não é saída).
+  exam_update_reload: { label: 'Recarregou com a atualização do IClass', icon: '↻', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
 }
 
 const SEV_RANK = { high: 3, med: 2, low: 1 }

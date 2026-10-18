@@ -98,6 +98,20 @@ describe('SistemaPage · manutenção', () => {
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/server/restart', { confirm: 'REINICIAR' }))
   })
 
+  it('[UC-MANUT-001] confirmação do reinício lista também a prova de turma fora da conta (derruba todos)', async () => {
+    const user = userEvent.setup()
+    const data = preview()
+    data.restart.activeApplications.push({ id: 'app-9', examKey: 'Avaliacao_Q', examTitle: 'Prova Q', status: 'running', studentClass: '3RED', outsideScope: true })
+    mocks.get.mockResolvedValue(data)
+    render(<SistemaPage />)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
+    expect(await screen.findByText(/2 provas em andamento/)).toBeVisible()
+    expect(screen.getByText(/3RED · Prova Q/)).toHaveTextContent('(turma de outro professor)')
+    expect(screen.getByText(/2DES · Prova X/)).not.toHaveTextContent('outro professor')
+    expect(screen.getByText(/derruba todos os alunos do servidor, de todas as turmas/)).toBeVisible()
+    expect(screen.queryByText('Nenhuma prova em andamento agora.')).not.toBeInTheDocument()
+  })
+
   it('[UC-MANUT-001] "Resetar sala" nomeia a turma, mostra as provas que serão encerradas e envia a confirmação ao servidor (CONF-X3)', async () => {
     const user = userEvent.setup()
     render(<SistemaPage />)

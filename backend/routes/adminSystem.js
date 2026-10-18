@@ -136,11 +136,18 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     // encerra, para a confirmação mostrar ao professor antes de qualquer mudança.
     router.get('/api/admin/maintenance/preview', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
+            // Reiniciar derruba TODOS os alunos conectados: a confirmação lista todas as
+            // provas em andamento do servidor (turma e prova, sem dado de aluno), qualquer
+            // que seja o escopo da conta. Antes o professor de uma turma lia "Nenhuma prova
+            // em andamento" com outra turma no meio da prova.
             const restart = {
                 activeApplications: (db.memory.examApplications || [])
                     .filter(application => application && ACTIVE_APPLICATION_STATUSES.has(application.status))
-                    .filter(application => adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId))
-                    .map(application => ({ ...applicationSummary(application, examTitleFor), studentClass: application.studentClass })),
+                    .map(application => ({
+                        ...applicationSummary(application, examTitleFor),
+                        studentClass: application.studentClass,
+                        outsideScope: !adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId),
+                    })),
             };
             const studentClass = String(req.query.studentClass || '').trim();
             if (!studentClass) return res.json({ success: true, restart, flush: null, reset: null, applications: [] });

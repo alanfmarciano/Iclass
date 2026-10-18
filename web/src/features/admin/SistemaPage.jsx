@@ -420,9 +420,9 @@ export default function SistemaPage() {
           <div className="space-y-2">
             <p className="text-sm font-semibold text-warning">{_plural(restartActive.length, 'prova em andamento', 'provas em andamento')}:</p>
             <ul className="text-sm text-text list-disc pl-5 space-y-1">
-              {restartActive.map((a) => <li key={a.id}>{a.studentClass} · {_appLabel(a)}</li>)}
+              {restartActive.map((a) => <li key={a.id}>{a.studentClass} · {_appLabel(a)}{a.outsideScope && <span className="text-muted"> (turma de outro professor)</span>}</li>)}
             </ul>
-            <p className="text-xs text-muted">As respostas já salvas ficam guardadas, mas os alunos precisam entrar de novo depois do reinício.</p>
+            <p className="text-xs text-muted">O reinício derruba todos os alunos do servidor, de todas as turmas. As respostas já salvas ficam guardadas, mas os alunos precisam entrar de novo depois do reinício.</p>
           </div>
         ) : <p className="text-sm text-muted">{preview ? 'Nenhuma prova em andamento agora.' : 'Conferindo as provas em andamento…'}</p>}
       </Modal>

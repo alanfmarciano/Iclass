@@ -16,7 +16,7 @@ import { fmtGrade } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { classTimeExtraFeedback, resolveMonitorTimer } from './monitorTimer'
-import { deliveryLabel, deliveryTone } from './attemptDelivery'
+import { attemptCountLabel, deliveryLabel, deliveryTone } from './attemptDelivery'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
@@ -1215,6 +1215,7 @@ export default function MonitorPage() {
                       <td className="px-4 py-3 font-mono text-xs text-muted">{r.ip || '-'}</td>
                       <td className="px-4 py-3">
                         <Badge tone={st[0]} dot>{st[1]}</Badge>
+                        {attemptCountLabel(r) && <p className="mt-1 text-[11px] font-medium text-muted">{attemptCountLabel(r)}</p>}
                         {r.status === 'time_over' && <p className="mt-1 text-[11px] text-subtle">Entrega automática em instantes</p>}
                         {r.status === 'discarded' && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">Tentativa em andamento desconsiderada no encerramento</p>}
                         {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}

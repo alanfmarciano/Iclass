@@ -35,7 +35,10 @@ export function StudentShell() {
   const logo = branding?.logoLightUrl || branding?.logoDarkUrl || ''
   const brandName = branding?.displayName || 'IClass'
   const pageTitle = NAV.find((item) => item.to === pathname)?.text || 'Portal do Aluno'
-  const notificationsEndpoint = cls && activeClass.courseId ? `/api/student/notifications?courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : null
+  const notificationsContext = cls && activeClass.courseId ? `courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : ''
+  const notificationsEndpoint = notificationsContext ? `/api/student/notifications?${notificationsContext}` : null
+  // "Marcar como lidas" vale só para o sino desta turma/curso (aluno em duas turmas).
+  const notificationsSeenEndpoint = notificationsContext ? `/api/student/notifications/seen?${notificationsContext}` : '/api/student/notifications/seen'
   // Abrir um aviso pelo sino já conta como lido (UXA-X3).
   const openNotification = async (item) => {
     let markedRead = false
@@ -45,7 +48,7 @@ export function StudentShell() {
     if (item.href) nav(item.href)
     return markedRead
   }
-  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint="/api/student/notifications/seen" onOpenItem={openNotification} />
+  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} />
   useStudentHeartbeat()
 
   if (interfacePreset === 'lumen') {
