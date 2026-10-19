@@ -23,6 +23,7 @@ import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
+import { csvCell } from '../../lib/csv'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -196,7 +197,7 @@ function exportKeystrokesCsv(events, name) {
     const info = isTypingEvent(ev) ? { label: 'digitação', sev: '-' } : classifyKeystroke(ev)
     return [ev.seq ?? '', ev.serverTs ? new Date(ev.serverTs).toLocaleString('pt-BR') : '', ev.question ?? '', ev.kind ?? '', info.label, info.sev, ev.key ?? '', ev.mods ?? '', ev.suspicious ? 'sim' : 'nao', ev.blocked ? 'sim' : 'nao']
   })
-  const csv = [header, ...lines].map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
+  const csv = [header, ...lines].map((r) => r.map(csvCell).join(',')).join('\n')
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

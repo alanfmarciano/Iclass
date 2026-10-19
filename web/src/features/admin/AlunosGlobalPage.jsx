@@ -11,6 +11,7 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { StatCard } from '../../components/ui/StatCard'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { csvCell } from '../../lib/csv'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
 const STATUS_LIST = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido']
@@ -170,7 +171,7 @@ export default function AlunosGlobalPage() {
       relativeDays(s.atividade),
     ])
     const csv = [head, ...body]
-      .map((line) => line.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(';'))
+      .map((line) => line.map(csvCell).join(';'))
       .join('\r\n')
     // BOM para o Excel reconhecer os acentos.
     const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }))

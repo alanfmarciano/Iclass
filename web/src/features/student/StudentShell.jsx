@@ -89,7 +89,7 @@ export function StudentShell() {
         <div className="flex h-[72px] items-center gap-3 border-b border-border px-5">
           {logo ? <img src={logo} alt={brandName} className="h-9 max-w-[165px] object-contain" /> : <>
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-primary text-primary-fg shadow-[0_10px_28px_var(--primary-glow)]"><GraduationCap size={20} /></span>
-          <div><span className="block font-semibold tracking-[-0.025em]">{brandName}</span><span className="block text-[10px] font-medium uppercase tracking-[.16em] text-subtle">Student space</span></div></>}
+          <div><span className="block font-semibold tracking-[-0.025em]">{brandName}</span><span className="block text-[10px] font-medium uppercase tracking-[.16em] text-subtle">Área do aluno</span></div></>}
         </div>
         <div className="glass-panel mx-3 my-5 flex items-center gap-3 rounded-xl p-3.5">
           <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-hover text-sm font-semibold text-primary-fg shadow-[0_8px_22px_var(--primary-glow)]">{(((s.nomeSocial && s.nomeSocial.trim()) || s.name) || auth.email || 'A')[0]?.toUpperCase()}</span>

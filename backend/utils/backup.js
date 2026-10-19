@@ -35,11 +35,12 @@ function hasLegacyApplications(snapshot) {
 // turmas, as tentativas e as entregas.
 const LEGACY_BACKUP_WARNING = 'Este backup é de uma versão anterior do IClass e não traz as aplicações de prova. '
     + 'Ao restaurar, as aplicações de prova atuais serão descartadas (inclusive as criadas depois do backup) e refeitas '
-    + 'a partir das turmas do backup. Voltam: a última prova preparada ou aplicada de cada turma, com as tentativas, as '
+    + 'a partir das turmas do backup. Volta a última aplicação de cada prova em cada turma, com as tentativas, as '
     + 'respostas e as entregas dos alunos, o token de acesso e a versão escolhida no Monitor para quem ainda não tinha '
-    + 'começado. Prova que estava pausada continua pausada, mas a pausa passa a contar do momento do backup, porque '
+    + 'começado. As aplicações anteriores de uma prova reaplicada e as canceladas não voltam como aplicação, mas as '
+    + 'notas delas continuam. Prova que estava pausada continua pausada, mas a pausa passa a contar do momento do backup, porque '
     + 'esse backup não guardava a hora da pausa: o tempo entre a pausa e o backup é descontado do tempo dos alunos. '
-    + 'Não voltam, porque esse backup não as guardava: as contestações de questão feitas pelos alunos e o "+N min" dado '
+    + 'Não voltam: as contestações de questão feitas pelos alunos (esse backup não as guardava) e o "+N min" dado '
     + 'a um aluno que ainda não tinha começado a tentativa. O horário de encerramento das provas já encerradas é '
     + 'aproximado pela última entrega. Um backup de segurança dos dados atuais é criado antes.';
 

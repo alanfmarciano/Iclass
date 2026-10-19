@@ -107,6 +107,9 @@ test('[UC-BACKUP-001] backup de versão anterior (sem as aplicações) volta àq
     assert.match(warned.body.error, /tempo entre a pausa e o backup é descontado do tempo dos alunos/);
     assert.match(warned.body.error, /Não voltam[^.]*contestações de questão[^.]*"\+N min"/);
     assert.match(warned.body.error, /encerramento[^.]*aproximado pela última entrega/);
+    // Volta a última aplicação de cada prova por turma, não só a última da turma.
+    assert.match(warned.body.error, /última aplicação de cada prova em cada turma/);
+    assert.match(warned.body.error, /anteriores de uma prova reaplicada e as canceladas não voltam como aplicação, mas as notas delas continuam/);
     assert.deepEqual(applicationIds(), [...atBackup, third.id].sort(), 'nada foi restaurado');
     assert.equal(db.memory.examApplications.find(item => item.id === second).status, 'finished');
     assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'backup_restored').length, 0);
