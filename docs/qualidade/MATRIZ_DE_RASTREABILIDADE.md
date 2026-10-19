@@ -2,7 +2,7 @@
 
 | Caso | Estado | Tela principal | API/Regra | Teste automatizado |
 |---|---|---|---|---|
-| UC-AUTH-001 | Automatizado | `/login` | login e sessão | `student-login.spec.js` |
+| UC-AUTH-001 | Automatizado | `/login` | login e sessão; a sessão (de instrutor ou de aluno) só vale pela chave gravada no servidor: `__proto__`, `constructor`, `toString`, `hasOwnProperty` e `valueOf` como token (cabeçalho ou `?access=`) ou e-mail dão 401 em `/api/data.js`, `/api/status`, apostila e `/uploads`, não furam o modo manutenção, e anotação ou liberação individual com esses nomes é recusada sem gravar em `Object.prototype` | `student-login.spec.js`, `session-own-keys.test.js` |
 | UC-ADMIN-001 | Automatizado | `/admins` | RBAC administrativo; avisos: o que vale para toda a instituição só o administrador edita ou exclui, o professor edita e exclui só os avisos do escopo dele sem levar o destino para fora dele, e "Excluir" pede confirmação; lixeira: o professor vê, restaura e apaga só itens das turmas e cursos dele (pastas de aluno e atestados só o administrador) | `admin-access.spec.js`, `admin-rbac-catalog.test.js`, `admin-professor-scope.test.js`, `AvisosPage.test.jsx` |
 | UC-PROVA-001 | Automatizado | `/provas`, `/monitor`, `/aluno/prova/:key` | aplicação e submissão | `exam-flow.spec.js`, `exam-applications.test.js` |
 | UC-PROVA-002 | Automatizado | `/aluno/provas` | tentativas e retomada | `exam-flow.spec.js`, `exam-attempts.test.js` |
