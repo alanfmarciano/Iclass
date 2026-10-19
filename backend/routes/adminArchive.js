@@ -159,7 +159,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
             if (!fs.existsSync(courseFile)) return res.status(404).json({ error: 'Arquivo não encontrado.' });
 
             let bundle;
-            try { bundle = JSON.parse(fs.readFileSync(courseFile, 'utf8')); } catch (error) { return res.status(500).json({ error: 'Arquivo corrompido.' }); }
+            try { bundle = JSON.parse(fs.readFileSync(courseFile, 'utf8')); } catch (error) { return sendInternalError(error, req, res, 'Arquivo corrompido.'); }
             const course = bundle.course;
             if (!course || !course.id) return res.status(400).json({ error: 'Curso inválido no arquivo.' });
             if ((db.memory.courses || []).some(item => item.id === course.id)) return res.status(400).json({ error: 'Já existe um curso ativo com este ID.' });

@@ -26,7 +26,9 @@ const {
     adminCanAccessStudent,
     isCourseExamKey,
     accessibilityExtraMinutes,
-    guarded
+    guarded,
+    sendInternalError,
+    sendRouteError
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
@@ -2679,7 +2681,7 @@ router.put('/api/admin/material/:key', (req, res) => {
                 resetOverridesForCourseItem(courseId, 'materials', key);
             }
         } catch (error) {
-            return res.status(error.status || 400).json({ error: error.message });
+            return sendRouteError(error, req, res, 'Falha ao gravar arquivo no disco.');
         }
 
         // Valida se o nome do arquivo é seguro
@@ -2703,8 +2705,9 @@ router.put('/api/admin/material/:key', (req, res) => {
             const resolved = courseId ? effectiveStructure(courseId, studentClass) : null;
             res.json({ success: true, key, scope, affectedClasses, structure: resolved?.structure });
         } catch (e) {
-            console.error("Erro ao salvar material:", e);
-            res.status(500).json({ error: 'Falha ao gravar arquivo no disco.' });
+            // Disco cheio, arquivo preso por outro programa ou pasta no lugar do .md: o
+            // professor recebe o código do erro e o stack fica no crash.log (ENG-04).
+            return sendInternalError(e, req, res, 'Falha ao gravar arquivo no disco.');
         }
     });
 });
@@ -2779,8 +2782,7 @@ router.post('/api/admin/material/create', (req, res) => {
             db.save();
             res.json({ success: true, apostilaKey, avaliacaoKey, scope, affectedClasses, structure: effectiveStructure(courseId, studentClass)?.structure || structure });
         } catch(e) {
-            console.error("Erro ao criar nova apostila:", e);
-            res.status(500).json({ error: 'Falha ao criar arquivos no servidor.' });
+            return sendInternalError(e, req, res, 'Falha ao criar arquivos no servidor.');
         }
     });
 });
@@ -2845,7 +2847,7 @@ router.post('/api/admin/evaluation', (req, res) => {
         if (!module) return res.status(404).json({ error: 'Módulo não encontrado.' });
         let normalized;
         try { normalized = normalizeEvaluationPayload(req.body); }
-        catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+        catch (error) { return sendRouteError(error, req, res); }
         const slug = normalized.title.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '').slice(0, 48) || 'Nova';
         let key = `Avaliacao_${slug}_${Date.now().toString(36)}`;
         while (db.memory.evaluations[key]) key += '_2';
@@ -2919,7 +2921,7 @@ router.put('/api/admin/evaluation/:key', (req, res) => {
                     affectedClasses = [studentClass];
                     ensureOverrides(findContentClass(courseId, studentClass)).unitNames[baseKey] = String(evaluationData.title || '').trim();
                 } catch (error) {
-                    return res.status(error.status || 400).json({ error: error.message });
+                    return sendRouteError(error, req, res);
                 }
             } else {
                 baseKey = resolveBaseKey(courseId, studentClass, 'evaluations', requestedKey);
@@ -2930,7 +2932,7 @@ router.put('/api/admin/evaluation/:key', (req, res) => {
         }
         let normalized;
         try { normalized = normalizeEvaluationPayload(evaluationData); }
-        catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+        catch (error) { return sendRouteError(error, req, res); }
 
         // Backup
         if (db.memory.evaluations[key]) {
@@ -3359,7 +3361,7 @@ router.post('/api/admin/upload', (req, res) => {
     validateAdmin(req, res, () => {
         uploadForRequest().single('file')(req, res, guarded(req, res, (err) => {
             if (err) {
-                return res.status(400).json({ error: 'Erro ao fazer upload do arquivo: ' + err.message });
+                return res.status(400).json({ error: uploadErrorMessage(err) });
             }
             if (!req.file) {
                 return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
@@ -3407,7 +3409,7 @@ router.post('/api/admin/upload-image', (req, res) => {
     validateAdmin(req, res, () => {
         uploadForRequest().single('image')(req, res, guarded(req, res, (err) => {
             if (err) {
-                return res.status(400).json({ error: 'Erro ao fazer upload da imagem: ' + err.message });
+                return res.status(400).json({ error: uploadErrorMessage(err) });
             }
             if (!req.file) {
                 return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
@@ -3544,7 +3546,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             try {
                 plan = planControlAction(db.memory, application, action);
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) db.save();
@@ -3570,7 +3572,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
                     adjustmentSeconds: req.body.adjustmentSeconds,
                 });
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, currentConfig);
             const active = ACTIVE_APPLICATION_STATUSES.has(application.status);
@@ -4536,7 +4538,7 @@ router.post('/api/admin/question-bank/create', (req, res) => {
                 questions: [{ text: questionText, alternatives, correctAnswer }],
             }).questions[0];
         } catch (error) {
-            return res.status(error.status || 400).json({ error: error.message });
+            return sendRouteError(error, req, res);
         }
         const item = {
             key: 'qb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
@@ -4570,7 +4572,7 @@ router.post('/api/admin/question-bank/update', (req, res) => {
                 }],
             }).questions[0];
         } catch (error) {
-            return res.status(error.status || 400).json({ error: error.message });
+            return sendRouteError(error, req, res);
         }
         item.questionText = normalizedQuestion.text;
         item.alternatives = normalizedQuestion.alternatives;

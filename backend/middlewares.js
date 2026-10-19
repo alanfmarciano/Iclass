@@ -392,9 +392,30 @@ function guarded(req, res, fn) {
     return (...args) => runGuarded(req, res, fn, args);
 }
 
-// Para os catch das rotas: registra no crash.log e responde o 500 padrão com o código.
-function sendInternalError(err, req, res) {
-    return errorHandler(err, req, res, () => {});
+// Para os catch das rotas (e todo 500 de rota): registra no crash.log e responde o 500
+// com o código do erro. `message` (opcional, em português, terminada em ponto) troca o
+// início genérico por um que diga ao professor o que falhou, por exemplo "Falha ao
+// gravar arquivo no disco. Código do erro: a1b2c3d4."; nunca leva error.message.
+function sendInternalError(err, req, res, message) {
+    return respondWithError(err, req, res, { internalMessage: message });
+}
+
+// Recusas previstas que chegam sem status: caminho ou identificador inválido
+// (utils/safePath.js), com a mensagem em português.
+const CLIENT_ERROR_CODES = new Set(['INVALID_PATH', 'PATH_OUTSIDE_BASE', 'INVALID_ID']);
+
+// Para os catch que recebem tanto a recusa prevista quanto a falha inesperada (por
+// exemplo, o try em volta de forkMaterial ou de transitionExamApplication). A recusa
+// (erro com status 4xx e mensagem em português, como "Turma não encontrada.") responde
+// como antes; o resto (disco cheio, pasta no lugar do .md, TypeError) vira o 500 com o
+// código do erro e o registro no crash.log. Antes, `res.status(error.status || 400)
+// .json({ error: error.message })` devolvia "EISDIR: illegal operation on a directory"
+// num 400, sem código e sem registro (ENG-04).
+function sendRouteError(err, req, res, message) {
+    const status = Number(err && err.status);
+    if (status >= 400 && status < 500 && err.message) return res.status(status).json({ error: err.message });
+    if (err && CLIENT_ERROR_CODES.has(err.code) && err.message) return res.status(400).json({ error: err.message });
+    return sendInternalError(err, req, res, message);
 }
 
 // Código do pedido (primeiro middleware do createApp): vai no cabeçalho X-Request-Id de
@@ -420,6 +441,15 @@ function resolveAdminSession(req, now = Date.now()) {
     return { token, session };
 }
 
+// Há sessão de aluno com o token do cabeçalho x-session-token? Só consulta (nada muda);
+// a validação completa (prazo, conta ativa, e-mail declarado) continua em
+// validateStudentSession. Usada pelo limite do corpo do lote de teclas (server.js).
+function hasStudentSessionToken(req) {
+    const token = req && req.headers ? req.headers['x-session-token'] : null;
+    if (typeof token !== 'string' || !token) return false;
+    return Object.values(db.memory.sessions || {}).some(value => value && typeof value === 'object' && value.token === token);
+}
+
 function validateAdmin(req, res, callback) {
     // 1) Preferir sessao de instrutor via TOKEN (nao expoe a senha no cliente).
     const adminSessionToken = req.headers['x-admin-session'];
@@ -428,7 +458,7 @@ function validateAdmin(req, res, callback) {
         const resolved = resolveAdminSession(req, now);
         if (!resolved) {
             delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true });
+            return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
         }
         const sess = resolved.session;
         const adminsList = readJSON(DB_ADMINS_FILE);
@@ -1065,12 +1095,28 @@ function finishStartedResponse(res) {
     }
 }
 
+// Erro depois que a rota já preparou um download (tipo do arquivo e Content-Disposition,
+// como no ZIP do backup completo): a resposta de erro sai como JSON comum, e não como um
+// "arquivo .zip" com o JSON dentro.
+function clearDownloadHeaders(res) {
+    if (!res || typeof res.removeHeader !== 'function') return;
+    try {
+        res.removeHeader('Content-Disposition');
+        res.removeHeader('Content-Type');
+    } catch (e) { /* cabeçalhos já enviados */ }
+}
+
 // Middleware centralizado de tratamento de erros. Também é chamado direto pela guarda
 // dos callbacks (runGuarded) e pelos catch das rotas (sendInternalError).
 function errorHandler(err, req, res, next) {
+    return respondWithError(err, req, res, {});
+}
+
+function respondWithError(err, req, res, { internalMessage } = {}) {
     const request = req || {};
     const requestId = request.id || '';
     const headersSent = !!(res && res.headersSent);
+    if (!headersSent) clearDownloadHeaders(res);
 
     if (err && err.code === 'ICLASS_DB_WRITE') {
         // O crash.log já recebe a falha de gravação pelo próprio banco (uma linha por minuto).
@@ -1087,18 +1133,19 @@ function errorHandler(err, req, res, next) {
     // novo, não encolher a apostila (ENG-03).
     if (err && err.type === 'entity.too.large' && request.headers && request.headers['x-admin-session'] && !resolveAdminSession(request)) {
         if (headersSent) return finishStartedResponse(res);
-        return res.status(401).json({ success: false, error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true });
+        return res.status(401).json({ success: false, error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
     }
 
     if (status >= 500) {
         // Erro interno: registra o stack no crash.log com o código do pedido e responde só
-        // a mensagem padrão com o código, que o professor repassa ao suporte (ENG-04).
-        // Nunca expõe a mensagem do código (ex.: "email.trim is not a function").
+        // a mensagem padrão (ou a da rota) com o código, que o professor repassa ao
+        // suporte (ENG-04). Nunca expõe a mensagem do código (ex.: "email.trim is not a function").
         logError('erro interno', err, { req: request });
         if (headersSent) return finishStartedResponse(res);
+        const base = typeof internalMessage === 'string' && internalMessage.trim() ? internalMessage.trim() : INTERNAL_ERROR_MESSAGE;
         return res.status(status).json({
             success: false,
-            error: requestId ? `Ocorreu um erro interno no servidor. Código do erro: ${requestId}.` : INTERNAL_ERROR_MESSAGE,
+            error: requestId ? `${base} Código do erro: ${requestId}.` : base,
             ...(requestId ? { requestId } : {}),
         });
     }
@@ -1112,6 +1159,8 @@ function errorHandler(err, req, res, next) {
     else if (err && err.type === 'entity.too.large') message = 'Os dados enviados são grandes demais.';
     // Outras recusas do leitor de corpo (charset ou codificação desconhecidos) vinham em inglês.
     else if (err && typeof err.type === 'string') message = 'Dados enviados em formato inválido.';
+    // Parâmetro do caminho com % inválido: o roteador respondia "Failed to decode param".
+    else if (err instanceof URIError) message = 'O endereço pedido tem caracteres inválidos.';
     else if (err && err.message) message = err.message;
     return res.status(status).json({
         success: false,
@@ -1291,6 +1340,8 @@ module.exports = {
     runGuarded,
     guarded,
     sendInternalError,
+    sendRouteError,
     resolveAdminSession,
+    hasStudentSessionToken,
     assignRequestId,
 };

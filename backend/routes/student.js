@@ -1540,7 +1540,9 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
     }
     
     if (!questions || questions.length === 0) {
-        return res.status(500).json({ error: 'Falha ao processar avaliação no servidor.' });
+        // Prova sem questões no banco nem no .md: o código do erro leva o professor ao
+        // registro no crash.log (qual prova faltou).
+        return sendInternalError(new Error(`Avaliação sem questões no servidor: ${examKey}`), req, res, 'Falha ao processar avaliação no servidor.');
     }
 
     questions = questions.map((question, index) => ({

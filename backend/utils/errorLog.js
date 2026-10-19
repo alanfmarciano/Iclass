@@ -76,9 +76,14 @@ function rotateIfNeeded(file) {
     return size < CRASH_LOG_MAX_BYTES * 2;
 }
 
-// logError(kind, err, ctx): ctx = { req, requestId, method, path, role, email, details }.
-// `details` (objeto simples) vira linhas "chave: valor" depois do stack. Nunca lança.
+// logError(kind, err, ctx): ctx = { req, requestId, method, path, role, email, details,
+// printStack }. `details` (objeto simples) vira linhas "chave: valor" depois do stack.
+// O console recebe uma linha-resumo; o bloco inteiro (com o stack) vai também para o
+// console quando o arquivo não pôde ser gravado (disco cheio, arquivo preso) ou quando
+// printStack é true (exceção não tratada, como fazia o logCrash). Devolve true se o
+// bloco foi gravado no arquivo. Nunca lança.
 function logError(kind, err, ctx = {}) {
+    let written = false;
     try {
         const context = ctx && typeof ctx === 'object' ? ctx : {};
         const req = context.req;
@@ -94,7 +99,8 @@ function logError(kind, err, ctx = {}) {
         if (actor && (actor.role || actor.email)) parts.push(`(${oneLine(`${actor.role || ''} ${actor.email || ''}`)})`);
         const header = parts.join(' ');
         const extra = detailsLines(context.details);
-        const block = `\n${header}\n${errorDetail(err)}\n${extra ? `${extra}\n` : ''}`;
+        const detail = `${errorDetail(err)}${extra ? `\n${extra}` : ''}`;
+        const block = `\n${header}\n${detail}\n`;
 
         const file = crashLogPath();
         try {
@@ -106,12 +112,16 @@ function logError(kind, err, ctx = {}) {
                     fs.mkdirSync(path.dirname(file), { recursive: true });
                     fs.appendFileSync(file, block);
                 }
+                written = true;
             }
-        } catch (error) { /* disco cheio ou sem permissão: fica só o console */ }
-        console.error(`🛑 ${header.slice(header.indexOf(']') + 2)}: ${errorSummary(err)} (detalhes em crash.log)`);
+        } catch (error) { /* disco cheio ou sem permissão: o stack vai para o console abaixo */ }
+        const summary = `🛑 ${header.slice(header.indexOf(']') + 2)}: ${errorSummary(err)}`;
+        if (written && context.printStack !== true) console.error(`${summary} (detalhes em crash.log)`);
+        else console.error(`${summary}${written ? ' (também em crash.log)' : ' (crash.log indisponível)'}\n${detail}`);
     } catch (error) {
         // O registro nunca derruba quem chamou (nem o tratador de erros).
     }
+    return written;
 }
 
 module.exports = {

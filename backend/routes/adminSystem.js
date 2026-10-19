@@ -11,6 +11,7 @@ const {
     getCourseItemKeys,
     localIpAddresses,
     getReleasedItemsForClass,
+    sendInternalError,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
 const { saveServerBackup } = require('../utils/backup.js');
@@ -84,8 +85,8 @@ function safetyBackup(prefix) {
     try {
         return { ok: true, file: path.basename(saveServerBackup(prefix)) };
     } catch (error) {
-        console.error(`[MANUTENÇÃO] Falha no backup de segurança (${prefix}):`, error.message);
-        return { ok: false, file: null };
+        // A rota responde com sendInternalError(backup.error, ...): o stack vai para o crash.log.
+        return { ok: false, file: null, error };
     }
 }
 
@@ -206,7 +207,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 return res.json({ success: true, clearedCount: 0, message: `Nada para limpar na turma ${cls.name}.` });
             }
             const backup = safetyBackup('antes-limpeza-prova');
-            if (!backup.ok) return res.status(500).json({ error: 'Não foi possível salvar o backup de segurança; nada foi apagado.' });
+            if (!backup.ok) return sendInternalError(backup.error, req, res, 'Não foi possível salvar o backup de segurança; nada foi apagado.');
             const removed = applyExamStateFlush(db.memory, plan);
             recordMaintenanceAudit(req, matchedAdmin, 'exam_state_flushed', cls, {
                 applicationId: plan.applicationId,
@@ -287,7 +288,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             const { cls } = scope;
             const helpers = classHelpers(cls);
             const backup = safetyBackup('antes-resetar-sala');
-            if (!backup.ok) return res.status(500).json({ error: 'Não foi possível salvar o backup de segurança; nada foi alterado.' });
+            if (!backup.ok) return sendInternalError(backup.error, req, res, 'Não foi possível salvar o backup de segurança; nada foi alterado.');
 
             const actor = (matchedAdmin && (matchedAdmin.email || matchedAdmin.name)) || 'Administrador';
             const finished = [];

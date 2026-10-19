@@ -2,7 +2,8 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse, guarded } = require('../middlewares.js');
+const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse, guarded, sendInternalError, sendRouteError } = require('../middlewares.js');
+const { logError } = require('../utils/errorLog.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
 const backupAudit = require('../utils/backupAudit.js');
@@ -63,7 +64,9 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 if (!removed) return res.status(404).json({ error: 'Item não encontrado na lixeira.' });
                 res.json({ success: true });
             } catch (error) {
-                res.status(400).json({ error: error.message || 'Identificador inválido.' });
+                // Identificador inválido (safePath) continua 400; falha do disco (arquivo
+                // preso por outro programa no Windows) vira 500 com o código do erro.
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -164,8 +167,11 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             try {
                 await backupUtil.streamFullZip(res);
             } catch (error) {
-                if (!res.headersSent) res.status(500).json({ error: 'Falha ao gerar backup completo.' });
-                else res.destroy(error);
+                if (!res.headersSent) return sendInternalError(error, req, res, 'Falha ao gerar backup completo.');
+                // O ZIP já começou a descer: registra e corta a conexão, para o navegador
+                // acusar o download como falho em vez de guardar um ZIP pela metade.
+                logError('erro interno', error, { req });
+                res.destroy(error);
             }
         });
     });

@@ -27,7 +27,7 @@ backend/
 
 ### server.js — ordem de montagem (importa)
 
-1. `assignRequestId` (X-Request-Id), `cors`, cabeçalho do build e leitor JSON com limite por sessão (10 MB com sessão de instrutor, 512 KB nos demais), seguido de `req.body = {}` quando não há corpo. O leitor de query fica com o último valor de parâmetro repetido.
+1. `assignRequestId` (X-Request-Id), `cors`, cabeçalho do build e leitor JSON com limite por sessão (10 MB com sessão de instrutor, 512 KB nos demais; o lote de teclas do aluno com sessão fica com 10 MB até o H2-C), seguido de `req.body = {}` quando não há corpo. O leitor de query fica com o último valor de parâmetro repetido.
 2. Rotas de arquivos controlados: `/uploads/:filename`, `/imagens/:filename` (passam por `sendControlledFile`).
 3. `express.static(web/dist)` — serve a SPA.
 4. Guard de RBAC do admin em `/api/admin` (`adminRbacGuard`).

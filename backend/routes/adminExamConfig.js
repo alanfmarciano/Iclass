@@ -38,6 +38,7 @@ const {
     getReleasedItemsForClass,
     isCourseItemKey,
     isCourseExamKey,
+    sendRouteError,
 } = require('../middlewares.js');
 
 const VERSION_LABELS = ['A', 'B', 'C', 'D'];
@@ -494,7 +495,7 @@ function createAdminExamConfigRouter() {
             try {
                 plan = planControlAction(db.memory, application, req.body.action);
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) await db.save();
@@ -520,7 +521,7 @@ function createAdminExamConfigRouter() {
                     adjustmentSeconds: req.body.adjustmentSeconds,
                 });
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             if (!cls.releasedItems) cls.releasedItems = {};
@@ -637,7 +638,7 @@ function createAdminExamConfigRouter() {
                     config: cls.onlineExamConfigs?.[application.examKey] || null,
                 });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -657,7 +658,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, updated });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -699,7 +700,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, question: liveQuestion(application, number), regraded, config: onlineConfig });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -739,7 +740,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, annulment: entry, regraded, config: onlineConfig });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -820,7 +821,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, replacementNumber, extraMinutes, regraded, config: onlineConfig });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });

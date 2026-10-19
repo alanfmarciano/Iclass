@@ -8,7 +8,7 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, assignRequestId } = require('./middlewares.js');
+const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, hasStudentSessionToken, assignRequestId } = require('./middlewares.js');
 const { logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
@@ -22,7 +22,8 @@ const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
 // O registro é o único do servidor (utils/errorLog.js), com o limite de 5 MB.
 // ---------------------------------------------------------------------------
 function logCrash(kind, err) {
-    logError(kind, err);
+    // Exceção não tratada: o stack inteiro também vai para o console (janela do launcher).
+    logError(kind, err, { printStack: true });
 }
 process.on('uncaughtException', (err) => logCrash('uncaughtException', err));
 process.on('unhandledRejection', (reason) => logCrash('unhandledRejection', reason));
@@ -33,6 +34,14 @@ process.on('unhandledRejection', (reason) => logCrash('unhandledRejection', reas
 // sem login não manda mais 10 MB por pedido (ENG-03).
 const ADMIN_JSON_LIMIT = '10mb';
 const DEFAULT_JSON_LIMIT = '512kb';
+// Exceção provisória: o lote de teclas da prova, com sessão de aluno, segue com os 10 MB
+// de antes. Até o H2-C (trilha B) fatiar o envio em lotes de 500, o ExamRunner manda o
+// buffer inteiro e o devolve ao buffer quando o envio falha: depois de uma queda longa
+// da rede (mais de ~3.500 teclas guardadas), com 512 KB cada tecla reenviava o buffer
+// todo, recebia 413 para sempre e o Monitor parava de receber as teclas do aluno. O
+// servidor continua guardando no máximo 500 eventos por envio. Sai junto com o H2-C.
+const KEYSTROKE_BATCH_PATH = '/api/student/log-keystrokes';
+const KEYSTROKE_JSON_LIMIT = '10mb';
 
 // Query string com parâmetro repetido (?email=a&email=b) vira o último valor, sempre
 // texto: com a lista, 9 rotas do professor respondiam 500 ao chamar .trim() (ENG-03).
@@ -74,8 +83,14 @@ app.use('/api', (req, res, next) => {
     next();
 });
 const adminJsonParser = express.json({ limit: ADMIN_JSON_LIMIT });
+const keystrokeJsonParser = express.json({ limit: KEYSTROKE_JSON_LIMIT });
 const defaultJsonParser = express.json({ limit: DEFAULT_JSON_LIMIT });
-app.use((req, res, next) => (resolveAdminSession(req) ? adminJsonParser : defaultJsonParser)(req, res, next));
+function jsonParserFor(req) {
+    if (resolveAdminSession(req)) return adminJsonParser;
+    if (req.method === 'POST' && req.path === KEYSTROKE_BATCH_PATH && hasStudentSessionToken(req)) return keystrokeJsonParser;
+    return defaultJsonParser;
+}
+app.use((req, res, next) => jsonParserFor(req)(req, res, next));
 // Corpo sempre objeto: sem corpo, o Express 5 deixava req.body undefined e as rotas que
 // leem req.body.x respondiam 500 ou ficavam sem resposta. O express.text de
 // /api/student/leave e o multer continuam lendo o corpo (eles olham o fluxo, não o campo).
