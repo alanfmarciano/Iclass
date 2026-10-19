@@ -7,8 +7,7 @@ const {
     canAccessAdminPermission,
     resolveAdminApiPermission,
 } = require('./utils/adminPermissions.js');
-const { SERVER_INSTANCE_ID, ABSOLUTE_TTL_MS } = require('./utils/sessionConfig.js');
-const settingsUtil = require('./utils/settings.js');
+const { SERVER_INSTANCE_ID } = require('./utils/sessionConfig.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
 const { computeAttemptDeadline } = require('./utils/examDeadline.js');
@@ -18,8 +17,19 @@ const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = requir
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
 const { logError } = require('./utils/errorLog.js');
-const { ownEntry } = require('./utils/ownEntry.js');
-function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
+const {
+    findStudentSession,
+    studentSessionByEmail,
+    sessionMatchesToken,
+    hasSessionCredential,
+    revokeStudentSession,
+    checkAdminSessionToken,
+    createAdminSession,
+    revokeAdminSession,
+    touchSession,
+    isUserActivityRequest,
+    sessionAbsoluteTtlMs,
+} = require('./utils/authSessions.js');
 
 // Caminhos dos arquivos de banco de dados locais
 const DB_STUDENTS_FILE = path.join(DATA_DIR, 'db_students.json');
@@ -74,21 +84,21 @@ function validateStudentSession(req, res, next) {
         || (req.body && req.body.sessionToken)
         || (req.query && req.query.sessionToken);
     let normalizedEmail = distinctClaims[0] || '';
-    const tokenMatch = providedToken
-        ? Object.entries(db.memory.sessions || {}).find(([, value]) => value && typeof value === 'object' && value.token === providedToken)
-        : null;
-    if (normalizedEmail && tokenMatch && tokenMatch[0] !== normalizedEmail) {
+    // A sessão é procurada pelo hash do token (utils/authSessions.js); o token cru só
+    // existe no navegador.
+    const tokenMatch = typeof providedToken === 'string' ? findStudentSession(db.memory, providedToken) : null;
+    if (normalizedEmail && tokenMatch && tokenMatch.email !== normalizedEmail) {
         return res.status(403).json({ error: 'A identidade informada não corresponde à sessão autenticada.' });
     }
     if (!normalizedEmail && tokenMatch) {
-        normalizedEmail = tokenMatch[0];
+        normalizedEmail = tokenMatch.email;
     }
     if (!normalizedEmail) {
         return res.status(400).json({ error: 'E-mail do estudante é obrigatório.' });
     }
     // Só a sessão gravada com esse e-mail (chave própria): '__proto__' ou 'constructor'
     // devolviam o valor herdado de Object.prototype.
-    const session = ownEntry(db.memory.sessions, normalizedEmail);
+    const session = studentSessionByEmail(db.memory, normalizedEmail);
     
     if (!session) {
         return res.status(401).json({
@@ -97,8 +107,8 @@ function validateStudentSession(req, res, next) {
         });
     }
     
-    if (typeof session !== 'object' || !session.token) {
-        delete db.memory.sessions[normalizedEmail];
+    if (!hasSessionCredential(session)) {
+        revokeStudentSession(db.memory, normalizedEmail);
         return res.status(401).json({
             error: 'Sessão expirada. Faça login novamente.',
             sessionRevoked: true
@@ -108,19 +118,16 @@ function validateStudentSession(req, res, next) {
     const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
     const sessionIp = normalizeIp(session.ip);
     
-    // Sessão única: se a sessão tem um token (login recente), exige que a requisição
-    // apresente o mesmo token. Um novo login gera token novo e invalida o dispositivo antigo.
-    const sessionObj = db.memory.sessions[normalizedEmail];
-    if (sessionObj && typeof sessionObj === 'object' && sessionObj.token) {
-        if (!providedToken || providedToken !== sessionObj.token) {
-            return res.status(401).json({
-                error: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
-                sessionRevoked: true
-            });
-        }
+    // Sessão única: exige que a requisição apresente o token da sessão gravada. Um novo
+    // login gera token novo e invalida o dispositivo antigo.
+    if (typeof providedToken !== 'string' || !sessionMatchesToken(session, providedToken)) {
+        return res.status(401).json({
+            error: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
+            sessionRevoked: true
+        });
     }
 
-    // O token (UUID por login) já prova a identidade. Um IP diferente é registrado,
+    // O token (aleatório, um por login) já prova a identidade. Um IP diferente é registrado,
     // mas não derruba a sessão: celular que troca de Wi-Fi para 4G ou recebe outro
     // IP do roteador perdia a prova no meio.
     if (sessionIp && sessionIp !== clientIp) {
@@ -129,25 +136,22 @@ function validateStudentSession(req, res, next) {
     }
 
     const nowTs = Date.now();
-    const liveSession = db.memory.sessions[normalizedEmail];
-    if (liveSession && typeof liveSession === 'object') {
-        if (!liveSession.createdAt) liveSession.createdAt = nowTs;
-        // Cap ABSOLUTO no servidor (backstop). A ociosidade e enforced no cliente.
-        if (nowTs - liveSession.createdAt > absoluteTtlMs()) {
-            delete db.memory.sessions[normalizedEmail];
-            return res.status(401).json({ error: 'Sessão expirada (limite máximo atingido). Faça login novamente.', sessionRevoked: true });
-        }
-        liveSession.lastSeen = nowTs;
+    if (!session.createdAt) session.createdAt = nowTs;
+    // Cap ABSOLUTO no servidor (backstop). A ociosidade e enforced no cliente.
+    if (nowTs - session.createdAt > sessionAbsoluteTtlMs()) {
+        revokeStudentSession(db.memory, normalizedEmail);
+        return res.status(401).json({ error: 'Sessão expirada (limite máximo atingido). Faça login novamente.', sessionRevoked: true });
     }
+    touchSession(session, nowTs, { active: isUserActivityRequest(req) });
 
     const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === normalizedEmail);
     if (!student) {
-        delete db.memory.sessions[normalizedEmail];
+        revokeStudentSession(db.memory, normalizedEmail);
         return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
     }
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
-        delete db.memory.sessions[normalizedEmail];
+        revokeStudentSession(db.memory, normalizedEmail);
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa.', sessionRevoked: true });
     }
 
@@ -165,20 +169,20 @@ function validateStudentSession(req, res, next) {
 
 // Identifica quem faz a requisição por token: instrutor (x-admin-session) ou aluno
 // (x-session-token). Usado nas rotas que servem conteúdo de prova a qualquer perfil
-// autenticado; sem token válido a rota responde 401. O token de instrutor só vale se for
-// chave própria de adminSessions: '__proto__' (ou 'constructor', 'toString'...) devolvia o
-// valor herdado de Object.prototype e entrava como instrutor, sem login.
+// autenticado; sem token válido a rota responde 401. O token de instrutor vale só com
+// sessão gravada (utils/authSessions.js: '__proto__' não é sessão), dentro do prazo
+// absoluto e de conta que ainda existe; antes, o token vencido ou de conta apagada
+// continuava entrando aqui. O aluno segue para a validação completa (validateStudentSession).
 function resolveRequester(req) {
     const adminToken = String(req.get('x-admin-session') || '');
-    const adminSession = ownEntry(db.memory.adminSessions, adminToken);
-    if (adminSession) {
-        return { role: 'admin', email: adminSession.email };
+    const admin = adminToken ? checkAdminSessionToken(adminToken) : null;
+    if (admin && admin.ok) {
+        return { role: 'admin', email: admin.email };
     }
     const studentToken = String(req.get('x-session-token') || (req.query && req.query.sessionToken) || '');
     if (studentToken) {
-        const match = Object.entries(db.memory.sessions || {})
-            .find(([, value]) => value && typeof value === 'object' && value.token === studentToken);
-        if (match) return { role: 'student', email: match[0] };
+        const match = findStudentSession(db.memory, studentToken);
+        if (match) return { role: 'student', email: match.email };
     }
     return null;
 }
@@ -453,15 +457,14 @@ function assignRequestId(req, res, next) {
 }
 
 // Sessão de instrutor do pedido (cabeçalho x-admin-session), sem efeito colateral:
-// { token, session } quando o token existe e está dentro do prazo absoluto; null em
-// qualquer outro caso. Usada por validateAdmin e pelo limite do corpo JSON (server.js).
+// { token, session } quando o token tem sessão gravada, dentro do prazo absoluto e de
+// conta que existe; null em qualquer outro caso. Usada pelo limite do corpo JSON e pelo
+// errorHandler (413 de sessão vencida).
 function resolveAdminSession(req, now = Date.now()) {
     const token = req && req.headers ? req.headers['x-admin-session'] : null;
-    // Só a chave própria (utils/ownEntry.js): '__proto__' ou 'toString' não são sessão.
-    const session = ownEntry(db.memory.adminSessions, token);
-    if (!session || typeof session !== 'object') return null;
-    if (now - (session.createdAt || now) > absoluteTtlMs()) return null;
-    return { token, session };
+    if (typeof token !== 'string' || !token) return null;
+    const check = checkAdminSessionToken(token, now);
+    return check.ok ? { token, session: check.session } : null;
 }
 
 // Há sessão de aluno com o token do cabeçalho x-session-token? Só consulta (nada muda);
@@ -470,29 +473,29 @@ function resolveAdminSession(req, now = Date.now()) {
 function hasStudentSessionToken(req) {
     const token = req && req.headers ? req.headers['x-session-token'] : null;
     if (typeof token !== 'string' || !token) return false;
-    return Object.values(db.memory.sessions || {}).some(value => value && typeof value === 'object' && value.token === token);
+    return !!findStudentSession(db.memory, token);
 }
 
 function validateAdmin(req, res, callback) {
     // 1) Preferir sessao de instrutor via TOKEN (nao expoe a senha no cliente).
-    // Só sessão gravada (chave própria): '__proto__' não é sessão. Chave gravada com valor
-    // que não é sessão, ou fora do prazo, é removida e conta como sessão expirada.
+    // A sessão é procurada pelo hash do token (utils/authSessions.js); '__proto__' não é
+    // sessão. Chave gravada com valor que não é sessão, ou fora do prazo, é removida e
+    // conta como sessão expirada.
     const adminSessionToken = req.headers['x-admin-session'];
-    if (ownEntry(db.memory.adminSessions, adminSessionToken) !== undefined) {
-        const now = Date.now();
-        const resolved = resolveAdminSession(req, now);
-        if (!resolved) {
-            delete db.memory.adminSessions[adminSessionToken];
+    const now = Date.now();
+    const check = typeof adminSessionToken === 'string' && adminSessionToken
+        ? checkAdminSessionToken(adminSessionToken, now)
+        : { ok: false, reason: 'missing' };
+    if (check.reason !== 'missing') {
+        if (!check.ok) {
+            revokeAdminSession(db.memory, adminSessionToken);
+            if (check.reason === 'account_missing') {
+                return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
+            }
             return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
         }
-        const sess = resolved.session;
-        const adminsList = readJSON(DB_ADMINS_FILE);
-        const tokenAdmin = adminsList.find(a => a.email && a.email.toLowerCase() === sess.email);
-        if (!tokenAdmin) {
-            delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
-        }
-        sess.lastSeen = now;
+        const tokenAdmin = check.account;
+        touchSession(check.session, now, { active: isUserActivityRequest(req) });
         req.adminSessionToken = adminSessionToken;
         const cfg = readJSON(CONFIG_FILE);
         req.adminAccount = tokenAdmin;
@@ -548,13 +551,10 @@ function validateAdmin(req, res, callback) {
     return res.status(401).json({ error: 'Acesso não autorizado. E-mail ou senha incorretos.' });
 }
 
-function issueAdminSession(email) {
-    const crypto2 = require('crypto');
-    const token = crypto2.randomUUID ? crypto2.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2));
-    const now = Date.now();
-    db.memory.adminSessions = db.memory.adminSessions || {};
-    db.memory.adminSessions[token] = { email: String(email || '').toLowerCase(), createdAt: now, lastSeen: now };
-    return token;
+// Sessão nova de instrutor (utils/authSessions.js): devolve o token cru, que só vai na
+// resposta; a memória guarda o hash. origin 'setup' no acesso rápido local.
+function issueAdminSession(email, { origin } = {}) {
+    return createAdminSession(db.memory, email, { now: Date.now(), origin });
 }
 
 function validateAdminPermission(req, res, permission, callback) {

@@ -35,7 +35,8 @@ await db.save();
 | `uploads` | objeto | metadados de arquivos enviados |
 | `config` | objeto | configuração global; `releasedItems` |
 | `admins` | array | administradores/professores (RBAC) |
-| `sessions` | objeto | sessões de aluno online (`email` → dados/ping) |
+| `sessions` | objeto | sessões de aluno (só na memória): `email` → `{ tokenHash, createdAt, lastSeen, lastActivityAt, ip, origin? }`; `tokenHash` = sha256 do token, que fica só no navegador (`utils/authSessions.js`). `lastSeen` é a presença ("online"). |
+| `adminSessions` | objeto | sessões de instrutor (só na memória): `'h:' + sha256(token)` → `{ email, createdAt, lastSeen, lastActivityAt, origin? }`. `origin` só aparece quando não é `login` (`setup` no acesso rápido local). |
 | `studentExamState` | objeto | estado da prova por `studentEmail_examKey` |
 | `proctoringLogs` | array | eventos de antifraude |
 | `broadcastMessages` | array | mensagens do professor no monitor |

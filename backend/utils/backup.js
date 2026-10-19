@@ -8,6 +8,7 @@ const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
 const { normalizeStoredStudentClasses } = require('./students.js');
 const zipInspect = require('./zipInspect.js');
+const { clearSessions } = require('./authSessions.js');
 
 const CONTENT_DIR = runtimePaths.CONTENT_DIR;
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -246,8 +247,8 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     // A prova pausada no backup fica pausada desde o momento dele (exportedAt).
     const backupAt = Date.parse(String(snapshot.exportedAt || '')) || null;
     const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses({ backupAt }) : null;
-    db.memory.sessions = {};
-    db.memory.adminSessions = {};
+    // Restaurar desconecta todos (sessões não vão no backup).
+    clearSessions(db.memory);
     await db.save();
     return applications;
 }

@@ -15,6 +15,7 @@ const {
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
 const { saveServerBackup } = require('../utils/backup.js');
+const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
 const { finishApplication } = require('../utils/examFinish.js');
 const {
@@ -327,7 +328,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             // Quem também faz prova em andamento em outra turma continua conectado.
             const sessions = classSessionsToDrop(db.memory, cls, helpers.isClassStudent);
             const disconnected = sessions.drop;
-            disconnected.forEach(email => { delete db.memory.sessions[email]; });
+            disconnected.forEach(email => { revokeStudentSession(db.memory, email); });
 
             const submitted = finished.reduce((total, item) => total + item.submitted + item.deliveredAtDeadline, 0);
             recordMaintenanceAudit(req, matchedAdmin, 'class_reset', cls, {

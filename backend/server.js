@@ -13,7 +13,7 @@ const { logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
 const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
-const { ownEntry } = require('./utils/ownEntry.js');
+const { checkAdminSessionToken, checkStudentSessionToken, clearSessions } = require('./utils/authSessions.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -129,12 +129,14 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
     // vale o último, que é o que o navegador do usuário acrescentou.
     const queryAccess = Array.isArray(req.query.access) ? req.query.access[req.query.access.length - 1] : req.query.access;
     const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || queryAccess || '');
-    // Só sessão gravada (chave própria): '?access=__proto__' entregava arquivo protegido.
-    const adminSession = ownEntry(db.memory.adminSessions, accessToken);
-    const studentEmail = Object.keys(db.memory.sessions || {}).find(email => {
-        const session = db.memory.sessions[email];
-        return session && typeof session === 'object' && session.token === accessToken;
-    });
+    // Só sessão gravada, dentro do prazo e de conta que existe (utils/authSessions.js):
+    // '?access=__proto__' entregava arquivo protegido, e o token de instrutor vencido ou
+    // de conta apagada continuava abrindo arquivo. O aluno precisa de conta ativa.
+    const now = Date.now();
+    const adminCheck = accessToken ? checkAdminSessionToken(accessToken, now) : null;
+    const adminSession = adminCheck && adminCheck.ok ? adminCheck.session : null;
+    const studentCheck = accessToken && !adminSession ? checkStudentSessionToken(accessToken, now) : null;
+    const studentEmail = studentCheck && studentCheck.ok ? studentCheck.email : undefined;
     const publicBrandingFile = baseDir === runtimePaths.UPLOADS_DIR && Object.values(db.memory.branding || {}).some(value => {
         if (typeof value !== 'string' || !value.startsWith('/uploads/')) return false;
         return path.basename(value.split('?')[0]) === filename;
@@ -230,7 +232,8 @@ const proctoringRoutes = require('./routes/proctoring.js');
 app.use((req, res, next) => {
     const st = settingsUtil.getSettings();
     const adminToken = String(req.get('x-admin-session') || '');
-    const isAuthenticatedAdmin = !!ownEntry(db.memory.adminSessions, adminToken);
+    // Sessão de instrutor gravada, no prazo e de conta que existe (utils/authSessions.js).
+    const isAuthenticatedAdmin = !!adminToken && checkAdminSessionToken(adminToken).ok;
     const isStudentFlow = req.path.startsWith('/api/student') || req.path.startsWith('/api/forum')
         || req.path === '/api/ping' || req.path === '/data.js' || req.path === '/api/data.js'
         || (/^\/[^/]+\.md$/.test(req.path) && !isAuthenticatedAdmin);
@@ -270,8 +273,10 @@ let serverInstance;
 async function startServer() {
     verifyBuild();
     await db.init();
-    db.memory.sessions = {};
-    db.memory.adminSessions = {}; // sessoes de instrutor (memoria; zeradas a cada boot)
+    // Sessões de aluno e de instrutor só na memória, zeradas a cada boot. A retomada depois
+    // de um reinício (restoreSessions, utils/authSessions.js) entra com a tabela
+    // auth_sessions (H3a-2).
+    clearSessions(db.memory);
 
     // Garante IDs e e-mails de autor consistentes no fórum (migração automática)
     if (db.memory && db.memory.forum) {

@@ -79,6 +79,7 @@ const {
     studentEmailOwnership,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
+const { revokeStudentSession } = require('../utils/authSessions.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -1411,7 +1412,7 @@ function renameStudentEmailEverywhere(oldEmail, newEmail) {
             delete map[oldEmail];
         }
     });
-    if (memory.sessions) delete memory.sessions[oldEmail];
+    revokeStudentSession(memory, oldEmail);
     ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'forum', 'auditLogs']
         .forEach(collection => (memory[collection] || []).forEach(item => { if (item && same(item.studentEmail)) item.studentEmail = newEmail; }));
     // Notas na lixeira: a cópia guardada na auditoria acompanha o novo e-mail, senão a

@@ -20,6 +20,7 @@ O cliente (`web/src/lib/api.js`) envia credenciais por header conforme o perfil:
 
 - **Preferir sempre o token de sessão** (não expõe senha). O `Authorization: email:senha` existe só por compatibilidade.
 - Sessão de aluno tem **token único + trava por IP** (anti-sequestro). Ver [SEGURANCA.md](./SEGURANCA.md).
+- O token de sessão (aluno e instrutor) é opaco: 32 bytes aleatórios em base64url, devolvido só na resposta do login. O servidor guarda apenas o sha256 (`utils/authSessions.js`); token vencido (prazo absoluto) ou de conta apagada responde 401 também em `/uploads`, `/imagens` (`?access=`) e nas rotas de conteúdo de prova.
 
 ### Validação nos handlers
 

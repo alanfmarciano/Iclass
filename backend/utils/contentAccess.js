@@ -9,6 +9,7 @@ const path = require('path');
 const db = require('../database.js');
 const runtimePaths = require('../runtimePaths.js');
 const { effectiveStructure } = require('./classContent.js');
+const { findAdminSession } = require('./authSessions.js');
 
 const SAFE_CONTENT_KEY = /^[a-zA-Z0-9_-]+$/;
 
@@ -95,8 +96,10 @@ function isOwnHost(host, ownHosts) {
 // qualquer que seja o endereço gravado. contentMedia.js reexporta para o editor.
 const STORED_FILE_LINK = /(^|[\s("'<>=\[,])(?:((?:https?:)?\/\/([^\s/)"'<>?#]+))(\/(?:uploads|imagens)\/[^\s)"'<>?#]+)|((?:\.{1,2}\/)*\/?(?:uploads|imagens)\/[^\s)"'<>?#]+))\?([^\s)"'<>#]*)/gi;
 
+// Tokens de instrutor com sessão gravada. A memória guarda só o hash
+// (utils/authSessions.js), então a consulta é por token: { has(token) }.
 function liveInstructorSessionTokens() {
-    return new Set(Object.keys((db.memory && db.memory.adminSessions) || {}).filter(Boolean));
+    return { has: raw => !!findAdminSession(db.memory, raw) };
 }
 
 function decodedParamValue(part) {

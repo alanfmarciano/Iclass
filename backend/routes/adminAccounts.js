@@ -8,7 +8,7 @@ const {
     SERVER_INSTANCE_ID,
 } = require('../middlewares.js');
 const { parseAdditionalPermissions, isProfessorAccount } = require('../utils/adminPermissions.js');
-const { ownEntry } = require('../utils/ownEntry.js');
+const { revokeAdminSession } = require('../utils/authSessions.js');
 
 // Gestão de contas (criar/editar/excluir) é exclusiva de administradores.
 // Backstop além do RBAC: mesmo que a capability accounts.manage vaze para um
@@ -264,7 +264,7 @@ function createAdminAccountsRouter() {
 
     router.post('/api/session/logout', (req, res) => {
         validateAdmin(req, res, () => {
-            if (ownEntry(db.memory.adminSessions, req.adminSessionToken)) delete db.memory.adminSessions[req.adminSessionToken];
+            revokeAdminSession(db.memory, req.adminSessionToken);
             res.json({ success: true });
         });
     });

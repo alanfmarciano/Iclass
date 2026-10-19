@@ -3,6 +3,7 @@ const express = require('express');
 const db = require('../database.js');
 const { issueAdminSession, normalizeIp, SERVER_INSTANCE_ID } = require('../middlewares.js');
 const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
+const { createStudentSession } = require('../utils/authSessions.js');
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
 
@@ -98,12 +99,10 @@ function createSetupModeRouter(options = {}) {
                 return res.status(404).json({ error: `A conta oficial de aluno ${expectedStudent.email} não está cadastrada ou ativa.` });
             }
             const email = String(student.email).trim().toLowerCase();
-            const sessionToken = crypto.randomUUID();
             const clientIp = normalizeIp(remoteAddress);
-            db.memory.sessions = db.memory.sessions || {};
-            db.memory.sessions[email] = {
-                lastSeen: now(), createdAt: now(), ip: clientIp, token: sessionToken,
-            };
+            // Só o hash do token fica no servidor; origin 'setup': a sessão do acesso rápido
+            // local só pode voltar depois de um reinício com o modo setup ligado.
+            const sessionToken = createStudentSession(db.memory, email, { ip: clientIp, now: now(), origin: 'setup' });
             student.lastLoginAt = now();
             student.lastLoginIp = clientIp;
             actorEmail = email;
@@ -128,7 +127,7 @@ function createSetupModeRouter(options = {}) {
                 assignedClasses: Array.isArray(admin.assignedClasses) ? admin.assignedClasses : [],
                 additionalPermissions: Array.isArray(admin.additionalPermissions) ? admin.additionalPermissions : [],
                 mustChangePassword: admin.mustChangePassword === true,
-                sessionToken: issueAdminSession(actorEmail), instanceId: SERVER_INSTANCE_ID, localSetupMode: true,
+                sessionToken: issueAdminSession(actorEmail, { origin: 'setup' }), instanceId: SERVER_INSTANCE_ID, localSetupMode: true,
             };
         }
 
@@ -156,7 +155,7 @@ function createSetupModeRouter(options = {}) {
         if (!admin) return res.status(503).json({ error: 'Nenhuma conta administradora disponível.' });
 
         consumed = true;
-        const sessionToken = issueAdminSession(admin.email);
+        const sessionToken = issueAdminSession(admin.email, { origin: 'setup' });
         if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
         db.memory.auditLogs.push({
             id: `audit_setup_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
