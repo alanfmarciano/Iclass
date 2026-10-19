@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
@@ -19,12 +19,18 @@ export function AppShell() {
   const { pathname } = useLocation()
   const { interfacePreset } = useBranding()
   const breadcrumb = CRUMBS[pathname] || (pathname.startsWith('/resultados/') ? CRUMBS['/resultados'] : ['IClass'])
+  // No celular o menu cobre a página: fecha ao escolher um destino (senão os botões da
+  // página escolhida ficavam atrás dele até tocar no fundo escurecido).
+  const closeOnMobile = () => {
+    if (typeof window !== 'undefined' && !window.matchMedia('(min-width: 768px)').matches) setOpen(false)
+  }
+  useEffect(() => { closeOnMobile() }, [pathname])
 
   if (interfacePreset === 'lumen') return <LumenAdminShell />
 
   return (
     <div className="app-canvas h-full flex text-text">
-      <Sidebar open={open} />
+      <Sidebar open={open} onNavigate={closeOnMobile} />
       {open && <button type="button" aria-label="Fechar menu" className="fixed inset-0 z-30 bg-black/55 backdrop-blur-sm md:hidden" onClick={() => setOpen(false)} />}
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar onMenu={() => setOpen((o) => !o)} breadcrumb={breadcrumb} />

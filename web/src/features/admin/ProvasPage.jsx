@@ -16,6 +16,8 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { FinishApplicationModal } from './FinishApplicationModal'
+import { rememberApplicationToken } from './ApplicationTokenPanel'
+import { controlResultMessage } from './applicationControl'
 import { ExamApplicationDetail } from './ExamApplicationDetail'
 import '../../styles/provas-board.css'
 import {
@@ -23,6 +25,7 @@ import {
   getQuestionUsageMap,
   normalizeEvaluation,
   openPrintWindow,
+  runningApplicationOf,
   snapshotsFromHistory,
 } from './examTools'
 
@@ -167,7 +170,7 @@ export default function ProvasPage() {
   }, [summaries.data, courseId])
   const modulesWithExams = useMemo(() => structure.map((mod, index) => {
     const moduleId = String(mod.id || mod.key || mod.title || mod.name || index)
-    const moduleName = mod.name || mod.title || mod.id || `Modulo ${index + 1}`
+    const moduleName = mod.name || mod.title || mod.id || `Módulo ${index + 1}`
     const moduleExams = (mod.units || mod.items || [])
       .filter((unit) => unit.avaliacaoKey)
       .map((unit) => ({
@@ -211,6 +214,8 @@ export default function ProvasPage() {
     const configuredId = onlineConfig?.applicationId
     return applications.find((item) => item.id === configuredId) || applications[0] || null
   }, [applications, onlineConfig])
+  const runningApplication = useMemo(() => runningApplicationOf(applications), [applications])
+  const RUNNING_MESSAGE = 'Há uma aplicação em andamento desta prova; encerre-a pelo Monitor antes de preparar outra.'
   const normalizedEval = useMemo(() => evaluation ? normalizeEvaluation(evaluation) : null, [evaluation])
   const usage = useMemo(() => getQuestionUsageMap(history), [history])
   const effectiveExcluded = useMemo(() => {
@@ -377,8 +382,21 @@ export default function ProvasPage() {
     })
   }
 
+  function openRunningMonitor() {
+    if (!runningApplication) return
+    const params = new URLSearchParams({ courseId, className, examKey, applicationId: runningApplication.id })
+    navigate(`/monitor?${params.toString()}`)
+  }
+
+  // Avisos depois de preparar: o que a nova preparação substituiu ou bloqueou.
+  function notifyPrepared(prepared) {
+    if (prepared?.replacedApplicationIds?.length) toast.info('A aplicação preparada anterior (ainda não iniciada) foi substituída por esta.')
+    if (prepared?.answerKeyLocked) toast.info('O gabarito liberado na aplicação anterior voltou a ficar bloqueado. Libere de novo em Materiais quando quiser.')
+  }
+
   async function saveOnline(prepare) {
     if (!className || !courseId || !examKey || !normalizedEval) return toast.error('Selecione turma, curso e prova')
+    if (prepare && runningApplication) return toast.error(RUNNING_MESSAGE)
     if (currentVersions.length === 0) return toast.error('Esta avaliação não tem questões')
     if (form.tokenEnabled && !/^[A-Z]{5}$/.test(form.accessToken)) return toast.error('O token deve ter exatamente 5 letras maiúsculas')
     const parsedMaxAttempts = parseMaxAttemptsInput(form.maxAttempts)
@@ -403,8 +421,9 @@ export default function ProvasPage() {
             maxAttempts: parsedMaxAttempts.value,
           },
         })
-        if (prepared.accessToken) sessionStorage.setItem(`exam-token:${prepared.application.id}`, prepared.accessToken)
+        rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
         toast.success('Aplicação preparada. Inicie pelo monitor quando a turma estiver pronta.')
+        notifyPrepared(prepared)
         await loadExamState()
         const params = new URLSearchParams({ courseId, className, examKey, applicationId: prepared.application.id })
         navigate(`/monitor?${params.toString()}`)
@@ -414,6 +433,7 @@ export default function ProvasPage() {
       }
     } catch (e) {
       toast.error(e.message)
+      if (e.data?.activeApplication) loadExamState().catch(() => {})
     } finally {
       setBusy(null)
     }
@@ -435,6 +455,7 @@ export default function ProvasPage() {
   }
 
   function openHistoryApplication(entry) {
+    if (runningApplication) return toast.error(RUNNING_MESSAGE)
     const availableVersions = Math.max(1, snapshotsFromHistory(entry).length)
     setApplyHistory({
       entry,
@@ -477,13 +498,18 @@ export default function ProvasPage() {
           maxAttempts: parsedMaxAttempts.value,
         },
       })
-      if (prepared.accessToken) sessionStorage.setItem(`exam-token:${prepared.application.id}`, prepared.accessToken)
+      rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
       toast.success('Nova aplicação preparada. Abrindo o Monitor Online.')
+      notifyPrepared(prepared)
       setApplyHistory(null)
       const params = new URLSearchParams({ courseId, className, examKey, applicationId: prepared.application.id })
       navigate(`/monitor?${params.toString()}`)
     } catch (e) {
       toast.error(e.message)
+      if (e.data?.activeApplication) {
+        setApplyHistory(null)
+        loadExamState().catch(() => {})
+      }
     } finally {
       setBusy(null)
     }
@@ -526,12 +552,12 @@ export default function ProvasPage() {
     if (!className || !courseId || !examKey) return
     setBusy(action)
     try {
-      if (activeApplication) {
-        await api.post(`/api/admin/exam-applications/${encodeURIComponent(activeApplication.id)}/control`, { action, ...extra })
-      } else {
-        await api.post('/api/admin/server-exam-control', { studentClass: className, courseId, examKey, action })
-      }
-      toast.success('Estado atualizado')
+      const response = activeApplication
+        ? await api.post(`/api/admin/exam-applications/${encodeURIComponent(activeApplication.id)}/control`, { action, ...extra })
+        : await api.post('/api/admin/server-exam-control', { studentClass: className, courseId, examKey, action })
+      const result = controlResultMessage(action, response)
+      if (result.tone === 'info') toast.info(result.text)
+      else toast.success(result.text)
       await loadExamState()
       return true
     } catch (e) {
@@ -900,13 +926,13 @@ export default function ProvasPage() {
               <>
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px] gap-3 border-t border-border pt-4">
                   <div>
-                    <p className="text-xs uppercase font-semibold text-subtle">Avaliacao selecionada</p>
+                    <p className="text-xs uppercase font-semibold text-subtle">Avaliação selecionada</p>
                     <h2 className="text-lg font-bold text-text mt-1">{evaluation.title || selectedExam?.name || examKey}</h2>
                     <div className="mt-2"><Button size="sm" variant="secondary" icon={Edit3} onClick={openEvaluationEditor}>Editar conteúdo</Button></div>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <Badge tone="info">{selectedCount}/{totalQuestions} questoes</Badge>
-                      <Badge tone={usedCount > 0 ? 'warning' : 'neutral'}>{usedCount} ja usadas</Badge>
-                      <Badge tone="neutral">{mode === 'online' ? `${form.onlineVersions} versoes online` : `${form.printVersions} versoes impressas`}</Badge>
+                      <Badge tone="info">{selectedCount}/{totalQuestions} questões</Badge>
+                      <Badge tone={usedCount > 0 ? 'warning' : 'neutral'}>{usedCount} já usadas</Badge>
+                      <Badge tone="neutral">{mode === 'online' ? `${form.onlineVersions} versões online` : `${form.printVersions} versões impressas`}</Badge>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -939,10 +965,10 @@ export default function ProvasPage() {
                           <p className="text-xs text-muted">Quantidade, tempo e embaralhamento</p>
                         </div>
                       </div>
-                      <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponiveis`} />
+                      <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponíveis`} />
                       {mode === 'online' ? (
                         <div className="grid grid-cols-2 gap-3">
-                          <Input label="Versoes online" type="number" min="1" max="5" value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
+                          <Input label="Versões online" type="number" min="1" max="5" value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
                           <Input label="Duração (min)" type="number" min="1" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} />
                           <Input label="Sala de espera (min)" type="number" min="0" value={form.waitingRoomMinutes} onChange={(e) => setForm({ ...form, waitingRoomMinutes: e.target.value })} helper="Padrão: 10 minutos." />
                           <Select label="Início do cronômetro" value={form.timerMode} onChange={(e) => setForm({ ...form, timerMode: e.target.value })}>
@@ -967,7 +993,7 @@ export default function ProvasPage() {
                           </div>}
                         </div>
                       ) : (
-                        <Input label="Versoes impressas" type="number" min="1" max="10" value={form.printVersions} onChange={(e) => setForm({ ...form, printVersions: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} helper="Cada versão recebe codigo proprio." />
+                        <Input label="Versões impressas" type="number" min="1" max="10" value={form.printVersions} onChange={(e) => setForm({ ...form, printVersions: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} helper="Cada versão recebe código próprio." />
                       )}
                       <div className="grid grid-cols-1 gap-2">
                         <Switch label="Embaralhar questões" checked={form.shuffleQuestions} onChange={(v) => setForm({ ...form, shuffleQuestions: v })} />
@@ -986,13 +1012,19 @@ export default function ProvasPage() {
                         <div className="flex items-center gap-2">
                           <span className="w-8 h-8 grid place-items-center rounded-md bg-success-soft text-success"><CheckCircle2 size={17} /></span>
                           <div>
-                            <h3 className="text-sm font-bold text-text">Aplicacao online</h3>
+                            <h3 className="text-sm font-bold text-text">Aplicação online</h3>
                             <p className="text-xs text-muted">Salvar, preparar e depois iniciar pelo monitor</p>
                           </div>
                         </div>
+                        {runningApplication && (
+                          <div role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-3 space-y-2">
+                            <p className="text-sm text-text"><b>Prova em andamento nesta turma.</b> Encerre-a pelo Monitor (salvando ou desconsiderando as respostas) antes de preparar outra aplicação. Perdeu o token? Gere outro no Monitor, sem encerrar a prova.</p>
+                            <Button size="sm" variant="secondary" icon={Play} onClick={openRunningMonitor}>Abrir Monitor</Button>
+                          </div>
+                        )}
                         <div className="flex flex-wrap gap-2">
                           <Button icon={FileText} loading={busy === 'saveOnline'} onClick={() => saveOnline(false)}>Salvar online</Button>
-                          <Button icon={Play} loading={busy === 'prepare'} onClick={() => saveOnline(true)}>Preparar e abrir monitor</Button>
+                          <Button icon={Play} loading={busy === 'prepare'} disabled={!!runningApplication} title={runningApplication ? RUNNING_MESSAGE : undefined} onClick={() => saveOnline(true)}>Preparar e abrir monitor</Button>
                         </div>
                         <p className="text-xs text-warning">Preparar ainda não libera a prova. No monitor, clique em “Iniciar prova e avisar alunos” ou abra a sala de espera.</p>
                         <div className="flex flex-wrap gap-2">
@@ -1007,7 +1039,7 @@ export default function ProvasPage() {
                         <div className="flex items-center gap-2">
                           <span className="w-8 h-8 grid place-items-center rounded-md bg-info-soft text-info"><Printer size={17} /></span>
                           <div>
-                            <h3 className="text-sm font-bold text-text">Aplicacao impressa</h3>
+                            <h3 className="text-sm font-bold text-text">Aplicação impressa</h3>
                             <p className="text-xs text-muted">Gerar prova e gabarito</p>
                           </div>
                         </div>
@@ -1018,7 +1050,7 @@ export default function ProvasPage() {
                   </div>
 
                   <Card>
-                    <CardHeader title="Prévia da prova" subtitle={`Versão ${currentVersions[0]?.version || 'A'} - ${selectedCount} questoes`} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
+                    <CardHeader title="Prévia da prova" subtitle={`Versão ${currentVersions[0]?.version || 'A'} - ${selectedCount} questões`} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
                     <CardBody className="space-y-3">
                       {previewQuestions.map((q, index) => {
                         const usages = usage[q.originalNumber] || []
@@ -1028,7 +1060,7 @@ export default function ProvasPage() {
                               <span className="w-7 h-7 shrink-0 grid place-items-center rounded-md bg-primary-soft text-primary text-sm font-bold">{index + 1}</span>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-text">{q.text}</p>
-                                {usages.length > 0 && <p className="text-xs text-warning mt-1">Ja usada: {usages.map((u) => u.label).join(', ')}</p>}
+                                {usages.length > 0 && <p className="text-xs text-warning mt-1">Já usada: {usages.map((u) => u.label).join(', ')}</p>}
                               </div>
                               <Button size="sm" variant="ghost" icon={Trash2} onClick={() => toggleQuestion(q.originalNumber, false)}>Remover</Button>
                             </div>
@@ -1058,23 +1090,23 @@ export default function ProvasPage() {
                 </div>
 
                 <Card>
-                  <CardHeader title="Aplicacoes anteriores" subtitle="Preparações salvas, reimpressões e questões já usadas" action={<Badge tone="neutral">{history.length}</Badge>} />
+                  <CardHeader title="Aplicações anteriores" subtitle="Preparações salvas, reimpressões e questões já usadas" action={<Badge tone="neutral">{history.length}</Badge>} />
                   <CardBody className="space-y-2">
                     {history.map((entry, index) => {
                       const prepared = onlineConfig?.activeHistoryId === entry.id
                       const qList = (entry.questionNumbers || []).join(', ')
                       return (
                         <div key={entry.id} className={`rounded-lg border p-3 flex flex-wrap items-center gap-3 ${prepared ? 'border-primary/50 bg-primary-soft/20' : 'border-border'}`}>
-                          <button type="button" onClick={() => setViewApplication(entry)} className="flex-1 min-w-[220px] flex items-center gap-2 text-left group rounded-md -m-1 p-1 transition hover:bg-surface-2" title="Ver prova aplicada e versoes">
+                          <button type="button" onClick={() => setViewApplication(entry)} className="flex-1 min-w-[220px] flex items-center gap-2 text-left group rounded-md -m-1 p-1 transition hover:bg-surface-2" title="Ver prova aplicada e versões">
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-semibold text-text group-hover:text-primary transition">{historyLabel(entry, index)} {prepared ? <span className="text-primary">- preparada</span> : ''}</p>
-                              <p className="text-xs text-subtle">{entry.questionCount || entry.questionNumbers?.length || 0} questoes - {entry.durationMinutes || '-'} min - Q: {qList || '-'}</p>
+                              <p className="text-xs text-subtle">{entry.questionCount || entry.questionNumbers?.length || 0} questões - {entry.durationMinutes || '-'} min - Q: {qList || '-'}</p>
                             </div>
                             <ChevronRight size={16} className="text-subtle group-hover:text-primary shrink-0 transition" />
                           </button>
                           <Badge tone={entry.type === 'impressa' ? 'info' : 'neutral'}>{entry.type || 'online'}</Badge>
                           <Button size="sm" variant="secondary" icon={Printer} onClick={() => reprintHistory(entry)}>{entry.type === 'impressa' ? 'Reimprimir' : 'Imprimir'}</Button>
-                          <Button size="sm" icon={Play} onClick={() => openHistoryApplication(entry)}>Aplicar online</Button>
+                          <Button size="sm" icon={Play} disabled={!!runningApplication} title={runningApplication ? RUNNING_MESSAGE : undefined} onClick={() => openHistoryApplication(entry)}>Aplicar online</Button>
                           {prepared && <Button size="sm" variant="secondary" icon={Lock} onClick={blockPrepared}>Bloquear</Button>}
                           <button className="text-subtle hover:text-danger" onClick={() => setDeleteHistory(entry)} aria-label="Excluir histórico"><Trash2 size={16} /></button>
                         </div>

@@ -7,7 +7,17 @@ export function FinishApplicationModal({ open, onClose, summary, onSubmit, onDis
   const inProgress = Number(summary?.inProgressAttempts || 0)
   const answered = Number(summary?.answeredQuestions || 0)
   const waiting = Number(summary?.waitingToStart || 0)
+  const timeOver = Number(summary?.timeOverAttempts || 0)
+  const reopened = Math.min(inProgress, Number(summary?.reopenedAttempts || 0))
   const hasInProgress = inProgress > 0
+  // Quem já está sem tempo não depende da escolha: a entrega é automática.
+  const timeOverNotice = timeOver > 0 && (
+    <p className="text-sm text-muted" role="status">
+      {timeOver === 1
+        ? '1 aluno está com o tempo esgotado: as respostas salvas dele serão entregues automaticamente.'
+        : `${timeOver} alunos estão com o tempo esgotado: as respostas salvas deles serão entregues automaticamente.`}
+    </p>
+  )
 
   return (
     <Modal
@@ -40,10 +50,21 @@ export function FinishApplicationModal({ open, onClose, summary, onSubmit, onDis
           <div className="space-y-2 text-sm text-muted">
             <p><strong className="text-text">Salvar e entregar:</strong> cria uma entrega com tudo que o autosave registrou e a tentativa passa a contar normalmente.</p>
             <p><strong className="text-text">Desconsiderar:</strong> não cria entrega e a tentativa não será consumida.</p>
+            {reopened > 0 && (
+              <p role="note">
+                {reopened === 1
+                  ? '1 dessas tentativas foi reaberta com o tempo extra da turma depois da entrega do fim do tempo: ao desconsiderar, vale a entrega que o aluno já tinha.'
+                  : `${reopened} dessas tentativas foram reabertas com o tempo extra da turma depois da entrega do fim do tempo: ao desconsiderar, vale a entrega que cada aluno já tinha.`}
+              </p>
+            )}
           </div>
+          {timeOverNotice}
         </div>
       ) : (
-        <p className="text-sm text-muted">Os alunos deixarão de ver a prova disponível. Esta ação não altera entregas já realizadas.</p>
+        <div className="space-y-3">
+          <p className="text-sm text-muted">Os alunos deixarão de ver a prova disponível. Esta ação não altera entregas já realizadas.</p>
+          {timeOverNotice}
+        </div>
       )}
     </Modal>
   )

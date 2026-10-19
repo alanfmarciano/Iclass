@@ -7,8 +7,12 @@ const settingsUtil = require('./utils/settings.js');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
-const { verifyBuild } = require('./utils/buildIntegrity.js');
-const { localIpAddresses } = require('./middlewares.js');
+const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
+const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount } = require('./middlewares.js');
+const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
+const { fileLooksLikeBackup } = require('./utils/backup.js');
+const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
+const { ownEntry } = require('./utils/ownEntry.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -46,6 +50,13 @@ app.use(cors({
         } catch { return cb(null, false); }
     },
 }));
+// Versão do build servido em toda resposta da API (inclusive 401 e erros): o navegador
+// com o bundle de antes de uma atualização recarrega sozinho (utils/buildIntegrity.js).
+app.use('/api', (req, res, next) => {
+    const buildId = currentBuildId();
+    if (buildId) res.set(BUILD_ID_HEADER, buildId);
+    next();
+});
 app.use(express.json({ limit: '10mb' }));
 app.use((req, res, next) => {
     if (req.path.endsWith('.html') || req.path.endsWith('.js')) {
@@ -56,59 +67,108 @@ app.use((req, res, next) => {
     next();
 });
 
-function sendControlledFile(baseDir, req, res) {
+// Extensões que nunca saem como arquivo (viram vetor de script ou executável).
+const BLOCKED_FILE_EXTENSIONS = ['.html', '.htm', '.js', '.mjs', '.exe', '.bat', '.cmd', '.ps1'];
+const INLINE_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+// Formatos de arquivo de backup: em /uploads, quem não é administrador só os recebe
+// quando o conteúdo não é um backup (e, o professor, ligados ao conteúdo).
+const BACKUP_FILE_EXTENSIONS = ['.json', '.zip'];
+
+// `relativePath` já validado: um nome (uploads) ou segmentos de subpasta (imagens).
+async function sendControlledFile(baseDir, relativePath, req, res) {
     let target;
     try {
-        if (path.basename(req.params.filename || '') !== req.params.filename) throw new Error('Nome inválido');
-        target = resolveInside(baseDir, req.params.filename);
+        target = resolveInside(baseDir, relativePath);
     } catch (e) {
         return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
     }
     if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return res.status(404).json({ error: 'Arquivo não encontrado.' });
-    const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || req.query.access || '');
-    const adminSession = accessToken && db.memory.adminSessions && db.memory.adminSessions[accessToken];
+    const filename = path.basename(target);
+    // `?access=` repetido (link antigo com a sessão do instrutor gravada na apostila):
+    // vale o último, que é o que o navegador do usuário acrescentou.
+    const queryAccess = Array.isArray(req.query.access) ? req.query.access[req.query.access.length - 1] : req.query.access;
+    const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || queryAccess || '');
+    // Só sessão gravada (chave própria): '?access=__proto__' entregava arquivo protegido.
+    const adminSession = ownEntry(db.memory.adminSessions, accessToken);
     const studentEmail = Object.keys(db.memory.sessions || {}).find(email => {
         const session = db.memory.sessions[email];
         return session && typeof session === 'object' && session.token === accessToken;
     });
-    const publicBrandingFile = Object.values(db.memory.branding || {}).some(value => {
+    const publicBrandingFile = baseDir === runtimePaths.UPLOADS_DIR && Object.values(db.memory.branding || {}).some(value => {
         if (typeof value !== 'string' || !value.startsWith('/uploads/')) return false;
-        return path.basename(value.split('?')[0]) === req.params.filename;
+        return path.basename(value.split('?')[0]) === filename;
     });
     if (!adminSession && !studentEmail && !publicBrandingFile) return res.status(401).json({ error: 'Autenticação necessária para acessar este arquivo.' });
-    if (studentEmail && baseDir === runtimePaths.UPLOADS_DIR && !publicBrandingFile) {
-        const entry = (db.memory.library || []).find(item => item.filename === req.params.filename);
-        // Aluno só acessa uploads que sejam itens de biblioteca. Sem esse guard,
-        // um upload sem registro na biblioteca era servido a qualquer aluno
-        // autenticado (vazamento de material entre cursos).
-        if (!entry) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
-        if (entry.courseId) {
-            const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
-            const rawClasses = student && Array.isArray(student.classes) ? student.classes : [];
-            const courseIds = new Set(rawClasses.filter(item => item && typeof item === 'object').map(item => item.courseId).filter(Boolean));
-            rawClasses.filter(item => typeof item === 'string').forEach(className => {
-                const matches = (db.memory.classes || []).filter(cls => cls.name === className);
-                if (matches.length === 1 && matches[0].courseId) courseIds.add(matches[0].courseId);
-            });
-            if (!courseIds.has(entry.courseId)) return res.status(403).json({ error: 'Arquivo fora dos cursos autorizados.' });
-        }
-    }
     const ext = path.extname(target).toLowerCase();
-    if (['.html', '.htm', '.js', '.mjs', '.svg', '.exe', '.bat', '.cmd', '.ps1'].includes(ext)) {
+    // SVG só das imagens do conteúdo (content/imagens); enviado pelo usuário, não.
+    const isContentImage = baseDir !== runtimePaths.UPLOADS_DIR;
+    if (BLOCKED_FILE_EXTENSIONS.includes(ext) || (ext === '.svg' && !isContentImage)) {
         return res.status(415).json({ error: 'Este formato não pode ser servido pela aplicação.' });
     }
-    const inline = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)
+    if (!isContentImage && BACKUP_FILE_EXTENSIONS.includes(ext)) {
+        // SEG-X1: um .json/.zip em /uploads pode ser o banco inteiro (backup que voltou
+        // da lixeira) com os hashes das senhas; só o administrador baixa esse arquivo.
+        // A decisão é pelo conteúdo: o professor cria o vínculo sozinho (estrutura da
+        // turma ou link de material com '/uploads/<nome>.json'), então o vínculo não basta.
+        const sessionEmail = adminSession ? String(adminSession.email || '').toLowerCase() : '';
+        const account = sessionEmail ? (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === sessionEmail) : null;
+        const isAdministrator = !!account && !isProfessorAccount(account);
+        if (!isAdministrator) {
+            let backupLike = true;
+            try { backupLike = await fileLooksLikeBackup(target); } catch (error) { backupLike = true; }
+            if (backupLike || (adminSession && !uploadAttachedToContent(filename))) {
+                return res.status(403).json({ error: 'Arquivo disponível só para o administrador.' });
+            }
+        }
+    }
+    if (studentEmail && !adminSession && !publicBrandingFile) {
+        const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
+        if (isContentImage) {
+            // Imagens das apostilas: aluno com matrícula aprovada (UXA-09).
+            if (!studentHasApprovedClass(student, studentBelongsToClass)) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
+        } else {
+            const libraryFile = (db.memory.library || []).some(item => item && item.filename === filename);
+            if (libraryFile) {
+                // Mesma regra da listagem da biblioteca: turma do item ('class') e itens ocultos.
+                const allowed = studentCanDownloadLibraryFile({
+                    student, filename, library: db.memory.library, classes: db.memory.classes, belongsToClass: studentBelongsToClass,
+                });
+                if (!allowed) return res.status(403).json({ error: 'Arquivo fora dos materiais da sua turma.' });
+            } else {
+                // Upload sem item de biblioteca só sai para o aluno quando é imagem citada
+                // numa apostila liberada para a turma dele (imagem inserida pelo editor,
+                // UXA-X2). Sem esse guard, qualquer upload era servido a qualquer aluno.
+                const allowed = INLINE_IMAGE_EXTENSIONS.includes(ext) && await uploadReferencedInReleasedContent({
+                    student, studentEmail, filename, studentBelongsToClass, getReleasedItemsForClass,
+                });
+                if (!allowed) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
+            }
+        }
+    }
+    const inline = INLINE_IMAGE_EXTENSIONS.includes(ext) || ext === '.svg'
         || (ext === '.pdf' && req.query.preview === '1');
     res.set('X-Content-Type-Options', 'nosniff');
-    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    // sandbox + default-src 'none': um SVG aberto direto na aba não roda script.
+    res.set('Content-Security-Policy', ext === '.svg'
+        ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox"
+        : "default-src 'none'; sandbox");
     res.set('Cache-Control', 'private, no-store');
-    if (!inline) res.set('Content-Disposition', `attachment; filename="${path.basename(target).replace(/["\r\n]/g, '_')}"`);
-    res.type(ext || 'application/octet-stream');
+    if (!inline) res.set('Content-Disposition', `attachment; filename="${filename.replace(/["\r\n]/g, '_')}"`);
+    res.type(ext === '.svg' ? 'image/svg+xml' : (ext || 'application/octet-stream'));
     return res.sendFile(target);
 }
 
-app.get('/uploads/:filename', (req, res) => sendControlledFile(runtimePaths.UPLOADS_DIR, req, res));
-app.get('/imagens/:filename', (req, res) => sendControlledFile(path.join(runtimePaths.CONTENT_DIR, 'imagens'), req, res));
+app.get('/uploads/:filename', (req, res) => {
+    const filename = String(req.params.filename || '');
+    if (!filename || path.basename(filename) !== filename) return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
+    return sendControlledFile(runtimePaths.UPLOADS_DIR, filename, req, res);
+});
+// As apostilas citam imagens em subpastas (imagens/fecop/cap1/x.svg).
+app.get('/imagens/*path', (req, res) => {
+    const segments = safeImageSegments(req.params.path);
+    if (!segments) return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
+    return sendControlledFile(path.join(runtimePaths.CONTENT_DIR, 'imagens'), segments.join('/'), req, res);
+});
 // IclassV3: serve o build da nova interface React (Vite -> web/dist).
 // Em desenvolvimento o Vite roda em :5173 com proxy para /api; para uso local
 // normal, rode `npm run build` na pasta web/ e o Express entrega tudo aqui.
@@ -129,7 +189,7 @@ const proctoringRoutes = require('./routes/proctoring.js');
 app.use((req, res, next) => {
     const st = settingsUtil.getSettings();
     const adminToken = String(req.get('x-admin-session') || '');
-    const isAuthenticatedAdmin = adminToken && db.memory.adminSessions && db.memory.adminSessions[adminToken];
+    const isAuthenticatedAdmin = !!ownEntry(db.memory.adminSessions, adminToken);
     const isStudentFlow = req.path.startsWith('/api/student') || req.path.startsWith('/api/forum')
         || req.path === '/api/ping' || req.path === '/data.js' || req.path === '/api/data.js'
         || (/^\/[^/]+\.md$/.test(req.path) && !isAuthenticatedAdmin);
@@ -205,6 +265,28 @@ async function startServer() {
     sweepTrash();
     const trashInterval = setInterval(sweepTrash, 6 * 3600000);
     trashInterval.unref();
+
+    // Fim do tempo das provas: tentativa vencida sem envio vira entrega com as últimas
+    // respostas salvas, mesmo que o aluno nunca mais sincronize (sem rede, sem bateria).
+    // No boot também recupera tentativas 'expired' deixadas por versões antigas.
+    const { settleExpiredAttempts } = require('./utils/examDeadline.js');
+    function sweepExpiredAttempts() {
+        try {
+            const { finalized, discarded, changed } = settleExpiredAttempts(db.memory);
+            const recovered = finalized.filter(item => item.recoveredAfterFinish).length;
+            if (finalized.length > recovered) console.log('⏱️  Fim do tempo: ' + (finalized.length - recovered) + ' tentativa(s) entregue(s) automaticamente.');
+            // Tentativas sem entrega deixadas por versões antigas em aplicações já encerradas:
+            // viram entregas "em revisão", avisadas no "Precisa de você" e no sino.
+            if (recovered) console.log('⏱️  Recuperada(s) ' + recovered + ' tentativa(s) com tempo esgotado de aplicação já encerrada. Confira em Resultados (em revisão).');
+            // Sobras de versões antigas em aplicação encerrada com "desconsiderar": ficam
+            // registradas como desconsideradas (com as respostas), nunca "em instantes".
+            if (discarded) console.log('⏱️  ' + discarded + ' tentativa(s) antiga(s) de aplicação encerrada com "desconsiderar" registrada(s) como desconsiderada(s).');
+            if (changed) db.save().catch(err => logCrash('finalização de tentativas vencidas', err));
+        } catch (e) { logCrash('finalização de tentativas vencidas', e); }
+    }
+    sweepExpiredAttempts();
+    const examDeadlineInterval = setInterval(sweepExpiredAttempts, 10000);
+    examDeadlineInterval.unref();
 
     // Backup automático diário dos dados em data/backups (guarda os 14 mais recentes).
     // Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios do servidor.

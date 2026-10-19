@@ -15,6 +15,7 @@ import { RiskList } from './dashboard/RiskList'
 import { DisciplineFrequency } from './dashboard/DisciplineFrequency'
 import { WeekAgenda } from './dashboard/WeekAgenda'
 import { DataQualityNote } from './dashboard/DataQualityNote'
+import { csvCell } from '../../lib/csv'
 
 // Dashboard v3 — "fila de trabalho do dia", não relatório em miniatura.
 // São 4 endpoints com volatilidades diferentes; cada seção carrega, falha e
@@ -120,7 +121,7 @@ export default function DashboardPage() {
   // Exportar ≠ imprimir: gera CSV do overview (imprimir continua no navegador).
   const exportCsv = () => {
     const rows = overview.data || []
-    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const esc = csvCell
     const linhas = [
       ['Aluno', 'E-mail', 'Turma', 'Frequência (%)', 'Presenças', 'Aulas', 'Faltas', 'Média', 'Risco'].map(esc).join(';'),
       ...rows.map((o) => [o.name, o.email, o.className, o.frequencia ?? 'sem dado', o.presentes, o.totalAulas, o.faltas, o.media ?? 'sem prova', o.riscoLevel].map(esc).join(';')),

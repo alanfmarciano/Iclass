@@ -15,6 +15,9 @@ import { useToast } from '../../context/ToastProvider'
 import { printBoletim } from './boletimPrint'
 import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
+import { Modal } from '../../components/ui/Modal'
+import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf } from '../../lib/grades'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -43,12 +46,12 @@ function Kpi({ label, value, sub, children }) {
   )
 }
 
-function CompareBar({ label, me, them, max = 100, suffix = '' }) {
+function CompareBar({ label, me, them, max = 100, suffix = '', format = (value) => value }) {
   const pm = Math.min(100, (Number(me) / max) * 100)
   const pt = Math.min(100, (Number(them) / max) * 100)
   return (
     <div>
-      <div className="flex justify-between text-xs mb-1"><span className="text-text">{label}</span><span className="text-muted">você {me}{suffix} · turma {them}{suffix}</span></div>
+      <div className="flex justify-between text-xs mb-1"><span className="text-text">{label}</span><span className="text-muted">aluno {format(me)}{suffix} · turma {format(them)}{suffix}</span></div>
       <div className="space-y-1">
         <div className="h-2 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: pm + '%' }} /></div>
         <div className="h-2 rounded bg-surface-2 overflow-hidden"><div className="h-full" style={{ width: pt + '%', background: 'var(--text-muted)' }} /></div>
@@ -63,9 +66,24 @@ export default function AlunoDetailPage() {
   const nav = useNavigate()
   const toast = useToast()
   const { auth } = useAuth()
-  async function openBoletim() {
+  const workspace = useAdminWorkspace()
+  const [boletimChoices, setBoletimChoices] = useState(null)
+  // Boletim do curso/turma ativos (UXI-X1, FUN-X1). Aluno em vários cursos e fora
+  // do curso ativo: o professor escolhe a matrícula.
+  async function openBoletim(context) {
+    const ctx = context || boletimContext(student, { courseId: workspace.courseId, className: workspace.className })
+    if (ctx.choose) {
+      // Nome do curso no seletor (o id técnico não diz nada ao professor); matrícula
+      // em curso fora do escopo do professor aparece desativada (o boletim dela daria 403).
+      const summaries = await api.get('/api/admin/course-summaries').catch(() => [])
+      const list = Array.isArray(summaries) ? summaries : summaries?.courses || []
+      setBoletimChoices(boletimChoiceOptions(ctx.choose, list, { restricted: auth.accountRole === 'professor', workspace }))
+      return
+    }
+    setBoletimChoices(null)
     try {
-      const report = await api.get(`/api/admin/student/report?email=${encodeURIComponent(email)}`)
+      const query = new URLSearchParams({ email, courseId: ctx.courseId || '', studentClass: ctx.studentClass || '' })
+      const report = await api.get(`/api/admin/student/report?${query}`)
       if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
     } catch (e) { toast.error(e.message) }
   }
@@ -83,26 +101,27 @@ export default function AlunoDetailPage() {
   useEffect(() => {
     if (!email) return
     api.get(`/api/admin/student/academic?email=${encodeURIComponent(email)}`).then(setAcademic).catch(() => setAcademic({ submissions: [], progress: { completedCount: 0 }, moduleAccess: [], attendance: { count: 0, recent: [] }, certificates: [] }))
-    api.get(`/api/admin/student/dashboard?email=${encodeURIComponent(email)}`).then(setDash).catch(() => setDash(null))
+    // Média da matrícula no curso/turma ativos, consolidada como em Resultados.
+    const dashQuery = new URLSearchParams({ email, courseId: workspace.courseId || '', studentClass: workspace.className || '' })
+    api.get(`/api/admin/student/dashboard?${dashQuery}`).then(setDash).catch(() => setDash(null))
     api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
-  }, [email])
+  }, [email, workspace.courseId, workspace.className])
 
   const subs = academic?.submissions || []
-  const media = subs.length ? (subs.reduce((a, s) => a + (Number(s.score) || 0), 0) / subs.length / 10) : 0
+  // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
+  const validSubs = useMemo(() => subs.filter((s) => gradeOf(s.score) !== null), [subs])
   const modules = useMemo(() => [...new Set(subs.map((s) => moduleOf(s.examKey)))].filter((m) => m !== '—'), [subs])
   const semesters = useMemo(() => [...new Set(subs.map((s) => semesterOf(s.timestamp)))].sort(), [subs])
-  const filteredSubs = useMemo(() => subs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [subs, filterModule, filterSemester])
-  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''), value: (Number(s.score) || 0) / 10 })), [filteredSubs])
-  const modulos = useMemo(() => {
-    const g = {}
-    subs.forEach((s) => { const m = moduleOf(s.examKey); (g[m] = g[m] || []).push(Number(s.score) || 0) })
-    return Object.entries(g).map(([m, arr]) => ({ m, media: arr.reduce((a, b) => a + b, 0) / arr.length / 10 }))
-  }, [subs])
+  const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [validSubs, filterModule, filterSemester])
+  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''), value: gradeOf(s.score) })), [filteredSubs])
+  // Média por módulo do servidor: mesma consolidação e mesmo curso/turma da "Média geral"
+  // (antes era a média simples de todas as tentativas, feita aqui no navegador).
+  const modulos = Array.isArray(dash?.modulos) ? dash.modulos : []
   const timeline = useMemo(() => {
     const ev = []
-    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${(Number(s.score) || 0) / 10}`, time: fmtDate(s.timestamp) }))
+    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${fmtGrade(s.score)}`, time: fmtDate(s.timestamp) }))
     ;(academic?.moduleAccess || []).forEach((m) => ev.push({ id: 'a' + m.id, t: m.timestamp, tone: 'bg-primary', title: `Abriu ${String(m.key).replace(/_/g, ' ')}`, time: fmtDateTime(m.timestamp) }))
-    ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? 'login' : 'manual'})`, time: a.date }))
+    ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? 'automática' : a.origin === 'chamada' ? 'chamada' : 'manual'})`, time: a.date }))
     return ev.sort((x, y) => y.t - x.t).slice(0, 8)
   }, [subs, academic])
 
@@ -133,7 +152,7 @@ export default function AlunoDetailPage() {
                 </div>
                 <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {student.email}</p>
               </div>
-              <Button variant="secondary" icon={FileText} onClick={openBoletim}>Boletim (PDF)</Button>
+              <Button variant="secondary" icon={FileText} onClick={() => openBoletim()}>Boletim (PDF)</Button>
               <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>
             </div>
 
@@ -143,7 +162,8 @@ export default function AlunoDetailPage() {
                 <p className="text-2xl font-semibold text-text">{dash?.kpis?.frequencia == null ? <span className="text-base text-muted">sem aulas</span> : `${dash.kpis.frequencia}%`}</p>
                 <div className="h-1.5 rounded bg-surface overflow-hidden mt-1.5"><div className="h-full bg-primary" style={{ width: (dash?.kpis?.frequencia ?? 0) + '%' }} /></div>
               </Kpi>
-              <Kpi label="Média geral" value={(dash?.kpis?.media ?? media).toFixed(1)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
+              {/* Média do servidor: consolidada como em Resultados (sem nota no curso ativo, "—"). */}
+              <Kpi label="Média geral" value={fmtGradeValue(dash?.kpis?.media)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
               <Kpi label="Progresso"><div className="flex items-center gap-2.5"><ProgressRing value={dash?.kpis?.progresso ?? 0}>{(dash?.kpis?.progresso ?? 0)}%</ProgressRing></div></Kpi>
               <Kpi label="Provas" value={`${dash?.kpis?.provasFeitas ?? subs.length}/${dash?.kpis?.provasTotais ?? 0}`} sub={`${Math.max(0, (dash?.kpis?.provasTotais ?? 0) - (dash?.kpis?.provasFeitas ?? subs.length))} pendentes`} />
             </div>
@@ -167,14 +187,14 @@ export default function AlunoDetailPage() {
                   }><MiniLineChart points={notas} /></Card>
                   <Card title="Desempenho por módulo">
                     {modulos.length ? <div className="space-y-3">{modulos.map((m) => (
-                      <div key={m.m}><div className="flex justify-between text-xs mb-1"><span className="text-text">{m.m}</span><span className="text-muted">{m.media.toFixed(1)}</span></div><div className="h-1.5 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: `${m.media * 10}%` }} /></div></div>
+                      <div key={m.id || m.modulo}><div className="flex justify-between text-xs mb-1"><span className="text-text">{m.modulo}</span><span className="text-muted">{fmtGradeValue(m.media)}</span></div><div className="h-1.5 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: `${Math.min(100, Number(m.media) * 10)}%` }} /></div></div>
                     ))}</div> : <p className="text-sm text-muted">Sem notas ainda.</p>}
                   </Card>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   <Card title="Comparativo com a turma">
                     <div className="space-y-4">
-                      <CompareBar label="Média" me={dash?.comparativo?.studentMedia ?? 0} them={dash?.comparativo?.turmaMedia ?? 0} max={10} />
+                      <CompareBar label="Média" me={dash?.comparativo?.studentMedia ?? 0} them={dash?.comparativo?.turmaMedia ?? 0} max={10} format={(value) => fmtGradeValue(value, '0,0')} />
                       <CompareBar label="Frequência" me={dash?.comparativo?.studentFreq ?? 0} them={dash?.comparativo?.turmaFreq ?? 0} max={100} suffix="%" />
                       <p className="text-xs text-subtle">Comparado com {dash?.comparativo?.turmaSize ?? 0} aluno(s) da turma.</p>
                     </div>
@@ -211,7 +231,7 @@ export default function AlunoDetailPage() {
                       <div className="bg-surface-2 rounded-lg p-3"><p className="text-xs text-muted mb-1">Recorde</p><p className="text-xl font-semibold text-text">{dash?.streak?.recorde ?? 0} <span className="text-xs text-muted font-normal">dias</span></p></div>
                     </div>
                     <div className="mt-3 space-y-1.5 text-sm">
-                      <div className="flex justify-between"><span className="text-muted">Média (mês atual vs anterior)</span><span className="text-text">{(dash?.temporal?.mediaAtual ?? 0).toFixed(1)} vs {(dash?.temporal?.mediaAnterior ?? 0).toFixed(1)}</span></div>
+                      <div className="flex justify-between"><span className="text-muted">Média (mês atual vs anterior)</span><span className="text-text">{fmtGradeValue(dash?.temporal?.mediaAtual ?? 0)} vs {fmtGradeValue(dash?.temporal?.mediaAnterior ?? 0)}</span></div>
                       <div className="flex justify-between"><span className="text-muted">Presenças (mês)</span><span className="text-text">{dash?.temporal?.presencaAtual ?? 0} vs {dash?.temporal?.presencaAnterior ?? 0}</span></div>
                     </div>
                   </Card>
@@ -235,8 +255,10 @@ export default function AlunoDetailPage() {
                   <div className="divide-y divide-border">
                     {[...subs].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0)).map((s) => (
                       <div key={s.id} className="flex items-center justify-between py-2.5 text-sm">
-                        <div><p className="text-text">{s.examKey}</p><p className="text-xs text-subtle">{s.correctCount}/{s.totalCount} acertos · {fmtDate(s.timestamp)}</p></div>
-                        <Badge tone={Number(s.score) >= 60 ? 'success' : 'warning'}>{((Number(s.score) || 0) / 10).toFixed(1)}</Badge>
+                        <div><p className="text-text">{s.examKey}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
+                        {gradeOf(s.score) === null
+                          ? <Badge tone="neutral" title="Registro antigo com nota vazia ou fora de 0 a 10">nota inválida</Badge>
+                          : <Badge tone={gradeOf(s.score) >= 6 ? 'success' : 'warning'}>{fmtGrade(s.score)}</Badge>}
                       </div>
                     ))}
                   </div>
@@ -267,6 +289,16 @@ export default function AlunoDetailPage() {
                 <Card title="Calendário de frequência"><MonthCalendar email={student.email} /></Card>
               </div>
             )}
+
+            <Modal open={!!boletimChoices} onClose={() => setBoletimChoices(null)} title="Boletim de qual curso?" description="O aluno tem matrícula em mais de um curso. Escolha a turma do boletim.">
+              <div className="grid gap-2">
+                {(boletimChoices || []).map((m) => (
+                  <Button key={`${m.courseId}:${m.name}`} variant="secondary" disabled={!m.allowed} onClick={() => openBoletim({ courseId: m.courseId, studentClass: m.name })}>
+                    Turma {m.name}{m.allowed ? (m.courseName ? ` · ${m.courseName}` : '') : ' · curso fora do seu acesso'}
+                  </Button>
+                ))}
+              </div>
+            </Modal>
 
             {tab === 'auditoria' && (
               <Card title="Auditoria do cadastro">

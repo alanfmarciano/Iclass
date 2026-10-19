@@ -69,7 +69,7 @@ export const GRANTABLE_ADMIN_PERMISSIONS = Object.freeze([
   { permission: ADMIN_PERMISSIONS.PAGE_BRANDING, group: 'Identidade', label: 'Visualizar tela', description: 'Exibe as configurações de identidade visual.' },
   { permission: ADMIN_PERMISSIONS.BRANDING_MANAGE, group: 'Identidade', label: 'Alterar identidade', description: 'Permite usar os controles de edição visual.' },
   { permission: ADMIN_PERMISSIONS.PAGE_SYSTEM, group: 'Sistema', label: 'Visualizar tela', description: 'Exibe informações de rede e manutenção.' },
-  { permission: ADMIN_PERMISSIONS.SYSTEM_MANAGE, group: 'Sistema', label: 'Executar manutenção', description: 'Exibe reinício, limpeza e reset da sala.' },
+  { permission: ADMIN_PERMISSIONS.SYSTEM_MANAGE, group: 'Sistema', label: 'Executar manutenção', description: 'Libera configurações, lixeira, reinício do servidor, limpeza e reset da sala e gerar cópia de segurança no servidor. Baixar e restaurar backup continua só do administrador.' },
   { permission: ADMIN_PERMISSIONS.COURSE_MANAGE, group: 'Cursos', label: 'Gerenciar cursos', description: 'Exibe criação, edição, exclusão e restauração de cursos.' },
 ])
 

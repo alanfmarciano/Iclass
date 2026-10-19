@@ -493,6 +493,10 @@ O gabarito pode existir no markdown para importação e revisão, mas o sistema 
 
 - O gabarito deve ficar no final do arquivo.
 - Usar `<details>` apenas como padrão de organização do markdown.
+- Em apostila (material do aluno), o gabarito do professor fica sob o título `## Gabarito do professor` (forma recomendada) ou num `<details><summary>Gabarito do professor</summary>`. O sistema tira esse trecho da apostila do aluno: o título vai até o próximo título de nível igual ou menor, com os subtítulos de dentro (`### Questão 1`); o `<details>` sai inteiro.
+- O rótulo em negrito no começo de um bloco (`**Gabarito do professor**`, `<strong>`, `<b>`, também dentro de itálico ou de `<span>`) protege até o fim da seção em que está (até o próximo título de nível igual ou menor que o da seção; sem título acima, até o próximo `#` ou `##`), sozinho ou com as respostas no mesmo parágrafo (`**Gabarito do professor:** 1-B, 2-C`): o que vem depois dele na seção (listas, `<p>`, blocos de código) sai junto. Rótulo em célula de tabela e negrito quebrado em duas linhas não são reconhecidos. Para deixar claro onde o gabarito acaba, use o título `## Gabarito do professor`.
+- Marca do professor: professor(a), prof., profs., profa. (ou Prof&ordf;), instrutor(a), docente, exclusivo(a). "Gabarito" sem a marca ("Gabarito dos exercícios", "Ver Resposta") é tratado como autocorreção do aluno e aparece. Código (bloco cercado, código inline ou `<pre>`) nunca é mexido.
+- Comentários HTML (`<!-- ... -->`) nunca chegam ao aluno: o sistema tira todos da apostila servida, antes de procurar títulos e rótulos (um comentário no meio do título não o esconde). Não use comentário para esconder gabarito; use o título acima.
 - No sistema real, a correção deve acontecer no servidor.
 - O frontend não deve ser fonte única de validação.
 - A prova só deve aparecer para o aluno quando liberada para a turma.

@@ -56,14 +56,15 @@ export function Modal({ open, onClose, title, description, children, footer, siz
     document.body
   )
 }
-export function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLabel = 'Confirmar', danger }) {
+// note: texto opcional no lugar do aviso padrão (ex.: exclusão que vai para uma lixeira).
+export function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLabel = 'Confirmar', danger, note }) {
   return (
     <Modal open={open} onClose={onClose} title={title} description={description}
       footer={<>
         <Button variant="ghost" onClick={onClose}>Cancelar</Button>
         <Button variant={danger ? 'destructive' : 'primary'} onClick={onConfirm}>{confirmLabel}</Button>
       </>}>
-      <p className="text-sm text-muted">Esta ação {danger ? 'não pode ser desfeita.' : 'será aplicada imediatamente.'}</p>
+      <p className="text-sm text-muted">{note || `Esta ação ${danger ? 'não pode ser desfeita.' : 'será aplicada imediatamente.'}`}</p>
     </Modal>
   )
 }

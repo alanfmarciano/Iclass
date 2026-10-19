@@ -1,0 +1,1462 @@
+{
+ "geradoPor": "backend/utils/backup.js da versão 5b69148 (em produção antes da fase 1)",
+ "backup": {
+  "type": "iclass-backup-data",
+  "version": "3.0",
+  "exportedAt": "2026-10-18T22:11:55.991Z",
+  "data": {
+   "students": [
+    {
+     "name": "Ana Antiga",
+     "email": "ana@antigo.local",
+     "status": "Ativo",
+     "password": "scrypt$yv/rhrDsvevq++CnhLwUrg==$wF/TDW5xyvrejRKIOQ/g0ew1HW2zRJpls2jX74snW0gUn/sm2TcKnCT2gHqnigEx1bKSemCxBKQ1EIPvhYQVzA==",
+     "classes": [
+      {
+       "name": "1DES",
+       "courseId": "curso-antigo"
+      }
+     ]
+    },
+    {
+     "name": "Bruno Antigo",
+     "email": "bruno@antigo.local",
+     "status": "Ativo",
+     "password": "scrypt$EcEkyXqnEKj+3oNMhpA8WQ==$bbxis2KlkAWWKSeN6inTs3aef6KLrLbUuY3fcKKDEoE45VHK+xFA0n1s9eg/qt4pFO7CyUxr0v4VZpl9MSmhSQ==",
+     "classes": [
+      {
+       "name": "2DES",
+       "courseId": "curso-antigo"
+      }
+     ]
+    },
+    {
+     "name": "Isabela Antiga",
+     "email": "isabela@antigo.local",
+     "status": "Ativo",
+     "password": "scrypt$Fr2O5bSga4pU4lBVHp/acA==$XRWW7ai+dLtjaK1jXRBEmuHiE8cqAzxjRTZXwj5KVX28/sgfe1anQXBX0U+YJlUFHtZpTjFt2C/QRQxp8QtdPQ==",
+     "classes": [
+      {
+       "name": "2DES",
+       "courseId": "curso-antigo"
+      }
+     ]
+    },
+    {
+     "name": "Carla Antiga",
+     "email": "carla@antigo.local",
+     "status": "Ativo",
+     "password": "scrypt$WvT+VLHwDXv0UBXElxGbnA==$TRGQO0kHop+N/ngPCw+JHZ0oS4C/U+fADLuToieEtUYazsetVCvSmztRxteRuSV7V8OyZ5nRAn10Bmbaq0nVcw==",
+     "classes": [
+      {
+       "name": "3DES",
+       "courseId": "curso-antigo"
+      }
+     ]
+    },
+    {
+     "name": "Davi Antigo",
+     "email": "davi@antigo.local",
+     "status": "Ativo",
+     "password": "scrypt$ObNQcEbBRm2u9wlIj4l91A==$InMQcoadnwLM9luXM3RAPFIJkJKUGx762vOLiskerz4/jwFUpT06AguoncLaOoYGuT0U8BxphJSzXaC/tOg0cg==",
+     "classes": [
+      {
+       "name": "3DES",
+       "courseId": "curso-antigo"
+      }
+     ]
+    },
+    {
+     "name": "Fábio Antigo",
+     "email": "fabio@antigo.local",
+     "status": "Ativo",
+     "password": "scrypt$wUMb/Er31RCrIV4zLg1yWg==$wIuApnjPIPaZoxVRb6/W97/2NEcD6EsTBpmqydCg1H+cUH25R9aQnhUf0LOuvq17PIafA+Y4uFjr3Yh29qEp1w==",
+     "classes": [
+      {
+       "name": "3DES",
+       "courseId": "curso-antigo"
+      }
+     ]
+    },
+    {
+     "name": "Eva Antiga",
+     "email": "eva@antigo.local",
+     "status": "Ativo",
+     "password": "scrypt$pHhGoLZoSVZZgTu/NhqadQ==$Zxu/b3mB/ItkSOfepHD8quu/hXib8mpWAdUmy2cyNLWysnJaK+ZaeEtX1JJxhaVOZa3fGnrMM7ELM2Lw4RkPxw==",
+     "classes": [
+      {
+       "name": "4DES",
+       "courseId": "curso-antigo"
+      }
+     ]
+    }
+   ],
+   "classes": [
+    {
+     "name": "1DES",
+     "courseId": "curso-antigo",
+     "releasedItems": {
+      "Avaliacao_Antiga": true
+     },
+     "onlineExamConfigs": {
+      "Avaliacao_Antiga": {
+       "applicationId": "app_bdc7d2b6-1cf9-418f-85f5-fa26dbd79e63",
+       "questionCount": 1,
+       "excludedQuestions": [],
+       "shuffleQuestions": true,
+       "shuffleAnswers": true,
+       "durationMinutes": 30,
+       "timerEnabled": true,
+       "timerMode": "per_attempt",
+       "waitingRoomDuration": 0,
+       "onlineActive": true,
+       "status": "running",
+       "startTime": 1792361510982,
+       "waitingRoomStartTimestamp": null,
+       "globalTimeAdjustment": 0,
+       "annulledQuestions": [],
+       "activeHistoryId": "eh_1792361510454_x3z8m",
+       "versionSnapshots": [
+        {
+         "version": "A",
+         "questions": [
+          {
+           "originalNumber": 1,
+           "text": "Quanto é 1 + 1?",
+           "correctAnswer": "B",
+           "alternatives": [
+            {
+             "letter": "A",
+             "text": "1"
+            },
+            {
+             "letter": "B",
+             "text": "2"
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "accessToken": null,
+       "accessTokenHash": null,
+       "tokenEnabled": false,
+       "maxAttempts": 1,
+       "preparedAt": "2026-10-18T22:11:50.717Z",
+       "updatedAt": "2026-10-18T22:11:50.717Z"
+      }
+     },
+     "examHistory": {
+      "Avaliacao_Antiga": [
+       {
+        "id": "eh_1792361508831_6s1by",
+        "type": "online",
+        "label": null,
+        "questionNumbers": [
+         1
+        ],
+        "examCode": null,
+        "printSnapshot": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "versionSnapshots": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "questionCount": 1,
+        "excludedQuestions": [],
+        "shuffleQuestions": true,
+        "shuffleAnswers": true,
+        "durationMinutes": 30,
+        "timerEnabled": true,
+        "waitingRoomMinutes": 0,
+        "accessToken": null,
+        "maxAttempts": 1,
+        "createdAt": "2026-10-18T22:11:48.832Z"
+       },
+       {
+        "id": "eh_1792361510454_x3z8m",
+        "type": "online",
+        "label": null,
+        "questionNumbers": [
+         1
+        ],
+        "examCode": null,
+        "printSnapshot": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "versionSnapshots": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "questionCount": 1,
+        "excludedQuestions": [],
+        "shuffleQuestions": true,
+        "shuffleAnswers": true,
+        "durationMinutes": 30,
+        "timerEnabled": true,
+        "waitingRoomMinutes": 0,
+        "accessToken": null,
+        "maxAttempts": 1,
+        "createdAt": "2026-10-18T22:11:50.454Z"
+       }
+      ]
+     },
+     "contentOverrides": {
+      "materials": {},
+      "evaluations": {},
+      "unitNames": {},
+      "extraUnits": [],
+      "structure": null
+     },
+     "activeExamKey": "Avaliacao_Antiga",
+     "activeApplicationId": "app_bdc7d2b6-1cf9-418f-85f5-fa26dbd79e63"
+    },
+    {
+     "name": "2DES",
+     "courseId": "curso-antigo",
+     "releasedItems": {
+      "Avaliacao_Antiga": false
+     },
+     "onlineExamConfigs": {
+      "Avaliacao_Antiga": {
+       "applicationId": "app_de398c04-864c-4f33-b3d0-30f5f972962b",
+       "questionCount": 1,
+       "excludedQuestions": [],
+       "shuffleQuestions": true,
+       "shuffleAnswers": true,
+       "durationMinutes": 30,
+       "timerEnabled": true,
+       "timerMode": "per_attempt",
+       "waitingRoomDuration": 0,
+       "onlineActive": false,
+       "status": "prepared",
+       "startTime": null,
+       "waitingRoomStartTimestamp": null,
+       "globalTimeAdjustment": 0,
+       "annulledQuestions": [],
+       "activeHistoryId": "eh_1792361511771_qjac9",
+       "versionSnapshots": [
+        {
+         "version": "A",
+         "questions": [
+          {
+           "originalNumber": 1,
+           "text": "Quanto é 1 + 1?",
+           "correctAnswer": "B",
+           "alternatives": [
+            {
+             "letter": "A",
+             "text": "1"
+            },
+            {
+             "letter": "B",
+             "text": "2"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "version": "B",
+         "questions": [
+          {
+           "originalNumber": 1,
+           "text": "Quanto é 1 + 1?",
+           "correctAnswer": "A",
+           "alternatives": [
+            {
+             "letter": "A",
+             "text": "2"
+            },
+            {
+             "letter": "B",
+             "text": "1"
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "accessToken": null,
+       "accessTokenHash": "ad820de7200cf1c42d0d28465b4df85b287363e8b48c5241845eb74b5a93632f",
+       "tokenEnabled": true,
+       "maxAttempts": 1,
+       "preparedAt": "2026-10-18T22:11:52.031Z",
+       "updatedAt": "2026-10-18T22:11:52.031Z"
+      }
+     },
+     "examHistory": {
+      "Avaliacao_Antiga": [
+       {
+        "id": "eh_1792361511771_qjac9",
+        "type": "online",
+        "label": null,
+        "questionNumbers": [
+         1
+        ],
+        "examCode": null,
+        "printSnapshot": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "version": "B",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "A",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "2"
+             },
+             {
+              "letter": "B",
+              "text": "1"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "versionSnapshots": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "version": "B",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "A",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "2"
+             },
+             {
+              "letter": "B",
+              "text": "1"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "questionCount": 1,
+        "excludedQuestions": [],
+        "shuffleQuestions": true,
+        "shuffleAnswers": true,
+        "durationMinutes": 30,
+        "timerEnabled": true,
+        "waitingRoomMinutes": 0,
+        "accessToken": null,
+        "maxAttempts": 1,
+        "createdAt": "2026-10-18T22:11:51.771Z"
+       }
+      ]
+     },
+     "contentOverrides": {
+      "materials": {},
+      "evaluations": {},
+      "unitNames": {},
+      "extraUnits": [],
+      "structure": null
+     }
+    },
+    {
+     "name": "3DES",
+     "courseId": "curso-antigo",
+     "releasedItems": {
+      "Avaliacao_Antiga": true
+     },
+     "onlineExamConfigs": {
+      "Avaliacao_Antiga": {
+       "applicationId": "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992",
+       "questionCount": 1,
+       "excludedQuestions": [],
+       "shuffleQuestions": true,
+       "shuffleAnswers": true,
+       "durationMinutes": 60,
+       "timerEnabled": true,
+       "timerMode": "per_attempt",
+       "waitingRoomDuration": 0,
+       "onlineActive": true,
+       "status": "paused",
+       "startTime": 1792360312825,
+       "waitingRoomStartTimestamp": null,
+       "globalTimeAdjustment": 0,
+       "annulledQuestions": [],
+       "activeHistoryId": "eh_1792361512300_vt7qx",
+       "versionSnapshots": [
+        {
+         "version": "A",
+         "questions": [
+          {
+           "originalNumber": 1,
+           "text": "Quanto é 1 + 1?",
+           "correctAnswer": "B",
+           "alternatives": [
+            {
+             "letter": "A",
+             "text": "1"
+            },
+            {
+             "letter": "B",
+             "text": "2"
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "accessToken": null,
+       "accessTokenHash": null,
+       "tokenEnabled": false,
+       "maxAttempts": 2,
+       "preparedAt": "2026-10-18T22:11:52.560Z",
+       "updatedAt": "2026-10-18T22:11:52.560Z"
+      }
+     },
+     "examHistory": {
+      "Avaliacao_Antiga": [
+       {
+        "id": "eh_1792361512300_vt7qx",
+        "type": "online",
+        "label": null,
+        "questionNumbers": [
+         1
+        ],
+        "examCode": null,
+        "printSnapshot": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "versionSnapshots": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "questionCount": 1,
+        "excludedQuestions": [],
+        "shuffleQuestions": true,
+        "shuffleAnswers": true,
+        "durationMinutes": 60,
+        "timerEnabled": true,
+        "waitingRoomMinutes": 0,
+        "accessToken": null,
+        "maxAttempts": 2,
+        "createdAt": "2026-10-18T22:11:52.300Z"
+       }
+      ]
+     },
+     "contentOverrides": {
+      "materials": {},
+      "evaluations": {},
+      "unitNames": {},
+      "extraUnits": [],
+      "structure": null
+     },
+     "activeExamKey": "Avaliacao_Antiga",
+     "activeApplicationId": "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992"
+    },
+    {
+     "name": "4DES",
+     "courseId": "curso-antigo",
+     "releasedItems": {
+      "Avaliacao_Antiga": false
+     },
+     "onlineExamConfigs": {
+      "Avaliacao_Antiga": {
+       "applicationId": "app_39290620-d536-4101-8855-4c99636d4b47",
+       "questionCount": 1,
+       "excludedQuestions": [],
+       "shuffleQuestions": true,
+       "shuffleAnswers": true,
+       "durationMinutes": 30,
+       "timerEnabled": true,
+       "timerMode": "per_attempt",
+       "waitingRoomDuration": 0,
+       "onlineActive": false,
+       "status": "finished",
+       "startTime": 1792361514681,
+       "waitingRoomStartTimestamp": null,
+       "globalTimeAdjustment": 0,
+       "annulledQuestions": [],
+       "activeHistoryId": "eh_1792361514152_cg5mo",
+       "versionSnapshots": [
+        {
+         "version": "A",
+         "questions": [
+          {
+           "originalNumber": 1,
+           "text": "Quanto é 1 + 1?",
+           "correctAnswer": "B",
+           "alternatives": [
+            {
+             "letter": "A",
+             "text": "1"
+            },
+            {
+             "letter": "B",
+             "text": "2"
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "accessToken": null,
+       "accessTokenHash": null,
+       "tokenEnabled": false,
+       "maxAttempts": 1,
+       "preparedAt": "2026-10-18T22:11:54.415Z",
+       "updatedAt": "2026-10-18T22:11:54.415Z"
+      }
+     },
+     "examHistory": {
+      "Avaliacao_Antiga": [
+       {
+        "id": "eh_1792361514152_cg5mo",
+        "type": "online",
+        "label": null,
+        "questionNumbers": [
+         1
+        ],
+        "examCode": null,
+        "printSnapshot": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "versionSnapshots": [
+         {
+          "version": "A",
+          "questions": [
+           {
+            "originalNumber": 1,
+            "text": "Quanto é 1 + 1?",
+            "correctAnswer": "B",
+            "alternatives": [
+             {
+              "letter": "A",
+              "text": "1"
+             },
+             {
+              "letter": "B",
+              "text": "2"
+             }
+            ]
+           }
+          ]
+         }
+        ],
+        "questionCount": 1,
+        "excludedQuestions": [],
+        "shuffleQuestions": true,
+        "shuffleAnswers": true,
+        "durationMinutes": 30,
+        "timerEnabled": true,
+        "waitingRoomMinutes": 0,
+        "accessToken": null,
+        "maxAttempts": 1,
+        "createdAt": "2026-10-18T22:11:54.152Z"
+       }
+      ]
+     },
+     "contentOverrides": {
+      "materials": {},
+      "evaluations": {},
+      "unitNames": {},
+      "extraUnits": [],
+      "structure": null
+     },
+     "activeExamKey": null,
+     "activeApplicationId": null
+    }
+   ],
+   "courses": [
+    {
+     "id": "curso-antigo",
+     "name": "Curso antigo",
+     "structure": [
+      {
+       "name": "Módulo",
+       "units": [
+        {
+         "avaliacaoKey": "Avaliacao_Antiga"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "branding": {
+    "id": "default",
+    "institutionName": "IClass",
+    "primaryColor": "#ef4444",
+    "logoUrl": ""
+   },
+   "submissions": [
+    {
+     "id": "sub_180f8fff-81cb-4cb5-8ff4-7e715ae5ef4d",
+     "student": {
+      "name": "Ana Antiga",
+      "email": "ana@antigo.local",
+      "status": "Ativo",
+      "classes": [
+       {
+        "name": "1DES",
+        "courseId": "curso-antigo"
+       }
+      ],
+      "studentClass": "1DES",
+      "courseId": "curso-antigo"
+     },
+     "examKey": "Avaliacao_Antiga",
+     "applicationId": "app_af323fef-a0c0-436b-ad8d-864a5d2f0ad2",
+     "attemptId": "attempt_f581ee38-a7c9-4dd4-9ee6-9895cd9e9555",
+     "score": 0,
+     "correctCount": 0,
+     "totalCount": 1,
+     "gradedAnswers": [
+      {
+       "questionNumber": 1,
+       "studentChoice": "A",
+       "correctAnswer": "B",
+       "isCorrect": false,
+       "annulled": false,
+       "annulmentMode": null
+      }
+     ],
+     "assignedVersion": "A",
+     "activeHistoryId": "eh_1792361508831_6s1by",
+     "examSnapshot": {
+      "version": "A",
+      "examCode": null,
+      "questions": [
+       {
+        "number": 1,
+        "text": "Quanto é 1 + 1?",
+        "correctAnswer": "B",
+        "alternatives": [
+         {
+          "letter": "A",
+          "text": "1"
+         },
+         {
+          "letter": "B",
+          "text": "2"
+         }
+        ],
+        "originalNumber": 1
+       }
+      ]
+     },
+     "examConfigVersion": "2026-10-18T22:11:49.117Z",
+     "attemptNumber": 1,
+     "resultStatus": "considered",
+     "aggregationPolicy": "highest",
+     "selectedForResult": false,
+     "gradePublished": false,
+     "submissionSource": "student",
+     "timestamp": "2026-10-18T22:11:49.926Z"
+    },
+    {
+     "id": "sub_728f2beb-f965-40ab-a76c-6dd513757b6c",
+     "student": {
+      "name": "Eva Antiga",
+      "email": "eva@antigo.local",
+      "status": "Ativo",
+      "classes": [
+       {
+        "name": "4DES",
+        "courseId": "curso-antigo"
+       }
+      ],
+      "studentClass": "4DES",
+      "courseId": "curso-antigo"
+     },
+     "examKey": "Avaliacao_Antiga",
+     "applicationId": "app_39290620-d536-4101-8855-4c99636d4b47",
+     "attemptId": "attempt_0210e62e-1b37-4c73-83be-fb601cbfec38",
+     "score": 100,
+     "correctCount": 1,
+     "totalCount": 1,
+     "gradedAnswers": [
+      {
+       "questionNumber": 1,
+       "studentChoice": "B",
+       "correctAnswer": "B",
+       "isCorrect": true,
+       "annulled": false,
+       "annulmentMode": null
+      }
+     ],
+     "assignedVersion": "A",
+     "activeHistoryId": "eh_1792361514152_cg5mo",
+     "examSnapshot": {
+      "version": "A",
+      "examCode": null,
+      "questions": [
+       {
+        "number": 1,
+        "text": "Quanto é 1 + 1?",
+        "correctAnswer": "B",
+        "alternatives": [
+         {
+          "letter": "A",
+          "text": "1"
+         },
+         {
+          "letter": "B",
+          "text": "2"
+         }
+        ],
+        "originalNumber": 1
+       }
+      ]
+     },
+     "examConfigVersion": "2026-10-18T22:11:54.415Z",
+     "attemptNumber": 1,
+     "resultStatus": "considered",
+     "aggregationPolicy": "highest",
+     "selectedForResult": false,
+     "gradePublished": false,
+     "submissionSource": "student",
+     "timestamp": "2026-10-18T22:11:55.204Z"
+    }
+   ],
+   "notes": {},
+   "annotations": {},
+   "forum": [],
+   "config": {
+    "releasedItems": {}
+   },
+   "courseStructure": [],
+   "evaluations": {
+    "Avaliacao_Antiga": {
+     "key": "Avaliacao_Antiga",
+     "title": "Prova da versão anterior",
+     "questions": [
+      {
+       "number": 1,
+       "text": "Quanto é 1 + 1?",
+       "correctAnswer": "B",
+       "alternatives": [
+        {
+         "letter": "A",
+         "text": "1",
+         "isCorrect": false
+        },
+        {
+         "letter": "B",
+         "text": "2",
+         "isCorrect": true
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "progress": {},
+   "uploads": {},
+   "admins": [
+    {
+     "email": "admin@antigo.local",
+     "name": "Admin",
+     "role": "admin",
+     "password": "scrypt$TVLOWWOUdIJhDm8pULop7w==$zRtMHHta4wtDhUW1t0Tq8o395U930xktd5yodma/IOw9VJmIp6vwYl6QEky5XP4wNcNCOTj8N4TSzejzrXTscQ==",
+     "assignedClasses": [
+      {
+       "courseId": "curso-antigo",
+       "className": "1DES"
+      },
+      {
+       "courseId": "curso-antigo",
+       "className": "2DES"
+      },
+      {
+       "courseId": "curso-antigo",
+       "className": "3DES"
+      },
+      {
+       "courseId": "curso-antigo",
+       "className": "4DES"
+      }
+     ]
+    }
+   ],
+   "proctoringLogs": [],
+   "studentExamState": {
+    "app_bdc7d2b6-1cf9-418f-85f5-fa26dbd79e63::ana@antigo.local::1": {
+     "id": "attempt_6a0dd20f-fb1d-4544-a1c6-36346f1a23d1",
+     "attemptId": "attempt_6a0dd20f-fb1d-4544-a1c6-36346f1a23d1",
+     "applicationId": "app_bdc7d2b6-1cf9-418f-85f5-fa26dbd79e63",
+     "studentEmail": "ana@antigo.local",
+     "studentClass": "1DES",
+     "courseId": "curso-antigo",
+     "examKey": "Avaliacao_Antiga",
+     "attemptNumber": 1,
+     "status": "active",
+     "answers": {
+      "1": "B"
+     },
+     "timerRemaining": 1800,
+     "assignedVersion": "A",
+     "versionAssigned": true,
+     "assignedQuestionNumbers": [
+      1
+     ],
+     "individualTimeAdjustment": 0,
+     "tokenValidated": true,
+     "startedAt": 1792361511250,
+     "deadlineAt": 1792363311250,
+     "savedAt": "2026-10-18T22:11:51.505Z",
+     "createdAt": "2026-10-18T22:11:51.245Z",
+     "examConfigVersion": "2026-10-18T22:11:50.717Z",
+     "focusLocked": false,
+     "accessibilityExtraMinutes": 0
+    },
+    "isabela@antigo.local_Avaliacao_Antiga": {
+     "studentEmail": "isabela@antigo.local",
+     "examKey": "Avaliacao_Antiga",
+     "answers": {},
+     "timerRemaining": null,
+     "assignedVersion": "B",
+     "individualTimeAdjustment": 0,
+     "versionAssigned": true
+    },
+    "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992::carla@antigo.local::1": {
+     "id": "attempt_6eae34a3-6852-4a57-94f6-e586eefc9e47",
+     "attemptId": "attempt_6eae34a3-6852-4a57-94f6-e586eefc9e47",
+     "applicationId": "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992",
+     "studentEmail": "carla@antigo.local",
+     "studentClass": "3DES",
+     "courseId": "curso-antigo",
+     "examKey": "Avaliacao_Antiga",
+     "attemptNumber": 1,
+     "status": "active",
+     "answers": {
+      "1": "B"
+     },
+     "timerRemaining": 3600,
+     "assignedVersion": "A",
+     "versionAssigned": true,
+     "assignedQuestionNumbers": [
+      1
+     ],
+     "individualTimeAdjustment": 0,
+     "tokenValidated": true,
+     "startedAt": 1792360313095,
+     "deadlineAt": 1792363913095,
+     "savedAt": "2026-10-18T22:11:53.353Z",
+     "createdAt": "2026-10-18T22:11:53.092Z",
+     "examConfigVersion": "2026-10-18T22:11:52.560Z",
+     "focusLocked": false,
+     "accessibilityExtraMinutes": 0
+    },
+    "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992::davi@antigo.local::1": {
+     "id": "attempt_54256e36-51af-4f1f-b5db-12399aadab9a",
+     "attemptId": "attempt_54256e36-51af-4f1f-b5db-12399aadab9a",
+     "applicationId": "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992",
+     "studentEmail": "davi@antigo.local",
+     "studentClass": "3DES",
+     "courseId": "curso-antigo",
+     "examKey": "Avaliacao_Antiga",
+     "attemptNumber": 1,
+     "status": "active",
+     "answers": {},
+     "timerRemaining": 4200,
+     "assignedVersion": "A",
+     "versionAssigned": true,
+     "assignedQuestionNumbers": [
+      1
+     ],
+     "individualTimeAdjustment": 10,
+     "tokenValidated": true,
+     "startedAt": 1792360313620,
+     "deadlineAt": 1792363913620,
+     "savedAt": null,
+     "createdAt": "2026-10-18T22:11:53.616Z",
+     "examConfigVersion": "2026-10-18T22:11:52.560Z",
+     "focusLocked": false,
+     "accessibilityExtraMinutes": 0
+    },
+    "fabio@antigo.local_Avaliacao_Antiga": {
+     "studentEmail": "fabio@antigo.local",
+     "examKey": "Avaliacao_Antiga",
+     "answers": {},
+     "timerRemaining": null,
+     "assignedVersion": "A",
+     "individualTimeAdjustment": 5
+    }
+   },
+   "broadcastMessages": [],
+   "questionBank": [],
+   "auditLogs": [
+    {
+     "id": "audit_exam_1792361510190_069af544",
+     "type": "exam_application_finished",
+     "actor": "admin@antigo.local",
+     "applicationId": "app_af323fef-a0c0-436b-ad8d-864a5d2f0ad2",
+     "examKey": "Avaliacao_Antiga",
+     "studentClass": "1DES",
+     "courseId": "curso-antigo",
+     "details": {
+      "policy": "none",
+      "submitted": 0,
+      "discarded": 0,
+      "summary": {
+       "applicationId": "app_af323fef-a0c0-436b-ad8d-864a5d2f0ad2",
+       "inProgressAttempts": 0,
+       "answeredQuestions": 0,
+       "waitingToStart": 0,
+       "students": []
+      }
+     },
+     "timestamp": "2026-10-18T22:11:50.190Z"
+    },
+    {
+     "id": "audit_exam_1792361515518_3fb8585e",
+     "type": "exam_application_finished",
+     "actor": "admin@antigo.local",
+     "applicationId": "app_39290620-d536-4101-8855-4c99636d4b47",
+     "examKey": "Avaliacao_Antiga",
+     "studentClass": "4DES",
+     "courseId": "curso-antigo",
+     "details": {
+      "policy": "none",
+      "submitted": 0,
+      "discarded": 0,
+      "summary": {
+       "applicationId": "app_39290620-d536-4101-8855-4c99636d4b47",
+       "inProgressAttempts": 0,
+       "answeredQuestions": 0,
+       "waitingToStart": 0,
+       "students": []
+      }
+     },
+     "timestamp": "2026-10-18T22:11:55.518Z"
+    }
+   ],
+   "loginLogs": [],
+   "pedagogicalObservations": [],
+   "attendance": [],
+   "certificates": [],
+   "moduleAccess": [],
+   "schools": [
+    {
+     "id": "escola_default",
+     "name": "IClass",
+     "info": {},
+     "branding": {},
+     "createdAt": 1792361507474
+    }
+   ],
+   "announcements": [],
+   "library": []
+  },
+  "content": {}
+ },
+ "applicationsAtBackup": [
+  {
+   "id": "app_af323fef-a0c0-436b-ad8d-864a5d2f0ad2",
+   "examKey": "Avaliacao_Antiga",
+   "courseId": "curso-antigo",
+   "studentClass": "1DES",
+   "historyId": "eh_1792361508831_6s1by",
+   "status": "finished",
+   "timerMode": "per_attempt",
+   "durationMinutes": 30,
+   "timerEnabled": true,
+   "waitingRoomDuration": 0,
+   "startsAt": 1792361509387,
+   "endsAt": 1792361510190,
+   "maxAttempts": 1,
+   "questionCount": 1,
+   "excludedQuestions": [],
+   "shuffleQuestions": true,
+   "shuffleAnswers": true,
+   "versionSnapshots": [
+    {
+     "version": "A",
+     "questions": [
+      {
+       "originalNumber": 1,
+       "text": "Quanto é 1 + 1?",
+       "correctAnswer": "B",
+       "alternatives": [
+        {
+         "letter": "A",
+         "text": "1"
+        },
+        {
+         "letter": "B",
+         "text": "2"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "contentVersion": "2026-10-18T22:11:49.117Z",
+   "accessTokenHash": null,
+   "tokenEnabled": false,
+   "globalTimeAdjustment": 0,
+   "studentAdjustments": {},
+   "studentVersions": {},
+   "annulledQuestions": [],
+   "questionReports": [],
+   "createdAt": "2026-10-18T22:11:49.118Z",
+   "preparedAt": "2026-10-18T22:11:49.118Z",
+   "startedAt": "2026-10-18T22:11:49.387Z",
+   "finishedAt": "2026-10-18T22:11:50.190Z",
+   "cancelledAt": null,
+   "updatedAt": "2026-10-18T22:11:50.190Z",
+   "createdBy": "admin@antigo.local",
+   "updatedBy": "admin@antigo.local",
+   "finishResolution": {
+    "policy": "none",
+    "submitted": 0,
+    "discarded": 0,
+    "at": "2026-10-18T22:11:50.190Z",
+    "by": "admin@antigo.local"
+   }
+  },
+  {
+   "id": "app_bdc7d2b6-1cf9-418f-85f5-fa26dbd79e63",
+   "examKey": "Avaliacao_Antiga",
+   "courseId": "curso-antigo",
+   "studentClass": "1DES",
+   "historyId": "eh_1792361510454_x3z8m",
+   "status": "running",
+   "timerMode": "per_attempt",
+   "durationMinutes": 30,
+   "timerEnabled": true,
+   "waitingRoomDuration": 0,
+   "startsAt": 1792361510982,
+   "endsAt": null,
+   "maxAttempts": 1,
+   "questionCount": 1,
+   "excludedQuestions": [],
+   "shuffleQuestions": true,
+   "shuffleAnswers": true,
+   "versionSnapshots": [
+    {
+     "version": "A",
+     "questions": [
+      {
+       "originalNumber": 1,
+       "text": "Quanto é 1 + 1?",
+       "correctAnswer": "B",
+       "alternatives": [
+        {
+         "letter": "A",
+         "text": "1"
+        },
+        {
+         "letter": "B",
+         "text": "2"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "contentVersion": "2026-10-18T22:11:50.717Z",
+   "accessTokenHash": null,
+   "tokenEnabled": false,
+   "globalTimeAdjustment": 0,
+   "studentAdjustments": {},
+   "studentVersions": {},
+   "annulledQuestions": [],
+   "questionReports": [],
+   "createdAt": "2026-10-18T22:11:50.717Z",
+   "preparedAt": "2026-10-18T22:11:50.717Z",
+   "startedAt": "2026-10-18T22:11:50.982Z",
+   "finishedAt": null,
+   "cancelledAt": null,
+   "updatedAt": "2026-10-18T22:11:50.982Z",
+   "createdBy": "admin@antigo.local",
+   "updatedBy": "admin@antigo.local"
+  },
+  {
+   "id": "app_de398c04-864c-4f33-b3d0-30f5f972962b",
+   "examKey": "Avaliacao_Antiga",
+   "courseId": "curso-antigo",
+   "studentClass": "2DES",
+   "historyId": "eh_1792361511771_qjac9",
+   "status": "prepared",
+   "timerMode": "per_attempt",
+   "durationMinutes": 30,
+   "timerEnabled": true,
+   "waitingRoomDuration": 0,
+   "startsAt": null,
+   "endsAt": null,
+   "maxAttempts": 1,
+   "questionCount": 1,
+   "excludedQuestions": [],
+   "shuffleQuestions": true,
+   "shuffleAnswers": true,
+   "versionSnapshots": [
+    {
+     "version": "A",
+     "questions": [
+      {
+       "originalNumber": 1,
+       "text": "Quanto é 1 + 1?",
+       "correctAnswer": "B",
+       "alternatives": [
+        {
+         "letter": "A",
+         "text": "1"
+        },
+        {
+         "letter": "B",
+         "text": "2"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "version": "B",
+     "questions": [
+      {
+       "originalNumber": 1,
+       "text": "Quanto é 1 + 1?",
+       "correctAnswer": "A",
+       "alternatives": [
+        {
+         "letter": "A",
+         "text": "2"
+        },
+        {
+         "letter": "B",
+         "text": "1"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "contentVersion": "2026-10-18T22:11:52.031Z",
+   "accessTokenHash": "ad820de7200cf1c42d0d28465b4df85b287363e8b48c5241845eb74b5a93632f",
+   "tokenEnabled": true,
+   "globalTimeAdjustment": 0,
+   "studentAdjustments": {},
+   "studentVersions": {
+    "isabela@antigo.local": "B"
+   },
+   "annulledQuestions": [],
+   "questionReports": [],
+   "createdAt": "2026-10-18T22:11:52.031Z",
+   "preparedAt": "2026-10-18T22:11:52.031Z",
+   "startedAt": null,
+   "finishedAt": null,
+   "cancelledAt": null,
+   "updatedAt": "2026-10-18T22:11:52.031Z",
+   "createdBy": "admin@antigo.local",
+   "updatedBy": "admin@antigo.local"
+  },
+  {
+   "id": "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992",
+   "examKey": "Avaliacao_Antiga",
+   "courseId": "curso-antigo",
+   "studentClass": "3DES",
+   "historyId": "eh_1792361512300_vt7qx",
+   "status": "paused",
+   "timerMode": "per_attempt",
+   "durationMinutes": 60,
+   "timerEnabled": true,
+   "waitingRoomDuration": 0,
+   "startsAt": 1792360312825,
+   "endsAt": null,
+   "maxAttempts": 2,
+   "questionCount": 1,
+   "excludedQuestions": [],
+   "shuffleQuestions": true,
+   "shuffleAnswers": true,
+   "versionSnapshots": [
+    {
+     "version": "A",
+     "questions": [
+      {
+       "originalNumber": 1,
+       "text": "Quanto é 1 + 1?",
+       "correctAnswer": "B",
+       "alternatives": [
+        {
+         "letter": "A",
+         "text": "1"
+        },
+        {
+         "letter": "B",
+         "text": "2"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "contentVersion": "2026-10-18T22:11:52.560Z",
+   "accessTokenHash": null,
+   "tokenEnabled": false,
+   "globalTimeAdjustment": 0,
+   "studentAdjustments": {
+    "davi@antigo.local": 10,
+    "fabio@antigo.local": 5
+   },
+   "studentVersions": {},
+   "annulledQuestions": [],
+   "questionReports": [],
+   "createdAt": "2026-10-18T22:11:52.560Z",
+   "preparedAt": "2026-10-18T22:11:52.560Z",
+   "startedAt": "2026-10-18T22:11:52.825Z",
+   "finishedAt": null,
+   "cancelledAt": null,
+   "updatedAt": "2026-10-18T22:11:53.890Z",
+   "createdBy": "admin@antigo.local",
+   "updatedBy": "admin@antigo.local"
+  },
+  {
+   "id": "app_39290620-d536-4101-8855-4c99636d4b47",
+   "examKey": "Avaliacao_Antiga",
+   "courseId": "curso-antigo",
+   "studentClass": "4DES",
+   "historyId": "eh_1792361514152_cg5mo",
+   "status": "finished",
+   "timerMode": "per_attempt",
+   "durationMinutes": 30,
+   "timerEnabled": true,
+   "waitingRoomDuration": 0,
+   "startsAt": 1792361514681,
+   "endsAt": 1792361515518,
+   "maxAttempts": 1,
+   "questionCount": 1,
+   "excludedQuestions": [],
+   "shuffleQuestions": true,
+   "shuffleAnswers": true,
+   "versionSnapshots": [
+    {
+     "version": "A",
+     "questions": [
+      {
+       "originalNumber": 1,
+       "text": "Quanto é 1 + 1?",
+       "correctAnswer": "B",
+       "alternatives": [
+        {
+         "letter": "A",
+         "text": "1"
+        },
+        {
+         "letter": "B",
+         "text": "2"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "contentVersion": "2026-10-18T22:11:54.415Z",
+   "accessTokenHash": null,
+   "tokenEnabled": false,
+   "globalTimeAdjustment": 0,
+   "studentAdjustments": {},
+   "studentVersions": {},
+   "annulledQuestions": [],
+   "questionReports": [],
+   "createdAt": "2026-10-18T22:11:54.415Z",
+   "preparedAt": "2026-10-18T22:11:54.415Z",
+   "startedAt": "2026-10-18T22:11:54.681Z",
+   "finishedAt": "2026-10-18T22:11:55.518Z",
+   "cancelledAt": null,
+   "updatedAt": "2026-10-18T22:11:55.518Z",
+   "createdBy": "admin@antigo.local",
+   "updatedBy": "admin@antigo.local",
+   "finishResolution": {
+    "policy": "none",
+    "submitted": 0,
+    "discarded": 0,
+    "at": "2026-10-18T22:11:55.518Z",
+    "by": "admin@antigo.local"
+   }
+  }
+ ],
+ "ids": {
+  "first": "app_af323fef-a0c0-436b-ad8d-864a5d2f0ad2",
+  "second": "app_bdc7d2b6-1cf9-418f-85f5-fa26dbd79e63",
+  "secondAttempt": "attempt_6a0dd20f-fb1d-4544-a1c6-36346f1a23d1",
+  "tokenApp": "app_de398c04-864c-4f33-b3d0-30f5f972962b",
+  "pausedApp": "app_05f5e1c6-21e4-46a8-8d5d-28780e6cd992",
+  "carlaAttempt": "attempt_6eae34a3-6852-4a57-94f6-e586eefc9e47",
+  "finishedApp": "app_39290620-d536-4101-8855-4c99636d4b47",
+  "evaAttempt": "attempt_0210e62e-1b37-4c73-83be-fb601cbfec38"
+ },
+ "accessToken": "SENHA"
+}
