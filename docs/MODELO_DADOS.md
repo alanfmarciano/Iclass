@@ -5,14 +5,22 @@ Como o estado é organizado, persistido e evoluído. Fonte no código: `backend/
 ## Persistência
 
 - **SQLite key-value**: cada coleção tem uma tabela `NOME (key TEXT PRIMARY KEY, value TEXT)`, onde `value` é JSON serializado.
+- **Registro único** (`COLLECTION_TABLES` em `backend/database.js`): cada coleção e cada tabela aparecem só ali, com `collection`, `table`, `kind` (`array`, `object`, `singleton`, `store` ou `derived`), `key`, `append`, `backup` e `restore`. Dele saem o `CREATE TABLE IF NOT EXISTS`, a carga do boot, a gravação, a lista do backup e a restauração. Coleção ou tabela nova entra só por ele.
 - **Espelho em memória**: `db.memory` é um objeto com uma propriedade por coleção. Toda leitura/escrita da aplicação passa por ele.
-- **Salvar**: `db.save()` (alias de `saveToDisk`) serializa `db.memory` para o SQLite. A escrita é serializada internamente para evitar corridas.
+- **Salvar**: `db.save()` (alias de `saveToDisk`) leva para o SQLite só as linhas que mudaram desde a última gravação (`backend/utils/dbWriter.js`): uma gravação por vez, numa transação (`BEGIN IMMEDIATE` … `COMMIT`, ou `ROLLBACK` se algo falhar, sem perder o que já estava gravado). No boot o motor é semeado com o que foi lido: a primeira gravação não regrava o banco inteiro. A promessa resolve depois do `COMMIT` e rejeita com `DbWriteError` (`code: 'ICLASS_DB_WRITE'`) quando não deu para gravar; aí uma regravação em segundo plano tenta de novo (2 s, 5 s, 10 s e depois a cada 30 s).
+- **Linha ilegível**: um registro com JSON quebrado fica no arquivo e fora da memória (aviso no console); a gravação nunca o apaga.
 
 ```js
 const db = require('../database.js');
 db.memory.courses.push(novoCurso);
 await db.save();
 ```
+
+### Arquivos do banco (modo WAL)
+
+O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de energia) e `busy_timeout` de 5 s (`ICLASS_DB_BUSY_TIMEOUT_MS`). Com o servidor ligado, `data/` tem três arquivos: `database.db`, `database.db-wal` (gravações ainda não aplicadas ao arquivo principal) e `database.db-shm` (índice do WAL). Ao desligar pelo caminho normal (Ctrl+C, fechar a janela, Reiniciar) o servidor grava, fecha o banco e o `-wal` some. Copiar o banco com o servidor ligado exige os três arquivos juntos; o certo é usar o backup do sistema. Em pasta de rede ou sincronizada (OneDrive) o modo WAL pode não pegar: o servidor segue com aviso no console e o modo real aparece em `db.storageStatus().journalMode`.
+
+`db.storageStatus()` é a fonte única do estado do armazenamento: modo do diário, `synchronous`, `busy_timeout`, tamanho do banco e do `-wal`, linhas por coleção, última gravação completa, p95 do `COMMIT`, último erro de gravação e se há regravação pendente.
 
 ## Coleções em `db.memory`
 
@@ -48,7 +56,7 @@ await db.save();
 | `pedagogicalObservations` | array | observações pedagógicas controladas |
 | `library` | array | biblioteca de materiais reutilizáveis |
 
-> A lista canônica usada por backup/restore está em `COLLECTIONS` (`backend/utils/backup.js`). Ao criar uma coleção nova, adicione-a lá para que entre no backup.
+> A lista usada por backup/restore (`COLLECTIONS` em `backend/utils/backup.js`) é derivada do registro `COLLECTION_TABLES` (`backend/database.js`): toda entrada com `backup` diferente de `false`, na ordem do registro. Ao criar uma coleção nova, acrescente-a ao registro; ela entra no backup sozinha (`examKeystrokes` fica de fora, como antes).
 
 ## Diretórios em disco (`runtimePaths.js`)
 
@@ -88,6 +96,6 @@ Curso[campo] ?? Escola[campo] ?? Sistema[campo] ?? padrãoDeFábrica
 
 1. **Default seguro** para todo campo novo (`?? valorPadrão`).
 2. **Retrocompatibilidade**: dados antigos sem o campo devem funcionar.
-3. **Registrar no backup**: coleção nova entra em `COLLECTIONS`.
+3. **Registrar no registro único**: coleção nova entra em `COLLECTION_TABLES` (e daí no backup e na restauração).
 4. **Nada de migração destrutiva** sobre `data/database.db` existente.
 5. Ao aposentar algo (como `courseStructure`), manter leitura tolerante durante a transição.

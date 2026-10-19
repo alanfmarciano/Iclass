@@ -19,7 +19,7 @@ Navegador (React SPA)  ──HTTP /api──►  Express (Node)  ──►  SQLi
 backend/
 ├── server.js          # bootstrap: CORS, static, monta routers, error handler, listen
 ├── runtimePaths.js    # resolve DATA_DIR, CONTENT_DIR, ARCHIVE_DIR (configuráveis por env)
-├── database.js        # SQLite key-value + espelho em memória (db.memory) + db.save()
+├── database.js        # SQLite key-value + espelho em memória (db.memory) + db.save() + registro COLLECTION_TABLES
 ├── middlewares.js     # validateAdmin, validateStudentSession, sanitização, RBAC
 ├── routes/            # um router por área funcional
 └── utils/             # regras isoladas e reutilizáveis (backup, provas, segurança, etc.)
@@ -66,7 +66,7 @@ await db.save();                       // persiste no SQLite
 ```
 
 - `db.memory` é o objeto de estado (ver [MODELO_DADOS.md](./MODELO_DADOS.md)).
-- `db.save()` (alias de `saveToDisk`) serializa a escrita (flags internas `isSaving`/`hasPendingSave`).
+- `db.save()` (alias de `saveToDisk`) entra na fila do motor de gravação (`utils/dbWriter.js`): uma transação por vez, só com as linhas que mudaram, e resolve depois do `COMMIT`. Dentro de um pedido, a resposta espera as gravações dele (`utils/persistenceContext.js`); falha de gravação vira 503 `retryable`. Detalhes em [MODELO_DADOS.md](./MODELO_DADOS.md) e [PADROES_CODIGO.md](./PADROES_CODIGO.md).
 - Sempre **mute e depois salve**; nunca escreva SQL cru fora de `database.js`.
 
 ## 4. Camadas do frontend

@@ -16,6 +16,9 @@ const {
 } = require('./utils/examApplications.js');
 const { hashExamToken } = require('./utils/examToken.js');
 const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
+const { createDbWriter, DbWriteError, MEMORY_KINDS } = require('./utils/dbWriter.js');
+const { currentRequestContext, isSoleApiRequest } = require('./utils/persistenceContext.js');
+const { logError } = require('./utils/errorLog.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
@@ -135,89 +138,178 @@ const DB_ADMINS_FILE = path.join(DATA_DIR, 'db_admins.json');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const dbPath = path.join(DATA_DIR, 'database.db');
 const sqliteDb = new sqlite3.Database(dbPath);
-
-let memoryDB = {
-    students: [],
-    classes: [],
-    courses: [], // Novo: multi-cursos
-    branding: {}, // Novo: white-label
-    submissions: [],
-    examApplications: [],
-    notes: {},
-    annotations: {},
-    forum: [],
-    config: { releasedItems: {} },
-    courseStructure: [], // Em breve obsoleto, migrado para courses
-    evaluations: {},
-    progress: {},
-    uploads: {},
-    admins: [],
-    sessions: {}, // Alunos online { "email": last_ping_timestamp }
-    proctoringLogs: [],
-    examKeystrokes: [], // Modo Prova Rigoroso: histórico de digitação por tentativa (telemetria de prova)
-    studentExamState: {}, // chave: studentEmail + '_' + examKey
-    broadcastMessages: [],
-    questionBank: [],
-    auditLogs: [], // Fase 1: auditoria de alterações no perfil do aluno
-    loginLogs: [], // Fase 2: logs de login (segurança/LGPD)
-    pedagogicalObservations: [], // Fase 3: observações pedagógicas controladas
-    attendance: [], // Fase 4: registros de presença
-    certificates: [], // Fase 4: certificados emitidos
-    moduleAccess: [], // Fase 4: histórico de módulos acessados
-    schools: [], // Fase I.1: escolas/instituições (white-label)
-    announcements: [], // Avisos/Comunicados (professor -> turma/curso/aluno)
-    library: [] // Biblioteca de materiais reutilizaveis
-};
-
-let isSaving = false;
-let hasPendingSave = false;
-let saveWaiters = [];
-// Último conteúdo gravado por tabela ({ tabela: Map(chave -> json) }); null força reescrita completa.
-let lastWrittenRows = null;
+// Erro de statement sem callback (migração legada) vira evento 'error': sem este
+// ouvinte ele derrubava o processo como uncaughtException (CONF-05).
+sqliteDb.on('error', err => {
+    console.error(`⚠️ [BANCO] ${(err && err.message) || err}`);
+});
 
 function classStorageKey(cls) {
     if (!cls || !cls.name) return '';
     return `${String(cls.courseId || '').trim()}::${String(cls.name).trim()}`;
 }
 
-// Criação de Tabelas se não existirem
-function createTables() {
-    return new Promise((resolve, reject) => {
-        sqliteDb.serialize(() => {
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS students (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS classes (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS courses (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS branding (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS submissions (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS exam_applications (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS notes (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS annotations (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS forum (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS course_structure (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS evaluations (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS progress (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS uploads (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS proctoring_logs (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS exam_keystrokes (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS student_exam_state (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS broadcast_messages (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS question_bank (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS audit_logs (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS login_logs (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS pedagogical_observations (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS attendance (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS certificates (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS module_access (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS schools (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS announcements (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS library (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS admins (key TEXT PRIMARY KEY, value TEXT)", (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
+// Registro único das tabelas (contrato da fase 2). Cada coleção da memória e cada tabela
+// de data/database.db aparecem só aqui; dele derivam createTables, a carga do boot, a
+// gravação (utils/dbWriter.js), a lista do backup (utils/backup.js: backup e kind
+// diferente de 'derived') e a restauração. Tabela nova só entra por este registro, com
+// CREATE TABLE IF NOT EXISTS.
+// Campos:
+// - collection: nome em db.memory e no backup; table: nome no SQLite;
+// - kind: 'array' (lista, uma linha por item), 'object' (uma linha por chave),
+//   'singleton' (uma linha de chave fixa), 'store' (tabela própria, fora da memória) ou
+//   'derived' (linhas calculadas da memória por rows(memory), fora do backup);
+// - key: campo ou função da chave da linha (nos singletons, a chave fixa; nos objetos, a
+//   própria chave do objeto);
+// - append: coleção que só cresce; na gravação parcial só as linhas novas viram texto
+//   (quem altera uma linha antiga dela chama db.save() completo ou passa changed);
+// - backup: vai no backup (padrão true);
+// - restore: 'replace' (o backup substitui), 'merge' (junta com a atual), 'keep' (fica
+//   a atual quando falta no backup) ou 'reset' (volta vazia); padrão 'replace'.
+function tableEntry(collection, table, kind, key, extra = {}) {
+    return Object.freeze({ collection, table, kind, key, append: false, backup: true, restore: 'replace', ...extra });
+}
+
+const COLLECTION_TABLES = Object.freeze([
+    tableEntry('students', 'students', 'array', 'email'),
+    // Turma é identificada por curso + nome: "TURMA A" pode existir em dois cursos. Com a
+    // chave só pelo nome, uma delas era apagada a cada gravação.
+    tableEntry('classes', 'classes', 'array', classStorageKey),
+    tableEntry('courses', 'courses', 'array', 'id'), // multi-cursos
+    tableEntry('branding', 'branding', 'singleton', 'default', { restore: 'keep', empty: () => ({}) }), // white-label
+    tableEntry('submissions', 'submissions', 'array', 'id', { append: true }),
+    tableEntry('notes', 'notes', 'object', null),
+    tableEntry('annotations', 'annotations', 'object', null),
+    tableEntry('forum', 'forum', 'array', 'id'),
+    tableEntry('config', 'config', 'singleton', 'app_config', { restore: 'keep', empty: () => ({ releasedItems: {} }) }),
+    // Em breve obsoleto, migrado para courses.
+    tableEntry('courseStructure', 'course_structure', 'singleton', 'structure', { restore: 'keep', empty: () => [] }),
+    tableEntry('evaluations', 'evaluations', 'object', null),
+    tableEntry('progress', 'progress', 'object', null),
+    tableEntry('uploads', 'uploads', 'object', null),
+    // Contas de acesso: a restauração só as troca com replaceAccounts (utils/backup.js).
+    tableEntry('admins', 'admins', 'array', 'email'),
+    tableEntry('proctoringLogs', 'proctoring_logs', 'array', 'id', { append: true }),
+    // Modo Prova Rigoroso: histórico de digitação por tentativa (telemetria de prova).
+    // Fora do backup, como antes; o H1-b leva para a tabela própria exam_keystroke_events.
+    tableEntry('examKeystrokes', 'exam_keystrokes', 'array', 'id', { append: true, backup: false }),
+    tableEntry('studentExamState', 'student_exam_state', 'object', null), // chave: studentEmail + '_' + examKey
+    tableEntry('broadcastMessages', 'broadcast_messages', 'array', 'id'),
+    tableEntry('questionBank', 'question_bank', 'array', 'key'),
+    // Auditoria: a restauração junta a trilha do backup com a atual (mergeAuditTrails,
+    // utils/audit.js, ligado pelo H7a-2).
+    tableEntry('auditLogs', 'audit_logs', 'array', 'id', { append: true, restore: 'merge' }),
+    tableEntry('loginLogs', 'login_logs', 'array', 'id', { append: true }), // segurança/LGPD
+    tableEntry('pedagogicalObservations', 'pedagogical_observations', 'array', 'id'),
+    tableEntry('attendance', 'attendance', 'array', 'id', { append: true }), // registros de presença
+    tableEntry('certificates', 'certificates', 'array', 'id'),
+    tableEntry('moduleAccess', 'module_access', 'array', 'id', { append: true }), // módulos acessados
+    tableEntry('schools', 'schools', 'array', 'id'), // escolas/instituições (white-label)
+    tableEntry('announcements', 'announcements', 'array', 'id'), // avisos (professor -> turma/curso/aluno)
+    tableEntry('library', 'library', 'array', 'id'), // biblioteca de materiais reutilizáveis
+    // Aplicações de prova: sem elas, restaurar um backup voltava as entregas e a turma,
+    // mas não o status das aplicações.
+    tableEntry('examApplications', 'exam_applications', 'array', 'id'),
+]);
+
+const TABLE_BY_COLLECTION = new Map(COLLECTION_TABLES.map(entry => [entry.collection, entry]));
+
+// Valor vazio de uma coleção da memória (boot, restauração 'reset').
+function emptyCollectionValue(entry) {
+    if (!entry) return undefined;
+    if (entry.kind === 'array') return [];
+    if (entry.kind === 'object') return {};
+    if (entry.kind === 'singleton') return entry.empty();
+    return undefined;
+}
+
+function createEmptyMemory() {
+    const memory = {};
+    COLLECTION_TABLES.forEach(entry => {
+        if (MEMORY_KINDS.has(entry.kind)) memory[entry.collection] = emptyCollectionValue(entry);
     });
+    memory.sessions = {}; // Alunos online { "email": sessão } (memória; zeradas a cada boot)
+    return memory;
+}
+
+let memoryDB = createEmptyMemory();
+
+function runSql(sql, params = []) {
+    return new Promise((resolve, reject) => sqliteDb.run(sql, params, err => (err ? reject(err) : resolve())));
+}
+
+function getSql(sql, params = []) {
+    return new Promise((resolve, reject) => sqliteDb.get(sql, params, (err, row) => (err ? reject(err) : resolve(row))));
+}
+
+function allSql(sql, params = []) {
+    return new Promise((resolve, reject) => sqliteDb.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+}
+
+// Espera por trava do banco (outro programa gravando): ICLASS_DB_BUSY_TIMEOUT_MS ou 5 s.
+const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+function configuredBusyTimeoutMs() {
+    const raw = String(process.env.ICLASS_DB_BUSY_TIMEOUT_MS || '').trim();
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value) || value < 0) return DEFAULT_BUSY_TIMEOUT_MS;
+    return Math.min(Math.round(value), 120000);
+}
+
+const SYNCHRONOUS_NAMES = { 0: 'OFF', 1: 'NORMAL', 2: 'FULL', 3: 'EXTRA' };
+const connectionInfo = { journalMode: null, synchronous: null, busyTimeoutMs: null };
+
+// PRAGMAs da conexão (CONF-05, DES-01), antes de createTables:
+// - busy_timeout: a gravação espera a trava de outro programa em vez de falhar na hora;
+// - WAL: um leitor externo (visualizador do banco, cópia) não bloqueia mais a gravação.
+//   Em pasta de rede ou sincronizada o modo pode não pegar: segue com aviso, e o modo
+//   real fica em storageStatus().journalMode;
+// - synchronous FULL: o "salvo" sobrevive também a queda de energia;
+// - journal_size_limit: o -wal volta a 64 MB depois de um checkpoint.
+async function configureConnection() {
+    const busyTimeoutMs = configuredBusyTimeoutMs();
+    await runSql(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+    let journalMode = null;
+    try {
+        const row = await getSql('PRAGMA journal_mode = WAL');
+        journalMode = String(row ? Object.values(row)[0] : '').toLowerCase();
+    } catch (err) {
+        console.warn(`⚠️ Não foi possível ligar o modo WAL do banco: ${(err && err.message) || err}`);
+    }
+    if (!journalMode) {
+        const row = await getSql('PRAGMA journal_mode').catch(() => null);
+        journalMode = String(row ? Object.values(row)[0] : '').toLowerCase() || null;
+    }
+    if (journalMode !== 'wal') {
+        console.warn(`⚠️ O banco de dados está no modo "${journalMode || 'desconhecido'}" em vez de WAL. A pasta de dados pode estar numa pasta de rede ou sincronizada (OneDrive): mova a pasta do IClass para um disco local.`);
+    }
+    await runSql('PRAGMA synchronous = FULL');
+    await runSql('PRAGMA journal_size_limit = 67108864');
+    const busyRow = await getSql('PRAGMA busy_timeout').catch(() => null);
+    const syncRow = await getSql('PRAGMA synchronous').catch(() => null);
+    connectionInfo.journalMode = journalMode;
+    connectionInfo.busyTimeoutMs = busyRow ? Number(Object.values(busyRow)[0]) : busyTimeoutMs;
+    connectionInfo.synchronous = syncRow ? (SYNCHRONOUS_NAMES[Number(Object.values(syncRow)[0])] || String(Object.values(syncRow)[0])) : null;
+}
+
+// Criação de Tabelas se não existirem: todas pelo registro COLLECTION_TABLES.
+async function createTables() {
+    for (const entry of COLLECTION_TABLES) {
+        const statements = entry.kind === 'store'
+            ? (entry.schema || [])
+            : [`CREATE TABLE IF NOT EXISTS ${entry.table} (key TEXT PRIMARY KEY, value TEXT)`];
+        for (const sql of statements) await runSql(sql);
+    }
+}
+
+// PRAGMAs e tabelas, uma vez: o init e o primeiro ciclo de gravação esperam. Se falhar
+// (disco), a próxima tentativa recomeça.
+let connectionReady = null;
+function ensureConnection() {
+    if (!connectionReady) {
+        connectionReady = configureConnection().then(createTables);
+        connectionReady.catch(() => { connectionReady = null; });
+    }
+    return connectionReady;
 }
 
 // Helper para migrar arquivo JSON legado para tabela SQLite
@@ -231,7 +323,7 @@ function migrateJsonToTable(filePath, tableName, keyField, isArray = true) {
             const data = JSON.parse(raw);
             
             sqliteDb.serialize(() => {
-                sqliteDb.run("BEGIN TRANSACTION");
+                sqliteDb.run("BEGIN IMMEDIATE");
                 
                 if (isArray) {
                     const stmt = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
@@ -267,27 +359,41 @@ function migrateJsonToTable(filePath, tableName, keyField, isArray = true) {
     });
 }
 
-// Carregar dados de tabela SQLite para memória
-function loadTable(tableName, isArray = true) {
-    return new Promise((resolve, reject) => {
-        sqliteDb.all(`SELECT key, value FROM ${tableName}`, (err, rows) => {
-            if (err) return reject(err);
-            
-            if (isArray) {
-                const arr = [];
-                rows.forEach(r => {
-                    try { arr.push(JSON.parse(r.value)); } catch(e){}
-                });
-                resolve(arr);
-            } else {
-                const obj = {};
-                rows.forEach(r => {
-                    try { obj[r.key] = JSON.parse(r.value); } catch(e){}
-                });
-                resolve(obj);
+// Carrega as coleções do registro para a memória e semeia o motor de gravação com o
+// JSON de cada linha exatamente como foi lido (DES-01): a primeira gravação depois do
+// boot escreve só o que mudou, em vez de apagar e reinserir todas as tabelas (26 s num
+// banco de um ano). Linha com JSON ilegível fica no arquivo, fora da memória e do mapa:
+// a gravação nunca a apaga (antes ela sumia no primeiro save).
+async function loadRegisteredCollections() {
+    for (const entry of COLLECTION_TABLES) {
+        if (!MEMORY_KINDS.has(entry.kind)) continue;
+        const rows = await allSql(`SELECT key, value FROM ${entry.table}`);
+        const seed = new Map();
+        const parsed = [];
+        let unreadable = 0;
+        rows.forEach(row => {
+            try {
+                parsed.push([row.key, JSON.parse(row.value)]);
+                seed.set(String(row.key), row.value);
+            } catch (e) {
+                unreadable += 1;
             }
         });
-    });
+        writer.seed(entry.table, seed);
+        if (unreadable) {
+            console.warn(`⚠️ ${unreadable} registro(s) ilegível(is) na tabela ${entry.table} ficaram no arquivo e fora da memória.`);
+        }
+        if (entry.kind === 'array') {
+            memoryDB[entry.collection] = parsed.map(([, value]) => value);
+        } else if (entry.kind === 'object') {
+            const object = {};
+            parsed.forEach(([key, value]) => { object[key] = value; });
+            memoryDB[entry.collection] = object;
+        } else {
+            const found = parsed.find(([key]) => key === entry.key);
+            memoryDB[entry.collection] = (found && found[1]) || emptyCollectionValue(entry);
+        }
+    }
 }
 
 function bootstrapAdminPassword() {
@@ -707,7 +813,8 @@ function rebuildExamApplicationsFromClasses({ backupAt = null } = {}) {
 }
 
 async function init() {
-    await createTables();
+    // PRAGMAs (busy_timeout, WAL, synchronous) e tabelas do registro.
+    await ensureConnection();
 
     // 1. Executa migrações de arquivos JSON legados se houverem
     await migrateJsonToTable(DB_STUDENTS_FILE, 'students', 'email', true);
@@ -726,67 +833,30 @@ async function init() {
     if (fs.existsSync(CONFIG_FILE)) {
         try {
             const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
-            sqliteDb.run("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", 'app_config', raw);
+            await runSql("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ['app_config', raw]);
             fs.renameSync(CONFIG_FILE, CONFIG_FILE + '.migrated');
         } catch(e){}
     }
     if (fs.existsSync(DB_COURSE_STRUCTURE_FILE)) {
         try {
             const raw = fs.readFileSync(DB_COURSE_STRUCTURE_FILE, 'utf8');
-            sqliteDb.run("INSERT OR REPLACE INTO course_structure (key, value) VALUES (?, ?)", 'structure', raw);
+            await runSql("INSERT OR REPLACE INTO course_structure (key, value) VALUES (?, ?)", ['structure', raw]);
             fs.renameSync(DB_COURSE_STRUCTURE_FILE, DB_COURSE_STRUCTURE_FILE + '.migrated');
         } catch(e){}
     }
 
-    memoryDB.students = await loadTable('students', true);
-    
+    // 2. Carrega todas as coleções do registro (e semeia o motor de gravação).
+    await loadRegisteredCollections();
+
     // Migração de studentClass para classes array
     memoryDB.students.forEach(student => {
-        if (!student.classes) {
+        if (student && !student.classes) {
             student.classes = [];
             if (student.studentClass) {
                 student.classes.push(student.studentClass);
             }
         }
     });
-    memoryDB.classes = await loadTable('classes', true);
-    memoryDB.courses = await loadTable('courses', true);
-    memoryDB.submissions = await loadTable('submissions', true);
-    memoryDB.examApplications = await loadTable('exam_applications', true);
-    memoryDB.forum = await loadTable('forum', true);
-    memoryDB.admins = await loadTable('admins', true);
-    memoryDB.proctoringLogs = await loadTable('proctoring_logs', true);
-    memoryDB.examKeystrokes = await loadTable('exam_keystrokes', true);
-    memoryDB.studentExamState = await loadTable('student_exam_state', false);
-    memoryDB.broadcastMessages = await loadTable('broadcast_messages', true);
-    memoryDB.questionBank = await loadTable('question_bank', true);
-    memoryDB.auditLogs = await loadTable('audit_logs', true);
-    memoryDB.loginLogs = await loadTable('login_logs', true);
-    memoryDB.pedagogicalObservations = await loadTable('pedagogical_observations', true);
-    memoryDB.attendance = await loadTable('attendance', true);
-    memoryDB.certificates = await loadTable('certificates', true);
-    memoryDB.moduleAccess = await loadTable('module_access', true);
-    memoryDB.schools = await loadTable('schools', true);
-    memoryDB.announcements = await loadTable('announcements', true);
-    memoryDB.library = await loadTable('library', true);
-
-    memoryDB.notes = await loadTable('notes', false);
-    memoryDB.annotations = await loadTable('annotations', false);
-    memoryDB.evaluations = await loadTable('evaluations', false);
-    memoryDB.progress = await loadTable('progress', false);
-    memoryDB.uploads = await loadTable('uploads', false);
-
-    // Carrega Singletons
-    const loadedConfig = await loadTable('config', false);
-    memoryDB.config = loadedConfig['app_config'] || { releasedItems: {} };
-
-    const loadedBranding = await loadTable('branding', false);
-    if (loadedBranding['default']) {
-        memoryDB.branding = loadedBranding['default'];
-    }
-
-    const loadedStructure = await loadTable('course_structure', false);
-    memoryDB.courseStructure = loadedStructure['structure'] || [];
 
     // 3. Garante defaults se tabelas estruturais estiverem vazias
     populateDefaultsIfEmpty();
@@ -946,139 +1016,137 @@ async function init() {
     console.log("💾 Banco de dados SQLite inicializado e carregado na memória.");
 }
 
-// Sincroniza dados da memória de volta para o SQLite (Atomic Transactions)
-function saveToDisk() {
-    // Administradores pertencem sempre a todas as turmas, inclusive as criadas ou removidas durante a execução.
-    syncAdminClassAssignments();
-    syncProfessorAssignmentReferences();
-    const completion = new Promise((resolve, reject) => saveWaiters.push({ resolve, reject }));
-    if (isSaving) {
-        hasPendingSave = true;
-        return completion;
-    }
-    
-    isSaving = true;
-    hasPendingSave = false;
-    
-    setTimeout(() => {
-        const cycleWaiters = saveWaiters.splice(0);
-        sqliteDb.serialize(() => {
-            sqliteDb.run("BEGIN TRANSACTION");
-            
-            // Gravação incremental: cada tabela guarda o JSON da última escrita por chave
-            // e só as linhas que mudaram são gravadas. Antes, cada save apagava e regravava
-            // TODAS as tabelas (inclusive milhares de teclas e logs), o que pesava durante
-            // uma prova com muitos alunos. Na primeira gravação (ou após falha) a tabela
-            // inteira é reescrita para garantir consistência.
-            const writtenThisCycle = {};
-            const writeTable = (tableName, next) => {
-                const previous = lastWrittenRows && lastWrittenRows[tableName];
-                if (!previous) {
-                    sqliteDb.run(`DELETE FROM ${tableName}`);
-                    const insert = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
-                    next.forEach((json, key) => insert.run(key, json));
-                    insert.finalize();
-                } else {
-                    const remove = sqliteDb.prepare(`DELETE FROM ${tableName} WHERE key = ?`);
-                    previous.forEach((_, key) => { if (!next.has(key)) remove.run(key); });
-                    remove.finalize();
-                    const upsert = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
-                    next.forEach((json, key) => { if (previous.get(key) !== json) upsert.run(key, json); });
-                    upsert.finalize();
-                }
-                writtenThisCycle[tableName] = next;
-            };
+// Motor de gravação (utils/dbWriter.js): fila, diff, transação e regravação.
+const writer = createDbWriter({
+    connection: sqliteDb,
+    tables: COLLECTION_TABLES,
+    getMemory: () => memoryDB,
+    ready: ensureConnection,
+    // Administradores pertencem sempre a todas as turmas, inclusive as criadas ou
+    // removidas durante a execução; professores só às que ainda existem.
+    beforeCycle: () => {
+        const adminsChanged = syncAdminClassAssignments();
+        const professorsChanged = syncProfessorAssignmentReferences();
+        return adminsChanged || professorsChanged;
+    },
+    // A causa (erro do SQLite ou do plano) vai para o log: a pilha dela diz onde falhou,
+    // e a mensagem já começa pelo código (SQLITE_BUSY: database is locked).
+    logFailure: err => {
+        logError('[GRAVAÇÃO] Não foi possível gravar no banco', (err && err.cause) || err);
+    },
+});
 
-            const syncArrayTable = (tableName, arr, keyField) => {
-                const next = new Map();
-                (arr || []).forEach((item, idx) => {
-                    if (!item) return;
-                    let keyVal = typeof keyField === 'function' ? keyField(item) : item[keyField];
-                    if (keyVal === undefined || keyVal === null || keyVal === '') {
-                        // NUNCA descarta um registro por falta da chave (era isso que apagava as
-                        // notas: submissões sem 'id' eram puladas). Gera uma chave estável e a
-                        // grava de volta no objeto em memória para mantê-la consistente.
-                        keyVal = `${tableName}_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 8)}`;
-                        if (typeof keyField === 'string') { try { item[keyField] = keyVal; } catch (e) {} }
-                    }
-                    next.set(String(keyVal), JSON.stringify(item));
-                });
-                writeTable(tableName, next);
-            };
+// Verificador de gravação parcial (ICLASS_VERIFY_SAVES; ligado no node --test e no e2e):
+// numa gravação parcial feita durante um pedido /api, o que mudou na memória desde o
+// início do pedido (ou desde a gravação anterior dele) e ficou fora de only (ou linha
+// antiga de coleção com append fora de changed) é acusado no console e em
+// db.saveVerifyFailures e entra no ciclo assim mesmo, para o dado não se perder.
+// A verificação é pulada quando outra coisa pode ter mudado a memória no meio: outro
+// pedido /api (utils/persistenceContext.js) ou uma gravação de fora de pedido (timer,
+// como a entrega automática do fim do tempo), que conta em backgroundSaveSeq.
+const saveVerifyFailures = [];
+let backgroundSaveSeq = 0;
 
-            const syncObjectTable = (tableName, obj) => {
-                const next = new Map();
-                for (const key in obj) next.set(String(key), JSON.stringify(obj[key]));
-                writeTable(tableName, next);
-            };
+function verifyPartialSave(context, scope) {
+    const snapshot = context.snapshot;
+    if (!snapshot || !isSoleApiRequest(context) || snapshot.backgroundSeq !== backgroundSaveSeq) return;
+    writer.uncoveredChanges(snapshot.rows, scope).forEach(problem => {
+        const entry = TABLE_BY_COLLECTION.get(problem.collection);
+        scope.only.add(problem.collection);
+        if (entry && entry.append && problem.existed) {
+            const keys = scope.changed.get(problem.collection) || new Set();
+            keys.add(problem.key);
+            scope.changed.set(problem.collection, keys);
+        }
+        const signature = `${problem.collection}\u0000${problem.key}`;
+        if (context.reported.has(signature)) return;
+        context.reported.add(signature);
+        const failure = {
+            method: context.method,
+            path: context.path,
+            collection: problem.collection,
+            key: problem.key,
+            at: new Date().toISOString(),
+        };
+        saveVerifyFailures.push(failure);
+        console.error(`[VERIFICAÇÃO DE GRAVAÇÃO] ${failure.method} ${failure.path} alterou "${failure.collection}" (chave ${failure.key}) sem incluir em only`);
+    });
+}
 
-            try {
-                syncArrayTable('students', memoryDB.students, 'email');
-                // Turma é identificada por curso + nome: "TURMA A" pode existir em dois cursos.
-                // Com a chave só pelo nome, uma delas era apagada a cada gravação.
-                syncArrayTable('classes', memoryDB.classes, classStorageKey);
-                syncArrayTable('courses', memoryDB.courses, 'id');
-                syncArrayTable('submissions', memoryDB.submissions, 'id');
-                syncArrayTable('exam_applications', memoryDB.examApplications, 'id');
-                syncArrayTable('forum', memoryDB.forum, 'id');
-                syncArrayTable('admins', memoryDB.admins, 'email');
-                syncArrayTable('proctoring_logs', memoryDB.proctoringLogs, 'id');
-                syncArrayTable('exam_keystrokes', memoryDB.examKeystrokes, 'id');
-                syncArrayTable('broadcast_messages', memoryDB.broadcastMessages, 'id');
-                syncArrayTable('question_bank', memoryDB.questionBank, 'key');
-                syncArrayTable('audit_logs', memoryDB.auditLogs, 'id');
-                syncArrayTable('login_logs', memoryDB.loginLogs, 'id');
-                syncArrayTable('pedagogical_observations', memoryDB.pedagogicalObservations, 'id');
-                syncArrayTable('attendance', memoryDB.attendance, 'id');
-                syncArrayTable('certificates', memoryDB.certificates, 'id');
-                syncArrayTable('module_access', memoryDB.moduleAccess, 'id');
-                syncArrayTable('schools', memoryDB.schools, 'id');
-                syncArrayTable('announcements', memoryDB.announcements, 'id');
-                syncArrayTable('library', memoryDB.library, 'id');
+if (process.env.NODE_TEST_CONTEXT) {
+    // node --test: uma gravação parcial esquecida reprova o arquivo de teste.
+    process.on('exit', () => {
+        if (!saveVerifyFailures.length) return;
+        console.error(`[VERIFICAÇÃO DE GRAVAÇÃO] ${saveVerifyFailures.length} alteração(ões) fora da gravação parcial:`);
+        saveVerifyFailures.forEach(item => console.error(`  ${item.method} ${item.path}: "${item.collection}" (chave ${item.key})`));
+        process.exitCode = 1;
+    });
+}
 
-                syncObjectTable('notes', memoryDB.notes);
-                syncObjectTable('annotations', memoryDB.annotations);
-                syncObjectTable('evaluations', memoryDB.evaluations);
-                syncObjectTable('progress', memoryDB.progress);
-                syncObjectTable('uploads', memoryDB.uploads);
-                syncObjectTable('student_exam_state', memoryDB.studentExamState);
-
-                sqliteDb.run("DELETE FROM config");
-                sqliteDb.run("INSERT INTO config (key, value) VALUES (?, ?)", 'app_config', JSON.stringify(memoryDB.config));
-
-                sqliteDb.run("DELETE FROM branding");
-                sqliteDb.run("INSERT INTO branding (key, value) VALUES (?, ?)", 'default', JSON.stringify(memoryDB.branding));
-
-                sqliteDb.run("DELETE FROM course_structure");
-                sqliteDb.run("INSERT INTO course_structure (key, value) VALUES (?, ?)", 'structure', JSON.stringify(memoryDB.courseStructure));
-                
-                sqliteDb.run("COMMIT", (err) => {
-                    if (err) {
-                        console.error("Erro ao comitar alterações no SQLite:", err);
-                    }
-                    // Só confia no diff incremental se o COMMIT deu certo; caso contrário a
-                    // próxima gravação reescreve tudo.
-                    lastWrittenRows = err ? null : writtenThisCycle;
-                    if (err) cycleWaiters.forEach(waiter => waiter.reject(err));
-                    else cycleWaiters.forEach(waiter => waiter.resolve());
-                    isSaving = false;
-                    if (hasPendingSave) {
-                        saveToDisk();
-                    }
-                });
-            } catch (err) {
-                console.error("Falha ao salvar dados no SQLite:", err);
-                lastWrittenRows = null;
-                sqliteDb.run("ROLLBACK");
-                cycleWaiters.forEach(waiter => waiter.reject(err));
-                isSaving = false;
-                if (hasPendingSave) {
-                    saveToDisk();
-                }
-            }
-        });
-    }, 250);
+// db.save(): gravação completa (compara todas as coleções). É o que todo código novo usa.
+// db.save({ only, changed, detached }): parcial, só nas rotas anotadas (H1-c). Nome
+// desconhecido lança TypeError na hora. Dentro de um pedido, a resposta espera o COMMIT
+// (utils/persistenceContext.js), a não ser com detached: true (presença automática, timers).
+// A promessa rejeita com DbWriteError (code 'ICLASS_DB_WRITE') quando não deu para gravar.
+function saveToDisk(options) {
+    const scope = writer.scopeFromOptions(options);
+    const detached = !!(options && typeof options === 'object' && options.detached === true);
+    const adminsChanged = syncAdminClassAssignments();
+    const professorsChanged = syncProfessorAssignmentReferences();
+    if ((adminsChanged || professorsChanged) && !scope.full) scope.only.add('admins');
+    const context = currentRequestContext();
+    if (!context) backgroundSaveSeq += 1;
+    if (context && !scope.full) verifyPartialSave(context, scope);
+    const completion = writer.request(scope);
+    if (context) refreshSaveSnapshot(context, scope);
+    if (context && !detached) context.pending.push(completion);
     return completion;
+}
+
+// Foto da memória no início de um pedido /api, para o verificador.
+function captureSaveSnapshot() {
+    return { rows: writer.snapshotRows(), backgroundSeq: backgroundSaveSeq };
+}
+
+// Depois de uma gravação pedida no pedido, o que ela cobre passa a ser o ponto de
+// partida da foto: uma gravação completa seguida de uma parcial no mesmo pedido não
+// acusa o que a completa já levou.
+function refreshSaveSnapshot(context, scope) {
+    if (!context.snapshot) return;
+    if (scope.full) {
+        context.snapshot = captureSaveSnapshot();
+        return;
+    }
+    const covered = new Set([...scope.only, ...scope.changed.keys()]);
+    writer.snapshotRows(covered).forEach((rows, collection) => context.snapshot.rows.set(collection, rows));
+}
+
+// Estado do armazenamento (fonte única: cartão Armazenamento do H1-c e /api/health do H3).
+function storageStatus() {
+    const fileSize = file => { try { return fs.statSync(file).size; } catch (e) { return 0; } };
+    const rows = {};
+    COLLECTION_TABLES.forEach(entry => {
+        const value = memoryDB[entry.collection];
+        if (entry.kind === 'array') rows[entry.collection] = Array.isArray(value) ? value.length : 0;
+        else if (entry.kind === 'object') rows[entry.collection] = value && typeof value === 'object' ? Object.keys(value).length : 0;
+        else if (entry.kind === 'singleton') rows[entry.collection] = value === undefined ? 0 : 1;
+    });
+    const status = writer.status();
+    return {
+        journalMode: connectionInfo.journalMode,
+        synchronous: connectionInfo.synchronous,
+        busyTimeoutMs: connectionInfo.busyTimeoutMs,
+        databaseBytes: fileSize(dbPath),
+        walBytes: fileSize(`${dbPath}-wal`),
+        rows,
+        lastFullSaveAt: status.lastFullSaveAt,
+        lastFullSaveMs: status.lastFullSaveMs,
+        commitP95Ms: status.commitP95Ms,
+        lastWriteError: status.lastWriteError,
+        pendingRetry: status.pendingRetry,
+        nextRetryAt: status.nextRetryAt,
+        lastCycle: status.lastCycle,
+    };
 }
 
 function defaultAdminEmail() {
@@ -1086,19 +1154,30 @@ function defaultAdminEmail() {
     return first ? String(first.email).toLowerCase() : 'admin@local';
 }
 
-async function close() {
-    await saveToDisk();
-    await new Promise((resolve, reject) => {
-        sqliteDb.close(err => err ? reject(err) : resolve());
-    });
+// Gravação completa, espera da fila e fechamento da conexão (o SQLite aplica e apaga o
+// -wal). Usado no desligamento (SIGINT, SIGTERM, SIGHUP, SIGBREAK) e no Reiniciar.
+// Depois dele, db.save() rejeita com DbWriteError.
+function close() {
+    return writer.close();
 }
 
 module.exports = {
     init,
     defaultAdminEmail,
     get memory() { return memoryDB; },
+    COLLECTION_TABLES,
+    emptyCollectionValue,
     save: saveToDisk,
+    // Resolve quando toda gravação pedida até agora terminou (com sucesso ou não).
+    flush: () => writer.flush(),
+    // VACUUM e VACUUM INTO só por aqui: fn(conexão) roda com a fila de gravação parada.
+    runExclusive: fn => writer.runExclusive(fn),
     close,
+    storageStatus,
+    captureSaveSnapshot,
+    get saveVerifyFailures() { return saveVerifyFailures; },
+    clearSaveVerifyFailures() { saveVerifyFailures.length = 0; },
+    DbWriteError,
     hashPassword,
     verifyPassword,
     needsPasswordRehash,

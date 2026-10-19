@@ -19,6 +19,8 @@ const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAud
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
 const { logError } = require('./utils/errorLog.js');
 const { ownEntry } = require('./utils/ownEntry.js');
+const { DB_WRITE_ERROR_MESSAGE } = require('./utils/dbWriter.js');
+const { bindToRequestContext } = require('./utils/persistenceContext.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -394,8 +396,10 @@ function runGuarded(req, res, fn, args = []) {
 }
 
 // Versão para callbacks passados a terceiros (multer): guarded(req, res, async (err) => ...).
+// O callback continua no contexto do pedido (utils/persistenceContext.js): as gravações
+// feitas nele também são esperadas antes da resposta.
 function guarded(req, res, fn) {
-    return (...args) => runGuarded(req, res, fn, args);
+    return bindToRequestContext((...args) => runGuarded(req, res, fn, args));
 }
 
 // Para os catch das rotas (e todo 500 de rota): registra no crash.log e responde o 500
@@ -839,14 +843,15 @@ function readJSON(file) {
     return [];
 }
 
-// Função para escrever dados JSON via Memory DB
+// Função para escrever dados JSON via Memory DB. Devolve a gravação (db.save()): quem
+// precisa do COMMIT espera; dentro de um pedido a resposta já espera por ela (CONF-04).
 function writeJSON(file, data) {
     if (file.includes('db_students.json')) db.memory.students = data;
     else if (file.includes('db_classes.json')) db.memory.classes = data;
     else if (file.includes('db_submissions.json')) db.memory.submissions = data;
     else if (file.includes('config.json')) db.memory.config = data;
     else if (file.includes('db_admins.json')) db.memory.admins = data;
-    db.save();
+    return db.save();
 }
 
 function getAnswerKeyReleaseKey(examKey) {
@@ -1109,8 +1114,8 @@ function getReleasedItemsForClass(cls, studentEmail) {
 }
 
 // Falha de gravação no banco (DbWriteError, code 'ICLASS_DB_WRITE'): o cliente mantém a
-// sessão e tenta de novo (contrato de gravação da fase 2).
-const DB_WRITE_ERROR_MESSAGE = 'Não foi possível gravar os dados agora. Tente de novo em alguns segundos.';
+// sessão e tenta de novo (contrato de gravação da fase 2). O texto (DB_WRITE_ERROR_MESSAGE)
+// vem de utils/dbWriter.js.
 const INTERNAL_ERROR_MESSAGE = 'Ocorreu um erro interno no servidor.';
 
 // Texto do erro interno (contrato da fase 2), com o código do pedido quando há um.

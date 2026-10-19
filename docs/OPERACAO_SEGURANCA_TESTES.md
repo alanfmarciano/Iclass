@@ -19,6 +19,11 @@ npm run check
 
 O backend usa `node:test` e Supertest, o frontend usa Vitest/Testing Library e os fluxos completos usam Playwright.
 
+Variáveis de gravação usadas nos testes:
+
+- `ICLASS_VERIFY_SAVES=1` liga o verificador de gravação parcial: uma rota que muda uma coleção fora do `only` do `db.save` é acusada no console (`[VERIFICAÇÃO DE GRAVAÇÃO]`) e o dado é gravado assim mesmo. No `node --test` ele liga sozinho e reprova o arquivo de teste; o servidor do e2e (`test/e2e/start-test-server.js`) liga por padrão. `ICLASS_VERIFY_SAVES=0` desliga.
+- `ICLASS_DB_BUSY_TIMEOUT_MS` muda a espera pela trava do banco (padrão 5000 ms). Os testes de trava usam valores curtos para o 503 sair logo.
+
 ## Acessibilidade
 
 O fluxo E2E de login executa `axe-core` na tela de autenticação e no portal do aluno com regras WCAG 2.2 nível AA. O teste falha quando encontra violações automatizáveis. O frontend também fornece foco visível global, redução de movimento, contraste calculado para cores de branding, modais com trap de foco e erros de formulário associados aos respectivos campos.
@@ -40,6 +45,12 @@ O teste automatizado não substitui a verificação manual de navegação por te
 Antes de cada fase ou operação sensível, faça snapshot completo externo com SHA-256. A restauração in-app cria backup completo de segurança, valida tipo, versão e schema, rejeita traversal, duplicidades e ZIP acima do limite descompactado, extrai em staging e invalida sessões.
 
 A restauração só responde sucesso depois do `COMMIT` do SQLite. Em falha, arquivos e coleções anteriores são recolocados.
+
+### Banco em modo WAL
+
+O banco (`data/database.db`) roda em modo WAL: com o servidor ligado existem também `database.db-wal` e `database.db-shm`. Uma cópia manual do banco feita com o servidor ligado precisa dos três arquivos juntos (só o `.db` pode vir sem as últimas gravações); prefira o backup do sistema ou desligue o servidor antes. Desligar pelo caminho normal (Ctrl+C, fechar a janela do console, Reiniciar em Sistema) grava, fecha o banco e apaga o `-wal`. Não deixe a pasta do IClass dentro do OneDrive ou de pasta de rede: o modo WAL pode não pegar (aviso no console) e o sincronizador pode prender o arquivo.
+
+Toda gravação confirmada ao usuário já está no disco: a resposta só sai depois do `COMMIT` (com `synchronous=FULL`). Se outro programa prender o banco por mais que o `busy_timeout` (5 s), a tela recebe 503 "Não foi possível gravar os dados agora. Tente de novo em alguns segundos." e o servidor tenta gravar de novo sozinho (2 s, 5 s, 10 s e depois a cada 30 s); a falha vai para o `crash.log` no máximo uma vez por minuto.
 
 ## Modo manutenção
 

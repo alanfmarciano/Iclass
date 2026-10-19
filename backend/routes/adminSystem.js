@@ -243,8 +243,18 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             res.json({ success: true, message: 'Servidor reiniciando...' });
             const serverInstance = req.app.get('serverInstance');
 
-            const spawnRestart = () => {
+            let restarting = false;
+            const spawnRestart = async () => {
+                if (restarting) return;
+                restarting = true;
                 console.log('Iniciando processo de reinicialização...');
+                // Grava o que estiver na fila e fecha o banco (aplica o -wal) antes de sair,
+                // no máximo 5 s para uma trava do banco não prender o reinício. Antes o
+                // process.exit(0) perdia o que fosse pedido nos 2 s de espera (CONF-04).
+                await Promise.race([
+                    db.close().catch(err => console.error('⚠️ Falha ao fechar o banco antes de reiniciar:', (err && err.message) || err)),
+                    new Promise(resolve => setTimeout(resolve, 5000).unref()),
+                ]);
                 const { spawn } = require('child_process');
                 const child = spawn('cmd.exe', ['/c', 'ping 127.0.0.1 -n 3 >nul && node backend/server.js'], {
                     detached: true,

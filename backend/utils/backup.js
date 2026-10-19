@@ -13,18 +13,14 @@ const CONTENT_DIR = runtimePaths.CONTENT_DIR;
 const DATA_DIR = runtimePaths.DATA_DIR;
 const BACKUPS_DIR = runtimePaths.BACKUPS_DIR;
 const MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024;
-const COLLECTIONS = [
-    'students', 'classes', 'courses', 'branding', 'submissions', 'notes', 'annotations',
-    'forum', 'config', 'courseStructure', 'evaluations', 'progress', 'uploads', 'admins',
-    'proctoringLogs', 'studentExamState', 'broadcastMessages', 'questionBank', 'auditLogs',
-    'loginLogs', 'pedagogicalObservations', 'attendance', 'certificates', 'moduleAccess',
-    'schools', 'announcements', 'library',
-    // Aplicações de prova: sem elas, restaurar um backup (por exemplo o salvo antes de
-    // "Resetar sala") voltava as entregas e a turma, mas não o status das aplicações.
-    // Backup de versão anterior sem a coleção: as aplicações atuais são descartadas e
-    // refeitas a partir das turmas do backup (ver legacyApplications).
-    'examApplications',
-];
+// Coleções do backup: derivadas do registro único de tabelas (database.js,
+// COLLECTION_TABLES), as que têm backup e não são derivadas. A ordem é a do registro.
+// Entre elas está examApplications: sem as aplicações, restaurar um backup (por exemplo o
+// salvo antes de "Resetar sala") voltava as entregas e a turma, mas não o status das
+// aplicações. Backup de versão anterior sem a coleção: as aplicações atuais são
+// descartadas e refeitas a partir das turmas do backup (ver legacyApplications).
+const BACKUP_TABLES = db.COLLECTION_TABLES.filter(entry => entry.backup !== false && entry.kind !== 'derived');
+const COLLECTIONS = BACKUP_TABLES.map(entry => entry.collection);
 
 // Backup gerado por versão anterior do IClass, que não guardava as aplicações de prova.
 function hasLegacyApplications(snapshot) {
@@ -232,12 +228,29 @@ function snapshotSummary(snapshot, format) {
     };
 }
 
+// Valor restaurado de uma coleção conforme o modo dela no registro (restore):
+// - 'replace' e 'keep': o backup substitui a atual (quando falta no backup, a atual fica);
+// - 'merge': a trilha do backup junta com a atual. Enquanto mergeAuditTrails (utils/audit.js)
+//   não estiver ligado aqui (H7a-2, junto com a nova regra da lixeira de notas, que hoje
+//   depende de grade_restore), a auditoria do backup substitui a atual, como antes;
+// - 'reset': volta vazia (sessões).
+function restoredCollectionValue(entry, restored) {
+    if (entry.restore === 'reset') return db.emptyCollectionValue(entry);
+    return structuredClone(restored);
+}
+
 async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
-    COLLECTIONS.forEach(key => {
-        if (snapshot.data[key] === undefined) return;
-        if (key === 'admins' && !replaceAccounts) return;
-        db.memory[key] = structuredClone(snapshot.data[key]);
+    db.COLLECTION_TABLES.forEach(entry => {
+        if (entry.restore === 'reset') {
+            db.memory[entry.collection] = restoredCollectionValue(entry);
+            return;
+        }
+        if (!COLLECTIONS.includes(entry.collection)) return;
+        if (snapshot.data[entry.collection] === undefined) return;
+        // Contas de acesso só com o pedido explícito do administrador (SEG-X1).
+        if (entry.collection === 'admins' && !replaceAccounts) return;
+        db.memory[entry.collection] = restoredCollectionValue(entry, snapshot.data[entry.collection]);
     });
     // Backups antigos podem trazer `studentClass` em objeto (DES-03).
     (db.memory.students || []).forEach(student => normalizeStoredStudentClasses(student));
