@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount } = require('../middlewares.js');
+const { validateAdmin, isProfessorAccount, sendInternalError } = require('../middlewares.js');
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside, assertSafeId } = require('../utils/safePath.js');
 
@@ -101,7 +101,9 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     },
                 }, null, 2));
             } catch (error) {
-                return res.status(500).json({ error: `Falha ao gravar o arquivo: ${error.message}` });
+                // O detalhe (caminho, código do sistema) fica no crash.log; a tela recebe a
+                // mensagem padrão com o código do erro (ENG-04).
+                return sendInternalError(error, req, res);
             }
 
             db.memory.courses = (db.memory.courses || []).filter(item => item.id !== courseId);
@@ -202,7 +204,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
             let directory;
             try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta inválida.' }); }
             if (!directory) return res.status(404).json({ error: 'Arquivo não encontrado.' });
-            try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) { return res.status(500).json({ error: error.message }); }
+            try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) { return sendInternalError(error, req, res); }
             res.json({ success: true });
         });
     });

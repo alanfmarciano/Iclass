@@ -25,7 +25,8 @@ const {
     filterSchoolsForAdmin,
     adminCanAccessStudent,
     isCourseExamKey,
-    accessibilityExtraMinutes
+    accessibilityExtraMinutes,
+    guarded
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
@@ -3071,7 +3072,7 @@ router.use(createAdminExamConfigRouter());
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
 router.post('/api/admin/attendance/justification-upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        uploadForRequest().single('file')(req, res, async (err) => {
+        uploadForRequest().single('file')(req, res, guarded(req, res, async (err) => {
             if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
@@ -3093,7 +3094,7 @@ router.post('/api/admin/attendance/justification-upload', (req, res) => {
             if (req.file.size > _stA.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(tempPath); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _stA.upload.maxSizeMb + ' MB.' }); }
             const rel = fileStore.storeStudentFile(student, 'atestados', req.file.originalname, tempPath);
             res.json({ success: true, file: rel, name: req.file.originalname });
-        });
+        }));
     });
 });
 
@@ -3170,7 +3171,7 @@ router.get('/api/admin/library', (req, res) => {
 
 router.post('/api/admin/library/upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        uploadForRequest().single('file')(req, res, (err) => {
+        uploadForRequest().single('file')(req, res, guarded(req, res, (err) => {
             if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
@@ -3207,7 +3208,7 @@ router.post('/api/admin/library/upload', (req, res) => {
             recordAcademicAudit(req, matchedAdmin, 'content_library_created', { courseId: entry.courseId, className: entry.studentClass, id: entry.id, scope: entry.studentClass ? 'class' : 'course' }, null, { affectedClasses });
             db.save();
             res.json({ success: true, entry, affectedClasses });
-        });
+        }));
     });
 });
 
@@ -3356,7 +3357,7 @@ function getFilesForApostila(key) {
 
 router.post('/api/admin/upload', (req, res) => {
     validateAdmin(req, res, () => {
-        uploadForRequest().single('file')(req, res, (err) => {
+        uploadForRequest().single('file')(req, res, guarded(req, res, (err) => {
             if (err) {
                 return res.status(400).json({ error: 'Erro ao fazer upload do arquivo: ' + err.message });
             }
@@ -3398,13 +3399,13 @@ router.post('/api/admin/upload', (req, res) => {
             } else {
                 res.status(404).json({ error: 'Apostila não encontrada.' });
             }
-        });
+        }));
     });
 });
 
 router.post('/api/admin/upload-image', (req, res) => {
     validateAdmin(req, res, () => {
-        uploadForRequest().single('image')(req, res, (err) => {
+        uploadForRequest().single('image')(req, res, guarded(req, res, (err) => {
             if (err) {
                 return res.status(400).json({ error: 'Erro ao fazer upload da imagem: ' + err.message });
             }
@@ -3420,7 +3421,7 @@ router.post('/api/admin/upload-image', (req, res) => {
             const relativePath = '/uploads/' + filename;
             
             res.json({ success: true, url: relativePath });
-        });
+        }));
     });
 });
 

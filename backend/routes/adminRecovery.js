@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse } = require('../middlewares.js');
+const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse, guarded } = require('../middlewares.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
 const backupAudit = require('../utils/backupAudit.js');
@@ -194,7 +194,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 rejectProfessor(res, matchedAdmin);
                 return;
             }
-            uploadForRequest().single('file')(req, res, async (error) => {
+            uploadForRequest().single('file')(req, res, guarded(req, res, async (error) => {
                 // Recusas antes da restauração (arquivo grande demais, formato inválido,
                 // sem a confirmação) também ficam no histórico de backup.
                 const uploadInfo = () => (req.file ? { file: String(req.file.originalname || '').slice(0, 200), size: req.file.size || 0 } : {});
@@ -258,7 +258,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                     await db.save().catch(() => {});
                     res.status(400).json({ error: restoreError.message || 'Falha ao restaurar backup.' });
                 }
-            });
+            }));
         });
     });
 

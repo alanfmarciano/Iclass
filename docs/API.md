@@ -5,7 +5,8 @@ Padrões para os endpoints Express. Fonte: `backend/server.js`, `backend/middlew
 ## Princípios
 
 - **Server-authoritative**: a API decide tudo (autenticação, liberação, correção). O cliente nunca é confiável.
-- **JSON in/out**: `express.json({ limit: '10mb' })`. Respostas em JSON.
+- **JSON in/out**: corpo JSON até 10 MB só com sessão de instrutor válida (`x-admin-session`); aluno, rotas públicas e login legado ficam com 512 KB (413; com `x-admin-session` vencida, 401 `sessionRevoked`). Sem corpo, `req.body` é `{}`. Parâmetro de query repetido vale o último, sempre texto. Respostas em JSON.
+- **Erros**: toda resposta leva `X-Request-Id`. Erro interno responde 500 `{ success:false, error:'Ocorreu um erro interno no servidor. Código do erro: <id>.', requestId }` e o stack vai para `data/crash.log` (só por `utils/errorLog.js`, que roda em 5 MB para `crash.log.1`). Falha de gravação (`ICLASS_DB_WRITE`) responde 503 `{ retryable:true }`.
 - **Prefixos**: rotas administrativas sob `/api/admin/...`, rotas do aluno sob `/api/student/...`, compartilhadas em `common.js`.
 
 ## Autenticação

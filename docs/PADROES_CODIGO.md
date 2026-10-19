@@ -34,7 +34,7 @@ Ver [ARQUITETURA.md](./ARQUITETURA.md). Regra prática:
 - **Rota fina**: o handler valida credencial, lê `req.body`, chama util e responde. Nada de regra de negócio complexa inline.
 - **Acesso a estado**: sempre via `db.memory` + `db.save()`. Nunca SQL cru fora de `database.js`.
 - **Autorização primeiro**: todo handler admin começa com `validateAdmin(req, res, cb)`; aluno com `validateStudentSession`. Ver [API.md](./API.md).
-- **Erros**: responder `res.status(4xx).json({ error: 'mensagem em pt-BR' })`. Deixar exceções não tratadas subirem para o `errorHandler`.
+- **Erros**: responder `res.status(4xx).json({ error: 'mensagem em pt-BR' })`. Deixar exceções não tratadas subirem para o `errorHandler`: o callback de `validateAdmin`/`validateAdminPermission` já roda dentro da guarda (`runGuarded`), o callback do multer vai embrulhado em `guarded(req, res, fn)` e um `catch` que não sabe tratar o erro devolve `sendInternalError(err, req, res)` (500 com o código do erro e registro no `crash.log`). Nunca `res.status(500).json({ error: err.message })`.
 - **Padrão de router com fábrica** quando precisa de config (ex.: `createAdminSystemRouter({ port })`).
 
 ```js

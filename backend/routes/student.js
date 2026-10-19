@@ -32,7 +32,8 @@ const {
     validateAdminPermission,
     isProfessorAccount,
     adminCanAccessClass,
-    adminCanAccessItem
+    adminCanAccessItem,
+    sendInternalError
 } = require('../middlewares.js');
 const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
 const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_VERSION } = require('../utils/security.js');
@@ -681,8 +682,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 : 0
         });
     } catch (err) {
-        console.error('Erro no sync unificado do estudante:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -2029,7 +2029,7 @@ router.get('/api/student/annotations', validateStudentSession, (req, res) => {
 router.use('/api/forum', (req, res, next) => {
     const hasAdminCredentials = !!(req.headers['x-admin-session'] || req.headers.authorization);
     if (!hasAdminCredentials) return validateStudentSession(req, res, next);
-    validateAdminPermission(req, res, 'page.forum', (config, matchedAdmin) => {
+    return validateAdminPermission(req, res, 'page.forum', (config, matchedAdmin) => {
         let key = (req.body && req.body.key) || (req.query && req.query.key);
         if (!key && req.body && req.body.commentId) {
             const comment = (db.memory.forum || []).find(item => item.id === req.body.commentId);

@@ -10,6 +10,7 @@ const {
     studentBelongsToClass,
     studentCanSeeBroadcastMessage,
     sanitizeBroadcastMessageForStudent,
+    sendInternalError,
 } = require('../middlewares.js');
 const { countStudentExamAttempts, normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { normalizeExamToken, verifyExamToken } = require('../utils/examToken.js');
@@ -197,8 +198,7 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
         
         res.json({ success: true });
     } catch (err) {
-        console.error('Erro ao salvar log de atividade:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -258,8 +258,7 @@ router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) =>
         db.save();
         res.json({ success: true, inserted });
     } catch (err) {
-        console.error('Erro ao salvar histórico de digitação:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -289,8 +288,7 @@ router.get('/api/admin/exam-keystrokes/:class/:examKey', (req, res) => {
             events = events.slice(-limit);
             res.json({ success: true, events, total });
         } catch (err) {
-            console.error('Erro ao recuperar histórico de digitação:', err);
-            res.status(500).json({ error: 'Erro interno no servidor.' });
+            return sendInternalError(err, req, res);
         }
     });
 });
@@ -358,8 +356,7 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
         await db.save();
         res.json({ success: true });
     } catch (err) {
-        console.error('Erro ao salvar progresso do aluno:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -381,8 +378,7 @@ router.get('/api/admin/proctoring-logs/:class/:examKey', (req, res) => {
             
             res.json(logs);
         } catch (err) {
-            console.error('Erro ao recuperar logs de auditoria:', err);
-            res.status(500).json({ error: 'Erro interno no servidor.' });
+            return sendInternalError(err, req, res);
         }
     });
 });
@@ -464,8 +460,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
             maxAttempts
         });
     } catch (err) {
-        console.error('Erro ao buscar estado da prova do estudante:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -491,8 +486,7 @@ router.post('/api/student/acknowledge-message', validateStudentSession, (req, re
         db.save();
         res.json({ success: true });
     } catch (err) {
-        console.error('Erro ao acusar recebimento de mensagem:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -516,8 +510,7 @@ router.get('/api/student/message-history', validateStudentSession, (req, res) =>
             .map(m => sanitizeBroadcastMessageForStudent(m, email));
         res.json({ success: true, messages });
     } catch (err) {
-        console.error('Erro ao carregar historico de mensagens:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -545,8 +538,7 @@ router.post('/api/student/message-history/delete', validateStudentSession, (req,
         db.save();
         res.json({ success: true, deleted: count });
     } catch (err) {
-        console.error('Erro ao excluir historico de mensagens:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -649,8 +641,7 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
 
         res.json({ success: true, valid: true, applicationId: null, attemptId: existing.attemptId || null });
     } catch (err) {
-        console.error('Erro ao validar token de prova:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 

@@ -17,6 +17,7 @@ const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
+const { logError } = require('./utils/errorLog.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -154,7 +155,9 @@ function validateStudentSession(req, res, next) {
     // confere que quem volta à prova é a mesma sessão (utils/examFocusRules.js).
     req.studentSessionToken = providedToken;
 
-    next();
+    // Devolve o que o próximo passo devolver: a promessa de um callback assíncrono
+    // chega a quem chamou (validateAnySession, Express 5), e o erro não fica solto.
+    return next();
 }
 
 // Identifica quem faz a requisição por token: instrutor (x-admin-session) ou aluno
@@ -183,7 +186,7 @@ function validateAnySession(req, res, next) {
         // Instrutor no login legado (Authorization "email:senha").
         return validateAdmin(req, res, (config, account) => {
             req.requester = { role: 'admin', email: String(account.email || '').toLowerCase() };
-            next();
+            return next();
         });
     }
     if (!requester) {
@@ -195,7 +198,7 @@ function validateAnySession(req, res, next) {
     }
     return validateStudentSession(req, res, () => {
         req.requester = { role: 'student', email: req.studentEmail };
-        next();
+        return next();
     });
 }
 
@@ -366,16 +369,68 @@ function validateRequestedAdminContext(req, res, account) {
     return true;
 }
 
+// Guarda dos callbacks (ENG-04): executa fn(...args) e leva qualquer exceção, síncrona
+// ou da promessa devolvida, ao errorHandler (500 com o código do erro). Sem ela, o
+// callback assíncrono de validateAdmin ou do multer que lançava deixava o pedido sem
+// resposta e virava unhandledRejection. Devolve o resultado de fn (a promessa já
+// tratada), para quem chama poder esperar.
+function runGuarded(req, res, fn, args = []) {
+    const fail = err => errorHandler(err, req, res, () => {});
+    let result;
+    try {
+        result = fn(...args);
+    } catch (err) {
+        fail(err);
+        return undefined;
+    }
+    if (result && typeof result.then === 'function') return result.then(undefined, fail);
+    return result;
+}
+
+// Versão para callbacks passados a terceiros (multer): guarded(req, res, async (err) => ...).
+function guarded(req, res, fn) {
+    return (...args) => runGuarded(req, res, fn, args);
+}
+
+// Para os catch das rotas: registra no crash.log e responde o 500 padrão com o código.
+function sendInternalError(err, req, res) {
+    return errorHandler(err, req, res, () => {});
+}
+
+// Código do pedido (primeiro middleware do createApp): vai no cabeçalho X-Request-Id de
+// toda resposta e na mensagem do erro interno ("Código do erro: a1b2c3d4"), para achar
+// o registro no crash.log.
+function assignRequestId(req, res, next) {
+    req.id = crypto.randomBytes(4).toString('hex');
+    res.set('X-Request-Id', req.id);
+    next();
+}
+
+// Sessão de instrutor do pedido (cabeçalho x-admin-session), sem efeito colateral:
+// { token, session } quando o token existe e está dentro do prazo absoluto; null em
+// qualquer outro caso. Usada por validateAdmin e pelo limite do corpo JSON (server.js).
+function resolveAdminSession(req, now = Date.now()) {
+    const token = req && req.headers ? req.headers['x-admin-session'] : null;
+    if (typeof token !== 'string' || !token) return null;
+    const sessions = db.memory.adminSessions;
+    if (!sessions || !Object.prototype.hasOwnProperty.call(sessions, token)) return null;
+    const session = sessions[token];
+    if (!session || typeof session !== 'object') return null;
+    if (now - (session.createdAt || now) > absoluteTtlMs()) return null;
+    return { token, session };
+}
+
 function validateAdmin(req, res, callback) {
     // 1) Preferir sessao de instrutor via TOKEN (nao expoe a senha no cliente).
     const adminSessionToken = req.headers['x-admin-session'];
-    if (adminSessionToken && db.memory.adminSessions && db.memory.adminSessions[adminSessionToken]) {
-        const sess = db.memory.adminSessions[adminSessionToken];
+    if (adminSessionToken && db.memory.adminSessions && Object.prototype.hasOwnProperty.call(db.memory.adminSessions, adminSessionToken)) {
         const now = Date.now();
-        if (now - (sess.createdAt || now) > absoluteTtlMs()) {
+        const resolved = resolveAdminSession(req, now);
+        if (!resolved) {
             delete db.memory.adminSessions[adminSessionToken];
             return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true });
         }
+        const sess = resolved.session;
         const adminsList = readJSON(DB_ADMINS_FILE);
         const tokenAdmin = adminsList.find(a => a.email && a.email.toLowerCase() === sess.email);
         if (!tokenAdmin) {
@@ -389,12 +444,17 @@ function validateAdmin(req, res, callback) {
         req.adminConfig = cfg;
         if (!validateRequestedAdminContext(req, res, tokenAdmin)) return;
         installProfessorResponseRedaction(res, tokenAdmin);
-        return callback(cfg, tokenAdmin);
+        return runGuarded(req, res, callback, [cfg, tokenAdmin]);
     }
 
     // 2) Fallback legado: Authorization "email:senha".
     // Não aceita senha via query string (evita senha em logs/histórico do navegador).
-    const authHeader = req.headers.authorization || (req.body && req.body.password);
+    // Só texto vale como credencial: password numérico ou objeto no corpo (ENG-03)
+    // dava 500 ('authHeader.includes is not a function') e agora conta como ausente,
+    // sem gastar o limite de tentativas.
+    const headerCredential = typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+    const bodyCredential = req.body && typeof req.body.password === 'string' ? req.body.password : '';
+    const authHeader = headerCredential || bodyCredential;
     if (!authHeader) {
         return res.status(401).json({ error: 'Acesso não autorizado.' });
     }
@@ -428,10 +488,9 @@ function validateAdmin(req, res, callback) {
         req.adminConfig = config;
         if (!validateRequestedAdminContext(req, res, matchedAdmin)) return;
         installProfessorResponseRedaction(res, matchedAdmin);
-        callback(config, matchedAdmin);
-    } else {
-        res.status(401).json({ error: 'Acesso não autorizado. E-mail ou senha incorretos.' });
+        return runGuarded(req, res, callback, [config, matchedAdmin]);
     }
+    return res.status(401).json({ error: 'Acesso não autorizado. E-mail ou senha incorretos.' });
 }
 
 function issueAdminSession(email) {
@@ -444,11 +503,12 @@ function issueAdminSession(email) {
 }
 
 function validateAdminPermission(req, res, permission, callback) {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    // O callback roda dentro da guarda de validateAdmin (a promessa dele é devolvida).
+    return validateAdmin(req, res, (config, matchedAdmin) => {
         if (!canAccessAdminPermission(matchedAdmin, permission)) {
             return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
         }
-        callback(config, matchedAdmin);
+        return callback(config, matchedAdmin);
     });
 }
 
@@ -683,7 +743,7 @@ function validateProfessorRequestScope(req, account) {
 }
 
 function adminRbacGuard(req, res, next) {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    return validateAdmin(req, res, (config, matchedAdmin) => {
         const permission = resolveAdminApiPermission(req.method, req.path);
         // Restauração de backup recusada aqui (antes da rota) também é evento de
         // segurança: fica no histórico de backup, como as recusas da própria rota.
@@ -993,17 +1053,67 @@ function getReleasedItemsForClass(cls, studentEmail) {
     return released;
 }
 
-// Middleware centralizado de tratamento de erros
+// Falha de gravação no banco (DbWriteError, code 'ICLASS_DB_WRITE'): o cliente mantém a
+// sessão e tenta de novo (contrato de gravação da fase 2).
+const DB_WRITE_ERROR_MESSAGE = 'Não foi possível gravar os dados agora. Tente de novo em alguns segundos.';
+const INTERNAL_ERROR_MESSAGE = 'Ocorreu um erro interno no servidor.';
+
+// Resposta já começou (stream, sendFile): não há como mandar outro corpo; só fecha.
+function finishStartedResponse(res) {
+    if (res && !res.writableEnded && typeof res.end === 'function') {
+        try { res.end(); } catch (e) { /* conexão já caiu */ }
+    }
+}
+
+// Middleware centralizado de tratamento de erros. Também é chamado direto pela guarda
+// dos callbacks (runGuarded) e pelos catch das rotas (sendInternalError).
 function errorHandler(err, req, res, next) {
-    console.error('🔴 [SERVER ERROR]:', err);
-    const status = Number(err && (err.status || err.statusCode)) || 500;
-    // Erro interno (500+) não expõe a mensagem do código (ex.: "email.trim is not
-    // a function"); JSON malformado ganha mensagem em português (CONF-14).
-    let message = 'Ocorreu um erro interno no servidor.';
+    const request = req || {};
+    const requestId = request.id || '';
+    const headersSent = !!(res && res.headersSent);
+
+    if (err && err.code === 'ICLASS_DB_WRITE') {
+        // O crash.log já recebe a falha de gravação pelo próprio banco (uma linha por minuto).
+        console.error(`⚠️ [GRAVAÇÃO] ${request.method || ''} ${String(request.originalUrl || request.url || '').split('?')[0]}: ${err.message || err}`);
+        if (headersSent) return finishStartedResponse(res);
+        return res.status(503).json({ success: false, error: DB_WRITE_ERROR_MESSAGE, retryable: true, ...(requestId ? { requestId } : {}) });
+    }
+
+    let status = Number(err && (err.status || err.statusCode)) || 500;
+    if (status < 400 || status > 599) status = 500;
+
+    // Corpo grande demais com a sessão de instrutor vencida (ou de antes de um reinício):
+    // o limite aplicado foi o de quem não tem sessão (512 KB). O que resolve é entrar de
+    // novo, não encolher a apostila (ENG-03).
+    if (err && err.type === 'entity.too.large' && request.headers && request.headers['x-admin-session'] && !resolveAdminSession(request)) {
+        if (headersSent) return finishStartedResponse(res);
+        return res.status(401).json({ success: false, error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true });
+    }
+
+    if (status >= 500) {
+        // Erro interno: registra o stack no crash.log com o código do pedido e responde só
+        // a mensagem padrão com o código, que o professor repassa ao suporte (ENG-04).
+        // Nunca expõe a mensagem do código (ex.: "email.trim is not a function").
+        logError('erro interno', err, { req: request });
+        if (headersSent) return finishStartedResponse(res);
+        return res.status(status).json({
+            success: false,
+            error: requestId ? `Ocorreu um erro interno no servidor. Código do erro: ${requestId}.` : INTERNAL_ERROR_MESSAGE,
+            ...(requestId ? { requestId } : {}),
+        });
+    }
+
+    // Erro do pedido (4xx): JSON malformado e corpo grande ganham mensagem em português
+    // (CONF-14); os demais mantêm a mensagem própria.
+    console.error(`⚠️ [${status}] ${request.method || ''} ${String(request.originalUrl || request.url || '').split('?')[0]}: ${(err && (err.type || err.message)) || err}`);
+    if (headersSent) return finishStartedResponse(res);
+    let message = INTERNAL_ERROR_MESSAGE;
     if (err && err.type === 'entity.parse.failed') message = 'Dados enviados em formato inválido (JSON).';
     else if (err && err.type === 'entity.too.large') message = 'Os dados enviados são grandes demais.';
-    else if (status < 500 && err && err.message) message = err.message;
-    res.status(status).json({
+    // Outras recusas do leitor de corpo (charset ou codificação desconhecidos) vinham em inglês.
+    else if (err && typeof err.type === 'string') message = 'Dados enviados em formato inválido.';
+    else if (err && err.message) message = err.message;
+    return res.status(status).json({
         success: false,
         error: message
     });
@@ -1177,5 +1287,10 @@ module.exports = {
     getCourseItemKeys,
     isCourseItemKey,
     isCourseExamKey,
-    errorHandler
+    errorHandler,
+    runGuarded,
+    guarded,
+    sendInternalError,
+    resolveAdminSession,
+    assignRequestId,
 };

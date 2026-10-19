@@ -8,7 +8,8 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount } = require('./middlewares.js');
+const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, assignRequestId } = require('./middlewares.js');
+const { logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
 const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
@@ -18,22 +19,38 @@ const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
 // Registra qualquer erro não-tratado em data/crash.log (com stack trace) em vez
 // de derrubar o processo silenciosamente. O servidor é MANTIDO vivo para que
 // uma única falha de rota/intervalo não interrompa uma prova em andamento.
+// O registro é o único do servidor (utils/errorLog.js), com o limite de 5 MB.
 // ---------------------------------------------------------------------------
-const CRASH_LOG = path.join(runtimePaths.DATA_DIR, 'crash.log');
 function logCrash(kind, err) {
-    const ts = new Date().toISOString();
-    const detail = (err && err.stack) ? err.stack : String(err);
-    const line = `\n[${ts}] ${kind}\n${detail}\n`;
-    try { fs.appendFileSync(CRASH_LOG, line); } catch (e) { /* sem fallback: não derrubar por causa do log */ }
-    console.error(`🛑 ${kind} @ ${ts}\n${detail}`);
+    logError(kind, err);
 }
 process.on('uncaughtException', (err) => logCrash('uncaughtException', err));
 process.on('unhandledRejection', (reason) => logCrash('unhandledRejection', reason));
+
+// Corpo JSON: até 10 MB só para o instrutor com sessão válida (apostila com imagem
+// embutida). Aluno, rotas públicas e o login legado ficam com 512 KB: o maior corpo
+// legítimo do aluno (lote de 500 teclas) fica abaixo de 100 KB, e um aparelho da rede
+// sem login não manda mais 10 MB por pedido (ENG-03).
+const ADMIN_JSON_LIMIT = '10mb';
+const DEFAULT_JSON_LIMIT = '512kb';
+
+// Query string com parâmetro repetido (?email=a&email=b) vira o último valor, sempre
+// texto: com a lista, 9 rotas do professor respondiam 500 ao chamar .trim() (ENG-03).
+// Mesma forma do leitor 'simple' do Express 5 (objeto sem protótipo, sem aninhamento).
+function parseQueryLastValue(queryString) {
+    const out = Object.create(null);
+    if (!queryString) return out;
+    for (const [key, value] of new URLSearchParams(String(queryString))) out[key] = value;
+    return out;
+}
 
 const PORT = process.env.PORT || 3000;
 
 function createApp() {
 const app = express();
+app.set('query parser', parseQueryLastValue);
+// 1) Código do pedido (X-Request-Id e "Código do erro" no 500), antes de tudo.
+app.use(assignRequestId);
 // CORS restrito: a app é servida na mesma origem (Express serve o build React),
 // então só liberamos requisições sem Origin (mesma origem/apps nativos) e de
 // hosts locais/LAN. Bloqueia sites arbitrários da internet.
@@ -56,7 +73,16 @@ app.use('/api', (req, res, next) => {
     if (buildId) res.set(BUILD_ID_HEADER, buildId);
     next();
 });
-app.use(express.json({ limit: '10mb' }));
+const adminJsonParser = express.json({ limit: ADMIN_JSON_LIMIT });
+const defaultJsonParser = express.json({ limit: DEFAULT_JSON_LIMIT });
+app.use((req, res, next) => (resolveAdminSession(req) ? adminJsonParser : defaultJsonParser)(req, res, next));
+// Corpo sempre objeto: sem corpo, o Express 5 deixava req.body undefined e as rotas que
+// leem req.body.x respondiam 500 ou ficavam sem resposta. O express.text de
+// /api/student/leave e o multer continuam lendo o corpo (eles olham o fluxo, não o campo).
+app.use((req, res, next) => {
+    if (req.body === undefined) req.body = {};
+    next();
+});
 app.use((req, res, next) => {
     if (req.path.endsWith('.html') || req.path.endsWith('.js')) {
         res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
