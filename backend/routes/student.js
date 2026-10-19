@@ -56,6 +56,7 @@ const {
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
+const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     createSubmissionFromAttempt,
     questionsForAttempt,
@@ -1982,6 +1983,11 @@ router.post('/api/student/annotation', validateStudentSession, (req, res) => {
     const email = req.studentEmail;
     if (!key || !paragraphId) {
         return res.status(400).json({ error: 'Dados insuficientes' });
+    }
+    // Unidade ou parágrafo com nome herdado ('__proto__', 'constructor'...): a gravação
+    // abaixo caía em Object.prototype (ou em Object) e valia para o servidor todo.
+    if (isInheritedKey(key) || isInheritedKey(paragraphId)) {
+        return res.status(400).json({ error: 'Unidade ou parágrafo inválido.' });
     }
     
     const lowerEmail = email.toLowerCase();

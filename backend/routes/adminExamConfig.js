@@ -19,6 +19,7 @@ const {
 } = require('../utils/examApplications.js');
 const { deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
+const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     OPEN_APPLICATION_STATUSES,
     activeApplicationConflict,
@@ -903,6 +904,11 @@ function createAdminExamConfigRouter() {
             if (!isCourseItemKey(cls, itemKey)) return res.status(400).json({ error: 'Item não pertence ao curso da turma.' });
 
             const normalizedStudentEmail = (studentEmail || '').trim().toLowerCase();
+            // '__proto__' como aluno gravava a liberação em Object.prototype: o gabarito
+            // ficava liberado em todas as turmas, inclusive fora do escopo do professor.
+            if (normalizedStudentEmail && isInheritedKey(normalizedStudentEmail)) {
+                return res.status(400).json({ error: 'Aluno inválido.' });
+            }
             const actor = adminActor(req);
             // Gabarito só é liberado pela chave própria e nunca enquanto a prova tem
             // aplicação preparada ou em andamento na turma (G2: gabarito na reaplicação).

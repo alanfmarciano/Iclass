@@ -12,6 +12,7 @@ const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isPro
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
 const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
+const { ownEntry } = require('./utils/ownEntry.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -87,7 +88,8 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
     // vale o último, que é o que o navegador do usuário acrescentou.
     const queryAccess = Array.isArray(req.query.access) ? req.query.access[req.query.access.length - 1] : req.query.access;
     const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || queryAccess || '');
-    const adminSession = accessToken && db.memory.adminSessions && db.memory.adminSessions[accessToken];
+    // Só sessão gravada (chave própria): '?access=__proto__' entregava arquivo protegido.
+    const adminSession = ownEntry(db.memory.adminSessions, accessToken);
     const studentEmail = Object.keys(db.memory.sessions || {}).find(email => {
         const session = db.memory.sessions[email];
         return session && typeof session === 'object' && session.token === accessToken;
@@ -187,7 +189,7 @@ const proctoringRoutes = require('./routes/proctoring.js');
 app.use((req, res, next) => {
     const st = settingsUtil.getSettings();
     const adminToken = String(req.get('x-admin-session') || '');
-    const isAuthenticatedAdmin = adminToken && db.memory.adminSessions && db.memory.adminSessions[adminToken];
+    const isAuthenticatedAdmin = !!ownEntry(db.memory.adminSessions, adminToken);
     const isStudentFlow = req.path.startsWith('/api/student') || req.path.startsWith('/api/forum')
         || req.path === '/api/ping' || req.path === '/data.js' || req.path === '/api/data.js'
         || (/^\/[^/]+\.md$/.test(req.path) && !isAuthenticatedAdmin);

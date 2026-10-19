@@ -17,6 +17,7 @@ const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
+const { ownEntry } = require('./utils/ownEntry.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -84,7 +85,9 @@ function validateStudentSession(req, res, next) {
     if (!normalizedEmail) {
         return res.status(400).json({ error: 'E-mail do estudante é obrigatório.' });
     }
-    const session = (db.memory.sessions || {})[normalizedEmail];
+    // Só a sessão gravada com esse e-mail (chave própria): '__proto__' ou 'constructor'
+    // devolviam o valor herdado de Object.prototype.
+    const session = ownEntry(db.memory.sessions, normalizedEmail);
     
     if (!session) {
         return res.status(401).json({
@@ -159,11 +162,14 @@ function validateStudentSession(req, res, next) {
 
 // Identifica quem faz a requisição por token: instrutor (x-admin-session) ou aluno
 // (x-session-token). Usado nas rotas que servem conteúdo de prova a qualquer perfil
-// autenticado; sem token válido a rota responde 401.
+// autenticado; sem token válido a rota responde 401. O token de instrutor só vale se for
+// chave própria de adminSessions: '__proto__' (ou 'constructor', 'toString'...) devolvia o
+// valor herdado de Object.prototype e entrava como instrutor, sem login.
 function resolveRequester(req) {
     const adminToken = String(req.get('x-admin-session') || '');
-    if (adminToken && db.memory.adminSessions && db.memory.adminSessions[adminToken]) {
-        return { role: 'admin', email: db.memory.adminSessions[adminToken].email };
+    const adminSession = ownEntry(db.memory.adminSessions, adminToken);
+    if (adminSession) {
+        return { role: 'admin', email: adminSession.email };
     }
     const studentToken = String(req.get('x-session-token') || (req.query && req.query.sessionToken) || '');
     if (studentToken) {
@@ -368,9 +374,10 @@ function validateRequestedAdminContext(req, res, account) {
 
 function validateAdmin(req, res, callback) {
     // 1) Preferir sessao de instrutor via TOKEN (nao expoe a senha no cliente).
+    // Só sessão gravada (chave própria): '__proto__' não é sessão.
     const adminSessionToken = req.headers['x-admin-session'];
-    if (adminSessionToken && db.memory.adminSessions && db.memory.adminSessions[adminSessionToken]) {
-        const sess = db.memory.adminSessions[adminSessionToken];
+    const sess = ownEntry(db.memory.adminSessions, adminSessionToken);
+    if (sess) {
         const now = Date.now();
         if (now - (sess.createdAt || now) > absoluteTtlMs()) {
             delete db.memory.adminSessions[adminSessionToken];
