@@ -58,18 +58,38 @@ function buildDataSnapshot() {
     return { type: 'iclass-backup-data', version: '3.0', exportedAt: new Date().toISOString(), data, content };
 }
 
+// Recusa prevista do arquivo enviado para restaurar (formato, versão, caminhos, contas):
+// status 400 e mensagem em português, que a rota devolve como está (sendRouteError).
+// Erro sem status (disco cheio, arquivo preso por outro programa, falha inesperada) é
+// falha interna: 500 com o código do erro e o stack no crash.log (ENG-04).
+function backupRefusal(message) {
+    return Object.assign(new Error(message), { status: 400 });
+}
+
+// JSON do backup cortado ou corrompido (download pela metade, arquivo editado à mão):
+// antes o SyntaxError chegava à tela em inglês ("Unterminated string in JSON at
+// position 300"), sem código e sem registro.
+function parseBackupJson(text) {
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        if (error instanceof SyntaxError) throw backupRefusal('O arquivo de backup está corrompido ou incompleto e não pôde ser lido.');
+        throw error;
+    }
+}
+
 function validateDataSnapshot(snapshot) {
-    if (!snapshot || snapshot.type !== 'iclass-backup-data' || !snapshot.data || typeof snapshot.data !== 'object') throw new Error('Arquivo de backup inválido.');
-    if (!String(snapshot.version || '').startsWith('3.')) throw new Error('Versão de backup incompatível.');
+    if (!snapshot || snapshot.type !== 'iclass-backup-data' || !snapshot.data || typeof snapshot.data !== 'object') throw backupRefusal('Arquivo de backup inválido.');
+    if (!String(snapshot.version || '').startsWith('3.')) throw backupRefusal('Versão de backup incompatível.');
     COLLECTIONS.forEach(key => {
         if (snapshot.data[key] === undefined) return;
         const current = db.memory[key];
-        if (Array.isArray(current) !== Array.isArray(snapshot.data[key])) throw new Error(`Schema incompatível na coleção ${key}.`);
-        if (current && typeof current === 'object' && (!snapshot.data[key] || typeof snapshot.data[key] !== 'object')) throw new Error(`Schema incompatível na coleção ${key}.`);
+        if (Array.isArray(current) !== Array.isArray(snapshot.data[key])) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
+        if (current && typeof current === 'object' && (!snapshot.data[key] || typeof snapshot.data[key] !== 'object')) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
     });
-    if (snapshot.content !== undefined && (!snapshot.content || typeof snapshot.content !== 'object' || Array.isArray(snapshot.content))) throw new Error('Conteúdo Markdown inválido.');
+    if (snapshot.content !== undefined && (!snapshot.content || typeof snapshot.content !== 'object' || Array.isArray(snapshot.content))) throw backupRefusal('Conteúdo Markdown inválido.');
     Object.keys(snapshot.content || {}).forEach(filename => {
-        if (!/^[\w.\-() ]+\.md$/.test(filename)) throw new Error(`Nome de conteúdo inválido: ${filename}`);
+        if (!/^[\w.\-() ]+\.md$/.test(filename)) throw backupRefusal(`Nome de conteúdo inválido: ${filename}`);
     });
     return snapshot;
 }
@@ -141,24 +161,36 @@ async function saveServerFullBackup(prefix = 'seguranca-completa') {
 function validateZip(buffer) {
     const AdmZip = getZipLib();
     if (!AdmZip) throw new Error('Recurso de ZIP indisponível.');
-    const zip = new AdmZip(buffer);
+    // O ZIP já está na memória: falha ao abrir é arquivo cortado ou corrompido, não disco.
+    let zip;
+    let entries;
+    try {
+        zip = new AdmZip(buffer);
+        entries = zip.getEntries();
+    } catch (error) {
+        throw backupRefusal('O arquivo ZIP do backup está corrompido ou incompleto e não pôde ser aberto.');
+    }
     const seen = new Set();
     let total = 0;
-    for (const entry of zip.getEntries()) {
+    for (const entry of entries) {
         const name = String(entry.entryName || '').replace(/\\/g, '/');
-        if (!name || name.startsWith('/') || /^[a-z]:/i.test(name) || name.split('/').includes('..')) throw new Error(`Caminho inseguro no ZIP: ${name}`);
+        if (!name || name.startsWith('/') || /^[a-z]:/i.test(name) || name.split('/').includes('..')) throw backupRefusal(`Caminho inseguro no ZIP: ${name}`);
         const normalized = path.posix.normalize(name);
-        if (normalized.replace(/\/$/, '') !== name.replace(/\/$/, '')) throw new Error(`Caminho não normalizado no ZIP: ${name}`);
+        if (normalized.replace(/\/$/, '') !== name.replace(/\/$/, '')) throw backupRefusal(`Caminho não normalizado no ZIP: ${name}`);
         const key = normalized.toLowerCase();
-        if (seen.has(key)) throw new Error(`Entrada duplicada no ZIP: ${name}`);
+        if (seen.has(key)) throw backupRefusal(`Entrada duplicada no ZIP: ${name}`);
         seen.add(key);
         total += Number(entry.header && entry.header.size || 0);
-        if (total > MAX_UNCOMPRESSED_BYTES) throw new Error('ZIP excede o limite descompactado de 2 GB.');
-        if (name !== 'backup-data.json' && !/^(content|data\/uploads|data\/alunos)(\/|$)/.test(name)) throw new Error(`Destino não permitido no ZIP: ${name}`);
+        if (total > MAX_UNCOMPRESSED_BYTES) throw backupRefusal('ZIP excede o limite descompactado de 2 GB.');
+        if (name !== 'backup-data.json' && !/^(content|data\/uploads|data\/alunos)(\/|$)/.test(name)) throw backupRefusal(`Destino não permitido no ZIP: ${name}`);
     }
     const dataEntry = zip.getEntry('backup-data.json');
-    if (!dataEntry) throw new Error('ZIP inválido: backup-data.json ausente.');
-    const snapshot = validateDataSnapshot(JSON.parse(zip.readAsText(dataEntry)));
+    if (!dataEntry) throw backupRefusal('ZIP inválido: backup-data.json ausente.');
+    let dataText;
+    try { dataText = zip.readAsText(dataEntry); } catch (error) {
+        throw backupRefusal('O arquivo ZIP do backup está corrompido ou incompleto e não pôde ser aberto.');
+    }
+    const snapshot = validateDataSnapshot(parseBackupJson(dataText));
     return { zip, snapshot };
 }
 
@@ -178,10 +210,10 @@ function extractZipToStage(zip, stageRoot) {
 function validateRestoredAccounts(snapshot) {
     const admins = snapshot && snapshot.data ? snapshot.data.admins : undefined;
     if (admins === undefined) return;
-    if (!Array.isArray(admins)) throw new Error('Contas de acesso inválidas no backup.');
+    if (!Array.isArray(admins)) throw backupRefusal('Contas de acesso inválidas no backup.');
     const plain = admins.find(account => !account || !account.email || !db.isHashed(account.password));
-    if (plain) throw new Error(`O backup traz a conta ${(plain && plain.email) || 'sem e-mail'} sem senha protegida (texto puro). Restaure sem substituir as contas.`);
-    if (!admins.some(account => account.role !== 'professor')) throw new Error('O backup não tem nenhuma conta de administrador. Restaure sem substituir as contas.');
+    if (plain) throw backupRefusal(`O backup traz a conta ${(plain && plain.email) || 'sem e-mail'} sem senha protegida (texto puro). Restaure sem substituir as contas.`);
+    if (!admins.some(account => account.role !== 'professor')) throw backupRefusal('O backup não tem nenhuma conta de administrador. Restaure sem substituir as contas.');
 }
 
 // O que foi restaurado, para o registro de auditoria e para a tela avisar das contas
@@ -308,7 +340,7 @@ function legacyBackupError(snapshot) {
 async function restoreFromFile(absPath, originalName, { replaceAccounts = false, acceptLegacy = false } = {}) {
     const buffer = fs.readFileSync(absPath);
     const isZip = /\.zip$/i.test(originalName || '') || buffer.subarray(0, 2).toString() === 'PK';
-    const snapshot = isZip ? validateZip(buffer).snapshot : validateDataSnapshot(JSON.parse(buffer.toString('utf8')));
+    const snapshot = isZip ? validateZip(buffer).snapshot : validateDataSnapshot(parseBackupJson(buffer.toString('utf8')));
     if (hasLegacyApplications(snapshot) && !acceptLegacy) throw legacyBackupError(snapshot);
     await db.save();
     await saveServerFullBackup();

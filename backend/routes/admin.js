@@ -3051,6 +3051,28 @@ function uploadErrorMessage(err) {
     return `Erro no upload: ${detail}`;
 }
 
+// Erro do próprio envio: recusa do multer (tipo, tamanho, campos) ou formulário que o
+// pedido estragou (cortado no meio, conexão caída, cabeçalho multipart inválido; as
+// mensagens são as do busboy e do multer). O resto é falha do servidor ao gravar o
+// arquivo recebido (disco cheio, pasta de envios sem permissão ou presa por outro
+// programa no Windows).
+const UPLOAD_REQUEST_ERROR = /^(Unexpected end of (form|file)|Malformed |Multipart: |Unsupported content type|Missing Content-Type|Request (aborted|closed|error)$|aborted$)/;
+function isUploadRequestError(err) {
+    if (!err) return false;
+    if (err instanceof multer.MulterError || err.name === 'MulterError') return true;
+    if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED') return true;
+    return UPLOAD_REQUEST_ERROR.test(String(err.message || ''));
+}
+
+// Resposta ao erro do multer: o envio recusado responde 400 em português; a falha do
+// disco responde o 500 com o código do erro e o stack no crash.log. Antes ela virava 400
+// "Erro no upload: o arquivo não pôde ser recebido.", sem código e sem registro, e o
+// professor e o suporte ficavam sem saber que o disco encheu (ENG-04).
+function sendUploadError(err, req, res) {
+    if (isUploadRequestError(err)) return res.status(400).json({ error: uploadErrorMessage(err) });
+    return sendInternalError(err, req, res, 'Falha ao gravar no disco o arquivo enviado.');
+}
+
 // `discard`: apaga o arquivo recusado em vez de mandá-lo para a lixeira (arquivo de
 // backup leva o banco inteiro e não pode reaparecer pela lixeira, SEG-X1).
 function rejectInvalidUpload(req, res, { discard = false } = {}) {
@@ -3064,7 +3086,7 @@ function rejectInvalidUpload(req, res, { discard = false } = {}) {
     return true;
 }
 
-router.use(createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage, uploadDir }));
+router.use(createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage, isUploadRequestError, uploadDir }));
 router.use(createAdminArchiveRouter({ studentClassNames }));
 router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
@@ -3075,7 +3097,7 @@ router.use(createAdminExamConfigRouter());
 router.post('/api/admin/attendance/justification-upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         uploadForRequest().single('file')(req, res, guarded(req, res, async (err) => {
-            if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
             const requestedCourseId = String(req.body.courseId || '').trim();
@@ -3174,7 +3196,7 @@ router.get('/api/admin/library', (req, res) => {
 router.post('/api/admin/library/upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         uploadForRequest().single('file')(req, res, guarded(req, res, (err) => {
-            if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
             const ext = path.extname(req.file.originalname).toLowerCase();
@@ -3360,9 +3382,7 @@ function getFilesForApostila(key) {
 router.post('/api/admin/upload', (req, res) => {
     validateAdmin(req, res, () => {
         uploadForRequest().single('file')(req, res, guarded(req, res, (err) => {
-            if (err) {
-                return res.status(400).json({ error: uploadErrorMessage(err) });
-            }
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) {
                 return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             }
@@ -3408,9 +3428,7 @@ router.post('/api/admin/upload', (req, res) => {
 router.post('/api/admin/upload-image', (req, res) => {
     validateAdmin(req, res, () => {
         uploadForRequest().single('image')(req, res, guarded(req, res, (err) => {
-            if (err) {
-                return res.status(400).json({ error: uploadErrorMessage(err) });
-            }
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) {
                 return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
             }

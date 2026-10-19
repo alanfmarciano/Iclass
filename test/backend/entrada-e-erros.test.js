@@ -164,6 +164,12 @@ async function call(route, identity, body, query = '') {
     }
 }
 
+// Bloco do crash.log com o código do erro: do cabeçalho "[ISO] ... <código> ..." até o
+// próximo cabeçalho.
+function crashBlock(log, id) {
+    return String(log).split(/\n(?=\[\d{4}-)/).find(entry => entry.includes(` ${id} `)) || '';
+}
+
 test.before(async () => {
     await db.init();
     app = createApp();
@@ -386,17 +392,43 @@ test('[UC-ERRO-001] os callbacks do multer e de validateAdmin das rotas reais fi
     // O 503 fica de fora: é resposta de estado (manutenção, configuração inicial e, nas
     // próximas etapas, servidor iniciando), com formato próprio.
     const internalErrors = [];
+    // Mensagem de erro que vai para a resposta: campo error (na linha do .json ou na
+    // seguinte, quando o objeto quebra a linha), argumento direto de .json()/.send() ou
+    // texto montado com ela ("Falha: " + err.message, `${error.message}`), qualquer que
+    // seja o nome da variável (restoreError.message escapava da checagem anterior, que
+    // só olhava e, err, error e ex). A falha inesperada ("EISDIR: illegal operation on a
+    // directory", "Unterminated string in JSON at position 300") saía num 400 em inglês,
+    // sem código e sem registro.
+    const MESSAGE_IN_RESPONSE = /\berror\s*:[^,;]*?\b[A-Za-z_$][\w$]*\.message\b|\.(json|send)\(\s*[^,;{}()]*?\b[A-Za-z_$][\w$]*\.message\b/;
+    // Únicas mensagens que podem ir direto: as fixas, em português, de validadores
+    // conhecidos. validationError é o de validateStudentFields (utils/students.js) e
+    // requiresInProgressPolicy marca a recusa do encerramento com prova em andamento
+    // (utils/examFinish.js). O resto usa sendRouteError (recusa com status 4xx).
+    const ALLOWED_MESSAGE_SOURCES = [/\bvalidationError\.message\b/, /requiresInProgressPolicy/];
     for (const filename of fs.readdirSync(routesDir).filter(name => name.endsWith('.js'))) {
         fs.readFileSync(path.join(routesDir, filename), 'utf8').split('\n').forEach((line, index) => {
+            if (/^\s*\/\//.test(line)) return;
             if (/(status|sendStatus)\(\s*5(?!03)\d\d\b/.test(line)) internalErrors.push(`${filename}:${index + 1}: ${line.trim()}`);
-            // error.message numa resposta: a falha inesperada ("EISDIR: illegal operation on
-            // a directory", "x is not a function") saía num 400 sem código e sem registro.
-            // Só a recusa do encerramento com prova em andamento (mensagem em português
-            // de utils/examFinish.js) passa direto; o resto usa sendRouteError.
-            if (/\.json\(.*\b(e|err|error|ex)\.message/.test(line) && !/requiresInProgressPolicy/.test(line)) internalErrors.push(`${filename}:${index + 1}: devolve error.message (use sendRouteError)`);
+            if (MESSAGE_IN_RESPONSE.test(line) && !ALLOWED_MESSAGE_SOURCES.some(pattern => pattern.test(line))) {
+                internalErrors.push(`${filename}:${index + 1}: devolve a mensagem do erro (use sendRouteError): ${line.trim()}`);
+            }
         });
     }
-    assert.deepEqual(internalErrors, [], 'resposta 5xx escrita à mão ou error.message nas rotas (use sendInternalError ou sendRouteError)');
+    assert.deepEqual(internalErrors, [], 'resposta 5xx escrita à mão ou mensagem do erro nas rotas (use sendInternalError ou sendRouteError)');
+
+    // A própria checagem pega as formas que já escaparam dela.
+    [
+        "res.status(400).json({ error: restoreError.message || 'Falha ao restaurar backup.' });",
+        "return res.status(500).json({ error: `Falha ao gravar o arquivo: ${error.message}` });",
+        "return res.status(400).json({ error: 'Erro ao fazer upload do arquivo: ' + err.message });",
+        "    error: falha.message,",
+        "res.send(problem.message);",
+    ].forEach(sample => assert.match(sample, MESSAGE_IN_RESPONSE, sample));
+    [
+        "res.json(list.map(a => ({ id: a.id, title: a.title, message: a.message })));",
+        "if (message !== undefined) ann.message = String(message).slice(0, 5000);",
+        "console.error('Erro ao ler apostila:', err && err.message);",
+    ].forEach(sample => assert.doesNotMatch(sample, MESSAGE_IN_RESPONSE, sample));
 });
 
 test('[UC-ERRO-001] catch de rota com erro responde o 500 padrão com o código e registra no crash.log (sendInternalError)', async () => {
@@ -412,7 +444,7 @@ test('[UC-ERRO-001] catch de rota com erro responde o 500 padrão com o código 
     assert.match(log, /TypeError/);
 });
 
-test('[UC-ERRO-001] falha de disco ao salvar apostila e curso arquivado corrompido respondem 500 com o código do erro e ficam no crash.log', async () => {
+test('[UC-ERRO-001] falha de disco ao salvar apostila e curso arquivado corrompido respondem o 500 do contrato com o código do erro; o que falhou fica no crash.log', async () => {
     restoreSeed();
     const crashLog = () => fs.readFileSync(errorLog().crashLogPath(), 'utf8');
     // Pasta no lugar do .md: o fs.writeFileSync falha com EISDIR (como disco cheio ou
@@ -426,10 +458,13 @@ test('[UC-ERRO-001] falha de disco ao salvar apostila e curso arquivado corrompi
         const id = res.headers['x-request-id'];
         assert.match(String(id), REQUEST_ID);
         assert.equal(res.body.requestId, id);
-        assert.equal(res.body.error, `Falha ao gravar arquivo no disco. Código do erro: ${id}.`);
+        // Texto do contrato, igual em todas as rotas; o que a rota tentava fazer vai para o
+        // crash.log (antes a resposta começava com "Falha ao gravar arquivo no disco.").
+        assert.equal(res.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${id}.`);
         const log = crashLog();
         assert.match(log, new RegExp(`erro interno ${id} PUT /api/admin/material/Apostila_Disco_Falho \\(admin `));
         assert.match(log, /EISDIR/);
+        assert.match(crashBlock(log, id), /\n {2}contexto: Falha ao gravar arquivo no disco\.\n/);
 
         // O editor salva na turma (scope 'class'): a cópia da apostila para a turma
         // (forkMaterial) falhava do mesmo jeito e respondia 400 "EISDIR: illegal operation
@@ -438,7 +473,7 @@ test('[UC-ERRO-001] falha de disco ao salvar apostila e curso arquivado corrompi
             .send({ markdownText: '# Apostila', courseId: 'curso_legacy_01', studentClass: '1DES', scope: 'class' });
         assert.equal(forked.status, 500);
         const forkedId = forked.headers['x-request-id'];
-        assert.equal(forked.body.error, `Falha ao gravar arquivo no disco. Código do erro: ${forkedId}.`);
+        assert.equal(forked.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${forkedId}.`);
         assert.doesNotMatch(JSON.stringify(forked.body), /EISDIR|illegal/);
         assert.match(crashLog(), new RegExp(`erro interno ${forkedId} PUT /api/admin/material/Apostila_Disco_Falho \\(admin [^)]*\\)\\nError: EISDIR`));
     } finally {
@@ -460,8 +495,9 @@ test('[UC-ERRO-001] falha de disco ao salvar apostila e curso arquivado corrompi
             .send({ folder: 'curso_corrompido' });
         assert.equal(res.status, 500);
         const id = res.headers['x-request-id'];
-        assert.equal(res.body.error, `Arquivo corrompido. Código do erro: ${id}.`);
+        assert.equal(res.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${id}.`);
         assert.match(crashLog(), new RegExp(`erro interno ${id} POST /api/admin/archived-courses/restore \\(admin [^)]*\\)\\nSyntaxError`));
+        assert.match(crashBlock(crashLog(), id), /contexto: Arquivo corrompido\./);
     } finally {
         fs.rmSync(folder, { recursive: true, force: true });
     }
@@ -480,7 +516,8 @@ test('[UC-ERRO-001] falha ao gerar o ZIP do backup completo: antes do envio resp
         assert.equal(res.status, 500);
         const id = res.headers['x-request-id'];
         assert.match(String(id), REQUEST_ID);
-        assert.equal(res.body.error, `Falha ao gerar backup completo. Código do erro: ${id}.`);
+        assert.equal(res.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${id}.`);
+        assert.match(crashBlock(crashLog(), id), /contexto: Falha ao gerar backup completo\./);
         assert.equal(res.body.requestId, id);
         // A resposta de erro não sai como "arquivo .zip" com o JSON dentro.
         assert.match(String(res.headers['content-type']), /^application\/json/);
@@ -519,7 +556,134 @@ test('[UC-ERRO-001] falha ao gerar o ZIP do backup completo: antes do envio resp
     }
 });
 
-test('[UC-ERRO-001] sendInternalError: mensagem da rota com o código, sem error.message, e falha de gravação continua 503', () => {
+test('[UC-ERRO-001] restauração de backup: arquivo cortado ou inválido responde 400 em português; falha inesperada responde o 500 com o código, fica no crash.log e no histórico de backup', async () => {
+    restoreSeed();
+    const backupUtil = require('../../backend/utils/backup.js');
+    const AdmZip = require('adm-zip');
+    const crashLog = () => fs.readFileSync(errorLog().crashLogPath(), 'utf8');
+    const restore = (buffer, name) => request(app).post('/api/admin/backup/restore').set('x-admin-session', ADMIN_TOKEN)
+        .field('confirm', 'RESTAURAR').attach('file', buffer, name);
+    const lastFailure = () => [...(db.memory.auditLogs || [])].reverse().find(entry => entry.action === 'backup_restore_failed');
+    const studentsBefore = JSON.stringify(db.memory.students);
+    const full = Buffer.from(JSON.stringify(backupUtil.buildDataSnapshot()));
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+        // JSON cortado (download pela metade): antes 400 "Unterminated string in JSON at
+        // position 300 (line 1 column 301)", em inglês, sem código e sem registro.
+        const cut = await restore(full.subarray(0, 300), 'backup-cortado.json');
+        assert.equal(cut.status, 400);
+        assert.equal(cut.body.error, 'O arquivo de backup está corrompido ou incompleto e não pôde ser lido.');
+        assert.match(String(cut.headers['x-request-id']), REQUEST_ID);
+        assert.equal(lastFailure().details.error, cut.body.error, 'o histórico guarda o texto em português');
+
+        // ZIP cortado: antes "ADM-ZIP: Invalid or unsupported zip format. No END header found".
+        const archive = new AdmZip();
+        archive.addFile('backup-data.json', full);
+        const zipBuffer = archive.toBuffer();
+        const cutZip = await restore(zipBuffer.subarray(0, Math.floor(zipBuffer.length / 2)), 'backup-cortado.zip');
+        assert.equal(cutZip.status, 400);
+        assert.equal(cutZip.body.error, 'O arquivo ZIP do backup está corrompido ou incompleto e não pôde ser aberto.');
+        // backup-data.json cortado dentro de um ZIP íntegro.
+        const halfData = new AdmZip();
+        halfData.addFile('backup-data.json', full.subarray(0, 300));
+        const cutInside = await restore(halfData.toBuffer(), 'backup.zip');
+        assert.equal(cutInside.status, 400);
+        assert.equal(cutInside.body.error, 'O arquivo de backup está corrompido ou incompleto e não pôde ser lido.');
+
+        // A recusa prevista continua com a própria mensagem.
+        const invalid = await restore(Buffer.from('{"type":"outro"}'), 'backup.json');
+        assert.equal(invalid.status, 400);
+        assert.equal(invalid.body.error, 'Arquivo de backup inválido.');
+
+        // Falha inesperada no meio da restauração (disco cheio): 500 com o texto do contrato
+        // e o código, stack no crash.log e o mesmo texto no histórico de backup; antes 400
+        // "ENOSPC: no space left on device, write".
+        const original = backupUtil.restoreFromFile;
+        backupUtil.restoreFromFile = async () => {
+            throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC', syscall: 'write' });
+        };
+        try {
+            const failed = await restore(full, 'backup.json');
+            assert.equal(failed.status, 500);
+            const id = failed.headers['x-request-id'];
+            assert.equal(failed.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${id}.`);
+            assert.equal(failed.body.requestId, id);
+            assert.doesNotMatch(JSON.stringify(failed.body), /ENOSPC/);
+            const block = crashBlock(crashLog(), id);
+            assert.match(block, /POST \/api\/admin\/backup\/restore \(admin [^)]*\)\nError: ENOSPC/);
+            assert.match(block, /contexto: Falha ao restaurar o backup enviado\./);
+            assert.equal(lastFailure().details.error, failed.body.error);
+        } finally {
+            backupUtil.restoreFromFile = original;
+        }
+    } finally {
+        console.error = originalError;
+    }
+    assert.equal(JSON.stringify(db.memory.students), studentsBefore, 'nada foi restaurado');
+});
+
+test('[UC-ERRO-001] envio de arquivo com falha de disco responde o 500 com o código e fica no crash.log; envio recusado ou cortado continua 400 em português', async () => {
+    restoreSeed();
+    const runtimePaths = require('../../backend/runtimePaths.js');
+    const uploads = runtimePaths.UPLOADS_DIR;
+    const moved = `${uploads}.h9a-teste`;
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    const crashLog = () => fs.readFileSync(errorLog().crashLogPath(), 'utf8');
+    const originalError = console.error;
+    console.error = () => {};
+    // A pasta de envios vira um arquivo: o multer falha ao gravar o arquivo recebido
+    // (ENOTDIR), como com o disco cheio ou a pasta presa por outro programa no Windows.
+    // Antes: 400 "Erro no upload: o arquivo não pôde ser recebido.", sem código e sem registro.
+    fs.mkdirSync(uploads, { recursive: true });
+    fs.renameSync(uploads, moved);
+    fs.writeFileSync(uploads, 'não é pasta');
+    try {
+        const routes = [
+            ['/api/admin/upload-image', 'image', 'figura.png'],
+            ['/api/admin/upload', 'file', 'material.png'],
+            ['/api/admin/library/upload', 'file', 'material.png'],
+            ['/api/admin/attendance/justification-upload', 'file', 'atestado.png'],
+        ];
+        for (const [route, field, name] of routes) {
+            const res = await request(app).post(route).set('x-admin-session', ADMIN_TOKEN).attach(field, png, name);
+            assert.equal(res.status, 500, route);
+            const id = res.headers['x-request-id'];
+            assert.equal(res.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${id}.`, route);
+            const block = crashBlock(crashLog(), id);
+            assert.match(block, new RegExp(`erro interno ${id} POST ${route.replace(/\//g, '\\/')} \\(admin `), route);
+            assert.match(block, /ENOTDIR/, route);
+            assert.match(block, /contexto: Falha ao gravar no disco o arquivo enviado\./, route);
+        }
+        // Restaurar backup com a mesma falha: 500 com o código, e o histórico de backup
+        // guarda o mesmo texto.
+        const restore = await request(app).post('/api/admin/backup/restore').set('x-admin-session', ADMIN_TOKEN)
+            .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{}'), 'backup.json');
+        assert.equal(restore.status, 500);
+        const restoreId = restore.headers['x-request-id'];
+        assert.equal(restore.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${restoreId}.`);
+        assert.match(crashBlock(crashLog(), restoreId), /ENOTDIR/);
+        const failure = [...db.memory.auditLogs].reverse().find(entry => entry.action === 'backup_restore_failed');
+        assert.equal(failure.details.error, restore.body.error);
+    } finally {
+        fs.rmSync(uploads, { force: true });
+        fs.renameSync(moved, uploads);
+        console.error = originalError;
+    }
+
+    // Recusa do envio (tipo bloqueado) e formulário cortado no meio: 400 em português.
+    const blocked = await request(app).post('/api/admin/upload-image').set('x-admin-session', ADMIN_TOKEN)
+        .attach('image', Buffer.from('MZ'), 'programa.exe');
+    assert.equal(blocked.status, 400);
+    assert.equal(blocked.body.error, 'Erro no upload: tipo de arquivo não permitido.');
+    const truncated = await request(app).post('/api/admin/upload-image').set('x-admin-session', ADMIN_TOKEN)
+        .set('Content-Type', 'multipart/form-data; boundary=XYZ')
+        .send('--XYZ\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\n\r\nabc');
+    assert.equal(truncated.status, 400);
+    assert.equal(truncated.body.error, 'Erro no upload: o arquivo não pôde ser recebido.');
+});
+
+test('[UC-ERRO-001] sendInternalError: sempre o texto do contrato com o código, sem error.message; o contexto da rota vai só para o crash.log; falha de gravação continua 503', () => {
     const fakeRes = () => ({
         headersSent: false, writableEnded: false, statusCode: 200, body: null,
         status(code) { this.statusCode = code; return this; },
@@ -532,7 +696,10 @@ test('[UC-ERRO-001] sendInternalError: mensagem da rota com o código, sem error
         const custom = fakeRes();
         middlewares.sendInternalError(new Error('ENOSPC: no space left on device'), { id: 'beef0001', method: 'PUT', originalUrl: '/api/admin/material/x' }, custom, 'Falha ao gravar arquivo no disco.');
         assert.equal(custom.statusCode, 500);
-        assert.deepEqual(custom.body, { success: false, error: 'Falha ao gravar arquivo no disco. Código do erro: beef0001.', requestId: 'beef0001' });
+        assert.deepEqual(custom.body, { success: false, error: 'Ocorreu um erro interno no servidor. Código do erro: beef0001.', requestId: 'beef0001' });
+        const block = crashBlock(fs.readFileSync(errorLog().crashLogPath(), 'utf8'), 'beef0001');
+        assert.match(block, /erro interno beef0001 PUT \/api\/admin\/material\/x\nError: ENOSPC/);
+        assert.match(block, /\n {2}contexto: Falha ao gravar arquivo no disco\.\n/);
 
         const generic = fakeRes();
         middlewares.sendInternalError(new Error('x'), { id: 'beef0002' }, generic);
@@ -575,7 +742,7 @@ test('[UC-ERRO-001] sendRouteError: recusa prevista mantém status e mensagem; f
         const disk = fakeRes();
         middlewares.sendRouteError(Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }), { id: 'feed0004' }, disk, 'Falha ao gravar arquivo no disco.');
         assert.equal(disk.statusCode, 500);
-        assert.equal(disk.body.error, 'Falha ao gravar arquivo no disco. Código do erro: feed0004.');
+        assert.equal(disk.body.error, 'Ocorreu um erro interno no servidor. Código do erro: feed0004.');
 
         const dbWrite = fakeRes();
         middlewares.sendRouteError(Object.assign(new Error('SQLITE_FULL'), { code: 'ICLASS_DB_WRITE' }), { id: 'feed0005' }, dbWrite);

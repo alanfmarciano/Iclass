@@ -393,29 +393,48 @@ function guarded(req, res, fn) {
 }
 
 // Para os catch das rotas (e todo 500 de rota): registra no crash.log e responde o 500
-// com o código do erro. `message` (opcional, em português, terminada em ponto) troca o
-// início genérico por um que diga ao professor o que falhou, por exemplo "Falha ao
-// gravar arquivo no disco. Código do erro: a1b2c3d4."; nunca leva error.message.
-function sendInternalError(err, req, res, message) {
-    return respondWithError(err, req, res, { internalMessage: message });
+// com o texto do contrato, igual em todas as rotas: "Ocorreu um erro interno no
+// servidor. Código do erro: a1b2c3d4.". `context` (opcional, em português) diz o que a
+// rota tentava fazer ("Falha ao gravar arquivo no disco.") e vai só para o crash.log,
+// como a linha "contexto: ..." depois do stack. A resposta nunca leva error.message.
+function sendInternalError(err, req, res, context) {
+    return respondWithError(err, req, res, { context });
 }
 
 // Recusas previstas que chegam sem status: caminho ou identificador inválido
 // (utils/safePath.js), com a mensagem em português.
 const CLIENT_ERROR_CODES = new Set(['INVALID_PATH', 'PATH_OUTSIDE_BASE', 'INVALID_ID']);
 
+// Recusa prevista: erro com status 4xx e mensagem em português, como "Turma não
+// encontrada." (classContent) ou "Arquivo de backup inválido." (utils/backup.js), ou um
+// dos códigos de CLIENT_ERROR_CODES. Devolve o status da resposta, ou 0 se não for recusa.
+function routeRefusalStatus(err) {
+    if (!err || !err.message) return 0;
+    const status = Number(err.status);
+    if (status >= 400 && status < 500) return status;
+    return CLIENT_ERROR_CODES.has(err.code) ? 400 : 0;
+}
+
 // Para os catch que recebem tanto a recusa prevista quanto a falha inesperada (por
-// exemplo, o try em volta de forkMaterial ou de transitionExamApplication). A recusa
-// (erro com status 4xx e mensagem em português, como "Turma não encontrada.") responde
-// como antes; o resto (disco cheio, pasta no lugar do .md, TypeError) vira o 500 com o
-// código do erro e o registro no crash.log. Antes, `res.status(error.status || 400)
+// exemplo, o try em volta de forkMaterial, de transitionExamApplication ou da
+// restauração de backup). A recusa responde com o status e a mensagem dela; o resto
+// (disco cheio, pasta no lugar do .md, JSON cortado, TypeError) vira o 500 com o código
+// do erro e o registro no crash.log. Antes, `res.status(error.status || 400)
 // .json({ error: error.message })` devolvia "EISDIR: illegal operation on a directory"
 // num 400, sem código e sem registro (ENG-04).
-function sendRouteError(err, req, res, message) {
-    const status = Number(err && err.status);
-    if (status >= 400 && status < 500 && err.message) return res.status(status).json({ error: err.message });
-    if (err && CLIENT_ERROR_CODES.has(err.code) && err.message) return res.status(400).json({ error: err.message });
-    return sendInternalError(err, req, res, message);
+function sendRouteError(err, req, res, context) {
+    const status = routeRefusalStatus(err);
+    if (status) return res.status(status).json({ error: err.message });
+    return sendInternalError(err, req, res, context);
+}
+
+// Texto que a resposta de sendRouteError leva para este erro, para quem também precisa
+// registrá-lo (o histórico de backup guarda o mesmo texto que a tela mostrou, com o
+// código do erro, e não a mensagem técnica em inglês).
+function publicErrorMessage(err, req) {
+    if (err && err.code === 'ICLASS_DB_WRITE') return DB_WRITE_ERROR_MESSAGE;
+    if (routeRefusalStatus(err)) return String(err.message);
+    return internalErrorMessage(req);
 }
 
 // Código do pedido (primeiro middleware do createApp): vai no cabeçalho X-Request-Id de
@@ -1088,6 +1107,12 @@ function getReleasedItemsForClass(cls, studentEmail) {
 const DB_WRITE_ERROR_MESSAGE = 'Não foi possível gravar os dados agora. Tente de novo em alguns segundos.';
 const INTERNAL_ERROR_MESSAGE = 'Ocorreu um erro interno no servidor.';
 
+// Texto do erro interno (contrato da fase 2), com o código do pedido quando há um.
+function internalErrorMessage(req) {
+    const requestId = req && req.id ? String(req.id) : '';
+    return requestId ? `${INTERNAL_ERROR_MESSAGE} Código do erro: ${requestId}.` : INTERNAL_ERROR_MESSAGE;
+}
+
 // Resposta já começou (stream, sendFile): não há como mandar outro corpo; só fecha.
 function finishStartedResponse(res) {
     if (res && !res.writableEnded && typeof res.end === 'function') {
@@ -1112,14 +1137,16 @@ function errorHandler(err, req, res, next) {
     return respondWithError(err, req, res, {});
 }
 
-function respondWithError(err, req, res, { internalMessage } = {}) {
+function respondWithError(err, req, res, { context } = {}) {
     const request = req || {};
     const requestId = request.id || '';
     const headersSent = !!(res && res.headersSent);
     if (!headersSent) clearDownloadHeaders(res);
 
     if (err && err.code === 'ICLASS_DB_WRITE') {
-        // O crash.log já recebe a falha de gravação pelo próprio banco (uma linha por minuto).
+        // Aqui só a linha no console: quem registra a falha de gravação no crash.log é o
+        // motor de gravação (H1-a, por logError, no máximo uma linha por minuto), para uma
+        // trava longa do banco não virar um bloco por pedido.
         console.error(`⚠️ [GRAVAÇÃO] ${request.method || ''} ${String(request.originalUrl || request.url || '').split('?')[0]}: ${err.message || err}`);
         if (headersSent) return finishStartedResponse(res);
         return res.status(503).json({ success: false, error: DB_WRITE_ERROR_MESSAGE, retryable: true, ...(requestId ? { requestId } : {}) });
@@ -1137,15 +1164,16 @@ function respondWithError(err, req, res, { internalMessage } = {}) {
     }
 
     if (status >= 500) {
-        // Erro interno: registra o stack no crash.log com o código do pedido e responde só
-        // a mensagem padrão (ou a da rota) com o código, que o professor repassa ao
-        // suporte (ENG-04). Nunca expõe a mensagem do código (ex.: "email.trim is not a function").
-        logError('erro interno', err, { req: request });
+        // Erro interno: registra o stack no crash.log com o código do pedido (e o contexto
+        // dado pela rota) e responde só o texto padrão com o código, que o professor
+        // repassa ao suporte (ENG-04). Nunca expõe a mensagem do código (ex.: "email.trim
+        // is not a function").
+        const contextText = typeof context === 'string' ? context.trim() : '';
+        logError('erro interno', err, { req: request, details: contextText ? { contexto: contextText } : undefined });
         if (headersSent) return finishStartedResponse(res);
-        const base = typeof internalMessage === 'string' && internalMessage.trim() ? internalMessage.trim() : INTERNAL_ERROR_MESSAGE;
         return res.status(status).json({
             success: false,
-            error: requestId ? `${base} Código do erro: ${requestId}.` : base,
+            error: internalErrorMessage(request),
             ...(requestId ? { requestId } : {}),
         });
     }
@@ -1341,6 +1369,7 @@ module.exports = {
     guarded,
     sendInternalError,
     sendRouteError,
+    publicErrorMessage,
     resolveAdminSession,
     hasStudentSessionToken,
     assignRequestId,

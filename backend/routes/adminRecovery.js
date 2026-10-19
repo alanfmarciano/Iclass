@@ -2,14 +2,16 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse, guarded, sendInternalError, sendRouteError } = require('../middlewares.js');
+const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse, guarded, sendInternalError, sendRouteError, publicErrorMessage } = require('../middlewares.js');
 const { logError } = require('../utils/errorLog.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
 const backupAudit = require('../utils/backupAudit.js');
 
-function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage = error => `Erro no upload: ${error.message}`, uploadDir }) {
-    if (typeof uploadForRequest !== 'function' || typeof rejectInvalidUpload !== 'function' || !uploadDir) {
+// uploadErrorMessage e isUploadRequestError vêm de admin.js: o envio recusado (multer,
+// formulário cortado) responde 400 em português; o resto é falha do disco (500 com código).
+function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage, isUploadRequestError, uploadDir }) {
+    if (typeof uploadForRequest !== 'function' || typeof rejectInvalidUpload !== 'function' || typeof uploadErrorMessage !== 'function' || typeof isUploadRequestError !== 'function' || !uploadDir) {
         throw new Error('Dependências de upload inválidas para adminRecovery.');
     }
 
@@ -170,7 +172,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 if (!res.headersSent) return sendInternalError(error, req, res, 'Falha ao gerar backup completo.');
                 // O ZIP já começou a descer: registra e corta a conexão, para o navegador
                 // acusar o download como falho em vez de guardar um ZIP pela metade.
-                logError('erro interno', error, { req });
+                logError('erro interno', error, { req, details: { contexto: 'Falha ao gerar backup completo (ZIP cortado no meio do envio).' } });
                 res.destroy(error);
             }
         });
@@ -209,6 +211,13 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                     await db.save().catch(() => {});
                 };
                 if (error) {
+                    // Envio recusado (tamanho, tipo, formulário cortado): 400 em português.
+                    // Falha do disco ao gravar o arquivo recebido: 500 com o código do erro,
+                    // e o histórico de backup guarda o mesmo texto que a tela mostrou.
+                    if (!isUploadRequestError(error)) {
+                        await recordRefusal(publicErrorMessage(error, req));
+                        return sendInternalError(error, req, res, 'Falha ao gravar no disco o backup enviado para restaurar.');
+                    }
                     const message = uploadErrorMessage(error);
                     await recordRefusal(message);
                     return res.status(400).json({ error: message });
@@ -257,12 +266,19 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                     discardUpload(temporaryFile);
                     if (restoreError.legacyBackup) {
                         // Nada foi restaurado: a tela mostra o aviso e pede a confirmação.
-                        return res.status(409).json({ error: restoreError.message, legacyBackup: true, exportedAt: restoreError.exportedAt });
+                        return res.status(409).json({ error: backupUtil.LEGACY_BACKUP_WARNING, legacyBackup: true, exportedAt: restoreError.exportedAt });
                     }
                     keepBackupHistory(backupHistory);
-                    recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...fileInfo, error: String(restoreError.message || '').slice(0, 300) });
+                    // Recusa prevista do arquivo (formato, versão, JSON ou ZIP cortado, contas:
+                    // status 400 em utils/backup.js) volta com a própria mensagem. O resto
+                    // (disco cheio, arquivo preso por outro programa, falha inesperada) é erro
+                    // interno: 500 com o código do erro e o stack no crash.log. Antes tudo
+                    // saía em 400 com a mensagem crua ("Unterminated string in JSON at
+                    // position 300", "ENOSPC: no space left on device"), sem código (ENG-04).
+                    const shownError = publicErrorMessage(restoreError, req);
+                    recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...fileInfo, error: shownError.slice(0, 300) });
                     await db.save().catch(() => {});
-                    res.status(400).json({ error: restoreError.message || 'Falha ao restaurar backup.' });
+                    return sendRouteError(restoreError, req, res, 'Falha ao restaurar o backup enviado.');
                 }
             }));
         });
