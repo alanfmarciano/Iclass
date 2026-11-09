@@ -215,7 +215,7 @@ describe('Sistema · restaurar backup de versão anterior', () => {
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
     await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup-antigo.json', { type: 'application/json' }))
-    await user.type(screen.getByPlaceholderText('Digite RESTAURAR'), 'RESTAURAR')
+    await user.type(screen.getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
     await user.click(screen.getByRole('button', { name: 'Restaurar' }))
 
     // 1º envio: o servidor não restaura e devolve o aviso, que a tela mostra.
@@ -234,6 +234,28 @@ describe('Sistema · restaurar backup de versão anterior', () => {
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
     expect(mocks.toast.success.mock.calls[0][0]).toMatch(/aplicações de prova foram refeitas a partir das turmas do backup \(3 aplicações atuais descartadas, 1 refeita\)/)
     expect(window.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('[UC-BACKUP-001] restaurar usa a confirmação digitada padrão: o botão só libera com o arquivo e RESTAURAR', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true, accountsNotRestored: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const user = userEvent.setup()
+    const { container } = render(<SistemaPage />)
+    const button = screen.getByRole('button', { name: 'Restaurar' })
+    const field = screen.getByLabelText('Digite RESTAURAR para confirmar')
+    expect(button).toBeDisabled()
+    await user.type(field, 'restaurar')
+    expect(button).toBeDisabled()
+    await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup.json', { type: 'application/json' }))
+    expect(button).toBeEnabled()
+    await user.clear(field)
+    await user.type(field, 'RESTAURA')
+    expect(button).toBeDisabled()
+    await user.type(field, 'R{Enter}')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0][1].body.get('confirm')).toBe('RESTAURAR')
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
   })
 
   it('[UC-BACKUP-001] histórico anota a restauração de backup de versão anterior', () => {

@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../database.js');
+const { recordAudit } = require('../utils/audit.js');
 const {
     DB_ADMINS_FILE,
     readJSON,
@@ -90,18 +91,19 @@ function assignmentSnapshot(account) {
     };
 }
 
+// Escopo do professor (turmas, cursos, escolas): atalho para recordAudit, na categoria
+// 'account', gravando também type/actorEmail/at como as entradas antigas.
 function recordAssignmentAudit(req, requester, targetEmail, before, after) {
-    if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-    db.memory.auditLogs.push({
-        id: `audit_assignment_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-        type: 'professor_assignments_updated',
-        actorEmail: requester && requester.email,
+    const timestamp = Date.now();
+    recordAudit(db.memory, {
+        req,
+        actor: requester,
+        action: 'professor_assignments_updated',
+        category: 'account',
         targetEmail,
         before,
         after,
-        at: Date.now(),
-        ip: req.ip || req.socket && req.socket.remoteAddress || '',
-    });
+    }, { timestamp, legacy: { type: 'professor_assignments_updated', actorEmail: requester && requester.email, at: timestamp } });
 }
 
 function createAdminAccountsRouter() {

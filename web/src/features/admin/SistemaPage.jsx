@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { Modal } from '../../components/ui/Modal'
+import { TypedConfirm, typedConfirmMatches } from '../../components/ui/TypedConfirm'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Badge } from '../../components/ui/Badge'
 import { useApi } from '../../hooks/useApi'
@@ -219,11 +220,11 @@ function BackupCard({ isAdmin }) {
   }
   async function restore({ acceptLegacy = false } = {}) {
     if (!file) return toast.error('Escolha o arquivo de backup')
-    if (confirmTxt.trim().toUpperCase() !== 'RESTAURAR') return toast.error('Digite RESTAURAR para confirmar')
+    if (!typedConfirmMatches(confirmTxt, 'RESTAURAR')) return toast.error('Digite RESTAURAR para confirmar')
     if (!acceptLegacy && !window.confirm(replaceAccounts
       ? 'Isto substitui TODOS os dados atuais, inclusive as contas de acesso. Um backup de segurança será criado antes. Continuar?'
       : 'Isto substitui TODOS os dados atuais (as contas de acesso continuam as de hoje). Um backup de segurança será criado antes. Continuar?')) return
-    const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt); fd.append('replaceAccounts', replaceAccounts ? '1' : '0')
+    const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt.trim().toUpperCase()); fd.append('replaceAccounts', replaceAccounts ? '1' : '0')
     if (acceptLegacy) fd.append('acceptLegacy', '1')
     setLegacyWarning(null)
     setBusy(true)
@@ -262,10 +263,10 @@ function BackupCard({ isAdmin }) {
           <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo. Numa instalação nova (troca de computador), marque a opção para trazer os professores do backup.</p>
           <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
           <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
-          <div className="flex flex-wrap items-center gap-3">
-            <Input id="bk-confirm" value={confirmTxt} onChange={(e) => setConfirmTxt(e.target.value)} placeholder="Digite RESTAURAR" />
-            <Button variant="destructive" icon={Upload} loading={busy} onClick={() => restore()}>Restaurar</Button>
+          <div className="max-w-sm">
+            <TypedConfirm id="bk-confirm" word="RESTAURAR" value={confirmTxt} onChange={setConfirmTxt} disabled={busy} onConfirm={() => file && restore()} />
           </div>
+          <Button variant="destructive" icon={Upload} loading={busy} disabled={!file || !typedConfirmMatches(confirmTxt, 'RESTAURAR')} onClick={() => restore()}>Restaurar</Button>
         </div>}
         {isAdmin && <BackupHistory entries={history.data?.entries} />}
         <Modal
@@ -304,17 +305,6 @@ export function maintenanceClassOptions(classes, courses, current) {
     options.unshift({ key: _classKey(current.courseId, current.className), className: current.className, courseId: current.courseId || '', courseName: current.courseName || current.courseId || '' })
   }
   return options
-}
-
-// Confirmação digitada no padrão do app (RESETAR, RESTAURAR...): o botão só funciona
-// com a palavra certa, e o servidor confere de novo.
-function TypedConfirm({ id, word, value, onChange }) {
-  return (
-    <div className="space-y-2">
-      <p className="text-sm text-muted">Digite <b className="text-text font-mono">{word}</b> para confirmar.</p>
-      <Input id={id} aria-label={`Digite ${word} para confirmar`} value={value} onChange={(e) => onChange(e.target.value)} placeholder={word} autoComplete="off" />
-    </div>
-  )
 }
 
 export default function SistemaPage() {
@@ -366,7 +356,7 @@ export default function SistemaPage() {
     catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
   async function flush() {
-    if (confirmText.trim().toUpperCase() !== 'LIMPAR') return toast.error('Digite LIMPAR para confirmar')
+    if (!typedConfirmMatches(confirmText, 'LIMPAR')) return toast.error('Digite LIMPAR para confirmar')
     setBusy(true)
     try {
       const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() })
@@ -374,7 +364,7 @@ export default function SistemaPage() {
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
   async function reset() {
-    if (confirmText.trim().toUpperCase() !== 'RESETAR') return toast.error('Digite RESETAR para confirmar')
+    if (!typedConfirmMatches(confirmText, 'RESETAR')) return toast.error('Digite RESETAR para confirmar')
     setBusy(true)
     try {
       const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() })
@@ -459,7 +449,7 @@ export default function SistemaPage() {
       </Modal>
 
       <Modal open={dialog === 'flush'} onClose={closeDialog} title={`Limpar estado de prova · turma ${classLabel}`} description="Apaga só o estado de tentativas e as mensagens de prova da turma escolhida."
-        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!flushPlan || flushBlocked || flushEmpty || confirmText.trim().toUpperCase() !== 'LIMPAR'} onClick={flush}>Limpar estado</Button></>}>
+        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!flushPlan || flushBlocked || flushEmpty || !typedConfirmMatches(confirmText, 'LIMPAR')} onClick={flush}>Limpar estado</Button></>}>
         <div className="space-y-4">
           <Select label="Aplicação" value={flushApplication} onChange={(e) => { setFlushApplication(e.target.value); loadPreview(e.target.value) }}>
             <option value="">Todas as provas desta turma</option>
@@ -479,12 +469,12 @@ export default function SistemaPage() {
               </>}
             </div>
           )}
-          {flushPlan && !flushBlocked && !flushEmpty && <TypedConfirm id="flush-confirm" word="LIMPAR" value={confirmText} onChange={setConfirmText} />}
+          {flushPlan && !flushBlocked && !flushEmpty && <TypedConfirm id="flush-confirm" word="LIMPAR" value={confirmText} onChange={setConfirmText} disabled={busy} onConfirm={flush} />}
         </div>
       </Modal>
 
       <Modal open={dialog === 'reset'} onClose={closeDialog} title={`Resetar sala · turma ${classLabel}`} description="Um backup dos dados (com as aplicações de prova) é salvo antes do reset."
-        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!resetPlan || confirmText.trim().toUpperCase() !== 'RESETAR'} onClick={reset}>Confirmar reset</Button></>}>
+        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!resetPlan || !typedConfirmMatches(confirmText, 'RESETAR')} onClick={reset}>Confirmar reset</Button></>}>
         <div className="space-y-4">
           {previewError && <p className="text-sm text-danger">{previewError}</p>}
           {!resetPlan && !previewError && <p className="text-sm text-muted">Conferindo a turma…</p>}
@@ -504,7 +494,7 @@ export default function SistemaPage() {
               <p className="text-xs text-warning">Desfazer exige restaurar esse backup, e a restauração volta todas as turmas ao momento do reset: entregas, notas e mudanças feitas depois, em qualquer turma, se perdem.</p>
             </div>
           )}
-          {resetPlan && <TypedConfirm id="reset-confirm" word="RESETAR" value={confirmText} onChange={setConfirmText} />}
+          {resetPlan && <TypedConfirm id="reset-confirm" word="RESETAR" value={confirmText} onChange={setConfirmText} disabled={busy} onConfirm={reset} />}
         </div>
       </Modal>
     </div>

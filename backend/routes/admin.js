@@ -48,6 +48,7 @@ const {
     studentInClass,
     normalizeClassEntriesForStorage,
 } = require('../utils/students.js');
+const { recordAudit } = require('../utils/audit.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -99,18 +100,23 @@ function rejectInvalidBranding(res, body) {
     return true;
 }
 
+// Turmas, cursos e conteúdo: atalho para recordAudit (utils/audit.js). A categoria sai
+// do nome da ação (class_* e course_* em 'academic', content_* em 'content', como na
+// leitura das entradas antigas). Continua gravando type/actorEmail/target/at, que as
+// entradas antigas já tinham, e before/after viram uma cópia (antes a turma ia por
+// referência e a entrada mudava junto com a turma).
 function recordAcademicAudit(req, actor, type, target, before, after) {
-    if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-    db.memory.auditLogs.push({
-        id: `audit_academic_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-        type,
-        actorEmail: actor && actor.email,
-        target,
+    const timestamp = Date.now();
+    const scope = target && typeof target === 'object' ? target : {};
+    recordAudit(db.memory, {
+        req,
+        actor,
+        action: type,
+        courseId: scope.courseId || undefined,
+        studentClass: scope.className || undefined,
         before: before || null,
         after: after || null,
-        at: Date.now(),
-        ip: req.ip || req.socket && req.socket.remoteAddress || '',
-    });
+    }, { timestamp, legacy: { type, actorEmail: actor && actor.email, target, at: timestamp } });
 }
 const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
