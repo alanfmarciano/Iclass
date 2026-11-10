@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ArmazenamentoCard, ONEDRIVE_WARNING, compactResultText, databaseSizeText, formatBytes, freeSpaceText, topCollections } from './ArmazenamentoCard'
+import { ArmazenamentoCard, ONEDRIVE_WARNING, compactResultText, databaseSizeText, formatBytes, freeSpaceText, topCollections, writeErrorText } from './ArmazenamentoCard'
 
 const MB = 1024 * 1024
 
@@ -54,7 +54,7 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(mocks.calls[0]).toBe('/api/admin/storage')
     expect(screen.getByText('Armazenamento')).toBeVisible()
     expect(screen.getByText('Vale compactar')).toBeVisible()
-    expect(screen.getByText('122 MB no total: 120 MB no arquivo principal e 2 MB de gravações recentes (-wal)')).toBeVisible()
+    expect(screen.getByText('122 MB no total, sendo 120 MB no arquivo principal e 2 MB de gravações recentes (-wal)')).toBeVisible()
     expect(screen.getByText('48 MB (40% do arquivo)')).toBeVisible()
     expect(screen.getByText('Registros do Monitor: 52.000 · Presenças: 9.800 · Auditoria: 4.200 · Entregas de prova: 1.200 · Caderno dos alunos: 300')).toBeVisible()
     expect(screen.getByText('152.340')).toBeVisible()
@@ -74,7 +74,8 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(alerts.some((node) => node.textContent.includes(ONEDRIVE_WARNING))).toBe(true)
     const failure = alerts.find((node) => node.textContent.includes('Última falha ao gravar'))
     expect(failure).toBeTruthy()
-    expect(failure.textContent).toMatch(/SQLITE_BUSY · o IClass está tentando gravar de novo sozinho/)
+    // Antes aparecia só o código cru ("· SQLITE_BUSY").
+    expect(failure.textContent).toMatch(/o banco estava ocupado por outro programa \(antivírus, OneDrive ou cópia de arquivos\) \(código SQLITE_BUSY\) · o IClass está tentando gravar de novo sozinho/)
     expect(failure.className).toMatch(/text-danger/)
   })
 
@@ -95,7 +96,7 @@ describe('ArmazenamentoCard · Armazenamento', () => {
   it('[UC-ARMAZENAMENTO-001] Compactar pede COMPACTAR, não tem prazo no navegador e mostra antes e depois', async () => {
     const user = userEvent.setup()
     mocks.result = { data: storage(), error: null }
-    mocks.post.mockResolvedValue({ success: true, antes: 122 * MB, depois: 72 * MB, ms: 2300, storage: {} })
+    mocks.post.mockResolvedValue({ success: true, antes: 122 * MB, depois: 72 * MB, recuperadoBytes: 48 * MB, ms: 2300, storage: {} })
     render(<ArmazenamentoCard />)
     await user.click(screen.getByRole('button', { name: /Compactar banco/ }))
     const confirm = screen.getByRole('button', { name: /^Compactar$/ })
@@ -104,8 +105,8 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(confirm).toBeEnabled()
     await user.click(confirm)
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/storage/compact', { confirm: 'COMPACTAR' }, { timeoutMs: 0 }))
-    expect(mocks.toast.success).toHaveBeenCalledWith('Banco compactado: de 122 MB para 72 MB em 2,3 s.')
-    expect(await screen.findByText('Banco compactado: de 122 MB para 72 MB em 2,3 s.', { selector: 'p' })).toBeVisible()
+    expect(mocks.toast.success).toHaveBeenCalledWith('Banco compactado em 2,3 s: 48 MB de espaço vazio devolvido ao disco. No disco, o banco foi de 122 MB para 72 MB (o antes inclui as gravações recentes do -wal).')
+    expect(await screen.findByText('Banco compactado em 2,3 s: 48 MB de espaço vazio devolvido ao disco. No disco, o banco foi de 122 MB para 72 MB (o antes inclui as gravações recentes do -wal).', { selector: 'p' })).toBeVisible()
     expect(mocks.refetch).toHaveBeenCalled()
   })
 
@@ -127,7 +128,12 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(freeSpaceText({ freeBytes: null })).toBe('ainda não medido')
     expect(freeSpaceText({ freeBytes: 0, databaseBytes: 4 * MB })).toBe('0 KB (0% do arquivo)')
     expect(topCollections({ a: 1, b: 5, c: 0 })).toEqual([{ name: 'b', label: 'b', rows: 5 }, { name: 'a', label: 'a', rows: 1 }])
-    expect(compactResultText({ antes: 2 * MB, depois: MB, ms: 150 })).toBe('Banco compactado: de 2 MB para 1 MB em 150 ms.')
+    expect(compactResultText({ antes: 2 * MB, depois: MB, ms: 150 })).toBe('Banco compactado em 150 ms: de 2 MB para 1 MB.')
+    expect(compactResultText({ antes: 2 * MB, depois: MB, recuperadoBytes: 512 * 1024, ms: 150 })).toBe('Banco compactado em 150 ms: 512 KB de espaço vazio devolvido ao disco. No disco, o banco foi de 2 MB para 1 MB (o antes inclui as gravações recentes do -wal).')
+    expect(writeErrorText({ code: 'SQLITE_FULL' })).toBe('o disco está cheio (código SQLITE_FULL)')
+    expect(writeErrorText({ code: 'SQLITE_IOERR_WRITE' })).toBe('o disco não deixou gravar (erro de leitura ou escrita) (código SQLITE_IOERR_WRITE)')
+    expect(writeErrorText({ code: 'XYZ' })).toBe('erro inesperado ao gravar (código XYZ)')
+    expect(writeErrorText({})).toBe('erro inesperado ao gravar')
   })
 
   it('[UC-ARMAZENAMENTO-001] banco recém-aberto em WAL: sem "1.014 KB" e com a proporção sobre o tamanho do servidor', () => {
@@ -137,7 +143,7 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(formatBytes(999 * 1024)).toBe('999 KB')
     expect(formatBytes(1023.9 * MB)).toBe('1 GB')
     const wal = { databaseBytes: 4096, walBytes: 1014 * 1024, allocatedBytes: 1020 * 1024, freeBytes: 8192 }
-    expect(databaseSizeText(wal)).toBe('1 MB no total: 4 KB no arquivo principal e 1 MB de gravações recentes (-wal)')
+    expect(databaseSizeText(wal)).toBe('1 MB no total, sendo 4 KB no arquivo principal e 1 MB de gravações recentes (-wal)')
     expect(freeSpaceText(wal)).toBe('8 KB (1% do arquivo)')
     expect(databaseSizeText({ databaseBytes: 3 * MB, walBytes: 0 })).toBe('3 MB')
     // Servidor antigo sem allocatedBytes: cai no databaseBytes.

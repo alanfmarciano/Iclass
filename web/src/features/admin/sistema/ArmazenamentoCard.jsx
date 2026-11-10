@@ -73,15 +73,15 @@ export function freeSpaceText(storage) {
   return `${formatBytes(storage.freeBytes)}${total > 0 ? ` (${Math.min(100, percent)}% do arquivo)` : ''}`
 }
 
-// "120 MB" ou, com o -wal ainda cheio, "122 MB no total: 120 MB no arquivo principal e
-// 2 MB de gravações recentes (-wal)". O total vem primeiro: logo depois de ligar, em WAL, o
+// "120 MB" ou, com o -wal ainda cheio, "122 MB no total, sendo 120 MB no arquivo principal
+// e 2 MB de gravações recentes (-wal)" (sem dois-pontos: a linha já vem depois do rótulo). O total vem primeiro: logo depois de ligar, em WAL, o
 // arquivo principal pode ter só 4 KB e quase tudo estar no -wal.
 export function databaseSizeText(storage) {
   if (!storage) return ''
   const main = Number(storage.databaseBytes) || 0
   const wal = Number(storage.walBytes) || 0
   if (wal <= 0) return formatBytes(main)
-  return `${formatBytes(main + wal)} no total: ${formatBytes(main)} no arquivo principal e ${formatBytes(wal)} de gravações recentes (-wal)`
+  return `${formatBytes(main + wal)} no total, sendo ${formatBytes(main)} no arquivo principal e ${formatBytes(wal)} de gravações recentes (-wal)`
 }
 
 export function lastFullSaveText(storage) {
@@ -90,9 +90,41 @@ export function lastFullSaveText(storage) {
   return `${formatWhen(storage.lastFullSaveAt)}${took ? `, levou ${took}` : ''}`
 }
 
+// O "antes" do servidor soma o -wal, que o checkpoint do fim zera de qualquer jeito; por
+// isso o texto diz primeiro o espaço vazio devolvido (recuperadoBytes, o freeBytes de
+// antes menos o de depois) e só depois o tamanho no disco. Servidor sem recuperadoBytes
+// (versão anterior): só o antes e depois.
 export function compactResultText(result) {
   if (!result) return ''
-  return `Banco compactado: de ${formatBytes(result.antes)} para ${formatBytes(result.depois)}${formatMs(result.ms) ? ` em ${formatMs(result.ms)}` : ''}.`
+  const took = formatMs(result.ms) ? ` em ${formatMs(result.ms)}` : ''
+  const sizes = `de ${formatBytes(result.antes)} para ${formatBytes(result.depois)}`
+  if (result.recuperadoBytes === undefined || result.recuperadoBytes === null) return `Banco compactado${took}: ${sizes}.`
+  return `Banco compactado${took}: ${formatBytes(result.recuperadoBytes)} de espaço vazio devolvido ao disco. No disco, o banco foi ${sizes} (o antes inclui as gravações recentes do -wal).`
+}
+
+// Código da falha de gravação com uma explicação em português; o código vai junto, entre
+// parênteses, para o suporte (decisões da fase 2, §5).
+const WRITE_ERROR_TEXTS = {
+  SQLITE_BUSY: 'o banco estava ocupado por outro programa (antivírus, OneDrive ou cópia de arquivos)',
+  SQLITE_LOCKED: 'o banco estava ocupado por outro programa (antivírus, OneDrive ou cópia de arquivos)',
+  SQLITE_FULL: 'o disco está cheio',
+  SQLITE_IOERR: 'o disco não deixou gravar (erro de leitura ou escrita)',
+  SQLITE_READONLY: 'a pasta de dados está só para leitura',
+  SQLITE_CANTOPEN: 'não foi possível abrir o arquivo do banco',
+  SQLITE_CORRUPT: 'o arquivo do banco está danificado; restaure um backup',
+  SQLITE_NOTADB: 'o arquivo do banco está danificado; restaure um backup',
+  DB_CLOSED: 'o banco já estava fechado (servidor desligando)',
+  ENOSPC: 'o disco está cheio',
+  EACCES: 'sem permissão para gravar na pasta de dados',
+  EPERM: 'sem permissão para gravar na pasta de dados',
+}
+export function writeErrorText(error) {
+  if (!error) return ''
+  const code = String(error.code || '').trim()
+  // SQLITE_IOERR_WRITE, SQLITE_BUSY_SNAPSHOT etc. usam o texto do código base.
+  const base = code.match(/^(SQLITE_[A-Z]+)/)?.[1]
+  const text = WRITE_ERROR_TEXTS[code] || (base && WRITE_ERROR_TEXTS[base]) || 'erro inesperado ao gravar'
+  return code ? `${text} (código ${code})` : text
 }
 
 function Row({ label, children }) {
@@ -159,7 +191,7 @@ export function ArmazenamentoCard() {
         )}
         {storage?.lastWriteError && (
           <p className="text-sm text-danger" role="alert">
-            Última falha ao gravar: {formatWhen(storage.lastWriteError.at)} · {storage.lastWriteError.code}
+            Última falha ao gravar: {formatWhen(storage.lastWriteError.at)} · {writeErrorText(storage.lastWriteError)}
             {storage.pendingRetry ? ' · o IClass está tentando gravar de novo sozinho.' : ''}
           </p>
         )}

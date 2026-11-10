@@ -211,6 +211,59 @@ test('[UC-GRAVACAO-001] rede de segurança espera a prova terminar (teto de 2 h)
     assert.match((await readRow('annotations', 'adiada@teste.local')).value, /depois da prova/);
 });
 
+test('[UC-GRAVACAO-001] rede de segurança: adiamento de uma prova encerrada não vale para a prova seguinte', async () => {
+    // Antes, a saída cedo (sem gravação parcial pendente) vinha antes de zerar o marcador
+    // do adiamento: a prova 1 terminava com uma gravação completa, o marcador ficava, e a
+    // gravação completa rodava logo no primeiro tick da prova 2 (3 h depois > teto de 2 h).
+    await db.save();
+    const start = Date.now();
+    const removeApps = () => {
+        db.memory.examApplications = db.memory.examApplications.filter(item => !String(item.id).startsWith('app-seq-'));
+    };
+    try {
+        db.memory.notes['sequencia@teste.local'] = { Apostila_1: 'prova 1' };
+        await db.save({ only: ['notes'] });
+        db.memory.examApplications.push({ id: 'app-seq-1', classId: 'TI::1DES', examKey: 'P1', status: 'running' });
+        assert.equal((await db.runSafetyNetSave({ idleWaitMs: 1000, now: start })).deferred, true);
+
+        // A prova 1 termina com uma gravação completa (o encerrar com tentativas abertas).
+        removeApps();
+        await db.save();
+        assert.equal(db.storageStatus().partialSinceFullSave, false);
+        assert.equal((await db.runSafetyNetSave({ idleWaitMs: 1000, now: start + 10 * 60 * 1000 })).ran, false);
+
+        // Prova 2, 3 h depois do primeiro adiamento, com gravação parcial pendente: espera.
+        db.memory.examApplications.push({ id: 'app-seq-2', classId: 'TI::1DES', examKey: 'P1', status: 'running' });
+        db.memory.annotations['sequencia@teste.local'] = { Apostila_1: { p1: { note: 'na prova 2' } } };
+        db.memory.notes['sequencia@teste.local'] = { Apostila_1: 'prova 2' };
+        await db.save({ only: ['notes'] });
+        const second = await db.runSafetyNetSave({ idleWaitMs: 1000, now: start + 3 * 60 * 60 * 1000 });
+        assert.equal(second.ran, false, 'a gravação completa rodou no meio da prova 2');
+        assert.equal(second.deferred, true);
+        assert.equal(await readRow('annotations', 'sequencia@teste.local'), undefined, 'gravou no meio da prova 2');
+
+        // Provas uma depois da outra, sem tick entre elas: a prova 3 começa com a 2 já
+        // encerrada; o adiamento da 2 não conta para a 3 (o teto é da prova esquecida aberta).
+        const secondAt = start + 3 * 60 * 60 * 1000;
+        const thirdAt = secondAt + 60 * 60 * 1000;
+        removeApps();
+        db.memory.examApplications.push({ id: 'app-seq-3', classId: 'TI::1DES', examKey: 'P1', status: 'running' });
+        assert.equal((await db.runSafetyNetSave({ idleWaitMs: 1000, now: thirdAt })).deferred, true);
+        const third = await db.runSafetyNetSave({ idleWaitMs: 1000, now: secondAt + db.SAFETY_NET_MAX_DEFER_MS });
+        assert.equal(third.deferred, true, 'o adiamento da prova 2 valeu para a prova 3');
+
+        // Prova esquecida aberta junto com outra que começou depois: o teto conta do
+        // primeiro adiamento da esquecida.
+        db.memory.examApplications.push({ id: 'app-seq-4', classId: 'TI::1DES', examKey: 'P1', status: 'running' });
+        assert.equal((await db.runSafetyNetSave({ idleWaitMs: 1000, now: thirdAt + db.SAFETY_NET_MAX_DEFER_MS - 1000 })).deferred, true);
+        const capped = await db.runSafetyNetSave({ idleWaitMs: 1000, now: thirdAt + db.SAFETY_NET_MAX_DEFER_MS });
+        assert.equal(capped.ran, true, 'a prova 3 aberta há 2 h não chegou ao teto');
+        assert.ok(await readRow('annotations', 'sequencia@teste.local'));
+    } finally {
+        removeApps();
+    }
+});
+
 test('[UC-GRAVACAO-001] sync da prova numa turma sem contentOverrides não muda "classes" (verificador em silêncio)', async () => {
     const cls = db.memory.classes.find(item => item.name === '1DES');
     delete cls.contentOverrides;
@@ -323,6 +376,9 @@ test('[UC-ARMAZENAMENTO-001] Compactar devolve o espaço ao disco, registra na a
     assert.equal(response.status, 200, JSON.stringify(response.body));
     assert.ok(response.body.depois < response.body.antes, `antes ${response.body.antes}, depois ${response.body.depois}`);
     assert.ok(response.body.antes - response.body.depois > 2 * 1024 * 1024);
+    // O espaço vazio devolvido vem à parte (o antes soma o -wal, que o checkpoint zera).
+    assert.ok(Math.abs(response.body.recuperadoBytes - (before.freeBytes - response.body.storage.freeBytes)) <= 64 * 1024, `recuperadoBytes ${response.body.recuperadoBytes}, livre antes ${before.freeBytes}`);
+    assert.ok(response.body.recuperadoBytes > 2 * 1024 * 1024);
     assert.equal(typeof response.body.ms, 'number');
     assert.ok(response.body.storage.freeBytes < 64 * 1024, `freeBytes depois: ${response.body.storage.freeBytes}`);
     assert.equal(response.body.storage.compactSuggested, false);
@@ -335,6 +391,7 @@ test('[UC-ARMAZENAMENTO-001] Compactar devolve o espaço ao disco, registra na a
     assert.equal(audit[0].category, 'system');
     assert.equal(audit[0].actor, 'root@armazenamento.local');
     assert.ok(audit[0].details.antes > audit[0].details.depois);
+    assert.equal(audit[0].details.recuperadoBytes, response.body.recuperadoBytes);
     // Os dados continuam lá, e gravar depois funciona.
     assert.equal(JSON.parse((await readRow('notes', STUDENT.email)).value).Apostila_1, 'parcial');
     const note = await request(app).post('/api/student/notes/save').set('x-session-token', studentToken).send({ moduleKey: 'Apostila_2', note: 'depois do vacuum' });

@@ -203,6 +203,9 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             }
             const antes = storageTotalBytes(result.before);
             const depois = storageTotalBytes(result.after);
+            // O antes soma o -wal, que o checkpoint zera de qualquer jeito: o espaço vazio
+            // devolvido ao disco é o freeBytes que sumiu do arquivo.
+            const recuperadoBytes = Math.max(0, (Number(result.before.freeBytes) || 0) - (Number(result.after.freeBytes) || 0));
             recordAudit(db.memory, {
                 req,
                 actor: matchedAdmin,
@@ -210,10 +213,10 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 category: 'system',
                 before: { bytes: antes, freeBytes: result.before.freeBytes },
                 after: { bytes: depois, freeBytes: result.after.freeBytes },
-                details: { antes, depois, ms: result.ms },
+                details: { antes, depois, recuperadoBytes, ms: result.ms },
             });
             await db.save();
-            res.json({ success: true, antes, depois, ms: result.ms, storage: db.storageStatus() });
+            res.json({ success: true, antes, depois, recuperadoBytes, ms: result.ms, storage: db.storageStatus() });
         });
     });
 

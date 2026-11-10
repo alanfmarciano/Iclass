@@ -1445,27 +1445,49 @@ async function compactDatabase() {
 // algumas centenas de ms, o que atrasaria o rascunho de 40 alunos. O teto de espera é de
 // 2 h desde o primeiro adiamento, para uma aplicação esquecida aberta não deixar a rede
 // de segurança parada para sempre; ao fim da prova, a próxima rodada (em até 10 min) grava.
+// O adiamento é contado por aplicação (id -> primeiro adiamento com ela aberta) e sai do
+// mapa em toda rodada em que ela não está mais em andamento, inclusive quando não há
+// gravação parcial pendente (a prova terminou com uma gravação completa): sem isso, um
+// adiamento antigo de uma prova já encerrada fazia a gravação completa rodar logo no
+// primeiro tick da prova seguinte, mesmo com as duas provas uma depois da outra.
 const SAFETY_NET_INTERVAL_MS = 10 * 60 * 1000;
 const SAFETY_NET_IDLE_WAIT_MS = 30000;
 const SAFETY_NET_MAX_DEFER_MS = 2 * 60 * 60 * 1000;
 let safetyNetRun = null;
-let safetyNetDeferredSince = null;
+const safetyNetDeferredSince = new Map();
+
+function activeApplicationIds() {
+    return (memoryDB.examApplications || [])
+        .filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status))
+        .map((item, index) => String(item.id || `sem-id-${index}`));
+}
 
 function countActiveApplications() {
-    return (memoryDB.examApplications || []).filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status)).length;
+    return activeApplicationIds().length;
 }
 
 function runSafetyNetSave({ idleWaitMs = SAFETY_NET_IDLE_WAIT_MS, now = Date.now() } = {}) {
     if (safetyNetRun) return safetyNetRun;
+    // Antes de qualquer saída cedo: aplicação que não está mais em andamento perde o
+    // adiamento (ver o comentário acima).
+    const activeIds = activeApplicationIds();
+    const activeSet = new Set(activeIds);
+    for (const id of [...safetyNetDeferredSince.keys()]) {
+        if (!activeSet.has(id)) safetyNetDeferredSince.delete(id);
+    }
     if (writer.isClosed() || !writer.status().partialSinceFullSave) return Promise.resolve({ ran: false, rows: 0, found: 0 });
-    const activeApplications = countActiveApplications();
+    const activeApplications = activeIds.length;
     if (activeApplications > 0) {
-        if (safetyNetDeferredSince === null) safetyNetDeferredSince = now;
-        if (now - safetyNetDeferredSince < SAFETY_NET_MAX_DEFER_MS) {
+        for (const id of activeSet) {
+            if (!safetyNetDeferredSince.has(id)) safetyNetDeferredSince.set(id, now);
+        }
+        const oldest = Math.min(...safetyNetDeferredSince.values());
+        if (now - oldest < SAFETY_NET_MAX_DEFER_MS) {
             return Promise.resolve({ ran: false, rows: 0, found: 0, deferred: true, activeApplications });
         }
     }
-    safetyNetDeferredSince = null;
+    // Rodou (sem prova, ou pelo teto): o teto recomeça a contar no próximo adiamento.
+    safetyNetDeferredSince.clear();
     const pending = (async () => {
         try {
             await writer.waitIdle(idleWaitMs);
@@ -1571,8 +1593,8 @@ function defaultAdminEmail() {
 }
 
 // Gravação completa, espera da fila e fechamento da conexão (o SQLite aplica e apaga o
-// -wal). Usado no desligamento por SIGINT e SIGTERM (server.js); SIGHUP, SIGBREAK e o
-// Reiniciar passam a chamá-lo com o requestShutdown do H3c (plano da fase 2).
+// -wal). Usado no desligamento ordenado do H3c (requestShutdown no server.js: Ctrl+C,
+// SIGTERM, fechar a janela do console, Ctrl+Break, rota de controle e Reiniciar).
 // Depois dele, db.save() rejeita com DbWriteError.
 function close() {
     return writer.close();
