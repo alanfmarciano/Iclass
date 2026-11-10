@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
+import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, RefreshCw, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
@@ -9,7 +9,8 @@ import { useToast } from '../context/ToastProvider'
 import { api } from '../lib/api'
 import { useBranding } from '../context/BrandingProvider'
 import { InsecureConnectionNotice } from '../components/ui/InsecureConnectionNotice'
-import { adminAccessRefusalText, fetchConnectionInfo, LOCAL_ONLY_TEXT } from '../lib/adminAccess'
+import { adminAccessRefusalText, LOCAL_ONLY_TEXT } from '../lib/adminAccess'
+import { useConnectionInfo } from '../hooks/useConnectionInfo'
 
 const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }
 const LOCAL_QUICK_KEY = 'iclass-local-quick-token'
@@ -33,8 +34,10 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [quickLoginBusy, setQuickLoginBusy] = useState(null)
   const [demoEnabled, setDemoEnabled] = useState(false)
-  // Como o servidor trata o painel do professor neste aparelho (GET /api/connection, SEG-03).
-  const [connection, setConnection] = useState(null)
+  // Como o servidor trata o painel do professor neste aparelho (GET /api/connection, SEG-03),
+  // relido quando a tela volta a ficar visível, ao abrir a aba do instrutor e no
+  // "Verificar de novo": o administrador pode liberar o aparelho com esta tela aberta.
+  const { connection, checking: checkingConnection, refresh: refreshConnection, override: overrideConnection } = useConnectionInfo()
   const [localQuickToken, setLocalQuickToken] = useState(() => {
     if (typeof sessionStorage === 'undefined') return ''
     try { return sessionStorage.getItem(LOCAL_QUICK_KEY) || '' } catch { return '' }
@@ -98,12 +101,6 @@ export default function LoginPage() {
   }, [])
 
   useEffect(() => {
-    let cancelled = false
-    fetchConnectionInfo().then((info) => { if (!cancelled) setConnection(info) })
-    return () => { cancelled = true }
-  }, [])
-
-  useEffect(() => {
     api.get('/api/classes', { auth: false }).then((r) => setClasses(Array.isArray(r) ? r : (r.classes || []))).catch(() => setClasses([]))
   }, [])
 
@@ -117,7 +114,7 @@ export default function LoginPage() {
   function noteRefusal(err) {
     const adminAccess = err?.status === 403 && err?.data?.adminAccess
     if (!adminAccess) return
-    setConnection((current) => ({ ...(current || {}), adminAccess, adminAccessError: err.data.error || '', insecureAdmin: false }))
+    overrideConnection((current) => ({ ...(current || {}), adminAccess, adminAccessError: err.data.error || '', insecureAdmin: false }))
   }
 
   async function submit(e) {
@@ -251,17 +248,20 @@ export default function LoginPage() {
             <div className="mb-4">
               <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{localQuickToken ? 'Acesso rápido local' : 'Acesso rápido de demonstração'}</p>
               <div className="grid grid-cols-3 gap-2">
-                <Button type="button" variant="secondary" icon={ShieldCheck} loading={quickLoginBusy === 'admin'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('admin')} className="px-2 text-xs">Administrador</Button>
-                <Button type="button" variant="secondary" icon={GraduationCap} loading={quickLoginBusy === 'professor'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('professor')} className="px-2 text-xs">Professor</Button>
+                <Button type="button" variant="secondary" icon={ShieldCheck} loading={quickLoginBusy === 'admin'} disabled={quickLoginBusy !== null || !!adminRefusal} onClick={() => quickLogin('admin')} className="px-2 text-xs">Administrador</Button>
+                <Button type="button" variant="secondary" icon={GraduationCap} loading={quickLoginBusy === 'professor'} disabled={quickLoginBusy !== null || !!adminRefusal} onClick={() => quickLogin('professor')} className="px-2 text-xs">Professor</Button>
                 <Button type="button" variant="secondary" icon={User} loading={quickLoginBusy === 'student'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('student')} className="px-2 text-xs">Aluno</Button>
               </div>
+              {adminRefusal && (
+                <p data-testid="quick-admin-refused" className="mt-2 text-xs text-muted">Administrador e Professor não entram neste aparelho: o painel do professor não abre aqui (veja a aba Instrutor).</p>
+              )}
             </div>
           )}
 
           <div className="glass-panel rounded-[24px] p-5 shadow-lg sm:p-7">
             <div className="flex rounded-xl border border-border bg-surface-2 p-1 text-sm">
               <button onClick={() => { setMode('student'); setStudentAction('login') }} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'student' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Aluno</button>
-              <button onClick={() => setMode('admin')} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'admin' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Instrutor</button>
+              <button onClick={() => { setMode('admin'); refreshConnection() }} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'admin' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Instrutor</button>
             </div>
             {mode === 'student' && (
               <div className="mt-3 flex rounded-xl bg-surface-2 p-1 text-xs">
@@ -273,7 +273,10 @@ export default function LoginPage() {
             {mode === 'admin' && adminRefusal && (
               <div role="alert" data-testid="admin-access-refused" className="mt-4 flex items-start gap-2.5 rounded-lg border border-danger bg-danger-soft px-4 py-3 text-sm text-text">
                 <MonitorX aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-danger" />
-                <p>{adminRefusal}</p>
+                <div className="min-w-0 space-y-2">
+                  <p>{adminRefusal}</p>
+                  <Button type="button" variant="secondary" size="sm" icon={RefreshCw} loading={checkingConnection} onClick={() => refreshConnection({ force: true })}>Verificar de novo</Button>
+                </div>
               </div>
             )}
             {mode === 'admin' && !adminRefusal && <InsecureConnectionNotice connection={connection} className="mt-4" />}

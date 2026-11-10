@@ -1,19 +1,14 @@
-import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
-import { fetchConnectionInfo, INSECURE_ADMIN_TEXT, INSECURE_ADMIN_TITLE } from '../../lib/adminAccess'
+import { INSECURE_ADMIN_TEXT, INSECURE_ADMIN_TITLE } from '../../lib/adminAccess'
+import { useConnectionInfo } from '../../hooks/useConnectionInfo'
 
 // Aviso fixo do painel do professor aberto por http em outro aparelho da rede (modo
 // 'rede-sem-https', SEG-03): a senha passa pela rede sem proteção. Não fecha. No
 // computador do IClass, ou com a conexão segura, não aparece. `connection` (opcional)
-// evita uma segunda consulta quando a tela já tem a resposta de /api/connection.
+// evita uma segunda consulta quando a tela já tem a resposta de /api/connection; sem
+// ela, a consulta é refeita quando a tela volta a ficar visível (useConnectionInfo).
 export function InsecureConnectionNotice({ connection: given, className = '' }) {
-  const [fetched, setFetched] = useState(null)
-  useEffect(() => {
-    if (given !== undefined) return undefined
-    let cancelled = false
-    fetchConnectionInfo().then((info) => { if (!cancelled) setFetched(info) })
-    return () => { cancelled = true }
-  }, [given])
+  const { connection: fetched } = useConnectionInfo({ enabled: given === undefined })
   const connection = given !== undefined ? given : fetched
   if (!connection || connection.insecureAdmin !== true) return null
   return (

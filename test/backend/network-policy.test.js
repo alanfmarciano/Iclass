@@ -3,8 +3,9 @@
 // cabeçalho 'Authorization: email:senha'. Agora settings.network.adminAccess decide:
 // 'rede-sem-https' (padrão e banco antigo: como antes, com aviso fixo), 'local' (só o
 // computador do IClass) ou 'rede' (outros aparelhos só por https, que ainda não existe).
-// Os testes de outro aparelho usam createApp({ isThisComputer: () => false }): o
-// supertest sempre conecta pelo loopback.
+// Os testes de outro aparelho usam createApp({ isThisComputer: () => false }) ou
+// createApp({ network: { isThisComputer, isSecure, httpsUrl } }): o supertest sempre
+// conecta pelo loopback e sem cifra.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -79,7 +80,9 @@ test('[UC-REDE-001] decisão por modo: este computador sempre entra; outro apare
     }
     assert.deepEqual(adminAccessDecision({ mode: 'rede-sem-https', thisComputer: false, secure: false }), { allowed: true, insecure: true });
     assert.deepEqual(adminAccessDecision({ mode: 'rede-sem-https', thisComputer: false, secure: true }), { allowed: true, insecure: false });
-    assert.deepEqual(adminAccessDecision({ mode: 'local', thisComputer: false, secure: true }), { allowed: false, body: { error: DECISION_TEXT, adminAccess: 'local-only' } });
+    assert.deepEqual(adminAccessDecision({ mode: 'local', thisComputer: false, secure: true }), { allowed: false, body: { error: DECISION_TEXT, adminAccess: 'local-only', httpsUrl: null } });
+    // As duas recusas levam o httpsUrl do formato combinado (contrato 9), quando houver.
+    assert.equal(adminAccessDecision({ mode: 'local', thisComputer: false, secure: false, httpsUrl: 'https://192.0.2.10:3000' }).body.httpsUrl, 'https://192.0.2.10:3000');
     assert.deepEqual(adminAccessDecision({ mode: 'rede', thisComputer: false, secure: false }), { allowed: false, body: { error: HTTPS_REQUIRED_MESSAGE, adminAccess: 'https-required', httpsUrl: null } });
     assert.deepEqual(adminAccessDecision({ mode: 'rede', thisComputer: false, secure: true }), { allowed: true, insecure: false });
     assert.equal(LOCAL_ONLY_MESSAGE, DECISION_TEXT, 'texto exato da decisão §2 P1');
@@ -164,7 +167,7 @@ test('[UC-REDE-001] "Só o computador do IClass": outro aparelho recebe 403 loca
 
     const login = await request(remoteApp).post('/api/session/admin-login').send(ADMIN);
     assert.equal(login.status, 403);
-    assert.deepEqual(login.body, { error: DECISION_TEXT, adminAccess: 'local-only' });
+    assert.deepEqual(login.body, { error: DECISION_TEXT, adminAccess: 'local-only', httpsUrl: null });
     const blocked = [
         request(remoteApp).get('/api/admin/whoami').set('x-admin-session', token),
         request(remoteApp).get('/api/admin/classes').set('x-admin-session', token),
@@ -179,6 +182,8 @@ test('[UC-REDE-001] "Só o computador do IClass": outro aparelho recebe 403 loca
         assert.equal(res.status, 403, `pedido ${i}: ${res.status}`);
         assert.equal(res.body.adminAccess, 'local-only', `pedido ${i}`);
         assert.equal(res.body.error, DECISION_TEXT, `pedido ${i}`);
+        assert.ok(Object.prototype.hasOwnProperty.call(res.body, 'httpsUrl'), `pedido ${i}: httpsUrl no formato combinado`);
+        assert.equal(res.body.httpsUrl, null, `pedido ${i}`);
     }
     // Ninguém em outro aparelho troca a regra de volta.
     assert.equal(db.memory.config.settings.network.adminAccess, 'local');
@@ -210,4 +215,42 @@ test('[UC-REDE-001] "rede" guardado (backup de versão nova) sem https: outro ap
     assert.equal(connection.body.adminAccess, 'https-required');
     assert.equal(connection.body.tlsAvailable, false);
     await request(localApp).post('/api/session/admin-login').send(ADMIN).expect(200);
+});
+
+test('[UC-REDE-001] createApp({ network }): a mesma regra vale pelo app inteiro com conexão cifrada e endereço seguro', async () => {
+    const HTTPS_URL = 'https://192.0.2.10:3000';
+    const secureRemote = createApp({ network: { isThisComputer: () => false, isSecure: () => true, httpsUrl: () => HTTPS_URL } });
+    const plainRemote = createApp({ network: { isThisComputer: () => false, httpsUrl: () => HTTPS_URL } });
+
+    // 'rede': por http, recusa com o endereço seguro; pela conexão cifrada, entra.
+    seed({ adminAccess: 'rede' });
+    const plain = await request(plainRemote).post('/api/session/admin-login').send(ADMIN);
+    assert.equal(plain.status, 403);
+    assert.deepEqual(plain.body, { error: HTTPS_REQUIRED_MESSAGE, adminAccess: 'https-required', httpsUrl: HTTPS_URL });
+    const viaHttps = await request(secureRemote).post('/api/session/admin-login').send(ADMIN).expect(200);
+    await request(secureRemote).get('/api/admin/whoami').set('x-admin-session', viaHttps.body.sessionToken).expect(200);
+    const secureConnection = await request(secureRemote).get('/api/connection').expect(200);
+    assert.equal(secureConnection.body.secure, true);
+    assert.equal(secureConnection.body.adminAccess, 'ok');
+    assert.equal(secureConnection.body.insecureAdmin, false, 'pela conexão segura não há aviso');
+    assert.equal(secureConnection.body.httpsUrl, HTTPS_URL);
+
+    // 'local': a recusa também leva o httpsUrl, igual ao contrato.
+    seed({ adminAccess: 'local' });
+    const local = await request(secureRemote).post('/api/session/admin-login').send(ADMIN);
+    assert.equal(local.status, 403);
+    assert.deepEqual(local.body, { error: DECISION_TEXT, adminAccess: 'local-only', httpsUrl: HTTPS_URL });
+
+    // 'rede-sem-https' pela conexão cifrada: entra, sem o aviso de senha exposta.
+    seed({ adminAccess: 'rede-sem-https' });
+    const open = await request(secureRemote).get('/api/connection').expect(200);
+    assert.equal(open.body.adminAccess, 'ok');
+    assert.equal(open.body.insecureAdmin, false);
+    const openPlain = await request(plainRemote).get('/api/connection').expect(200);
+    assert.equal(openPlain.body.insecureAdmin, true);
+
+    // options.isThisComputer sozinho continua valendo, e vence o network.isThisComputer.
+    const both = createApp({ isThisComputer: () => true, network: { isThisComputer: () => false } });
+    const mine = await request(both).get('/api/connection').expect(200);
+    assert.equal(mine.body.thisComputer, true);
 });

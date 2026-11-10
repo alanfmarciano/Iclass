@@ -224,23 +224,83 @@ test('[UC-AUTH-001] hash antigo vira scrypt$ no login, pelo caminho assíncrono'
     assert.equal(await db.verifyPasswordAsync(db.memory.admins[0].password, ADMIN.password), true);
 });
 
-test('[UC-AUTH-001] senha trocada durante a conferência não é sobrescrita pela regravação do hash antigo', async () => {
+// Troca db.<name> por uma versão que roda `during` depois da primeira chamada (o momento
+// em que o login está esperando o scrypt) e devolve o resultado original.
+async function withChangeDuring(name, during, run) {
+    const original = db[name];
+    let calls = 0;
+    db[name] = async (...args) => {
+        const result = await original(...args);
+        calls += 1;
+        if (calls === 1) await during();
+        return result;
+    };
+    try { return await run(); } finally { db[name] = original; }
+}
+const loopbackReq = () => ({ headers: {}, socket: { remoteAddress: '127.0.0.1' } });
+
+test('[UC-AUTH-001] senha trocada durante a conferência não é sobrescrita pela regravação do hash antigo, e a antiga não entra', async () => {
     db.memory.students[0].password = legacySha(ANA.password);
-    const original = db.verifyPasswordAsync;
-    db.verifyPasswordAsync = async (stored, password) => {
-        const ok = await original(stored, password);
+    const login = await withChangeDuring('verifyPasswordAsync', () => {
         // O professor redefine a senha enquanto o login espera o scrypt.
         db.memory.students[0].password = 'scrypt$nova$senha';
-        return ok;
-    };
-    try {
-        const login = await attemptPasswordLogin({ kind: 'student', email: ANA.email, password: ANA.password, req: { headers: {}, socket: { remoteAddress: '127.0.0.1' } } });
-        assert.equal(login.ok, true);
-        assert.equal(login.rehashed, false);
-    } finally {
-        db.verifyPasswordAsync = original;
-    }
+    }, () => attemptPasswordLogin({ kind: 'student', email: ANA.email, password: ANA.password, req: loopbackReq() }));
+    // Antes, a sessão saía com a senha antiga (só a regravação era protegida).
+    assert.equal(login.ok, false);
+    assert.equal(login.status, 401);
+    assert.equal(login.passwordChanged, true);
     assert.equal(db.memory.students[0].password, 'scrypt$nova$senha');
+});
+
+test('[UC-AUTH-001] senha redefinida no meio do login: a antiga não abre sessão, a nova abre (aluno e instrutor)', async () => {
+    const newStudentHash = await db.hashPasswordAsync('nova-ana-123');
+    const studentLogin = await withChangeDuring('verifyPasswordAsync', () => {
+        db.memory.students[0].password = newStudentHash;
+    }, () => request(app).post('/api/student/login').send(ANA));
+    assert.equal(studentLogin.status, 401, `aluno com a senha antiga: ${studentLogin.status}`);
+    assert.equal(studentLogin.body.error, 'E-mail ou senha incorretos.');
+    assert.equal(studentLogin.body.passwordChanged, undefined, 'o detalhe não vai para a resposta');
+    assert.deepEqual(Object.keys(db.memory.sessions || {}), [], 'nenhuma sessão de aluno');
+    await request(app).post('/api/student/login').send({ email: ANA.email, password: 'nova-ana-123' }).expect(200);
+
+    const newAdminHash = await db.hashPasswordAsync('nova-adm-123');
+    const adminLogin = await withChangeDuring('verifyPasswordAsync', () => {
+        db.memory.admins[0].password = newAdminHash;
+    }, () => request(app).post('/api/session/admin-login').send(ADMIN));
+    assert.equal(adminLogin.status, 401, `instrutor com a senha antiga: ${adminLogin.status}`);
+    assert.equal(adminLogin.body.sessionToken, undefined);
+    assert.deepEqual(Object.keys(db.memory.adminSessions || {}), [], 'nenhuma sessão de instrutor');
+    await request(app).post('/api/session/admin-login').send({ email: ADMIN.email, password: 'nova-adm-123' }).expect(200);
+});
+
+test('[UC-AUTH-001] senha trocada durante a regravação do hash antigo: a antiga não entra e a nova fica', async () => {
+    db.memory.students[0].password = legacySha(ANA.password);
+    const newHash = await db.hashPasswordAsync('nova-ana-456');
+    const login = await withChangeDuring('hashPasswordAsync', () => {
+        db.memory.students[0].password = newHash;
+    }, () => attemptPasswordLogin({ kind: 'student', email: ANA.email, password: ANA.password, req: loopbackReq() }));
+    assert.equal(login.ok, false);
+    assert.equal(login.status, 401);
+    assert.equal(db.memory.students[0].password, newHash);
+});
+
+test('[UC-AUTH-001] conta apagada no meio do login não abre sessão; lista regravada com a mesma senha continua entrando', async () => {
+    const deleted = await withChangeDuring('verifyPasswordAsync', () => {
+        db.memory.students = [];
+    }, () => attemptPasswordLogin({ kind: 'student', email: ANA.email, password: ANA.password, req: loopbackReq() }));
+    assert.equal(deleted.ok, false);
+    assert.equal(deleted.status, 401);
+
+    seed();
+    db.memory.students[0].password = legacySha(ANA.password);
+    const rewritten = await withChangeDuring('verifyPasswordAsync', () => {
+        // Outra rota regrava a lista inteira (objetos novos, mesmos valores).
+        db.memory.students = db.memory.students.map(student => ({ ...student }));
+    }, () => attemptPasswordLogin({ kind: 'student', email: ANA.email, password: ANA.password, req: loopbackReq() }));
+    assert.equal(rewritten.ok, true);
+    assert.equal(rewritten.account, db.memory.students[0], 'a conta que está na lista agora');
+    assert.equal(rewritten.rehashed, true);
+    assert.match(db.memory.students[0].password, /^scrypt\$/, 'o hash novo vai para a conta da lista atual');
 });
 
 test('[UC-AUTH-001] cadastro, contas e senhas pelo painel gravam scrypt$ sem crypto.scryptSync', async () => {

@@ -372,12 +372,15 @@ function createAdminAccountsRouter() {
             if (matchedAdmin.mustChangePassword !== true) {
                 const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password: currentPassword, req });
                 if (!check.ok && check.status === 429) return res.status(429).json(check.body);
-                if (!check.ok || check.account !== matchedAdmin) {
-                    return res.status(400).json({ error: 'Senha atual incorreta.' });
+                // Outra troca terminou durante a conferência (a senha digitada não vale
+                // para a nova) ou a conta foi regravada no meio: 409, não "incorreta".
+                if (!check.ok && check.passwordChanged) {
+                    return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
                 }
+                if (!check.ok) return res.status(400).json({ error: 'Senha atual incorreta.' });
                 // O valor que a conferência confirmou (o hash novo, se o antigo foi
                 // regravado): outra troca no meio da espera ainda dá o 409 abaixo.
-                if (matchedAdmin.password !== check.password) {
+                if (check.account !== matchedAdmin || matchedAdmin.password !== check.password) {
                     return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
                 }
                 storedBefore = check.password;

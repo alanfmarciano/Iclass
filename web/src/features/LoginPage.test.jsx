@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -43,7 +43,12 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   sessionStorage.clear()
+  vi.restoreAllMocks()
 })
+
+const connectionCalls = () => mocks.get.mock.calls.filter(([path]) => path === '/api/connection').length
+const LOCAL_REFUSED = { secure: false, thisComputer: false, adminAccess: 'local-only', adminAccessMode: 'local', insecureAdmin: false }
+const OPEN_INSECURE = { secure: false, thisComputer: false, adminAccess: 'ok', adminAccessMode: 'rede-sem-https', insecureAdmin: true }
 
 describe('[UC-REDE-001] login do instrutor conforme o aparelho', () => {
   it('no computador do IClass não há aviso e o botão do instrutor fica liberado', async () => {
@@ -104,5 +109,72 @@ describe('[UC-REDE-001] login do instrutor conforme o aparelho', () => {
     expect(mocks.toast.info).not.toHaveBeenCalled()
     expect(sessionStorage.getItem('iclass-logout-reason')).toBeNull()
     expect(sessionStorage.getItem('iclass-logout-message')).toBeNull()
+  })
+
+  it('administrador libera o aparelho com a tela aberta: "Verificar de novo" tira o aviso e liga o botão, sem recarregar', async () => {
+    mocks.connection = LOCAL_REFUSED
+    const user = userEvent.setup()
+    renderLogin()
+    await user.click(screen.getByRole('button', { name: 'Instrutor' }))
+    expect(await screen.findByTestId('admin-access-refused')).toHaveTextContent(LOCAL_ONLY)
+    expect(screen.getByRole('button', { name: /Entrar como instrutor/ })).toBeDisabled()
+    // No computador do IClass, o administrador volta para "Todos os aparelhos da rede".
+    mocks.connection = OPEN_INSECURE
+    await user.click(screen.getByRole('button', { name: 'Verificar de novo' }))
+    await waitFor(() => expect(screen.queryByTestId('admin-access-refused')).toBeNull())
+    expect(screen.getByRole('button', { name: /Entrar como instrutor/ })).toBeEnabled()
+    expect(screen.getByTestId('insecure-connection-notice')).toHaveTextContent('Conexão sem proteção')
+  })
+
+  it('a regra é lida de novo quando a tela volta a ficar visível ou ganha o foco', async () => {
+    mocks.connection = LOCAL_REFUSED
+    const user = userEvent.setup()
+    renderLogin()
+    await user.click(screen.getByRole('button', { name: 'Instrutor' }))
+    expect(await screen.findByTestId('admin-access-refused')).toBeInTheDocument()
+    const before = connectionCalls()
+    mocks.connection = OPEN_INSECURE
+    // O tablet acorda (a aba volta) mais de 1 s depois da última consulta.
+    const later = Date.now() + 5000
+    vi.spyOn(Date, 'now').mockReturnValue(later)
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    await waitFor(() => expect(screen.queryByTestId('admin-access-refused')).toBeNull())
+    expect(connectionCalls()).toBe(before + 1)
+    expect(screen.getByRole('button', { name: /Entrar como instrutor/ })).toBeEnabled()
+    // Foco junto com a volta da aba não gera uma segunda consulta.
+    await act(async () => { window.dispatchEvent(new Event('focus')) })
+    expect(connectionCalls()).toBe(before + 1)
+    Date.now.mockReturnValue(later + 5000)
+    mocks.connection = LOCAL_REFUSED
+    await act(async () => { window.dispatchEvent(new Event('focus')) })
+    expect(await screen.findByTestId('admin-access-refused')).toHaveTextContent(LOCAL_ONLY)
+  })
+
+  it('acesso rápido de demonstração: Administrador e Professor desligados quando o painel é recusado; Aluno segue', async () => {
+    mocks.connection = LOCAL_REFUSED
+    mocks.get.mockImplementation(async (path) => {
+      if (path === '/api/connection') return mocks.connection
+      if (path === '/api/test-mode') return { enabled: true }
+      return []
+    })
+    renderLogin()
+    expect(await screen.findByTestId('quick-admin-refused')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Administrador' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Professor' })).toBeDisabled()
+    // A aba Aluno e o acesso rápido do aluno.
+    for (const button of screen.getAllByRole('button', { name: 'Aluno' })) expect(button).toBeEnabled()
+  })
+
+  it('acesso rápido de demonstração no computador do IClass: os três botões ligados', async () => {
+    mocks.get.mockImplementation(async (path) => {
+      if (path === '/api/connection') return mocks.connection
+      if (path === '/api/test-mode') return { enabled: true }
+      return []
+    })
+    renderLogin()
+    expect(await screen.findByRole('button', { name: 'Administrador' })).toBeEnabled()
+    await waitFor(() => expect(connectionCalls()).toBeGreaterThan(0))
+    expect(screen.getByRole('button', { name: 'Professor' })).toBeEnabled()
+    expect(screen.queryByTestId('quick-admin-refused')).toBeNull()
   })
 })

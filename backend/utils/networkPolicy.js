@@ -121,11 +121,13 @@ function isInstructorRequest(req) {
     return otherSessionTokens(req).some(token => checkAdminSessionToken(token).ok);
 }
 
-// Decisão para um pedido de professor. Pura, para os testes.
+// Decisão para um pedido de professor. Pura, para os testes. As duas recusas têm o
+// formato combinado entre os grupos (contrato 9): { error, adminAccess, httpsUrl }, com
+// httpsUrl null enquanto não houver conexão segura (H6c).
 function adminAccessDecision({ mode, thisComputer, secure, httpsUrl = null }) {
     if (thisComputer) return { allowed: true, insecure: false };
     if (mode === 'local') {
-        return { allowed: false, body: { error: LOCAL_ONLY_MESSAGE, adminAccess: 'local-only' } };
+        return { allowed: false, body: { error: LOCAL_ONLY_MESSAGE, adminAccess: 'local-only', httpsUrl } };
     }
     if (mode === 'rede') {
         if (secure) return { allowed: true, insecure: false };
@@ -134,18 +136,44 @@ function adminAccessDecision({ mode, thisComputer, secure, httpsUrl = null }) {
     return { allowed: true, insecure: !secure };
 }
 
-function thisComputerFor(req, isThisComputer) {
-    if (typeof req.isThisComputer === 'function') return req.isThisComputer();
-    return isThisComputer(req);
+// Como o pedido é visto (este computador? conexão cifrada? endereço seguro?). O
+// middleware guarda isto em req.networkAccess para as rotas (GET /api/connection,
+// network-settings) enxergarem o mesmo que a política; fora dele, calcula na hora.
+// options (createApp({ network }), só nos testes) troca cada regra: isThisComputer(req),
+// isSecure(req) e httpsUrl(req).
+function networkDetectors(options = {}) {
+    return {
+        isThisComputer: typeof options.isThisComputer === 'function' ? options.isThisComputer : isThisComputerRequest,
+        isSecure: typeof options.isSecure === 'function' ? options.isSecure : isSecureRequest,
+        httpsUrl: typeof options.httpsUrl === 'function' ? options.httpsUrl : httpsUrlFor,
+    };
+}
+
+function createNetworkAccess(req, options) {
+    const detectors = networkDetectors(options);
+    let memo;
+    return {
+        thisComputer() {
+            if (memo === undefined) memo = !!detectors.isThisComputer(req);
+            return memo;
+        },
+        secure: !!detectors.isSecure(req),
+        httpsUrl: detectors.httpsUrl(req) || null,
+    };
+}
+
+function networkAccessFor(req, options) {
+    if (req && req.networkAccess && typeof req.networkAccess.thisComputer === 'function') return req.networkAccess;
+    return createNetworkAccess(req, options);
 }
 
 // Como esta conexão é tratada, para a tela de login e o aviso do painel
 // (GET /api/connection). Não revela segredo: só o que vale para quem pergunta.
-function connectionInfo(req, { isThisComputer = isThisComputerRequest } = {}) {
+function connectionInfo(req, options = {}) {
     const mode = settingsUtil.networkSettings().adminAccess;
-    const thisComputer = thisComputerFor(req, isThisComputer);
-    const secure = isSecureRequest(req);
-    const httpsUrl = httpsUrlFor(req);
+    const access = networkAccessFor(req, options);
+    const thisComputer = access.thisComputer();
+    const { secure, httpsUrl } = access;
     const decision = adminAccessDecision({ mode, thisComputer, secure, httpsUrl });
     return {
         secure,
@@ -159,21 +187,19 @@ function connectionInfo(req, { isThisComputer = isThisComputerRequest } = {}) {
     };
 }
 
-// createApp(options): options.isThisComputer troca a regra de "este computador" nos
-// testes (supertest sempre conecta pelo loopback).
-function createNetworkPolicy({ isThisComputer = isThisComputerRequest } = {}) {
+// createApp(options): options.network = { isThisComputer, isSecure, httpsUrl } troca as
+// regras nos testes (supertest sempre conecta pelo loopback e sem cifra);
+// options.isThisComputer sozinho continua valendo.
+function createNetworkPolicy(options = {}) {
     return function networkPolicy(req, res, next) {
-        let memo;
-        req.isThisComputer = () => {
-            if (memo === undefined) memo = !!isThisComputer(req);
-            return memo;
-        };
+        const access = createNetworkAccess(req, options);
+        req.networkAccess = access;
         if (!isInstructorRequest(req)) return next();
         const decision = adminAccessDecision({
             mode: settingsUtil.networkSettings().adminAccess,
-            thisComputer: req.isThisComputer(),
-            secure: isSecureRequest(req),
-            httpsUrl: httpsUrlFor(req),
+            thisComputer: access.thisComputer(),
+            secure: access.secure,
+            httpsUrl: access.httpsUrl,
         });
         if (decision.allowed) return next();
         return res.status(403).json(decision.body);

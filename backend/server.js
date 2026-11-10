@@ -60,8 +60,9 @@ function parseQueryLastValue(queryString) {
 
 const PORT = process.env.PORT || 3000;
 
-// options.isThisComputer (só nos testes): troca a regra de "este computador" da
-// política de acesso do painel do professor (utils/networkPolicy.js).
+// Só nos testes: options.network = { isThisComputer, isSecure, httpsUrl } (ou só
+// options.isThisComputer) troca as regras da política de acesso do painel do professor
+// (utils/networkPolicy.js): o supertest sempre conecta pelo loopback e sem cifra.
 function createApp(options = {}) {
 const app = express();
 const { errorHandler, adminRbacGuard } = require('./middlewares.js');
@@ -135,7 +136,10 @@ app.use(createPersistenceContext({
 // 9) Painel do professor conforme o aparelho (H6b, SEG-03): settings.network.adminAccess
 // decide se outro aparelho da rede abre o painel. Antes de /assets, dos arquivos
 // (/uploads com ?access= de professor) e de qualquer rota de professor.
-app.use(createNetworkPolicy({ isThisComputer: options.isThisComputer }));
+app.use(createNetworkPolicy({
+    ...(options.network && typeof options.network === 'object' ? options.network : {}),
+    ...(typeof options.isThisComputer === 'function' ? { isThisComputer: options.isThisComputer } : {}),
+}));
 // 10) Arquivos do app (/assets), antes de /uploads, /imagens e do express.static: o
 // handler é terminal, com cache imutável e as versões .br/.gz do build; nome que não
 // existe é 404 com no-store, nunca o index.html (utils/staticAssets.js, H2-A, DES-05).
