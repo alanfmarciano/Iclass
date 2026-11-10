@@ -441,6 +441,70 @@ test('[UC-MANUT-001] resetar sala só na turma escolhida encerra a prova salvand
     await control(appB.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
 });
 
+// Disco cheio (ENOSPC) só ao gravar na pasta de backups: o backup de segurança falha.
+async function withBackupDiskFull(fn) {
+    const originalWrite = fs.writeFileSync;
+    const backupsDir = path.resolve(runtimePaths.BACKUPS_DIR);
+    fs.writeFileSync = function patchedWrite(file, ...args) {
+        if (typeof file === 'string' && path.resolve(file).startsWith(backupsDir + path.sep)) {
+            const error = new Error('ENOSPC: no space left on device, write');
+            error.code = 'ENOSPC';
+            throw error;
+        }
+        return originalWrite.call(this, file, ...args);
+    };
+    try { return await fn(); } finally { fs.writeFileSync = originalWrite; }
+}
+
+test('[UC-MANUT-001] backup de segurança que não pôde ser salvo: 503 com a mensagem própria e o código, nada muda (H9a, decisão do coordenador 5)', async () => {
+    const { ana, carla } = students;
+    resetSessions();
+    const crashLog = path.join(runtimePaths.DATA_DIR, 'crash.log');
+    const { application: appA } = await prepareAndStart(classA);
+    const startedAna = await startAttempt(ana, appA.id);
+    await autosave(ana, appA.id, startedAna.attemptId, { 1: 'B' });
+    db.memory.studentExamState['sobra-b'] = { studentEmail: carla.email, studentClass: classB, examKey, answers: { 1: 'A' } };
+    db.memory.broadcastMessages.push({ id: 'msg-falha-b', studentClass: classB, courseId, examKey, targetEmail: null, messageText: 'B' });
+    const backupsBefore = fs.existsSync(runtimePaths.BACKUPS_DIR) ? fs.readdirSync(runtimePaths.BACKUPS_DIR).length : 0;
+    const auditBefore = db.memory.auditLogs.length;
+    try {
+        const { flush, reset } = await withBackupDiskFull(async () => ({
+            flush: await admin('post', '/api/admin/flush-exam-state').send({ studentClass: classB, courseId, confirm: 'LIMPAR' }),
+            reset: await admin('post', '/api/admin/reset').send({ studentClass: classA, courseId, confirm: 'RESETAR' }),
+        }));
+
+        // Falha prevista e tratada: não é o "erro interno" (500), e o texto diz que nada mudou.
+        for (const [response, tail] of [[flush, 'nada foi apagado'], [reset, 'nada foi alterado']]) {
+            assert.equal(response.status, 503);
+            assert.equal(response.body.success, false);
+            assert.equal(response.body.retryable, undefined, 'não é a falha de gravação que o cliente repete sozinho');
+            const requestId = response.headers['x-request-id'];
+            assert.ok(requestId);
+            assert.equal(response.body.requestId, requestId);
+            assert.equal(response.body.error, `Não foi possível salvar o backup de segurança; ${tail}. Código do erro: ${requestId}.`);
+            assert.doesNotMatch(response.body.error, /ENOSPC|erro interno/);
+            const logged = fs.readFileSync(crashLog, 'utf8');
+            const block = logged.slice(logged.lastIndexOf(requestId) - 40);
+            assert.match(block, /falha tratada/);
+            assert.match(block, /ENOSPC/);
+            assert.match(block, new RegExp(`contexto: Não foi possível salvar o backup de segurança; ${tail}\\.`));
+        }
+
+        // Nada foi apagado nem alterado: sobra e mensagem da turma B, prova da turma A rodando.
+        assert.deepEqual(db.memory.studentExamState['sobra-b'].answers, { 1: 'A' });
+        assert.ok(db.memory.broadcastMessages.some(message => message.id === 'msg-falha-b'));
+        assert.equal(applicationOf(appA.id).status, 'running');
+        assert.deepEqual(openStatesOf(ana, appA.id)[0].answers, { 1: 'B' });
+        assert.ok(db.memory.sessions[ana.email]);
+        assert.equal(fs.existsSync(runtimePaths.BACKUPS_DIR) ? fs.readdirSync(runtimePaths.BACKUPS_DIR).length : 0, backupsBefore);
+        assert.equal(db.memory.auditLogs.length, auditBefore, 'sem registro de limpeza ou reset que não aconteceu');
+    } finally {
+        delete db.memory.studentExamState['sobra-b'];
+        db.memory.broadcastMessages = db.memory.broadcastMessages.filter(message => message.id !== 'msg-falha-b');
+        await control(appA.id, { action: 'finish', inProgressPolicy: 'discard' });
+    }
+});
+
 test('[UC-MANUT-001] reiniciar o servidor exige confirmação explícita', async () => {
     const originalExit = process.exit;
     let exited = false;

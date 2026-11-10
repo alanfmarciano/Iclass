@@ -415,6 +415,25 @@ function sendInternalError(err, req, res, context) {
     return respondWithError(err, req, res, { context });
 }
 
+// Falha prevista e tratada antes de uma ação destrutiva (por exemplo, o backup de
+// segurança que não pôde ser salvo antes de "Limpar estado de prova" ou "Resetar sala"):
+// não é "erro interno". Responde 503 com a mensagem própria da rota, que já diz que nada
+// mudou ("...; nada foi apagado."), mais o código do pedido, e registra a causa no
+// crash.log com esse código, como o 500. O 500 genérico fica só para o inesperado.
+function sendHandledFailure(err, req, res, message) {
+    const request = req || {};
+    const requestId = request.id ? String(request.id) : '';
+    const text = String(message || '').trim() || INTERNAL_ERROR_MESSAGE;
+    logError('falha tratada', err, { req: request, details: { contexto: text } });
+    if (res.headersSent) return finishStartedResponse(res);
+    clearDownloadHeaders(res);
+    return res.status(503).json({
+        success: false,
+        error: requestId ? `${text} Código do erro: ${requestId}.` : text,
+        ...(requestId ? { requestId } : {}),
+    });
+}
+
 // Recusas previstas que chegam sem status: caminho ou identificador inválido
 // (utils/safePath.js), com a mensagem em português.
 const CLIENT_ERROR_CODES = new Set(['INVALID_PATH', 'PATH_OUTSIDE_BASE', 'INVALID_ID']);
@@ -1382,6 +1401,7 @@ module.exports = {
     runGuarded,
     guarded,
     sendInternalError,
+    sendHandledFailure,
     sendRouteError,
     publicErrorMessage,
     resolveAdminSession,
