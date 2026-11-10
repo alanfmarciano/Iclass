@@ -606,6 +606,41 @@ test('[UC-SENHA-001] prova na turma não adia a troca de quem já entregou nem d
     assert.equal(open.body.mustChangePassword, false);
 });
 
+test('[UC-SENHA-001] prova sem cronômetro aberta há dias: senha fraca não pede a troca no meio da prova', async () => {
+    // Caso da Natália na prova B da referência (decisões §10): tentativa sem entrega numa
+    // aplicação sem cronômetro, em andamento há dias. Antes, passadas 4 h do início da
+    // tentativa ela deixava de contar como prova em andamento: o login marcava a senha fraca
+    // e a sync, o rascunho e a entrega respondiam 403 "Troque a senha antes de continuar".
+    const now = Date.now();
+    const threeDaysAgo = now - 3 * 24 * 60 * 60 * 1000;
+    db.memory.examApplications = [{ id: 'app_b', status: 'running', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_2', timerEnabled: false, durationMinutes: 60, startedAt: new Date(threeDaysAgo).toISOString() }];
+    db.memory.studentExamState = { aberta: { studentEmail: ANA.email, applicationId: 'app_b', status: 'active', attemptId: 'at_b', attemptNumber: 1, startedAt: threeDaysAgo } };
+    findStudent(ANA.email).password = db.hashPassword('123');
+
+    const login = await request(app).post('/api/student/login').send({ email: ANA.email, password: '123' });
+    assert.equal(login.status, 200, login.body.error);
+    assert.equal(login.body.mustChangePassword, false, 'antes, true: a troca era pedida no meio da prova');
+    assert.notEqual(findStudent(ANA.email).mustChangePassword, true);
+    const sync = await request(app).get('/api/student/sync').set('x-session-token', login.body.sessionToken)
+        .query({ studentClass: '1DES', courseId: 'DES', examKey: 'Avaliacao_DES_2' });
+    assert.notEqual(sync.body.passwordChangeRequired, true);
+    assert.equal(sync.status, 200, sync.body.error);
+
+    // Troca já pedida antes (senha fraca de outro login): a sessão da prova segue sem ela.
+    findStudent(ANA.email).mustChangePassword = true;
+    findStudent(ANA.email).passwordChangeReason = 'weak';
+    const token = createStudentSession(db.memory, ANA.email);
+    const during = await request(app).get('/api/student/sync').set('x-session-token', token)
+        .query({ studentClass: '1DES', courseId: 'DES', examKey: 'Avaliacao_DES_2' });
+    assert.equal(during.status, 200, 'antes, 403 passwordChangeRequired');
+
+    // O professor encerrou a aplicação: o login seguinte pede a troca.
+    db.memory.examApplications[0].status = 'finished';
+    const after = await request(app).post('/api/student/login').send({ email: ANA.email, password: '123' });
+    assert.equal(after.body.mustChangePassword, true);
+    assert.equal(after.body.passwordChangeReason, 'weak');
+});
+
 test('[UC-SENHA-001] redefinir e criar durante a prova da turma: a resposta diz que a troca fica para depois da prova', async () => {
     const headers = adminHeaders();
     db.memory.examApplications = [{ id: 'app_turma', status: 'running', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_1', durationMinutes: 60, startedAt: new Date().toISOString() }];

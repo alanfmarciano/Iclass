@@ -244,24 +244,29 @@ test('[UC-AUTH-003] troca de senha do instrutor encerra as outras sessões dele 
     assert.equal(audit.details.endedSessions, 1);
 });
 
-test('[UC-AUTH-003] tentativa aberta numa aplicação esquecida em andamento não segura a sessão antiga depois do "Redefinir senha"', async () => {
-    // Antes: a prova B da referência, sem cronômetro e "em andamento" desde 19/10, contava
-    // como prova em andamento para sempre; o token antigo seguia entrando no portal até o
-    // prazo absoluto da sessão.
+test('[UC-AUTH-003] prova sem cronômetro aberta há dias: depois do "Redefinir senha" o token antigo segue só na prova até o professor encerrar', async () => {
+    // Decisões §10 (revisão da J2): na prova sem cronômetro não há corte de 4 h; enquanto a
+    // aplicação estiver aberta, a tentativa sem entrega é prova em andamento. Antes, a prova B
+    // da referência (sem cronômetro, em andamento desde 19/10) deixava de contar depois de 4 h
+    // e o "Redefinir senha" derrubava a aluna no meio da prova. O portal continua fechado
+    // para o token antigo, e encerrar a aplicação fecha a janela.
     const token = await studentToken();
     const threeDaysAgo = Date.now() - 3 * 24 * 3600 * 1000;
     db.memory.examApplications = [{ id: 'app-b', status: 'running', studentClass: '1DES', courseId: 'DES', examKey: 'pB', timerEnabled: false, startedAt: new Date(threeDaysAgo).toISOString() }];
     db.memory.studentExamState = { 'app-b|ana': { applicationId: 'app-b', studentEmail: ANA, status: 'active', attemptId: 'at-b', startedAt: threeDaysAgo } };
     const prof = await adminToken(PROF);
     const res = await request(app).post('/api/admin/reset-password').set('x-admin-session', prof).send({ email: ANA, newPassword: 'nova-senha-ana-7' }).expect(200);
-    assert.equal(res.body.sessionEnded, true);
-    assert.equal(res.body.passwordChangeDeferred, false);
+    assert.equal(res.body.sessionEnded, false, 'antes, true: a sessão da prova acabava');
+    await ping(token).expect(200);
+    const portal = await request(app).get('/api/student/enrollments').set('x-session-token', token).query({ email: ANA }).expect(401);
+    assert.equal(portal.body.reason, 'password_reset');
+    // O professor encerrou a aplicação: a sessão de antes acaba de vez.
+    db.memory.examApplications[0].status = 'finished';
     const after = await ping(token).expect(401);
     assert.equal(after.body.reason, 'password_reset');
-    await request(app).get('/api/student/enrollments').set('x-session-token', token).query({ email: ANA }).expect(401);
 });
 
-test('[UC-AUTH-003] tentativa aberta dentro do tempo da prova segura a sessão; passado o prazo com a folga, não', () => {
+test('[UC-AUTH-003] tentativa aberta dentro do tempo da prova segura a sessão; passado o prazo com a folga, não; sem cronômetro, até encerrar', () => {
     const { studentHasOpenAttempt } = require('../../backend/utils/passwordChange.js');
     const now = Date.now();
     const memory = {
@@ -272,10 +277,20 @@ test('[UC-AUTH-003] tentativa aberta dentro do tempo da prova segura a sessão; 
     assert.equal(studentHasOpenAttempt(memory, ANA, now), true);
     assert.equal(studentHasOpenAttempt(memory, ANA, now + 59 * 60000), true);
     assert.equal(studentHasOpenAttempt(memory, ANA, now + 61 * 60000), false);
-    // Sem cronômetro: 4 h desde o início da tentativa.
+    // Sem cronômetro: sem corte enquanto a aplicação estiver aberta (antes, 4 h).
     memory.examApplications[0].timerEnabled = false;
     assert.equal(studentHasOpenAttempt(memory, ANA, now + 3 * 3600000), true);
-    assert.equal(studentHasOpenAttempt(memory, ANA, now + 4 * 3600000), false);
+    assert.equal(studentHasOpenAttempt(memory, ANA, now + 5 * 3600000), true, 'antes, false depois de 4 h');
+    assert.equal(studentHasOpenAttempt(memory, ANA, now + 30 * 24 * 3600000), true);
+    memory.examApplications[0].status = 'paused';
+    assert.equal(studentHasOpenAttempt(memory, ANA, now + 5 * 3600000), true);
+    memory.examApplications[0].status = 'finished';
+    assert.equal(studentHasOpenAttempt(memory, ANA, now), false);
+    memory.examApplications[0].status = 'running';
+    // Entregue: não conta.
+    memory.studentExamState['app-t|ana'].status = 'submitted';
+    assert.equal(studentHasOpenAttempt(memory, ANA, now), false);
+    memory.studentExamState['app-t|ana'].status = 'active';
     // Tentativa sem hora nenhuma (estado antigo): continua contando como aberta.
     memory.studentExamState['app-t|ana'].startedAt = null;
     assert.equal(studentHasOpenAttempt(memory, ANA, now + 30 * 24 * 3600000), true);

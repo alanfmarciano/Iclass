@@ -199,7 +199,8 @@ function validateStudentSession(req, res, next) {
     // ela, e só com ela (decisão do coordenador, J2): até a tentativa fechar, o token
     // antigo vale só nas rotas da prova (STUDENT_EXAM_SESSION_PATHS); as outras respondem
     // 401 password_reset sem encerrar a sessão. Antes ele abria o portal inteiro até a
-    // entrega. Depois da entrega (ou do fim da janela) a sessão acaba no primeiro pedido.
+    // entrega. Depois da entrega, do encerramento da aplicação ou, na prova com cronômetro,
+    // do prazo com a folga (decisões §10), a sessão acaba no primeiro pedido.
     // A prova da turma que o aluno ainda não abriu não segura a sessão antiga.
     const routePath = `${req.baseUrl || ''}${req.path || ''}`;
     if (sessionPredatesRevocation(student, session)) {

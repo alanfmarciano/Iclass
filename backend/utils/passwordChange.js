@@ -41,7 +41,8 @@ const STUDENT_PASSWORD_CHANGE_PATHS = new Set([
 
 // Rotas da prova (decisão do coordenador sobre o desvio do H5b, J2): depois do "Redefinir
 // senha" com uma tentativa aberta, o token de antes do reset vale só para estas, até a
-// tentativa fechar (entrega ou fim da janela): presença, estado e sincronização da prova,
+// tentativa fechar (entrega, aplicação encerrada ou, com cronômetro, prazo mais a folga;
+// openAttemptWindowEnd): presença, estado e sincronização da prova,
 // rascunho, registros de atividade e de teclas, entrega, mensagens do professor durante a
 // prova, aviso de questão, token e início de tentativa (a tela da prova recarregada),
 // saída e registro de erro da tela. Qualquer outra rota responde 401
@@ -142,14 +143,20 @@ function classExamWindowEnd(application, now = Date.now()) {
     return start + length + pausedMilliseconds(application, now);
 }
 
-// Fim da janela de uma tentativa aberta (ms), ou 0 quando a tentativa não traz a hora de
-// início (instruções, estado antigo: continua contando como aberta, como no H5a). Prova
-// com cronômetro: o prazo da tentativa (início, duração, ajustes e pausas,
-// computeAttemptDeadline) mais 30 min de folga. Sem cronômetro: 4 h desde o início da
-// tentativa, somando o tempo em pausa. Sem isso, uma tentativa aberta numa aplicação
-// esquecida em andamento (prova sem cronômetro nunca vence) contava como "em prova" para
-// sempre: o "Redefinir senha" deixava a sessão de antes valendo até o prazo absoluto e a
-// troca obrigatória ficava adiada.
+// Fim da janela de uma tentativa aberta (ms), ou 0 quando a tentativa não tem corte
+// (continua contando como aberta enquanto a aplicação estiver aberta). Decisões §10 (revisão
+// da J2): "prova em andamento" é a tentativa sem entrega de uma aplicação ainda aberta
+// (aguardando, em andamento ou pausada), para a troca obrigatória (P3) e para o token de
+// antes do "Redefinir senha" (H5b).
+// - Prova com cronômetro: o prazo da tentativa (início, duração, ajustes e pausas,
+//   computeAttemptDeadline) mais 30 min de folga.
+// - Prova sem cronômetro: sem corte. Enquanto o professor não encerrar a aplicação, a prova
+//   continua em andamento. Antes havia um corte de 4 h desde o início da tentativa, e a
+//   aluna da prova B da referência (sem cronômetro, aberta havia dias) recebia 403 "Troque
+//   a senha antes de continuar" na sync e na entrega, no meio da prova. O token de antes do
+//   reset continua preso às rotas da prova (validateStudentSession), e encerrar a aplicação
+//   fecha a janela.
+// - Tentativa sem hora de início (instruções, estado antigo): também sem corte, como no H5a.
 function openAttemptWindowEnd(state, application, now = Date.now()) {
     const startedAt = timeValue(state && state.startedAt);
     if (!startedAt) return 0;
@@ -157,7 +164,7 @@ function openAttemptWindowEnd(state, application, now = Date.now()) {
     const { computeAttemptDeadline } = require('./examDeadline.js');
     const deadline = Number(computeAttemptDeadline({ application, state, now }));
     if (Number.isFinite(deadline) && deadline > 0) return deadline + CLASS_EXAM_MARGIN_MS;
-    return startedAt + CLASS_EXAM_UNTIMED_WINDOW_MS + pausedMilliseconds(application, now);
+    return 0;
 }
 
 // Tentativas do aluno no estado das provas: { openAttempt, attemptedApplications }.
