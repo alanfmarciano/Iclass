@@ -110,6 +110,8 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/accounts\/(create|update|delete)$/, permission: 'accounts.manage' },
     { methods: ['POST'], pattern: /^\/teacher-assignments$/, permission: 'accounts.manage' },
     { methods: ['GET'], pattern: /^\/network-info$/, permission: 'page.system' },
+    // Cartão "Saúde do servidor" da tela Sistema (H3c).
+    { methods: ['GET'], pattern: /^\/system\/health$/, permission: 'page.system' },
     { methods: ['POST'], pattern: /^\/(flush-exam-state|server\/restart|reset)$/, permission: 'system.manage' },
     { methods: ['GET'], pattern: /^\/maintenance\/preview$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/settings$/, permission: 'system.manage' },

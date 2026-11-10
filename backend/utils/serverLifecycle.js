@@ -21,10 +21,21 @@
 // outras entradas de prova lidas pelo registro da aplicação (buildApplicationAuditTrail,
 // a exceção do contrato do recordAudit); o rótulo em pt-BR fica em ACTION_LABELS
 // (utils/audit.js) e o detalhe em describeExamAudit (utils/gradebook.js).
-// Os sinais, o desligamento ordenado (requestShutdown) e o registro dos timers ficam
-// com o H3c, que chama markCleanShutdown(reason) no fim do desligamento. Até lá, a saída
-// normal do processo (código 0, o fim do Ctrl+C/SIGTERM e do Reiniciar) marca a parada
-// limpa por um ouvinte de 'exit' daqui, sem mexer nesses trechos.
+// Processo (H3c: CONF-12, OPS-06, OPS-07). Também ficam aqui:
+// - os códigos de saída do servidor (EXIT_CODES), que o supervisor (backend/supervisor.js)
+//   e depois o launcher usam para decidir se religam;
+// - o registro dos timers do servidor (registerTimer): todo setInterval do servidor entra
+//   aqui com unref(), e o desligamento ordenado limpa todos de uma vez;
+// - o desligamento ordenado único (requestShutdown), que o startServer liga aos sinais
+//   (SIGINT, SIGTERM, SIGHUP, SIGBREAK), à mensagem {type:'shutdown'} do supervisor, ao
+//   botão Reiniciar e à rota de controle do launcher; o fim dele chama
+//   markCleanShutdown(reason);
+// - o estado do boot (fase, ready, duração, sessões retomadas) e o modo "com problemas"
+//   depois de uma exceção não tratada, lidos por /api/health (routes/systemHealth.js);
+// - o token da rota de controle (runtime/control.token).
+// A saída normal (código 0) sem o requestShutdown (os processos de teste que só sobem o
+// prepareServer) continua marcando a parada limpa por um ouvinte de 'exit' daqui.
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const runtimePaths = require('../runtimePaths.js');
@@ -366,7 +377,9 @@ function compensateBootOutage(memory, run = state.previousRun, { now = Date.now(
         if (running) console.warn('⚠️ Não há registro de quando o servidor parou (runtime/heartbeat.json): o tempo fora do ar não foi devolvido às provas em andamento. Se precisar, dê mais tempo pelo Monitor.');
         return { changed: false, applications: [] };
     }
-    const reason = run.clean ? 'restart' : 'crash';
+    // Parada pedida é 'reinício'; a saída depois de uma exceção não tratada (reason
+    // 'fatal', H3c) grava o heartbeat limpo, mas foi queda.
+    const reason = run.clean && run.reason !== 'fatal' ? 'restart' : 'crash';
     const outcome = compensateServerOutage(memory, { from: run.at, to: now, reason });
     if (outcome.changed) console.log(describeOutageLog(outcome, reason));
     return outcome;
@@ -425,14 +438,16 @@ function startHeartbeat({ getMemory, save, intervalMs = HEARTBEAT_INTERVAL_MS, n
     state.save = save || null;
     state.lastTickAt = now;
     writeHeartbeat({ now });
-    state.timer = setInterval(tick, Math.max(1000, Number(intervalMs) || HEARTBEAT_INTERVAL_MS));
-    if (typeof state.timer.unref === 'function') state.timer.unref();
+    state.timer = registerTimer('heartbeat', setInterval(tick, Math.max(1000, Number(intervalMs) || HEARTBEAT_INTERVAL_MS)));
     setDeadlineCheck(() => detectGap(Date.now()));
     return state.timer;
 }
 
 function stopHeartbeat() {
-    if (state.timer) clearInterval(state.timer);
+    if (state.timer) {
+        clearInterval(state.timer);
+        unregisterTimer('heartbeat', state.timer);
+    }
     state.timer = null;
     state.started = false;
     state.lastTickAt = null;
@@ -464,6 +479,214 @@ function installExitHook() {
     process.on('exit', onProcessExit);
 }
 
+// ---------------------------------------------------------------------------
+// Processo (H3c)
+// ---------------------------------------------------------------------------
+
+// Códigos de saída do servidor (contrato da fase 2). O supervisor religa só no 1 (com
+// espera crescente) e no 75 (na hora); 2 e 3 não adiantam repetir.
+const EXIT_CODES = Object.freeze({
+    OK: 0,          // parada normal (Ctrl+C, SIGTERM, fechar a janela, rota de controle)
+    ERROR: 1,       // erro fatal em execução ou falha passageira ao abrir o banco
+    CONFIG: 2,      // configuração: porta ocupada, build ausente ou desatualizado
+    DB_CORRUPT: 3,  // banco danificado (ICLASS_DB_CORRUPT): restaurar um backup
+    RESTART: 75,    // reinício pedido (botão Reiniciar ou launcher) sob o supervisor
+});
+// Teto do desligamento ordenado: passado isso, sai com 1 (algo travou).
+const SHUTDOWN_TIMEOUT_MS = 10 * 1000;
+const SHUTDOWN_REASONS = new Set(['stop', 'restart', 'admin_restart', 'fatal']);
+
+const processState = {
+    timers: new Map(),
+    shutdownHandler: null,
+    shutdownPromise: null,
+    shutdownRequest: null,
+    degraded: null,
+    boot: { phase: 'loading', ready: false, startedAt: Date.now(), readyAt: null, bootDurationMs: null, sessionsRestored: null },
+    controlToken: null,
+};
+
+// Registra um timer do servidor (setInterval) pelo nome: unref() (não segura o processo
+// vivo) e o desligamento ordenado limpa todos (clearTimers). O mesmo nome substitui o
+// anterior, que é parado. Devolve o próprio handle.
+function registerTimer(name, handle) {
+    if (!handle) return handle;
+    const key = String(name || 'timer');
+    const previous = processState.timers.get(key);
+    if (previous && previous !== handle) clearInterval(previous);
+    if (typeof handle.unref === 'function') handle.unref();
+    processState.timers.set(key, handle);
+    return handle;
+}
+
+function unregisterTimer(name, handle) {
+    const key = String(name || 'timer');
+    if (!handle || processState.timers.get(key) === handle) processState.timers.delete(key);
+}
+
+// Para todos os timers registrados (e o heartbeat). Devolve os nomes parados.
+function clearTimers() {
+    const names = [...processState.timers.keys()];
+    processState.timers.forEach(handle => { try { clearInterval(handle); } catch (e) { /* já parado */ } });
+    processState.timers.clear();
+    // O heartbeat para de bater, mas continua "iniciado": o fim do desligamento ainda
+    // grava a parada limpa nele (markCleanShutdown).
+    if (state.timer) {
+        try { clearInterval(state.timer); } catch (e) { /* já parado */ }
+        state.timer = null;
+    }
+    return names;
+}
+
+function registeredTimers() {
+    return [...processState.timers.keys()];
+}
+
+// O servidor roda sob o supervisor (backend/supervisor.js)?
+function isSupervised(env = process.env) {
+    return env.ICLASS_SUPERVISED === '1';
+}
+
+// O que o supervisor passou ao filho: quantos reinícios já houve, como o anterior saiu e
+// quantas quedas fatais nos últimos 10 min.
+function supervisorInfo(env = process.env) {
+    const count = value => {
+        const number = Number(value);
+        return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+    };
+    const lastExit = String(env.ICLASS_SUPERVISOR_LAST_EXIT || '').trim();
+    return {
+        supervised: isSupervised(env),
+        restarts: count(env.ICLASS_SUPERVISOR_RESTARTS),
+        recentFatals: count(env.ICLASS_SUPERVISOR_RECENT_FATALS),
+        lastExit: lastExit || null,
+        // Este processo nasceu de um reinício (supervisor ou o Reiniciar sem supervisor):
+        // a porta pode demorar um pouco a ser liberada pelo processo anterior.
+        relaunched: env.ICLASS_RESTARTED === '1' || count(env.ICLASS_SUPERVISOR_RESTARTS) > 0,
+    };
+}
+
+// Quem faz o desligamento de verdade (o startServer). fn({ restart, reason }) devolve uma
+// promessa; null tira o registro.
+function setShutdownHandler(fn) {
+    processState.shutdownHandler = typeof fn === 'function' ? fn : null;
+    if (!processState.shutdownHandler) {
+        processState.shutdownPromise = null;
+        processState.shutdownRequest = null;
+    }
+}
+
+function hasShutdownHandler() {
+    return typeof processState.shutdownHandler === 'function';
+}
+
+// Desligamento ordenado único (sinais, supervisor, Reiniciar, rota de controle, erro
+// fatal). Idempotente: o segundo pedido recebe a mesma promessa do primeiro. Sem handler
+// registrado (createApp nos testes) devolve false e não faz nada.
+function requestShutdown({ restart = false, reason } = {}) {
+    if (!hasShutdownHandler()) return false;
+    if (processState.shutdownPromise) return processState.shutdownPromise;
+    const normalized = SHUTDOWN_REASONS.has(reason) ? reason : (restart ? 'restart' : 'stop');
+    processState.shutdownRequest = { restart: restart === true, reason: normalized, at: Date.now() };
+    processState.shutdownPromise = Promise.resolve()
+        .then(() => processState.shutdownHandler({ restart: restart === true, reason: normalized }));
+    return processState.shutdownPromise;
+}
+
+function shutdownRequested() {
+    return processState.shutdownRequest ? { ...processState.shutdownRequest } : null;
+}
+
+// Depois de uma exceção não tratada o processo continua no ar em estado incerto:
+// /api/health responde 'degraded' (com problemas).
+function markDegraded(reason) {
+    processState.degraded = { at: new Date().toISOString(), reason: String(reason || 'erro') };
+}
+
+function degradedState() {
+    return processState.degraded ? { ...processState.degraded } : null;
+}
+
+// Fases do boot para o /api/health de quem está esperando o servidor: 'loading'
+// (lendo o banco), 'restoring' (sessões e tempo fora do ar), 'checking' (varredura do
+// fim do tempo) e, no fim, ready.
+function setBootPhase(phase) {
+    processState.boot.phase = String(phase || 'loading');
+}
+
+function markReady({ sessionsRestored = null, now = Date.now() } = {}) {
+    processState.boot.ready = true;
+    processState.boot.phase = 'ready';
+    processState.boot.readyAt = now;
+    processState.boot.bootDurationMs = Math.max(0, now - processState.boot.startedAt);
+    if (sessionsRestored) processState.boot.sessionsRestored = { ...sessionsRestored };
+}
+
+function bootState() {
+    return { ...processState.boot, sessionsRestored: processState.boot.sessionsRestored ? { ...processState.boot.sessionsRestored } : null };
+}
+
+// Só para os testes que sobem o app sem o startServer.
+function resetProcessState() {
+    clearTimers();
+    processState.shutdownHandler = null;
+    processState.shutdownPromise = null;
+    processState.shutdownRequest = null;
+    processState.degraded = null;
+    processState.boot = { phase: 'loading', ready: false, startedAt: Date.now(), readyAt: null, bootDurationMs: null, sessionsRestored: null };
+}
+
+function controlTokenFile() {
+    return path.join(runtimeDir(), 'control.token');
+}
+
+// Token da rota de controle (POST /api/system/control): 32 bytes novos a cada boot em
+// runtime/control.token, só legível pelo usuário (0600). O launcher lê o arquivo e manda o
+// conteúdo no cabeçalho x-iclass-control, do próprio computador. Nunca lança: devolve o
+// token ou null.
+function writeControlToken() {
+    const token = crypto.randomBytes(32).toString('hex');
+    try {
+        fs.mkdirSync(runtimeDir(), { recursive: true });
+        const file = controlTokenFile();
+        try { fs.rmSync(file, { force: true }); } catch (e) { /* escreve por cima */ }
+        fs.writeFileSync(file, token, { mode: 0o600 });
+        try { fs.chmodSync(file, 0o600); } catch (e) { /* Windows: sem modo Unix */ }
+        processState.controlToken = token;
+        return token;
+    } catch (err) {
+        try { logError('[CONTROLE] Não foi possível gravar runtime/control.token', err); } catch (e) { /* nunca lança */ }
+        processState.controlToken = null;
+        return null;
+    }
+}
+
+// O token que vale agora: o do arquivo (o que o launcher lê). Sem arquivo, nenhum.
+function readControlToken() {
+    try {
+        const value = fs.readFileSync(controlTokenFile(), 'utf8').trim();
+        return /^[0-9a-f]{64}$/.test(value) ? value : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function controlTokenMatches(candidate) {
+    const expected = readControlToken();
+    const given = typeof candidate === 'string' ? candidate.trim() : '';
+    if (!expected || !given || given.length !== expected.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+}
+
+// Apaga o token no desligamento: o arquivo velho não serve para o próximo processo.
+function removeControlToken() {
+    if (!processState.controlToken) return;
+    try {
+        if (readControlToken() === processState.controlToken) fs.rmSync(controlTokenFile(), { force: true });
+    } catch (e) { /* o próximo boot escreve outro */ }
+    processState.controlToken = null;
+}
+
 function status() {
     return {
         started: state.started,
@@ -476,6 +699,8 @@ function status() {
 }
 
 module.exports = {
+    EXIT_CODES,
+    SHUTDOWN_TIMEOUT_MS,
     GAP_THRESHOLD_MS,
     HEARTBEAT_INTERVAL_MS,
     LIVE_HEARTBEAT_MAX_AGE_MS,
@@ -496,4 +721,26 @@ module.exports = {
     status,
     stopHeartbeat,
     writeHeartbeat,
+    // Processo (H3c).
+    bootState,
+    clearTimers,
+    controlTokenFile,
+    controlTokenMatches,
+    degradedState,
+    hasShutdownHandler,
+    isSupervised,
+    markDegraded,
+    markReady,
+    readControlToken,
+    registerTimer,
+    registeredTimers,
+    removeControlToken,
+    requestShutdown,
+    resetProcessState,
+    setBootPhase,
+    setShutdownHandler,
+    shutdownRequested,
+    supervisorInfo,
+    unregisterTimer,
+    writeControlToken,
 };

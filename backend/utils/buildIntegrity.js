@@ -43,14 +43,27 @@ function computeSourceHash() {
     return hash.digest('hex');
 }
 
+// O código diz ao boot (server.js) qual falha foi: build ausente ou desatualizado (saída 2,
+// configuração; H3c).
+function buildError(code, message) {
+    const err = new Error(message);
+    err.code = code;
+    return err;
+}
+
 function verifyBuild() {
     const metaPath = path.join(runtimePaths.WEB_DIST_DIR, 'build-meta.json');
     if (!fs.existsSync(path.join(runtimePaths.WEB_DIST_DIR, 'index.html')) || !fs.existsSync(metaPath)) {
-        throw new Error('Build do frontend ausente. Execute npm run build antes de iniciar o servidor.');
+        throw buildError('ICLASS_BUILD_MISSING', 'Build do frontend ausente. Execute npm run build antes de iniciar o servidor.');
     }
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    let meta;
+    try {
+        meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    } catch (err) {
+        throw buildError('ICLASS_BUILD_MISSING', 'Build do frontend ilegível (web/dist/build-meta.json). Execute npm run build novamente.');
+    }
     const currentHash = computeSourceHash();
-    if (meta.sourceHash !== currentHash) throw new Error('Build do frontend desatualizado. Execute npm run build novamente.');
+    if (meta.sourceHash !== currentHash) throw buildError('ICLASS_BUILD_OUTDATED', 'Build do frontend desatualizado. Execute npm run build novamente.');
     return meta;
 }
 

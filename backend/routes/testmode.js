@@ -500,6 +500,20 @@ function ensureSeed() {
 
 router.get('/api/test-mode', (req, res) => res.json({ enabled: TEST }));
 
+// Erro fatal simulado (H3c), para conferir o supervisor: só em TEST_MODE com
+// ICLASS_TEST_ALLOW_CRASH=1 (os testes que sobem o servidor num processo próprio) e só do
+// próprio computador. Sem a segunda chave, a varredura de rotas dos testes que rodam no
+// mesmo processo derrubaria o próprio teste. Lança fora de qualquer pedido
+// (setImmediate), como uma exceção num timer: vira uncaughtException.
+router.post('/api/test/crash', (req, res) => {
+  const address = String((req.socket && req.socket.remoteAddress) || '');
+  if (!TEST || process.env.ICLASS_TEST_ALLOW_CRASH !== '1' || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)) {
+    return res.status(403).json({ error: 'Disponível apenas com o servidor em TEST_MODE (ICLASS_TEST_ALLOW_CRASH=1), no próprio computador.' });
+  }
+  res.status(202).json({ success: true });
+  res.once('finish', () => setImmediate(() => { throw new Error('Falha simulada pelo modo de teste (/api/test/crash).'); }));
+});
+
 router.post('/api/test/seed', (req, res) => {
   // Seed cria contas administrativas com senha conhecida ("teste"); só pode
   // existir quando o servidor sobe explicitamente em TEST_MODE. Sem esse guard,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { RefreshCw, Trash2, Wifi, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
@@ -14,6 +14,8 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { SaudeCard } from './sistema/SaudeCard'
+import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
 const UPLOAD_TYPES = [['pdf', 'PDF'], ['image', 'Imagem'], ['video', 'Vídeo'], ['doc', 'Documento'], ['sheet', 'Planilha'], ['zip', 'Compactado'], ['other', 'Outros']]
@@ -332,6 +334,11 @@ export default function SistemaPage() {
   const [confirmText, setConfirmText] = useState('')
   const [flushApplication, setFlushApplication] = useState('')
   const [busy, setBusy] = useState(false)
+  // Reinício pedido: 'Reiniciando…' até o /api/health mostrar o servidor novo (H3c).
+  const [restarting, setRestarting] = useState(false)
+  const [healthKey, setHealthKey] = useState(0)
+  const unmountedRef = useRef(false)
+  useEffect(() => () => { unmountedRef.current = true }, [])
   const toast = useToast()
   const ips = (net && (net.addresses || net.ips || net)) || []
   const list = Array.isArray(ips) ? ips : []
@@ -354,8 +361,19 @@ export default function SistemaPage() {
 
   async function restart() {
     setBusy(true)
-    try { await api.post('/api/admin/server/restart', { confirm: 'REINICIAR' }); toast.info('Servidor reiniciando…'); setDialog(null) }
-    catch (e) { toast.error(e.message) } finally { setBusy(false) }
+    const before = await readServerHealth()
+    try {
+      await api.post('/api/admin/server/restart', { confirm: 'REINICIAR' })
+    } catch (e) {
+      toast.error(e.message); setBusy(false); return
+    }
+    setBusy(false); setDialog(null); setRestarting(true)
+    toast.info('Reiniciando…')
+    const result = await waitForServerRestart({ previousInstanceId: before?.instanceId || null, isCancelled: () => unmountedRef.current })
+    if (unmountedRef.current) return
+    setRestarting(false)
+    if (result.ok) { toast.success('Servidor reiniciado.'); setHealthKey((k) => k + 1) }
+    else toast.error(`O servidor não voltou em ${RESTART_WAIT_MS / 1000} s. Veja a janela do IClass.`)
   }
   async function flush() {
     if (!typedConfirmMatches(confirmText, 'LIMPAR')) return toast.error('Digite LIMPAR para confirmar')
@@ -384,6 +402,8 @@ export default function SistemaPage() {
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <PageHeader title="Sistema" subtitle="Rede, configurações e manutenção." />
+
+      <SaudeCard refreshKey={healthKey} />
 
       <Card>
         <CardHeader title="Rede local" subtitle="Endereços para os alunos acessarem" />
@@ -416,9 +436,10 @@ export default function SistemaPage() {
             </Select>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button variant="secondary" icon={RefreshCw} onClick={() => openDialog('restart')}>Reiniciar servidor</Button>
+            <Button variant="secondary" icon={RefreshCw} loading={restarting} disabled={restarting} onClick={() => openDialog('restart')}>{restarting ? 'Reiniciando…' : 'Reiniciar servidor'}</Button>
             <Button variant="secondary" icon={Trash2} disabled={noClass} title={noClass ? 'Escolha a turma acima' : undefined} onClick={() => openDialog('flush')}>Limpar estado de prova</Button>
           </div>
+          {restarting && <p className="text-sm text-info" role="status">Reiniciando… a tela volta sozinha quando o servidor responder (até {RESTART_WAIT_MS / 1000} s).</p>}
           {noClass && <p className="text-xs text-subtle">Escolha a turma acima para limpar o estado de prova ou resetar a sala. Reiniciar o servidor vale para todas as turmas.</p>}
         </CardBody>
       </Card>}
@@ -436,7 +457,7 @@ export default function SistemaPage() {
 
       {!canManage && <Badge tone="neutral">Ações de manutenção não liberadas para esta conta.</Badge>}
 
-      <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description="Todos os alunos e professores conectados perdem a conexão por alguns segundos."
+      <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description="O IClass fica fora do ar por alguns segundos e volta sozinho. Ninguém precisa entrar de novo."
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} onClick={restart}>Reiniciar agora</Button></>}>
         {previewError && <p className="text-sm text-danger">{previewError}</p>}
         {restartActive.length > 0 ? (
@@ -445,9 +466,10 @@ export default function SistemaPage() {
             <ul className="text-sm text-text list-disc pl-5 space-y-1">
               {restartActive.map((a) => <li key={a.id}>{a.studentClass} · {_appLabel(a)}{a.outsideScope && <span className="text-muted"> (turma de outro professor)</span>}</li>)}
             </ul>
-            <p className="text-xs text-muted">O reinício derruba todos os alunos do servidor, de todas as turmas. As respostas já salvas ficam guardadas, mas os alunos precisam entrar de novo depois do reinício.</p>
+            <p className="text-xs text-muted">O reinício vale para o servidor inteiro, com as provas de todas as turmas.</p>
           </div>
         ) : <p className="text-sm text-muted">{preview ? 'Nenhuma prova em andamento agora.' : 'Conferindo as provas em andamento…'}</p>}
+        <p className="text-sm text-muted mt-3">Quem estiver fazendo prova pode continuar respondendo: as respostas são enviadas quando a conexão voltar e o tempo parado é devolvido automaticamente (até 15 minutos).</p>
       </Modal>
 
       <Modal open={dialog === 'flush'} onClose={closeDialog} title={`Limpar estado de prova · turma ${classLabel}`} description="Apaga só o estado de tentativas e as mensagens de prova da turma escolhida."

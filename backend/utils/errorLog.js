@@ -124,9 +124,43 @@ function logError(kind, err, ctx = {}) {
     return written;
 }
 
+// Última falha registrada (cartão Saúde do servidor, H3c): lê só o fim do arquivo (64 KB)
+// e devolve { at, kind, summary } do último bloco, ou null. O cabeçalho do bloco é
+// "[ISO] <tipo> ..." (logError acima); summary é a primeira linha do detalhe (a mensagem
+// do erro), sem o e-mail de quem fez o pedido. Nunca lança.
+const LAST_CRASH_READ_BYTES = 64 * 1024;
+
+function readLastCrash({ file = crashLogPath() } = {}) {
+    let text = '';
+    try {
+        const size = fs.statSync(file).size;
+        if (!size) return null;
+        const length = Math.min(size, LAST_CRASH_READ_BYTES);
+        const buffer = Buffer.alloc(length);
+        const descriptor = fs.openSync(file, 'r');
+        try { fs.readSync(descriptor, buffer, 0, length, size - length); } finally { fs.closeSync(descriptor); }
+        text = buffer.toString('utf8');
+    } catch (error) {
+        return null;
+    }
+    const lines = text.split(/\r?\n/);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const match = /^\[(\d{4}-\d{2}-\d{2}T[^\]]+)\] (\S+)/.exec(lines[index]);
+        if (!match) continue;
+        const detail = lines.slice(index + 1).find(line => line.trim()) || '';
+        return {
+            at: match[1],
+            kind: match[2],
+            summary: oneLine(detail).slice(0, 300),
+        };
+    }
+    return null;
+}
+
 module.exports = {
     CRASH_LOG_MAX_BYTES,
     crashLogPath,
     logError,
+    readLastCrash,
     requestActor,
 };

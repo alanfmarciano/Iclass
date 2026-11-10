@@ -60,6 +60,7 @@ const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeSco
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { createStudentSession, revokeStudentSession, pruneExpiredSessions } = require('../utils/authSessions.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
     createSubmissionFromAttempt,
     questionsForAttempt,
@@ -262,12 +263,13 @@ router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, re
 // timers suspensos pelo navegador e não pode perder a autenticação por isso.
 // Tarefa de fundo: gravação { detached: true } (a falha vai para o crash.log pelo
 // motor de gravação, que regrava sozinho).
-const sessionCleanupInterval = setInterval(() => {
+// Registrada no ciclo de vida do servidor (H3c): o desligamento ordenado a para antes do
+// db.close, e uma volta no meio do desligamento não grava num banco já fechado.
+serverLifecycle.registerTimer('session-prune', setInterval(() => {
     const absoluteHours = Number(settingsUtil.getSettings().session.absoluteHours) || 8;
     const removed = pruneExpiredSessions(db.memory, { absoluteTtlMs: absoluteHours * 3600000 });
     if (removed) db.save({ detached: true }).catch(() => {});
-}, 15 * 60 * 1000);
-sessionCleanupInterval.unref();
+}, 15 * 60 * 1000));
 
 // ----------------------------------------------------
 // ROTAS DE API DO ALUNO

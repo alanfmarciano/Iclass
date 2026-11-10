@@ -139,7 +139,21 @@ const DB_ADMINS_FILE = path.join(DATA_DIR, 'db_admins.json');
 // Conexão com SQLite
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const dbPath = path.join(DATA_DIR, 'database.db');
-const sqliteDb = new sqlite3.Database(dbPath);
+// Resultado da abertura do arquivo: sem ele, uma falha ao abrir (pasta no lugar do
+// arquivo, sem permissão) só ia para o log e o init ficava esperando para sempre (os
+// comandos enfileirados numa conexão que não abriu nunca respondem). Com ele, o init
+// rejeita com o código do SQLite (SQLITE_CANTOPEN) e o boot sai com a causa certa (H3c).
+let openConnection = null;
+const connectionOpened = new Promise((resolve, reject) => { openConnection = { resolve, reject }; });
+connectionOpened.catch(() => {});
+const sqliteDb = new sqlite3.Database(dbPath, err => {
+    if (err) {
+        console.error(`⚠️ [BANCO] ${(err && err.message) || err}`);
+        openConnection.reject(err);
+    } else {
+        openConnection.resolve();
+    }
+});
 // Erro de statement sem callback (migração legada) vira evento 'error': sem este
 // ouvinte ele derrubava o processo como uncaughtException (CONF-05).
 sqliteDb.on('error', err => {
@@ -398,7 +412,7 @@ async function createTables() {
 let connectionReady = null;
 function ensureConnection() {
     if (!connectionReady) {
-        connectionReady = configureConnection().then(createTables);
+        connectionReady = connectionOpened.then(configureConnection).then(createTables);
         connectionReady.catch(() => { connectionReady = null; });
     }
     return connectionReady;

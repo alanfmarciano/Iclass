@@ -14,6 +14,7 @@ const {
     sendHandledFailure,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
+const serverLifecycle = require('../utils/serverLifecycle.js');
 const { saveServerBackup } = require('../utils/backup.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
@@ -235,43 +236,37 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         });
     });
 
+    // Reiniciar (H3c, CONF-12, OPS-06): o desligamento ordenado único do servidor
+    // (serverLifecycle.requestShutdown), o mesmo dos sinais e do launcher: fecha a porta,
+    // para os timers, grava tudo e fecha o banco (db.close) e marca a parada limpa no
+    // heartbeat. Sob o supervisor o processo sai com 75 e volta na hora; sem ele, o próprio
+    // servidor dispara o novo processo antes de sair. As sessões (H3a-2) e o tempo das
+    // provas (H3b) voltam com ele: ninguém precisa entrar de novo. Antes saía sem db.close
+    // e, fora do Windows, não voltava.
     router.post('/api/admin/server/restart', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            // Reiniciar derruba a conexão de todos os alunos: só com confirmação explícita.
+            // Reiniciar deixa todos sem conexão por alguns segundos: só com confirmação explícita.
             if (String((req.body || {}).confirm || '').trim().toUpperCase() !== 'REINICIAR') {
                 return res.status(400).json({ error: 'Confirme o reinício do servidor.', confirmationRequired: true });
             }
+            // Sem o desligamento registrado (app montado pelos testes, sem o startServer)
+            // não há como voltar: nada é feito.
+            if (!serverLifecycle.hasShutdownHandler()) {
+                return res.status(503).json({ error: 'Reinício indisponível neste modo.' });
+            }
             recordMaintenanceAudit(req, matchedAdmin, 'server_restart_requested', null, {
                 activeApplications: (db.memory.examApplications || []).filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status)).length,
+                supervised: serverLifecycle.isSupervised(),
             });
+            // Falha de gravação aqui não impede o reinício: o db.close do desligamento grava
+            // de novo, e a resposta não vira o 503 de gravação.
             try { await db.save(); } catch (_) {}
-            res.json({ success: true, message: 'Servidor reiniciando...' });
-            const serverInstance = req.app.get('serverInstance');
-
-            const spawnRestart = () => {
-                console.log('Iniciando processo de reinicialização...');
-                const { spawn } = require('child_process');
-                const child = spawn('cmd.exe', ['/c', 'ping 127.0.0.1 -n 3 >nul && node backend/server.js'], {
-                    detached: true,
-                    stdio: 'ignore',
-                    cwd: process.cwd(),
-                    shell: true,
-                });
-                child.unref();
-                process.exit(0);
-            };
-
-            if (serverInstance) {
-                serverInstance.close(() => {
-                    console.log('Porta liberada.');
-                    spawnRestart();
-                });
-            }
-
-            setTimeout(() => {
-                console.log('Forçando reinicialização do servidor por timeout...');
-                spawnRestart();
-            }, 2000);
+            const supervised = serverLifecycle.isSupervised();
+            res.json({ success: true, ok: true, supervised, message: 'Servidor reiniciando...' });
+            // Depois que a resposta saiu (o desligamento fecha as conexões).
+            res.once('finish', () => setImmediate(() => {
+                serverLifecycle.requestShutdown({ restart: true, reason: 'admin_restart' });
+            }));
         });
     });
 

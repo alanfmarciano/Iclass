@@ -38,7 +38,7 @@ backend/
 
 ### Boot do servidor — ordem (`prepareServer`, fase 2, H3b)
 
-`startServer` confere o build e chama `prepareServer()` antes de abrir a porta (os testes usam o mesmo `prepareServer`, sem o build e sem `listen`):
+`startServer` (fase 2, H3c) instala os tratadores do processo, confere o build, abre a porta com o handler de boot e só então chama `prepareServer()` (os testes usam o mesmo `prepareServer`, sem o build e sem `listen`; ver "Processo, supervisor e códigos de saída" abaixo). A fase do boot (`loading`, `restoring`, `checking`) aparece no `/api/health`:
 
 1. `db.init()`: carga, migrações e a sincronização das turmas com as aplicações, que só grava quando alguma turma mudou de fato (o boot não regrava turmas, alunos nem presenças nem diz "Provas online resetadas" sem motivo).
 2. `serverLifecycle.loadPreviousRun()`: lê `DATA_DIR/runtime/heartbeat.json` da execução anterior (quando parou, se foi parada limpa). A retomada das sessões (passo 3) usa o mesmo dado (`previousRun().downtimeMs`). Heartbeat de menos de 15 s de outro processo ainda vivo (um segundo servidor aberto na mesma pasta, com o primeiro no ar) não é queda: este processo não devolve tempo nem grava o seu heartbeat.
@@ -46,9 +46,28 @@ backend/
 4. `compensateBootOutage`: o tempo do último heartbeat até agora volta para as provas em andamento como pausa `server_outage` (até 15 min; acima disso só o registro em `application.outages` e na auditoria da prova) e é gravado. Aplicação em que ninguém tinha mais tempo quando o servidor parou (todos entregaram, cronômetro por tentativa sem ninguém fazendo, prazo coletivo já vencido) fica sem pausa, sem registro e sem auditoria.
 5. Primeira varredura do fim do tempo (`settleExpiredAttempts`), depois da devolução: quem teve o prazo vencido com o servidor fora não é entregue no boot. Repete a cada 10 s.
 6. `startHeartbeat`: grava o heartbeat a cada 5 s e liga a verificação de tempo parado (`detectGap`: mais de 30 s sem verificação com o processo vivo, como notebook suspenso, vira queda `suspended`), que roda também antes de toda conta de prazo (`computeAttemptDeadline`).
-7. Backup automático (fora do `TEST_MODE`), `createApp()` e `listen`.
+7. Backup automático (fora do `TEST_MODE`) e os timers (`registerTimer`). Depois, no `startServer`: `createApp()`, a troca do handler de boot pelo app, `markReady` e o banner "iniciado com sucesso".
 
-A saída normal do processo (código 0: o fim do Ctrl+C e do SIGTERM, depois do `db.close`, e o botão Reiniciar) grava o heartbeat com `clean: true` por um ouvinte de `exit` do `serverLifecycle` (`markCleanShutdown`): o próximo boot registra reinício, não queda. Processo morto à força (kill -9, `taskkill /f`, falta de energia) conta como queda. Os sinais, o desligamento ordenado (`requestShutdown`, que passa a chamar `markCleanShutdown` com o motivo) e o `/api/health` ficam com o H3c; `db.health()` e `db.ping()` (`database.js`) já dão o estado da gravação e do banco para ele.
+O fim do desligamento ordenado grava o heartbeat com `clean: true` e o motivo (`markCleanShutdown`): o próximo boot registra reinício, não queda (o motivo `fatal` conta como queda). Processo morto à força (kill -9, `taskkill /f`, falta de energia) conta como queda. O ouvinte de `exit` do `serverLifecycle` continua como rede de segurança para a saída com código 0 fora do desligamento ordenado.
+
+### Processo, supervisor e códigos de saída (fase 2, H3c)
+
+**Ordem do `startServer`:**
+1. `installProcessHandlers`: `uncaughtException` (grava no `crash.log` pelo `logError`, marca "com problemas" e, sob o supervisor, faz o desligamento com motivo `fatal`, menos depois de 3 quedas em 10 min; sem supervisor o processo continua com aviso), `unhandledRejection` (só o registro), SIGINT/SIGTERM/SIGHUP/SIGBREAK e a mensagem `{ type: 'shutdown' }` do supervisor, todos para o mesmo `serverLifecycle.requestShutdown`.
+2. `verifyBuild` (build ausente ou desatualizado: sai com 2, dizendo que é o build).
+3. `http.createServer` com um **handler trocável** (`createSwitchableHandler`) que começa no app de boot (`createBootApp`: `/assets` pelo mesmo `serveBuildAssets`, `GET /api/health` 503 `starting` com a fase, todo `/api` 503 `{ starting: true }` com `Retry-After: 3`, o resto uma página "iniciando"). Porta ocupada ou sem permissão: sai com 2, sem tocar no banco. O H6c (HTTPS na mesma porta) passa o mesmo handler ao listener duplo e reaproveita esse tratamento.
+4. `writeControlToken` (`runtime/control.token`) e `prepareServer()`. Falha do banco: código 3 para banco danificado (`ICLASS_DB_CORRUPT`, `SQLITE_CORRUPT`, `SQLITE_NOTADB`, com a mensagem que cita o `backup-cli.js`), 1 para as outras (arquivo que não abre, disco).
+5. `createApp()`, `handler.set(app)`, `markReady` (com as sessões retomadas), banner e `{ type: 'ready' }` para o supervisor.
+
+Cada falha do boot sai por `describeBootFailure`, que diz a causa certa (build, porta, banco) e grava no `crash.log` com a etapa (`build`, `listen`, `database`, `boot`).
+
+**Códigos de saída** (`serverLifecycle.EXIT_CODES`): 0 parada normal; 1 erro em execução ou falha passageira ao abrir o banco (o supervisor religa); 2 configuração, porta ocupada ou build ausente (não religa); 3 banco danificado (não religa); 75 reinício pedido (o supervisor religa na hora).
+
+**Desligamento ordenado** (`requestShutdown({ restart, reason })`, um só por processo; chamado de novo devolve a mesma promessa): limpa todos os timers registrados (todo `setInterval` do servidor passa por `serverLifecycle.registerTimer(nome, handle)`, com `unref()`; um teste confere isso no código), fecha a porta (as conexões paradas na hora, as outras em até 2 s), `db.close()` (grava e aplica o `-wal`; no motivo `fatal`, no máximo 5 s), `markCleanShutdown`, apaga o `control.token` e sai (75 no reinício sob o supervisor, 1 no `fatal`, 0 no resto). Passando de 10 s, sai com 1 assim mesmo. Pedido ainda no boot sai sem gravar (a memória pode não estar carregada). No Reiniciar sem supervisor, relança o servidor antes de sair (Windows: `cmd.exe` com `ping` de espera, como antes; outros sistemas: `node backend/server.js` destacado, com a saída em `logs/servidor.log`).
+
+**Supervisor** (`backend/supervisor.js`, `npm run start:supervised`): sobe `backend/server.js` com `fork` e `ICLASS_SUPERVISED=1` (mais o número de reinícios, o último código e as quedas recentes, que o cartão Saúde mostra), copia a saída para o console e para `DATA_DIR/logs/servidor.log` (com data e hora, sem as sequências do terminal, girando aos 5 MB com 3 anteriores) e decide depois de cada saída (`decideAfterExit`): 0 para; 75 religa na hora; 2 e 3 param sem laço; outro código ou sinal religa com espera de 1, 2, 5, 10 e 30 s (a espera zera depois de 5 min pronto); 5 falhas seguidas antes de ficar pronto: para com 1. Com SIGINT/SIGTERM/SIGHUP/SIGBREAK, manda `{ type: 'shutdown' }` ao servidor, espera até 15 s (depois SIGKILL) e sai com o código dele, nunca religando enquanto para. Grava `runtime/supervisor.pid`.
+
+O `db.health()` e o `db.ping()` (`database.js`, H3b) dão o estado da gravação e do banco para o `/api/health` e o cartão Saúde do servidor (`routes/systemHealth.js`).
 
 ### Entrega do app na rede da sala (cache e compressão)
 

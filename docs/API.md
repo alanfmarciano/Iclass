@@ -109,9 +109,25 @@ res.json(questao);
 
 Arquivos do app em `/assets/<nome>` (`utils/staticAssets.js`): só GET e HEAD (outro método é 405); nome simples como os do Vite (`[A-Za-z0-9._-]`, inclusive começando com `_` ou `-`, como `_commonjsHelpers-<hash>.js`; sem começar nem terminar com ponto, sem `.gz`/`.br` no fim). Responde com `Cache-Control: public, max-age=31536000, immutable`, `Vary: Accept-Encoding`, `X-Content-Type-Options: nosniff` e `Content-Encoding: br` ou `gzip` quando a versão comprimida do build existe e o navegador aceita. Nome que não existe: 404 `Arquivo não encontrado.` com no-store, nunca o `index.html`. Falha inesperada no envio (disco): o 500 do contrato de erros (`{ success: false, error: 'Ocorreu um erro interno no servidor. Código do erro: <id>.', requestId }`), com no-store e o registro no `crash.log`. Qualquer outro caminho fora de `/api`, `/uploads` e `/imagens` recebe o `index.html` com no-store (503 `O IClass está sendo atualizado...` com `Retry-After: 3` enquanto o build é refeito).
 
+## Saúde e controle do processo
+
+Fase 2, H3c (`backend/routes/systemHealth.js`, montado pelo `admin.js`):
+
+- **`GET /api/health`** (público, sem sessão): `{ status, instanceId, startedAt, uptimeSeconds, version, supervised, checks: { database, lastSaveAt } }`. Só `status: 'ok'` responde 200. Responde 503 com:
+  - `status: 'starting'` e `phase` (`loading`, `restoring`, `checking`) enquanto o servidor carrega os dados (quem responde é o handler de boot do `server.js`);
+  - `status: 'degraded'` depois de uma exceção não tratada, com 3 gravações seguidas falhando ou com 2 consultas seguidas ao banco falhando (`db.health()` e `db.ping()`).
+
+  Não traz e-mail, IP nem dado de aluno. É o que o launcher, um monitor externo e a tela Sistema consultam. A política de rede (trilha B) não pode bloquear esta rota.
+- **Durante o boot**, a porta já está aberta: todo `/api` responde 503 `{ error: 'O IClass está iniciando. Aguarde alguns segundos.', starting: true }` com `Retry-After: 3` e `Cache-Control: no-store`; `/assets` é servido normalmente (o mesmo `serveBuildAssets`); o resto recebe uma página "O IClass está iniciando…" que se recarrega a cada 3 s.
+- **`GET /api/admin/system/health`** (permissão `page.system`): o cartão "Saúde do servidor". `{ success, status, instanceId, version, startedAt, bootDurationMs, uptimeSeconds, rssMb, heapUsedMb, dbFileMb, database, save, supervised, restarts, lastExit, degraded, lastCrash, lastOutage, sessionsRestored }`. `save` é `db.health()`; `lastCrash` é o último bloco do `crash.log` (`{ at, kind, summary }`, sem e-mail); `lastOutage` é a queda mais recente durante uma prova (`{ from, to, durationMs, reason, compensated, examKey, studentClass, courseId }`); `degraded` é `{ at, reason }` ou `null`.
+- **`POST /api/system/control`** `{ action: 'stop' | 'restart' }`: o caminho do launcher para parar ou reiniciar sem `taskkill /f`. Só do próprio computador (loopback) e com o cabeçalho `x-iclass-control` igual ao conteúdo de `data/runtime/control.token` (novo a cada boot); qualquer outra situação é 403 `Acesso negado.`, sem dizer o motivo. Ação inválida: 400 `{ success: false, error, field: 'action' }`. Resposta 202 `{ success, action, supervised }`, e depois o desligamento ordenado.
+- **`POST /api/admin/server/restart`** `{ confirm: 'REINICIAR' }` (Reiniciar da tela Sistema): grava, responde `{ success: true, ok: true, supervised, message }` e faz o desligamento ordenado (`serverLifecycle.requestShutdown({ restart: true, reason: 'admin_restart' })`). Sob o supervisor sai com 75 e volta na hora; sem ele, relança o próprio servidor. As sessões e o tempo das provas continuam. Sem o desligamento registrado (testes que sobem só o `createApp`): 503 `Reinício indisponível neste modo.`.
+
+O desligamento ordenado (`serverLifecycle.requestShutdown`, um só para Ctrl+C, SIGTERM, fechar a janela, Ctrl+Break, rota de controle, Reiniciar e erro fatal) para os timers, fecha a porta, chama `db.close()` (grava e aplica o `-wal`), marca a parada limpa no heartbeat e apaga o `control.token`. Ver os códigos de saída em [ARQUITETURA.md](./ARQUITETURA.md).
+
 ## Modo de teste
 
-`testmode.js` (`/api/test/seed`, reset) só executa com `TEST_MODE=1`. Nunca deixe seed/reset acessível fora de teste.
+`testmode.js` (`/api/test/seed`, reset) só executa com `TEST_MODE=1`. Nunca deixe seed/reset acessível fora de teste. `POST /api/test/crash` (só com `TEST_MODE=1` mais `ICLASS_TEST_ALLOW_CRASH=1` e do próprio computador) responde 202 e lança uma exceção não tratada logo depois, para os testes do supervisor.
 
 ## Checklist ao criar um endpoint
 

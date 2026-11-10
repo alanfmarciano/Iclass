@@ -8,6 +8,15 @@ Por padrão, o sistema mantém `data/`, `content/` e `cursos_arquivados/`. Teste
 
 Requer Node.js 20.19 ou superior. Execute `npm run build` antes de `npm start`. O build gera `web/dist/build-meta.json`; o servidor recusa iniciar se o build estiver ausente ou se o hash das fontes e dependências divergir.
 
+### Supervisor, saúde do servidor e logs (fase 2, H3c)
+
+- **Abrir com reinício automático**: `npm run start:supervised` (`node backend/supervisor.js`). Se o servidor cair (erro fatal, kill), o supervisor sobe outro em segundos (espera de 1, 2, 5, 10 e 30 s) e as sessões e o tempo das provas continuam. `npm start` (`node backend/server.js`) continua funcionando, sem o reinício automático.
+- **Quando não sobe**: o console e o `data/crash.log` dizem a causa. Código de saída 2: porta ocupada ("A porta 3000 já está em uso por outro programa (talvez outra janela do IClass ou o modo demonstração)") ou build ausente/desatualizado (rode a opção [4] do launcher ou `npm run build`). Código 3: banco danificado (restaure um backup com o `backup-cli.js`). Código 1: o banco não abriu (permissão, disco) ou erro inesperado. Com 2 e 3 o supervisor não tenta de novo; depois de 5 falhas seguidas no boot ele desiste com "⛔ O servidor não conseguiu iniciar 5 vezes seguidas.".
+- **`data/logs/servidor.log`**: tudo o que o servidor e o supervisor escreveram, com data e hora em cada linha. Procure `🔁 O servidor parou (código X)` (queda e reinício), `🔁 Reinício pedido` (Reiniciar da tela Sistema) e `⛔` (o supervisor parou). Gira aos 5 MB (`servidor.log.1` a `.3`). O detalhe técnico de cada erro (pilha) fica no `data/crash.log`.
+- **Cartão "Saúde do servidor"** (tela Sistema, atualiza a cada 15 s): Funcionando / Iniciando / Com problemas, há quanto tempo está ligado, memória, tamanho do banco, último salvamento (há quanto tempo e quanto levou), se o reinício automático está ligado e quantos reinícios houve, a última falha do `crash.log` e a última queda durante uma prova (com a turma e se o tempo foi devolvido). "Com problemas" depois de um erro inesperado: reinicie o IClass assim que possível.
+- **Monitor externo**: `GET /api/health` responde 200 só com o servidor funcionando (503 iniciando ou com problemas).
+- **Parar sem perder a gravação**: Ctrl+C, fechar a janela, `kill`/SIGTERM e a rota de controle do launcher fazem o mesmo desligamento: grava, fecha o banco (o `-wal` é aplicado) e marca a parada limpa. Evite `taskkill /f` e kill -9: contam como queda.
+
 ## Testes
 
 ```powershell
@@ -49,7 +58,7 @@ A restauração só responde sucesso depois do `COMMIT` do SQLite. Em falha, arq
 
 ### Banco em modo WAL
 
-O banco (`data/database.db`) roda em modo WAL: com o servidor ligado existem também `database.db-wal` e `database.db-shm`. Uma cópia manual do banco feita com o servidor ligado precisa dos três arquivos juntos (só o `.db` pode vir sem as últimas gravações); prefira o backup do sistema ou desligue o servidor antes. Desligar com Ctrl+C grava, fecha o banco e apaga o `-wal`; fechar a janela do console e o Reiniciar em Sistema ainda saem sem fechar o banco (o que já foi confirmado fica no `-wal` e é aplicado na subida seguinte, por isso a cópia manual precisa dos três arquivos). Não deixe a pasta do IClass dentro do OneDrive ou de pasta de rede: o modo WAL pode não pegar (aviso no console) e o sincronizador pode prender o arquivo.
+O banco (`data/database.db`) roda em modo WAL: com o servidor ligado existem também `database.db-wal` e `database.db-shm`. Uma cópia manual do banco feita com o servidor ligado precisa dos três arquivos juntos (só o `.db` pode vir sem as últimas gravações); prefira o backup do sistema ou desligue o servidor antes. Desligar com Ctrl+C, fechar a janela do console e o Reiniciar em Sistema gravam, fecham o banco e apagam o `-wal` (fase 2, H3c); só o processo morto à força (kill -9, `taskkill /f`, falta de energia) deixa o `-wal`, que é aplicado na subida seguinte (por isso a cópia manual com o servidor ligado precisa dos três arquivos). Não deixe a pasta do IClass dentro do OneDrive ou de pasta de rede: o modo WAL pode não pegar (aviso no console) e o sincronizador pode prender o arquivo.
 
 Toda gravação confirmada ao usuário já está no disco: a resposta só sai depois do `COMMIT` (com `synchronous=FULL`). Se outro programa prender o banco por mais que o `busy_timeout` (5 s), a tela recebe 503 "Não foi possível gravar os dados agora. Tente de novo em alguns segundos." e o servidor tenta gravar de novo sozinho (2 s, 5 s, 10 s e depois a cada 30 s); a falha vai para o `crash.log` no máximo uma vez por minuto.
 

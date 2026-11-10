@@ -131,6 +131,7 @@ const { createAdminArchiveRouter } = require('./adminArchive.js');
 const { createAdminSystemRouter } = require('./adminSystem.js');
 const { createAdminAccountsRouter } = require('./adminAccounts.js');
 const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
+const { createSystemHealthRouter } = require('./systemHealth.js');
 const {
     addExtraUnit,
     courseClasses: contentCourseClasses,
@@ -3112,6 +3113,9 @@ router.use(createAdminArchiveRouter({ studentClassNames }));
 router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
 router.use(createAdminExamConfigRouter());
+// Saúde do servidor (/api/health, /api/admin/system/health) e a rota de controle do
+// launcher (/api/system/control), H3c.
+router.use(createSystemHealthRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
