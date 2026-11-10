@@ -14,6 +14,7 @@ const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedCo
 const { fileLooksLikeBackup } = require('./utils/backup.js');
 const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
 const { ownEntry } = require('./utils/ownEntry.js');
+const { createPersistenceContext } = require('./utils/persistenceContext.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -58,6 +59,7 @@ const PORT = process.env.PORT || 3000;
 
 function createApp() {
 const app = express();
+const { errorHandler, adminRbacGuard } = require('./middlewares.js');
 app.set('query parser', parseQueryLastValue);
 // 1) Código do pedido (X-Request-Id e "Código do erro" no 500), antes de tudo.
 app.use(assignRequestId);
@@ -99,6 +101,14 @@ app.use((req, res, next) => {
     if (req.body === undefined) req.body = {};
     next();
 });
+// 8) Resposta só depois do COMMIT (H1-a, CONF-04): toda gravação pedida durante o pedido
+// (db.save com ou sem await) é esperada antes de res.send; se falhou, sai 503 retryable
+// em vez do "salvo". Antes de qualquer rota ou guarda. A foto da memória é do
+// verificador de gravação parcial (ICLASS_VERIFY_SAVES).
+app.use(createPersistenceContext({
+    snapshot: () => db.captureSaveSnapshot(),
+    onWriteFailure: (err, req, res) => errorHandler(err, req, res, () => {}),
+}));
 app.use((req, res, next) => {
     if (req.path.endsWith('.html') || req.path.endsWith('.js')) {
         res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -218,7 +228,6 @@ app.use(express.static(WEB_DIST));
 
 
 // Carregar os Roteadores Modulares
-const { errorHandler, adminRbacGuard } = require('./middlewares.js');
 const commonRoutes = require('./routes/common.js');
 const studentRoutes = require('./routes/student.js');
 const adminRoutes = require('./routes/admin.js');
@@ -322,7 +331,9 @@ async function startServer() {
             // Sobras de versões antigas em aplicação encerrada com "desconsiderar": ficam
             // registradas como desconsideradas (com as respostas), nunca "em instantes".
             if (discarded) console.log('⏱️  ' + discarded + ' tentativa(s) antiga(s) de aplicação encerrada com "desconsiderar" registrada(s) como desconsiderada(s).');
-            if (changed) db.save().catch(err => logCrash('finalização de tentativas vencidas', err));
+            // Tarefa de fundo: { detached: true }. Falha de gravação já vai para o
+            // crash.log pelo motor (uma linha por minuto) e é regravada sozinha.
+            if (changed) db.save({ detached: true }).catch(err => { if (!err || err.code !== 'ICLASS_DB_WRITE') logCrash('finalização de tentativas vencidas', err); });
         } catch (e) { logCrash('finalização de tentativas vencidas', e); }
     }
     sweepExpiredAttempts();
@@ -338,7 +349,7 @@ async function startServer() {
             try {
                 const last = backupUtil.lastAutomaticBackupAt();
                 if (last && Date.now() - last < 24 * 3600000) return;
-                await db.save();
+                await db.save({ detached: true });
                 const file = backupUtil.runAutomaticBackup();
                 console.log('💾 Backup automático criado: ' + path.basename(file));
             } catch (e) { logCrash('backup automático', e); }
