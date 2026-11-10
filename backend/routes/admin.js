@@ -16,6 +16,7 @@ const {
     getCourseItemKeys,
     isProfessorAccount,
     adminAllowedCourseIds,
+    adminAllowedSchoolIds,
     adminCanAccessCourse,
     adminCanAccessClass,
     adminCanAccessItem,
@@ -134,6 +135,7 @@ const { createAdminSystemRouter } = require('./adminSystem.js');
 const { createAdminAccountsRouter } = require('./adminAccounts.js');
 const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
 const { createAdminAuditRouter } = require('./adminAudit.js');
+const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
 const {
     addExtraUnit,
     courseClasses: contentCourseClasses,
@@ -3224,6 +3226,7 @@ router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
 router.use(createAdminExamConfigRouter());
 router.use(createAdminAuditRouter());
+router.use(createAdminCoursesRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -4052,15 +4055,26 @@ router.post('/api/admin/send-broadcast-message', (req, res) => {
     });
 });
 
+// Mensagem da turma (ou de um aluno dela) que a conta pode ver ou apagar (SEG-11): o
+// professor só as das turmas dele; mensagem sem curso vale pela turma, quando o nome
+// dela é único (adminCanAccessClass); com nome repetido em dois cursos, fica escondida.
+function adminCanAccessMessage(account, message) {
+    if (!isProfessorAccount(account)) return true;
+    return !!message && adminCanAccessClass(account, message.studentClass, message.courseId);
+}
+
 router.get('/api/admin/message-history', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const studentClass = (req.query.studentClass || '').trim();
         const courseId = (req.query.courseId || '').trim();
         const examKey = (req.query.examKey || '').trim();
         const applicationId = (req.query.applicationId || '').trim();
         const targetEmail = (req.query.targetEmail || '').trim().toLowerCase();
+        // Sem turma no pedido, o professor recebia as mensagens de todas as turmas,
+        // inclusive as privadas para um aluno de outra turma.
         const messages = (db.memory.broadcastMessages || [])
             .filter(m => !m.adminDeleted)
+            .filter(m => adminCanAccessMessage(matchedAdmin, m))
             .filter(m => !studentClass || String(m.studentClass || '').toLowerCase() === studentClass.toLowerCase())
             .filter(m => !courseId || !m.courseId || String(m.courseId) === courseId)
             .filter(m => !examKey || !m.examKey || String(m.examKey) === examKey)
@@ -4071,17 +4085,38 @@ router.get('/api/admin/message-history', (req, res) => {
     });
 });
 
+// Apagar do histórico do Monitor: uma mensagem (messageId) ou as de uma turma
+// (studentClass, com curso, prova e aplicação opcionais). Sem nenhum dos dois, o corpo
+// vazio apagava as mensagens de todas as turmas (SEG-11); agora é recusado para todos,
+// inclusive o administrador. O professor nunca apaga mensagem fora das turmas dele.
 router.post('/api/admin/message-history/delete', (req, res) => {
-    validateAdmin(req, res, () => {
-        const { messageId, studentClass, courseId, examKey, applicationId } = req.body || {};
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const body = req.body || {};
+        const text = value => (typeof value === 'string' ? value.trim() : '');
+        const messageId = text(body.messageId);
+        const studentClass = text(body.studentClass);
+        const courseId = text(body.courseId);
+        const examKey = text(body.examKey);
+        const applicationId = text(body.applicationId);
+        if (!messageId && !studentClass) {
+            return res.status(400).json({ success: false, error: 'Informe a mensagem ou a turma.', field: 'studentClass' });
+        }
+        if (messageId) {
+            const target = (db.memory.broadcastMessages || []).find(m => m && m.id === messageId);
+            if (target && !adminCanAccessMessage(matchedAdmin, target)) {
+                return res.status(403).json({ success: false, error: 'Você não tem acesso a esta mensagem.' });
+            }
+        }
         let count = 0;
         (db.memory.broadcastMessages || []).forEach(m => {
+            if (!m) return;
             const match = messageId
                 ? m.id === messageId
-                : (!studentClass || String(m.studentClass || '').toLowerCase() === String(studentClass).trim().toLowerCase())
-                    && (!courseId || !m.courseId || String(m.courseId) === String(courseId))
-                    && (!examKey || !m.examKey || String(m.examKey) === String(examKey))
-                    && (!applicationId || m.applicationId === applicationId);
+                : String(m.studentClass || '').toLowerCase() === studentClass.toLowerCase()
+                    && (!courseId || !m.courseId || String(m.courseId) === courseId)
+                    && (!examKey || !m.examKey || String(m.examKey) === examKey)
+                    && (!applicationId || m.applicationId === applicationId)
+                    && adminCanAccessMessage(matchedAdmin, m);
             if (match && !m.adminDeleted) {
                 m.adminDeleted = true;
                 m.adminDeletedAt = new Date().toISOString();
@@ -5091,18 +5126,42 @@ router.get('/api/admin/dashboard/trends', (req, res) => {
 
 
 // Duplicar (clonar) curso para outra escola: copia independente de estrutura e conteudo.
+// Professor (SEG-12): a origem precisa estar no escopo dele (o caminho também é conferido
+// em validateProfessorRequestScope) e a escola de destino, entre as escolas dele.
 router.post('/api/admin/courses/:id/clone', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         if (!canAccessAdminPermission(matchedAdmin, 'course.manage')) {
             return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
         }
-        const src = (db.memory.courses || []).find(c => c.id === req.params.id);
+        const src = (db.memory.courses || []).find(c => c && c.id === req.params.id);
         if (!src) return res.status(404).json({ error: 'Curso de origem não encontrado.' });
-        const newId = String(req.body.newId || '').trim().toUpperCase();
-        const newName = String(req.body.newName || '').trim();
-        const schoolId = req.body.schoolId || src.schoolId || 'escola_default';
-        if (!newId || !newName) return res.status(400).json({ error: 'Informe ID e nome do novo curso.' });
-        if ((db.memory.courses || []).some(c => c.id === newId)) return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
+        if (!adminCanAccessCourse(matchedAdmin, src.id)) {
+            return res.status(403).json({ error: 'O curso solicitado não pertence às turmas atribuídas a esta conta.' });
+        }
+        const body = req.body || {};
+        if (typeof body.newId !== 'string' || !body.newId.trim() || typeof body.newName !== 'string' || !body.newName.trim()) {
+            return res.status(400).json({ error: 'Informe ID e nome do novo curso.' });
+        }
+        const newId = body.newId.trim().toUpperCase();
+        // O código entra no nome dos arquivos copiados (<chave>_<código>.md): só letras,
+        // números, '-' e '_' (antes, '../' no código gravava fora da pasta de conteúdo).
+        const idError = courseIdError(newId);
+        if (idError) return res.status(400).json({ success: false, error: idError, field: 'newId' });
+        const parsedName = parseCourseName(body.newName);
+        if (parsedName.error) return res.status(400).json({ success: false, error: parsedName.error, field: 'newName' });
+        const newName = parsedName.value;
+        if (body.schoolId !== undefined && body.schoolId !== null && typeof body.schoolId !== 'string') {
+            return res.status(400).json({ success: false, error: 'Escola inválida.', field: 'schoolId' });
+        }
+        const requestedSchoolId = typeof body.schoolId === 'string' ? body.schoolId.trim() : '';
+        const schoolId = requestedSchoolId || src.schoolId || 'escola_default';
+        if (isProfessorAccount(matchedAdmin) && !adminAllowedSchoolIds(matchedAdmin).has(String(schoolId))) {
+            return res.status(403).json({ success: false, error: 'A escola de destino não está no seu escopo.', field: 'schoolId' });
+        }
+        if (requestedSchoolId && requestedSchoolId !== String(src.schoolId || '') && !schoolExists(requestedSchoolId)) {
+            return res.status(400).json({ success: false, error: 'Escola não encontrada.', field: 'schoolId' });
+        }
+        if ((db.memory.courses || []).some(c => c && c.id === newId)) return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
 
         function copyContentFile(oldKey, newKey) {
             const oldP = path.join(runtimePaths.CONTENT_DIR, `${oldKey}.md`);
@@ -5202,7 +5261,7 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
             return cloned;
         });
         db.memory.classes.push(...clonedClasses);
-        recordAcademicAudit(req, matchedAdmin, 'course_cloned', { courseId: src.id }, null, { newCourseId: newId, clonedClasses: clonedClasses.map(cls => cls.name) });
+        recordAcademicAudit(req, matchedAdmin, 'course_cloned', { courseId: src.id }, null, { newCourseId: newId, schoolId, clonedClasses: clonedClasses.map(cls => cls.name) });
         db.save();
         res.json({ success: true, course: newCourse, classes: clonedClasses });
     });

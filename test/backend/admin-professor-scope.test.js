@@ -223,3 +223,293 @@ test('[UC-PRESENCA-002] CSV de presença neutraliza fórmula no nome do aluno, c
     // Nenhum campo começa com um caractere de fórmula.
     assert.doesNotMatch(csv.text, /(^|;)"?[=+@]/m);
 });
+
+// ---------------------------------------------------------------- Mensagens do Monitor (fase 2, H5c)
+
+function seedMessages() {
+    const base = { acknowledgedBy: [], deletedFor: [], adminDeleted: false, status: 'pending', examKey: null, applicationId: null };
+    db.memory.broadcastMessages = [
+        { ...base, id: 'msg-1des', studentClass: '1DES', courseId: COURSE, targetEmail: null, messageText: 'Para a 1DES', timestamp: 4 },
+        { ...base, id: 'msg-2des-privada', studentClass: '2DES', courseId: COURSE, targetEmail: 'zeca@escopo.local', messageText: 'Só para o Zeca', timestamp: 3 },
+        // Mensagens antigas, sem curso: valem pela turma (nome único).
+        { ...base, id: 'msg-2des-antiga', studentClass: '2DES', courseId: null, targetEmail: null, messageText: 'Antiga da 2DES', timestamp: 2 },
+        { ...base, id: 'msg-1des-antiga', studentClass: '1DES', courseId: null, targetEmail: null, messageText: 'Antiga da 1DES', timestamp: 1 },
+    ];
+}
+
+test('[UC-ADMIN-003] histórico de mensagens do Monitor: o professor só vê as mensagens das turmas dele (SEG-11)', async () => {
+    seedMessages();
+    const mine = await asProfessor(request(app).get('/api/admin/message-history')).expect(200);
+    assert.deepEqual(mine.body.messages.map(m => m.id), ['msg-1des', 'msg-1des-antiga'],
+        'antes o professor da 1DES recebia a mensagem privada para o aluno da 2DES');
+    const filtered = await asProfessor(request(app).get(`/api/admin/message-history?studentClass=1DES&courseId=${COURSE}`)).expect(200);
+    assert.deepEqual(filtered.body.messages.map(m => m.id), ['msg-1des', 'msg-1des-antiga']);
+    await asProfessor(request(app).get(`/api/admin/message-history?studentClass=2DES&courseId=${COURSE}`)).expect(403);
+    const all = await asAdmin(request(app).get('/api/admin/message-history')).expect(200);
+    assert.equal(all.body.messages.length, 4, 'o administrador continua vendo todas');
+});
+
+test('[UC-ADMIN-003] apagar do histórico exige a mensagem ou a turma, e o professor não apaga mensagem de outra turma (SEG-11)', async () => {
+    seedMessages();
+    const deleted = () => db.memory.broadcastMessages.filter(m => m.adminDeleted).map(m => m.id).sort();
+
+    const empty = await asProfessor(request(app).post('/api/admin/message-history/delete')).send({});
+    assert.equal(empty.status, 400, 'antes o corpo vazio apagava as mensagens de todas as turmas');
+    assert.equal(empty.body.error, 'Informe a mensagem ou a turma.');
+    await asAdmin(request(app).post('/api/admin/message-history/delete')).send({}).expect(400);
+    await asAdmin(request(app).post('/api/admin/message-history/delete')).send({ messageId: 123, studentClass: ['2DES'] }).expect(400);
+    assert.deepEqual(deleted(), []);
+
+    const foreign = await asProfessor(request(app).post('/api/admin/message-history/delete')).send({ messageId: 'msg-2des-privada' });
+    assert.equal(foreign.status, 403);
+    assert.equal(foreign.body.error, 'Você não tem acesso a esta mensagem.');
+    await asProfessor(request(app).post('/api/admin/message-history/delete')).send({ messageId: 'msg-2des-antiga', studentClass: '1DES', courseId: COURSE }).expect(403);
+    await asProfessor(request(app).post('/api/admin/message-history/delete')).send({ studentClass: '2DES', courseId: COURSE }).expect(403);
+    assert.deepEqual(deleted(), []);
+
+    // A tela do Monitor manda a mensagem e a turma ativa juntas.
+    const own = await asProfessor(request(app).post('/api/admin/message-history/delete')).send({ messageId: 'msg-1des', studentClass: '1DES', courseId: COURSE });
+    assert.equal(own.status, 200, own.body.error);
+    assert.equal(own.body.deleted, 1);
+    // "Limpar histórico" da turma: só as da turma pedida.
+    const clearOwn = await asProfessor(request(app).post('/api/admin/message-history/delete')).send({ studentClass: '1DES', courseId: COURSE });
+    assert.equal(clearOwn.body.deleted, 1);
+    assert.deepEqual(deleted(), ['msg-1des', 'msg-1des-antiga']);
+
+    const adminClear = await asAdmin(request(app).post('/api/admin/message-history/delete')).send({ studentClass: '2DES' }).expect(200);
+    assert.equal(adminClear.body.deleted, 2);
+    assert.equal(deleted().length, 4);
+});
+
+// ---------------------------------------------------------------- Fórum (fase 2, H5c)
+
+function seedForum() {
+    db.memory.forum = [
+        { id: 'duvida-1des', key: 'geral', studentEmail: 'ana@escopo.local', studentName: 'Ana', courseId: COURSE, studentClass: '1DES', text: 'Dúvida da 1DES', timestamp: '2026-10-01T10:00:00Z', replies: [] },
+        { id: 'duvida-2des', key: 'geral', studentEmail: 'zeca@escopo.local', studentName: 'Zeca Dois', courseId: COURSE, studentClass: '2DES', text: 'Dúvida da 2DES', timestamp: '2026-10-02T10:00:00Z', replies: [] },
+        // Antiga, sem turma: a turma sai do cadastro do aluno (2DES).
+        { id: 'duvida-2des-antiga', key: 'geral', studentEmail: 'zeca@escopo.local', studentName: 'Zeca Dois', text: 'Antiga da 2DES', timestamp: '2026-09-01T10:00:00Z', replies: [] },
+        // Antiga de quem não está mais no cadastro: não dá para saber a turma.
+        { id: 'duvida-sem-turma', key: 'geral', studentEmail: 'saiu@escopo.local', studentName: 'Ex-aluno', text: 'Sem turma', timestamp: '2026-08-01T10:00:00Z', replies: [] },
+    ];
+}
+
+test('[UC-ADMIN-003] fórum do painel: o professor só recebe as dúvidas das turmas dele, e dúvida sem turma fica com o administrador (SEG-11)', async () => {
+    seedForum();
+    const mine = await asProfessor(request(app).post('/api/admin/forum/all')).send({}).expect(200);
+    assert.deepEqual(mine.body.comments.map(c => c.id), ['duvida-1des'],
+        'antes vinham as dúvidas (com o e-mail do aluno) de todas as turmas do curso');
+    const scoped = await asProfessor(request(app).post('/api/admin/forum/all')).send({ courseId: COURSE, studentClass: '1DES' }).expect(200);
+    assert.deepEqual(scoped.body.comments.map(c => c.id), ['duvida-1des']);
+    await asProfessor(request(app).post('/api/admin/forum/all')).send({ courseId: COURSE, studentClass: '2DES' }).expect(403);
+
+    const viaForum = await asProfessor(request(app).get('/api/forum?key=geral')).expect(200);
+    assert.deepEqual(viaForum.body.comments.map(c => c.id), ['duvida-1des']);
+
+    const all = await asAdmin(request(app).post('/api/admin/forum/all')).send({}).expect(200);
+    assert.deepEqual(all.body.comments.map(c => c.id).sort(), ['duvida-1des', 'duvida-2des', 'duvida-2des-antiga', 'duvida-sem-turma']);
+    const adminForum = await asAdmin(request(app).get('/api/forum?key=geral')).expect(200);
+    assert.equal(adminForum.body.comments.length, 4);
+    // A dúvida antiga ganhou a turma inferida (gravada para as próximas leituras).
+    assert.deepEqual([db.memory.forum[2].courseId, db.memory.forum[2].studentClass], [COURSE, '2DES']);
+});
+
+test('[UC-ADMIN-003] fórum do aluno: sem curso e turma a lista é recusada, e com a turma dele vêm só as dúvidas dela (SEG-11)', async () => {
+    seedForum();
+    const noContext = await request(app).get('/api/forum?key=geral').set('x-session-token', tokens.ana);
+    assert.equal(noContext.status, 400, 'antes a aluna da 1DES lia as dúvidas e os nomes da 2DES');
+    assert.equal(noContext.body.error, 'Informe o curso e a turma.');
+    await request(app).get(`/api/forum?key=geral&courseId=${COURSE}`).set('x-session-token', tokens.ana).expect(400);
+    await request(app).get(`/api/forum?key=geral&courseId=${COURSE}&studentClass=2DES`).set('x-session-token', tokens.ana).expect(403);
+    const own = await request(app).get(`/api/forum?key=geral&courseId=${COURSE}&studentClass=1DES`).set('x-session-token', tokens.ana).expect(200);
+    assert.deepEqual(own.body.comments.map(c => c.id), ['duvida-1des']);
+});
+
+// ---------------------------------------------------------------- Cursos (fase 2, H5c)
+
+const OTHER_COURSE = 'curso-outra-escola';
+
+function seedCourses({ professorSchools = [] } = {}) {
+    db.memory.schools = [
+        { id: 'escola-a', name: 'Escola A', info: {}, branding: {} },
+        { id: 'escola-b', name: 'Escola B', info: {}, branding: {} },
+    ];
+    db.memory.courses = [
+        { id: COURSE, name: 'Curso', description: 'Do professor', schoolId: 'escola-a', structure: [{ id: 'm1', title: 'Módulo 1', units: [] }], status: 'active' },
+        { id: OTHER_COURSE, name: 'Curso de outra coordenação', schoolId: 'escola-b', structure: [], status: 'active' },
+    ];
+    const professor = db.memory.admins.find(account => account.role === 'professor');
+    professor.additionalPermissions = ['course.manage'];
+    professor.assignedSchoolIds = professorSchools;
+}
+
+const courseById = id => db.memory.courses.find(course => course.id === id);
+const courseAudit = action => (db.memory.auditLogs || []).filter(entry => entry.action === action);
+
+test('[UC-ADMIN-003] professor com course.manage não altera, não exclui, não duplica nem lista curso fora do escopo (SEG-12)', async () => {
+    seedCourses();
+    const put = await asProfessor(request(app).put(`/api/admin/courses/${OTHER_COURSE}`)).send({ name: 'ALTERADO PELO PROFESSOR' });
+    assert.equal(put.status, 403);
+    await asProfessor(request(app).delete(`/api/admin/courses/${OTHER_COURSE}`)).expect(403);
+    await asProfessor(request(app).post(`/api/admin/courses/${OTHER_COURSE}/clone`)).send({ newId: 'COPIA_OUTRA', newName: 'Cópia' }).expect(403);
+    const other = courseById(OTHER_COURSE);
+    assert.equal(other.name, 'Curso de outra coordenação');
+    assert.equal(other.deleted, undefined);
+    assert.equal(courseById('COPIA_OUTRA'), undefined);
+
+    const list = await asProfessor(request(app).get('/api/courses?includeDeleted=1')).expect(200);
+    assert.deepEqual(list.body.map(course => course.id), [COURSE], 'antes o professor recebia todos os cursos');
+    const adminList = await asAdmin(request(app).get('/api/courses')).expect(200);
+    assert.equal(adminList.body.length, 2);
+});
+
+test('[UC-CURSO-001] as rotas antigas de escrita de curso respondem 410 pedindo para recarregar, sem gravar nada (SEG-12)', async () => {
+    seedCourses();
+    for (const [method, url, body] of [
+        ['put', `/api/courses/${OTHER_COURSE}`, { name: 'ALTERADO PELO PROFESSOR', schoolId: 'x', structure: [] }],
+        ['delete', `/api/courses/${OTHER_COURSE}`, undefined],
+        ['post', '/api/courses', { id: 'NOVO_ANTIGO', name: 'Pela rota antiga' }],
+    ]) {
+        for (const as of [asProfessor, asAdmin]) {
+            let req = as(request(app)[method](url));
+            if (body) req = req.send(body);
+            const res = await req;
+            assert.equal(res.status, 410, `${method.toUpperCase()} ${url}: antes 200`);
+            assert.equal(res.body.error, 'O IClass foi atualizado. Recarregue a página (F5) para continuar.');
+        }
+    }
+    assert.equal(courseById(OTHER_COURSE).name, 'Curso de outra coordenação');
+    assert.equal(courseById(OTHER_COURSE).schoolId, 'escola-b');
+    assert.equal(courseById('NOVO_ANTIGO'), undefined);
+});
+
+test('[UC-CURSO-001] alterar curso grava só os campos permitidos, a escola só o administrador muda, e cada mudança fica na auditoria (SEG-12)', async () => {
+    seedCourses();
+    // Trocar a escola: só o administrador. Nada é gravado com a recusa.
+    const moveSchool = await asProfessor(request(app).put(`/api/admin/courses/${COURSE}`)).send({ name: 'Outro nome', schoolId: 'escola-b' });
+    assert.equal(moveSchool.status, 403);
+    assert.equal(moveSchool.body.error, 'Só o administrador pode mudar a escola do curso.');
+    assert.equal(courseById(COURSE).name, 'Curso');
+
+    // A tela manda a escola atual junto: não é mudança. structure e foo são ignorados.
+    const edit = await asProfessor(request(app).put(`/api/admin/courses/${COURSE}`)).send({
+        name: '  Curso renomeado  ', description: 'Nova descrição', schoolId: 'escola-a', structure: [], foo: 'bar', id: 'trocado', clonedFrom: 'x',
+    });
+    assert.equal(edit.status, 200, edit.body.error);
+    const course = courseById(COURSE);
+    assert.equal(course.name, 'Curso renomeado');
+    assert.equal(course.description, 'Nova descrição');
+    assert.equal(course.schoolId, 'escola-a');
+    assert.equal(course.structure.length, 1, 'a estrutura só muda pela rota /structure');
+    assert.equal(course.foo, undefined);
+    assert.equal(course.clonedFrom, undefined);
+    assert.equal(courseById('trocado'), undefined);
+
+    const [updated] = courseAudit('course_updated');
+    assert.ok(updated, 'antes a alteração de curso não ia para a auditoria');
+    assert.equal(updated.category, 'academic');
+    assert.equal(updated.actor, 'prof@escopo.local');
+    assert.equal(updated.courseId, COURSE);
+    assert.deepEqual([updated.before.name, updated.after.name], ['Curso', 'Curso renomeado']);
+    assert.equal(updated.after.structure, undefined);
+
+    // Salvar de novo sem mudar nada não registra.
+    await asProfessor(request(app).put(`/api/admin/courses/${COURSE}`)).send({ name: 'Curso renomeado', schoolId: 'escola-a' }).expect(200);
+    assert.equal(courseAudit('course_updated').length, 1);
+
+    // Validação dos campos.
+    for (const [body, field] of [[{ name: '' }, 'name'], [{ name: 'x'.repeat(121) }, 'name'], [{ name: 123 }, 'name'],
+        [{ description: 'x'.repeat(2001) }, 'description'], [{ branding: 'azul' }, 'branding']]) {
+        const res = await asAdmin(request(app).put(`/api/admin/courses/${COURSE}`)).send(body);
+        assert.equal(res.status, 400, JSON.stringify(body));
+        assert.equal(res.body.field, field);
+    }
+    await asAdmin(request(app).put(`/api/admin/courses/${COURSE}`)).send({ schoolId: 'escola-inexistente' }).expect(400);
+    await asAdmin(request(app).put('/api/admin/courses/nao-existe')).send({ name: 'x' }).expect(404);
+
+    // O administrador muda a escola.
+    await asAdmin(request(app).put(`/api/admin/courses/${COURSE}`)).send({ schoolId: 'escola-b' }).expect(200);
+    assert.equal(courseById(COURSE).schoolId, 'escola-b');
+    const moved = courseAudit('course_updated').pop();
+    assert.deepEqual([moved.before.schoolId, moved.after.schoolId, moved.actor], ['escola-a', 'escola-b', 'admin@escopo.local']);
+});
+
+test('[UC-CURSO-001] criar, excluir e restaurar curso pelo painel: campos permitidos, escola do professor e auditoria (SEG-12)', async () => {
+    seedCourses();
+    const created = await asAdmin(request(app).post('/api/admin/courses')).send({
+        id: 'NOVO', name: 'Curso novo', description: 'Descrição', schoolId: 'escola-a',
+        structure: [{ id: 'm1', units: [] }], status: 'deleted', deleted: true, extra: 1,
+    });
+    assert.equal(created.status, 200, created.body.error);
+    const course = courseById('NOVO');
+    assert.deepEqual(course.structure, [], 'a estrutura começa sempre vazia');
+    assert.equal(course.status, 'active');
+    assert.equal(course.deleted, false);
+    assert.equal(course.extra, undefined);
+    const [createdEntry] = courseAudit('course_created');
+    assert.deepEqual([createdEntry.courseId, createdEntry.after.name, createdEntry.actor], ['NOVO', 'Curso novo', 'admin@escopo.local']);
+
+    const duplicate = await asAdmin(request(app).post('/api/admin/courses')).send({ id: 'NOVO', name: 'De novo', schoolId: 'escola-a' });
+    assert.equal(duplicate.status, 400);
+    for (const id of ['../fora', 'com espaço', '__proto__', '', 'x'.repeat(65)]) {
+        const res = await asAdmin(request(app).post('/api/admin/courses')).send({ id, name: 'Inválido', schoolId: 'escola-a' });
+        assert.equal(res.status, 400, `id ${JSON.stringify(id)}`);
+        assert.equal(res.body.field, 'id');
+    }
+    await asAdmin(request(app).post('/api/admin/courses')).send({ id: 'SEM_ESCOLA_VALIDA', name: 'x', schoolId: 'escola-z' }).expect(400);
+
+    // Professor: só numa escola atribuída a ele.
+    const noSchool = await asProfessor(request(app).post('/api/admin/courses')).send({ id: 'DO_PROF', name: 'Do professor', schoolId: 'escola-a' });
+    assert.equal(noSchool.status, 403);
+    assert.equal(courseById('DO_PROF'), undefined);
+    db.memory.admins.find(account => account.role === 'professor').assignedSchoolIds = ['escola-a'];
+    await asProfessor(request(app).post('/api/admin/courses')).send({ id: 'DO_PROF', name: 'Do professor', schoolId: 'escola-b' }).expect(403);
+    await asProfessor(request(app).post('/api/admin/courses')).send({ id: 'DO_PROF', name: 'Do professor', schoolId: 'escola-a' }).expect(200);
+
+    // Excluir marca e preserva; excluir de novo não muda nada nem registra.
+    const removed = await asAdmin(request(app).delete('/api/admin/courses/NOVO')).expect(200);
+    assert.equal(removed.body.course.deleted, true);
+    const deletedAt = courseById('NOVO').deletedAt;
+    assert.ok(deletedAt);
+    await asAdmin(request(app).delete('/api/admin/courses/NOVO')).expect(200);
+    assert.equal(courseById('NOVO').deletedAt, deletedAt);
+    const deletedEntries = courseAudit('course_deleted');
+    assert.equal(deletedEntries.length, 1, 'antes a exclusão de curso não ia para a auditoria');
+    assert.deepEqual([deletedEntries[0].before.deleted, deletedEntries[0].after.deleted], [false, true]);
+
+    // Restaurar (botão "Restaurar" em Cursos e turmas).
+    await asAdmin(request(app).put('/api/admin/courses/NOVO')).send({ status: 'active', deleted: false, deletedAt: null }).expect(200);
+    assert.deepEqual([courseById('NOVO').status, courseById('NOVO').deleted, courseById('NOVO').deletedAt], ['active', false, null]);
+    const restored = courseAudit('course_updated').pop();
+    assert.deepEqual([restored.before.deleted, restored.after.deleted], [true, false]);
+});
+
+test('[UC-CURSO-001] duplicar curso: código seguro e escola de destino dentro do escopo do professor (SEG-12)', async () => {
+    seedCourses();
+    // Código com '../' gravava os arquivos do conteúdo copiado fora da pasta de conteúdo.
+    const traversal = await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: '../../fora', newName: 'Cópia' });
+    assert.equal(traversal.status, 400);
+    assert.equal(traversal.body.field, 'newId');
+    await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: { x: 1 }, newName: 'Cópia' }).expect(400);
+
+    await asProfessor(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: 'COPIA_B', newName: 'Cópia', schoolId: 'escola-b' }).expect(403);
+    assert.equal(courseById('COPIA_B'), undefined);
+    const ok = await asProfessor(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: 'copia_a', newName: 'Cópia', schoolId: 'escola-a' });
+    assert.equal(ok.status, 200, ok.body.error);
+    assert.equal(courseById('COPIA_A').schoolId, 'escola-a');
+    const [cloned] = courseAudit('course_cloned');
+    assert.deepEqual([cloned.courseId, cloned.after.newCourseId, cloned.after.schoolId], [COURSE, 'COPIA_A', 'escola-a']);
+});
+
+test('[UC-CURSO-001] as telas não chamam mais as rotas antigas de escrita de curso (SEG-12)', () => {
+    const webSrc = path.join(__dirname, '..', '..', 'web', 'src');
+    const walk = directory => fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+        const full = path.join(directory, entry.name);
+        if (entry.isDirectory()) return walk(full);
+        return /\.(jsx?|mjs)$/.test(entry.name) && !/\.test\./.test(entry.name) ? [full] : [];
+    });
+    const legacy = /api\.(post|put|delete)\(\s*[`'"]\/api\/courses/;
+    const offenders = walk(webSrc).filter(file => legacy.test(fs.readFileSync(file, 'utf8')))
+        .map(file => path.relative(webSrc, file));
+    assert.deepEqual(offenders, []);
+});

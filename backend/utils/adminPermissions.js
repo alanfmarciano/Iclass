@@ -153,6 +153,10 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/class\/(create|update|toggle-registration|delete)$/, permission: 'classes.manage' },
     { methods: ['POST'], pattern: /^\/course\/disciplinas$/, permission: 'course.manage' },
     { methods: ['POST'], pattern: /^\/course\/grade-templates$/, permission: 'course.manage' },
+    // Criar, alterar e excluir curso (SEG-12): antes em /api/courses, fora desta guarda
+    // e do escopo do professor. O id no caminho é conferido em validateProfessorRequestScope.
+    { methods: ['POST'], pattern: /^\/courses$/, permission: 'course.manage' },
+    { methods: ['PUT', 'DELETE'], pattern: /^\/courses\/[^/]+$/, permission: 'course.manage' },
     { methods: ['GET'], pattern: /^\/courses\/[^/]+\/structure$/, permission: 'page.editor' },
     { methods: ['POST'], pattern: /^\/courses\/[^/]+\/structure$/, permission: 'page.editor' },
     { methods: ['POST'], pattern: /^\/courses\/[^/]+\/clone$/, permission: 'course.manage' },

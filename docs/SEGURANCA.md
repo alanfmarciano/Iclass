@@ -41,6 +41,13 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 
 ## Histórico de correções
 
+### 2026-11-10 — escopo do professor (fase 2, H5c)
+
+- O professor só vê e só apaga as mensagens do Monitor das turmas dele; apagar do histórico exige a mensagem ou a turma de todos, inclusive do administrador (antes o corpo vazio apagava as mensagens de todas as turmas). (SEG-11)
+- Fórum: o painel do professor filtra dúvida por dúvida pela turma (gravada ou inferida pelo aluno); a dúvida antiga sem turma fica só com o administrador. O aluno precisa informar curso e turma para listar as dúvidas. (SEG-11)
+- Cursos: criar, alterar e excluir passam por `/api/admin/courses`, com a guarda do painel e o escopo pelo id do caminho; só os campos permitidos são gravados, a escola só o administrador muda, e tudo vai para a auditoria. Duplicar confere a origem, a escola de destino e o código novo (antes `../` no código gravava fora da pasta de conteúdo). As rotas antigas de `/api/courses` respondem 410. (SEG-12)
+- Guarda estática da assinatura dos callbacks de `validateAdmin`/`validateAdminPermission`, para o SEG-05 não voltar numa rota nova. (SEG-05)
+
 ### 2026-10-16 — sigilo da prova (fase 1, G3)
 
 - `/:key.md` exige sessão; aluno só lê apostila liberada para a sua turma; avaliações bloqueadas em qualquer grafia do nome (antes `/avaliacao_X.md` abria o gabarito no Windows). (SEG-01, SEG-18)

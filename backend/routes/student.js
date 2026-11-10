@@ -2070,18 +2070,40 @@ function adminForumContextAllowed(req, matchedAdmin, comment) {
     return adminCanAccessClass(matchedAdmin, context.studentClass, context.courseId);
 }
 
+// Dúvida que o professor pode ver no painel (SEG-11): a turma da dúvida (gravada, ou
+// inferida pelo aluno nas antigas) precisa estar no escopo dele. Dúvida antiga sem
+// turma que se possa inferir fica escondida do professor; o administrador vê todas.
+// Devolve também se a inferência gravou a turma numa dúvida antiga (quem chama grava).
+function forumCommentVisibleToAdmin(account, comment) {
+    if (!isProfessorAccount(account)) return { visible: true, migrated: false };
+    const wasLegacy = !!comment && !comment.courseId && !comment.studentClass;
+    const context = comment ? inferLegacyForumContext(comment) : null;
+    return {
+        visible: !!context && adminCanAccessClass(account, context.studentClass, context.courseId),
+        migrated: wasLegacy && !!context,
+    };
+}
+
 router.get('/api/forum', (req, res) => {
     const { key } = req.query;
     const courseId = String(req.query.courseId || '').trim();
     const studentClass = String(req.query.studentClass || '').trim();
     if (!key) return res.status(400).json({ error: 'Falta a chave do material' });
-    if (req.auth.role === 'student' && (courseId || studentClass)) {
+    // O aluno lê só as dúvidas da turma em que está (SEG-11): sem curso e turma, a lista
+    // trazia nomes e dúvidas de todas as turmas, até para conta sem turma nenhuma.
+    if (req.auth.role === 'student') {
+        if (!courseId || !studentClass) return res.status(400).json({ success: false, error: 'Informe o curso e a turma.', field: courseId ? 'studentClass' : 'courseId' });
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
-        if (!cls || !studentBelongsToClass(req.studentAccount, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
+        if (!cls || !studentBelongsToClass(req.studentAccount, cls)) return res.status(403).json({ success: false, error: 'Contexto de turma não autorizado.' });
     }
-    
+
     let migrated = false;
     const comments = db.memory.forum.filter(c => c.key === key && !c.deleted).filter(c => {
+        if (req.auth.role === 'admin') {
+            const scope = forumCommentVisibleToAdmin(req.auth.admin, c);
+            if (scope.migrated) migrated = true;
+            if (!scope.visible) return false;
+        }
         if (!courseId && !studentClass) return true;
         const wasLegacy = !c.courseId && !c.studentClass;
         const context = inferLegacyForumContext(c);
@@ -2349,10 +2371,18 @@ router.post('/api/admin/forum/all', (req, res) => {
         const studentClass = String(req.body?.studentClass || '').trim();
         const cls = studentClass ? findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId) : null;
         if (studentClass && !cls) return res.status(404).json({ error: 'Turma não encontrada.' });
-        let comments = isProfessorAccount(matchedAdmin)
-            ? (db.memory.forum || []).filter(comment => adminCanAccessItem(matchedAdmin, comment.key))
-            : (db.memory.forum || []);
         let migrated = false;
+        // Professor: só as dúvidas das turmas dele, uma a uma (SEG-11). Antes o filtro era
+        // pelo curso do tópico, e sem turma no pedido vinham as dúvidas (com e-mail) de
+        // todas as turmas; o tópico 'geral' não pertence a curso nenhum e passava sempre.
+        let comments = isProfessorAccount(matchedAdmin)
+            ? (db.memory.forum || []).filter(comment => {
+                if (!comment || !adminCanAccessItem(matchedAdmin, comment.key)) return false;
+                const scope = forumCommentVisibleToAdmin(matchedAdmin, comment);
+                if (scope.migrated) migrated = true;
+                return scope.visible;
+            })
+            : (db.memory.forum || []);
         if (courseId || studentClass) {
             const allowedKeys = cls ? getCourseItemKeys(cls) : new Set();
             allowedKeys.add('geral');
