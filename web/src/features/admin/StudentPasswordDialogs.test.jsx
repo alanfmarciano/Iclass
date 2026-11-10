@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({ apiPost: vi.fn(), toast: { success: vi.fn(), e
 vi.mock('../../lib/api', () => ({ api: { post: state.apiPost } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => state.toast }))
 
-import { StudentPasswordResetDialog, TemporaryPasswordNotice, TEMPORARY_PASSWORD_KEPT_TEXT, TEMPORARY_PASSWORD_TEXT } from './StudentPasswordDialogs'
+import { RESET_PASSWORD_HINT_TEXT, StudentPasswordResetDialog, TemporaryPasswordNotice, TEMPORARY_PASSWORD_DEFERRED_TEXT, TEMPORARY_PASSWORD_KEPT_TEXT, TEMPORARY_PASSWORD_TEXT } from './StudentPasswordDialogs'
 import { StudentAuditPanel } from './StudentAuditPanel'
 
 beforeEach(() => {
@@ -68,6 +68,31 @@ describe('[UC-SENHA-001] aviso da senha temporária segue a troca pedida', () =>
     render(<StudentPasswordResetDialog email="ana@escola.local" onClose={vi.fn()} />)
     await user.click(screen.getByRole('button', { name: 'Redefinir' }))
     expect(await screen.findByText(TEMPORARY_PASSWORD_KEPT_TEXT)).toBeInTheDocument()
+  })
+
+  it('antes de redefinir, o diálogo não promete a troca (pode não valer: demonstração ou prova)', () => {
+    render(<StudentPasswordResetDialog email="ana@escola.local" onClose={vi.fn()} />)
+    expect(screen.getByText(RESET_PASSWORD_HINT_TEXT)).toBeInTheDocument()
+    expect(screen.queryByText(/No próximo acesso o aluno vai escolher/)).toBeNull()
+  })
+
+  it('aluno em prova agora (passwordChangeDeferred): o aviso diz que a troca fica para depois da prova', async () => {
+    state.apiPost.mockResolvedValue({ success: true, mustChangePassword: true, passwordChangeDeferred: true, temporaryPassword: 'abcde-fghjk' })
+    const user = userEvent.setup()
+    render(<StudentPasswordResetDialog email="ana@escola.local" onClose={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Redefinir' }))
+    expect(await screen.findByText(TEMPORARY_PASSWORD_DEFERRED_TEXT)).toBeInTheDocument()
+    expect(screen.queryByText(TEMPORARY_PASSWORD_TEXT)).toBeNull()
+  })
+
+  it('senha definida pelo professor: o toast traz a mensagem do servidor', async () => {
+    state.apiPost.mockResolvedValue({ success: true, mustChangePassword: true, passwordChangeDeferred: true, message: 'Senha redefinida. O aluno está fazendo uma prova agora: ele vai escolher uma senha nova no primeiro acesso depois da prova.' })
+    const user = userEvent.setup()
+    render(<StudentPasswordResetDialog email="ana@escola.local" onClose={vi.fn()} />)
+    await user.click(screen.getByLabelText('Definir eu mesmo'))
+    await user.type(screen.getByLabelText('Senha nova'), 'Ponte-Velha-48')
+    await user.click(screen.getByRole('button', { name: 'Redefinir' }))
+    expect(state.toast.success).toHaveBeenCalledWith(expect.stringContaining('depois da prova'))
   })
 })
 

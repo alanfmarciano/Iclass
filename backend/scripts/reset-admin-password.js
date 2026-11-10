@@ -21,6 +21,11 @@ async function resetAdminPassword(requestedEmail) {
     const temporaryPassword = crypto.randomBytes(9).toString('base64url');
     account.password = db.hashPassword(temporaryPassword);
     account.mustChangePassword = true;
+    // Senha temporária do launcher = troca pedida sem passwordChangeReason (utils/
+    // passwordChange.js): vale também com TEST_MODE e não pede a senha atual. Um motivo
+    // antigo ('weak', 'created', 'reset') ficava e mudava as duas coisas: com TEST_MODE a
+    // troca deixava de ser pedida, e a tela dizia "A sua senha é fácil de adivinhar".
+    delete account.passwordChangeReason;
     // Mesmo registro de antes (type/actorEmail/at), pelo recordAudit; quem fez é o
     // computador do servidor (launcher), não uma conta.
     const at = Date.now();

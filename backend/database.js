@@ -224,6 +224,23 @@ async function upgradeLegacyPasswordHashes(memory = memoryDB) {
     return results.filter(Boolean).length;
 }
 
+// Ganchos depois da restauração de um backup (contrato H3 x H4 x H5: "os ganchos
+// pós-restauração ficam em db.afterRestore"). A restauração (utils/backup.js
+// applySnapshot) aplica as coleções e, antes da gravação, roda estes ganchos na ordem,
+// com a memória já restaurada (runAfterRestore). Cada item: { name, run(memory) }; run
+// pode devolver promessa.
+// - 'legacyPasswordHashes' (H5a, SEG-X2): hashes SHA-256 antigos do backup viram
+//   scrypt-sha256$ antes da gravação, como no boot.
+// A trilha A tem o mesmo registro com o gancho 'authSessions' (H3a-2); na junção as duas
+// listas viram uma só, com 'authSessions' primeiro.
+const AFTER_RESTORE_HOOKS = [
+    { name: 'legacyPasswordHashes', run: memory => upgradeLegacyPasswordHashes(memory) },
+];
+
+async function runAfterRestore(memory = memoryDB) {
+    for (const hook of AFTER_RESTORE_HOOKS) await hook.run(memory);
+}
+
 // Turmas atribuídas sem repetição e numa ordem fixa (curso, depois turma). A ordem
 // não depende mais da ordem em que as turmas foram lidas do banco: depois de restaurar
 // um backup (turmas regravadas em outra ordem) cada boot reordenava a lista e regravava
@@ -1379,6 +1396,9 @@ module.exports = {
     needsPasswordRehash,
     countLegacyPasswordHashes,
     upgradeLegacyPasswordHashes,
+    // Ganchos pós-restauração ({ name, run }) e quem os roda (utils/backup.js).
+    afterRestore: AFTER_RESTORE_HOOKS,
+    runAfterRestore,
     allClassAssignments,
     syncAdminClassAssignments,
     rebuildExamApplicationsFromClasses,

@@ -129,7 +129,7 @@ export default function AlunosPage() {
     try {
       const created = await api.post('/api/admin/student/create', payloadFrom(form, false))
       toast.success('Aluno cadastrado')
-      if (created?.temporaryPassword) setCreatedPassword({ email: form.email, password: created.temporaryPassword, mustChangePassword: created.mustChangePassword !== false })
+      if (created?.temporaryPassword) setCreatedPassword({ email: form.email, password: created.temporaryPassword, mustChangePassword: created.mustChangePassword !== false, deferred: created.passwordChangeDeferred === true })
       setOpen(false)
       setForm(emptyForm())
       refetch()
@@ -562,7 +562,7 @@ export default function AlunosPage() {
         title={`Excluir ${del ? displayName(del) : ''}?`} description={STUDENT_DELETE_WARNING} />
 
       <StudentPasswordResetDialog email={reset?.email || null} onClose={() => setReset(null)} onDone={refetch} />
-      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} onClose={() => setCreatedPassword(null)} />
+      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} deferred={createdPassword?.deferred} onClose={() => setCreatedPassword(null)} />
     </div>
   )
 }

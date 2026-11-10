@@ -50,7 +50,7 @@ const {
 } = require('../utils/students.js');
 const { normalizeAuditEntry, recordAudit } = require('../utils/audit.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
-const { passwordChangeRuleActive, requirePasswordChange } = require('../utils/passwordChange.js');
+const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -320,20 +320,31 @@ router.post('/api/admin/enrollment-requests/:id/reject', (req, res) => {
 
 
 
+// Texto da resposta do "Redefinir senha" e da criação (a tela mostra o mesmo).
+function resetPasswordMessage(changeRequired, deferred) {
+    if (!changeRequired) return 'Senha redefinida.';
+    if (deferred) return 'Senha redefinida. O aluno está fazendo uma prova agora: ele vai escolher uma senha nova no primeiro acesso depois da prova.';
+    return 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.';
+}
+
 // Redefinir senha do aluno (H5a; UXA-13, SEG-06).
 // - newPassword vazio ou ausente: o servidor gera uma senha temporária (xxxxx-xxxxx) e a
 //   devolve só nesta resposta (temporaryPassword), para o professor entregar ao aluno;
 // - newPassword digitado: passa pela política de senha (a senha "a" era aceita);
 // - nos dois casos o aluno troca a senha no próximo acesso (mustChangePassword, decisão
 //   P3 do Alan), o pedido de "Esqueci a senha" é atendido e o reset fica na auditoria
-//   (student_password_reset, nunca com a senha). Antes não ficava registro nenhum.
+//   (student_password_reset, nunca com a senha). Antes não ficava registro nenhum;
+// - a resposta diz o que vale de fato: com TEST_MODE a troca não é pedida
+//   (mustChangePassword false) e, com o aluno em prova agora, ela fica para o primeiro
+//   acesso depois da prova (passwordChangeDeferred), em vez de prometer a troca já.
 // O escopo continua o de sempre: page.students e aluno visível ao professor (guarda).
 router.post('/api/admin/reset-password', (req, res) => {
     validateAdmin(req, res, async (config, matchedAdmin) => {
         const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
         const typed = typeof req.body.newPassword === 'string' ? req.body.newPassword.trim() : '';
-        if (!email || (req.body.newPassword !== undefined && req.body.newPassword !== null && typeof req.body.newPassword !== 'string')) {
-            return res.status(400).json({ error: 'E-mail ou nova senha inválidos.' });
+        if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail do aluno.', field: 'email' });
+        if (req.body.newPassword !== undefined && req.body.newPassword !== null && typeof req.body.newPassword !== 'string') {
+            return res.status(400).json({ success: false, error: 'Nova senha inválida.', field: 'newPassword' });
         }
         const findStudent = () => (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
         const target = findStudent();
@@ -372,14 +383,15 @@ router.post('/api/admin/reset-password', (req, res) => {
         }, { timestamp: now });
         await db.save();
 
-        // Com TEST_MODE (demonstração) a troca não é pedida: a resposta diz o que vale.
+        // Com TEST_MODE (demonstração) a troca não é pedida, e com o aluno em prova ela
+        // fica para depois: a resposta diz o que vale.
         const changeRequired = passwordChangeRuleActive();
+        const deferred = changeRequired && studentHasExamInProgress(db.memory, student.email, student, now);
         res.json({
             success: true,
-            message: changeRequired
-                ? 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.'
-                : 'Senha redefinida.',
+            message: resetPasswordMessage(changeRequired, deferred),
             mustChangePassword: changeRequired,
+            passwordChangeDeferred: deferred,
             ...(temporaryPassword ? { temporaryPassword } : {}),
         });
     });
@@ -1298,7 +1310,8 @@ router.post('/api/admin/student/create', (req, res) => {
         const fields = extractStudentFields(req.body);
 
         if (!fields.name || !fields.email || studentClasses.length === 0) {
-            return res.status(400).json({ error: 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.' });
+            const field = !fields.name ? 'name' : (!fields.email ? 'email' : 'classes');
+            return res.status(400).json({ success: false, error: 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.', field });
         }
         // Senha inicial (H5a; UXA-13, SEG-06): em branco, o servidor gera uma temporária e a
         // devolve só nesta resposta; digitada, passa pela política. A caixa "Pedir troca no
@@ -1329,7 +1342,7 @@ router.post('/api/admin/student/create', (req, res) => {
             const classCourse = (c && typeof c === 'object' && c.courseId) || requestedCourseId;
             const matchedClass = allClasses.find(cls => cls.name === className && (!classCourse || String(cls.courseId) === String(classCourse)));
             if (!matchedClass) {
-                return res.status(400).json({ error: `A turma ${className} não está pré-cadastrada no sistema.` });
+                return res.status(400).json({ success: false, error: `A turma ${className} não está pré-cadastrada no sistema.`, field: 'classes' });
             }
         }
 
@@ -1338,7 +1351,7 @@ router.post('/api/admin/student/create', (req, res) => {
         // Validações de campos (e-mail válido/único, matrícula única, telefones, status)
         const validation = validateStudentFields(fields, students, null);
         if (!validation.ok) {
-            return res.status(400).json({ error: validation.error });
+            return res.status(400).json({ success: false, error: validation.error });
         }
 
         const newStudent = {
@@ -1377,9 +1390,13 @@ router.post('/api/admin/student/create', (req, res) => {
         await db.save();
         // O que vale no primeiro acesso: a caixa desmarcada ou TEST_MODE (demonstração)
         // não pedem a troca; a tela escolhe o texto do aviso por aqui.
+        // Aluno novo numa turma com prova agora: a troca fica para o primeiro acesso depois
+        // dela (passwordChangeDeferred), como no "Redefinir senha".
+        const mustChange = askPasswordChange && passwordChangeRuleActive();
         res.json({
             success: true,
-            mustChangePassword: askPasswordChange && passwordChangeRuleActive(),
+            mustChangePassword: mustChange,
+            passwordChangeDeferred: mustChange && studentHasExamInProgress(db.memory, newStudent.email, newStudent),
             ...(temporaryPassword ? { temporaryPassword } : {}),
         });
     });

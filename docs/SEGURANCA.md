@@ -29,7 +29,7 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 | CSV injection | `csvSafe()` neutraliza fórmulas (`= + - @`) e escapa delimitadores na exportação de notas | `routes/admin.js` |
 | Troca de senha | Exige senha atual (fora da troca obrigatória da senha temporária do launcher); o aluno sempre informa a atual | `routes/adminAccounts.js`, `routes/student.js` |
 | Política de senha | Toda senha nova digitada: 8 caracteres (aluno) ou 10 (instrutor), sem senha comum nem dado pessoal; senha temporária gerada pelo servidor | `utils/passwordPolicy.js` |
-| Troca obrigatória | Senha criada ou redefinida pelo professor e senha fraca no login: 403 `passwordChangeRequired` até a troca, nunca no meio de uma prova (nem com a prova aberta na turma); o `TEST_MODE` ignora a regra | `utils/passwordChange.js`, `middlewares.js` |
+| Troca obrigatória | Senha criada ou redefinida pelo professor e senha fraca no login: 403 `passwordChangeRequired` até a troca, nunca no meio de uma prova (nem com a prova aberta na turma, para quem ainda não abriu a tentativa e dentro da janela da prova: uma aplicação esquecida aberta não adia a troca para sempre); o `TEST_MODE` ignora a regra | `utils/passwordChange.js`, `middlewares.js` |
 | Seed/reset | Só sob `TEST_MODE=1` | `routes/testmode.js` |
 | Integridade de build | Servidor recusa iniciar com build ausente/divergente | `utils/buildIntegrity.js` |
 

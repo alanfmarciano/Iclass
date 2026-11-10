@@ -184,7 +184,9 @@ function createAdminAccountsRouter() {
             const { name, email, password } = req.body;
             if (typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string'
                 || name.trim() === '' || email.trim() === '' || password.trim() === '') {
-                return res.status(400).json({ error: 'Dados incompletos ou inválidos.' });
+                const field = (typeof name !== 'string' || name.trim() === '') ? 'name'
+                    : ((typeof email !== 'string' || email.trim() === '') ? 'email' : 'password');
+                return res.status(400).json({ success: false, error: 'Dados incompletos ou inválidos.', field });
             }
             // Política de senha do instrutor (H5a, SEG-06): pelo menos 10 caracteres, como a
             // troca de senha já exigia; antes a criação aceitava a senha "1".

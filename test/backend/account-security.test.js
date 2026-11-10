@@ -531,7 +531,10 @@ test('[UC-SENHA-001] TEST_MODE: criar e redefinir aluno respondem que a troca n�
 });
 
 test('[UC-SENHA-001] prova aberta na turma, antes de o aluno abrir a tentativa: a troca fica para o login seguinte', async () => {
-    db.memory.examApplications = [{ id: 'app_turma', status: 'running', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_1' }];
+    // A janela da prova na turma conta a partir do início da aplicação (ver o teste de
+    // janela abaixo): aqui a prova começou agora.
+    const startedAt = new Date().toISOString();
+    db.memory.examApplications = [{ id: 'app_turma', status: 'running', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_1', startedAt }];
     findStudent(ANA.email).password = db.hashPassword('123');
     const login = await request(app).post('/api/student/login').send({ email: ANA.email, password: '123' });
     assert.equal(login.status, 200, login.body.error);
@@ -546,13 +549,145 @@ test('[UC-SENHA-001] prova aberta na turma, antes de o aluno abrir a tentativa: 
     assert.equal((await request(app).post('/api/student/notes/get').set('x-session-token', during.body.sessionToken).send({ moduleKey: 'geral' })).status, 200);
 
     // Prova de outra turma (ou outro curso com o mesmo nome de turma) não adia a troca.
-    db.memory.examApplications = [{ id: 'app_outra', status: 'running', courseId: 'ADM', studentClass: '1DES', examKey: 'Avaliacao_ADM_1' }];
+    db.memory.examApplications = [{ id: 'app_outra', status: 'running', courseId: 'ADM', studentClass: '1DES', examKey: 'Avaliacao_ADM_1', startedAt }];
     const other = await request(app).post('/api/student/login').send({ email: ANA.email, password: '123' });
     assert.equal(other.body.mustChangePassword, true);
     // Aplicação encerrada também não.
-    db.memory.examApplications = [{ id: 'app_turma', status: 'finished', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_1' }];
+    db.memory.examApplications = [{ id: 'app_turma', status: 'finished', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_1', startedAt }];
     const after = await request(app).post('/api/student/login').send({ email: ANA.email, password: '123' });
     assert.equal(after.body.mustChangePassword, true);
+});
+
+test('[UC-SENHA-001] prova na turma não adia a troca de quem já entregou nem depois da janela da prova', async () => {
+    const headers = adminHeaders();
+    const now = Date.now();
+    const runningApp = extra => ({ id: 'app_turma', status: 'running', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_1', ...extra });
+
+    // A Ana já entregou a prova que ainda está em andamento na turma: o reset seguido do
+    // login com a temporária pede a troca. Antes, a troca era adiada para toda a turma
+    // enquanto a aplicação estivesse aberta, e a temporária continuava valendo.
+    db.memory.examApplications = [runningApp({ startedAt: new Date(now - 10 * 60 * 1000).toISOString(), durationMinutes: 60 })];
+    db.memory.studentExamState = { entregue: { studentEmail: ANA.email, applicationId: 'app_turma', status: 'submitted', attemptNumber: 1 } };
+    const reset = await request(app).post('/api/admin/reset-password').set(headers).send({ email: ANA.email });
+    assert.equal(reset.status, 200, reset.body.error);
+    assert.equal(reset.body.passwordChangeDeferred, false);
+    assert.equal(reset.body.message, 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.');
+    const login = await request(app).post('/api/student/login').send({ email: ANA.email, password: reset.body.temporaryPassword });
+    assert.equal(login.status, 200, login.body.error);
+    assert.equal(login.body.mustChangePassword, true, 'antes, false: a prova da turma adiava a troca de quem já tinha entregado');
+    assert.equal((await request(app).post('/api/student/notes/get').set('x-session-token', login.body.sessionToken).send({ moduleKey: 'geral' })).status, 403);
+
+    // Prova sem cronômetro esquecida em andamento (nunca vence): passada a janela de 4 h,
+    // não adia mais a troca de quem nem abriu a tentativa.
+    db.memory.studentExamState = {};
+    db.memory.examApplications = [runningApp({ timerEnabled: false, startedAt: new Date(now - 5 * 60 * 60 * 1000).toISOString() })];
+    const forgotten = await request(app).post('/api/student/login').send({ email: ANA.email, password: reset.body.temporaryPassword });
+    assert.equal(forgotten.body.mustChangePassword, true, 'antes, false para sempre');
+    // Prova com cronômetro de 60 min que começou há 2 h: também já passou.
+    db.memory.examApplications = [runningApp({ durationMinutes: 60, startedAt: new Date(now - 2 * 60 * 60 * 1000).toISOString() })];
+    const late = await request(app).post('/api/student/login').send({ email: ANA.email, password: reset.body.temporaryPassword });
+    assert.equal(late.body.mustChangePassword, true);
+    // A mesma, pausada por 90 min no meio: a pausa empurra a janela, e a troca fica para depois.
+    db.memory.examApplications = [runningApp({
+        durationMinutes: 60,
+        startedAt: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+        pauses: [{ pausedAt: now - 100 * 60 * 1000, resumedAt: now - 10 * 60 * 1000 }],
+    })];
+    const paused = await request(app).post('/api/student/login').send({ email: ANA.email, password: reset.body.temporaryPassword });
+    assert.equal(paused.body.mustChangePassword, false);
+    // Aplicação sem hora nenhuma (dado estranho): só a tentativa aberta adiaria.
+    db.memory.examApplications = [runningApp({})];
+    const noTime = await request(app).post('/api/student/login').send({ email: ANA.email, password: reset.body.temporaryPassword });
+    assert.equal(noTime.body.mustChangePassword, true);
+    // Tentativa aberta continua adiando, mesmo fora da janela (o aluno está na prova).
+    db.memory.examApplications = [runningApp({ timerEnabled: false, startedAt: new Date(now - 5 * 60 * 60 * 1000).toISOString() })];
+    db.memory.studentExamState = { aberta: { studentEmail: ANA.email, applicationId: 'app_turma', status: 'in_progress', attemptNumber: 1 } };
+    const open = await request(app).post('/api/student/login').send({ email: ANA.email, password: reset.body.temporaryPassword });
+    assert.equal(open.body.mustChangePassword, false);
+});
+
+test('[UC-SENHA-001] redefinir e criar durante a prova da turma: a resposta diz que a troca fica para depois da prova', async () => {
+    const headers = adminHeaders();
+    db.memory.examApplications = [{ id: 'app_turma', status: 'running', courseId: 'DES', studentClass: '1DES', examKey: 'Avaliacao_DES_1', durationMinutes: 60, startedAt: new Date().toISOString() }];
+    const reset = await request(app).post('/api/admin/reset-password').set(headers).send({ email: ANA.email });
+    assert.equal(reset.status, 200, reset.body.error);
+    assert.equal(reset.body.mustChangePassword, true);
+    assert.equal(reset.body.passwordChangeDeferred, true, 'antes, a resposta prometia a troca no próximo acesso');
+    assert.match(reset.body.message, /fazendo uma prova agora.*depois da prova/);
+    const created = await request(app).post('/api/admin/student/create').set(headers)
+        .send({ name: 'Caio Lima', email: 'caio@contas.local', classes: [{ name: '1DES', courseId: 'DES' }], studentPassword: '' });
+    assert.equal(created.status, 200, created.body.error);
+    assert.equal(created.body.passwordChangeDeferred, true);
+    // Sem prova: não adia.
+    db.memory.examApplications = [];
+    const calm = await request(app).post('/api/admin/reset-password').set(headers).send({ email: ANA.email });
+    assert.equal(calm.body.passwordChangeDeferred, false);
+    // TEST_MODE: nem a troca vale, nem o adiamento.
+    await withTestMode(async () => {
+        const demo = await request(app).post('/api/admin/reset-password').set(headers).send({ email: ANA.email });
+        assert.deepEqual([demo.body.mustChangePassword, demo.body.passwordChangeDeferred, demo.body.message], [false, false, 'Senha redefinida.']);
+    });
+});
+
+test('[UC-SENHA-001] senha do launcher limpa o motivo antigo: vale com TEST_MODE e não pede a senha atual', async () => {
+    const { resetAdminPassword } = require('../../backend/scripts/reset-admin-password.js');
+    const account = db.memory.admins[0];
+    account.mustChangePassword = true;
+    account.passwordChangeReason = 'weak';
+    const result = await resetAdminPassword(ADMIN.email);
+    assert.equal(account.mustChangePassword, true);
+    assert.equal(account.passwordChangeReason, undefined, 'antes, o motivo weak ficava');
+    await withTestMode(async () => {
+        const login = await request(app).post('/api/session/admin-login').send({ email: ADMIN.email, password: result.temporaryPassword });
+        assert.equal(login.status, 200, login.body.error);
+        assert.equal(login.body.mustChangePassword, true, 'antes, false: com TEST_MODE o motivo weak desligava a troca da senha do launcher');
+        const blocked = await request(app).get('/api/admin/students').set('x-admin-session', login.body.sessionToken);
+        assert.equal(blocked.status, 403);
+    });
+    const login = await request(app).post('/api/session/admin-login').send({ email: ADMIN.email, password: result.temporaryPassword });
+    assert.equal(login.body.passwordChangeReason, 'reset', 'antes, weak: a tela dizia "A sua senha é fácil de adivinhar"');
+    // Troca sem a senha atual, como a da senha temporária do launcher sempre foi.
+    const changed = await request(app).post('/api/admin/change-password').set('x-admin-session', login.body.sessionToken).send({ newPassword: 'Painel-Novo-2027' });
+    assert.equal(changed.status, 200, changed.body.error);
+    assert.equal(account.mustChangePassword, false);
+});
+
+test('[UC-SENHA-001] acesso local (setup) devolve o motivo da troca, como o login e o whoami', async () => {
+    const express = require('express');
+    const { createSetupModeRouter } = require('../../backend/routes/setupMode.js');
+    db.memory.admins[0].mustChangePassword = true;
+    db.memory.admins[0].passwordChangeReason = 'weak';
+    const local = express();
+    local.use(express.json());
+    local.use(createSetupModeRouter({ enabled: true, setupToken: 'token-local' }));
+    const session = await request(local).post('/api/setup/admin-session').send({ token: 'token-local' });
+    assert.equal(session.status, 200, session.body.error);
+    assert.equal(session.body.mustChangePassword, true);
+    assert.equal(session.body.passwordChangeReason, 'weak', 'antes, sem o motivo: a tela não mostrava a senha atual de saída');
+});
+
+test('[UC-SENHA-001] recusas por dado faltando ou de tipo errado também no formato { success:false, error, field }', async () => {
+    const headers = adminHeaders();
+    const noEmail = await request(app).post('/api/admin/reset-password').set(headers).send({ email: '' });
+    assert.deepEqual([noEmail.status, noEmail.body.success, noEmail.body.field], [400, false, 'email']);
+    const badPassword = await request(app).post('/api/admin/reset-password').set(headers).send({ email: ANA.email, newPassword: 5 });
+    assert.deepEqual([badPassword.status, badPassword.body.success, badPassword.body.field], [400, false, 'newPassword']);
+    const account = await request(app).post('/api/admin/accounts/create').set(headers).send({ name: '', email: 'x@contas.local', password: 'Quadro-Verde-2026' });
+    assert.deepEqual([account.status, account.body.success, account.body.field], [400, false, 'name']);
+    const accountPassword = await request(app).post('/api/admin/accounts/create').set(headers).send({ name: 'Xavier', email: 'x@contas.local', password: 5 });
+    assert.deepEqual([accountPassword.status, accountPassword.body.success, accountPassword.body.field], [400, false, 'password']);
+    const student = await request(app).post('/api/admin/student/create').set(headers).send({ name: 'Caio Lima', email: 'caio@contas.local', classes: [] });
+    assert.deepEqual([student.status, student.body.success, student.body.field], [400, false, 'classes']);
+    const unknownClass = await request(app).post('/api/admin/student/create').set(headers).send({ name: 'Caio Lima', email: 'caio@contas.local', classes: [{ name: '9ZZZ', courseId: 'DES' }] });
+    assert.deepEqual([unknownClass.status, unknownClass.body.success, unknownClass.body.field], [400, false, 'classes']);
+});
+
+test('[UC-SENHA-002] a conversão dos hashes antigos na restauração é um gancho de db.afterRestore', () => {
+    assert.ok(Array.isArray(db.afterRestore));
+    assert.ok(db.afterRestore.some(hook => hook.name === 'legacyPasswordHashes'));
+    const backupSource = fs.readFileSync(path.join(__dirname, '../../backend/utils/backup.js'), 'utf8');
+    assert.match(backupSource, /db\.runAfterRestore\(/);
+    assert.doesNotMatch(backupSource, /upgradeLegacyPasswordHashes/, 'antes, a restauração chamava a conversão direto');
 });
 
 test('[UC-SENHA-001] aba Auditoria da ficha: a redefinição de senha vem com o rótulo da ação', async () => {

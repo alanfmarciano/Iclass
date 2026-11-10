@@ -5,6 +5,7 @@ const { recordAudit } = require('../utils/audit.js');
 const { issueAdminSession, normalizeIp, SERVER_INSTANCE_ID } = require('../middlewares.js');
 const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const { createStudentSession } = require('../utils/authSessions.js');
+const { adminPasswordChangeState } = require('../utils/passwordChange.js');
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
 
@@ -50,6 +51,13 @@ function normalizeStudentForQuickAccess(student) {
     safeStudent.courses = courses;
     safeStudent.studentClass = classes[0]?.name || '';
     return safeStudent;
+}
+
+// Troca de senha pedida, como no login e no whoami (adminAccounts.js adminSessionPayload):
+// o que vale agora e o motivo, para a tela já mostrar a senha atual quando ela é pedida.
+function passwordChangeFields(admin) {
+    const state = adminPasswordChangeState(admin);
+    return { mustChangePassword: state.required === true, ...(state.required ? { passwordChangeReason: state.reason } : {}) };
 }
 
 function createSetupModeRouter(options = {}) {
@@ -127,7 +135,7 @@ function createSetupModeRouter(options = {}) {
                 assignedCourseIds: Array.isArray(admin.assignedCourseIds) ? admin.assignedCourseIds : [],
                 assignedClasses: Array.isArray(admin.assignedClasses) ? admin.assignedClasses : [],
                 additionalPermissions: Array.isArray(admin.additionalPermissions) ? admin.additionalPermissions : [],
-                mustChangePassword: admin.mustChangePassword === true,
+                ...passwordChangeFields(admin),
                 sessionToken: issueAdminSession(actorEmail, { origin: 'setup' }), instanceId: SERVER_INSTANCE_ID, localSetupMode: true,
             };
         }
@@ -173,7 +181,7 @@ function createSetupModeRouter(options = {}) {
             assignedCourseIds: Array.isArray(admin.assignedCourseIds) ? admin.assignedCourseIds : [],
             assignedClasses: Array.isArray(admin.assignedClasses) ? admin.assignedClasses : [],
             additionalPermissions: Array.isArray(admin.additionalPermissions) ? admin.additionalPermissions : [],
-            mustChangePassword: admin.mustChangePassword === true,
+            ...passwordChangeFields(admin),
             sessionToken,
             instanceId: SERVER_INSTANCE_ID,
             localSetupMode: true,
