@@ -271,10 +271,14 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     const storage = extras && extras.storage;
     if (storage && Number(storage.freeBytes) > 0) {
         const freeMb = Math.max(1, Math.round(Number(storage.freeBytes) / (1024 * 1024)));
+        // O número fica na coluna da direita (count, em MB) e também no texto, para a
+        // linha se ler sozinha: "12 MB sem uso dentro do arquivo do banco (40%) · ...".
+        const allocated = Number(storage.allocatedBytes) || 0;
+        const percent = allocated > 0 ? Math.min(100, Math.round((Number(storage.freeBytes) / allocated) * 100)) : null;
         items.push({
             id: 'compactar_banco', tipo: 'compactar_banco',
             titulo: 'Compactar o banco',
-            detalhe: 'MB livres dentro do arquivo do banco · Sistema → Armazenamento',
+            detalhe: `${freeMb} MB sem uso dentro do arquivo do banco${percent !== null ? ` (${percent}%)` : ''} · Sistema → Armazenamento`,
             count: freeMb, tone: 'info', href: '/sistema', permissao: 'system.manage',
         });
     }

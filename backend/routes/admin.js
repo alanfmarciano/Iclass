@@ -4793,7 +4793,7 @@ function _storageQueueBlock(matchedAdmin) {
     if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
     const status = db.storageStatus();
     if (!status.compactSuggested) return null;
-    return { freeBytes: status.freeBytes, databaseBytes: status.databaseBytes };
+    return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
 }
 
 // Fila "Precisa de você": pendências com destino clicável. Respeita o snooze de

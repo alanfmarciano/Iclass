@@ -170,7 +170,9 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             if (isProfessorAccount(matchedAdmin)) {
                 return res.status(403).json({ error: 'Apenas administradores podem compactar o banco.' });
             }
-            if (String((req.body || {}).confirm || '').trim().toUpperCase() !== 'COMPACTAR') {
+            // Só texto: um array ['COMPACTAR'] viraria 'COMPACTAR' no String().
+            const confirm = (req.body || {}).confirm;
+            if (typeof confirm !== 'string' || confirm.trim().toUpperCase() !== 'COMPACTAR') {
                 return res.status(400).json({ error: 'Digite COMPACTAR para confirmar.', confirmationRequired: true });
             }
             const active = activeApplicationCount();

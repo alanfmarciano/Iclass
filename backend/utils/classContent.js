@@ -27,6 +27,23 @@ function ensureOverrides(cls) {
     return cls.contentOverrides;
 }
 
+// Leitura sem alterar a turma (H1-c): devolve contentOverrides já com os campos padrão, mas
+// sem criar nada em cls. ensureOverrides fica só para quem vai gravar (variante, unidade
+// extra, estrutura própria). Antes, montar a estrutura (sync da prova, conteúdo, Monitor)
+// criava contentOverrides na turma que não tinha, e a rota com gravação parcial deixava
+// essa mudança em "classes" fora do disco (o verificador acusava no GET /api/student/sync).
+const isPlainObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+function readOverrides(cls) {
+    const raw = cls && isPlainObject(cls.contentOverrides) ? cls.contentOverrides : {};
+    return {
+        materials: isPlainObject(raw.materials) ? raw.materials : {},
+        evaluations: isPlainObject(raw.evaluations) ? raw.evaluations : {},
+        unitNames: isPlainObject(raw.unitNames) ? raw.unitNames : {},
+        extraUnits: Array.isArray(raw.extraUnits) ? raw.extraUnits : [],
+        structure: Array.isArray(raw.structure) ? raw.structure : null,
+    };
+}
+
 function variantSuffix(courseId, className) {
     return crypto.createHash('sha1').update(`${courseId}::${className}`).digest('hex').slice(0, 10);
 }
@@ -54,7 +71,7 @@ function effectiveStructure(courseId, className) {
     const course = findCourse(courseId);
     if (!course) return null;
     const cls = className ? findClass(courseId, className) : null;
-    const overrides = cls ? ensureOverrides(cls) : null;
+    const overrides = cls ? readOverrides(cls) : null;
     const structure = deepClone(overrides?.structure || course.structure || []);
     const variants = {};
 
@@ -173,7 +190,7 @@ function resetOverridesForCourseItem(courseId, kind, baseKey) {
 
 function resolveBaseKey(courseId, className, kind, key) {
     const cls = findClass(courseId, className);
-    const mapping = cls ? mappingForKey(ensureOverrides(cls), kind, key) : null;
+    const mapping = cls ? mappingForKey(readOverrides(cls), kind, key) : null;
     return mapping?.baseKey || key;
 }
 
@@ -191,6 +208,7 @@ module.exports = {
     effectiveStructure,
     ensureOverrides,
     findClass,
+    readOverrides,
     findCourse,
     forkEvaluation,
     forkMaterial,

@@ -1380,6 +1380,10 @@ function storageStatus() {
         busyTimeoutMs: connectionInfo.busyTimeoutMs,
         databaseBytes,
         walBytes,
+        // Tamanho do banco que vale para a proporção do espaço recuperável (o maior entre o
+        // arquivo e as páginas do SQLite): o cartão e a fila usam este, não databaseBytes,
+        // que em WAL antes do checkpoint pode ser só a página inicial (4 KB).
+        allocatedBytes: baseBytes,
         // Espaço recuperável pelo Compactar (null até a primeira leitura das PRAGMAs).
         freeBytes,
         freeBytesAt: fileStats.at,
@@ -1436,13 +1440,32 @@ async function compactDatabase() {
 // sozinha (sem outro pedido junto no mesmo ciclo), o crash.log diz quais coleções, para
 // corrigir a anotação. Nunca rejeita (a falha de gravação já vai para o crash.log pelo
 // motor, que regrava sozinho).
+// Com prova em andamento (aplicação em ACTIVE_APPLICATION_STATUSES), a gravação completa
+// espera (contrato de processo e timers do H3c): num banco de um ano ela segura a fila por
+// algumas centenas de ms, o que atrasaria o rascunho de 40 alunos. O teto de espera é de
+// 2 h desde o primeiro adiamento, para uma aplicação esquecida aberta não deixar a rede
+// de segurança parada para sempre; ao fim da prova, a próxima rodada (em até 10 min) grava.
 const SAFETY_NET_INTERVAL_MS = 10 * 60 * 1000;
 const SAFETY_NET_IDLE_WAIT_MS = 30000;
+const SAFETY_NET_MAX_DEFER_MS = 2 * 60 * 60 * 1000;
 let safetyNetRun = null;
+let safetyNetDeferredSince = null;
 
-function runSafetyNetSave({ idleWaitMs = SAFETY_NET_IDLE_WAIT_MS } = {}) {
+function countActiveApplications() {
+    return (memoryDB.examApplications || []).filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status)).length;
+}
+
+function runSafetyNetSave({ idleWaitMs = SAFETY_NET_IDLE_WAIT_MS, now = Date.now() } = {}) {
     if (safetyNetRun) return safetyNetRun;
     if (writer.isClosed() || !writer.status().partialSinceFullSave) return Promise.resolve({ ran: false, rows: 0, found: 0 });
+    const activeApplications = countActiveApplications();
+    if (activeApplications > 0) {
+        if (safetyNetDeferredSince === null) safetyNetDeferredSince = now;
+        if (now - safetyNetDeferredSince < SAFETY_NET_MAX_DEFER_MS) {
+            return Promise.resolve({ ran: false, rows: 0, found: 0, deferred: true, activeApplications });
+        }
+    }
+    safetyNetDeferredSince = null;
     const pending = (async () => {
         try {
             await writer.waitIdle(idleWaitMs);
@@ -1581,6 +1604,7 @@ module.exports = {
     compactDatabase,
     runSafetyNetSave,
     SAFETY_NET_INTERVAL_MS,
+    SAFETY_NET_MAX_DEFER_MS,
     health,
     ping,
     captureSaveSnapshot,

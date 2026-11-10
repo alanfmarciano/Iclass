@@ -29,12 +29,17 @@ const COLLECTION_LABELS = {
 
 const integer = (n) => (Math.round(Number(n) || 0)).toLocaleString('pt-BR')
 
-// 0 KB, 640 KB, 12,4 MB, 1,2 GB.
+// 0 KB, 640 KB, 12,4 MB, 1,2 GB. Passa para a unidade de cima a partir de 1.000 da de
+// baixo (1.014 KB vira "1 MB"), para nunca mostrar quatro dígitos com ponto.
+const KB = 1024
+const MB = 1024 * KB
+const GB = 1024 * MB
 export function formatBytes(bytes) {
   const value = Math.max(0, Number(bytes) || 0)
-  if (value < 1024 * 1024) return `${Math.round(value / 1024).toLocaleString('pt-BR')} KB`
-  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`
-  return `${(value / (1024 * 1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`
+  const decimal = (n) => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
+  if (Math.round(value / KB) < 1000) return `${Math.round(value / KB).toLocaleString('pt-BR')} KB`
+  if (Math.round((value / MB) * 10) / 10 < 1000) return `${decimal(value / MB)} MB`
+  return `${decimal(value / GB)} GB`
 }
 
 function formatWhen(value) {
@@ -58,12 +63,25 @@ export function topCollections(rows, limit = 5) {
     .map(([name, count]) => ({ name, label: COLLECTION_LABELS[name] || name, rows: Number(count) }))
 }
 
-// "3,2 MB (40% do arquivo)" ou "ainda não medido".
+// "3,2 MB (40% do arquivo)" ou "ainda não medido". A proporção usa allocatedBytes, o mesmo
+// tamanho que o servidor usa para sugerir compactar (o maior entre o arquivo e as páginas
+// do SQLite); databaseBytes sozinho, em WAL antes do checkpoint, pode ser só 4 KB.
 export function freeSpaceText(storage) {
   if (!storage || storage.freeBytes === null || storage.freeBytes === undefined) return 'ainda não medido'
-  const total = Number(storage.databaseBytes) || 0
+  const total = Number(storage.allocatedBytes) || Number(storage.databaseBytes) || 0
   const percent = total > 0 ? Math.round((Number(storage.freeBytes) / total) * 100) : 0
   return `${formatBytes(storage.freeBytes)}${total > 0 ? ` (${Math.min(100, percent)}% do arquivo)` : ''}`
+}
+
+// "120 MB" ou, com o -wal ainda cheio, "122 MB no total: 120 MB no arquivo principal e
+// 2 MB de gravações recentes (-wal)". O total vem primeiro: logo depois de ligar, em WAL, o
+// arquivo principal pode ter só 4 KB e quase tudo estar no -wal.
+export function databaseSizeText(storage) {
+  if (!storage) return ''
+  const main = Number(storage.databaseBytes) || 0
+  const wal = Number(storage.walBytes) || 0
+  if (wal <= 0) return formatBytes(main)
+  return `${formatBytes(main + wal)} no total: ${formatBytes(main)} no arquivo principal e ${formatBytes(wal)} de gravações recentes (-wal)`
 }
 
 export function lastFullSaveText(storage) {
@@ -147,10 +165,7 @@ export function ArmazenamentoCard() {
         )}
         {storage && (
           <dl>
-            <Row label="Banco de dados">
-              {formatBytes(storage.databaseBytes)}
-              {Number(storage.walBytes) > 0 ? ` + ${formatBytes(storage.walBytes)} no arquivo de gravações recentes (-wal)` : ''}
-            </Row>
+            <Row label="Banco de dados">{databaseSizeText(storage)}</Row>
             <Row label="Espaço recuperável">{freeSpaceText(storage)}</Row>
             <Row label="Maiores coleções">
               {top.length ? top.map((item) => `${item.label}: ${integer(item.rows)}`).join(' · ') : 'Nenhum dado ainda.'}

@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ArmazenamentoCard, ONEDRIVE_WARNING, compactResultText, formatBytes, freeSpaceText, topCollections } from './ArmazenamentoCard'
+import { ArmazenamentoCard, ONEDRIVE_WARNING, compactResultText, databaseSizeText, formatBytes, freeSpaceText, topCollections } from './ArmazenamentoCard'
 
 const MB = 1024 * 1024
 
@@ -54,7 +54,7 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(mocks.calls[0]).toBe('/api/admin/storage')
     expect(screen.getByText('Armazenamento')).toBeVisible()
     expect(screen.getByText('Vale compactar')).toBeVisible()
-    expect(screen.getByText(/^120 MB \+ 2 MB no arquivo de gravações recentes/)).toBeVisible()
+    expect(screen.getByText('122 MB no total: 120 MB no arquivo principal e 2 MB de gravações recentes (-wal)')).toBeVisible()
     expect(screen.getByText('48 MB (40% do arquivo)')).toBeVisible()
     expect(screen.getByText('Registros do Monitor: 52.000 · Presenças: 9.800 · Auditoria: 4.200 · Entregas de prova: 1.200 · Caderno dos alunos: 300')).toBeVisible()
     expect(screen.getByText('152.340')).toBeVisible()
@@ -128,5 +128,19 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(freeSpaceText({ freeBytes: 0, databaseBytes: 4 * MB })).toBe('0 KB (0% do arquivo)')
     expect(topCollections({ a: 1, b: 5, c: 0 })).toEqual([{ name: 'b', label: 'b', rows: 5 }, { name: 'a', label: 'a', rows: 1 }])
     expect(compactResultText({ antes: 2 * MB, depois: MB, ms: 150 })).toBe('Banco compactado: de 2 MB para 1 MB em 150 ms.')
+  })
+
+  it('[UC-ARMAZENAMENTO-001] banco recém-aberto em WAL: sem "1.014 KB" e com a proporção sobre o tamanho do servidor', () => {
+    // Antes: "4 KB + 1.014 KB no arquivo de gravações recentes" e "(100% do arquivo)",
+    // porque a proporção era sobre o database.db de 4 KB antes do checkpoint.
+    expect(formatBytes(1014 * 1024)).toBe('1 MB')
+    expect(formatBytes(999 * 1024)).toBe('999 KB')
+    expect(formatBytes(1023.9 * MB)).toBe('1 GB')
+    const wal = { databaseBytes: 4096, walBytes: 1014 * 1024, allocatedBytes: 1020 * 1024, freeBytes: 8192 }
+    expect(databaseSizeText(wal)).toBe('1 MB no total: 4 KB no arquivo principal e 1 MB de gravações recentes (-wal)')
+    expect(freeSpaceText(wal)).toBe('8 KB (1% do arquivo)')
+    expect(databaseSizeText({ databaseBytes: 3 * MB, walBytes: 0 })).toBe('3 MB')
+    // Servidor antigo sem allocatedBytes: cai no databaseBytes.
+    expect(freeSpaceText({ freeBytes: MB, databaseBytes: 4 * MB })).toBe('1 MB (25% do arquivo)')
   })
 })

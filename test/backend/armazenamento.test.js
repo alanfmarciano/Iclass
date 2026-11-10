@@ -174,6 +174,63 @@ test('[UC-GRAVACAO-001] rede de segurança: a gravação completa leva o esqueci
     assert.equal(crashLog().slice(before).match(/Rede de segurança/g).length, 1);
 });
 
+test('[UC-GRAVACAO-001] rede de segurança espera a prova terminar (teto de 2 h) e grava depois', async () => {
+    await db.save();
+    db.memory.annotations['adiada@teste.local'] = { Apostila_1: { p1: { note: 'esquecida na prova' } } };
+    db.memory.notes['adiada@teste.local'] = { Apostila_1: 'com only' };
+    await db.save({ only: ['notes'] });
+    db.memory.examApplications.push({ id: 'app-rede', classId: 'TI::1DES', examKey: 'P1', status: 'running' });
+    const start = Date.now();
+    try {
+        // Com prova em andamento a gravação completa espera (contrato do H3c).
+        const deferred = await db.runSafetyNetSave({ idleWaitMs: 1000, now: start });
+        assert.equal(deferred.ran, false);
+        assert.equal(deferred.deferred, true);
+        assert.equal(deferred.activeApplications, 1);
+        assert.equal(await readRow('annotations', 'adiada@teste.local'), undefined, 'gravou no meio da prova');
+        const later = await db.runSafetyNetSave({ idleWaitMs: 1000, now: start + 90 * 60 * 1000 });
+        assert.equal(later.deferred, true, 'antes do teto continua esperando');
+        // Passou do teto (aplicação esquecida aberta): grava mesmo assim.
+        const capped = await db.runSafetyNetSave({ idleWaitMs: 1000, now: start + db.SAFETY_NET_MAX_DEFER_MS });
+        assert.equal(capped.ran, true);
+        assert.ok(await readRow('annotations', 'adiada@teste.local'), 'depois do teto a rede de segurança grava');
+    } finally {
+        db.memory.examApplications = db.memory.examApplications.filter(item => item.id !== 'app-rede');
+    }
+    // Prova encerrada: a rodada seguinte grava na hora, e o teto recomeça na próxima prova.
+    db.memory.annotations['adiada@teste.local'].Apostila_1.p1.note = 'depois da prova';
+    await db.save({ only: ['notes'] });
+    db.memory.examApplications.push({ id: 'app-rede-2', classId: 'TI::1DES', examKey: 'P1', status: 'paused' });
+    try {
+        assert.equal((await db.runSafetyNetSave({ idleWaitMs: 1000, now: start + db.SAFETY_NET_MAX_DEFER_MS + 1000 })).deferred, true, 'teto recomeça a contar');
+    } finally {
+        db.memory.examApplications = db.memory.examApplications.filter(item => item.id !== 'app-rede-2');
+    }
+    const after = await db.runSafetyNetSave({ idleWaitMs: 1000 });
+    assert.equal(after.ran, true);
+    assert.match((await readRow('annotations', 'adiada@teste.local')).value, /depois da prova/);
+});
+
+test('[UC-GRAVACAO-001] sync da prova numa turma sem contentOverrides não muda "classes" (verificador em silêncio)', async () => {
+    const cls = db.memory.classes.find(item => item.name === '1DES');
+    delete cls.contentOverrides;
+    await db.save();
+    db.clearSaveVerifyFailures();
+    const response = await request(app)
+        .get('/api/student/sync')
+        .query({ email: STUDENT.email, studentClass: '1DES', courseId: 'TI', examKey: 'P1' })
+        .set('x-session-token', studentToken);
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    // Antes, montar a estrutura da turma criava contentOverrides (padrão) só na memória, e
+    // o verificador acusava "GET /api/student/sync alterou classes sem incluir em only".
+    assert.equal(cls.contentOverrides, undefined, 'a leitura criou contentOverrides na turma');
+    assert.deepEqual(db.saveVerifyFailures.map(item => `${item.path} ${item.collection}`), []);
+    const { effectiveStructure, readOverrides } = require('../../backend/utils/classContent.js');
+    assert.ok(effectiveStructure('TI', '1DES'));
+    assert.equal(cls.contentOverrides, undefined);
+    assert.deepEqual(readOverrides(cls), { materials: {}, evaluations: {}, unitNames: {}, extraUnits: [], structure: null });
+});
+
 test('[UC-ARMAZENAMENTO-001] espaço recuperável e sugestão de compactar depois de apagar dados', async () => {
     await db.refreshStorageStats();
     const fresh = db.storageStatus();
@@ -197,6 +254,8 @@ test('[UC-ARMAZENAMENTO-001] "Compactar o banco" no Precisa de você só para o 
     assert.ok(item, 'administrador vê a sugestão');
     assert.equal(item.href, '/sistema');
     assert.ok(item.count >= 3);
+    // O texto se lê sozinho, com o número (antes: "MB livres dentro do arquivo do banco").
+    assert.equal(item.detalhe, `${item.count} MB sem uso dentro do arquivo do banco (${Math.round(db.storageStatus().freeBytes / db.storageStatus().allocatedBytes * 100)}%) · Sistema → Armazenamento`);
     const professor = await asProfessor(request(app).get(QUEUE_URL));
     assert.equal(professor.status, 200);
     assert.ok(!professor.body.some(entry => entry.id === 'compactar_banco'), 'professor (mesmo com system.manage) não vê');
@@ -216,6 +275,8 @@ test('[UC-ARMAZENAMENTO-001] GET /api/admin/storage: estado do banco para o cart
     assert.ok(storage.databaseBytes > 0);
     assert.equal(typeof storage.walBytes, 'number');
     assert.ok(storage.freeBytes > 0);
+    // Base da proporção do espaço recuperável, a mesma do servidor (cartão e fila).
+    assert.ok(storage.allocatedBytes >= storage.databaseBytes);
     assert.equal(typeof storage.rows.notes, 'number');
     assert.equal(typeof storage.keystrokes, 'number');
     assert.ok('commitP95Ms' in storage && 'lastFullSaveAt' in storage && 'lastWriteError' in storage);
@@ -234,6 +295,12 @@ test('[UC-ARMAZENAMENTO-001] Compactar: só administrador, com COMPACTAR, nunca 
     const unconfirmed = await asAdmin(request(app).post('/api/admin/storage/compact')).send({});
     assert.equal(unconfirmed.status, 400);
     assert.equal(unconfirmed.body.error, 'Digite COMPACTAR para confirmar.');
+    // Só texto: ['COMPACTAR'] passava no String() e chegava à compactação.
+    for (const confirm of [['COMPACTAR'], { 0: 'COMPACTAR' }, 1]) {
+        const wrongType = await asAdmin(request(app).post('/api/admin/storage/compact')).send({ confirm });
+        assert.equal(wrongType.status, 400, JSON.stringify(confirm));
+        assert.equal(wrongType.body.error, 'Digite COMPACTAR para confirmar.');
+    }
 
     db.memory.examApplications.push({ id: 'app-armazenamento', classId: 'TI::1DES', examKey: 'P1', status: 'running' });
     try {
