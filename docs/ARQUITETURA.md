@@ -36,6 +36,20 @@ backend/
 7. Fallback do app: qualquer outro caminho (inclusive `/`) recebe o `index.html` com no-store; `/assets` nunca chega aqui.
 8. `errorHandler` no fim.
 
+### Boot do servidor — ordem (`prepareServer`, fase 2, H3b)
+
+`startServer` confere o build e chama `prepareServer()` antes de abrir a porta (os testes usam o mesmo `prepareServer`, sem o build e sem `listen`):
+
+1. `db.init()`: carga, migrações e a sincronização das turmas com as aplicações, que só grava quando alguma turma mudou de fato (o boot não regrava turmas, alunos nem presenças nem diz "Provas online resetadas" sem motivo).
+2. `serverLifecycle.loadPreviousRun()`: lê `DATA_DIR/runtime/heartbeat.json` da execução anterior (quando parou, se foi parada limpa). A retomada das sessões do H3a-2 usa o mesmo dado (`previousRun().downtimeMs`).
+3. Sessões zeradas (`clearSessions`), migração do fórum e varredura da lixeira.
+4. `compensateBootOutage`: o tempo do último heartbeat até agora volta para as provas em andamento como pausa `server_outage` (até 15 min; acima disso só o registro em `application.outages` e na auditoria da prova) e é gravado.
+5. Primeira varredura do fim do tempo (`settleExpiredAttempts`), depois da devolução: quem teve o prazo vencido com o servidor fora não é entregue no boot. Repete a cada 10 s.
+6. `startHeartbeat`: grava o heartbeat a cada 5 s e liga a verificação de tempo parado (`detectGap`: mais de 30 s sem verificação com o processo vivo, como notebook suspenso, vira queda `suspended`), que roda também antes de toda conta de prazo (`computeAttemptDeadline`).
+7. Backup automático (fora do `TEST_MODE`), `createApp()` e `listen`.
+
+O desligamento (Ctrl+C, SIGTERM) e o botão Reiniciar gravam o heartbeat com `clean: true` (`markCleanShutdown`): o próximo boot registra reinício, não queda. Os sinais, o desligamento ordenado e o `/api/health` ficam com o H3c; `db.health()` e `db.ping()` (`database.js`) já dão o estado da gravação e do banco para ele.
+
 ### Entrega do app na rede da sala (cache e compressão)
 
 - **`/assets`**: os nomes têm o hash do conteúdo (`index-<hash>.js`), então ficam no aparelho para sempre (`public, max-age=31536000, immutable`). O build grava ao lado de cada arquivo de texto de 1 KB ou mais a versão `.gz` (gzip 9) e a `.br` (brotli 11) (`web/scripts/compress-assets.mjs`, no `npm run build`). O servidor manda a `.br` quando o navegador aceita br (só em HTTPS), senão a `.gz`, senão o original. Build antigo sem as versões comprimidas continua funcionando (original com cache imutável).

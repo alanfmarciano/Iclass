@@ -417,6 +417,29 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     expect(postsTo('/api/student/submit')).toHaveLength(1)
   }, 15000)
 
+  it('envio automático recusado porque o servidor devolveu o tempo da queda: o aviso diz que foi o servidor (CONF-03)', async () => {
+    const user = userEvent.setup()
+    let extended = false
+    apiMock.get.mockImplementation(async () => syncResponse({ timerRemaining: extended ? 40 : 2, answers: extended ? { 1: 'A' } : {} }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/submit') return { success: true }
+      extended = true
+      throw Object.assign(new Error('O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'), {
+        status: 409,
+        data: { deadlineExtended: true, timerRemaining: 40, reason: 'server_outage' },
+      })
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    await waitFor(() => expect(postsTo('/api/student/submit')).toHaveLength(1), { timeout: 4000 })
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'))
+    expect(toast.info).not.toHaveBeenCalledWith('O professor deu mais tempo. A prova continua.')
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 4000 })).toBeVisible()
+    expect(screen.queryByText('Prova enviada!')).not.toBeInTheDocument()
+    expect(postsTo('/api/student/submit')).toHaveLength(1)
+  }, 15000)
+
   it('aplicação encerrada com "desconsiderar" mostra a entrega de quem já tinha sido entregue no fim do tempo', async () => {
     apiMock.get.mockResolvedValue(syncResponse({
       startedAt: null,

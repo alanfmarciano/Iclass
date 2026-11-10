@@ -200,6 +200,10 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
     let lastFullSaveMs = null;
     let lastCycle = null;
     let cycles = 0;
+    // Ciclos seguidos que não gravaram (zera no primeiro COMMIT) e o início do ciclo em
+    // andamento ou do último: db.health() (H3b) e o /api/health do H3c leem por status().
+    let consecutiveFailures = 0;
+    let lastCycleStartedAt = null;
 
     function exec(sql) {
         return new Promise((resolve, reject) => connection.exec(sql, err => (err ? reject(err) : resolve())));
@@ -435,6 +439,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
 
     function recordFailure(err, scope) {
         const code = (err && (err.sqliteCode || err.code)) || 'ERRO';
+        consecutiveFailures += 1;
         lastWriteError = { at: new Date().toISOString(), code: String(code), message: String((err && err.message) || err) };
         // As coleções do ciclo que falhou continuam pendentes até um COMMIT dar certo.
         retryScope = mergeScope(retryScope || emptyScope(), scope);
@@ -448,6 +453,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
 
     async function runCycle() {
         running = true;
+        lastCycleStartedAt = new Date().toISOString();
         const scope = mergeScope(mergeScope(emptyScope(), pendingScope), retryScope);
         const waiters = pendingWaiters;
         pendingScope = null;
@@ -478,6 +484,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             waiters.forEach(waiter => waiter.reject(writeError));
         } else {
             lastWriteError = null;
+            consecutiveFailures = 0;
             clearRetry();
             waiters.forEach(waiter => waiter.resolve());
         }
@@ -690,6 +697,10 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null,
             cycles,
             lastCycle: lastCycle ? { ...lastCycle } : null,
+            lastCycleStartedAt,
+            consecutiveFailures,
+            // Um ciclo de gravação ou uma tarefa exclusiva (VACUUM) rodando agora.
+            running,
             queued: !!pendingScope,
             closed,
         };

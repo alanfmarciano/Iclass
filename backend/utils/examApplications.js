@@ -212,6 +212,12 @@ function findOpenAttemptState(studentExamState, scope = {}) {
     return match ? { key: match[0], state: match[1] } : null;
 }
 
+// Pausa fechada que o próprio servidor grava pelo tempo em que ficou fora do ar durante
+// a prova (H3b, utils/serverLifecycle.js): { pausedAt, resumedAt, reason }. Conta no prazo
+// como qualquer pausa; o código que só lê pausedAt/resumedAt (versões anteriores
+// inclusive) chega ao mesmo prazo.
+const SERVER_OUTAGE_PAUSE_REASON = 'server_outage';
+
 // Pausas da aplicação ({ pausedAt, resumedAt }). Pausar congela o cronômetro: o
 // prazo de cada tentativa é empurrado pelo tempo em que a aplicação ficou pausada.
 function applicationPauses(application) {
@@ -414,6 +420,7 @@ module.exports = {
     ACTIVE_APPLICATION_STATUSES,
     APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
+    SERVER_OUTAGE_PAUSE_REASON,
     applicationPauses,
     applicationToOnlineConfig,
     attemptStatesForApplication,

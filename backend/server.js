@@ -17,6 +17,7 @@ const { createPersistenceContext } = require('./utils/persistenceContext.js');
 const { checkAdminSessionToken, checkStudentSessionToken, clearSessions } = require('./utils/authSessions.js');
 const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
+const serverLifecycle = require('./utils/serverLifecycle.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -311,15 +312,23 @@ return app;
 
 let serverInstance;
 
-async function startServer() {
-    verifyBuild();
+// Estado do servidor antes de atender (H3b, ordem do boot): banco, tempo fora do ar,
+// sessões, migração do fórum, lixeira, devolução do tempo das provas em andamento,
+// gravação, primeira varredura do fim do tempo e heartbeat, nesta ordem. A devolução vem
+// antes da varredura: sem ela, quem teve o prazo vencido enquanto o servidor estava fora
+// do ar era entregue automaticamente logo no boot. Separado do startServer para os
+// testes subirem o mesmo boot sem o build e sem abrir a porta.
+async function prepareServer() {
+    // 1) Banco (carga e migrações).
     await db.init();
-    // Sessões de aluno e de instrutor só na memória, zeradas a cada boot. A retomada depois
-    // de um reinício (restoreSessions, utils/authSessions.js) entra com a tabela
-    // auth_sessions (H3a-2).
+    // 2) Quanto tempo o servidor ficou fora do ar: o heartbeat da execução anterior.
+    serverLifecycle.loadPreviousRun();
+    // 3) Sessões de aluno e de instrutor só na memória, zeradas a cada boot. A retomada
+    // depois de um reinício (restoreSessions, utils/authSessions.js) entra com a tabela
+    // auth_sessions (H3a-2), com o tempo fora do ar de serverLifecycle.previousRun().
     clearSessions(db.memory);
 
-    // Garante IDs e e-mails de autor consistentes no fórum (migração automática)
+    // 4) Garante IDs e e-mails de autor consistentes no fórum (migração automática)
     if (db.memory && db.memory.forum) {
         let migrated = false;
         db.memory.forum.forEach(comment => {
@@ -345,20 +354,31 @@ async function startServer() {
         }
     }
 
-    // Inicia o servidor e informa o endereço IP da rede local
-    // Varredura da lixeira conforme a retenção configurada (boot + a cada 6h).
+    // 5) Varredura da lixeira conforme a retenção configurada (boot + a cada 6h).
     const _fileStore = require('./utils/storage.js');
     function sweepTrash() { try { const n = _fileStore.purgeTrash(settingsUtil.getSettings().trash.retentionDays); if (n) console.log('🗑️  Lixeira: ' + n + ' item(ns) antigos removidos.'); } catch (e) {} }
     sweepTrash();
     const trashInterval = setInterval(sweepTrash, 6 * 3600000);
     trashInterval.unref();
 
-    // Fim do tempo das provas: tentativa vencida sem envio vira entrega com as últimas
+    // 6) e 7) O tempo em que o servidor ficou fora do ar (do último heartbeat até agora)
+    // vira pausa das provas em andamento, até 15 min (utils/serverLifecycle.js), e é
+    // gravado antes da primeira varredura. Falha de gravação não impede o boot: a memória
+    // já tem a pausa e o motor regrava sozinho.
+    const outage = serverLifecycle.compensateBootOutage(db.memory);
+    if (outage.changed) {
+        try { await db.save(); } catch (e) { if (!e || e.code !== 'ICLASS_DB_WRITE') logCrash('tempo fora do ar das provas', e); }
+    }
+
+    // 8) Fim do tempo das provas: tentativa vencida sem envio vira entrega com as últimas
     // respostas salvas, mesmo que o aluno nunca mais sincronize (sem rede, sem bateria).
     // No boot também recupera tentativas 'expired' deixadas por versões antigas.
     const { settleExpiredAttempts } = require('./utils/examDeadline.js');
     function sweepExpiredAttempts() {
         try {
+            // Computador suspenso ou processo parado desde a última volta: o tempo parado
+            // é devolvido antes de qualquer tentativa ser finalizada.
+            serverLifecycle.detectGap(Date.now());
             const { finalized, discarded, changed } = settleExpiredAttempts(db.memory);
             const recovered = finalized.filter(item => item.recoveredAfterFinish).length;
             if (finalized.length > recovered) console.log('⏱️  Fim do tempo: ' + (finalized.length - recovered) + ' tentativa(s) entregue(s) automaticamente.');
@@ -376,6 +396,13 @@ async function startServer() {
     sweepExpiredAttempts();
     const examDeadlineInterval = setInterval(sweepExpiredAttempts, 10000);
     examDeadlineInterval.unref();
+
+    // 9) Heartbeat a cada 5 s (runtime/heartbeat.json) e, com ele, a verificação de tempo
+    // parado antes das contas de prazo. Começa depois da devolução do tempo do boot.
+    serverLifecycle.startHeartbeat({
+        getMemory: () => db.memory,
+        save: () => db.save({ detached: true }),
+    });
 
     // Backup automático diário dos dados em data/backups (guarda os 14 mais recentes).
     // Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios do servidor.
@@ -395,6 +422,12 @@ async function startServer() {
         const backupInterval = setInterval(backupIfDue, 3600000);
         backupInterval.unref();
     }
+    return { outage };
+}
+
+async function startServer() {
+    verifyBuild();
+    await prepareServer();
 
     const app = createApp();
     serverInstance = app.listen(PORT, '0.0.0.0', () => {
@@ -450,6 +483,9 @@ async function startServer() {
         await serverClosed;
         clearTimeout(forceCloseTimer);
         await db.close();
+        // O próximo boot sabe que foi parada pedida, não queda (o tempo fora do ar das
+        // provas é devolvido do mesmo jeito; muda o motivo no registro).
+        serverLifecycle.markCleanShutdown('stop');
     };
     process.once('SIGINT', () => shutdown().finally(() => process.exit(0)));
     process.once('SIGTERM', () => shutdown().finally(() => process.exit(0)));
@@ -463,4 +499,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createApp, startServer };
+module.exports = { createApp, prepareServer, startServer };

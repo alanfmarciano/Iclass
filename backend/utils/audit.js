@@ -131,6 +131,7 @@ const ACTION_LABELS = Object.freeze({
     exam_attempt_recovered_after_finish: 'Tentativa recuperada depois do encerramento',
     exam_attempt_reopened_extra_time: 'Tentativa reaberta com tempo extra',
     exam_attempt_reopen_discarded: 'Reabertura sem entrega nova: a entrega anterior voltou',
+    exam_application_server_outage: 'Servidor fora do ar durante a prova',
 });
 
 // Categoria de uma ação sem category gravada (entradas antigas, ou ação nova que não

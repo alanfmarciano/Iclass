@@ -22,6 +22,16 @@ export function classifyAutoSubmitError(error) {
   return 'fatal'
 }
 
+// Texto do aviso quando o envio automático volta com 409 deadlineExtended: com reason
+// 'server_outage' o prazo só ficou à frente pelo tempo devolvido de uma queda do
+// servidor (o professor não fez nada); sem reason, foi o professor que deu mais tempo.
+export const AUTO_SUBMIT_EXTENDED_MESSAGE = 'O professor deu mais tempo. A prova continua.'
+export const AUTO_SUBMIT_SERVER_OUTAGE_MESSAGE = 'O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'
+
+export function autoSubmitExtendedMessage(error) {
+  return error?.data?.reason === 'server_outage' ? AUTO_SUBMIT_SERVER_OUTAGE_MESSAGE : AUTO_SUBMIT_EXTENDED_MESSAGE
+}
+
 export function countAnswered(answers) {
   return Object.values(answers || {}).filter((value) => value !== null && value !== undefined && value !== '').length
 }

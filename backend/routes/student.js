@@ -40,6 +40,8 @@ const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
+const { parseEvaluationMarkdown } = require('../utils/parser.js');
+const { logError } = require('../utils/errorLog.js');
 const { normalizeExamToken } = require('../utils/examToken.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -71,6 +73,7 @@ const {
     canReplaceServerFinalization,
     computeAttemptDeadline,
     countAnswers,
+    extendedByServerOutage,
     finalizeAttemptState,
     lateSubmitDecision,
     markLateSubmission,
@@ -170,7 +173,7 @@ function applicationForClass(cls, examKey, applicationId) {
 function applyPageReturn(state, { sessionToken, application, cls, examKey }) {
     if (!state || state.focusLocked !== true || !state.pageExit) return false;
     const now = Date.now();
-    const decision = pageExitReturnDecision(state, { sessionToken, now });
+    const decision = pageExitReturnDecision(state, { sessionToken, now, outages: application?.outages });
     if (decision.expired) {
         // Passou do prazo: vale a regra de saída de sempre (o professor libera).
         delete state.pageExit;
@@ -1498,30 +1501,44 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
     }
 
     // Envio automático com o prazo ainda bem à frente: a tela não viu o tempo extra
-    // (o professor deu mais tempo ou reabriu a tentativa no "+N min" da turma). A
-    // prova continua; o navegador volta para as questões com o tempo novo.
+    // (o professor deu mais tempo ou reabriu a tentativa no "+N min" da turma, ou o
+    // servidor devolveu o tempo em que ficou fora do ar). A prova continua; o navegador
+    // volta para as questões com o tempo novo. reason 'server_outage': o prazo só está
+    // à frente pelo tempo devolvido da queda (H3b), e a tela diz isso ao aluno.
     if (auto === true && timing.overdueMs !== null && timing.overdueMs < -AUTO_SUBMIT_EARLY_TOLERANCE_MS) {
+        const serverOutage = !!application && extendedByServerOutage(lockedState, application, nowTs);
         return res.status(409).json({
-            error: 'O professor deu mais tempo. A prova continua.',
+            error: serverOutage
+                ? 'O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'
+                : 'O professor deu mais tempo. A prova continua.',
             deadlineExtended: true,
             timerRemaining: Math.max(0, Math.ceil(-timing.overdueMs / 1000)),
+            ...(serverOutage ? { reason: 'server_outage' } : {}),
         });
     }
 
     // Tenta obter questoes estruturadas do banco de dados primeiro
     let questions;
-    const evaluation = db.memory.evaluations[examKey];
+    let evaluation = db.memory.evaluations[examKey];
     if (evaluation) {
         questions = evaluation.questions;
     } else {
-        // Fallback: Localiza e lê o arquivo da prova antigo .md
+        // Fallback: a prova antiga só em .md (content/<prova>.md), sem entrada em
+        // evaluations. Antes o leitor do .md não estava importado aqui: o caminho sempre
+        // dava ReferenceError, engolido pelo catch, e o aluno recebia 500 "Falha ao
+        // processar avaliação no servidor.". A avaliação lida do .md também vale para a
+        // correção (gabarito das questões que a versão aplicada não trouxer).
         const filePath = path.join(CONTENT_DIR, `${examKey}.md`);
         try {
-            await fs.promises.access(filePath, fs.constants.F_OK);
             const mdContent = await fs.promises.readFile(filePath, 'utf8');
             const parsedObj = parseEvaluationMarkdown(mdContent, examKey);
             questions = parsedObj ? parsedObj.questions : [];
-        } catch (err) {}
+            if (parsedObj && Array.isArray(parsedObj.questions) && parsedObj.questions.length) evaluation = parsedObj;
+        } catch (err) {
+            // Sem o arquivo: segue para o erro de prova sem questões, abaixo. Outra falha
+            // (arquivo ilegível) fica no crash.log.
+            if (!err || err.code !== 'ENOENT') logError('[PROVA] Não foi possível ler a prova em .md', err, { req, details: { examKey } });
+        }
     }
     
     if (!questions || questions.length === 0) {

@@ -14,7 +14,7 @@ import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '..
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
-import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, wait } from './examAutoSubmit'
+import { autoSubmitExtendedMessage, autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, wait } from './examAutoSubmit'
 import {
   clearExamDraft,
   clearExamDraftsForApplication,
@@ -313,7 +313,7 @@ export default function ExamRunner() {
         }
         if (kind === 'extended') {
           if (timeupRef.current === frozen) {
-            resumeExtendedAttempt('O professor deu mais tempo. A prova continua.')
+            resumeExtendedAttempt(autoSubmitExtendedMessage(e))
             syncRef.current?.()
           }
           return

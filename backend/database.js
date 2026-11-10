@@ -681,7 +681,11 @@ function migrateLegacyExamApplications(options = {}) {
         if (normalizeLegacyStudentAdjustments(application, memoryDB.studentExamState)) changed = true;
     });
     (memoryDB.classes || []).forEach(cls => {
-        if (!cls.onlineExamConfigs) return;
+        if (!cls || !cls.onlineExamConfigs) return;
+        // A turma reescrita a partir da aplicação (configuração, liberação, prova ativa)
+        // só conta como mudança quando ficou diferente (DES-08): antes ela era reescrita
+        // sem marcar, e a diferença real só ia para o disco na gravação seguinte.
+        const classBefore = JSON.stringify(cls);
         Object.keys(cls.onlineExamConfigs).forEach(examKey => {
             const cfg = cls.onlineExamConfigs[examKey];
             if (!cfg) return;
@@ -775,18 +779,26 @@ function migrateLegacyExamApplications(options = {}) {
                 cls.activeApplicationId = application.id;
             }
         });
+        if (JSON.stringify(cls) !== classBefore) changed = true;
     });
     return changed;
 }
 
 // Configuração da prova em cada turma conforme a aplicação dela; configuração sem
 // aplicação (versões antigas) volta bloqueada e parada. Usada no boot e ao restaurar um
-// backup de versão anterior. Devolve true quando mudou alguma coisa.
+// backup de versão anterior. Devolve true só quando alguma turma mudou de fato (DES-08):
+// antes toda turma com prova em andamento contava como "resetada", o boot imprimia
+// "Provas online resetadas" e gravava de novo a cada início, mesmo sem mudar nada.
+// Campo que já está no valor de destino não é reescrito (nem ganha um null que não
+// tinha): a linha da turma continua igual à do arquivo.
 function syncOnlineExamConfigsWithApplications() {
     if (!Array.isArray(memoryDB.classes)) return false;
     let resetSomething = false;
     memoryDB.classes.forEach(cls => {
-        if (cls.activeExamKey) { cls.activeExamKey = null; resetSomething = true; }
+        if (!cls || typeof cls !== 'object') return;
+        const before = JSON.stringify(cls);
+        let activeExamKey = null;
+        let activeApplicationId = null;
         if (cls.onlineExamConfigs) {
             Object.keys(cls.onlineExamConfigs).forEach(examKey => {
                 const cfg = cls.onlineExamConfigs[examKey];
@@ -795,26 +807,34 @@ function syncOnlineExamConfigsWithApplications() {
                 if (application) {
                     cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cfg);
                     if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
-                        cls.activeExamKey = examKey;
-                        cls.activeApplicationId = application.id;
+                        activeExamKey = examKey;
+                        activeApplicationId = application.id;
                     }
                     return;
                 }
-                cfg.onlineActive = false;
-                cfg.status = 'not_applied';
-                cfg.startTime = null;
-                cfg.waitingRoomStartTimestamp = null;
-                resetSomething = true;
+                if (cfg.onlineActive !== false) cfg.onlineActive = false;
+                if (cfg.status !== 'not_applied') cfg.status = 'not_applied';
+                if (cfg.startTime != null) cfg.startTime = null;
+                if (cfg.waitingRoomStartTimestamp != null) cfg.waitingRoomStartTimestamp = null;
             });
+        }
+        // Prova ativa da turma: a última aplicação em andamento; sem nenhuma, a turma fica
+        // sem prova ativa. activeApplicationId continua como estava quando não há
+        // aplicação ativa (como antes).
+        if (activeExamKey) {
+            if (cls.activeExamKey !== activeExamKey) cls.activeExamKey = activeExamKey;
+            if (cls.activeApplicationId !== activeApplicationId) cls.activeApplicationId = activeApplicationId;
+        } else if (cls.activeExamKey) {
+            cls.activeExamKey = null;
         }
         if (cls.releasedItems) {
             Object.keys(cls.releasedItems).forEach(key => {
                 if (key.startsWith('Avaliacao_') && cls.releasedItems[key] === true && !cls.onlineExamConfigs?.[key]?.applicationId) {
                     cls.releasedItems[key] = false;
-                    resetSomething = true;
                 }
             });
         }
+        if (JSON.stringify(cls) !== before) resetSomething = true;
     });
     return resetSomething;
 }
@@ -1202,7 +1222,82 @@ function storageStatus() {
         pendingRetry: status.pendingRetry,
         nextRetryAt: status.nextRetryAt,
         lastCycle: status.lastCycle,
+        lastCycleStartedAt: status.lastCycleStartedAt,
+        consecutiveFailures: status.consecutiveFailures,
+        saving: status.running,
+        savesSinceBoot: status.cycles,
     };
+}
+
+// Saúde da gravação (H3b, DES-08, CONF-12), para o /api/health e o cartão Saúde do H3c:
+// um recorte de storageStatus(), que continua a fonte única (sem contadores próprios).
+// - lastOkAt/lastDurationMs: o último ciclo que gravou (COMMIT ou nada a gravar);
+// - lastStartedAt: o início do ciclo em andamento ou do último;
+// - lastErrorCode/consecutiveFailures: a falha mais recente e quantos ciclos seguidos
+//   falharam (zera no primeiro que grava);
+// - saving: um ciclo ou tarefa exclusiva rodando agora.
+function health() {
+    const status = storageStatus();
+    return {
+        lastOkAt: status.lastCycle ? status.lastCycle.at : null,
+        lastStartedAt: status.lastCycleStartedAt,
+        lastDurationMs: status.lastCycle ? status.lastCycle.ms : null,
+        lastFullSaveAt: status.lastFullSaveAt,
+        lastErrorCode: status.lastWriteError ? status.lastWriteError.code : null,
+        lastErrorAt: status.lastWriteError ? status.lastWriteError.at : null,
+        consecutiveFailures: status.consecutiveFailures,
+        pendingRetry: status.pendingRetry,
+        savesSinceBoot: status.savesSinceBoot,
+        saving: status.saving,
+        dbFileBytes: status.databaseBytes + status.walBytes,
+    };
+}
+
+// Confere o banco de verdade com um SELECT 1 (H3b), com tempo-limite de 2 s e resultado
+// guardado por 5 s (o /api/health pode ser consultado a cada segundo pelo launcher).
+// Durante uma gravação não consulta: o sqlite3 poria o SELECT na fila atrás do ciclo (de
+// até alguns segundos num banco grande) e o servidor pareceria travado; vale o último
+// resultado (ok null quando ainda não houve nenhum). Nunca rejeita. consecutiveFailures:
+// consultas seguidas que falharam fora de gravação (o H3c dá "com problemas" a partir de 2).
+const PING_TIMEOUT_MS = 2000;
+const PING_CACHE_MS = 5000;
+let lastPing = null;
+let pingFailures = 0;
+let pingInFlight = null;
+
+function pingResult(extra = {}) {
+    const base = lastPing || { ok: null, at: null, ms: null, error: null };
+    return { ...base, consecutiveFailures: pingFailures, ...extra };
+}
+
+function ping({ now = Date.now() } = {}) {
+    if (lastPing && now - Date.parse(lastPing.at) < PING_CACHE_MS) return Promise.resolve(pingResult({ cached: true }));
+    if (writer.status().running) return Promise.resolve(pingResult({ cached: true, saving: true }));
+    if (pingInFlight) return pingInFlight;
+    const started = Date.now();
+    pingInFlight = new Promise(resolve => {
+        let settled = false;
+        const finish = (ok, error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            pingFailures = ok ? 0 : pingFailures + 1;
+            lastPing = { ok, at: new Date().toISOString(), ms: Date.now() - started, error: error ? String(error) : null };
+            pingInFlight = null;
+            resolve(pingResult({ cached: false }));
+        };
+        const timer = setTimeout(() => finish(false, `sem resposta do banco em ${PING_TIMEOUT_MS / 1000} s`), PING_TIMEOUT_MS);
+        if (typeof timer.unref === 'function') timer.unref();
+        try {
+            sqliteDb.get('SELECT 1 AS ok', [], (err, row) => {
+                if (err) return finish(false, err.code || err.message || err);
+                return finish(!!row && Number(row.ok) === 1, row ? null : 'resposta vazia');
+            });
+        } catch (err) {
+            finish(false, (err && (err.code || err.message)) || err);
+        }
+    });
+    return pingInFlight;
 }
 
 function defaultAdminEmail() {
@@ -1233,6 +1328,8 @@ module.exports = {
     runExclusive: fn => writer.runExclusive(fn),
     close,
     storageStatus,
+    health,
+    ping,
     captureSaveSnapshot,
     get saveVerifyFailures() { return saveVerifyFailures; },
     clearSaveVerifyFailures() { saveVerifyFailures.length = 0; },

@@ -21,6 +21,7 @@ import { liveCorrectionDraft } from './examTools'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
+import { serverOutageNotice, withLiveOutagePauses } from './serverOutage'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
@@ -442,10 +443,11 @@ export default function MonitorPage() {
   const selectedApplication = useMemo(() => applications.find((item) => item.id === applicationId) || null, [applications, applicationId])
   // Versão atual do token no servidor (a lista da turma é consultada a cada 5 s): se
   // outro navegador trocou o token, o painel deixa de mostrar o guardado nesta aba.
-  const tokenIssuedAt = useMemo(() => {
-    const live = (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId)
-    return (live || selectedApplication)?.accessTokenIssuedAt || ''
-  }, [activeApplicationsRequest.data, applicationId, selectedApplication])
+  const liveApplication = useMemo(() => (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId) || null, [activeApplicationsRequest.data, applicationId])
+  const tokenIssuedAt = (liveApplication || selectedApplication)?.accessTokenIssuedAt || ''
+  // Queda do servidor com a prova correndo (H3b): o aviso e as pausas da queda vêm da
+  // lista consultada a cada 5 s, porque a compensação acontece no servidor.
+  const outageNotice = useMemo(() => serverOutageNotice(liveApplication || selectedApplication), [liveApplication, selectedApplication])
   const selectedConfig = useMemo(() => {
     const current = selectedClass?.onlineExamConfigs?.[examKey] || {}
     if (!selectedApplication) return current
@@ -461,11 +463,11 @@ export default function MonitorPage() {
       timerMode: selectedApplication.timerMode,
       globalTimeAdjustment: selectedApplication.globalTimeAdjustment,
       waitingRoomDuration: selectedApplication.waitingRoomDuration,
-      pauses: selectedApplication.pauses || [],
+      pauses: withLiveOutagePauses(selectedApplication.pauses || [], liveApplication?.pauses),
       maxAttempts: selectedApplication.maxAttempts,
       requiresToken: selectedApplication.tokenEnabled === true,
     }
-  }, [selectedClass, examKey, selectedApplication])
+  }, [selectedClass, examKey, selectedApplication, liveApplication])
   const waitingStartsAt = Number(selectedConfig.startTime || 0)
   const waitingHasEnded = selectedConfig.status === 'waiting' && waitingStartsAt > 0 && clockNow >= waitingStartsAt
   const displayedStatus = waitingHasEnded ? 'running' : selectedConfig.status
@@ -1086,6 +1088,12 @@ export default function MonitorPage() {
                   <div className="mt-3 flex items-start gap-2 rounded-lg border border-warning/45 bg-warning-soft px-3 py-2.5 text-sm text-warning" role="status">
                     <AlertTriangle size={17} className="mt-0.5 shrink-0" />
                     <span><strong>Não visível aos alunos.</strong> “Preparar” monta a aplicação; o aviso só será enviado depois de clicar em “Iniciar prova e avisar alunos” ou “Sala de espera”.</span>
+                  </div>
+                )}
+                {outageNotice && (
+                  <div className={`mt-3 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm ${outageNotice.compensated ? 'border-info/40 bg-info-soft text-info' : 'border-warning/45 bg-warning-soft text-warning'}`} role="status">
+                    <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+                    <span><strong>{outageNotice.title}</strong> {outageNotice.text}</span>
                   </div>
                 )}
                 {waitingRemaining != null && (
