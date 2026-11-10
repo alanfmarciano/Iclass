@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { BookOpen } from 'lucide-react'
 import { useAuth } from '../../context/AuthProvider'
@@ -8,6 +9,7 @@ import { LumenShell } from './LumenShell'
 import { NotificationBell } from '../ui/NotificationBell'
 import { useAdminNotificationOpener } from './useAdminNotificationOpener'
 import { useApi } from '../../hooks/useApi'
+import { PageLoading } from '../ui/PageLoading'
 
 export function LumenAdminShell() {
   const { auth, logout, clearActiveWorkspace } = useAuth()
@@ -41,7 +43,7 @@ export function LumenAdminShell() {
       onLogout={() => { logout(); navigate('/login') }}
       notifications={<NotificationBell buttonClassName="lumen-icon-button relative" endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'} seenEndpoint="/api/admin/notifications/seen" onOpenItem={openNotification} />}
     >
-      <div key={pathname} className="app-enter"><AdminCourseGate><Outlet /></AdminCourseGate></div>
+      <div key={pathname} className="app-enter"><Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense></div>
     </LumenShell>
   )
 }

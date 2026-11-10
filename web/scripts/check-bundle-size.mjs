@@ -1,0 +1,169 @@
+// Orçamento do pacote da interface (fase 2, H2-A: DES-06). `npm run check:bundle`, na
+// suíte rápida e no `npm run check`; NÃO roda no `npm run build`, para nunca impedir o
+// Alan de compilar e ligar o sistema pela opção [4] do launcher.
+//
+// Falha (saída 1) quando:
+// - o JavaScript da primeira abertura (script de entrada do index.html mais os
+//   <link rel="modulepreload">) passa de 130 KB em gzip;
+// - algum .js de web/dist/assets passa de 350 KB sem compressão;
+// - algum arquivo de web/src faz `import * as` de 'lucide-react' (traz os ~1.500 ícones
+//   para o pacote; StatCard usava assim e o pacote único chegava a 1,5 MB);
+// - algum arquivo de web/dist/assets tem um nome que o servidor não entrega por /assets
+//   (a mesma regra de backend/utils/staticAssets.js: acento, espaço, sinal, ponto no
+//   começo ou subpasta), porque a tela que depende dele não abriria.
+// Sem web/dist, confere só o código-fonte e avisa que o orçamento do build não foi
+// conferido. O tamanho em gzip vem do .gz do build (compress-assets.mjs) ou, sem ele, de
+// zlib nível 9.
+import fs from 'node:fs'
+import path from 'node:path'
+import zlib from 'node:zlib'
+import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const require = createRequire(import.meta.url)
+const { isServableAssetName } = require('../../backend/utils/staticAssets.js')
+
+export const INITIAL_JS_GZIP_LIMIT = 130 * 1024
+export const JS_RAW_LIMIT = 350 * 1024
+export const NO_BUILD_MESSAGE = 'Sem build da interface: orçamento não conferido.'
+
+const WILDCARD_LUCIDE = /(?:import|export)\s*\*\s*(?:as\s+[A-Za-z_$][\w$]*\s+)?from\s*['"]lucide-react['"]/
+const SOURCE_EXTENSIONS = /\.(?:js|jsx|mjs|ts|tsx)$/
+
+function formatKb(bytes) {
+  return `${(bytes / 1024).toFixed(1).replace('.', ',')} KB`
+}
+
+function walk(directory) {
+  if (!fs.existsSync(directory)) return []
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(directory, entry.name)
+    if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : walk(full)
+    return SOURCE_EXTENSIONS.test(entry.name) ? [full] : []
+  })
+}
+
+// Arquivos de web/src com `import * as` (ou `export *`) de 'lucide-react'.
+export function findWildcardIconImports(srcDir) {
+  return walk(srcDir)
+    .filter((file) => WILDCARD_LUCIDE.test(fs.readFileSync(file, 'utf8')))
+    .map((file) => path.relative(srcDir, file).replace(/\\/g, '/'))
+}
+
+function attribute(tag, name) {
+  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag)
+  return match ? (match[1] ?? match[2] ?? match[3]) : null
+}
+
+// Caminhos (relativos a web/dist) do JS que o navegador baixa na primeira abertura.
+export function initialScripts(indexHtml) {
+  const scripts = []
+  for (const [tag] of indexHtml.matchAll(/<script\b[^>]*>/gi)) {
+    const src = attribute(tag, 'src')
+    if (src && /module/i.test(attribute(tag, 'type') || '')) scripts.push(src)
+  }
+  for (const [tag] of indexHtml.matchAll(/<link\b[^>]*>/gi)) {
+    const rel = (attribute(tag, 'rel') || '').toLowerCase()
+    const href = attribute(tag, 'href')
+    if (href && rel.split(/\s+/).includes('modulepreload')) scripts.push(href)
+  }
+  return [...new Set(scripts.map((item) => item.replace(/^\.?\//, '').split(/[?#]/)[0]))]
+}
+
+// Nomes de web/dist/assets que o servidor recusaria (staticAssets.js). As versões .gz e
+// .br de um arquivo que existe ao lado não contam: saem como a versão comprimida dele.
+// Subpasta conta: /assets só entrega arquivos direto da pasta.
+export function unservableAssetNames(assetsDir) {
+  if (!fs.existsSync(assetsDir)) return []
+  const entries = fs.readdirSync(assetsDir, { withFileTypes: true })
+  const files = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name))
+  return entries
+    .filter((entry) => {
+      if (!entry.isFile()) return true
+      const original = entry.name.replace(/\.(?:gz|br)$/i, '')
+      if (original !== entry.name && files.has(original)) return false
+      return !isServableAssetName(entry.name)
+    })
+    .map((entry) => (entry.isFile() ? entry.name : `${entry.name}/`))
+    .sort()
+}
+
+function gzipSize(file) {
+  const precompressed = `${file}.gz`
+  if (fs.existsSync(precompressed)) return fs.statSync(precompressed).size
+  return zlib.gzipSync(fs.readFileSync(file), { level: 9 }).length
+}
+
+// checkBundle({ distDir, srcDir }) → { ok, built, errors, lines }
+export function checkBundle({ distDir, srcDir, initialLimit = INITIAL_JS_GZIP_LIMIT, rawLimit = JS_RAW_LIMIT }) {
+  const errors = []
+  const lines = []
+  const wildcard = findWildcardIconImports(srcDir)
+  for (const file of wildcard) {
+    errors.push(`${file} importa todos os ícones (import * as de 'lucide-react'). Importe só os ícones usados pelo nome.`)
+  }
+  const indexPath = path.join(distDir, 'index.html')
+  if (!fs.existsSync(indexPath)) {
+    lines.push(NO_BUILD_MESSAGE)
+    return { ok: errors.length === 0, built: false, errors, lines }
+  }
+
+  const initial = initialScripts(fs.readFileSync(indexPath, 'utf8'))
+  let initialGzip = 0
+  for (const relative of initial) {
+    const file = path.join(distDir, relative)
+    if (!fs.existsSync(file)) {
+      errors.push(`O index.html aponta para ${relative}, que não está no build. Rode npm run build de novo.`)
+      continue
+    }
+    initialGzip += gzipSize(file)
+  }
+  lines.push(`JavaScript da primeira abertura: ${formatKb(initialGzip)} em gzip (limite ${formatKb(initialLimit)}), ${initial.length} arquivo(s).`)
+  if (initialGzip > initialLimit) {
+    errors.push(`O JavaScript da primeira abertura tem ${formatKb(initialGzip)} em gzip, acima do limite de ${formatKb(initialLimit)}. Carregue a tela nova com lazyPage (web/src/lib/lazyPage.js) em vez de importá-la direto no App.jsx.`)
+  }
+
+  const assetsDir = path.join(distDir, 'assets')
+  for (const name of unservableAssetNames(assetsDir)) {
+    errors.push(`assets/${name} tem um nome que o servidor não entrega em /assets (só letras sem acento, números, '.', '_' e '-', sem começar com ponto e sem subpasta). Renomeie o arquivo de origem ou confira o sanitizeFileName do web/vite.config.js.`)
+  }
+  const jsFiles = fs.existsSync(assetsDir)
+    ? fs.readdirSync(assetsDir).filter((name) => /\.m?js$/.test(name))
+    : []
+  let largest = null
+  for (const name of jsFiles) {
+    const size = fs.statSync(path.join(assetsDir, name)).size
+    if (!largest || size > largest.size) largest = { name, size }
+    if (size > rawLimit) {
+      errors.push(`assets/${name} tem ${formatKb(size)} sem compressão, acima do limite de ${formatKb(rawLimit)} por arquivo.`)
+    }
+  }
+  lines.push(`Arquivos .js no build: ${jsFiles.length}${largest ? `; o maior é assets/${largest.name}, com ${formatKb(largest.size)} (limite ${formatKb(rawLimit)})` : ''}.`)
+  return { ok: errors.length === 0, built: true, errors, lines }
+}
+
+// Rodando como script (node web/scripts/...), e não importado pelo teste? O Node resolve
+// os links simbólicos e as junções do Windows no import.meta.url, mas não no argv: com a
+// pasta do IClass atrás de um link, comparar os caminhos crus fazia o script sair com 0
+// sem fazer nada.
+function runsAsScript() {
+  if (!process.argv[1]) return false
+  try {
+    return pathToFileURL(fs.realpathSync(path.resolve(process.argv[1]))).href === import.meta.url
+  } catch {
+    return false
+  }
+}
+
+const isMain = runsAsScript()
+if (isMain) {
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const result = checkBundle({ distDir: path.join(webRoot, 'dist'), srcDir: path.join(webRoot, 'src') })
+  result.lines.forEach((line) => console.log(line))
+  if (!result.ok) {
+    console.error('\nOrçamento do pacote da interface estourado:')
+    result.errors.forEach((error) => console.error(` - ${error}`))
+    process.exit(1)
+  }
+  console.log('Orçamento do pacote da interface: dentro do limite.')
+}

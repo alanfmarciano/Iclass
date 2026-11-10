@@ -37,6 +37,7 @@ const SUITES = {
     npmScript('test:docs', 'Rastreabilidade da documentacao'),
     npmScript('test:backend', 'Todos os testes do servidor'),
     npmScript('test:web', 'Todos os testes da interface'),
+    npmScript('check:bundle', 'Orcamento do pacote da interface'),
   ],
   provas: [
     backend('exam-applications.test.js', 'exam-attempts.test.js'),
@@ -84,6 +85,7 @@ const SUITES = {
     npmScript('test:backend', 'Todos os testes do servidor'),
     npmScript('test:web', 'Todos os testes da interface'),
     npmScript('build', 'Compilacao da interface'),
+    npmScript('check:bundle', 'Orcamento do pacote da interface'),
     e2e(),
   ],
 };

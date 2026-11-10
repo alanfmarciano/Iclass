@@ -57,6 +57,7 @@ const {
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
+const { createStudentSession, revokeStudentSession } = require('../utils/authSessions.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     createSubmissionFromAttempt,
@@ -222,28 +223,15 @@ function attemptOutcomeFor(application, studentEmail, attemptId) {
 // ROTAS DE REDE E PRESENÇA
 // ----------------------------------------------------
 
-// Ping do Aluno para manter a sessão online
+// Ping do Aluno para manter a sessão online. validateStudentSession já conferiu a
+// sessão (token e e-mail) e atualizou a presença (lastSeen), que serve só para o
+// contador "online". O ramo antigo que criava aqui uma sessão sem token saiu: ele
+// nunca era alcançado depois da validação e gravaria sessão que não é do login.
 router.get('/api/ping', validateStudentSession, (req, res) => {
-    const email = req.query.email;
-    if (email) {
-        const normalizedEmail = email.toLowerCase();
-        const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
-        const existingSession = db.memory.sessions[normalizedEmail];
-        
-        if (existingSession && typeof existingSession === 'object') {
-            // Presença serve só para o contador "online". Não bloqueamos por IP diferente
-            // (isso fazia o aluno sumir da lista se o IP mudasse). O IP de login continua
-            // sendo verificado nas rotas sensíveis (envio de prova, autosave etc.).
-            existingSession.lastSeen = Date.now();
-        } else {
-            db.memory.sessions[normalizedEmail] = {
-                lastSeen: Date.now(),
-                ip: clientIp
-            };
-        }
+    if (req.query.email) {
         // Presença automática também no heartbeat: cobre alunos com sessão já ativa
         // (retomada do navegador), que não passam de novo pelo POST /api/student/login.
-        if (ensureDailyLoginAttendance(normalizedEmail, { req, source: 'heartbeat' })) {
+        if (ensureDailyLoginAttendance(req.studentEmail, { req, source: 'heartbeat' })) {
             db.save().catch(() => {});
         }
     }
@@ -260,7 +248,7 @@ router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, re
     }
     next();
 }, validateStudentSession, (req, res) => {
-    delete db.memory.sessions[req.studentEmail];
+    revokeStudentSession(db.memory, req.studentEmail);
     res.json({ success: true });
 });
 
@@ -993,15 +981,11 @@ router.post('/api/student/login', async (req, res) => {
     ensureDailyLoginAttendance(normalizedEmail, { req, source: 'login' });
     // Sessão única: gera um token novo a cada login. Logins anteriores (em outros
     // dispositivos) deixam de valer porque o token guardado neles passa a divergir.
-    const sessionToken = crypto.randomUUID
-        ? crypto.randomUUID()
-        : (Date.now().toString(36) + Math.random().toString(36).slice(2));
-    db.memory.sessions[normalizedEmail] = {
-        lastSeen: Date.now(),
-        createdAt: Date.now(),
+    // O servidor guarda só o hash do token (utils/authSessions.js).
+    const sessionToken = createStudentSession(db.memory, normalizedEmail, {
         ip: normalizeIp(req.ip || req.socket.remoteAddress),
-        token: sessionToken
-    };
+        now: Date.now(),
+    });
     await db.save();
 
     // Retorna dados do estudante sem expor o campo de senha

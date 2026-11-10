@@ -1,4 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { lazy } from 'react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -56,5 +57,31 @@ describe('AppShell · menu lateral no celular', () => {
     expect(screen.getByTestId('sidebar')).toHaveAttribute('data-open', 'true')
     await user.click(screen.getByRole('link', { name: 'Sistema' }))
     expect(screen.getByTestId('sidebar')).toHaveAttribute('data-open', 'true')
+  })
+})
+
+describe('[UC-DESEMPENHO-001] AppShell · tela sob demanda', () => {
+  afterEach(cleanup)
+
+  it('enquanto o arquivo da tela chega, mostra "Carregando..." dentro do painel, com o menu à vista', async () => {
+    setViewport(true)
+    let resolveModule
+    const pending = new Promise((resolve) => { resolveModule = resolve })
+    const TelaSobDemanda = lazy(() => pending)
+    render(
+      <MemoryRouter initialEntries={['/monitor']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/monitor" element={<TelaSobDemanda />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('Carregando...')
+    expect(screen.getByTestId('sidebar')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Abrir menu' })).toBeInTheDocument()
+    await act(async () => { resolveModule({ default: () => <p>Monitor da turma</p> }) })
+    expect(await screen.findByText('Monitor da turma')).toBeInTheDocument()
+    expect(screen.queryByText('Carregando...')).not.toBeInTheDocument()
   })
 })

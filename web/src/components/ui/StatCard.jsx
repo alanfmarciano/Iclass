@@ -1,9 +1,22 @@
-import * as Icons from 'lucide-react'
+import {
+  Activity, AlertCircle, CircleCheck, Clock, GraduationCap, KeyRound, MessagesSquare,
+  ShieldCheck, UserCheck, UserMinus, UserX, Users,
+} from 'lucide-react'
 import { Card } from './Card'
 import { cn } from '../../lib/cn'
+
+// Ícones que os cartões usam, pelo nome passado em `icon`. Importados um a um: o
+// `import * as` de antes trazia os ~1.500 ícones da biblioteca para o pacote do app,
+// inclusive para o celular do aluno (DES-06). Ícone novo num StatCard entra aqui (o
+// teste StatCard.test.jsx confere todos os nomes usados em web/src).
+export const STAT_CARD_ICONS = {
+  Activity, AlertCircle, CircleCheck, Clock, GraduationCap, KeyRound, MessagesSquare,
+  ShieldCheck, UserCheck, UserMinus, UserX, Users,
+}
+
 // onClick/active são opcionais: sem eles o card continua sendo apenas informativo.
 export function StatCard({ label, value, trend, icon, onClick, active = false }) {
-  const Icon = Icons[icon] || Icons.Activity
+  const Icon = (Object.prototype.hasOwnProperty.call(STAT_CARD_ICONS, icon) && STAT_CARD_ICONS[icon]) || Activity
   const up = trend > 0, down = trend < 0
   return (
     <Card

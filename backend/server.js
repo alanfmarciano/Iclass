@@ -13,8 +13,10 @@ const { logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
 const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
-const { ownEntry } = require('./utils/ownEntry.js');
 const { createPersistenceContext } = require('./utils/persistenceContext.js');
+const { checkAdminSessionToken, checkStudentSessionToken, clearSessions } = require('./utils/authSessions.js');
+const { compressTextResponses } = require('./utils/httpCompression.js');
+const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -85,6 +87,24 @@ app.use('/api', (req, res, next) => {
     if (buildId) res.set(BUILD_ID_HEADER, buildId);
     next();
 });
+// 5) Cache por tipo de resposta (H2-A, DES-05): a API e o index.html sempre frescos (a
+// recarga automática depois de uma atualização depende disso); os arquivos do app em
+// /assets, com hash no nome, ficam no aparelho (serveBuildAssets, mais abaixo). Rota que
+// define o próprio Cache-Control continua definindo (vem depois).
+app.use('/api', (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+});
+// .html e .js fora de /assets (/data.js, /index.html): sem cache, como antes.
+app.use((req, res, next) => {
+    if (/^\/assets\//i.test(req.path)) return next();
+    if (req.path.endsWith('.html') || req.path.endsWith('.js')) setNoStore(res);
+    next();
+});
+// 6) Respostas de texto acima de 1 KB em gzip (H2-A, DES-13): JSON da API, data.js,
+// apostilas .md e CSV. Fica ANTES do persistenceContext (H1-a): o envio dele, que espera
+// o COMMIT e troca a resposta pelo 503, roda primeiro, e a compressão só vê o que sai.
+app.use(compressTextResponses({ minBytes: 1024, maxBytes: 32 * 1024 * 1024, level: 6 }));
 const adminJsonParser = express.json({ limit: ADMIN_JSON_LIMIT });
 const keystrokeJsonParser = express.json({ limit: KEYSTROKE_JSON_LIMIT });
 const defaultJsonParser = express.json({ limit: DEFAULT_JSON_LIMIT });
@@ -109,14 +129,14 @@ app.use(createPersistenceContext({
     snapshot: () => db.captureSaveSnapshot(),
     onWriteFailure: (err, req, res) => errorHandler(err, req, res, () => {}),
 }));
-app.use((req, res, next) => {
-    if (req.path.endsWith('.html') || req.path.endsWith('.js')) {
-        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-        res.set('Pragma', 'no-cache');
-        res.set('Expires', '0');
-    }
-    next();
-});
+// 10) Arquivos do app (/assets), antes de /uploads, /imagens e do express.static: o
+// handler é terminal, com cache imutável e as versões .br/.gz do build; nome que não
+// existe é 404 com no-store, nunca o index.html (utils/staticAssets.js, H2-A, DES-05).
+// Build da nova interface React (Vite -> web/dist). Em desenvolvimento o Vite roda em
+// :5173 com proxy para /api; para uso local normal, rode `npm run build` na pasta web/
+// e o Express entrega tudo aqui.
+const WEB_DIST = runtimePaths.WEB_DIST_DIR;
+app.use('/assets', serveBuildAssets(WEB_DIST));
 
 // Extensões que nunca saem como arquivo (viram vetor de script ou executável).
 const BLOCKED_FILE_EXTENSIONS = ['.html', '.htm', '.js', '.mjs', '.exe', '.bat', '.cmd', '.ps1'];
@@ -139,12 +159,14 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
     // vale o último, que é o que o navegador do usuário acrescentou.
     const queryAccess = Array.isArray(req.query.access) ? req.query.access[req.query.access.length - 1] : req.query.access;
     const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || queryAccess || '');
-    // Só sessão gravada (chave própria): '?access=__proto__' entregava arquivo protegido.
-    const adminSession = ownEntry(db.memory.adminSessions, accessToken);
-    const studentEmail = Object.keys(db.memory.sessions || {}).find(email => {
-        const session = db.memory.sessions[email];
-        return session && typeof session === 'object' && session.token === accessToken;
-    });
+    // Só sessão gravada, dentro do prazo e de conta que existe (utils/authSessions.js):
+    // '?access=__proto__' entregava arquivo protegido, e o token de instrutor vencido ou
+    // de conta apagada continuava abrindo arquivo. O aluno precisa de conta ativa.
+    const now = Date.now();
+    const adminCheck = accessToken ? checkAdminSessionToken(accessToken, now) : null;
+    const adminSession = adminCheck && adminCheck.ok ? adminCheck.session : null;
+    const studentCheck = accessToken && !adminSession ? checkStudentSessionToken(accessToken, now) : null;
+    const studentEmail = studentCheck && studentCheck.ok ? studentCheck.email : undefined;
     const publicBrandingFile = baseDir === runtimePaths.UPLOADS_DIR && Object.values(db.memory.branding || {}).some(value => {
         if (typeof value !== 'string' || !value.startsWith('/uploads/')) return false;
         return path.basename(value.split('?')[0]) === filename;
@@ -220,11 +242,9 @@ app.get('/imagens/*path', (req, res) => {
     if (!segments) return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
     return sendControlledFile(path.join(runtimePaths.CONTENT_DIR, 'imagens'), segments.join('/'), req, res);
 });
-// IclassV3: serve o build da nova interface React (Vite -> web/dist).
-// Em desenvolvimento o Vite roda em :5173 com proxy para /api; para uso local
-// normal, rode `npm run build` na pasta web/ e o Express entrega tudo aqui.
-const WEB_DIST = runtimePaths.WEB_DIST_DIR;
-app.use(express.static(WEB_DIST));
+// IclassV3: o resto da raiz do build (web/dist) sai pelo express.static, sem servir o
+// index.html sozinho: quem entrega o index é o fallback do app, sempre com no-store.
+app.use(express.static(WEB_DIST, { index: false }));
 
 
 // Carregar os Roteadores Modulares
@@ -239,7 +259,8 @@ const proctoringRoutes = require('./routes/proctoring.js');
 app.use((req, res, next) => {
     const st = settingsUtil.getSettings();
     const adminToken = String(req.get('x-admin-session') || '');
-    const isAuthenticatedAdmin = !!ownEntry(db.memory.adminSessions, adminToken);
+    // Sessão de instrutor gravada, no prazo e de conta que existe (utils/authSessions.js).
+    const isAuthenticatedAdmin = !!adminToken && checkAdminSessionToken(adminToken).ok;
     const isStudentFlow = req.path.startsWith('/api/student') || req.path.startsWith('/api/forum')
         || req.path === '/api/ping' || req.path === '/data.js' || req.path === '/api/data.js'
         || (/^\/[^/]+\.md$/.test(req.path) && !isAuthenticatedAdmin);
@@ -262,10 +283,24 @@ app.use(studentRoutes);
 app.use(adminRoutes);
 
 // Fallback SPA: qualquer rota que não seja /api ou /uploads devolve o index.html
-// da nova interface, e o React Router resolve a navegação (instrutor/aluno).
+// da nova interface, e o React Router resolve a navegação (instrutor/aluno). Também
+// atende '/'. O index.html sai sempre com no-store: é ele que aponta para os arquivos
+// do build atual. /assets nunca chega aqui (o handler de lá é terminal); se chegasse,
+// o HTML ficaria gravado como .js no cache imutável.
 app.use((req, res, next) => {
     if (req.path.startsWith('/api') || req.path.startsWith('/uploads') || req.path.startsWith('/imagens')) return next();
-    res.sendFile(path.join(WEB_DIST, 'index.html'));
+    if (req.path === '/assets' || req.path.startsWith('/assets/')) return sendAssetNotFound(res);
+    setNoStore(res);
+    res.sendFile(path.join(WEB_DIST, 'index.html'), (err) => {
+        if (!err || res.headersSent) return;
+        // Build sendo refeito com o servidor ligado (o Vite esvazia web/dist antes de
+        // gravar): pede para tentar de novo em instantes, em vez de um erro.
+        if (err.code === 'ENOENT' || err.status === 404 || err.statusCode === 404) {
+            res.set('Retry-After', '3');
+            return res.status(503).type('text/plain').send('O IClass está sendo atualizado. Recarregue a página em instantes.');
+        }
+        next(err);
+    });
 });
 
 // Registrar o middleware global de tratamento de erros
@@ -279,8 +314,10 @@ let serverInstance;
 async function startServer() {
     verifyBuild();
     await db.init();
-    db.memory.sessions = {};
-    db.memory.adminSessions = {}; // sessoes de instrutor (memoria; zeradas a cada boot)
+    // Sessões de aluno e de instrutor só na memória, zeradas a cada boot. A retomada depois
+    // de um reinício (restoreSessions, utils/authSessions.js) entra com a tabela
+    // auth_sessions (H3a-2).
+    clearSessions(db.memory);
 
     // Garante IDs e e-mails de autor consistentes no fórum (migração automática)
     if (db.memory && db.memory.forum) {

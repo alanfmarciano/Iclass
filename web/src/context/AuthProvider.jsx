@@ -166,6 +166,11 @@ export function AuthProvider({ children }) {
       ...extra,
     }
     setAuthProvider(() => next)
+    // Grava já, como no login do aluno: com as telas sob demanda (H2-A), o React espera o
+    // arquivo do painel antes de desenhar, e o efeito que grava a sessão só rodava depois.
+    // Nesse intervalo, um envio que lê a sessão guardada (backup, biblioteca, chamada) ou
+    // uma recarga logo após entrar saía sem sessão (401).
+    try { localStorage.setItem(LS, JSON.stringify(next)) } catch {}
     setAuth(next)
     lastActivityRef.current = Date.now()
     setAuthReady(true)

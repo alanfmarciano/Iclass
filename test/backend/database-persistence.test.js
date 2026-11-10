@@ -12,6 +12,7 @@ process.env.ICLASS_ARCHIVE_DIR = path.join(tempRoot, 'archives');
 process.env.TEST_MODE = '1';
 
 const db = require('../../backend/database.js');
+const { findAdminSession, findStudentSession } = require('../../backend/utils/authSessions.js');
 
 function readOne(databasePath, sql, params = []) {
     return new Promise((resolve, reject) => {
@@ -410,7 +411,11 @@ test('modo administrativo local exige loopback e token efêmero de uso único', 
     const authenticated = await request(app).post('/api/setup/admin-session').send({ token: setupToken }).expect(200);
     assert.equal(authenticated.body.email, 'admin-local@teste.local');
     assert.equal(authenticated.body.localSetupMode, true);
-    assert.ok(db.memory.adminSessions[authenticated.body.sessionToken]);
+    // A memória guarda só o hash do token (utils/authSessions.js, H3a-1), com origin 'setup'.
+    const setupSession = findAdminSession(db.memory, authenticated.body.sessionToken);
+    assert.equal(setupSession && setupSession.email, 'admin-local@teste.local');
+    assert.equal(setupSession.session.origin, 'setup');
+    assert.equal(Object.hasOwn(db.memory.adminSessions, authenticated.body.sessionToken), false);
     assert.equal(JSON.stringify(db.memory.auditLogs).includes(setupToken), false);
     await request(app).post('/api/setup/admin-session').send({ token: setupToken }).expect(410);
 
@@ -454,7 +459,7 @@ test('acesso rapido local escolhe somente as contas oficiais de teste', async ()
     const admin = await request(app).post('/api/setup/quick-session').send({ token: setupToken, profile: 'admin' }).expect(200);
     assert.equal(admin.body.email, 'admin@teste.local');
     assert.equal(admin.body.sessionType, 'admin');
-    assert.ok(db.memory.adminSessions[admin.body.sessionToken]);
+    assert.equal(findAdminSession(db.memory, admin.body.sessionToken)?.session.origin, 'setup');
 
     const professor = await request(app).post('/api/setup/quick-session').send({ token: setupToken, profile: 'professor' }).expect(200);
     assert.equal(professor.body.email, 'professor@teste.local');
@@ -465,6 +470,9 @@ test('acesso rapido local escolhe somente as contas oficiais de teste', async ()
     assert.equal(student.body.sessionType, 'student');
     assert.equal(Object.hasOwn(student.body.student, 'password'), false);
     assert.ok(db.memory.sessions['aluno@teste.local']);
+    assert.equal(findStudentSession(db.memory, student.body.sessionToken)?.email, 'aluno@teste.local');
+    assert.equal(db.memory.sessions['aluno@teste.local'].origin, 'setup');
+    assert.equal(JSON.stringify(db.memory.sessions).includes(student.body.sessionToken), false);
     assert.equal(db.memory.auditLogs.filter(log => log.type === 'local_quick_login').length, 3);
     assert.equal(JSON.stringify(db.memory.auditLogs).includes(setupToken), false);
 

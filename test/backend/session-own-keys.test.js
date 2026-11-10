@@ -22,6 +22,7 @@ const db = require('../../backend/database.js');
 const runtimePaths = require('../../backend/runtimePaths.js');
 const { getReleasedItemsForClass } = require('../../backend/middlewares.js');
 const { createApp } = require('../../backend/server.js');
+const { adminSessionKey } = require('../../backend/utils/authSessions.js');
 
 const INHERITED_NAMES = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf'];
 const COURSE = 'curso-chaves';
@@ -259,9 +260,12 @@ test('[UC-AUTH-001] login de instrutor e sair continuam funcionando', async () =
     const whoami = await request(app).get('/api/admin/whoami').set('Authorization', 'prof@chaves.local:senha-prof');
     assert.equal(whoami.status, 200);
     const token = whoami.body.sessionToken;
-    assert.ok(token && token in db.memory.adminSessions);
+    // A memória guarda só o hash do token (utils/authSessions.js, H3a-1).
+    const storedKey = adminSessionKey(token);
+    assert.ok(token && storedKey in db.memory.adminSessions);
+    assert.equal(Object.prototype.hasOwnProperty.call(db.memory.adminSessions, token), false);
     await request(app).get('/api/data.js').set('x-admin-session', token).expect(200);
     await request(app).post('/api/session/logout').set('x-admin-session', token).expect(200);
-    assert.equal(Object.prototype.hasOwnProperty.call(db.memory.adminSessions, token), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(db.memory.adminSessions, storedKey), false);
     await request(app).get('/api/data.js').set('x-admin-session', token).expect(401);
 });
