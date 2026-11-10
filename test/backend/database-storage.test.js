@@ -373,7 +373,11 @@ test('[UC-GRAVACAO-001] backup e restauração saem do registro único de tabela
         .filter(entry => entry.backup !== false && entry.kind !== 'derived')
         .map(entry => entry.collection);
     assert.deepEqual(backup.COLLECTIONS, expected);
-    assert.equal(backup.COLLECTIONS.includes('examKeystrokes'), false);
+    // As teclas (tabela própria, kind 'store') estão no registro com backup, mas só entram
+    // no JSON pelo exportRows do H4a: até lá o backup continua sem elas, como sempre foi.
+    assert.equal(backup.COLLECTIONS.includes('examKeystrokes'), true);
+    assert.equal(backup.buildDataSnapshot().data.examKeystrokes, undefined);
+    assert.equal('examKeystrokes' in db.memory, false, 'as teclas ficam fora da memória');
     assert.equal(backup.COLLECTIONS.includes('examApplications'), true);
     // Toda coleção da memória tem tabela e toda tabela aparece uma vez.
     const tables = db.COLLECTION_TABLES.map(entry => entry.table);
@@ -388,7 +392,8 @@ test('[UC-GRAVACAO-001] toda tabela do arquivo tem entrada no registro único', 
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
         (err, result) => (err ? reject(err) : resolve(result))));
     await closeConnection(connection);
-    const registered = new Set(db.COLLECTION_TABLES.map(entry => entry.table));
+    // A tabela antiga das teclas (legacyTable da entrada 'store') também é da entrada.
+    const registered = new Set(db.COLLECTION_TABLES.flatMap(entry => [entry.table, entry.legacyTable].filter(Boolean)));
     const missing = rows.map(row => row.name).filter(name => !registered.has(name));
     assert.deepEqual(missing, [], 'tabela criada fora de db.COLLECTION_TABLES');
     db.COLLECTION_TABLES.forEach(entry => assert.ok(rows.some(row => row.name === entry.table), `tabela ${entry.table} não foi criada`));

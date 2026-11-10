@@ -4,7 +4,7 @@ Como o estado é organizado, persistido e evoluído. Fonte no código: `backend/
 
 ## Persistência
 
-- **SQLite key-value**: cada coleção tem uma tabela `NOME (key TEXT PRIMARY KEY, value TEXT)`, onde `value` é JSON serializado.
+- **SQLite key-value**: cada coleção tem uma tabela `NOME (key TEXT PRIMARY KEY, value TEXT)`, onde `value` é JSON serializado. A exceção são as tabelas próprias (`kind: 'store'`), com colunas e índices: hoje só o histórico de digitação da prova ([abaixo](#histórico-de-digitação-da-prova-exam_keystroke_events)).
 - **Registro único** (`COLLECTION_TABLES` em `backend/database.js`): cada coleção e cada tabela aparecem só ali, com `collection`, `table`, `kind` (`array`, `object`, `singleton`, `store` ou `derived`), `key`, `append`, `backup` e `restore`. Dele saem o `CREATE TABLE IF NOT EXISTS`, a carga do boot, a gravação, a lista do backup e a restauração. Coleção ou tabela nova entra só por ele.
 - **Espelho em memória**: `db.memory` é um objeto com uma propriedade por coleção. Toda leitura/escrita da aplicação passa por ele.
 - **Salvar**: `db.save()` (alias de `saveToDisk`) leva para o SQLite só as linhas que mudaram desde a última gravação (`backend/utils/dbWriter.js`): uma gravação por vez, numa transação (`BEGIN IMMEDIATE` … `COMMIT`, ou `ROLLBACK` se algo falhar, sem perder o que já estava gravado). No boot o motor é semeado com o que foi lido: a primeira gravação não regrava o banco inteiro. A promessa resolve depois do `COMMIT` e rejeita com `DbWriteError` (`code: 'ICLASS_DB_WRITE'`) quando não deu para gravar; aí uma regravação em segundo plano tenta de novo (2 s, 5 s, 10 s e depois a cada 30 s).
@@ -20,7 +20,7 @@ await db.save();
 
 O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de energia) e `busy_timeout` de 5 s (`ICLASS_DB_BUSY_TIMEOUT_MS`). Com o servidor ligado, `data/` tem três arquivos: `database.db`, `database.db-wal` (gravações ainda não aplicadas ao arquivo principal) e `database.db-shm` (índice do WAL). Ao desligar com Ctrl+C (ou SIGTERM) o servidor grava, fecha o banco e o `-wal` some. Fechar a janela do console e o botão Reiniciar ainda saem sem fechar o banco: o que já foi confirmado está no `-wal`, que o SQLite aplica na subida seguinte. Copiar o banco com o servidor ligado exige os três arquivos juntos; o certo é usar o backup do sistema. Em pasta de rede ou sincronizada (OneDrive) o modo WAL pode não pegar: o servidor segue com aviso no console e o modo real aparece em `db.storageStatus().journalMode`.
 
-`db.storageStatus()` é a fonte única do estado do armazenamento: modo do diário, `synchronous`, `busy_timeout`, tamanho do banco e do `-wal`, linhas por coleção, última gravação completa, p95 do `COMMIT`, último erro de gravação e se há regravação pendente.
+`db.storageStatus()` é a fonte única do estado do armazenamento: modo do diário, `synchronous`, `busy_timeout`, tamanho do banco e do `-wal`, linhas por coleção, teclas da prova gravadas (`keystrokes`), última gravação completa, p95 do `COMMIT`, último erro de gravação e se há regravação pendente.
 
 ## Coleções em `db.memory`
 
@@ -57,7 +57,32 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `pedagogicalObservations` | array | observações pedagógicas controladas |
 | `library` | array | biblioteca de materiais reutilizáveis |
 
-> A lista usada por backup/restore (`COLLECTIONS` em `backend/utils/backup.js`) é derivada do registro `COLLECTION_TABLES` (`backend/database.js`): toda entrada com `backup` diferente de `false`, na ordem do registro. Ao criar uma coleção nova, acrescente-a ao registro; ela entra no backup sozinha (`examKeystrokes` fica de fora, como antes).
+> A lista usada por backup/restore (`COLLECTIONS` em `backend/utils/backup.js`) é derivada do registro `COLLECTION_TABLES` (`backend/database.js`): toda entrada com `backup` diferente de `false` e que não é `derived`, na ordem do registro. Ao criar uma coleção nova, acrescente-a ao registro; ela entra no backup sozinha. As tabelas próprias (`kind: 'store'`, hoje só `examKeystrokes`) estão na lista, mas o JSON do backup e a restauração ainda não as levam: entram pelo `exportRows`/`importRows` do H4a; até lá o backup continua sem as teclas, como sempre foi, e restaurar não mexe nelas.
+
+## Histórico de digitação da prova (`exam_keystroke_events`)
+
+Fase 2, H1-b (DES-02, CONF-06). As teclas do Modo Prova Rigoroso não ficam em `db.memory`: ficam na tabela própria `exam_keystroke_events` (entrada `examKeystrokes`, `kind: 'store'`, no registro), uma linha por tecla, e todo acesso passa por `db.keystrokes` (`backend/utils/keystrokeStore.js`).
+
+| Coluna | Conteúdo |
+|--------|----------|
+| `row_id` | `INTEGER PRIMARY KEY AUTOINCREMENT`: ordem de chegada e cursor da digitação ao vivo (nunca reaproveitado) |
+| `id` | id da tecla (único) |
+| `student_email` | e-mail do aluno, em minúsculas |
+| `student_class`, `course_id` | turma e curso da matrícula |
+| `exam_key`, `application_id`, `attempt_id` | prova, aplicação e tentativa |
+| `seq`, `client_ts` | sequência e hora do navegador (o `seq` recomeça quando a página recarrega) |
+| `server_ts` | hora de chegada no servidor (ms) |
+| `key`, `code`, `mods`, `kind`, `question` | a tecla, até 40/40/16/24/12 caracteres |
+| `blocked`, `suspicious` | 0 ou 1 |
+
+Índices: `(application_id, student_email, seq)` e `(exam_key COLLATE NOCASE, student_email, seq)`.
+
+- **Contadores**: na memória ficam só os contadores por aplicação, prova, aluno e turma (total, suspeitas e bloqueadas, última tecla), montados no boot com um `GROUP BY` e atualizados depois de cada `COMMIT`. O Monitor, a prévia da manutenção e o cartão de armazenamento (`db.storageStatus().keystrokes`) leem deles.
+- **Gravação**: `append`, `deleteRows`, `deleteWhere` (retenção), `renameEmail` (troca de e-mail do aluno) e `importRows` (restauração) entram numa fila que o motor de gravação esvazia no próximo ciclo, na mesma transação das coleções da memória; a promessa resolve depois do `COMMIT` e, dentro de um pedido, a resposta espera por ela. Falha de gravação: 503 `retryable` e a regravação em segundo plano grava a fila depois. As escritas do store não passam pelo verificador de gravação parcial (não gravam nada da memória).
+- **Teto**: 20 mil teclas por aluno e aplicação (ou por aluno e prova, sem aplicação); `ICLASS_KEYSTROKE_CAP` muda o número. Passando dele, saem as mais antigas (pela hora do servidor) na mesma transação.
+- **Maiúsculas**: prova e turma são comparadas sem diferenciar maiúsculas só nas letras A-Z (igual ao `COLLATE NOCASE` e ao `lower()` do SQLite).
+- **Migração do banco antigo**: até a fase 1 as teclas ficavam como JSON na tabela chave-valor `exam_keystrokes`. No boot, `migrateLegacy` leva as linhas para a tabela nova numa transação única, com a fila de gravação parada (o console mostra `Migrando histórico de digitação (N registros)...` e o tempo gasto); a chave antiga vira o `id` e o e-mail vai em minúsculas. É idempotente: a migrada sai da tabela antiga e um segundo boot não acha nada. Linha com JSON ilegível ou sem aluno e prova fica na tabela antiga (aviso no console), que continua sendo criada.
+- **Cópia de outro banco** (`copyFromAttached`, para a restauração do ZIP formato 2 do H4): lê a tabela nova e, num banco antigo, a tabela `exam_keystrokes` do arquivo anexado.
 
 ## Diretórios em disco (`runtimePaths.js`)
 

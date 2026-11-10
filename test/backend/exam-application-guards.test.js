@@ -66,7 +66,6 @@ test.before(async () => {
     db.memory.examApplications = [];
     db.memory.studentExamState = {};
     db.memory.proctoringLogs = [];
-    db.memory.examKeystrokes = [];
     db.memory.broadcastMessages = [];
     db.memory.auditLogs = [];
 });
@@ -356,7 +355,8 @@ test('[UC-MANUT-001] limpar estado de prova exige turma e confirmação, respeit
     db.memory.studentExamState['ana@guards.local_Avaliacao_Guardas'] = { studentEmail: 'ana@guards.local', examKey, answers: { 1: 'B' } };
     db.memory.studentExamState['legado-b'] = { studentEmail: 'carla@guards.local', studentClass: classB, examKey, answers: {} };
     db.memory.proctoringLogs.push({ id: 'log-a', studentEmail: 'ana@guards.local', studentClass: classA, examKey, eventType: 'tab_blur' });
-    db.memory.examKeystrokes.push({ id: 'key-a', studentEmail: 'ana@guards.local', studentClass: classA, examKey, key: 'a' });
+    // Teclas na tabela própria (db.keystrokes), gravadas antes da prévia.
+    await db.keystrokes.append([{ id: 'key-a', studentEmail: 'ana@guards.local', studentClass: classA, examKey, key: 'a' }]);
     db.memory.broadcastMessages.push(
         { id: 'msg-a', studentClass: classA, courseId, examKey, targetEmail: null, messageText: 'Turma A' },
         { id: 'msg-b', studentClass: classB, courseId, examKey, targetEmail: null, messageText: 'Turma B' },
@@ -367,6 +367,8 @@ test('[UC-MANUT-001] limpar estado de prova exige turma e confirmação, respeit
     assert.equal(previewA.body.flush.counts.pendingAnswers, 1);
     assert.equal(previewA.body.flush.counts.messages, 1);
     assert.equal(previewA.body.flush.preserved.proctoringLogs, 1);
+    // Contada pelos contadores do histórico de digitação, só a da turma A.
+    assert.equal(previewA.body.flush.preserved.keystrokes, 1);
 
     const originalSave = db.save;
     let saves = 0;
@@ -385,7 +387,8 @@ test('[UC-MANUT-001] limpar estado de prova exige turma e confirmação, respeit
     assert.equal(openStatesOf(carla, application.id).length, 1);
     assert.deepEqual(db.memory.broadcastMessages.map(message => message.id), ['msg-b']);
     assert.equal(db.memory.proctoringLogs.length, 1);
-    assert.equal(db.memory.examKeystrokes.length, 1);
+    assert.equal(db.keystrokes.stats({ email: 'ana@guards.local', examKey }).total, 1, 'a limpeza não apaga a digitação');
+    assert.deepEqual((await db.keystrokes.findByEmails(['ana@guards.local'])).map(item => item.id), ['key-a']);
     assert.ok(fs.existsSync(path.join(runtimePaths.BACKUPS_DIR, flushed.body.backup)), 'backup de segurança salvo antes');
     const audit = db.memory.auditLogs.find(log => log.type === 'exam_state_flushed');
     assert.equal(audit.studentClass, classA);

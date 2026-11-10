@@ -25,6 +25,10 @@
 //   only: grava só as chaves novas e apaga as que sumiram; linha que já existia só é
 //   comparada se a chave estiver em changed. Coleção em changed entra em only.
 //   Singletons (config, branding, courseStructure) só entram quando listados.
+// - Tabela própria (kind 'store', como as teclas da prova em utils/keystrokeStore.js): fica
+//   fora da memória e do diff. O módulo dela tem a fila das operações pedidas e entrega
+//   ao ciclo um plano (plan()) com run(), feito dentro da mesma transação, e apply(),
+//   depois do COMMIT. Entra no ciclo quando listada em only e na gravação completa.
 const { performance } = require('node:perf_hooks');
 
 const DB_WRITE_CODE = 'ICLASS_DB_WRITE';
@@ -50,6 +54,7 @@ const CRASH_LOG_INTERVAL_MS = 60000;
 // Tipos do registro que ficam na memória (db.memory[coleção]) e passam pelo diff.
 const MEMORY_KINDS = new Set(['array', 'object', 'singleton']);
 const DIFF_KINDS = new Set(['array', 'object', 'singleton', 'derived']);
+const STORE_KIND = 'store';
 
 class DbWriteError extends Error {
     constructor(message, { sqliteCode = null, cause } = {}) {
@@ -153,7 +158,7 @@ function unreadableCopyKey(key, stamp) {
     return `${key}.ilegivel-${stamp}`;
 }
 
-// createDbWriter({ connection, tables, getMemory, ready, beforeCycle, logFailure, busyTimeoutMs })
+// createDbWriter({ connection, tables, getMemory, ready, beforeCycle, logFailure, busyTimeoutMs, stores })
 // - connection: sqlite3.Database;
 // - tables: o registro COLLECTION_TABLES (database.js);
 // - getMemory(): db.memory;
@@ -162,9 +167,11 @@ function unreadableCopyKey(key, stamp) {
 //   mudaram 'admins';
 // - logFailure(err, info): registro da falha (crash.log), no máximo uma vez por minuto;
 // - busyTimeoutMs(): o busy_timeout da conexão (PRAGMA), para limitar a espera de cada
-//   pedido pela trava a cerca de um busy_timeout.
-function createDbWriter({ connection, tables, getMemory, ready = () => Promise.resolve(), beforeCycle = () => false, logFailure = () => {}, busyTimeoutMs = () => null }) {
+//   pedido pela trava a cerca de um busy_timeout;
+// - stores: Map(coleção -> módulo da tabela própria, com plan()) das entradas 'store'.
+function createDbWriter({ connection, tables, getMemory, ready = () => Promise.resolve(), beforeCycle = () => false, logFailure = () => {}, busyTimeoutMs = () => null, stores = new Map() }) {
     const entries = tables.filter(entry => DIFF_KINDS.has(entry.kind));
+    const storeEntries = tables.filter(entry => entry.kind === STORE_KIND && stores.has(entry.collection));
     const byCollection = new Map(tables.map(entry => [entry.collection, entry]));
     const lastWritten = new Map();
     // Por tabela, as chaves das linhas do disco com JSON ilegível (fora de lastWritten).
@@ -283,9 +290,20 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         const selected = scope.full
             ? entries
             : entries.filter(entry => scope.only.has(entry.collection) || scope.changed.has(entry.collection));
-        return selected.map(entry => (!scope.full && entry.append && entry.kind === 'array'
+        const plan = selected.map(entry => (!scope.full && entry.append && entry.kind === 'array'
             ? planAppend(entry, memory, scope.changed.get(entry.collection))
             : planWhole(entry, memory)));
+        // Tabelas próprias: as operações que estão na fila agora.
+        storeEntries.forEach(entry => {
+            if (!scope.full && !scope.only.has(entry.collection)) return;
+            const storePlan = stores.get(entry.collection).plan();
+            if (storePlan && storePlan.rows > 0) plan.push({ entry, store: storePlan });
+        });
+        return plan;
+    }
+
+    function planRows(item) {
+        return item.store ? item.store.rows : item.deletes.length + item.upserts.length;
     }
 
     // busy_timeout deste ciclo: o que falta do busy_timeout para o pedido que espera há
@@ -330,8 +348,8 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         } catch (err) {
             return err;
         }
-        const tablesWithRows = plan.filter(item => item.deletes.length || item.upserts.length);
-        const rows = tablesWithRows.reduce((total, item) => total + item.deletes.length + item.upserts.length, 0);
+        const tablesWithRows = plan.filter(item => planRows(item) > 0);
+        const rows = tablesWithRows.reduce((total, item) => total + planRows(item), 0);
         const started = performance.now();
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const kept = [];
@@ -344,6 +362,11 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             }
             let failure = null;
             for (const item of tablesWithRows) {
+                if (item.store) {
+                    failure = await item.store.run();
+                    if (failure) break;
+                    continue;
+                }
                 if (item.deletes.length) failure = await runStatement(`DELETE FROM ${item.entry.table} WHERE key = ?`, item.deletes);
                 // Linha ilegível que ia ser sobrescrita (o padrão de um singleton, uma chave
                 // que volta a ser usada): o texto original fica numa chave própria.
@@ -366,7 +389,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
                 return failure;
             }
         }
-        plan.forEach(item => item.apply());
+        plan.forEach(item => (item.store ? item.store.apply() : item.apply()));
         kept.forEach(({ table, key, copyKey }) => {
             const keys = unreadableKeys.get(table);
             if (keys) keys.delete(key);
@@ -533,7 +556,8 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         const scope = emptyScope();
         const known = name => {
             const entry = byCollection.get(name);
-            if (!entry || !DIFF_KINDS.has(entry.kind)) throw new TypeError(`db.save: coleção desconhecida "${String(name)}".`);
+            const storeEntry = !!entry && entry.kind === STORE_KIND && stores.has(entry.collection);
+            if (!entry || (!DIFF_KINDS.has(entry.kind) && !storeEntry)) throw new TypeError(`db.save: coleção desconhecida "${String(name)}".`);
             return entry.collection;
         };
         if (only !== undefined) {

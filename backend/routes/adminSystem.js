@@ -65,6 +65,8 @@ function classHelpers(cls) {
         isClassStudent: email => emails.has(normalizedEmail(email)),
         courseExamKeys: getCourseItemKeys(cls),
         examTitle: examTitleFor,
+        // Teclas preservadas: pelos contadores do histórico de digitação (tabela própria).
+        keystrokeEntries: () => db.keystrokes.statsEntries(),
     };
 }
 

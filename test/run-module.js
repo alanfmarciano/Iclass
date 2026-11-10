@@ -40,7 +40,7 @@ const SUITES = {
     npmScript('check:bundle', 'Orcamento do pacote da interface'),
   ],
   provas: [
-    backend('exam-applications.test.js', 'exam-attempts.test.js'),
+    backend('exam-applications.test.js', 'exam-attempts.test.js', 'keystroke-store.test.js'),
     web(
       'src/features/student/StudentExamAvailability.test.jsx',
       'src/features/admin/FinishApplicationModal.test.jsx',

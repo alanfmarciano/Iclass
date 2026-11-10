@@ -23,6 +23,7 @@ Variáveis de gravação usadas nos testes:
 
 - `ICLASS_VERIFY_SAVES=1` liga o verificador de gravação parcial: uma rota que muda uma coleção fora do `only` do `db.save` é acusada no console (`[VERIFICAÇÃO DE GRAVAÇÃO]`) e o dado é gravado assim mesmo. No `node --test` ele liga sozinho e reprova o arquivo de teste; o servidor do e2e (`test/e2e/start-test-server.js`) liga por padrão. `ICLASS_VERIFY_SAVES=0` desliga.
 - `ICLASS_DB_BUSY_TIMEOUT_MS` muda a espera pela trava do banco (padrão 5000 ms). Os testes de trava usam valores curtos para o 503 sair logo.
+- `ICLASS_KEYSTROKE_CAP` muda o teto do histórico de digitação da prova por aluno e aplicação (padrão 20000). Os testes do teto usam um valor pequeno.
 
 ## Acessibilidade
 

@@ -100,7 +100,6 @@ function seed() {
     db.memory.attendance = [];
     db.memory.studentExamState = {};
     db.memory.proctoringLogs = [];
-    db.memory.examKeystrokes = [];
     db.memory.examApplications = [];
     db.memory.auditLogs = [];
 }
@@ -500,7 +499,9 @@ test('[UC-SIGILO-001] eventos, digitação e rascunho da prova exigem turma reso
 
     await request(app).post('/api/student/log-keystrokes').set('x-session-token', tokens.pendente)
         .send({ studentClass: 'turma a', courseId: courseA, examKey, events: [{ key: 'a', at: Date.now() }] }).expect(403);
-    assert.equal((db.memory.examKeystrokes || []).length, 0);
+    // Teclas na tabela própria (db.keystrokes): a conta pendente não gravou nenhuma.
+    assert.equal(db.keystrokes.stats({ email: 'pendente@portal.local' }).total, 0);
+    assert.deepEqual(await db.keystrokes.findByEmails(['pendente@portal.local']), []);
     await request(app).post('/api/student/autosave-progress').set('x-session-token', tokens.pendente)
         .send({ studentClass: 'turma a', courseId: courseA, examKey, answers: { 1: 'A' } }).expect(403);
     assert.deepEqual(db.memory.studentExamState, {});

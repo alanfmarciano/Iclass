@@ -4,6 +4,8 @@ Documento de planejamento. Base: mockup `mockup-digitacao-ao-vivo.html`. Nada aq
 
 > **Revisão v2 (2026-07-16):** o plano foi conferido contra o código real (`ExamRunner.jsx`, `proctoring.js`, `admin.js`, `adminPermissions.js`, `middlewares.js`, `adminSystem.js`, `database.js`). As correções estão marcadas com **[CORRIGIDO]** e resumidas na §0.
 
+> **Atualização da fase 2 (H1-b, DES-02/CONF-06):** as teclas saíram de `db.memory.examKeystrokes` e da tabela chave-valor `exam_keystrokes`: ficam na tabela própria `exam_keystroke_events` (uma linha por tecla, com colunas e índices), migrada no boot, e todo acesso passa por `db.keystrokes` (`backend/utils/keystrokeStore.js`; ver [MODELO_DADOS.md](./MODELO_DADOS.md)). O cursor da digitação ao vivo passou a ser o `row_id` da tabela (ordem de chegada): `GET /api/admin/exam-keystrokes/:class/:examKey?after=<cursor>` devolve `{ success, events, total, cursor, hasMore, logs }` ([API.md](./API.md)). O `seq` do navegador recomeça quando a página do aluno recarrega e não serve de cursor; `sinceSeq` continua aceito só sem `after`, para o cliente antigo. O Monitor conta as teclas pelos contadores do store. O cliente que usa o cursor é o H2-D. As referências abaixo a `examKeystrokes`, `exam_keystrokes` e a linhas de `proctoring.js` e `database.js` são do código da época do plano.
+
 ---
 
 ## 0. Correções da revisão (o que mudou em relação ao plano original)

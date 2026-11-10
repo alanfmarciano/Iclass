@@ -17,6 +17,7 @@ const {
 const { hashExamToken } = require('./utils/examToken.js');
 const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
 const { createDbWriter, DbWriteError, MEMORY_KINDS } = require('./utils/dbWriter.js');
+const { createKeystrokeStore, KEYSTROKE_COLLECTION, KEYSTROKE_SCHEMA, KEYSTROKE_TABLE, LEGACY_KEYSTROKE_TABLE } = require('./utils/keystrokeStore.js');
 const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('./utils/persistenceContext.js');
 const { logError } = require('./utils/errorLog.js');
 
@@ -157,15 +158,18 @@ function classStorageKey(cls) {
 // Campos:
 // - collection: nome em db.memory e no backup; table: nome no SQLite;
 // - kind: 'array' (lista, uma linha por item), 'object' (uma linha por chave),
-//   'singleton' (uma linha de chave fixa), 'store' (tabela própria, fora da memória) ou
-//   'derived' (linhas calculadas da memória por rows(memory), fora do backup);
+//   'singleton' (uma linha de chave fixa), 'store' (tabela própria, fora da memória, com
+//   as colunas e índices de schema e a fila de gravação no módulo dela) ou 'derived'
+//   (linhas calculadas da memória por rows(memory), fora do backup);
 // - key: campo ou função da chave da linha (nos singletons, a chave fixa; nos objetos, a
 //   própria chave do objeto);
 // - append: coleção que só cresce; na gravação parcial só as linhas novas viram texto
 //   (quem altera uma linha antiga dela chama db.save() completo ou passa changed);
 // - backup: vai no backup (padrão true);
 // - restore: 'replace' (o backup substitui), 'merge' (junta com a atual), 'keep' (fica
-//   a atual quando falta no backup) ou 'reset' (volta vazia); padrão 'replace'.
+//   a atual quando falta no backup) ou 'reset' (volta vazia); padrão 'replace';
+// - legacyTable (só 'store'): a tabela antiga que a migração do boot esvazia; continua
+//   sendo criada (schema) e é desta entrada.
 function tableEntry(collection, table, kind, key, extra = {}) {
     return Object.freeze({ collection, table, kind, key, append: false, backup: true, restore: 'replace', ...extra });
 }
@@ -190,9 +194,12 @@ const COLLECTION_TABLES = Object.freeze([
     // Contas de acesso: a restauração só as troca com replaceAccounts (utils/backup.js).
     tableEntry('admins', 'admins', 'array', 'email'),
     tableEntry('proctoringLogs', 'proctoring_logs', 'array', 'id', { append: true }),
-    // Modo Prova Rigoroso: histórico de digitação por tentativa (telemetria de prova).
-    // Fora do backup, como antes; o H1-b leva para a tabela própria exam_keystroke_events.
-    tableEntry('examKeystrokes', 'exam_keystrokes', 'array', 'id', { append: true, backup: false }),
+    // Modo Prova Rigoroso: histórico de digitação por tentativa (telemetria de prova), em
+    // tabela própria fora da memória (DES-02, CONF-06): todo acesso por db.keystrokes
+    // (utils/keystrokeStore.js). A tabela antiga exam_keystrokes (JSON por tecla) é
+    // migrada no boot. Vai no backup pelo exportRows/importRows do H4a; até lá o backup
+    // continua sem as teclas, como sempre foi (utils/backup.js).
+    tableEntry(KEYSTROKE_COLLECTION, KEYSTROKE_TABLE, 'store', 'id', { legacyTable: LEGACY_KEYSTROKE_TABLE, schema: KEYSTROKE_SCHEMA }),
     tableEntry('studentExamState', 'student_exam_state', 'object', null), // chave: studentEmail + '_' + examKey
     tableEntry('broadcastMessages', 'broadcast_messages', 'array', 'id'),
     tableEntry('questionBank', 'question_bank', 'array', 'key'),
@@ -858,6 +865,11 @@ async function init() {
         } catch(e){}
     }
 
+    // Histórico de digitação: a tabela antiga (JSON por tecla) passa para a tabela própria
+    // numa transação única (idempotente), e os contadores saem de um GROUP BY.
+    await keystrokeStore.migrateLegacy();
+    await keystrokeStore.loadCounters();
+
     // 2. Carrega todas as coleções do registro (e semeia o motor de gravação).
     await loadRegisteredCollections();
 
@@ -1029,6 +1041,15 @@ async function init() {
     console.log("💾 Banco de dados SQLite inicializado e carregado na memória.");
 }
 
+// Histórico de digitação da prova (utils/keystrokeStore.js): a fila dele entra no ciclo
+// do motor de gravação, na mesma transação das coleções.
+const keystrokeStore = createKeystrokeStore({
+    connection: sqliteDb,
+    requestWrite: result => requestSave(writer.scopeFromOptions({ only: [KEYSTROKE_COLLECTION] }), { result }),
+    runExclusive: fn => writer.runExclusive(fn),
+    flush: () => writer.flush(),
+});
+
 // Motor de gravação (utils/dbWriter.js): fila, diff, transação e regravação.
 const writer = createDbWriter({
     connection: sqliteDb,
@@ -1048,6 +1069,7 @@ const writer = createDbWriter({
         logError('[GRAVAÇÃO] Não foi possível gravar no banco', (err && err.cause) || err);
     },
     busyTimeoutMs: () => connectionInfo.busyTimeoutMs,
+    stores: new Map([[KEYSTROKE_COLLECTION, keystrokeStore]]),
 });
 
 // Verificador de gravação parcial (ICLASS_VERIFY_SAVES; ligado no node --test e no e2e):
@@ -1105,13 +1127,29 @@ if (process.env.NODE_TEST_CONTEXT) {
 function saveToDisk(options) {
     const scope = writer.scopeFromOptions(options);
     const detached = !!(options && typeof options === 'object' && options.detached === true);
+    return requestSave(scope, { detached });
+}
+
+// Pede o ciclo com o escopo dado (db.save e as escritas de db.keystrokes). result(): o
+// valor com que a promessa resolve depois do COMMIT (as teclas devolvem { inserted } etc.).
+// As escritas de db.keystrokes não passam pelo verificador: não gravam nada da memória,
+// e o que a rota mudou nela segue esperando o db.save() da própria rota (a troca de
+// e-mail renomeia as teclas antes do db.save() completo do fim).
+function requestSave(scope, { detached = false, result = null } = {}) {
     const adminsChanged = syncAdminClassAssignments();
     const professorsChanged = syncProfessorAssignmentReferences();
     if ((adminsChanged || professorsChanged) && !scope.full) scope.only.add('admins');
     const context = currentRequestContext();
     if (!context) backgroundSaveSeq += 1;
-    if (context && !scope.full) verifyPartialSave(context, scope);
-    const completion = writer.request(scope);
+    const storeWrite = typeof result === 'function';
+    if (context && !scope.full && !storeWrite) verifyPartialSave(context, scope);
+    let completion = writer.request(scope);
+    if (storeWrite) {
+        completion = completion.then(() => result());
+        // Sem quem espere, a falha não vira unhandledRejection (vai para o crash.log e,
+        // dentro de um pedido, para o 503).
+        completion.catch(() => {});
+    }
     if (context) refreshSaveSnapshot(context, scope);
     // Dentro de um pedido a resposta espera esta gravação; a promessa devolvida sabe se a
     // rota tratou a falha (utils/persistenceContext.js).
@@ -1149,6 +1187,8 @@ function storageStatus() {
     });
     const status = writer.status();
     return {
+        // Teclas da prova gravadas (tabela própria, pelos contadores).
+        keystrokes: keystrokeStore.api.total(),
         journalMode: connectionInfo.journalMode,
         synchronous: connectionInfo.synchronous,
         busyTimeoutMs: connectionInfo.busyTimeoutMs,
@@ -1182,6 +1222,8 @@ module.exports = {
     init,
     defaultAdminEmail,
     get memory() { return memoryDB; },
+    // Histórico de digitação da prova (tabela própria; utils/keystrokeStore.js).
+    keystrokes: keystrokeStore.api,
     COLLECTION_TABLES,
     emptyCollectionValue,
     save: saveToDisk,

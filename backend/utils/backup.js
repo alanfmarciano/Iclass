@@ -22,6 +22,10 @@ const MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024;
 // descartadas e refeitas a partir das turmas do backup (ver legacyApplications).
 const BACKUP_TABLES = db.COLLECTION_TABLES.filter(entry => entry.backup !== false && entry.kind !== 'derived');
 const COLLECTIONS = BACKUP_TABLES.map(entry => entry.collection);
+// Tabelas próprias (kind 'store', fora da memória: o histórico de digitação). Entram no
+// JSON e na restauração pelo exportRows/importRows do H4a; até lá o backup continua sem
+// elas, como sempre foi, e restaurar não mexe nelas (as teclas atuais ficam).
+const STORE_COLLECTIONS = new Set(BACKUP_TABLES.filter(entry => entry.kind === 'store').map(entry => entry.collection));
 
 // Backup gerado por versão anterior do IClass, que não guardava as aplicações de prova.
 function hasLegacyApplications(snapshot) {
@@ -45,7 +49,7 @@ function getZipLib() { try { return require('adm-zip'); } catch (e) { return nul
 
 function buildDataSnapshot() {
     const data = {};
-    COLLECTIONS.forEach(key => { if (db.memory[key] !== undefined) data[key] = db.memory[key]; });
+    COLLECTIONS.forEach(key => { if (!STORE_COLLECTIONS.has(key) && db.memory[key] !== undefined) data[key] = db.memory[key]; });
     const content = {};
     if (fs.existsSync(CONTENT_DIR)) {
         fs.readdirSync(CONTENT_DIR).filter(filename => filename.endsWith('.md')).forEach(filename => {
@@ -80,6 +84,10 @@ function validateDataSnapshot(snapshot) {
     if (!String(snapshot.version || '').startsWith('3.')) throw backupRefusal('Versão de backup incompatível.');
     COLLECTIONS.forEach(key => {
         if (snapshot.data[key] === undefined) return;
+        if (STORE_COLLECTIONS.has(key)) {
+            if (!Array.isArray(snapshot.data[key])) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
+            return;
+        }
         const current = db.memory[key];
         if (Array.isArray(current) !== Array.isArray(snapshot.data[key])) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
         if (current && typeof current === 'object' && (!snapshot.data[key] || typeof snapshot.data[key] !== 'object')) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
@@ -248,7 +256,7 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
             db.memory[entry.collection] = restoredCollectionValue(entry);
             return;
         }
-        if (!COLLECTIONS.includes(entry.collection)) return;
+        if (!COLLECTIONS.includes(entry.collection) || STORE_COLLECTIONS.has(entry.collection)) return;
         if (snapshot.data[entry.collection] === undefined) return;
         // Contas de acesso só com o pedido explícito do administrador (SEG-X1).
         if (entry.collection === 'admins' && !replaceAccounts) return;

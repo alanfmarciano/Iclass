@@ -66,7 +66,10 @@ function hasAnswers(state) {
         .some(value => value !== null && value !== undefined && value !== '');
 }
 
-function evidenceCounts(memory, cls, application, studentEmail, examKey) {
+// O que fica preservado no escopo (logs de foco e teclas). As teclas ficam numa tabela
+// própria (db.keystrokes): somam os contadores dela (keystrokeEntries, as entradas de
+// db.keystrokes.statsEntries(), por aluno, prova, aplicação e turma) pelo mesmo critério.
+function evidenceCounts(memory, cls, application, studentEmail, examKey, keystrokeEntries = []) {
     const inScope = item => item
         && (!studentEmail || normalizedEmail(item.studentEmail) === studentEmail)
         && (!examKey || item.examKey === examKey)
@@ -75,13 +78,15 @@ function evidenceCounts(memory, cls, application, studentEmail, examKey) {
             : (item.studentClass ? sameClassName(item.studentClass, cls.name) : false));
     return {
         proctoringLogs: (memory.proctoringLogs || []).filter(inScope).length,
-        keystrokes: (memory.examKeystrokes || []).filter(inScope).length,
+        keystrokes: (Array.isArray(keystrokeEntries) ? keystrokeEntries : [])
+            .filter(inScope)
+            .reduce((total, entry) => total + (Number(entry.total) || 0), 0),
     };
 }
 
 // O que "Limpar estado de prova" faria na turma (e, opcionalmente, numa aplicação).
 // blockedBy lista as aplicações em andamento que impedem a limpeza.
-function planExamStateFlush(memory, { cls, application = null, examKey = '', studentEmail = '', courseExamKeys, isClassStudent, examTitle } = {}) {
+function planExamStateFlush(memory, { cls, application = null, examKey = '', studentEmail = '', courseExamKeys, isClassStudent, examTitle, keystrokeEntries } = {}) {
     const email = normalizedEmail(studentEmail);
     const exam = application ? application.examKey : normalized(examKey);
     const applications = classApplications(memory, cls);
@@ -125,7 +130,7 @@ function planExamStateFlush(memory, { cls, application = null, examKey = '', stu
             pendingAnswers,
             messages: messageIndexes.length,
         },
-        preserved: evidenceCounts(memory, cls, application, email, exam),
+        preserved: evidenceCounts(memory, cls, application, email, exam, typeof keystrokeEntries === 'function' ? keystrokeEntries() : keystrokeEntries),
     };
 }
 
@@ -161,11 +166,11 @@ function classSessionsToDrop(memory, cls, isClassStudent) {
 // O que "Resetar sala" faria na turma: encerra as aplicações em andamento salvando
 // as respostas, limpa os estados de prova que sobrarem e as mensagens da turma e
 // desconecta os alunos matriculados nela.
-function planClassReset(memory, { cls, courseExamKeys, isClassStudent, examTitle } = {}) {
+function planClassReset(memory, { cls, courseExamKeys, isClassStudent, examTitle, keystrokeEntries } = {}) {
     const applications = classApplications(memory, cls);
     const active = applications.filter(item => ACTIVE_APPLICATION_STATUSES.has(item.status));
     const activeIds = new Set(active.map(item => item.id));
-    const flush = planExamStateFlush(memory, { cls, courseExamKeys, isClassStudent, examTitle });
+    const flush = planExamStateFlush(memory, { cls, courseExamKeys, isClassStudent, examTitle, keystrokeEntries });
     // Os estados das aplicações em andamento viram entrega (ou ficam marcados como vencidos)
     // ao encerrar: só os que sobram contam como "limpos".
     const leftoverStateKeys = flush.stateKeys.filter(key => !activeIds.has(memory.studentExamState[key]?.applicationId));

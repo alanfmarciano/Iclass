@@ -25,6 +25,7 @@ const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
+const { FIELD_LIMITS: KEYSTROKE_FIELD_LIMITS } = require('../utils/keystrokeStore.js');
 
 // Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
@@ -203,90 +204,128 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
 });
 
 // 1b. Recebe lotes do histórico de digitação da prova (Modo Prova Rigoroso).
-//     Armazenamento dedicado para não poluir os logs de foco. Nunca dispara pausa.
-const KEYSTROKE_CAP_PER_ATTEMPT = 20000; // guarda-chuva para não crescer sem limite
+//     Armazenamento dedicado (tabela própria, db.keystrokes) para não poluir os logs de
+//     foco. Nunca dispara pausa. Ordem: sessão → campos (texto curto) → cortes de campo
+//     de cada evento → append; lote sem evento válido não grava nada.
+//     O teto por aluno e aplicação (ICLASS_KEYSTROKE_CAP, padrão 20 mil) é aplicado pelo
+//     store no mesmo ciclo da gravação, pelos contadores, sem percorrer as teclas.
+const KEYSTROKE_BATCH_MAX = 500;
+// Identificação da prova, da aplicação e da tentativa: texto curto. Antes o attemptId ia
+// como viesse (qualquer tipo e tamanho) para cada um dos até 500 eventos do lote, e uma
+// prova que não fosse texto derrubava a rota com 500.
+const KEYSTROKE_ID_MAX = 200;
+
+function shortTextField(value, { required = false } = {}) {
+    if (value === undefined || value === null || value === '') return required ? { error: true } : { value: null };
+    if (typeof value !== 'string') return { error: true };
+    const text = value.trim();
+    if (!text) return required ? { error: true } : { value: null };
+    if (text.length > KEYSTROKE_ID_MAX) return { error: true };
+    return { value: text };
+}
+
+function safeInteger(value) {
+    const number = Math.trunc(Number(value));
+    return Number.isSafeInteger(number) && number !== 0 ? number : null;
+}
+
 router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) => {
     try {
         const { studentClass, courseId, examKey, applicationId, attemptId, events } = req.body;
         if (!examKey || !Array.isArray(events) || events.length === 0) {
             return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
         }
+        const exam = shortTextField(examKey, { required: true });
+        if (exam.error) return res.status(400).json({ success: false, error: 'Prova inválida no registro de digitação.', field: 'examKey' });
+        const requestedApplication = shortTextField(applicationId);
+        if (requestedApplication.error) return res.status(400).json({ success: false, error: 'Aplicação de prova inválida no registro de digitação.', field: 'applicationId' });
+        const attempt = shortTextField(attemptId);
+        if (attempt.error) return res.status(400).json({ success: false, error: 'Tentativa inválida no registro de digitação.', field: 'attemptId' });
         const normalizedEmail = req.studentEmail;
-        const normalizedExamKey = examKey.trim();
+        const normalizedExamKey = exam.value;
         const cls = requireEnrolledExamClass(req, res, studentClass, courseId);
         if (!cls) return;
-        const application = applicationForClass(cls, normalizedExamKey, applicationId);
-        if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+        const application = applicationForClass(cls, normalizedExamKey, requestedApplication.value);
+        if (requestedApplication.value && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
-        const store = db.memory.examKeystrokes;
-        let inserted = 0;
-        for (const ev of events.slice(0, 500)) {
-            if (!ev || typeof ev !== 'object') continue;
-            store.push({
+        // Cortes de campo de cada evento (os de antes) e números como inteiros seguros:
+        // um campo grande não se multiplica pelos 500 eventos do lote.
+        const serverTs = Date.now();
+        const courseText = typeof courseId === 'string' ? courseId.trim().slice(0, KEYSTROKE_FIELD_LIMITS.courseId) : '';
+        const rows = [];
+        for (const ev of events.slice(0, KEYSTROKE_BATCH_MAX)) {
+            if (!ev || typeof ev !== 'object' || Array.isArray(ev)) continue;
+            rows.push({
                 id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
                 studentEmail: normalizedEmail,
                 studentClass: cls.name,
-                courseId: cls.courseId || courseId || null,
+                courseId: cls.courseId || courseText || null,
                 examKey: normalizedExamKey,
                 applicationId: application?.id || null,
-                attemptId: attemptId || null,
-                seq: Number(ev.seq) || null,
-                clientTs: Number(ev.clientTs) || null,
-                serverTs: Date.now(),
-                key: typeof ev.key === 'string' ? ev.key.slice(0, 40) : '',
-                code: typeof ev.code === 'string' ? ev.code.slice(0, 40) : '',
-                mods: typeof ev.mods === 'string' ? ev.mods.slice(0, 16) : '',
-                kind: typeof ev.kind === 'string' ? ev.kind.slice(0, 24) : 'key',
-                question: ev.question != null ? String(ev.question).slice(0, 12) : null,
+                attemptId: attempt.value,
+                seq: safeInteger(ev.seq),
+                clientTs: safeInteger(ev.clientTs),
+                serverTs,
+                key: typeof ev.key === 'string' ? ev.key.slice(0, KEYSTROKE_FIELD_LIMITS.key) : '',
+                code: typeof ev.code === 'string' ? ev.code.slice(0, KEYSTROKE_FIELD_LIMITS.code) : '',
+                mods: typeof ev.mods === 'string' ? ev.mods.slice(0, KEYSTROKE_FIELD_LIMITS.mods) : '',
+                kind: typeof ev.kind === 'string' ? ev.kind.slice(0, KEYSTROKE_FIELD_LIMITS.kind) : 'key',
+                question: ev.question != null && typeof ev.question !== 'object' ? String(ev.question).slice(0, KEYSTROKE_FIELD_LIMITS.question) : null,
                 blocked: ev.blocked === true,
                 suspicious: ev.suspicious === true,
             });
-            inserted++;
         }
 
-        // Poda por tentativa para não crescer indefinidamente.
-        const attemptEvents = store.filter(k => k.studentEmail === normalizedEmail
-            && (application ? k.applicationId === application.id : k.examKey === normalizedExamKey));
-        if (attemptEvents.length > KEYSTROKE_CAP_PER_ATTEMPT) {
-            const excess = attemptEvents
-                .sort((a, b) => (a.serverTs || 0) - (b.serverTs || 0))
-                .slice(0, attemptEvents.length - KEYSTROKE_CAP_PER_ATTEMPT);
-            const excessIds = new Set(excess.map(e => e.id));
-            db.memory.examKeystrokes = store.filter(k => !excessIds.has(k.id));
-        }
-
-        db.save();
-        res.json({ success: true, inserted });
+        // Sem evento válido, nada é gravado. Com eventos, a resposta sai depois do COMMIT
+        // (503 retryable se a gravação falhar).
+        if (rows.length) db.keystrokes.append(rows);
+        res.json({ success: true, inserted: rows.length });
     } catch (err) {
         return sendInternalError(err, req, res);
     }
 });
 
-// 1c. Histórico completo de digitação de um aluno (visualização ao vivo do professor)
+// 1c. Histórico de digitação de um aluno (visualização ao vivo do professor).
+//     Cursor = row_id da tabela (ordem de chegada; o seq do navegador recomeça quando a
+//     página recarrega). Com ?after=<cursor>: as primeiras `limit` depois dele, com
+//     hasMore. Sem after: as últimas `limit` (sinceSeq, o filtro antigo pelo seq, só
+//     nesse caso). Resposta: { success, events, total, cursor, hasMore, logs }; logs são
+//     os eventos de foco do mesmo aluno, prova e aplicação (os últimos 500).
+const KEYSTROKE_VIEW_LOGS = 500;
 router.get('/api/admin/exam-keystrokes/:class/:examKey', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, async () => {
         try {
-            const studentClass = req.params.class.trim();
             const examKey = req.params.examKey.trim();
             const email = String(req.query.email || '').trim().toLowerCase();
             const applicationId = String(req.query.applicationId || '').trim();
+            const rawAfter = req.query.after === undefined ? '' : String(req.query.after).trim();
+            if (rawAfter && !/^\d{1,15}$/.test(rawAfter)) {
+                return res.status(400).json({ success: false, error: 'Parâmetro after inválido: use o cursor devolvido pela consulta anterior.', field: 'after' });
+            }
             const sinceSeq = Number(req.query.sinceSeq) || 0;
-            const limit = Math.min(Number(req.query.limit) || 2000, 5000);
+            const limit = Math.max(1, Math.min(Math.floor(Number(req.query.limit)) || 2000, 5000));
             if (!email) return res.status(400).json({ error: 'Parâmetro email é obrigatório.' });
 
             // Identifica pelo aluno + prova + aplicação — exatamente a mesma lógica do
             // contador do monitor (monitor-status). studentClass não entra no filtro para
             // evitar divergência de casing/valor gravado que esconderia o histórico.
-            let events = (db.memory.examKeystrokes || []).filter(k =>
-                k.studentEmail.toLowerCase() === email
-                && k.examKey.toLowerCase() === examKey.toLowerCase()
-                && (!applicationId || k.applicationId === applicationId)
-                && (!sinceSeq || Number(k.seq || 0) > sinceSeq)
-            );
-            events.sort((a, b) => (Number(a.seq || 0) - Number(b.seq || 0)) || (a.serverTs - b.serverTs));
-            const total = events.length;
-            events = events.slice(-limit);
-            res.json({ success: true, events, total });
+            const page = await db.keystrokes.query({
+                email,
+                examKey,
+                applicationId: applicationId || undefined,
+                after: rawAfter ? Number(rawAfter) : undefined,
+                sinceSeq,
+                limit,
+            });
+            const lowerExam = examKey.toLowerCase();
+            const logs = (db.memory.proctoringLogs || [])
+                .filter(log => log
+                    && String(log.studentEmail || '').toLowerCase() === email
+                    && String(log.examKey || '').toLowerCase() === lowerExam
+                    && (!applicationId || log.applicationId === applicationId))
+                .sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0))
+                .slice(-KEYSTROKE_VIEW_LOGS);
+            res.json({ success: true, events: page.events, total: page.total, cursor: page.cursor, hasMore: page.hasMore, logs });
         } catch (err) {
             return sendInternalError(err, req, res);
         }

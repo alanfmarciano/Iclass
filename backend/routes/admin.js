@@ -349,7 +349,7 @@ router.post('/api/admin/reset-password', (req, res) => {
 // reaproveitado) é do outro aluno no período em que o e-mail era dele e fica; e-mail que
 // também é de professor não leva a autoria do professor (studentEmailOwnership).
 router.post('/api/admin/delete-student', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, async () => {
         const { email } = req.body || {};
         if (typeof email !== 'string' || email.trim() === '') {
             return res.status(400).json({ error: 'E-mail do estudante não informado.' });
@@ -398,7 +398,7 @@ router.post('/api/admin/delete-student', (req, res) => {
         // certificados, logs de prova e de login). Login de professor com o mesmo e-mail fica.
         // O log de login não é renomeado na troca de e-mail: vale o dono do e-mail na data.
         const loginKind = item => (item.role && item.role !== 'student' ? 'anyone' : 'student');
-        ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs']
+        ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'loginLogs']
             .forEach(collection => {
                 if (!Array.isArray(db.memory[collection])) return;
                 db.memory[collection] = db.memory[collection].filter(item => !(item && ownedRecord(item, item.studentEmail || item.email,
@@ -476,6 +476,13 @@ router.post('/api/admin/delete-student', (req, res) => {
         } catch (e) {}
 
         db.save();
+        // Histórico de digitação (tabela própria): as teclas dele saem pelo mesmo critério
+        // dos outros registros. A busca vem depois de a sessão dele ter saído (acima): um
+        // lote de teclas já aceito está na fila e é achado também.
+        const keystrokeIds = (await db.keystrokes.findByEmails(emails))
+            .filter(item => ownedRecord(item, item.studentEmail, 'renamed'))
+            .map(item => item.id);
+        if (keystrokeIds.length) db.keystrokes.deleteRows(keystrokeIds);
         res.json({ success: true, message: 'Estudante removido com sucesso.' });
     });
 });
@@ -1421,7 +1428,9 @@ function renameStudentEmailEverywhere(oldEmail, newEmail) {
         }
     });
     revokeStudentSession(memory, oldEmail);
-    ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'forum', 'auditLogs']
+    // Histórico de digitação (tabela própria): renomeado no mesmo ciclo da gravação.
+    db.keystrokes.renameEmail(oldEmail, newEmail);
+    ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'forum', 'auditLogs']
         .forEach(collection => (memory[collection] || []).forEach(item => { if (item && same(item.studentEmail)) item.studentEmail = newEmail; }));
     // Notas na lixeira: a cópia guardada na auditoria acompanha o novo e-mail, senão a
     // nota excluída aparece como "aluno fora do cadastro" e não pode ser restaurada.
@@ -4069,16 +4078,12 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 ? studentLogs.filter(l => !l.attemptId || l.attemptId === state.attemptId)
                 : studentLogs;
 
-            const studentKeystrokes = (db.memory.examKeystrokes || []).filter(k =>
-                k.studentEmail.toLowerCase() === email &&
-                k.examKey.toLowerCase() === examKey.toLowerCase() &&
-                (application ? k.applicationId === application.id : true)
-            );
-            const keystrokeCount = studentKeystrokes.length;
-            const suspiciousCount = studentKeystrokes.filter(k => k.suspicious || k.blocked).length;
-            const lastKeystrokeAt = keystrokeCount
-                ? Math.max(...studentKeystrokes.map(k => Number(k.serverTs) || 0))
-                : null;
+            // Teclas pelos contadores do histórico de digitação (db.keystrokes), sem
+            // percorrer as teclas: aluno e prova e, com aplicação, só as dela.
+            const keystrokeStats = db.keystrokes.stats({ email, examKey, applicationId: application ? application.id : undefined });
+            const keystrokeCount = keystrokeStats.total;
+            const suspiciousCount = keystrokeStats.suspicious;
+            const lastKeystrokeAt = keystrokeCount ? keystrokeStats.lastAt : null;
 
             let status = 'absent';
             if (submission) {
