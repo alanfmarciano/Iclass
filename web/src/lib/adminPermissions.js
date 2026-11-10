@@ -17,6 +17,9 @@ export const ADMIN_PERMISSIONS = Object.freeze({
   BRANDING_MANAGE: 'branding.manage',
   SYSTEM_MANAGE: 'system.manage',
   SCHOOLS_SCOPE: 'schools.scope',
+  // Tela Auditoria e aba Auditoria da ficha do aluno: só o administrador (decisão P5);
+  // não é concedível ao professor (o servidor responde 403).
+  AUDIT_VIEW: 'audit.view',
 })
 
 export const ADMIN_PATH_PERMISSIONS = Object.freeze({
@@ -39,6 +42,7 @@ export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/escolas': ADMIN_PERMISSIONS.PAGE_BRANDING,
   '/identidade': ADMIN_PERMISSIONS.SCHOOLS_SCOPE,
   '/sistema': ADMIN_PERMISSIONS.PAGE_SYSTEM,
+  '/auditoria': ADMIN_PERMISSIONS.AUDIT_VIEW,
 })
 
 const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([

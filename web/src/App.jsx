@@ -43,6 +43,7 @@ const IdentidadePage = lazyPage(() => import('./features/admin/IdentidadePage'))
 const EscolasPage = lazyPage(() => import('./features/admin/EscolasPage'))
 const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
 const SistemaPage = lazyPage(() => import('./features/admin/SistemaPage'))
+const AuditoriaPage = lazyPage(() => import('./features/admin/AuditoriaPage'))
 // Aluno
 const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
 const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
@@ -133,6 +134,7 @@ export default function App() {
         <Route path="escolas/:id" element={<RequireAdminPath path="/escolas"><EscolaEditPage /></RequireAdminPath>} />
         <Route path="identidade" element={<RequireAdminPath path="/identidade"><IdentidadePage /></RequireAdminPath>} />
         <Route path="sistema" element={<RequireAdminPath path="/sistema"><SistemaPage /></RequireAdminPath>} />
+        <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
       </Route>
 
       {/* Aluno */}

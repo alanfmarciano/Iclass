@@ -545,7 +545,7 @@ function gradebookCsv(gradebook) {
 // mais os identificadores da entrega para o histórico da nota em Resultados. Atalho para
 // recordAudit (utils/audit.js), na categoria 'grade', com os mesmos campos de antes (a
 // lixeira de notas lê details.deletedSubmission e submissionId).
-function recordGradeAudit(memory, { req, actor, submission, action, field = 'Nota', oldValue = '', newValue = '', details = null }) {
+function recordGradeAudit(memory, { req, actor, submission, action, field = 'Nota', oldValue = '', newValue = '', details = null, reason }) {
     if (!memory) return null;
     return recordAudit(memory, {
         req,
@@ -561,8 +561,37 @@ function recordGradeAudit(memory, { req, actor, submission, action, field = 'Not
         applicationId: submission?.applicationId || null,
         courseId: submission?.student?.courseId || submission?.courseId || null,
         studentClass: submission?.student?.studentClass || submission?.studentClass || null,
+        reason: reason || undefined,
         details: details || undefined,
     });
+}
+
+// Motivo de uma alteração de nota (CONF-09). Com REQUIRE_REASON_AFTER_PUBLISH ligada
+// (padrão da fase 2), mexer numa nota que o aluno já viu pede o motivo: despublicar ou
+// excluir uma nota publicada, ou mudar a composição (desconsiderar, reconsiderar,
+// escolher tentativa, regra de cálculo) de um grupo com alguma tentativa publicada. Nos
+// outros casos ele é opcional. O texto vai para o campo reason da auditoria.
+const REQUIRE_REASON_AFTER_PUBLISH = true;
+const GRADE_REASON_MIN = 3;
+const GRADE_REASON_MAX = 500;
+const GRADE_REASON_REQUIRED_MESSAGE = 'Informe o motivo: esta nota já foi publicada para o aluno.';
+
+// Lê body.reason. Devolve { ok: true, reason } (texto aparado e cortado em 500, ou '')
+// ou { ok: false, status: 400, body } para a rota responder sem mudar nada.
+// required: a ação mexe numa nota já publicada.
+function gradeChangeReason(body, { required = false } = {}) {
+    const raw = body ? body.reason : undefined;
+    if (raw !== undefined && raw !== null && typeof raw !== 'string') {
+        return { ok: false, status: 400, body: { success: false, error: 'O motivo precisa ser um texto.', field: 'reason' } };
+    }
+    const reason = String(raw || '').trim().slice(0, GRADE_REASON_MAX);
+    if (required && REQUIRE_REASON_AFTER_PUBLISH && reason.length < GRADE_REASON_MIN) {
+        const error = reason
+            ? `O motivo precisa ter pelo menos ${GRADE_REASON_MIN} letras: esta nota já foi publicada para o aluno.`
+            : GRADE_REASON_REQUIRED_MESSAGE;
+        return { ok: false, status: 400, body: { success: false, code: 'reason_required', error, field: 'reason' } };
+    }
+    return { ok: true, reason };
 }
 
 // Aluno excluído (delete-student): o registro de auditoria fica como histórico,
@@ -1057,7 +1086,11 @@ module.exports = {
     ANONYMIZED_STUDENT_NAME,
     CSV_BOM,
     GRADE_MAX,
+    GRADE_REASON_MAX,
+    GRADE_REASON_MIN,
+    GRADE_REASON_REQUIRED_MESSAGE,
     MANUAL_TYPES,
+    REQUIRE_REASON_AFTER_PUBLISH,
     buildClassGradebook,
     buildCsv,
     buildGradeGroups,
@@ -1078,6 +1111,7 @@ module.exports = {
     formatDateTimeBR,
     formatGradeBR,
     gradeCountsMismatch,
+    gradeChangeReason,
     gradeFromScore,
     gradebookCsv,
     isEmptyInput,

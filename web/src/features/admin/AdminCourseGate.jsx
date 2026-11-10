@@ -9,7 +9,7 @@ import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../context/AuthProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 
-const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema']
+const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria']
 
 function isDeleted(course) {
   return course?.deleted === true || course?.status === 'deleted' || course?.status === 'inactive' || !!course?.deletedAt

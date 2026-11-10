@@ -28,7 +28,8 @@ const {
     accessibilityExtraMinutes,
     guarded,
     sendInternalError,
-    sendRouteError
+    sendRouteError,
+    validateAdminPermission
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
@@ -48,7 +49,7 @@ const {
     studentInClass,
     normalizeClassEntriesForStorage,
 } = require('../utils/students.js');
-const { recordAudit } = require('../utils/audit.js');
+const { recordAudit, auditTimestamp, normalizeAuditEntry } = require('../utils/audit.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -69,6 +70,7 @@ const {
     parseCountInput,
     parseGradeInput,
     recordGradeAudit,
+    gradeChangeReason,
     safeFilePart,
     scopeLabel,
     scopeSubmissionsToContext,
@@ -131,6 +133,7 @@ const { createAdminArchiveRouter } = require('./adminArchive.js');
 const { createAdminSystemRouter } = require('./adminSystem.js');
 const { createAdminAccountsRouter } = require('./adminAccounts.js');
 const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
+const { createAdminAuditRouter } = require('./adminAudit.js');
 const {
     addExtraUnit,
     courseClasses: contentCourseClasses,
@@ -515,6 +518,12 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
         if (group.length === 0) return res.status(404).json({ error: 'Tentativas não encontradas.' });
         const groupResult = () => enrichSubmissionsWithAttemptResult(group.map(groups.resolved));
         const before = groupResult().find(item => String(item.id) === String(target.id));
+        if (!['archive', 'restore', 'select', 'policy'].includes(action)) return res.status(400).json({ error: 'Ação de resultado inválida.' });
+        if (action === 'policy' && !VALID_POLICIES.has(policy)) return res.status(400).json({ error: 'Regra de cálculo inválida.' });
+        // Grupo com alguma tentativa já publicada: o aluno já viu a nota, então mudar a
+        // composição pede o motivo (CONF-09). Conferido antes de mexer em qualquer coisa.
+        const motive = gradeChangeReason(req.body, { required: group.some(item => item.gradePublished === true) });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
 
         if (action === 'archive') {
             target.resultStatus = 'archived';
@@ -563,6 +572,7 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
             field: 'Composição da nota',
             oldValue: `${title}: ${consolidated(before)} (regra: ${policyLabel(before?.aggregationPolicy)})`,
             newValue: `${title}: ${consolidated(after)} · ${actionLabel}`,
+            reason: motive.reason,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
         res.json({ success: true, submissions: refreshed });
@@ -656,11 +666,13 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
             .filter(Boolean);
 
         // Histórico da nota: auditoria desta entrega (lançamento, publicação,
-        // composição) e recorreções por anulação/troca de questão (scoreHistory).
+        // composição) e recorreções por anulação/troca de questão (scoreHistory). O motivo
+        // de mudar nota já publicada (H7a-2) vem junto: o professor não vê a tela
+        // Auditoria, mas vê aqui o porquê de cada mudança.
         const history = [
             ...(db.memory.auditLogs || [])
                 .filter(entry => entry && entry.submissionId != null && String(entry.submissionId) === String(submission.id))
-                .map(entry => ({ id: entry.id, at: entry.timestamp, actor: entry.actor, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue })),
+                .map(entry => ({ id: entry.id, at: entry.timestamp, actor: entry.actor, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue, reason: entry.reason || '' })),
             ...(Array.isArray(submission.scoreHistory) ? submission.scoreHistory : [])
                 .filter(entry => !entry.auditId)
                 .map((entry, index) => ({ id: `score_${index}`, at: Date.parse(entry.at) || entry.at, actor: entry.by || 'sistema', field: 'Nota recalculada', oldValue: formatGradeBR(entry.from), newValue: `${formatGradeBR(entry.to)}${entry.reason ? ` · ${entry.reason}` : ''}` })),
@@ -693,6 +705,11 @@ router.post('/api/admin/submissions/publish', (req, res) => {
         if (ids.size === 0) return res.status(400).json({ error: 'Selecione ao menos uma nota.' });
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const allowedIds = new Set(filterSubmissionsForAdmin(submissions, matchedAdmin).map(item => String(item.id)));
+        // Ocultar uma nota que o aluno já viu pede o motivo (CONF-09); publicar não. A
+        // conferência vem antes de qualquer mudança: sem o motivo, nenhuma nota muda.
+        const hidesPublished = !published && submissions.some(item => ids.has(String(item.id)) && allowedIds.has(String(item.id)) && item.gradePublished === true);
+        const motive = gradeChangeReason(req.body, { required: hidesPublished });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
         let updated = 0;
         let skippedInvalid = 0;
         submissions.forEach(item => {
@@ -713,6 +730,7 @@ router.post('/api/admin/submissions/publish', (req, res) => {
                     field: 'Publicação da nota',
                     oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
                     newValue: published ? 'publicada para o aluno' : 'oculta do aluno',
+                    reason: motive.reason,
                 });
             }
         });
@@ -746,6 +764,9 @@ router.post('/api/admin/submissions/delete', (req, res) => {
             ));
         }
         if (removed.length === 0) return res.status(404).json({ error: 'Tentativa não encontrada.' });
+        // Excluir uma nota que o aluno já viu pede o motivo (CONF-09), antes de excluir.
+        const motive = gradeChangeReason(req.body, { required: removed.some(item => item.gradePublished === true) });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
 
         const removedSet = new Set(removed);
         removed.forEach(item => {
@@ -758,6 +779,7 @@ router.post('/api/admin/submissions/delete', (req, res) => {
                 oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
                 newValue: 'registro excluído',
                 details: { deletedSubmission: item },
+                reason: motive.reason,
             });
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions.filter(item => !removedSet.has(item)));
@@ -765,19 +787,26 @@ router.post('/api/admin/submissions/delete', (req, res) => {
     });
 });
 
-// Lixeira de notas (AVA-08): exclusões (grade_delete) com a cópia do registro que
-// ainda não voltaram. "Voltou" = existe um grade_restore apontando para aquela
-// exclusão (a auditoria nunca é reescrita) ou a entrega já está de novo na lista.
+// Lixeira de notas (AVA-08, FUN-03): uma nota está na lixeira quando a entrega não existe
+// mais (nenhuma entrega atual com aquele id) e há pelo menos uma exclusão (grade_delete
+// com a cópia do registro). De cada entrega aparece só a exclusão mais recente. O
+// grade_restore não decide mais quem aparece: a restauração de backup junta a trilha
+// (mergeAuditTrails), e a entrega pode ter voltado com o backup (sai da lixeira sozinha),
+// ter sido excluída de novo (uma linha só, a última) ou ter sumido de novo depois de
+// restaurada da lixeira (volta para a lixeira).
 function deletedGradeEntries() {
-    const logs = db.memory.auditLogs || [];
-    const restored = new Set(logs
-        .filter(entry => entry && entry.action === 'grade_restore' && entry.details && entry.details.fromAuditId)
-        .map(entry => String(entry.details.fromAuditId)));
     const current = new Set((db.memory.submissions || []).map(item => String(item && item.id)));
-    return logs.filter(entry => entry && entry.action === 'grade_delete'
-        && entry.details && entry.details.deletedSubmission && entry.details.deletedSubmission.id != null
-        && !restored.has(String(entry.id))
-        && !current.has(String(entry.details.deletedSubmission.id)));
+    const latest = new Map();
+    (db.memory.auditLogs || []).forEach(entry => {
+        if (!entry || entry.action !== 'grade_delete' || !entry.details || !entry.details.deletedSubmission) return;
+        const copyId = entry.details.deletedSubmission.id;
+        if (copyId === undefined || copyId === null || current.has(String(copyId))) return;
+        const time = auditTimestamp(entry.timestamp !== undefined && entry.timestamp !== null ? entry.timestamp : entry.at);
+        const previous = latest.get(String(copyId));
+        // Mesma hora: vale a que veio depois na trilha.
+        if (!previous || time >= previous.time) latest.set(String(copyId), { entry, time });
+    });
+    return [...latest.values()].map(item => item.entry);
 }
 
 function registeredStudentByEmail(email) {
@@ -847,7 +876,12 @@ router.post('/api/admin/submissions/restore', (req, res) => {
             return res.status(404).json({ error: 'Nota excluída não encontrada.' });
         }
         if (!deletedGradeEntries().some(item => item.id === entry.id)) {
-            return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+            const copyId = String(entry.details.deletedSubmission.id);
+            if ((db.memory.submissions || []).some(item => String(item && item.id) === copyId)) {
+                return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+            }
+            // A mesma entrega foi excluída de novo depois: a lixeira mostra só a exclusão mais recente.
+            return res.status(409).json({ error: 'Esta nota foi excluída de novo depois. Atualize a lista de notas excluídas e restaure de lá.' });
         }
         if (copy.anonymized === true) return res.status(409).json({ error: 'O aluno foi excluído e a nota ficou sem identificação; ela não pode voltar.' });
         const student = registeredStudentByEmail(copy.student?.email || copy.studentEmail);
@@ -1587,13 +1621,17 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
     });
 });
 
-// Histórico de auditoria de um aluno (alterações no perfil) — somente admin.
+// Histórico de auditoria de um aluno (aba Auditoria da ficha) — somente admin
+// (audit.view, decisão P5: o professor recebe 403 e a aba some para ele). As entradas
+// saem lidas por normalizeAuditEntry, como na tela Auditoria: as antigas que guardavam o
+// aluno só em details também aparecem, e a hora em texto ordena certo.
 router.get('/api/admin/student/audit', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdminPermission(req, res, 'audit.view', () => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        const logs = (db.memory.auditLogs || [])
-            .filter(l => l.studentEmail === email)
+        const logs = (Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [])
+            .map(normalizeAuditEntry)
+            .filter(entry => entry && entry.studentEmail === email)
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         res.json(logs);
     });
@@ -2239,10 +2277,28 @@ router.post('/api/admin/announcements/delete', (req, res) => {
         }
         const before = db.memory.announcements.length;
         db.memory.announcements = db.memory.announcements.filter(a => a.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'announcement_deleted',
+            category: 'academic',
+            courseId: ann.courseId || undefined,
+            studentClass: ann.studentClass || undefined,
+            studentEmail: ann.target === 'aluno' && ann.targetValue ? ann.targetValue : undefined,
+            details: { deleted: deletedItemCopy(ann) },
+        });
         db.save();
         res.json({ success: true, removed: before - db.memory.announcements.length });
     });
 });
+
+// Cópia do item excluído para a auditoria (details.deleted, SEG-07): com ela dá para
+// refazer à mão um aviso, um evento do calendário ou uma questão excluídos (FUN-03),
+// sem uma lixeira para cada tipo. A lista de quem leu o aviso vira só a contagem.
+function deletedItemCopy(item) {
+    const { readBy, ...rest } = item || {};
+    return Array.isArray(readBy) ? { ...rest, readCount: readBy.length } : rest;
+}
 
 // ===================== CALENDARIO DO CURSO =====================
 const CALENDAR_TYPES = ['aula', 'prova', 'entrega', 'aviso', 'reuniao', 'outro'];
@@ -2338,6 +2394,15 @@ router.post('/api/admin/announcements/calendar/delete', (req, res) => {
         if (!item) return res.status(404).json({ error: 'Evento não encontrado.' });
         if (!_annInScope(item, matchedAdmin)) return res.status(403).json({ error: 'Evento fora do seu escopo.' });
         db.memory.announcements = db.memory.announcements.filter(entry => entry.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'calendar_event_deleted',
+            category: 'academic',
+            courseId: item.courseId || undefined,
+            studentClass: item.target === 'turma' && item.targetValue ? item.targetValue : undefined,
+            details: { deleted: deletedItemCopy(item) },
+        });
         db.save();
         res.json({ success: true });
     });
@@ -2363,6 +2428,15 @@ router.post('/api/admin/student/certificates/issue', (req, res) => {
             issuedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
         };
         db.memory.certificates.push(cert);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'certificate_issued',
+            category: 'academic',
+            studentEmail: email,
+            courseId: cert.courseId || undefined,
+            details: { certificateId: cert.id, code: cert.code, courseName: cert.courseName },
+        });
         db.save();
         res.json({ success: true, certificate: cert });
     });
@@ -2370,12 +2444,25 @@ router.post('/api/admin/student/certificates/issue', (req, res) => {
 
 // Cancelar certificado (Fase 4)
 router.post('/api/admin/student/certificates/revoke', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { id } = req.body;
         const cert = (db.memory.certificates || []).find(c => c.id === id);
         if (!cert) return res.status(404).json({ error: 'Certificado não encontrado.' });
+        const previousStatus = cert.status || 'Emitido';
         cert.status = 'Cancelado';
         cert.revokedAt = Date.now();
+        cert.revokedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'certificate_revoked',
+            category: 'academic',
+            studentEmail: cert.studentEmail || undefined,
+            courseId: cert.courseId || undefined,
+            before: { status: previousStatus },
+            after: { status: cert.status },
+            details: { certificateId: cert.id, code: cert.code, courseName: cert.courseName },
+        });
         db.save();
         res.json({ success: true });
     });
@@ -3100,6 +3187,7 @@ router.use(createAdminArchiveRouter({ studentClassNames }));
 router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
 router.use(createAdminExamConfigRouter());
+router.use(createAdminAuditRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -4651,22 +4739,36 @@ router.post('/api/admin/question-bank/import-evaluation', (req, res) => {
 });
 
 router.post('/api/admin/question-bank/delete', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { key } = req.body;
         if (!key) return res.status(400).json({ error: 'key é obrigatório.' });
         const before = db.memory.questionBank.length;
+        const removed = db.memory.questionBank.filter(q => q.key === key);
         db.memory.questionBank = db.memory.questionBank.filter(q => q.key !== key);
+        removed.forEach(question => recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'question_deleted',
+            category: 'academic',
+            examKey: question.sourceExamKey || undefined,
+            details: { deleted: deletedItemCopy(question) },
+        }));
         db.save();
         res.json({ success: true, deleted: before - db.memory.questionBank.length });
     });
 });
 
 // ---- Escolas / Instituições (Fase I.1) ----
+// O que a auditoria guarda de uma escola: identificação e dados institucionais (a
+// identidade visual fica de fora: a logo pode ser uma imagem inteira).
+function schoolAuditView(school) {
+    return { id: school.id, name: school.name || '', info: school.info || {} };
+}
 router.get('/api/admin/schools', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => { res.json(filterSchoolsForAdmin(db.memory.schools || [], matchedAdmin)); });
 });
 router.post('/api/admin/schools/create', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const name = (req.body.name || '').trim();
         if (!name) return res.status(400).json({ error: 'Nome da escola é obrigatório.' });
         if (rejectInvalidBranding(res, req.body.branding || {})) return;
@@ -4679,26 +4781,50 @@ router.post('/api/admin/schools/create', (req, res) => {
             createdAt: Date.now(),
         };
         db.memory.schools.push(school);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'school_created',
+            category: 'academic',
+            after: schoolAuditView(school),
+        });
         db.save();
         res.json({ success: true, school });
     });
 });
 router.post('/api/admin/schools/update', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const school = (db.memory.schools || []).find(s => s.id === id);
         if (!school) return res.status(404).json({ error: 'Escola não encontrada.' });
         if (req.body.branding !== undefined && rejectInvalidBranding(res, req.body.branding)) return;
+        const before = schoolAuditView(school);
+        const previousBranding = { ...(school.branding || {}) };
         if (req.body.name !== undefined) school.name = String(req.body.name).trim();
         if (req.body.info !== undefined) school.info = { ...(school.info || {}), ...extractInstitutional(req.body.info) };
         if (req.body.branding !== undefined) school.branding = { ...(school.branding || {}), ...extractBranding(req.body.branding) };
         school.updatedAt = Date.now();
+        const after = schoolAuditView(school);
+        // Identidade visual: só os nomes do que mudou (a logo pode ser uma imagem inteira).
+        const brandingKeys = Object.keys({ ...previousBranding, ...(school.branding || {}) })
+            .filter(key => JSON.stringify(previousBranding[key]) !== JSON.stringify((school.branding || {})[key]));
+        if (JSON.stringify(before) !== JSON.stringify(after) || brandingKeys.length) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'school_updated',
+                category: 'academic',
+                before,
+                after,
+                details: brandingKeys.length ? { brandingKeys } : undefined,
+            });
+        }
         db.save();
         res.json({ success: true, school });
     });
 });
 router.post('/api/admin/schools/delete', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const schools = db.memory.schools || [];
         if (schools.length <= 1) return res.status(400).json({ error: 'Não é possível excluir a única escola.' });
@@ -4707,6 +4833,13 @@ router.post('/api/admin/schools/delete', (req, res) => {
         const inUse = (db.memory.courses || []).some(c => c.schoolId === id && !c.deleted);
         if (inUse) return res.status(400).json({ error: 'Escola em uso por cursos. Mova os cursos antes de excluir.' });
         db.memory.schools = schools.filter(s => s.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'school_deleted',
+            category: 'academic',
+            before: schoolAuditView(school),
+        });
         db.save();
         res.json({ success: true });
     });

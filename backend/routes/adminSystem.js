@@ -107,6 +107,28 @@ function recordMaintenanceAudit(req, account, type, cls, details) {
     }, { timestamp, legacy: { type, actorEmail: account && account.email, at: timestamp } });
 }
 
+// Chaves das configurações achatadas por ponto ('trash.retentionDays'), com o valor.
+// Lista (tipos de arquivo permitidos) é um valor só.
+function flattenSettings(value, prefix = '', out = {}) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(key => flattenSettings(value[key], prefix ? `${prefix}.${key}` : key, out));
+        return out;
+    }
+    if (prefix) out[prefix] = value;
+    return out;
+}
+
+// O que mudou entre duas versões das configurações: [{ key, before, after }], na ordem
+// das chaves (as de antes primeiro).
+function settingsChanges(before, after) {
+    const flatBefore = flattenSettings(before);
+    const flatAfter = flattenSettings(after);
+    const keys = [...new Set([...Object.keys(flatBefore), ...Object.keys(flatAfter)])];
+    return keys
+        .filter(key => JSON.stringify(flatBefore[key]) !== JSON.stringify(flatAfter[key]))
+        .map(key => ({ key, before: flatBefore[key] === undefined ? null : flatBefore[key], after: flatAfter[key] === undefined ? null : flatAfter[key] }));
+}
+
 function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     const router = express.Router();
 
@@ -359,10 +381,23 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         validateAdmin(req, res, () => res.json(settingsUtil.getSettings()));
     });
 
+    // Configurações gerais: cada chave que mudou vai para a auditoria (settings_updated,
+    // SEG-07) com o valor de antes e o de depois. Salvar sem mudar nada não grava entrada.
     router.post('/api/admin/settings', (req, res) => {
-        validateAdmin(req, res, async () => {
+        validateAdmin(req, res, async (config, account) => {
             if (!db.memory.config) db.memory.config = {};
+            const before = settingsUtil.getSettings();
             db.memory.config.settings = settingsUtil.mergeSettings(req.body || {});
+            const changes = settingsChanges(before, settingsUtil.getSettings());
+            if (changes.length) {
+                recordAudit(db.memory, {
+                    req,
+                    actor: account,
+                    action: 'settings_updated',
+                    category: 'system',
+                    details: { changes },
+                });
+            }
             await db.save();
             res.json({ success: true, settings: db.memory.config.settings });
         });

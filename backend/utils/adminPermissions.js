@@ -22,11 +22,15 @@ const ADMIN_PERMISSION_VALUES = Object.freeze([
     'schools.scope',
     'course.purge',
     'forum.purge',
+    'audit.view',
 ]);
 
 const ADMIN_PERMISSION_SET = new Set(ADMIN_PERMISSION_VALUES);
 // Exclusivas de administrador: nunca fazem parte do professor nem podem ser concedidas.
-const ADMIN_ONLY_PERMISSION_SET = new Set(['page.accounts', 'accounts.manage', 'students.destroy', 'students.certificates', 'students.security', 'course.purge', 'forum.purge']);
+// audit.view (SEG-07, decisão P5): a trilha de auditoria mostra IP, contas e o que os
+// outros professores fizeram; é só do administrador. O professor continua vendo o
+// histórico de cada nota em Resultados (rota das entregas, page.results).
+const ADMIN_ONLY_PERMISSION_SET = new Set(['page.accounts', 'accounts.manage', 'students.destroy', 'students.certificates', 'students.security', 'course.purge', 'forum.purge', 'audit.view']);
 const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([
     'page.dashboard',
     'page.exams',
@@ -128,6 +132,12 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/delete-student$/, permission: 'students.destroy' },
     { methods: ['POST'], pattern: /^\/student\/certificates\/(issue|revoke)$/, permission: 'students.certificates' },
     { methods: ['GET'], pattern: /^\/student\/login-logs$/, permission: 'students.security' },
+    // Aba Auditoria da ficha do aluno: só o administrador (decisão P5; antes valia
+    // page.students e o professor lia a trilha de qualquer aluno pela API). Fica antes da
+    // regra genérica de aluno, porque a primeira regra que casa é a que vale.
+    { methods: ['GET'], pattern: /^\/student\/audit$/, permission: 'audit.view' },
+    // Tela Auditoria e exportação em CSV (SEG-07, FUN-04).
+    { methods: ['GET'], pattern: /^\/audit(?:\/export)?$/, permission: 'audit.view' },
     { methods: ['GET', 'POST'], pattern: /^\/(students|student(?:\/.*)?|reset-password|delete-student)$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/enrollment-requests(?:\/.*)?$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/attendance(?:\/.*)?$/, permission: 'page.students' },

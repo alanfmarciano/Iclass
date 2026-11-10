@@ -81,6 +81,7 @@ const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } 
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
+const { recordAudit } = require('../utils/audit.js');
 const {
     attemptContextForStudent,
     collectiveTimeOverForNewAttempt,
@@ -2434,12 +2435,30 @@ router.post('/api/admin/forum/purge', (req, res) => {
         const idx = (db.memory.forum || []).findIndex(c => c.id === commentId);
         if (idx === -1) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, db.memory.forum[idx])) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
+        const comment = db.memory.forum[idx];
+        const context = inferLegacyForumContext(comment) || {};
+        let purged = null;
         if (replyId) {
-            const comment = db.memory.forum[idx];
             const rIdx = (comment.replies || []).findIndex(r => r.id === replyId);
-            if (rIdx !== -1) comment.replies.splice(rIdx, 1);
+            if (rIdx !== -1) {
+                comment.replies.splice(rIdx, 1);
+                purged = { scope: 'resposta', commentId: comment.id, replyId, removedReplies: 1 };
+            }
         } else {
             db.memory.forum.splice(idx, 1);
+            purged = { scope: 'dúvida', commentId: comment.id, removedReplies: Array.isArray(comment.replies) ? comment.replies.length : 0 };
+        }
+        // Apagar de vez fica na auditoria (SEG-07): o escopo e a contagem, sem o texto.
+        if (purged) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'forum_purged',
+                category: 'system',
+                courseId: context.courseId || undefined,
+                studentClass: context.studentClass || undefined,
+                details: purged,
+            });
         }
         db.save();
         res.json({ success: true });
