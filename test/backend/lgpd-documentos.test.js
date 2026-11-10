@@ -35,6 +35,9 @@ const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'bac
 let app;
 
 const as = who => req => req.set('x-admin-session', tokens[who]);
+// Os valores do cadastro entram no markdown com toda pontuação escapada (texto literal);
+// plain() tira as barras para conferir o texto como o aluno lê.
+const plain = markdown => String(markdown).replace(/\\([!-\/:-@[-`{-~])/g, '$1');
 const auditOf = action => (db.memory.auditLogs || []).filter(entry => entry.action === action);
 
 function seed() {
@@ -85,12 +88,15 @@ test('[UC-LGPD-001] /api/legal/documents responde sem login com o modelo preench
         assert.equal(doc.documentId, `${MODEL_ID}:${kind}`);
         assert.equal(doc.version, null);
         assert.equal(doc.publishedAt, null);
-        assert.match(doc.markdown, /Modelo de referência; não substitui orientação jurídica/);
+        // O aviso do modelo vem à parte, fora do texto: publicar o modelo sem editar não
+        // leva aos alunos o "revise antes de publicar" (regressão do H8a-1).
+        assert.equal(doc.notice, 'Modelo de referência; não substitui orientação jurídica.');
+        assert.doesNotMatch(doc.markdown, /Modelo de referência|Revise este texto/);
         // Nenhum marcador da lista fica sem trocar.
         assert.doesNotMatch(doc.markdown, /\{\{/);
-        assert.match(doc.markdown, /12\.345\.678\/0001-90/);
+        assert.match(plain(doc.markdown), /12\.345\.678\/0001-90/);
     }
-    const privacy = res.body.privacy.markdown;
+    const privacy = plain(res.body.privacy.markdown);
     assert.match(privacy, /Instituto Alfa Ltda\./);
     assert.match(privacy, /Rua A, 10, Recife\/PE/);
     // Encarregado não informado ainda.
@@ -100,11 +106,13 @@ test('[UC-LGPD-001] /api/legal/documents responde sem login com o modelo preench
     assert.match(privacy, /Versão: modelo padrão do IClass\. Publicação: ainda não publicado pela instituição\./);
     // O nome da escola com '*' não vira formatação.
     assert.match(res.body.terms.markdown, /\*\*Escola \\\*Alfa\\\*\*\*/);
+    // E-mail da escola vira link com o endereço exato.
+    assert.match(res.body.privacy.markdown, /\[contato\\@alfa\\\.local\]\(<mailto:contato@alfa\.local>\)/);
 
     // ?escola= e ?courseId= trocam só os dados; id desconhecido usa a primeira escola.
     const beta = await request(app).get('/api/legal/documents?escola=escola_b');
     assert.deepEqual(beta.body.school, { id: 'escola_b', name: 'Escola Beta' });
-    assert.match(beta.body.privacy.markdown, /\*\*Controlador:\*\* Escola Beta, CNPJ \[não informado\], \[não informado\]\./);
+    assert.match(plain(beta.body.privacy.markdown), /\*\*Controlador:\*\* Escola Beta, CNPJ \[não informado\], \[não informado\]\./);
     const byCourse = await request(app).get('/api/legal/documents?courseId=curso_b');
     assert.equal(byCourse.body.school.id, 'escola_b');
     const unknown = await request(app).get('/api/legal/documents?escola=nao-existe');
@@ -116,7 +124,7 @@ test('[UC-LGPD-001] /api/legal/documents responde sem login com o modelo preench
 
 test('[UC-LGPD-001] marcadores: vazio vira [não informado], desconhecido fica e é avisado', () => {
     const { markdown, unknownPlaceholders } = legal.renderLegalMarkdown('A {{instituicao}} B {{ cnpj }} C {{inexistente}} D {{outro_x}} {{inexistente}}', { instituicao: 'Escola <b>X</b>', cnpj: '   ' });
-    assert.equal(markdown, 'A Escola \\<b\\>X\\</b\\> B [não informado] C {{inexistente}} D {{outro_x}} {{inexistente}}');
+    assert.equal(markdown, 'A Escola \\<b\\>X\\<\\/b\\> B [não informado] C {{inexistente}} D {{outro_x}} {{inexistente}}');
     assert.deepEqual(unknownPlaceholders, ['inexistente', 'outro_x']);
     // Os dois modelos só usam marcadores da lista fechada.
     Object.values(MODELS).forEach(model => {
@@ -131,6 +139,43 @@ test('[UC-LGPD-001] marcadores: vazio vira [não informado], desconhecido fica e
     assert.equal(values.prazo_lixeira, 'apagados de vez 30 dias depois de irem para a lixeira');
     assert.equal(values.versao, '3');
     assert.equal(values.data_publicacao, '10/03/2026');
+});
+
+test('[UC-LGPD-001] dados do cadastro: texto literal, e-mail e site viram link com o endereço exato', () => {
+    // Regressão do H8a-1: a barra antes de '_' e '~' quebrava o link automático do GFM
+    // ('joao_silva@...' virava link para silva@...; '~' e '_' no site viravam %5C).
+    const contact = [
+        { text: 'joao_silva@escola.com.br', link: 'email' },
+        { text: '(81) 3333-4444' },
+        { text: 'https://escola.example/~curso/a_b', link: 'url' },
+    ];
+    const { markdown } = legal.renderLegalMarkdown('Contato: {{contato_instituicao}}. DPO: {{encarregado_contato}}.', {
+        contato_instituicao: contact,
+        encarregado_contato: [{ text: 'www.escola_tecnica.com.br', link: 'url' }, { text: 'maria_dpo@escola.local', link: 'email' }],
+    });
+    assert.equal(markdown, 'Contato: [joao\\_silva\\@escola\\.com\\.br](<mailto:joao_silva@escola.com.br>), \\(81\\) 3333\\-4444, '
+        + '[https\\:\\/\\/escola\\.example\\/\\~curso\\/a\\_b](<https://escola.example/~curso/a_b>). '
+        + 'DPO: [www\\.escola\\_tecnica\\.com\\.br](<http://www.escola_tecnica.com.br>), [maria\\_dpo\\@escola\\.local](<mailto:maria_dpo@escola.local>).');
+    // Endereço que não é http(s)/www. ou e-mail com sinais de cabeçalho ficam como texto.
+    const odd = legal.renderLegalMarkdown('{{encarregado_contato}}', { encarregado_contato: [{ text: 'a?cc=x@y.com', link: 'email' }, { text: 'javascript:alert(1)', link: 'url' }] });
+    assert.doesNotMatch(odd.markdown, /\]\(|mailto|javascript:a/);
+    // Link e URL escritos no nome da escola não viram link: toda pontuação leva a barra.
+    const name = legal.renderLegalMarkdown('{{instituicao}}', { instituicao: 'Escola [link](http://evil.example) www.x.com a@b.com' });
+    assert.equal(name.markdown, 'Escola \\[link\\]\\(http\\:\\/\\/evil\\.example\\) www\\.x\\.com a\\@b\\.com');
+    // Contato vazio vira [não informado]; partes vazias somem.
+    assert.equal(legal.renderLegalMarkdown('{{encarregado_contato}}', { encarregado_contato: [{ text: '', link: 'email' }, { text: ' ' }] }).markdown, '[não informado]');
+    assert.equal(legal.placeholderText(contact), 'joao_silva@escola.com.br, (81) 3333-4444, https://escola.example/~curso/a_b');
+});
+
+test('[UC-LGPD-001] modelos: aviso fora do texto e bases legais com os incisos certos', () => {
+    Object.values(MODELS).forEach(model => {
+        assert.doesNotMatch(model.markdown, /Modelo de referência|Revise este texto|antes de publicar/);
+        assert.match(model.markdown, /^# /, 'o texto começa no título');
+    });
+    // Execução de contrato é o art. 7º, V; obrigação legal é o art. 7º, II.
+    assert.match(MODELS.privacidade.markdown, /Execução do contrato de matrícula e procedimentos ligados a ele \(art\. 7º, V, da LGPD\)\./);
+    assert.match(MODELS.privacidade.markdown, /Cumprimento de obrigações legais e regulatórias da instituição de ensino \(art\. 7º, II, da LGPD\)\./);
+    assert.doesNotMatch(MODELS.privacidade.markdown, /contrato[^\n]*art\. 7º, II e V/);
 });
 
 test('[UC-LGPD-002] rascunho não aparece na rota pública; publicar cria versão nova com auditoria', async () => {
@@ -191,7 +236,8 @@ test('[UC-LGPD-002] rascunho não aparece na rota pública; publicar cria versã
     assert.equal(after.body.terms.version, 1);
     assert.equal(after.body.terms.title, 'Termos de Uso da Escola');
     assert.match(after.body.terms.markdown, /Regra extra da escola/);
-    assert.match(after.body.terms.markdown, /Versão: 1\. Publicação: \d{2}\/\d{2}\/\d{4}\./);
+    assert.match(plain(after.body.terms.markdown), /Versão: 1\. Publicação: \d{2}\/\d{2}\/\d{4}\./);
+    assert.equal(after.body.terms.notice, null);
     // A privacidade continua no modelo até ser publicada também.
     assert.equal(after.body.privacy.isModel, true);
 
@@ -220,6 +266,13 @@ test('[UC-LGPD-002] rascunho não aparece na rota pública; publicar cria versã
 });
 
 test('[UC-LGPD-002] publicar o modelo sem editar e restaurar o modelo no rascunho', async () => {
+    // A tela de publicar sabe que o texto é o modelo sem mudança (pede conferência) e que
+    // não traz o aviso para o administrador.
+    const listing = await as('admin')(request(app).get('/api/admin/lgpd/documents'));
+    assert.equal(listing.body.documents.privacidade.draft.sameAsModel, true);
+    assert.equal(listing.body.documents.privacidade.draft.hasModelNotice, false);
+    assert.equal(listing.body.modelNotice, 'Modelo de referência; não substitui orientação jurídica.');
+    assert.match(listing.body.modelReviewHint, /antes de publicar/);
     const res = await publish('privacidade');
     assert.equal(res.status, 200, res.body.error);
     const row = db.memory.legalDocuments.find(item => item.id === 'privacidade_v1');
@@ -228,6 +281,9 @@ test('[UC-LGPD-002] publicar o modelo sem editar e restaurar o modelo no rascunh
     const pub = await request(app).get('/api/legal/documents');
     assert.equal(pub.body.privacy.documentId, 'privacidade_v1');
     assert.equal(pub.body.privacy.isModel, false);
+    // A versão publicada a partir do modelo não leva o aviso para o administrador.
+    assert.equal(pub.body.privacy.notice, null);
+    assert.doesNotMatch(pub.body.privacy.markdown, /Modelo de referência|Revise este texto|antes de publicar/);
     // Vai para a tabela própria (legal_documents), fora de config e branding.
     await db.save();
     const reader = new sqlite3.Database(path.join(tempRoot, 'database.db'), sqlite3.OPEN_READONLY);
@@ -241,6 +297,9 @@ test('[UC-LGPD-002] publicar o modelo sem editar e restaurar o modelo no rascunh
         await new Promise(resolve => reader.close(resolve));
     }
 
+    const pasted = await as('admin')(request(app).post('/api/admin/lgpd/documents/draft')).send({ kind: 'privacidade', markdown: '> **Modelo de referência; não substitui orientação jurídica.** Revise este texto com a direção da escola.\n\nTexto curto' });
+    assert.equal(pasted.body.draft.hasModelNotice, true);
+    assert.equal(pasted.body.draft.sameAsModel, false);
     await as('admin')(request(app).post('/api/admin/lgpd/documents/draft')).send({ kind: 'privacidade', markdown: 'Texto curto' });
     const restored = await as('admin')(request(app).post('/api/admin/lgpd/documents/restore-model')).send({ kind: 'privacidade' });
     assert.equal(restored.status, 200);
@@ -304,7 +363,7 @@ test('[UC-LGPD-003] encarregado gravado só pela rota de LGPD, com auditoria, e 
     assert.equal(auditOf('dpo_changed').length, 1);
 
     const pub = await request(app).get('/api/legal/documents');
-    assert.match(pub.body.privacy.markdown, /\*\*Encarregado pelo tratamento de dados pessoais:\*\* Maria Souza\. Contato: dpo@alfa\.local, \(81\) 3333-0000\./);
+    assert.match(plain(pub.body.privacy.markdown), /\*\*Encarregado pelo tratamento de dados pessoais:\*\* Maria Souza\. Contato: \[dpo@alfa\.local\]\(<mailto:dpo@alfa\.local>\), \(81\) 3333-0000\./);
 
     // Editar a escola (o professor tem schools.scope) não troca nem apaga o encarregado.
     const edit = await as('prof')(request(app).post('/api/admin/schools/update')).send({ id: 'escola_a', info: { phone: '81 9999-0000', dpoName: 'Outra Pessoa', dpoEmail: 'x@x.local' } });

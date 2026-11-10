@@ -22,7 +22,7 @@
 // de LGPD (routes/adminPrivacy.js): extractInstitutional (utils/branding.js) não os
 // conhece, então editar a escola não os apaga nem os troca.
 
-const { MODEL_ID, MODELS, DEFAULT_MINORS_LEGAL_BASIS } = require('./legalTemplates.js');
+const { MODEL_ID, MODELS, DEFAULT_MINORS_LEGAL_BASIS, MODEL_NOTICE, MODEL_REVIEW_HINT, MODEL_NOTICE_RE } = require('./legalTemplates.js');
 
 const LEGAL_KINDS = Object.freeze(['termos', 'privacidade']);
 // Nome de cada tipo nas respostas públicas ({ terms, privacy }).
@@ -181,6 +181,11 @@ function draftFor(memory, kind) {
         saved: !!stored,
         // O rascunho é igual ao texto atual: publicar não teria o que mudar.
         sameAsCurrent: (base.title || KIND_LABELS[kind]) === current.title && base.markdown === current.markdown,
+        // O texto é o do modelo, sem nenhuma mudança (o diálogo de publicar pede conferência).
+        sameAsModel: base.markdown === MODELS[kind].markdown,
+        // O texto ainda traz o aviso do modelo para o administrador (copiado de uma versão
+        // anterior do modelo): publicado, ele ficaria para os alunos numa versão que não muda.
+        hasModelNotice: MODEL_NOTICE_RE.test(String(base.markdown || '')),
     };
 }
 
@@ -210,11 +215,50 @@ function text(value) {
     return String(value).replace(/\s+/g, ' ').trim();
 }
 
-// O valor entra no meio do markdown: os caracteres de formatação viram literais (o nome
-// da escola com '*' ou '<' não muda a formatação do texto; com os colchetes escapados,
-// parênteses não formam link). O HTML final ainda passa pelo DOMPurify no navegador.
+// O valor entra no meio do markdown como texto literal: todo sinal de pontuação ASCII
+// leva a barra (no CommonMark todos podem ser escapados), então nada do cadastro vira
+// formatação, HTML, lista, link ou link automático do GFM. Antes só alguns sinais eram
+// escapados, e a barra dentro de e-mail e endereço quebrava o link automático: com
+// 'joao_silva@escola.com.br' o link ia para silva@escola.com.br, e 'a_b' num site virava
+// '%5C' no href. O HTML final ainda passa pelo DOMPurify no navegador.
+const MARKDOWN_PUNCTUATION_RE = /[!-\/:-@[-`{-~]/g;
+
 function escapeMarkdownInline(value) {
-    return String(value).replace(/[\\`*_{}[\]<>#|~]/g, '\\$&');
+    return String(value).replace(MARKDOWN_PUNCTUATION_RE, '\\$&');
+}
+
+// Contatos (e-mail e site da escola, e-mail do encarregado) viram link explícito, com o
+// texto escapado e o endereço entre <...>: o texto mostrado e o destino são exatamente o
+// valor gravado. Só e-mail simples e endereço http(s) ou www. viram link; o resto
+// (javascript:, e-mail com ?, &, espaço...) fica como texto.
+const LINK_EMAIL_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+const LINK_URL_RE = /^(?:https?:\/\/|www\.)[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/i;
+
+function linkHref(value, link) {
+    if (link === 'email' && LINK_EMAIL_RE.test(value)) return `mailto:${value}`;
+    if (link === 'url' && LINK_URL_RE.test(value)) return /^www\./i.test(value) ? `http://${value}` : value;
+    return '';
+}
+
+// Valor de um marcador em markdown. value: texto, ou lista de partes { text, link }
+// (link: 'email' | 'url'), unidas por ', ' sem as vazias.
+function placeholderMarkdown(value) {
+    if (Array.isArray(value)) {
+        return value.map(part => {
+            const plain = text(isPlainObject(part) ? part.text : part);
+            if (!plain) return '';
+            const href = isPlainObject(part) ? linkHref(plain, part.link) : '';
+            return href ? `[${escapeMarkdownInline(plain)}](<${href}>)` : escapeMarkdownInline(plain);
+        }).filter(Boolean).join(', ');
+    }
+    const plain = text(value);
+    return plain ? escapeMarkdownInline(plain) : '';
+}
+
+// Texto simples de um valor (lista de partes unida por ', ').
+function placeholderText(value) {
+    if (Array.isArray(value)) return value.map(part => text(isPlainObject(part) ? part.text : part)).filter(Boolean).join(', ');
+    return text(value);
 }
 
 function joinFilled(values, separator = ', ') {
@@ -254,7 +298,8 @@ function settingsOf(memory, options) {
 }
 
 // Valores dos marcadores para uma escola e um documento ({ version, publishedAt }; sem
-// versão, é o modelo ou a prévia de uma versão nova).
+// versão, é o modelo ou a prévia de uma versão nova). Os contatos vêm em partes
+// ({ text, link }), para o e-mail e o site virarem link (placeholderMarkdown).
 function placeholderValues(memory, school, doc = {}, options = {}) {
     const settings = settingsOf(memory, options);
     const timeZone = (settings && settings.timezone) || 'America/Sao_Paulo';
@@ -269,9 +314,9 @@ function placeholderValues(memory, school, doc = {}, options = {}) {
         nome_fantasia: text(info.tradeName) || schoolName,
         cnpj: text(info.registrationId),
         endereco: joinFilled([info.address, info.cityState, text(info.zip) ? `CEP ${text(info.zip)}` : '']),
-        contato_instituicao: joinFilled([info.email, info.phone, info.website]),
+        contato_instituicao: [{ text: info.email, link: 'email' }, { text: info.phone }, { text: info.website, link: 'url' }],
         encarregado_nome: text(info.dpoName),
-        encarregado_contato: joinFilled([info.dpoEmail, info.dpoPhone]),
+        encarregado_contato: [{ text: info.dpoEmail, link: 'email' }, { text: info.dpoPhone }],
         base_legal_menores: text(privacy.minorsLegalBasis) || DEFAULT_MINORS_LEGAL_BASIS,
         prazo_monitoramento: retentionPhrase(retention.proctoringDays, {
             withDays: days => `apagados ${days} dias depois do encerramento da prova`,
@@ -303,8 +348,8 @@ function renderLegalMarkdown(markdown, values = {}) {
             if (!unknown.includes(name)) unknown.push(name);
             return whole;
         }
-        const value = text(values[name]);
-        return value ? escapeMarkdownInline(value) : NOT_INFORMED;
+        const value = placeholderMarkdown(values[name]);
+        return value || NOT_INFORMED;
     });
     return { markdown: rendered, unknownPlaceholders: unknown };
 }
@@ -334,6 +379,8 @@ function publicLegalDocuments(memory, query = {}, options = {}) {
             version: doc.version,
             publishedAt: doc.publishedAt,
             isModel: doc.isModel,
+            // Aviso mostrado acima do texto enquanto é o modelo (fica fora do markdown).
+            notice: doc.isModel ? MODEL_NOTICE : null,
             title: doc.title,
             markdown,
         };
@@ -523,7 +570,11 @@ module.exports = {
     currentDocument,
     draftFor,
     resolveSchool,
+    MODEL_NOTICE,
+    MODEL_REVIEW_HINT,
     placeholderValues,
+    placeholderText,
+    escapeMarkdownInline,
     renderLegalMarkdown,
     renderedDocument,
     schoolSummary,

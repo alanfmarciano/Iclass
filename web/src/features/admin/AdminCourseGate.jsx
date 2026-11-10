@@ -9,7 +9,10 @@ import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../context/AuthProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 
-const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria']
+// Telas do ambiente da instituição: abrem sem curso escolhido. Toda tela nova do grupo
+// Instituição ou Gestão acadêmica da Sidebar entra aqui também (senão o item do menu cai
+// no seletor de curso); o teste AdminCourseGate.test confere as duas listas.
+export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria', '/lgpd']
 
 function isDeleted(course) {
   return course?.deleted === true || course?.status === 'deleted' || course?.status === 'inactive' || !!course?.deletedAt

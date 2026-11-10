@@ -14,6 +14,7 @@ const CRUMBS = {
   '/turmas': ['Gestão acadêmica', 'Cursos e turmas'], '/alunos': ['Gestão', 'Alunos'], '/matriculas': ['Visão geral', 'Matrículas'], '/admins': ['Instituição', 'Administradores'],
   '/forum': ['Gestão', 'Fórum & Dúvidas'], '/escolas': ['Instituição', 'Escolas'],
   '/identidade': ['Instituição', 'Identidade Visual'], '/sistema': ['Instituição', 'Sistema'], '/auditoria': ['Instituição', 'Auditoria'],
+  '/lgpd': ['Instituição', 'Privacidade (LGPD)'],
 }
 export function AppShell() {
   const [open, setOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches)

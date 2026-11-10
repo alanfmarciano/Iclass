@@ -15,14 +15,21 @@
 
 const MODEL_ID = 'modelo-2026.1';
 
-const MODEL_NOTICE = '> **Modelo de referência; não substitui orientação jurídica.** Revise este texto com a direção da escola e, se possível, com um advogado antes de publicar.';
+// O aviso do modelo fica fora do texto (markdown): quem publica o modelo sem editar não
+// entrega aos alunos uma versão, que não muda mais, mandando "revisar antes de publicar".
+// - MODEL_NOTICE aparece acima do texto em /termos e /privacidade enquanto é o modelo
+//   (GET /api/legal/documents, campo notice) e na aba Documentos do administrador;
+// - MODEL_REVIEW_HINT é só para o administrador (aba Documentos e diálogo de publicar).
+// Um rascunho que ainda traz a linha do aviso (texto copiado de uma versão anterior do
+// modelo) é apontado no diálogo de publicar (hasModelNotice em legalDocuments.js).
+const MODEL_NOTICE = 'Modelo de referência; não substitui orientação jurídica.';
+const MODEL_REVIEW_HINT = 'Revise este texto com a direção da escola e, se possível, com um advogado antes de publicar.';
+const MODEL_NOTICE_RE = /Modelo de referência; não substitui orientação jurídica|Revise este texto com a direção da escola/i;
 
 const TERMS_TITLE = 'Termos de Uso';
 const PRIVACY_TITLE = 'Política de Privacidade';
 
-const TERMS_MODEL = `${MODEL_NOTICE}
-
-# Termos de Uso do IClass
+const TERMS_MODEL = `# Termos de Uso do IClass
 
 Estes Termos de Uso valem para quem usa o IClass de **{{nome_fantasia}}** ({{instituicao}}, CNPJ {{cnpj}}), com endereço em {{endereco}}. O IClass é o ambiente de estudo da escola: materiais das aulas, provas online, caderno, dúvidas, avisos, frequência e notas.
 
@@ -73,9 +80,7 @@ Dúvidas sobre estes Termos: {{contato_instituicao}}. Assuntos de dados pessoais
 Versão: {{versao}}. Publicação: {{data_publicacao}}.
 `;
 
-const PRIVACY_MODEL = `${MODEL_NOTICE}
-
-# Política de Privacidade do IClass
+const PRIVACY_MODEL = `# Política de Privacidade do IClass
 
 Esta Política explica como **{{nome_fantasia}}** trata os dados pessoais de alunos e responsáveis no IClass, conforme a Lei Geral de Proteção de Dados Pessoais (Lei nº 13.709/2018, LGPD).
 
@@ -105,8 +110,8 @@ Esta Política explica como **{{nome_fantasia}}** trata os dados pessoais de alu
 
 ## 4. Bases legais
 
-- Execução do contrato de matrícula e procedimentos ligados a ele (art. 7º, II e V, da LGPD).
-- Cumprimento de obrigações legais e regulatórias da instituição de ensino (art. 7º, II).
+- Execução do contrato de matrícula e procedimentos ligados a ele (art. 7º, V, da LGPD).
+- Cumprimento de obrigações legais e regulatórias da instituição de ensino (art. 7º, II, da LGPD).
 - Dados de acessibilidade e saúde: cumprimento de obrigação legal (art. 11, II, "a").
 - Dados de crianças e adolescentes: {{base_legal_menores}}
 
@@ -160,6 +165,9 @@ const DEFAULT_MINORS_LEGAL_BASIS = "Execução do contrato de matrícula e cumpr
 
 module.exports = {
     MODEL_ID,
+    MODEL_NOTICE,
+    MODEL_REVIEW_HINT,
+    MODEL_NOTICE_RE,
     TERMS_MODEL,
     PRIVACY_MODEL,
     TERMS_TITLE,

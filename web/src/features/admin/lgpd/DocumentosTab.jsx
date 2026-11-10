@@ -19,13 +19,19 @@ import { useToast } from '../../../context/ToastProvider'
 // - o rascunho em markdown, com título e resumo da mudança, gravado à parte: o aluno só
 //   vê o texto depois de publicado (o rascunho nunca vai para /termos nem /privacidade);
 // - a prévia com os dados de uma escola e o aviso de marcador desconhecido;
-// - publicar, com a confirmação digitada PUBLICAR: a versão publicada não muda mais, e
-//   os alunos com cadastro ativo terão de aceitá-la no próximo acesso (portão do H8a-2);
+// - publicar, com a confirmação digitada PUBLICAR: a versão publicada não muda mais. O
+//   diálogo avisa quando o texto é o modelo sem mudança ou ainda traz o aviso do modelo
+//   para o administrador (que ficaria para os alunos). O aceite pelos alunos no próximo
+//   acesso é do H8a-2 (portão): até lá, o diálogo não promete pedir aceite a ninguém;
+//   quando o portão existir, ele volta a dizer quantos alunos terão de aceitar;
 // - o histórico das versões publicadas, com o texto de cada uma.
 
 const PUBLISH_WORD = 'PUBLICAR'
 const KIND_ORDER = ['termos', 'privacidade']
 const PUBLIC_PATH = { termos: '/termos', privacidade: '/privacidade' }
+// Mesmo teste do servidor (MODEL_NOTICE_RE em backend/utils/legalTemplates.js): o texto
+// em edição ainda traz o aviso do modelo para o administrador.
+const MODEL_NOTICE_RE = /Modelo de referência; não substitui orientação jurídica|Revise este texto com a direção da escola/i
 
 export function fmtDocDate(iso, withTime = false) {
   const time = Date.parse(String(iso || ''))
@@ -200,6 +206,7 @@ export function DocumentosTab() {
   const current = doc.current
   const nextVersion = (current.version || 0) + 1
   const cannotPublish = !current.isModel && doc.draft.sameAsCurrent && !dirty
+  const editorHasNotice = MODEL_NOTICE_RE.test(editor.markdown || '')
   const publicLink = `${PUBLIC_PATH[kind]}${escola ? `?escola=${encodeURIComponent(escola)}` : ''}`
 
   return (
@@ -229,9 +236,14 @@ export function DocumentosTab() {
           </div>
           <p className="text-sm text-muted">
             {current.isModel
-              ? 'Os alunos veem o modelo padrão do IClass, com o aviso de que ainda não foi revisado. Ninguém precisa aceitar nada até a publicação. Revise o texto abaixo, ajuste o que for preciso e publique.'
+              ? 'Os alunos veem o modelo padrão do IClass, com o aviso de que ainda não foi revisado. Revise o texto abaixo, ajuste o que for preciso e publique.'
               : `Publicada por ${current.publishedBy || 'administrador'}. Para mudar o texto, edite o rascunho e publique uma nova versão: a versão publicada não muda mais.`}
           </p>
+          {current.isModel && data.modelNotice && (
+            <p className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm text-text" data-testid="model-notice">
+              <b>{data.modelNotice}</b> {data.modelReviewHint}
+            </p>
+          )}
         </CardBody>
       </Card>
 
@@ -322,14 +334,24 @@ export function DocumentosTab() {
         )}
       >
         <div className="space-y-3 text-sm">
-          <p>Depois de publicada, esta versão passa a valer para todos e não pode mais ser alterada: uma mudança futura vira uma versão nova.</p>
+          <p>Depois de publicada, esta versão passa a ser o texto de {doc.label} para todos e não pode mais ser alterada: uma mudança futura vira uma versão nova.</p>
           <p>
             {data.activeStudents === 1
-              ? '1 aluno com cadastro ativo precisará ler e aceitar esta versão no próximo acesso ao portal.'
-              : `${data.activeStudents} alunos com cadastro ativo precisarão ler e aceitar esta versão no próximo acesso ao portal.`}
+              ? `1 aluno com cadastro ativo passa a ver esta versão em ${doc.label}.`
+              : `${data.activeStudents} alunos com cadastro ativo passam a ver esta versão em ${doc.label}.`}
             {' '}A prova em andamento não é interrompida.
           </p>
           {dirty && <p className="font-medium">As alterações ainda não salvas serão salvas antes.</p>}
+          {editorHasNotice && (
+            <p role="alert" className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-text">
+              O texto ainda traz o aviso “{data.modelNotice || 'Modelo de referência'}” para o administrador. Se publicar assim, os alunos vão ler esse aviso numa versão que não muda mais. Tire o aviso do texto antes de publicar.
+            </p>
+          )}
+          {!dirty && doc.draft.sameAsModel && (
+            <p className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-text" data-testid="publish-model-warning">
+              Você vai publicar o modelo do IClass sem nenhuma mudança. {data.modelReviewHint} Confira na prévia os dados da escola e do encarregado.
+            </p>
+          )}
           <UnknownPlaceholders names={preview?.unknownPlaceholders} />
           <TypedConfirm word={PUBLISH_WORD} value={confirmText} onChange={setConfirmText} onConfirm={publish} disabled={busy === 'publish' || busy === 'save'} autoFocus />
           {publishError && <p role="alert" className="text-danger">{publishError}</p>}

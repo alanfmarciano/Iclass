@@ -80,6 +80,10 @@ function documentsPayload(query) {
     return {
         success: true,
         modelId: MODEL_ID,
+        // Avisos do modelo, fora do texto (utils/legalTemplates.js): a tela mostra os dois
+        // ao administrador; os alunos só veem o primeiro, e só enquanto é o modelo.
+        modelNotice: legal.MODEL_NOTICE,
+        modelReviewHint: legal.MODEL_REVIEW_HINT,
         placeholders: legal.LEGAL_PLACEHOLDERS,
         markdownMax: legal.MARKDOWN_MAX,
         schools: schoolList(),

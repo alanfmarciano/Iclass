@@ -116,6 +116,7 @@ export function EncarregadoTab() {
             <Input label="E-mail" type="email" value={form.dpoEmail} onChange={set('dpoEmail')} error={errors.dpoEmail} maxLength={254} autoComplete="off" />
             <Input label="Telefone" value={form.dpoPhone} onChange={set('dpoPhone')} error={errors.dpoPhone} maxLength={40} autoComplete="off" />
             <p className="text-xs text-muted">Informe o nome e pelo menos um contato. Deixe tudo em branco para remover.</p>
+            <p className="text-xs text-muted">O encarregado fica no cadastro da escola: restaurar um backup anterior volta ao encarregado que estava no backup. Confira esta aba depois de uma restauração.</p>
             {schools.length > 1 && (
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={applyToAll} onChange={(event) => setApplyToAll(event.target.checked)} />

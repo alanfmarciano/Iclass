@@ -3,7 +3,13 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LegalDocumentPage, { MODEL_NOTICE, legalVersionLine } from './LegalDocumentPage'
+import { createRequire } from 'node:module'
 import { legalMarkdownToHtml } from '../lib/legalMarkdown'
+
+// Renderização de verdade, do servidor ao HTML: os marcadores preenchidos por
+// renderLegalMarkdown (backend/utils/legalDocuments.js) passam pelo mesmo marked + DOMPurify
+// da página.
+const legal = createRequire(import.meta.url)('../../../backend/utils/legalDocuments.js')
 
 const mocks = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('../lib/api', () => ({ api: { get: mocks.get } }))
@@ -13,7 +19,7 @@ function response(extra = {}) {
     success: true,
     published: false,
     school: { id: 'escola_a', name: 'Escola Alfa' },
-    terms: { kind: 'termos', documentId: 'modelo-2026.1:termos', version: null, publishedAt: null, isModel: true, title: 'Termos de Uso', markdown: '# Termos\n\nTexto dos termos.' },
+    terms: { kind: 'termos', documentId: 'modelo-2026.1:termos', version: null, publishedAt: null, isModel: true, notice: 'Modelo de referência; não substitui orientação jurídica.', title: 'Termos de Uso', markdown: '# Termos\n\nTexto dos termos.' },
     privacy: { kind: 'privacidade', documentId: 'modelo-2026.1:privacidade', version: null, publishedAt: null, isModel: true, title: 'Política de Privacidade', markdown: '# Política\n\nTexto da política.' },
     ...extra,
   }
@@ -40,6 +46,8 @@ describe('[UC-LGPD-001] páginas públicas /termos e /privacidade (H8a-1)', () =
     renderAt('/termos?courseId=curso_b&outro=1')
     expect(await screen.findByRole('heading', { level: 1, name: 'Termos de Uso' })).toBeVisible()
     expect(screen.getByTestId('legal-version')).toHaveTextContent(MODEL_NOTICE)
+    // O aviso do modelo vem à parte (notice), fora do texto.
+    expect(screen.getByTestId('legal-notice')).toHaveTextContent('Modelo de referência; não substitui orientação jurídica.')
     expect(screen.getByText('Texto dos termos.')).toBeVisible()
     expect(screen.getByText('Escola Alfa')).toBeVisible()
     // Só os parâmetros da escola vão para a API, sem a sessão de ninguém.
@@ -71,6 +79,7 @@ describe('[UC-LGPD-001] páginas públicas /termos e /privacidade (H8a-1)', () =
     const { container } = renderAt('/privacidade')
     expect(await screen.findByRole('heading', { level: 1, name: 'Política de Privacidade da Escola' })).toBeVisible()
     expect(screen.getByTestId('legal-version')).toHaveTextContent('Versão 2, publicada em 10/03/2026')
+    expect(screen.queryByTestId('legal-notice')).toBeNull()
     expect(container.querySelector('script')).toBeNull()
     expect(container.querySelector('[onerror]')).toBeNull()
     expect(container.querySelector('a[href^="javascript"]')).toBeNull()
@@ -89,5 +98,35 @@ describe('[UC-LGPD-001] páginas públicas /termos e /privacidade (H8a-1)', () =
   it('linha da versão', () => {
     expect(legalVersionLine({ isModel: true })).toBe(MODEL_NOTICE)
     expect(legalVersionLine({ isModel: false, version: 3, publishedAt: 'x' })).toBe('Versão 3')
+  })
+
+  // Regressão do H8a-1: a barra que o servidor punha antes de '_' e '~' quebrava o link
+  // automático do GFM. 'joao_silva@escola.com.br' virava link para silva@escola.com.br e
+  // o site com '_' ou '~' ficava com %5C no endereço.
+  it('e-mail e site do cadastro viram link com o endereço exato; o resto fica como texto', () => {
+    const { markdown } = legal.renderLegalMarkdown('Contato: {{contato_instituicao}}. Encarregado: {{encarregado_nome}}, {{encarregado_contato}}. Escola: {{instituicao}}.', {
+      contato_instituicao: [
+        { text: 'joao_silva@escola.com.br', link: 'email' },
+        { text: '(81) 3333-4444' },
+        { text: 'https://escola.example/~curso/a_b', link: 'url' },
+      ],
+      encarregado_nome: 'Maria **DPO** <b>x</b>',
+      encarregado_contato: [{ text: 'maria_dpo@escola.local', link: 'email' }, { text: 'www.escola_tecnica.com.br', link: 'url' }],
+      instituicao: 'Escola [link](http://evil.example) www.evil.example joao_x@evil.example ~a~ _b_',
+    })
+    const box = document.createElement('div')
+    box.innerHTML = legalMarkdownToHtml(markdown)
+    const links = Array.from(box.querySelectorAll('a')).map((a) => [a.textContent, a.getAttribute('href')])
+    expect(links).toEqual([
+      ['joao_silva@escola.com.br', 'mailto:joao_silva@escola.com.br'],
+      ['https://escola.example/~curso/a_b', 'https://escola.example/~curso/a_b'],
+      ['maria_dpo@escola.local', 'mailto:maria_dpo@escola.local'],
+      ['www.escola_tecnica.com.br', 'http://www.escola_tecnica.com.br'],
+    ])
+    expect(box.textContent.trim()).toBe('Contato: joao_silva@escola.com.br, (81) 3333-4444, https://escola.example/~curso/a_b. '
+      + 'Encarregado: Maria **DPO** <b>x</b>, maria_dpo@escola.local, www.escola_tecnica.com.br. '
+      + 'Escola: Escola [link](http://evil.example) www.evil.example joao_x@evil.example ~a~ _b_.')
+    expect(box.querySelector('b, strong, em, del')).toBeNull()
+    expect(box.innerHTML).not.toContain('%5C')
   })
 })

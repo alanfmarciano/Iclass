@@ -1,18 +1,20 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AdminCourseGate } from './AdminCourseGate'
+import { AdminCourseGate, INSTITUTION_PATHS } from './AdminCourseGate'
+import { getAdminNavGroups } from '../../components/layout/Sidebar'
 
 const mocks = vi.hoisted(() => ({
   setActiveWorkspace: vi.fn(),
   clearActiveWorkspace: vi.fn(),
   navigate: vi.fn(),
   setPref: vi.fn(),
+  pathname: '/',
 }))
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom')
-  return { ...actual, useLocation: () => ({ pathname: '/' }), useNavigate: () => mocks.navigate }
+  return { ...actual, useLocation: () => ({ pathname: mocks.pathname }), useNavigate: () => mocks.navigate }
 })
 
 vi.mock('../../hooks/useApi', () => ({
@@ -50,6 +52,7 @@ vi.mock('../../context/PreferencesProvider', () => ({
 describe('AdminCourseGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.pathname = '/'
     sessionStorage.clear()
   })
   afterEach(cleanup)
@@ -73,5 +76,22 @@ describe('AdminCourseGate', () => {
     secondCard.focus()
     await user.keyboard('{Enter}')
     expect(mocks.setActiveWorkspace).toHaveBeenLastCalledWith(expect.objectContaining({ courseId: 'DES', className: '2DES', period: 'Noite' }))
+  })
+
+  // Regressão do H8a-1: o item "Privacidade (LGPD)" do ambiente da instituição abria o
+  // seletor de curso, porque /lgpd faltava em INSTITUTION_PATHS.
+  it('abre sem curso escolhido toda tela do menu do ambiente da instituição', () => {
+    const navPaths = getAdminNavGroups({ accountRole: 'admin', activeWorkspace: null })
+      .flatMap(group => group.items.map(item => item.to))
+      .filter(path => path !== '/')
+    expect(navPaths).toEqual(expect.arrayContaining(['/auditoria', '/lgpd']))
+    navPaths.forEach(path => expect(INSTITUTION_PATHS).toContain(path))
+  })
+
+  it('[UC-LGPD-004] mostra a página Privacidade (LGPD) do administrador sem curso escolhido', () => {
+    mocks.pathname = '/lgpd'
+    render(<AdminCourseGate><h1>Privacidade (LGPD)</h1></AdminCourseGate>)
+    expect(screen.getByRole('heading', { level: 1, name: 'Privacidade (LGPD)' })).toBeVisible()
+    expect(screen.queryByText('Selecione o curso e a turma')).not.toBeInTheDocument()
   })
 })

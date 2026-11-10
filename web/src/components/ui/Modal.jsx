@@ -14,13 +14,24 @@ export function Modal({ open, onClose, title, description, children, footer, siz
   const onCloseRef = useRef(onClose)
   const titleId = useId()
   const descriptionId = useId()
+  const wasOpenRef = useRef(false)
+  // O foco de quem abriu é lido ao abrir, ainda na renderização: o campo com autoFocus
+  // dentro do diálogo já recebe o foco antes dos efeitos rodarem.
+  if (open && !wasOpenRef.current && typeof document !== 'undefined') previousFocusRef.current = document.activeElement
+  wasOpenRef.current = open
   useEffect(() => { onCloseRef.current = onClose }, [onClose])
   useEffect(() => {
     if (!open) return
-    previousFocusRef.current = document.activeElement
     const dialog = dialogRef.current
     const focusable = () => Array.from(dialog?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])
-    requestAnimationFrame(() => (focusable()[0] || dialog)?.focus())
+    // Um campo do diálogo que já tem o foco (autoFocus, como a confirmação digitada)
+    // fica com ele: antes o foco ia para o botão Fechar e as teclas digitadas logo ao
+    // abrir se perdiam.
+    requestAnimationFrame(() => {
+      if (dialog && dialog.contains(document.activeElement)) return
+      const target = focusable()[0] || dialog
+      target?.focus()
+    })
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); onCloseRef.current?.(); return }
       if (e.key !== 'Tab') return

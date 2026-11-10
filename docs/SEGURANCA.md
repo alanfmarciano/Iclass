@@ -44,7 +44,7 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 ### 2026-11-10 — Termos e Privacidade (fase 2, H8a-1)
 
 - O aluno passa a poder ler o que aceita: `/termos` e `/privacidade` são públicas, com o texto atual e os dados da escola, inclusive o encarregado (DPO). Sem publicação, mostram o modelo do IClass como não revisado, e ninguém precisa aceitar nada. (SEG-08, OPS-12)
-- Só o administrador revisa e publica (`students.security`); a versão publicada não muda mais e cada publicação vai para a auditoria (`legal_publish`). O encarregado só muda pela página Privacidade (LGPD), com `dpo_changed`. O texto passa pelo DOMPurify no navegador, e os dados da escola entram nele sem virar formatação. (SEG-08, OPS-12)
+- Só o administrador revisa e publica (`students.security`); a versão publicada não muda mais e cada publicação vai para a auditoria (`legal_publish`). O encarregado só muda pela página Privacidade (LGPD), com `dpo_changed`. O texto passa pelo DOMPurify no navegador, e os dados da escola entram nele como texto literal (toda pontuação escapada, sem formatação nem link), com exceção do e-mail e do site da escola e do e-mail do encarregado, que viram link com o endereço exato. (SEG-08, OPS-12)
 
 ### 2026-11-10 — escopo do professor (fase 2, H5c)
 

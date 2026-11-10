@@ -25,7 +25,7 @@ function kindData(kind, extra = {}) {
     kind,
     label,
     current: { documentId: `modelo-2026.1:${kind}`, version: null, publishedAt: null, publishedBy: null, isModel: true, title: label },
-    draft: { id: `rascunho_${kind}`, kind, title: label, markdown: MODEL, changeSummary: '', updatedAt: null, updatedBy: null, saved: false, sameAsCurrent: true },
+    draft: { id: `rascunho_${kind}`, kind, title: label, markdown: MODEL, changeSummary: '', updatedAt: null, updatedBy: null, saved: false, sameAsCurrent: true, sameAsModel: true, hasModelNotice: false },
     preview: { markdown: '# Termos\n\nTexto do modelo de Escola Alfa.', unknownPlaceholders: [] },
     history: [],
     ...extra,
@@ -37,6 +37,8 @@ function documentsResponse(overrides = {}) {
     success: true,
     modelId: 'modelo-2026.1',
     markdownMax: 100000,
+    modelNotice: 'Modelo de referência; não substitui orientação jurídica.',
+    modelReviewHint: 'Revise este texto com a direção da escola e, se possível, com um advogado antes de publicar.',
     placeholders: [{ key: 'nome_fantasia', label: 'Nome fantasia da escola' }],
     schools: [{ id: 'escola_a', name: 'Escola Alfa' }],
     school: { id: 'escola_a', name: 'Escola Alfa' },
@@ -78,7 +80,9 @@ describe('[UC-LGPD-002] Privacidade (LGPD): documentos (H8a-1)', () => {
     })
     renderPage()
     expect(await screen.findByText('Não publicado')).toBeVisible()
-    expect(screen.getByText(/Ninguém precisa aceitar nada até a publicação/)).toBeVisible()
+    // O aviso do modelo aparece para o administrador, fora do texto.
+    expect(screen.getByTestId('model-notice')).toHaveTextContent('Modelo de referência; não substitui orientação jurídica. Revise este texto')
+    expect(screen.queryByText(/precisa aceitar/)).not.toBeInTheDocument()
     expect(screen.getByTestId('legal-preview')).toHaveTextContent('Texto do modelo de Escola Alfa.')
     expect(screen.getByRole('link', { name: /Ver a página pública/ })).toHaveAttribute('href', '/termos?escola=escola_a')
 
@@ -91,14 +95,22 @@ describe('[UC-LGPD-002] Privacidade (LGPD): documentos (H8a-1)', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Publicar versão 1' }))
     const dialog = await screen.findByRole('dialog')
-    // O Modal põe o foco no primeiro botão logo depois de abrir: digitar antes disso
-    // mandaria parte das teclas para o botão Fechar.
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Fechar' })).toHaveFocus())
-    expect(within(dialog).getByText(/42 alunos com cadastro ativo precisarão ler e aceitar esta versão/)).toBeVisible()
+    // A confirmação digitada fica com o foco depois que o Modal abre (antes o foco ia
+    // para o botão Fechar e as teclas digitadas logo ao abrir se perdiam).
+    const typed = within(dialog).getByLabelText('Digite PUBLICAR para confirmar')
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    expect(typed).toHaveFocus()
+    // Neste ponto ainda não há aceite pelos alunos (H8a-2): o diálogo não o promete.
+    expect(within(dialog).getByText(/42 alunos com cadastro ativo passam a ver esta versão em Termos de Uso/)).toBeVisible()
+    expect(within(dialog).queryByText(/aceitar/)).not.toBeInTheDocument()
     expect(within(dialog).getByText('As alterações ainda não salvas serão salvas antes.')).toBeVisible()
+    // O texto mudou: nada de aviso de modelo sem mudança.
+    expect(within(dialog).queryByTestId('publish-model-warning')).not.toBeInTheDocument()
     const confirm = within(dialog).getByRole('button', { name: 'Publicar' })
     expect(confirm).toBeDisabled()
-    await userEvent.type(within(dialog).getByLabelText('Digite PUBLICAR para confirmar'), 'publicar')
+    await userEvent.keyboard('publicar')
+    expect(typed).toHaveValue('publicar')
     expect(confirm).toBeEnabled()
     await userEvent.click(confirm)
 
@@ -117,12 +129,23 @@ describe('[UC-LGPD-002] Privacidade (LGPD): documentos (H8a-1)', () => {
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Publicar versão 1' }))
     const dialog = await screen.findByRole('dialog')
-    // O Modal põe o foco no primeiro botão logo depois de abrir: digitar antes disso
-    // mandaria parte das teclas para o botão Fechar.
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Fechar' })).toHaveFocus())
+    // Publicar o modelo sem mudança pede conferência.
+    expect(within(dialog).getByTestId('publish-model-warning')).toHaveTextContent('Você vai publicar o modelo do IClass sem nenhuma mudança.')
     await userEvent.type(within(dialog).getByLabelText('Digite PUBLICAR para confirmar'), 'PUBLICAR{Enter}')
     expect(await within(dialog).findByText(/O rascunho foi alterado depois que você abriu a página/)).toBeVisible()
     expect(mocks.post).toHaveBeenCalledWith('/api/admin/lgpd/documents/publish', { kind: 'termos', confirm: 'PUBLICAR', draftUpdatedAt: null })
+  })
+
+  it('avisa quando o texto ainda traz o aviso do modelo para o administrador', async () => {
+    const pasted = `> **Modelo de referência; não substitui orientação jurídica.** Revise este texto com a direção da escola.\n\n${MODEL}`
+    mocks.get.mockResolvedValue(documentsResponse({
+      termos: kindData('termos', { draft: { ...kindData('termos').draft, markdown: pasted, saved: true, updatedAt: '2026-03-10T14:00:00.000Z', sameAsCurrent: false, sameAsModel: false, hasModelNotice: true } }),
+    }))
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Publicar versão 1' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('O texto ainda traz o aviso')
+    expect(within(dialog).queryByTestId('publish-model-warning')).not.toBeInTheDocument()
   })
 
   it('rascunho igual à versão publicada não deixa publicar', async () => {

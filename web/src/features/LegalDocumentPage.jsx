@@ -15,7 +15,9 @@ import { PageLoading } from '../components/ui/PageLoading'
 // sublinhados: a cor da marca no fundo claro não tem contraste AA (WCAG 1.4.3).
 //
 // Enquanto a escola não publica, a página mostra o modelo do IClass com o aviso de que
-// ele ainda não foi revisado; ninguém precisa aceitar nada até lá (decisão P4).
+// ele ainda não foi revisado e o aviso do modelo (notice, que fica fora do texto: a
+// versão publicada a partir do modelo não o leva); ninguém precisa aceitar nada até lá
+// (decisão P4).
 
 const KINDS = {
   termos: { key: 'terms', path: '/termos', other: 'privacidade' },
@@ -101,6 +103,7 @@ export default function LegalDocumentPage({ kind = 'termos' }) {
                 {legalVersionLine(doc)}
               </p>
               {state.data?.school?.name && <p className="mt-1 text-sm text-muted">{state.data.school.name}</p>}
+              {doc.isModel && doc.notice && <p className="mt-2 text-sm text-text" data-testid="legal-notice">{doc.notice}</p>}
             </header>
             <div className="prose-iclass break-words [&_a]:text-text" dangerouslySetInnerHTML={{ __html: html }} />
           </article>
