@@ -173,26 +173,34 @@ function createSystemHealthRouter() {
         });
     });
 
-    router.post('/api/system/control', (req, res) => {
-        // Do próprio computador e com o token do boot; o resto é 403, sem dizer o motivo.
-        if (!isLoopback(req) || !serverLifecycle.controlTokenMatches(req.get(CONTROL_HEADER))) {
-            return res.status(403).json({ error: 'Acesso negado.' });
-        }
-        const action = typeof (req.body || {}).action === 'string' ? req.body.action.trim() : '';
-        if (!CONTROL_ACTIONS.has(action)) {
-            return res.status(400).json({ success: false, error: 'Ação inválida: use stop ou restart.', field: 'action' });
-        }
-        if (!serverLifecycle.hasShutdownHandler()) {
-            return res.status(503).json({ success: false, error: 'Controle indisponível neste modo.' });
-        }
-        res.status(202).json({ success: true, action, supervised: serverLifecycle.isSupervised() });
-        // Depois que a resposta saiu: o desligamento fecha as conexões.
-        res.once('finish', () => setImmediate(() => {
-            serverLifecycle.requestShutdown({ restart: action === 'restart', reason: action === 'restart' ? 'restart' : 'stop' });
-        }));
-    });
+    router.post('/api/system/control', handleSystemControl);
 
     return router;
+}
+
+// POST /api/system/control. O mesmo handler atende no app e no handler de boot do
+// server.js (createBootApp): o launcher para ou reinicia também enquanto o servidor ainda
+// carrega o banco, sem taskkill. Durante o boot o desligamento sai sem gravar (o que o
+// boot gravou já está no disco).
+function handleSystemControl(req, res) {
+    res.set('Cache-Control', 'no-store');
+    // Do próprio computador e com o token do boot; o resto é 403, sem dizer o motivo.
+    if (!isLoopback(req) || !serverLifecycle.controlTokenMatches(req.get(CONTROL_HEADER))) {
+        return res.status(403).json({ error: 'Acesso negado.' });
+    }
+    const action = typeof (req.body || {}).action === 'string' ? req.body.action.trim() : '';
+    if (!CONTROL_ACTIONS.has(action)) {
+        return res.status(400).json({ success: false, error: 'Ação inválida: use stop ou restart.', field: 'action' });
+    }
+    if (!serverLifecycle.hasShutdownHandler()) {
+        return res.status(503).json({ success: false, error: 'Controle indisponível neste modo.' });
+    }
+    res.status(202).json({ success: true, action, supervised: serverLifecycle.isSupervised(), starting: !serverLifecycle.bootState().ready });
+    // Depois que a resposta saiu: o desligamento fecha as conexões.
+    res.once('finish', () => setImmediate(() => {
+        serverLifecycle.requestShutdown({ restart: action === 'restart', reason: action === 'restart' ? 'restart' : 'stop' });
+    }));
+    return undefined;
 }
 
 module.exports = {
@@ -200,6 +208,7 @@ module.exports = {
     DEGRADED_SAVE_FAILURES,
     adminHealth,
     createSystemHealthRouter,
+    handleSystemControl,
     lastOutage,
     publicHealth,
     serverStatus,

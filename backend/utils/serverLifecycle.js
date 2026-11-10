@@ -463,11 +463,14 @@ function markCleanShutdown(reason = 'stop') {
     return writeHeartbeat({ clean: true, reason });
 }
 
-// Até o requestShutdown do H3c: o processo que sai com código 0 (fim do Ctrl+C e do
-// SIGTERM depois do db.close, Reiniciar) parou porque pediram, e o próximo boot registra
-// "reinício", não "queda do servidor". Outro código (erro no boot, erro fatal) e o
-// processo morto à força (kill -9, taskkill /f, falta de energia) não passam por aqui e
-// contam como queda. Síncrono: no 'exit' só dá para gravar com writeFileSync.
+// Rede de segurança do requestShutdown (que já grava a parada limpa no fim do
+// desligamento ordenado): o processo que sai com código 0 com o heartbeat ainda
+// iniciado parou porque pediram (os processos de teste que só sobem o prepareServer e
+// saem sozinhos), e o próximo boot registra "reinício", não "queda do servidor". O
+// desligamento pedido durante o boot para o heartbeat antes de sair (stopHeartbeat) e
+// não passa por aqui. Outro código (erro no boot, erro fatal) e o processo morto à força
+// (kill -9, taskkill /f, falta de energia) também não, e contam como queda. Síncrono: no
+// 'exit' só dá para gravar com writeFileSync.
 function onProcessExit(code) {
     if (code !== 0) return;
     try { markCleanShutdown('stop'); } catch (e) { /* nunca lança na saída */ }
@@ -687,6 +690,22 @@ function removeControlToken() {
     processState.controlToken = null;
 }
 
+function supervisorPidFile() {
+    return path.join(runtimeDir(), 'supervisor.pid');
+}
+
+// O servidor percebeu que o supervisor morreu (canal IPC fechado): apaga
+// runtime/supervisor.pid se ele ainda tem o PID desse supervisor, para o launcher não
+// encerrar a árvore de um PID velho (que o sistema pode ter dado a outro programa).
+function removeSupervisorPid(pid) {
+    try {
+        if (fs.readFileSync(supervisorPidFile(), 'utf8').trim() === String(pid)) fs.rmSync(supervisorPidFile(), { force: true });
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 function status() {
     return {
         started: state.started,
@@ -735,6 +754,7 @@ module.exports = {
     registerTimer,
     registeredTimers,
     removeControlToken,
+    removeSupervisorPid,
     requestShutdown,
     resetProcessState,
     setBootPhase,

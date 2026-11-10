@@ -322,6 +322,9 @@ test('[UC-SAUDE-001] banco que não é SQLite sai com 3 citando o backup-cli; pa
     assert.match(corrupt.output(), /está danificado/);
     assert.match(corrupt.output(), /backup-cli\.js/);
     assert.equal(/iniciado com sucesso/.test(corrupt.output()), false);
+    // O token da rota de controle é gravado logo depois de a porta abrir: a falha do boot
+    // não o deixa no disco (o launcher leria o token de um servidor que não está no ar).
+    assert.equal(fs.existsSync(proc.controlTokenFile(corruptDir)), false, 'sem control.token depois da falha de boot');
 
     const folderDir = newDataDir('pasta-');
     fs.mkdirSync(path.join(folderDir, 'database.db'));
@@ -329,6 +332,48 @@ test('[UC-SAUDE-001] banco que não é SQLite sai com 3 citando o backup-cli; pa
     const folderExit = await folder.exited;
     assert.equal(folderExit.code, 1, folder.output());
     assert.match(folder.output(), /Não foi possível abrir o banco de dados/);
+    assert.equal(fs.existsSync(proc.controlTokenFile(folderDir)), false, 'sem control.token depois da falha de boot');
+});
+
+test('[UC-SAUDE-001] desligar durante o boot sai com 0 sem gravar e sem marcar parada limpa (o heartbeat do boot fica clean:false)', async () => {
+    const dataDir = newDataDir('boot-sigterm-');
+    const server = proc.launch(childScript, { dataDir, port: await proc.freePort(), env: { ICLASS_TEST_BOOT_DELAY_MS: '20000' } });
+    await proc.waitForHealth(server.base, { accept: res => res.status === 503 && res.body && res.body.status === 'starting', exited: server.exited });
+    // O heartbeat deste boot já começou (o atraso de teste vem depois do prepareServer).
+    await proc.waitFor(() => proc.readJson(proc.heartbeatFile(dataDir)), { what: 'heartbeat do boot' });
+    server.child.kill('SIGTERM');
+    const result = await server.exited;
+    assert.equal(result.code, 0, server.output());
+    const heartbeat = proc.readJson(proc.heartbeatFile(dataDir));
+    assert.equal(heartbeat.clean, false, `parada no boot não é parada limpa: ${JSON.stringify(heartbeat)}`);
+    assert.equal(heartbeat.reason || null, null);
+    assert.match(server.output(), /Desligando antes de terminar de iniciar: nada a gravar\./);
+    assert.equal(/gravando os dados/.test(server.output()), false, 'não promete gravar o que não grava');
+    assert.equal(fs.existsSync(proc.controlTokenFile(dataDir)), false);
+});
+
+test('[UC-SAUDE-001] rota de controle também durante o boot: 403 sem o token, 202 com ele (starting:true) e saída 0 sem esperar o boot', async () => {
+    const dataDir = newDataDir('boot-controle-');
+    const server = proc.launch(childScript, { dataDir, port: await proc.freePort(), env: { ICLASS_TEST_BOOT_DELAY_MS: '20000' } });
+    await proc.waitForHealth(server.base, { accept: res => res.status === 503 && res.body && res.body.status === 'starting', exited: server.exited });
+    await proc.waitFor(() => proc.readJson(proc.heartbeatFile(dataDir)), { what: 'heartbeat do boot' });
+    const token = fs.readFileSync(proc.controlTokenFile(dataDir), 'utf8').trim();
+    const denied = await proc.call(server.base, '/api/system/control', { method: 'POST', headers: { 'x-iclass-control': 'b'.repeat(64) }, body: { action: 'stop' } });
+    assert.equal(denied.status, 403);
+    const invalid = await proc.call(server.base, '/api/system/control', { method: 'POST', headers: { 'x-iclass-control': token }, body: { action: 'desligar' } });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.body.field, 'action');
+    // O resto da API continua "iniciando".
+    assert.equal((await proc.call(server.base, '/api/ping')).status, 503);
+    const startedAt = Date.now();
+    const accepted = await proc.call(server.base, '/api/system/control', { method: 'POST', headers: { 'x-iclass-control': token }, body: { action: 'stop' } });
+    assert.equal(accepted.status, 202, JSON.stringify(accepted.body));
+    assert.equal(accepted.body.starting, true);
+    const result = await server.exited;
+    assert.equal(result.code, 0, server.output());
+    assert.ok(Date.now() - startedAt < 10000, 'não esperou o fim do boot');
+    assert.equal(proc.readJson(proc.heartbeatFile(dataDir)).clean, false);
+    assert.equal(fs.existsSync(proc.controlTokenFile(dataDir)), false);
 });
 
 test('[UC-SAUDE-001] durante o boot a porta já responde "iniciando" (health 503 starting, API 503 starting) e depois 200', async () => {

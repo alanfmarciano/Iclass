@@ -81,6 +81,17 @@ async function waitForHealth(base, { timeoutMs = 30000, accept = res => res.stat
     throw new Error(`o /api/health não chegou ao esperado em ${timeoutMs} ms: ${JSON.stringify(last && (last.body || last))}`);
 }
 
+// Espera check() devolver algo verdadeiro, até timeoutMs.
+async function waitFor(check, { timeoutMs = 15000, intervalMs = 100, what = 'condição' } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const value = check();
+        if (value) return value;
+        await sleep(intervalMs);
+    }
+    throw new Error(`${what}: não aconteceu em ${timeoutMs} ms`);
+}
+
 function readJson(file) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return null; }
 }
@@ -107,5 +118,6 @@ module.exports = {
     readJson,
     running,
     sleep,
+    waitFor,
     waitForHealth,
 };

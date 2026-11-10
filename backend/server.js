@@ -509,12 +509,15 @@ const BOOT_HTML = `<!doctype html>
 // app; /api/health com a fase do boot; o resto de /api com 503 {starting:true} e
 // Retry-After 3; as páginas com o aviso "iniciando" em HTML que se recarrega sozinho.
 function createBootApp() {
-    const { startingHealthBody } = require('./routes/systemHealth.js');
+    const { startingHealthBody, handleSystemControl } = require('./routes/systemHealth.js');
     const { errorHandler } = require('./middlewares.js');
     const boot = express();
     boot.disable('x-powered-by');
     boot.use(assignRequestId);
     boot.use('/assets', serveBuildAssets(runtimePaths.WEB_DIST_DIR));
+    // A rota de controle do launcher vale também durante o boot: parar ou reiniciar um
+    // servidor que ainda carrega o banco sem precisar do taskkill.
+    boot.post('/api/system/control', express.json({ limit: '1kb' }), handleSystemControl);
     boot.get('/api/health', (req, res) => {
         res.set('Cache-Control', 'no-store');
         res.set('Retry-After', '3');
@@ -583,6 +586,9 @@ function failBoot(cause, err, options) {
     const failure = describeBootFailure(cause, err, options);
     logError(failure.kind, err, { details: { saida: failure.exitCode } });
     console.error(failure.message);
+    // O token da rota de controle (gravado logo depois de a porta abrir) não fica no disco
+    // de um servidor que não está no ar: o launcher não lê um token velho.
+    serverLifecycle.removeControlToken();
     process.exit(failure.exitCode);
 }
 
@@ -734,19 +740,29 @@ async function performShutdown({ restart = false, reason = 'stop' } = {}) {
         console.error(`⛔ O desligamento passou de ${serverLifecycle.SHUTDOWN_TIMEOUT_MS / 1000} s; saindo assim mesmo.`);
         process.exit(EXIT_CODES.ERROR);
     }, serverLifecycle.SHUTDOWN_TIMEOUT_MS);
-    console.log(SHUTDOWN_MESSAGES[reason] || SHUTDOWN_MESSAGES.stop);
     serverLifecycle.clearTimers();
     // Ainda no boot: a memória pode não estar carregada, e uma gravação completa agora
     // apagaria do disco o que não foi lido. Sai sem gravar (o que o boot já gravou foi em
-    // transações completas) e sem marcar parada limpa: o próximo boot conta a queda pelo
-    // heartbeat da execução anterior.
+    // transações completas) e sem marcar parada limpa: o heartbeat para (stopHeartbeat),
+    // e nem o ouvinte de 'exit' do serverLifecycle grava clean:true. O próximo boot conta
+    // o tempo fora do ar pelo último heartbeat gravado (o desta execução, se já começou,
+    // ou o da anterior). Sai com o código do pedido: 0, 75 (reinício sob o supervisor) ou
+    // 1 (erro fatal); o reinício sem supervisor relança o processo.
     if (!serverLifecycle.bootState().ready) {
+        console.log(reason === 'fatal'
+            ? SHUTDOWN_MESSAGES.fatal
+            : (restart ? '🔁 Reiniciando antes de terminar de iniciar: nada a gravar.' : '🛑 Desligando antes de terminar de iniciar: nada a gravar.'));
+        serverLifecycle.stopHeartbeat();
         try { if (serverInstance && serverInstance.listening) serverInstance.close(); } catch (e) { /* saindo */ }
         serverLifecycle.removeControlToken();
+        if (restart && !supervised && reason !== 'fatal') {
+            try { relaunchWithoutSupervisor(); } catch (err) { logCrash('reinício sem supervisor', err); }
+        }
         clearTimeout(hardStop);
-        process.exit(reason === 'fatal' ? EXIT_CODES.ERROR : EXIT_CODES.OK);
+        process.exit(exitCode);
         return;
     }
+    console.log(SHUTDOWN_MESSAGES[reason] || SHUTDOWN_MESSAGES.stop);
     try { await closeHttpServer(serverInstance); } catch (err) { logCrash('desligamento (porta)', err); }
     try {
         await (reason === 'fatal' ? withTimeout(db.close(), FATAL_SHUTDOWN_SAVE_MS) : db.close());
@@ -796,6 +812,23 @@ function installProcessHandlers({ server } = {}) {
             serverLifecycle.requestShutdown({ restart: message.restart === true, reason: message.restart === true ? 'restart' : 'stop' });
         }
     });
+    // O supervisor morreu sozinho (kill -9, "Finalizar tarefa" no node.exe dele, taskkill
+    // sem /T): o canal IPC fecha. Sem isto o servidor ficava no ar sem dono e sem log,
+    // segurando a porta, e a próxima abertura pelo launcher saía com 2 (porta ocupada).
+    if (serverLifecycle.isSupervised() && typeof process.send === 'function') {
+        const supervisorPid = process.ppid;
+        process.once('disconnect', () => {
+            if (serverLifecycle.shutdownRequested()) return; // parada pedida pelo supervisor
+            // A saída ia para o supervisor (pipe fechado): escrever nela não pode derrubar o
+            // desligamento com EPIPE.
+            [process.stdout, process.stderr].forEach(stream => { try { stream.on('error', () => {}); } catch (e) { /* sem saída */ } });
+            logError('supervisor', new Error(`O supervisor (processo ${supervisorPid}) parou sem desligar o servidor; desligamento ordenado.`));
+            // runtime/supervisor.pid ainda aponta para o supervisor morto: o launcher não
+            // pode encerrar pela árvore de um PID que talvez já seja de outro programa.
+            serverLifecycle.removeSupervisorPid(supervisorPid);
+            serverLifecycle.requestShutdown({ reason: 'stop' });
+        });
+    }
 }
 
 function sendToSupervisor(message) {

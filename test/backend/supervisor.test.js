@@ -151,6 +151,31 @@ test('[UC-SAUDE-001] SIGTERM no supervisor: parada ordenada do servidor, heartbe
     assert.equal(fs.existsSync(path.join(dataDir, 'runtime', 'supervisor.pid')), false);
 });
 
+test('[UC-SAUDE-001] supervisor morto sozinho (kill -9): o servidor percebe pelo canal IPC, desliga em ordem e apaga o supervisor.pid velho', async () => {
+    const { dataDir, supervisor } = await startSupervised('orfao-');
+    const childPid = proc.readJson(proc.heartbeatFile(dataDir)).pid;
+    const pidFile = path.join(dataDir, 'runtime', 'supervisor.pid');
+    assert.equal(fs.readFileSync(pidFile, 'utf8').trim(), String(supervisor.child.pid));
+    supervisor.child.kill('SIGKILL');
+    await supervisor.exited;
+    // Antes o servidor continuava no ar, sem dono, segurando a porta.
+    await proc.waitFor(() => !proc.processAlive(childPid), { what: 'o servidor sair depois do supervisor morto' });
+    const heartbeat = proc.readJson(proc.heartbeatFile(dataDir));
+    assert.equal(heartbeat.clean, true, JSON.stringify(heartbeat));
+    assert.equal(heartbeat.reason, 'stop');
+    assert.equal(fs.existsSync(pidFile), false, 'o supervisor.pid do supervisor morto foi apagado');
+    assert.equal(fs.existsSync(proc.controlTokenFile(dataDir)), false);
+    assert.match(fs.readFileSync(path.join(dataDir, 'crash.log'), 'utf8'), /parou sem desligar o servidor/);
+    // A porta ficou livre: outro servidor abre nela.
+    const again = proc.launch(path.join(__dirname, 'fixtures', 'server-main-child.js'), { dataDir, port: supervisor.port });
+    try {
+        await proc.waitForHealth(again.base, { exited: again.exited });
+    } finally {
+        again.child.kill('SIGTERM');
+        assert.equal((await again.exited).code, 0);
+    }
+});
+
 test('[UC-SAUDE-001] exceção não tratada sob o supervisor: o servidor grava, sai com 1 e volta', async () => {
     const { dataDir, supervisor, health } = await startSupervised('crash-', { ICLASS_TEST_ALLOW_CRASH: '1' });
     try {
