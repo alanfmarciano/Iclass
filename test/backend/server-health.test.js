@@ -238,6 +238,9 @@ test('[UC-SAUDE-001] handler de boot: /api/health "starting" com a fase, /api 50
     serverLifecycle.setBootPhase('restoring');
     const health = await request(boot).get('/api/health').expect(503);
     assert.equal(health.body.status, 'starting');
+    // Mesmo formato de estado do resto do /api no boot (J2): starting:true e Retry-After 3.
+    assert.equal(health.body.starting, true);
+    assert.equal(health.headers['retry-after'], '3');
     assert.equal(health.body.phase, 'restoring');
     assert.equal(health.body.instanceId, SERVER_INSTANCE_ID);
     const ping = await request(boot).get('/api/ping').expect(503);

@@ -55,11 +55,15 @@ function serverStatus({ save, ping }) {
 }
 
 // Corpo do /api/health durante o boot (handler de boot do server.js): ainda não há banco
-// para consultar.
+// para consultar. starting: true como todo o resto do /api no boot (contrato das
+// respostas de estado: 503 {starting:true} com Retry-After 3): o cliente classifica o
+// estado da conexão por ele, e a espera do Reiniciar e o cartão Saúde consultam
+// justamente esta rota.
 function startingHealthBody() {
     const boot = serverLifecycle.bootState();
     return {
         status: 'starting',
+        starting: true,
         phase: boot.phase === 'ready' ? 'checking' : boot.phase,
         instanceId: SERVER_INSTANCE_ID,
         startedAt: startedAtIso(),
