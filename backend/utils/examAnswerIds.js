@@ -176,9 +176,16 @@ function decodeAttemptAnswers(answers, { application = null, onlineConfig = null
 }
 
 // Estado da tentativa como vai para o aluno: respostas com os identificadores opacos.
+// Prova sem prazo (timerRemaining null): o campo não vai. As telas até a 1615783 liam o
+// null como zero ("o tempo acabou") e enviavam a prova sozinha assim que o aluno abria;
+// sem o campo, elas ficam sem cronômetro. A tela atual entende os dois.
 function stateForStudent(state, scope) {
     if (!state || typeof state !== 'object') return state;
-    return { ...state, answers: encodeAnswersForStudent(state.answers, scope) };
+    const studentState = { ...state, answers: encodeAnswersForStudent(state.answers, scope) };
+    if (studentState.timerRemaining === null || studentState.timerRemaining === undefined || studentState.timerRemaining === '') {
+        delete studentState.timerRemaining;
+    }
+    return studentState;
 }
 
 // Que letras o aluno viu nas alternativas desta tentativa ou entrega:

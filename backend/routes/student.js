@@ -63,6 +63,8 @@ const {
 } = require('../utils/examGrading.js');
 const {
     AUTO_SUBMIT_EARLY_TOLERANCE_MS,
+    NO_DEADLINE_AUTO_SUBMIT_MESSAGE,
+    NO_DEADLINE_CODE,
     SERVER_DEADLINE_SOURCE,
     attemptOverdueMs,
     attemptStateForReopen,
@@ -1454,6 +1456,21 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
             deadlineAt: Number(lockedState.deadlineAt) || null,
             overdueMs: lockedState.deadlineAt ? nowTs - Number(lockedState.deadlineAt) : null,
         };
+    // Prova sem prazo ("Cronômetro ativo" desligado, sem duração ou sem início): não
+    // existe fim do tempo, então não existe envio automático por tempo. As telas até a
+    // 1615783 liam o tempo restante null como zero e mandavam auto: true assim que o
+    // aluno abria a prova (ou clicava em Iniciar, ou era liberado do foco), e a tentativa
+    // era fechada como "enviada no fim do tempo". Aqui a tentativa e as respostas ficam
+    // como estão (nada é gravado) e a tela volta para as questões. O envio do aluno
+    // (auto ausente ou false) segue normal.
+    const withoutDeadline = timing.deadlineAt == null || (!application && onlineConfig.timerEnabled === false);
+    if (auto === true && withoutDeadline) {
+        return res.status(409).json({
+            error: NO_DEADLINE_AUTO_SUBMIT_MESSAGE,
+            code: NO_DEADLINE_CODE,
+            noDeadline: true,
+        });
+    }
     const pastDeadline = timing.overdueMs !== null && timing.overdueMs >= 0;
     if (applicationPaused && !pastDeadline) {
         return res.status(403).json({ error: 'A aplicação está pausada pelo professor. Aguarde a retomada para enviar.', applicationPaused: true });

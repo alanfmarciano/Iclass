@@ -1035,3 +1035,120 @@ describe('[UC-NOTAS-001] ExamRunner: nota no fim da prova', () => {
     expect(screen.queryByText('7.5')).not.toBeInTheDocument()
   })
 })
+
+// Prova sem prazo ("Cronômetro ativo" desligado): o servidor manda o tempo restante
+// null (ou sem o campo). Antes o null virava 0 e a prova era enviada sozinha ao abrir.
+function untimedSync({ timerRemaining = null, omitTimer = false, timerEnabled = false, ...options } = {}) {
+  const response = syncResponse(options)
+  response.onlineExamConfigs[EXAM].timerEnabled = timerEnabled
+  if (response.state && response.state.startedAt) {
+    if (omitTimer) delete response.state.timerRemaining
+    else response.state.timerRemaining = timerRemaining
+    response.state.deadlineAt = null
+  }
+  return response
+}
+
+function autoSubmits() {
+  return postsTo('/api/student/submit').filter(([, body]) => body.auto === true)
+}
+
+describe('[UC-TENTATIVA-002] ExamRunner: prova sem prazo não é enviada sozinha', () => {
+  it.each([
+    ['null', { timerRemaining: null }],
+    ['ausente', { omitTimer: true }],
+    ['texto vazio', { timerRemaining: '' }],
+    ['null com o cronômetro ligado na turma', { timerRemaining: null, timerEnabled: true }],
+  ])('tempo restante %s ao abrir a tela: sem cronômetro, sem envio automático, e o aluno envia quando quiser', async (_label, options) => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(untimedSync(options))
+    apiMock.post.mockImplementation(async (url) => (url === '/api/student/submit' ? { success: true, gradePublished: false, answeredCount: 1 } : { success: true }))
+    renderRunner()
+    enterFullscreen()
+    const dois = await screen.findByRole('button', { name: /Dois/ })
+    // Fica aberta: espera a sincronização seguinte (4 s) sem nada sair sozinho.
+    await waitFor(() => expect(apiMock.get.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 6000 })
+    expect(autoSubmits()).toHaveLength(0)
+    expect(screen.queryByText('Tempo esgotado')).not.toBeInTheDocument()
+    expect(document.querySelector('[title="Tempo restante"]')).toBeNull()
+    expect(dois).toBeEnabled()
+
+    await user.click(dois)
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    expect(await screen.findByText('Prova enviada!')).toBeVisible()
+    expect(screen.queryByText(/O tempo acabou/)).not.toBeInTheDocument()
+    const calls = postsTo('/api/student/submit')
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1]).toMatchObject({ auto: false, attemptId: 'att-1', answers: { 1: 'A' } })
+  }, 15000)
+
+  it('clicar em "Iniciar prova" sem prazo (start-attempt com tempo restante null) abre as questões e não envia nada', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValueOnce(untimedSync({ startedAt: null }))
+    apiMock.get.mockResolvedValue(untimedSync({ timerRemaining: null }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url.endsWith('/start-attempt')) {
+        const started = startedAttemptResponse()
+        started.state.timerRemaining = null
+        started.state.deadlineAt = null
+        return started
+      }
+      return { success: true }
+    })
+    renderRunner()
+    // As instruções dizem que a prova não tem tempo limite (antes: "60 min · Ao iniciar").
+    expect(await screen.findByText('Sem tempo limite')).toBeVisible()
+    expect(screen.getByText('Desligado')).toBeVisible()
+    expect(screen.getByText(/Esta prova não tem tempo limite: não há cronômetro/)).toBeVisible()
+    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: 'Iniciar prova' }))
+    enterFullscreen()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeEnabled()
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    expect(autoSubmits()).toHaveLength(0)
+    expect(screen.queryByText('Tempo esgotado')).not.toBeInTheDocument()
+    expect(document.querySelector('[title="Tempo restante"]')).toBeNull()
+  }, 10000)
+
+  it('servidor recusa o envio automático com no_deadline: a prova volta às questões, sem cronômetro e sem repetir o envio', async () => {
+    const user = userEvent.setup()
+    // Servidor desencontrado (manda 0, mas a tentativa não tem prazo): a tela tenta o
+    // envio automático uma vez e o servidor recusa.
+    apiMock.get.mockResolvedValue(untimedSync({ timerRemaining: 0, timerEnabled: true, answers: { 1: 'A' } }))
+    apiMock.post.mockImplementation(async (url, body) => {
+      if (url === '/api/student/submit' && body.auto === true) {
+        throw Object.assign(new Error('Esta prova não tem tempo limite e continua aberta.'), { status: 409, data: { code: 'no_deadline', noDeadline: true } })
+      }
+      if (url === '/api/student/submit') return { success: true, gradePublished: false, answeredCount: 1 }
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await waitFor(() => expect(autoSubmits()).toHaveLength(1), { timeout: 4000 })
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('Esta prova não tem tempo limite. Continue respondendo e envie quando terminar.'))
+    const dois = await screen.findByRole('button', { name: /Dois/ })
+    expect(dois).toHaveAttribute('aria-pressed', 'true')
+    const syncsBefore = apiMock.get.mock.calls.length
+    await waitFor(() => expect(apiMock.get.mock.calls.length).toBeGreaterThan(syncsBefore), { timeout: 6000 })
+    expect(autoSubmits()).toHaveLength(1)
+    expect(document.querySelector('[title="Tempo restante"]')).toBeNull()
+    expect(screen.getByRole('button', { name: /Três/ })).toBeEnabled()
+
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    expect(await screen.findByText('Prova enviada!')).toBeVisible()
+    expect(postsTo('/api/student/submit').at(-1)[1]).toMatchObject({ auto: false, answers: { 1: 'A' } })
+  }, 15000)
+
+  it('com prazo nada muda: o cronômetro aparece e chega a zero enviando sozinho', async () => {
+    apiMock.get.mockResolvedValue(untimedSync({ timerRemaining: 2, timerEnabled: true }))
+    apiMock.post.mockImplementation(async (url) => (url === '/api/student/submit' ? { success: true, gradePublished: false, answeredCount: 0 } : { success: true }))
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    expect(document.querySelector('[title="Tempo restante"]')).not.toBeNull()
+    expect(await screen.findByText('Prova enviada!', {}, { timeout: 5000 })).toBeVisible()
+    expect(autoSubmits()).toHaveLength(1)
+  }, 10000)
+})

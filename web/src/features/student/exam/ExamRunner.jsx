@@ -14,7 +14,7 @@ import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '..
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
-import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, wait } from './examAutoSubmit'
+import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds, wait } from './examAutoSubmit'
 import {
   clearExamDraft,
   clearExamDraftsForApplication,
@@ -121,6 +121,7 @@ export default function ExamRunner() {
   const unsupportedLoggedRef = useRef(null) // tentativa já registrada como sem tela cheia
   const pageHiddenRef = useRef(false) // a página está sendo recarregada ou fechada
   const timeOverScreenRef = useRef(false) // a tela de erro é a de "tempo terminou" (pode voltar)
+  const noDeadlineAttemptRef = useRef(null) // tentativa que o servidor confirmou ser sem prazo
   // Impressão digital das questões já recebidas: o servidor só reenvia quando mudam.
   const questionsVersionRef = useRef('')
   answersRef.current = answers
@@ -206,6 +207,16 @@ export default function ExamRunner() {
     setPhase('loading')
     toast.info(message)
   }, [toast])
+
+  // Tempo que falta na tentativa, pelo que o servidor mandou. Sem prazo (cronômetro
+  // desligado na aplicação, timerRemaining null/ausente/vazio, ou tentativa que o servidor
+  // já disse não ter prazo): null, sem cronômetro e sem envio automático. Antes o null
+  // virava 0 e a prova era enviada sozinha assim que o aluno abria a tela.
+  const attemptRemaining = useCallback((timerRemaining, config, forAttemptId) => {
+    if (config?.timerEnabled === false) return null
+    if (forAttemptId && noDeadlineAttemptRef.current === forAttemptId) return null
+    return remainingSeconds(timerRemaining)
+  }, [])
 
   // As questões chegam só da tentativa iniciada (sync ou start-attempt), nunca da config da turma.
   const applyAttemptQuestions = useCallback((payload) => {
@@ -314,6 +325,17 @@ export default function ExamRunner() {
         if (kind === 'extended') {
           if (timeupRef.current === frozen) {
             resumeExtendedAttempt('O professor deu mais tempo. A prova continua.')
+            syncRef.current?.()
+          }
+          return
+        }
+        if (kind === 'no_deadline') {
+          // A prova não tem prazo: o servidor não fechou a tentativa. A tela volta para as
+          // questões, sem cronômetro, com as respostas que estavam na tela.
+          if (timeupRef.current === frozen) {
+            noDeadlineAttemptRef.current = frozen.attemptId
+            setRemaining(null)
+            resumeExtendedAttempt('Esta prova não tem tempo limite. Continue respondendo e envie quando terminar.')
             syncRef.current?.()
           }
           return
@@ -650,7 +672,7 @@ export default function ExamRunner() {
         if (nextMessage && !instructorMessage) setInstructorMessage(nextMessage)
       }
       if (Array.isArray(r.questionReports)) {
-        setReportedQuestions(new Set(r.questionReports.map((report) => Number(report.questionNumber)).filter(Number.isFinite)))
+        setReportedQuestions(new Set(r.questionReports.map((report) => optionalNumber(report.questionNumber)).filter((number) => number !== null)))
       }
 
       if (submittedRef.current) return
@@ -682,7 +704,7 @@ export default function ExamRunner() {
         setPhase('not_started')
         return
       }
-      const resolvedMaxAttempts = Number(r.maxAttempts ?? c.maxAttempts)
+      const resolvedMaxAttempts = optionalNumber(r.maxAttempts ?? c.maxAttempts)
       const attemptsUsed = Number(r.attemptsUsed || 0)
       if (Number.isInteger(resolvedMaxAttempts) && resolvedMaxAttempts >= 1 && attemptsUsed >= resolvedMaxAttempts) {
         setAttemptLimit(resolvedMaxAttempts)
@@ -710,8 +732,8 @@ export default function ExamRunner() {
         setPhase('token')
         return
       }
-      const startsAt = Number(c.startTime)
-      if (c.status === 'waiting' && startsAt > Date.now()) {
+      const startsAt = optionalNumber(c.startTime)
+      if (c.status === 'waiting' && startsAt !== null && startsAt > Date.now()) {
         setWaitingRemaining(Math.max(0, Math.ceil((startsAt - Date.now()) / 1000)))
         setPhase('waiting')
         return
@@ -723,11 +745,7 @@ export default function ExamRunner() {
       }
 
       setWaitingRemaining(null)
-      if (Number.isFinite(Number(st.timerRemaining))) {
-        setRemaining(Math.max(0, Number(st.timerRemaining)))
-      } else {
-        setRemaining(null)
-      }
+      setRemaining(attemptRemaining(st.timerRemaining, c, stateAttemptId))
       setPhase((p) => (['paused', 'server_paused', 'loading', 'waiting', 'token', 'instructions', 'not_started'].includes(p) ? 'active' : p))
     } catch (e) {
       if (e.status === 401 || e.status === 403) {
@@ -820,7 +838,7 @@ export default function ExamRunner() {
       setAttemptId(response.attemptId)
       setExamConfigVersion(response.examConfigVersion || examConfigVersion)
       if (response.state?.assignedVersion) setAssignedVersion(response.state.assignedVersion)
-      if (Number.isFinite(Number(response.state?.timerRemaining))) setRemaining(Number(response.state.timerRemaining))
+      setRemaining(attemptRemaining(response.state?.timerRemaining, cfg, response.attemptId))
       applyAttemptQuestions(response)
       await loadAttemptAnswers(response.attemptId, response.localCopyKey, response.state?.answers || {})
       setPhase('active')
@@ -977,6 +995,8 @@ export default function ExamRunner() {
   }
 
   const answeredCount = Object.keys(answers).length
+  // "Cronômetro ativo" desligado na aplicação: a prova não tem tempo limite.
+  const untimed = cfg?.timerEnabled === false
   const instructorMessageOverlay = instructorMessage && (
     <div className="fixed inset-0 z-[10000] grid place-items-center bg-black/70 backdrop-blur-sm p-4">
       <div className="w-full max-w-md rounded-xl border border-border bg-surface shadow-lg p-6 text-center">
@@ -1067,7 +1087,7 @@ export default function ExamRunner() {
           : result?.finalizedByServer
             ? 'O tempo acabou e as respostas salvas no servidor foram entregues automaticamente. Sua nota será exibida depois da publicação pelo professor.'
             : `${result?.auto ? 'O tempo acabou e suas respostas foram enviadas automaticamente. ' : ''}Sua nota será exibida depois da publicação pelo professor.`}</p>}
-      {Number.isFinite(Number(result?.answeredCount)) && result?.answeredCount !== null && (
+      {optionalNumber(result?.answeredCount) !== null && (
         <p className="text-sm text-text mt-2">{Number(result.answeredCount) === 1 ? '1 resposta registrada.' : `${Number(result.answeredCount)} respostas registradas.`}</p>
       )}
       {Number(result?.lateBySeconds) > 0 && (
@@ -1118,12 +1138,12 @@ export default function ExamRunner() {
           <div>
             <h2 className="text-xl font-bold text-text">Instruções da prova</h2>
             {examTitle && <p className="mt-0.5 text-sm font-medium text-text">{examTitle}</p>}
-            <p className="text-sm text-muted mt-1">Leia antes de iniciar. O cronômetro só começa depois da sua confirmação.</p>
+            <p className="text-sm text-muted mt-1">{untimed ? 'Leia antes de iniciar. Esta prova não tem tempo limite: não há cronômetro.' : 'Leia antes de iniciar. O cronômetro só começa depois da sua confirmação.'}</p>
           </div>
         </div>
         <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Duração</p><p className="font-semibold text-text">{cfg?.durationMinutes || '-'} min</p>{extraMinutes > 0 && <p className="text-xs font-medium text-success">+{extraMinutes} min de tempo adicional</p>}</div>
-          <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Cronômetro</p><p className="font-semibold text-text">{cfg?.timerMode === 'per_attempt' ? 'Ao iniciar' : 'Coletivo'}</p></div>
+          <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Duração</p><p className="font-semibold text-text">{untimed ? 'Sem tempo limite' : `${cfg?.durationMinutes || '-'} min`}</p>{!untimed && extraMinutes > 0 && <p className="text-xs font-medium text-success">+{extraMinutes} min de tempo adicional</p>}</div>
+          <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Cronômetro</p><p className="font-semibold text-text">{untimed ? 'Desligado' : cfg?.timerMode === 'per_attempt' ? 'Ao iniciar' : 'Coletivo'}</p></div>
           <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Tentativas</p><p className="font-semibold text-text">{cfg?.maxAttempts || 'Sem limite'}</p></div>
         </div>
         <ul className="mt-5 space-y-2 text-sm text-muted list-disc pl-5">
