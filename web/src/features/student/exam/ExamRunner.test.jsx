@@ -1398,6 +1398,49 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
     expect(keystrokeBatches()[0].seqs).toEqual([1, 2, 3, 4, 5])
   }, 15000)
 
+  it('"Enviar prova" espera o envio da digitação em andamento e manda todos os lotes que sobraram, em lotes de 500 (sobra do H5b, J2)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const order = []
+    let releaseFirst
+    const firstHeld = new Promise((resolve) => { releaseFirst = resolve })
+    let keyCalls = 0
+    apiMock.post.mockImplementation(async (url, body) => {
+      if (url === '/api/student/log-keystrokes') {
+        keyCalls += 1
+        const call = keyCalls
+        order.push(`keys:${call}:start:${body.events.length}`)
+        if (call === 1) await firstHeld
+        order.push(`keys:${call}:done`)
+        return { success: true }
+      }
+      if (url === '/api/student/submit') {
+        order.push('submit')
+        return { success: true, gradePublished: false, answeredCount: 1 }
+      }
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // o 1.º lote sai e fica preso
+    await waitFor(() => expect(keyCalls).toBe(1))
+    typeKeys(1180) // ficam no buffer enquanto o 1.º envio não volta
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    // Antes, o "Enviar prova" mandava um lote de 500 junto com o que estava preso, esperava
+    // só por ele e entregava; 680 teclas ficavam para depois da entrega.
+    expect(keyCalls).toBe(1)
+    expect(order).not.toContain('submit')
+    await act(async () => { releaseFirst() })
+    await waitFor(() => expect(order).toContain('submit'))
+    const sent = keystrokeBatches()
+    expect(sent.every((batch) => batch.seqs.length <= 500)).toBe(true)
+    expect(sent.flatMap((batch) => batch.seqs)).toEqual(Array.from({ length: 1200 }, (_, index) => index + 1))
+    const submitAt = order.indexOf('submit')
+    for (let call = 1; call <= sent.length; call += 1) expect(order.indexOf(`keys:${call}:done`)).toBeLessThan(submitAt)
+  }, 15000)
+
   it('"Enviar prova" não fica preso no envio da digitação: com a rede lenta, a entrega sai depois de no máximo 3 s', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {

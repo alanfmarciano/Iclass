@@ -68,6 +68,36 @@ export function waitForKeystrokeFlush(pending, waitMs = KEYSTROKE_SUBMIT_WAIT_MS
     new Promise((resolve) => { timer = setTimeout(resolve, waitMs) }),
   ]).finally(() => clearTimeout(timer))
 }
+
+// Antes de "Enviar prova" (sobra do H5b, J2): espera o envio em andamento e manda todos os
+// lotes que sobraram no buffer, em lotes de até 500, um por vez, dentro da mesma espera
+// máxima (waitMs, a rede lenta não segura a entrega). Antes só o primeiro lote saía: com a
+// rede de volta depois de uma queda (fila de mais de 500 teclas), o resto ficava para
+// depois da entrega, quando o servidor já pode recusar a sessão (senha redefinida).
+// - pendingSend(): a promessa do envio em andamento, ou null;
+// - sendNext(): manda o próximo lote e devolve a promessa (undefined: nada saiu);
+// - remaining(): quantos eventos ainda estão no buffer.
+// Para quando o buffer esvazia, o prazo acaba ou um lote volta para o buffer (recusado:
+// tentar de novo daria o mesmo).
+export async function drainKeystrokesBeforeSubmit({ pendingSend, sendNext, remaining, waitMs = KEYSTROKE_SUBMIT_WAIT_MS, now = () => Date.now() }) {
+  const deadline = now() + waitMs
+  const left = () => Math.max(0, deadline - now())
+  for (;;) {
+    if (left() <= 0) return
+    const inFlight = pendingSend()
+    if (inFlight) {
+      await waitForKeystrokeFlush(inFlight, left())
+      if (pendingSend() === inFlight) return // ainda não voltou: o prazo acabou
+      continue
+    }
+    const before = remaining()
+    if (!before) return
+    const sent = sendNext()
+    if (!sent) return
+    await waitForKeystrokeFlush(sent, left())
+    if (remaining() >= before) return
+  }
+}
 export const KEYSTROKE_RETRY_BASE_MS = 2000
 export const KEYSTROKE_RETRY_MAX_MS = 30000
 const KEYSTROKE_RETRIES_AFTER_LEAVE = 5
@@ -168,6 +198,7 @@ export default function ExamRunner() {
   const keyBufferRef = useRef([])
   const keySeqRef = useRef(0)
   const flushInFlightRef = useRef(0) // envios da digitação em andamento
+  const flushPromiseRef = useRef(null) // promessa do envio da digitação em andamento
   const flushQueuedRef = useRef(false) // pedido de envio durante um em andamento ou no recuo
   const flushFailuresRef = useRef(0) // falhas seguidas do envio da digitação
   const flushRetryAtRef = useRef(0) // até quando o envio espera o recuo
@@ -315,7 +346,12 @@ export default function ExamRunner() {
       // A digitação que ainda está no buffer sai antes da entrega, com espera curta
       // (KEYSTROKE_SUBMIT_WAIT_MS): depois da entrega o servidor pode recusar a sessão (senha
       // redefinida pelo professor durante a prova, H5b) e o último lote sumia do Monitor.
-      await waitForKeystrokeFlush(flushRef.current?.({ final: true }))
+      // Espera o envio em andamento e manda todos os lotes que sobraram, não só o primeiro.
+      await drainKeystrokesBeforeSubmit({
+        pendingSend: () => (flushInFlightRef.current > 0 ? flushPromiseRef.current : null),
+        sendNext: () => flushRef.current?.({ final: true }),
+        remaining: () => keyBufferRef.current.length,
+      })
       const r = await api.post('/api/student/submit', {
         email,
         studentClass,
@@ -512,7 +548,7 @@ export default function ExamRunner() {
     }
     flushQueuedRef.current = false
     flushInFlightRef.current += 1
-    return api.post('/api/student/log-keystrokes', payload, { timeoutMs: KEYSTROKE_TIMEOUT_MS }).then(() => {
+    const sending = api.post('/api/student/log-keystrokes', payload, { timeoutMs: KEYSTROKE_TIMEOUT_MS }).then(() => {
       flushInFlightRef.current = Math.max(0, flushInFlightRef.current - 1)
       flushFailuresRef.current = 0
       flushRetryAtRef.current = 0
@@ -553,6 +589,9 @@ export default function ExamRunner() {
       }
       scheduleKeystrokeRetry()
     })
+    // O envio em andamento, para o "Enviar prova" esperar por ele (drainKeystrokesBeforeSubmit).
+    flushPromiseRef.current = sending
+    return sending
   }, [email, studentClass, courseId, examKey, applicationId, attemptId, scheduleKeystrokeRetry])
   flushRef.current = flushKeystrokes
 
