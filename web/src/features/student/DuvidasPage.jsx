@@ -10,6 +10,7 @@ import { PageState } from '../../components/ui/PageState'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
 import { useToast } from '../../context/ToastProvider'
+import { usePolling } from '../../hooks/usePolling'
 
 const FILTERS = [
   { key: 'all', label: 'Todas' },
@@ -38,20 +39,20 @@ export default function DuvidasPage() {
   const [sending, setSending] = useState(false)
   const toast = useToast()
 
-  async function load(silent = false) {
+  // requestOptions: o que o usePolling manda na consulta periódica (prazo e cabeçalho de
+  // consulta de fundo). Devolve se a resposta chegou (recuo do usePolling).
+  async function load(silent = false, requestOptions = undefined) {
     if (!silent) { setLoading(true); setError(null) }
     try {
-      const r = await api.get(`/api/student/my-forum?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`)
+      const r = await api.get(`/api/student/my-forum?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`, requestOptions)
       setComments(r.comments || [])
       if (Array.isArray(r.topics) && r.topics.length) setTopics(r.topics)
-    } catch (e) { if (!silent) setError(e) } finally { if (!silent) setLoading(false) }
+      return true
+    } catch (e) { if (!silent) setError(e); return false } finally { if (!silent) setLoading(false) }
   }
   useEffect(() => { load() /* eslint-disable-next-line */ }, [courseId, studentClass])
-  useEffect(() => {
-    const id = setInterval(() => load(true), 15000)
-    return () => clearInterval(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [courseId, studentClass])
+  // A cada 15 s, uma consulta por vez e só com a aba à vista (usePolling).
+  usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 15000, immediate: false })
 
   async function post() {
     if (!text.trim()) return

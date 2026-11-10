@@ -11,7 +11,8 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
 import { consolidatedAverage, fmtGradeValue } from '../../lib/grades'
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { usePolling } from '../../hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
 
 // Nota e armazenada em escala 0-100 e exibida em 0-10.
@@ -356,13 +357,26 @@ export default function ProvasPage() {
   const [collapsed, setCollapsed] = useState({})
   const toggleMod = (m) => setCollapsed((c) => ({ ...c, [m]: !c[m] }))
 
+  // Entregas do aluno: ao abrir e a cada 5 s, uma consulta por vez e só com a aba à vista
+  // (usePolling). A resposta de outra turma (troca no meio da consulta) não vale.
+  const mineKey = `${email}|${courseId}|${studentClass}`
+  const mineKeyRef = useRef(mineKey)
+  mineKeyRef.current = mineKey
+  const minePolling = usePolling(async (requestOptions) => {
+    const key = mineKey
+    try {
+      const r = await api.post('/api/student/my-submissions', { email, courseId, studentClass }, requestOptions)
+      if (mineKeyRef.current === key) setMine(r.submissions || [])
+      return true
+    } catch { return false }
+  }, { intervalMs: 5000 })
+  // Troca de turma: consulta já (a primeira consulta sai sozinha ao abrir).
+  const mineKeySeenRef = useRef(mineKey)
   useEffect(() => {
-    let active = true
-    const load = () => api.post('/api/student/my-submissions', { email, courseId, studentClass }).then((r) => active && setMine(r.submissions || [])).catch(() => {})
-    load()
-    const id = setInterval(load, 5000)
-    return () => { active = false; clearInterval(id) }
-  }, [email, courseId, studentClass])
+    if (mineKeySeenRef.current === mineKey) return
+    mineKeySeenRef.current = mineKey
+    minePolling.runNow()
+  }, [mineKey, minePolling.runNow])
 
   const availableApplications = applications.data?.applications || []
 

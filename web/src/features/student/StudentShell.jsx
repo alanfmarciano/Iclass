@@ -12,6 +12,7 @@ import { StudentExamAvailability } from './StudentExamAvailability'
 import { NotificationBell } from '../../components/ui/NotificationBell'
 import { useStudentHeartbeat } from './useStudentHeartbeat'
 import { PageLoading } from '../../components/ui/PageLoading'
+import { AppErrorBoundary, STUDENT_ERROR_DESCRIPTION } from '../../components/ui/ErrorScreen'
 const NAV = [
   { to: '/aluno', icon: Home, text: 'Início', end: true },
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
@@ -95,7 +96,7 @@ export function StudentShell() {
           onLogout={() => { logout(); nav('/login') }}
           notifications={notifications}
         >
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></AppErrorBoundary></div>
         </LumenShell>
         <StudentExamAvailability />
       </>
@@ -155,7 +156,7 @@ export function StudentShell() {
           {notifications}
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></AppErrorBoundary></div>
         </main>
       </div>
       <StudentExamAvailability />

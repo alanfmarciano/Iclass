@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Clock3, GraduationCap, RefreshCw, XCircle } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -7,6 +7,7 @@ import { EmptyState } from '../../components/ui/EmptyState'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
+import { usePolling } from '../../hooks/usePolling'
 
 function classKey(cls) {
   return `${cls?.courseId || ''}|${cls?.name || ''}`
@@ -52,17 +53,22 @@ export function StudentCourseGate({ children }) {
     })
   }
 
-  async function refresh() {
-    applyPayload(await api.get('/api/student/enrollments'))
+  async function refresh(requestOptions = undefined) {
+    applyPayload(await api.get('/api/student/enrollments', requestOptions))
   }
 
+  // Sem turma ou com pedido de matrícula em análise: confere a cada 5 s, uma consulta por
+  // vez e só com a aba à vista (usePolling); o acesso abre sozinho depois da aprovação.
+  const waitingEnrollment = !!auth.email && !(classes.length > 0 && pending.length === 0)
+  const enrollmentPolling = usePolling((requestOptions) => refresh(requestOptions), { intervalMs: 5000, enabled: waitingEnrollment })
+  // Ação na tela (cancelar, pedir de novo) ou a lista mudou: confere já.
+  const enrollmentKey = `${auth.email}|${classes.length}|${pending.length}`
+  const enrollmentKeyRef = useRef(enrollmentKey)
   useEffect(() => {
-    if (!auth.email || (classes.length > 0 && pending.length === 0)) return undefined
-    refresh().catch(() => {})
-    const id = setInterval(() => refresh().catch(() => {}), 5000)
-    return () => clearInterval(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth.email, classes.length, pending.length])
+    if (enrollmentKeyRef.current === enrollmentKey) return
+    enrollmentKeyRef.current = enrollmentKey
+    if (waitingEnrollment) enrollmentPolling.runNow()
+  }, [enrollmentKey, waitingEnrollment, enrollmentPolling.runNow])
 
   async function cancel(request) {
     setBusy(request.id)

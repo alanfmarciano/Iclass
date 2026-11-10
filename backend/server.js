@@ -8,7 +8,7 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, hasStudentSessionToken, assignRequestId } = require('./middlewares.js');
+const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, assignRequestId } = require('./middlewares.js');
 const { logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
@@ -36,17 +36,11 @@ process.on('unhandledRejection', (reason) => logCrash('unhandledRejection', reas
 // Corpo JSON: até 10 MB só para o instrutor com sessão válida (apostila com imagem
 // embutida). Aluno, rotas públicas e o login legado ficam com 512 KB: o maior corpo
 // legítimo do aluno (lote de 500 teclas) fica abaixo de 100 KB, e um aparelho da rede
-// sem login não manda mais 10 MB por pedido (ENG-03).
+// sem login não manda mais 10 MB por pedido (ENG-03). O lote de teclas da prova também:
+// desde o H2-C o ExamRunner manda no máximo 500 teclas por envio e envia o resto em
+// seguida, então a exceção de 10 MB que ele tinha saiu.
 const ADMIN_JSON_LIMIT = '10mb';
 const DEFAULT_JSON_LIMIT = '512kb';
-// Exceção provisória: o lote de teclas da prova, com sessão de aluno, segue com os 10 MB
-// de antes. Até o H2-C (trilha B) fatiar o envio em lotes de 500, o ExamRunner manda o
-// buffer inteiro e o devolve ao buffer quando o envio falha: depois de uma queda longa
-// da rede (mais de ~3.500 teclas guardadas), com 512 KB cada tecla reenviava o buffer
-// todo, recebia 413 para sempre e o Monitor parava de receber as teclas do aluno. O
-// servidor continua guardando no máximo 500 eventos por envio. Sai junto com o H2-C.
-const KEYSTROKE_BATCH_PATH = '/api/student/log-keystrokes';
-const KEYSTROKE_JSON_LIMIT = '10mb';
 
 // Query string com parâmetro repetido (?email=a&email=b) vira o último valor, sempre
 // texto: com a lista, 9 rotas do professor respondiam 500 ao chamar .trim() (ENG-03).
@@ -110,11 +104,9 @@ app.use((req, res, next) => {
 // o COMMIT e troca a resposta pelo 503, roda primeiro, e a compressão só vê o que sai.
 app.use(compressTextResponses({ minBytes: 1024, maxBytes: 32 * 1024 * 1024, level: 6 }));
 const adminJsonParser = express.json({ limit: ADMIN_JSON_LIMIT });
-const keystrokeJsonParser = express.json({ limit: KEYSTROKE_JSON_LIMIT });
 const defaultJsonParser = express.json({ limit: DEFAULT_JSON_LIMIT });
 function jsonParserFor(req) {
     if (resolveAdminSession(req)) return adminJsonParser;
-    if (req.method === 'POST' && req.path === KEYSTROKE_BATCH_PATH && hasStudentSessionToken(req)) return keystrokeJsonParser;
     return defaultJsonParser;
 }
 app.use((req, res, next) => jsonParserFor(req)(req, res, next));

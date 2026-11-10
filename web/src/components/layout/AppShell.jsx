@@ -7,6 +7,7 @@ import { useBranding } from '../../context/BrandingProvider'
 import { LumenAdminShell } from './LumenAdminShell'
 import { PageLoading } from '../ui/PageLoading'
 import { InsecureConnectionNotice } from '../ui/InsecureConnectionNotice'
+import { ADMIN_ERROR_DESCRIPTION, AppErrorBoundary } from '../ui/ErrorScreen'
 const CRUMBS = {
   '/calendario': ['Gestão', 'Calendário'], '/avisos': ['Gestão', 'Avisos'],
   '/': ['Visão geral', 'Dashboard'], '/provas': ['Avaliações', 'Provas'],
@@ -40,8 +41,9 @@ export function AppShell() {
           {/* Painel por http em outro aparelho (SEG-03): aviso fixo, fora do key da rota. */}
           <InsecureConnectionNotice className="mb-4" />
           <div key={pathname} className="app-enter">
-            {/* Tela sob demanda (lib/lazyPage.js): "Carregando..." com o menu à vista. */}
-            <Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense>
+            {/* Tela sob demanda (lib/lazyPage.js): "Carregando..." com o menu à vista. Erro
+                de tela só nesta página, com o menu à vista e registro no servidor (H9c). */}
+            <AppErrorBoundary area="admin" description={ADMIN_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense></AppErrorBoundary>
           </div>
         </main>
       </div>

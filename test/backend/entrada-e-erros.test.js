@@ -801,32 +801,40 @@ test('[UC-ERRO-001] corpo JSON: 512 KB sem sessão de instrutor, 10 MB com sess�
     assert.equal(db.memory.adminSessions[ADMIN_TOKEN], undefined, 'sessão vencida removida');
 });
 
-test('[UC-ERRO-001] lote de teclas grande com sessão de aluno continua aceito (até o H2-C fatiar no cliente); sem sessão fica com 512 KB', async () => {
+test('[UC-ERRO-001] lote de teclas acima de 512 KB recebe 413 também com sessão de aluno; o lote de 500 do ExamRunner passa', async () => {
+    // Fase 2, H2-C (decisões §5): o ExamRunner manda no máximo 500 teclas por envio e
+    // envia o resto em seguida, então a exceção de 10 MB do lote de teclas saiu e o limite
+    // volta a ser o de 512 KB de todo pedido do aluno.
     restoreSeed();
-    // ~4.000 eventos como os do ExamRunner (> 512 KB): o buffer de uma queda longa de rede.
-    const events = Array.from({ length: 4000 }, (_, index) => ({
+    const keystroke = (index) => ({
         seq: index + 1, clientTs: Date.now(), key: 'a', code: 'KeyA', mods: '', kind: 'char', question: null,
         blocked: false, suspicious: false, padding: 'x'.repeat(60),
-    }));
-    const payload = { email: DEMO_ACCOUNTS.student.email, studentClass: '1DES', courseId: 'curso_legacy_01', examKey: 'Avaliacao_FUTEC_5', events };
-    assert.ok(Buffer.byteLength(JSON.stringify(payload)) > 512 * 1024);
+    });
+    const base = { email: DEMO_ACCOUNTS.student.email, studentClass: '1DES', courseId: 'curso_legacy_01', examKey: 'Avaliacao_FUTEC_5' };
+    // ~4.000 eventos (> 512 KB): o buffer inteiro de uma queda longa de rede, como o
+    // cliente antigo mandava.
+    const big = { ...base, events: Array.from({ length: 4000 }, (_, index) => keystroke(index)) };
+    assert.ok(Buffer.byteLength(JSON.stringify(big)) > 512 * 1024);
     const before = db.memory.examKeystrokes.length;
-    const accepted = await request(app).post('/api/student/log-keystrokes').set('x-session-token', STUDENT_TOKEN).send(payload);
+    const refused = await request(app).post('/api/student/log-keystrokes').set('x-session-token', STUDENT_TOKEN).send(big);
+    assert.equal(refused.status, 413);
+    assert.equal(db.memory.examKeystrokes.length, before, 'nada gravado do lote recusado');
+    const anonymous = await request(app).post('/api/student/log-keystrokes').send(big);
+    assert.equal(anonymous.status, 413);
+
+    // O lote do ExamRunner (500 teclas, KEYSTROKE_BATCH_MAX) fica bem abaixo do limite.
+    const batch = { ...base, events: Array.from({ length: 500 }, (_, index) => keystroke(index)) };
+    assert.ok(Buffer.byteLength(JSON.stringify(batch)) < 128 * 1024);
+    const accepted = await request(app).post('/api/student/log-keystrokes').set('x-session-token', STUDENT_TOKEN).send(batch);
     assert.equal(accepted.status, 200, `${accepted.status} ${accepted.body && accepted.body.error}`);
-    assert.equal(accepted.body.inserted, 500, 'o servidor guarda no máximo 500 por envio, como antes');
+    assert.equal(accepted.body.inserted, 500);
     assert.equal(db.memory.examKeystrokes.length, before + 500);
 
-    const anonymous = await request(app).post('/api/student/log-keystrokes').send(payload);
-    assert.equal(anonymous.status, 413);
-    const unknown = await request(app).post('/api/student/log-keystrokes').set('x-session-token', 'token-que-nao-existe').send(payload);
-    assert.equal(unknown.status, 413);
-    // A exceção vale só para o lote de teclas: o caderno do aluno segue com 512 KB.
+    // O caderno do aluno segue com 512 KB, como sempre.
     const notes = await request(app).post('/api/student/notes/save').set('x-session-token', STUDENT_TOKEN)
         .send({ email: DEMO_ACCOUNTS.student.email, moduleKey: 'geral', note: 'x'.repeat(600 * 1024) });
     assert.equal(notes.status, 413);
-    assert.equal(middlewares.hasStudentSessionToken({ headers: { 'x-session-token': STUDENT_TOKEN } }), true);
-    assert.equal(middlewares.hasStudentSessionToken({ headers: { 'x-session-token': '__proto__' } }), false);
-    assert.equal(middlewares.hasStudentSessionToken({ headers: {} }), false);
+    assert.equal(middlewares.hasStudentSessionToken, undefined, 'a exceção do lote de teclas saiu do servidor');
 });
 
 test('[UC-ERRO-001] resolveAdminSession não altera nada e só aceita sessão existente dentro do prazo', () => {

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const buildMock = vi.hoisted(() => ({ noteServerBuild: vi.fn() }))
 vi.mock('./buildVersion', async (importOriginal) => ({ ...(await importOriginal()), noteServerBuild: buildMock.noteServerBuild }))
 
-import { api, downloadFile, hasActiveSession, setAdminAccessDeniedHandler, setAuthProvider } from './api'
+import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, downloadFile, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider } from './api'
 
 afterEach(() => {
   buildMock.noteServerBuild.mockReset()
@@ -132,5 +132,164 @@ describe('[UC-REDE-001] painel recusado neste aparelho', () => {
     expect(handler).toHaveBeenCalledTimes(2)
     await expect(api.get('/api/admin/outro')).rejects.toThrow('Turma não autorizada.')
     expect(handler).toHaveBeenCalledTimes(2)
+  })
+})
+
+// Fase 2, H9c (ENG-04) e H2-C (DES-09): cada pedido tem prazo. Antes, um pedido
+// pendurado (Wi-Fi caindo, servidor travado) deixava a tela girando sem fim.
+// fetch que só termina quando o pedido é cancelado (servidor que aceita e não responde).
+function hangingFetch() {
+  return vi.fn((_url, init = {}) => new Promise((_resolve, reject) => {
+    if (init.signal) init.signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')))
+  }))
+}
+
+describe('[UC-ERRO-002] tempo-limite e falhas de conexão do cliente', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('pedido do instrutor sem resposta desiste em 60 s com status 0 e a mensagem em português', async () => {
+    vi.useFakeTimers()
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    vi.stubGlobal('fetch', hangingFetch())
+    const pending = api.get('/api/admin/students').catch((error) => error)
+    await vi.advanceTimersByTimeAsync(INSTRUCTOR_TIMEOUT_MS - 1)
+    let settled = false
+    pending.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    const error = await pending
+    expect(INSTRUCTOR_TIMEOUT_MS).toBe(60000)
+    expect(error.status).toBe(0)
+    expect(error.timeout).toBe(true)
+    expect(error.message).toBe(TIMEOUT_MESSAGE)
+    expect(TIMEOUT_MESSAGE).toBe('O servidor do IClass demorou demais para responder. Confira se ele está ligado e tente de novo.')
+  })
+
+  it('o login do instrutor também tem o prazo de 60 s', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', hangingFetch())
+    const pending = api.post('/api/session/admin-login', { email: 'a', password: 'b' }).catch((error) => error)
+    await vi.advanceTimersByTimeAsync(INSTRUCTOR_TIMEOUT_MS)
+    expect((await pending).timeout).toBe(true)
+  })
+
+  it('timeoutMs de quem chama vale (consulta periódica: 10 s); timeoutMs: 0 é sem prazo', async () => {
+    vi.useFakeTimers()
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    const fetchMock = hangingFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    const quick = api.get('/api/admin/notifications', { timeoutMs: POLL_TIMEOUT_MS }).catch((error) => error)
+    await vi.advanceTimersByTimeAsync(POLL_TIMEOUT_MS)
+    expect((await quick).timeout).toBe(true)
+
+    let longSettled = false
+    api.post('/api/admin/courses/curso1/clone', {}, { timeoutMs: 0 }).catch(() => {}).finally(() => { longSettled = true })
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+    expect(longSettled).toBe(false)
+    // Sem prazo e sem quem cancele: o pedido sai sem signal.
+    expect(fetchMock.mock.calls[1][1].signal).toBeUndefined()
+  })
+
+  it('operações longas do professor ficam sem prazo mesmo quando a tela não diz nada', async () => {
+    vi.useFakeTimers()
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    vi.stubGlobal('fetch', hangingFetch())
+    const paths = [
+      '/api/admin/backup/server', '/api/admin/backup/restore', '/api/admin/storage/compact', '/api/admin/flush-exam-state',
+      '/api/admin/reset', '/api/admin/courses/c1/clone', '/api/admin/courses/c1/purge', '/api/admin/archived-courses/x/restore',
+    ]
+    for (const path of paths) expect(isLongAdminOperation(path), path).toBe(true)
+    expect(isLongAdminOperation('/api/admin/students')).toBe(false)
+    expect(isLongAdminOperation('/api/admin/backupx')).toBe(false)
+    let settled = 0
+    for (const path of paths) api.post(path, {}).catch(() => {}).finally(() => { settled += 1 })
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+    expect(settled).toBe(0)
+  })
+
+  it('pedido do aluno fica sem prazo (a prova tem as próprias tentativas)', async () => {
+    vi.useFakeTimers()
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    vi.stubGlobal('fetch', hangingFetch())
+    let settled = false
+    api.post('/api/student/autosave-progress', {}).catch(() => {}).finally(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+    expect(settled).toBe(false)
+  })
+
+  it('pedido com keepalive (saída da página) nunca tem prazo, mesmo pedindo um', async () => {
+    vi.useFakeTimers()
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    const fetchMock = hangingFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    api.post('/api/student/log-keystrokes', {}, { keepalive: true, timeoutMs: 1000 }).catch(() => {})
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ keepalive: true }))
+    expect(fetchMock.mock.calls[0][1].signal).toBeUndefined()
+  })
+
+  it('sem rede: status 0, err.network e a mensagem em português (no download também)', async () => {
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    const error = await api.get('/api/admin/students').catch((err) => err)
+    expect(error.status).toBe(0)
+    expect(error.network).toBe(true)
+    expect(error.message).toBe(NETWORK_MESSAGE)
+    expect(NETWORK_MESSAGE).toBe('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.')
+    await expect(downloadFile('/api/admin/gradebook?format=csv')).rejects.toThrow(NETWORK_MESSAGE)
+  })
+
+  it('o prazo vale também enquanto o corpo da resposta chega', async () => {
+    vi.useFakeTimers()
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      }),
+    })))
+    const pending = api.get('/api/admin/students').catch((error) => error)
+    await vi.advanceTimersByTimeAsync(INSTRUCTOR_TIMEOUT_MS)
+    const error = await pending
+    expect(error.timeout).toBe(true)
+    expect(error.message).toBe(TIMEOUT_MESSAGE)
+  })
+
+  it('cancelar é de quem chamou: o erro sai como AbortError, sem a mensagem de conexão', async () => {
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    vi.stubGlobal('fetch', hangingFetch())
+    const controller = new AbortController()
+    const pending = api.get('/api/admin/students', { signal: controller.signal }).catch((error) => error)
+    controller.abort()
+    const error = await pending
+    expect(error.name).toBe('AbortError')
+    expect(error.message).not.toBe(TIMEOUT_MESSAGE)
+    expect(error.message).not.toBe(NETWORK_MESSAGE)
+  })
+
+  it('consulta de fundo leva X-IClass-Background: 1; o pedido comum não', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await api.get('/api/ping?email=a', { background: true, timeoutMs: POLL_TIMEOUT_MS })
+    await api.get('/api/student/me')
+    expect(BACKGROUND_HEADER).toBe('X-IClass-Background')
+    expect(fetchMock.mock.calls[0][1].headers).toEqual(expect.objectContaining({ 'X-IClass-Background': '1', 'x-session-token': 'token-aluno' }))
+    expect(fetchMock.mock.calls[1][1].headers).not.toHaveProperty('X-IClass-Background')
+  })
+
+  it('resposta de erro do servidor continua com o status e a mensagem dele', async () => {
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'Turma não encontrada.' }), { status: 404, headers: { 'content-type': 'application/json' } })))
+    const error = await api.get('/api/admin/students').catch((err) => err)
+    expect(error.status).toBe(404)
+    expect(error.message).toBe('Turma não encontrada.')
+    expect(error.timeout).toBeUndefined()
   })
 })

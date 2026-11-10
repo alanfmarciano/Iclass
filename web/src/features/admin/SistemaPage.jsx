@@ -202,7 +202,7 @@ function BackupCard({ isAdmin }) {
   async function serverBackup() {
     setServerBusy(true)
     try {
-      const r = await api.post('/api/admin/backup/server', {})
+      const r = await api.post('/api/admin/backup/server', {}, { timeoutMs: 0 })
       toast.success(`Cópia de segurança gerada no servidor (${r.fileName}). Ficam as ${r.kept || 20} cópias manuais mais recentes.`)
       if (isAdmin) history.refetch(true)
     } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
@@ -359,7 +359,7 @@ export default function SistemaPage() {
     if (!typedConfirmMatches(confirmText, 'LIMPAR')) return toast.error('Digite LIMPAR para confirmar')
     setBusy(true)
     try {
-      const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() })
+      const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() }, { timeoutMs: 0 })
       toast.success(r?.message || 'Estado de prova limpo'); setDialog(null); setConfirmText('')
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
@@ -367,7 +367,7 @@ export default function SistemaPage() {
     if (!typedConfirmMatches(confirmText, 'RESETAR')) return toast.error('Digite RESETAR para confirmar')
     setBusy(true)
     try {
-      const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() })
+      const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() }, { timeoutMs: 0 })
       toast.success(r?.message || 'Sala resetada'); setDialog(null); setConfirmText('')
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }

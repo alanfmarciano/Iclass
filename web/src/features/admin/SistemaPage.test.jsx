@@ -74,7 +74,7 @@ describe('SistemaPage · manutenção', () => {
     await user.type(screen.getByLabelText('Digite LIMPAR para confirmar'), 'LIMPAR')
     expect(confirmButton).toBeEnabled()
     await user.click(confirmButton)
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '1DES', courseId: 'DES', confirm: 'LIMPAR' })))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '1DES', courseId: 'DES', confirm: 'LIMPAR' }), { timeoutMs: 0 }))
   })
 
   it('[UC-MANUT-001] limpeza fica travada com prova em andamento na turma', async () => {
@@ -124,7 +124,7 @@ describe('SistemaPage · manutenção', () => {
     expect(screen.getByText(/a restauração volta todas as turmas ao momento do reset/)).toBeVisible()
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }, { timeoutMs: 0 }))
   })
 
   it('[UC-MANUT-001] no Ambiente da instituição (sem turma ativa) a turma é escolhida no próprio card de Manutenção (UXI-02, OPS-X3, CONF-X3)', async () => {
@@ -149,14 +149,14 @@ describe('SistemaPage · manutenção', () => {
     expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/studentClass=2DES&courseId=DES/))
     await user.type(screen.getByLabelText('Digite LIMPAR para confirmar'), 'LIMPAR')
     await user.click(screen.getByRole('button', { name: 'Limpar estado' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '2DES', courseId: 'DES', confirm: 'LIMPAR' })))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '2DES', courseId: 'DES', confirm: 'LIMPAR' }), { timeoutMs: 0 }))
 
     await user.selectOptions(select, 'ADM::1ADM')
     await user.click(resetButton)
     await screen.findByText(/Prova W/)
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1ADM', courseId: 'ADM', confirm: 'RESETAR' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1ADM', courseId: 'ADM', confirm: 'RESETAR' }, { timeoutMs: 0 }))
   })
 
   it('opções de turma: sem turmas excluídas, com o nome do curso e com a turma ativa mesmo antes da lista carregar', () => {

@@ -27,6 +27,8 @@ const {
     findClassByNameAndCourse,
     getReleasedItemsForClass
 } = require('../middlewares.js');
+const { logError } = require('../utils/errorLog.js');
+const { rateLimit } = require('../utils/rateLimit.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
 // O cliente compara o instanceId; se mudou (servidor reiniciado), forca novo login.
@@ -53,6 +55,61 @@ router.get('/api/session/status', (req, res) => {
 router.get('/api/connection', (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json(connectionInfo(req));
+});
+
+// Erro de tela do navegador (fase 2, H9c: ENG-05): a área de erro dos layouts e a tela
+// de erro da raiz (web/src/lib/clientErrors.js) avisam aqui, e o aviso vira uma linha
+// "erro de tela" no crash.log da pasta de dados, com quem estava na tela, a área, o
+// caminho da página e a versão do build. Não grava no banco. Pede sessão (aluno ou
+// instrutor) e aceita até 10 avisos por minuto por e-mail (acima disso, 429): com o
+// limite do arquivo (5 MB, utils/errorLog.js) e o tamanho dos campos, um aparelho não
+// enche o disco. Fora de /api/admin: o aluno também avisa.
+// O schema fica aqui até o H9b trazer o utils/inputSchema.js (mesmas mensagens).
+const CLIENT_ERROR_AREAS = ['raiz', 'admin', 'aluno', 'prova'];
+const CLIENT_ERROR_FIELDS = [
+    { field: 'area', label: 'área', oneOf: CLIENT_ERROR_AREAS, required: true },
+    { field: 'message', label: 'mensagem', max: 300, required: true },
+    { field: 'path', label: 'caminho', max: 200 },
+    { field: 'build', label: 'versão', max: 64 },
+];
+const CLIENT_ERROR_RATE_LIMIT = { max: 10, windowMs: 60000 };
+
+// Devolve { error, field } do primeiro campo errado, ou null com o corpo certo.
+function clientErrorProblem(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Dados enviados em formato inválido.' };
+    for (const rule of CLIENT_ERROR_FIELDS) {
+        const raw = body[rule.field];
+        if (raw === undefined) {
+            if (rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
+            continue;
+        }
+        if (typeof raw !== 'string') return { field: rule.field, error: `O campo "${rule.label}" está em formato inválido.` };
+        const value = raw.trim();
+        if (!value && rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
+        if (rule.oneOf && !rule.oneOf.includes(value)) return { field: rule.field, error: `O campo "${rule.label}" tem um valor não permitido.` };
+        if (rule.max && value.length > rule.max) {
+            return { field: rule.field, error: `O campo "${rule.label}" aceita no máximo ${rule.max.toLocaleString('pt-BR')} caracteres.` };
+        }
+    }
+    return null;
+}
+
+router.post('/api/client-error', validateAnySession, (req, res) => {
+    const email = String((req.requester && req.requester.email) || '').toLowerCase();
+    const limit = rateLimit(`client-error:${email}`, CLIENT_ERROR_RATE_LIMIT);
+    if (!limit.allowed) {
+        res.set('Retry-After', String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))));
+        return res.status(429).json({ success: false, error: 'Muitos avisos de erro seguidos. Aguarde um instante.' });
+    }
+    const problem = clientErrorProblem(req.body);
+    if (problem) return res.status(400).json({ success: false, ...problem });
+    const text = (name) => (typeof req.body[name] === 'string' ? req.body[name].trim() : '');
+    // Objeto sem stack: o stack do servidor não diz nada sobre o erro do navegador.
+    logError('erro de tela', { message: text('message') }, {
+        req,
+        details: { 'área': text('area'), caminho: text('path'), build: text('build') },
+    });
+    return res.status(204).end();
 });
 
 

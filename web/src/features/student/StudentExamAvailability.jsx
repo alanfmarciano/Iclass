@@ -91,17 +91,17 @@ export function StudentExamAvailability() {
     return () => window.clearInterval(id)
   }, [application?.id, application?.status, application?.startsAt])
 
+  // A janela voltou a ter o foco: confere já. A volta da aba oculta o usePolling do
+  // useApi já confere, e pollNow não dispara uma segunda consulta junto com uma em voo.
   useEffect(() => {
     const refresh = () => {
-      if (document.visibilityState === 'visible') applications.refetch(true)
+      if (document.visibilityState === 'visible') applications.pollNow()
     }
     window.addEventListener('focus', refresh)
-    document.addEventListener('visibilitychange', refresh)
     return () => {
       window.removeEventListener('focus', refresh)
-      document.removeEventListener('visibilitychange', refresh)
     }
-  }, [applications.refetch])
+  }, [applications.pollNow])
 
   const showBanner = !!application && !insideCurrentExam
   useEffect(() => {

@@ -483,15 +483,6 @@ function resolveAdminSession(req, now = Date.now()) {
     return check.ok ? { token, session: check.session } : null;
 }
 
-// Há sessão de aluno com o token do cabeçalho x-session-token? Só consulta (nada muda);
-// a validação completa (prazo, conta ativa, e-mail declarado) continua em
-// validateStudentSession. Usada pelo limite do corpo do lote de teclas (server.js).
-function hasStudentSessionToken(req) {
-    const token = req && req.headers ? req.headers['x-session-token'] : null;
-    if (typeof token !== 'string' || !token) return false;
-    return !!findStudentSession(db.memory, token);
-}
-
 function validateAdmin(req, res, callback) {
     // 1) Preferir sessao de instrutor via TOKEN (nao expoe a senha no cliente).
     // A sessão é procurada pelo hash do token (utils/authSessions.js); '__proto__' não é
@@ -1360,6 +1351,5 @@ module.exports = {
     sendRouteError,
     publicErrorMessage,
     resolveAdminSession,
-    hasStudentSessionToken,
     assignRequestId,
 };

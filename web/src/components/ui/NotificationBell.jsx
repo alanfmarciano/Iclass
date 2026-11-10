@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Bell, BellOff, CheckCheck, ChevronRight } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
+import { usePolling } from '../../hooks/usePolling'
 
 const TONE = {
   aviso: 'bg-info-soft text-info',
@@ -51,19 +52,26 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
   const rootRef = useRef(null)
   const navigate = useNavigate()
 
-  const load = useCallback(async () => {
-    if (!endpoint) return
-    try { setData(await api.get(endpoint)) } catch { /* mantém o último estado */ }
+  // Consulta periódica pelo usePolling (uma por vez, pausa com a aba oculta, recuo com o
+  // servidor fora). A resposta de um endpoint anterior (troca de turma) não vale mais.
+  const endpointRef = useRef(endpoint)
+  endpointRef.current = endpoint
+  const load = useCallback(async (requestOptions) => {
+    if (!endpoint) return true
+    try {
+      const next = await api.get(endpoint, requestOptions)
+      if (endpointRef.current === endpoint) setData(next)
+      return true
+    } catch { return false /* mantém o último estado */ }
   }, [endpoint])
+  const polling = usePolling(load, { intervalMs: pollMs, enabled: !!endpoint })
 
   useEffect(() => {
-    load()
     if (!endpoint) return undefined
-    const id = setInterval(load, pollMs)
-    const onFocus = () => { if (document.visibilityState !== 'hidden') load() }
+    const onFocus = () => { if (document.visibilityState !== 'hidden') polling.runNow() }
     window.addEventListener('focus', onFocus)
-    return () => { clearInterval(id); window.removeEventListener('focus', onFocus) }
-  }, [load, endpoint, pollMs])
+    return () => window.removeEventListener('focus', onFocus)
+  }, [endpoint, polling.runNow])
 
   useEffect(() => {
     if (!open) return undefined

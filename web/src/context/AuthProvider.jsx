@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef } f
 import { api, setAdminAccessDeniedHandler, setAuthProvider } from '../lib/api'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
+import { usePolling } from '../hooks/usePolling'
 
 const AuthCtx = createContext()
 const LS = 'iclass-v3-auth'
@@ -11,6 +12,7 @@ const IDLE_MS = 60 * 60 * 1000         // 60 min sem atividade do usuário -> lo
 const ABSOLUTE_MS = 8 * 60 * 60 * 1000 // 8 h desde o login -> logout
 const REVALIDATE_MS = 60 * 1000        // checagem periódica de instância/servidor
 const NET_FAIL_TOLERANCE = 3           // falhas de rede toleradas antes de considerar offline
+const SETTINGS_REFRESH_MS = 30 * 1000  // configurações públicas (tempo de sessão, manutenção)
 
 export function AuthProvider({ children }) {
   const [auth, setAuth] = useState(() => {
@@ -24,17 +26,16 @@ export function AuthProvider({ children }) {
   const netFailRef = useRef(0)
 
   useEffect(() => { setAuthProvider(() => auth) }, [auth])
-  useEffect(() => {
-    let cancelled = false
-    const refreshSettings = () => api.get('/api/settings/public', { auth: false }).then((r) => {
-      if (cancelled) return
+  // Configurações públicas (tempo de sessão, manutenção): ao abrir e a cada 30 s, uma
+  // consulta por vez e só com a aba à vista (usePolling).
+  usePolling(async (requestOptions) => {
+    try {
+      const r = await api.get('/api/settings/public', { auth: false, ...requestOptions })
       if (r?.session) { idleMsRef.current = (r.session.idleMinutes || 60) * 60000; absMsRef.current = (r.session.absoluteHours || 8) * 3600000 }
       if (r?.maintenance) setMaintenance(r.maintenance)
-    }).catch(() => {})
-    refreshSettings()
-    const id = setInterval(refreshSettings, 30000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [])
+      return true
+    } catch { return false }
+  }, { intervalMs: SETTINGS_REFRESH_MS })
   useEffect(() => {
     if (auth?.role) localStorage.setItem(LS, JSON.stringify(auth))
     else localStorage.removeItem(LS)
@@ -132,44 +133,43 @@ export function AuthProvider({ children }) {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Timeout de inatividade + revalidação periódica (instância) + on focus/visibility.
+  // A cada 60 s pelo usePolling (uma conferência por vez; com a aba oculta não confere e,
+  // ao voltar a ficar visível, confere na hora).
+  async function check(requestOptions) {
+    if (!auth?.role) return true
+    const now = Date.now()
+    const pathname = typeof window === 'undefined' ? '' : window.location.pathname
+    if (isStudentExamPath(pathname) && auth.role === 'student') {
+      // Ler uma questão por vários minutos continua sendo atividade válida.
+      // Mantém a sessão enquanto a rota protegida da prova estiver aberta.
+      lastActivityRef.current = now
+    } else if (shouldExpireForIdle({ role: auth.role, pathname, idleForMs: now - lastActivityRef.current, idleLimitMs: idleMsRef.current })) {
+      doLogout('idle'); return true
+    }
+    if (auth.loginAt && now - auth.loginAt > absMsRef.current) { doLogout('expired'); return true }
+    try {
+      const st = await api.get('/api/session/status', { auth: false, ...requestOptions })
+      netFailRef.current = 0
+      if (st.instanceId && auth.serverInstanceId && st.instanceId !== auth.serverInstanceId) { doLogout('restart'); return true }
+      return true
+    } catch {
+      netFailRef.current += 1 // rede instável: tolera, não desloga por 1 falha isolada
+      return false
+    }
+  }
+  const revalidation = usePolling(check, { intervalMs: REVALIDATE_MS, enabled: !!auth?.role, immediate: false })
   useEffect(() => {
     if (!auth?.role) return
     const markActivity = () => { lastActivityRef.current = Date.now() }
     const evs = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click']
     evs.forEach((e) => window.addEventListener(e, markActivity, { passive: true }))
-
-    async function check() {
-      if (!auth?.role) return
-      const now = Date.now()
-      const pathname = typeof window === 'undefined' ? '' : window.location.pathname
-      if (isStudentExamPath(pathname) && auth.role === 'student') {
-        // Ler uma questão por vários minutos continua sendo atividade válida.
-        // Mantém a sessão enquanto a rota protegida da prova estiver aberta.
-        lastActivityRef.current = now
-      } else if (shouldExpireForIdle({ role: auth.role, pathname, idleForMs: now - lastActivityRef.current, idleLimitMs: idleMsRef.current })) {
-        doLogout('idle'); return
-      }
-      if (auth.loginAt && now - auth.loginAt > absMsRef.current) { doLogout('expired'); return }
-      try {
-        const st = await api.get('/api/session/status', { auth: false })
-        netFailRef.current = 0
-        if (st.instanceId && auth.serverInstanceId && st.instanceId !== auth.serverInstanceId) { doLogout('restart'); return }
-      } catch {
-        netFailRef.current += 1 // rede instável: tolera, não desloga por 1 falha isolada
-      }
-    }
-
-    const id = setInterval(check, REVALIDATE_MS)
-    const onFocus = () => { if (document.visibilityState !== 'hidden') check() }
-    window.addEventListener('visibilitychange', onFocus)
+    const onFocus = () => { if (document.visibilityState !== 'hidden') revalidation.runNow() }
     window.addEventListener('focus', onFocus)
     return () => {
-      clearInterval(id)
       evs.forEach((e) => window.removeEventListener(e, markActivity))
-      window.removeEventListener('visibilitychange', onFocus)
       window.removeEventListener('focus', onFocus)
     }
-  }, [auth?.role, auth?.serverInstanceId, auth?.loginAt, doLogout])
+  }, [auth?.role, revalidation.runNow])
 
   const establishAdminSession = useCallback((who, fallbackEmail, extra = {}) => {
     const next = {

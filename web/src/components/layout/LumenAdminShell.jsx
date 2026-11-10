@@ -11,6 +11,7 @@ import { useAdminNotificationOpener } from './useAdminNotificationOpener'
 import { useApi } from '../../hooks/useApi'
 import { PageLoading } from '../ui/PageLoading'
 import { InsecureConnectionNotice } from '../ui/InsecureConnectionNotice'
+import { ADMIN_ERROR_DESCRIPTION, AppErrorBoundary } from '../ui/ErrorScreen'
 
 export function LumenAdminShell() {
   const { auth, logout, clearActiveWorkspace } = useAuth()
@@ -46,7 +47,8 @@ export function LumenAdminShell() {
     >
       {/* Painel por http em outro aparelho (SEG-03): aviso fixo, fora do key da rota. */}
       <InsecureConnectionNotice className="mb-4" />
-      <div key={pathname} className="app-enter"><Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense></div>
+      {/* Erro de tela só nesta página, com o menu à vista e registro no servidor (H9c). */}
+      <div key={pathname} className="app-enter"><AppErrorBoundary area="admin" description={ADMIN_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense></AppErrorBoundary></div>
     </LumenShell>
   )
 }

@@ -15,6 +15,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
+import { usePolling } from '../../hooks/usePolling'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -64,13 +65,16 @@ export default function ForumPage() {
   const templates = pref('forum.templates', [])
   const lastSeen = pref('forum.lastSeen', null)
 
-  const load = async (silent = false) => {
+  // requestOptions: o que o usePolling manda na consulta periódica (prazo e cabeçalho
+  // de consulta de fundo). Devolve se a resposta chegou (recuo do usePolling).
+  const load = async (silent = false, requestOptions = undefined) => {
     if (!silent) setLoading(true)
     setError(null)
-    try { setData(await api.post('/api/admin/forum/all', { courseId: activeCourseId, studentClass: activeClassName })) } catch (e) { if (!silent) setError(e) } finally { if (!silent) setLoading(false) }
+    try { setData(await api.post('/api/admin/forum/all', { courseId: activeCourseId, studentClass: activeClassName }, requestOptions)); return true } catch (e) { if (!silent) setError(e); return false } finally { if (!silent) setLoading(false) }
   }
   useEffect(() => { load() }, [activeCourseId, activeClassName])
-  useEffect(() => { const id = setInterval(() => load(true), 12000); return () => clearInterval(id) }, [activeCourseId, activeClassName])
+  // A cada 12 s, uma consulta por vez e só com a aba à vista (usePolling).
+  usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 12000, immediate: false })
 
   useEffect(() => {
     if (!activeCourseId) { setCourseKeys(null); return }
