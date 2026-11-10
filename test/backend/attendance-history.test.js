@@ -3,12 +3,14 @@
 // volta com id novo). O que se perdia agora fica:
 // 1) na auditoria: attendance_changed com antes e depois quando a situação muda depois da
 //    conclusão, sobre a presença automática do login ou a marcação individual, por outra
-//    pessoa ou depois de 15 min; o rascunho do mesmo professor (autosave) e a primeira
-//    chamada do dia não geram entrada. A marcação individual sempre grava
-//    attendance_marked. Nada do texto da justificativa, da observação nem do IP do aluno
-//    vai para a auditoria;
-// 2) no próprio registro: concludedAt (hora da primeira conclusão) e loginAccess (o
-//    acesso do login que a chamada substituiu) passam de versão em versão;
+//    pessoa ou mais de 15 min depois da versão de referência; o rascunho do mesmo
+//    professor (autosave) e a primeira chamada do dia não geram entrada. Vale também
+//    depois do 1º autosave: a tela manda a turma inteira a cada 2 s, e regravar o aluno
+//    sem mudar nada não apaga de onde, de quem e de quando é a situação (baseVersion).
+//    A marcação individual sempre grava attendance_marked. Nada do texto da
+//    justificativa, da observação nem do IP do aluno vai para a auditoria;
+// 2) no próprio registro: concludedAt (hora da primeira conclusão), loginAccess (o
+//    acesso do login que a chamada substituiu) e baseVersion passam de versão em versão;
 // 3) na chamada: aluno com cadastro encerrado não aparece nas datas novas, só numa data
 //    em que já tem registro ou anterior ao desligamento (statusChangedAt).
 const test = require('node:test');
@@ -38,6 +40,11 @@ const OTHER_DATE = '2026-03-09';
 const tokens = { admin: 'admin-token-presenca', prof: 'prof-token-presenca', prof2: 'prof2-token-presenca' };
 const emails = { admin: 'admin@presenca.local', prof: 'prof@presenca.local', prof2: 'prof2@presenca.local' };
 let app;
+
+// Relógio do servidor: adiantar simula o tempo passando entre um autosave e outro.
+const realDateNow = Date.now;
+let clockOffset = 0;
+const advance = ms => { clockOffset += ms; };
 
 const as = who => req => req.set('x-admin-session', tokens[who]);
 const auditOf = action => (db.memory.auditLogs || []).filter(entry => entry.action === action);
@@ -91,9 +98,11 @@ async function roster(who = 'prof', date = DATE) {
 test.before(async () => {
     await db.init();
     app = createApp();
+    Date.now = () => realDateNow() + clockOffset;
 });
-test.beforeEach(() => { seed(); });
+test.beforeEach(() => { clockOffset = 0; seed(); });
 test.after(async () => {
+    Date.now = realDateNow;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await db.close();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -164,8 +173,9 @@ test('[UC-PRESENCA-004] outro professor mudando o rascunho grava attendance_chan
     await chamada('prof2', [entry('ana', 'presente', 'falta'), entry('bruno', 'presente', 'presente')]);
     assert.equal(auditOf('attendance_changed').length, 1);
 
-    // A versão anterior ficou com mais de 15 min: volta a auditar.
-    dayRecords('ana@presenca.local')[0].timestamp = Date.now() - (attendanceUtil.ATTENDANCE_EDIT_SESSION_MS + 60 * 1000);
+    // Mais de 15 min depois da versão de referência (a mudança que virou entrada): volta
+    // a auditar. O rascunho do meio não renova a janela.
+    advance(attendanceUtil.ATTENDANCE_EDIT_SESSION_MS + 60 * 1000);
     await chamada('prof2', [entry('ana', 'presente', 'presente'), entry('bruno', 'presente', 'presente')]);
     changed = auditOf('attendance_changed');
     assert.equal(changed.length, 2);
@@ -209,6 +219,169 @@ test('[UC-PRESENCA-004] presença automática do login substituída: mudança vi
     const anaRow = after.find(r => r.email === 'ana@presenca.local');
     assert.equal(anaRow.origin, 'chamada');
     assert.deepEqual(anaRow.acessoAutomatico, { hora: '07:58', ip: '10.0.0.7', via: 'sessão aberta' });
+});
+
+// A tela da Chamada (ChamadaPage.buildEntries) manda a turma inteira a cada autosave:
+// quem não mudou volta com o markedBy e a hora de quem salvou. As regras de quando
+// auditar não podem valer só para o 1º autosave de quem abre a tela.
+const TURMA = ['ana', 'bruno', 'elisa'];
+const turma = (changes = {}) => TURMA.map(name => entry(name, ...(changes[name] || ['presente', 'presente'])));
+const loginRecord = (name, statuses = ['presente', 'presente'], extra = {}) => ({
+    id: `att_login_${name}`, studentEmail: `${name}@presenca.local`, studentClass: CLASS, courseId: COURSE, date: DATE,
+    origin: 'login', source: 'login', horaAcesso: '07:58', ip: '10.0.0.9', userAgent: 'Navegador do aluno',
+    aulas: aulas(...statuses), justificativa: null, markedBy: null, timestamp: Date.now() - 60 * 1000, ...extra,
+});
+
+test('[UC-PRESENCA-004] turma inteira no autosave: falta sobre a presença do login no 2º autosave vira entrada', async () => {
+    const anaLogin = loginRecord('ana');
+    db.memory.attendance.push(anaLogin, loginRecord('bruno'));
+    // 1º autosave: a professora mexe só na Elisa (sem registro: não grava entrada).
+    await chamada('prof', turma({ elisa: ['falta', 'falta'] }));
+    assert.equal(auditOf('attendance_changed').length, 0);
+    const anaAfterFirst = dayRecords('ana@presenca.local')[0];
+    assert.equal(anaAfterFirst.origin, 'chamada');
+    assert.deepEqual(anaAfterFirst.baseVersion, { origin: 'login', markedBy: null, timestamp: anaLogin.timestamp },
+        'a situação regravada sem mudar continua sendo a da presença automática');
+
+    // 2º autosave, 2 s depois: agora a Ana leva falta.
+    advance(2000);
+    await chamada('prof', turma({ elisa: ['falta', 'falta'], ana: ['falta', 'falta'] }));
+    const changed = auditOf('attendance_changed');
+    assert.equal(changed.length, 1, 'antes: a falta sobre a presença automática no 2º autosave não deixava rastro');
+    assert.equal(changed[0].studentEmail, 'ana@presenca.local');
+    assert.equal(changed[0].oldValue, 'Presente (2 aulas)');
+    assert.equal(changed[0].newValue, 'Falta (2 aulas)');
+    assert.equal(changed[0].details.before[0].baseVersion.origin, 'login', 'a fotografia diz de onde vinha a situação');
+    assert.ok(!JSON.stringify(changed[0]).includes('10.0.0.9'), 'o IP do aluno não vai para a auditoria');
+    const ana = dayRecords('ana@presenca.local')[0];
+    assert.equal(ana.baseVersion, undefined, 'a mudança registrada vira a nova referência');
+    assert.deepEqual(ana.loginAccess, { horaAcesso: '07:58', ip: '10.0.0.9', source: 'login' });
+
+    // Rascunho dela logo em seguida: não grava. O Bruno, regravado três vezes sem mudar,
+    // continua com a referência do login e com o acesso guardado.
+    advance(2000);
+    await chamada('prof', turma({ elisa: ['falta', 'falta'], ana: ['falta', 'presente'] }));
+    assert.equal(auditOf('attendance_changed').length, 1);
+    const bruno = dayRecords('bruno@presenca.local')[0];
+    assert.equal(bruno.baseVersion.origin, 'login');
+    assert.deepEqual(bruno.loginAccess, { horaAcesso: '07:58', ip: '10.0.0.9', source: 'login' });
+    advance(2000);
+    await chamada('prof', turma({ elisa: ['falta', 'falta'], ana: ['falta', 'presente'], bruno: ['falta', 'presente'] }));
+    assert.equal(auditOf('attendance_changed').length, 2, 'o Bruno também, no 4º autosave');
+    assert.equal(auditOf('attendance_changed')[1].studentEmail, 'bruno@presenca.local');
+});
+
+test('[UC-PRESENCA-004] turma inteira no autosave: outra pessoa mudando o aluno no 2º autosave dela vira entrada', async () => {
+    await chamada('prof', turma());
+    advance(60 * 1000);
+    await chamada('prof2', turma({ bruno: ['falta', 'falta'] }));
+    assert.deepEqual(auditOf('attendance_changed').map(e => e.studentEmail), ['bruno@presenca.local']);
+    advance(2000);
+    await chamada('prof2', turma({ bruno: ['falta', 'falta'], ana: ['falta', 'falta'] }));
+    const changed = auditOf('attendance_changed');
+    assert.deepEqual(changed.map(e => e.studentEmail), ['bruno@presenca.local', 'ana@presenca.local'],
+        'antes: a Ana, marcada pela professora, mudou no 2º autosave do colega sem rastro');
+    assert.equal(changed[1].actor, emails.prof2);
+    assert.equal(changed[1].details.before[0].markedBy, emails.prof2, 'o registro que saiu foi regravado pelo colega');
+    assert.equal(changed[1].details.before[0].baseVersion.markedBy, emails.prof, 'mas a situação era da professora');
+    // A partir daí é o rascunho dele.
+    advance(2000);
+    await chamada('prof2', turma({ bruno: ['falta', 'falta'], ana: ['presente', 'falta'] }));
+    assert.equal(auditOf('attendance_changed').length, 2);
+    // A professora volta e mexe na Ana: a situação agora é do colega.
+    advance(2000);
+    await chamada('prof', turma({ bruno: ['falta', 'falta'], ana: ['presente', 'presente'] }));
+    assert.equal(auditOf('attendance_changed').length, 3);
+});
+
+test('[UC-PRESENCA-004] turma inteira no autosave: versão de mais de 15 min mudada no 2º autosave vira entrada', async () => {
+    await chamada('prof', turma());
+    advance(40 * 60 * 1000);
+    await chamada('prof', turma({ bruno: ['falta', 'falta'] }));
+    assert.deepEqual(auditOf('attendance_changed').map(e => e.studentEmail), ['bruno@presenca.local']);
+    advance(2000);
+    await chamada('prof', turma({ bruno: ['falta', 'falta'], ana: ['falta', 'falta'] }));
+    assert.deepEqual(auditOf('attendance_changed').map(e => e.studentEmail), ['bruno@presenca.local', 'ana@presenca.local'],
+        'antes: a situação da Ana, de 40 min atrás, mudou no 2º autosave sem rastro');
+    // Depois da entrada, a janela recomeça: o rascunho logo em seguida não grava.
+    advance(2000);
+    await chamada('prof', turma({ bruno: ['falta', 'falta'], ana: ['presente', 'falta'] }));
+    assert.equal(auditOf('attendance_changed').length, 2);
+});
+
+test('[UC-PRESENCA-004] rascunho longo do mesmo professor: a janela de 15 min não anda com o autosave', async () => {
+    await chamada('prof', turma());
+    // Uma hora com a chamada aberta, mexendo na Ana a cada 10 min sem concluir.
+    const times = [];
+    for (let i = 1; i <= 6; i++) {
+        advance(10 * 60 * 1000);
+        await chamada('prof', turma({ ana: [i % 2 ? 'falta' : 'presente', 'presente'] }));
+        times.push(auditOf('attendance_changed').length);
+    }
+    assert.deepEqual(times, [0, 1, 1, 2, 2, 3], 'antes: nenhuma entrada em uma hora de rascunho');
+    // A mudança de 10 min depois da referência fica de fora (rascunho), a de 20 min entra,
+    // e o Antes é a situação que estava valendo (a do rascunho).
+    const [first] = auditOf('attendance_changed');
+    assert.equal(first.oldValue, '1 presença e 1 falta (2 aulas)');
+    assert.equal(first.newValue, 'Presente (2 aulas)');
+});
+
+test('[UC-PRESENCA-004] registro antigo sem curso que a chamada mostra é substituído, não fica ao lado do novo', async () => {
+    // Registro de versão antiga, sem courseId, concluído no dia; e acesso do login de uma
+    // turma que não tinha curso (courseId vazio).
+    db.memory.attendance.push(
+        { id: 'att_sem_curso', studentEmail: 'ana@presenca.local', studentClass: CLASS, date: DATE, origin: 'chamada', concluida: true,
+            aulas: aulas('presente', 'presente'), markedBy: emails.prof, timestamp: Date.now() - 86400000 },
+        loginRecord('bruno', ['presente', 'presente'], { courseId: '' }),
+    );
+    const before = await roster();
+    assert.equal(before.find(r => r.email === 'ana@presenca.local').concluida, true, 'a chamada mostra o registro antigo');
+    assert.deepEqual(before.find(r => r.email === 'bruno@presenca.local').acessoAutomatico, { hora: '07:58', ip: '10.0.0.9', via: 'login' });
+
+    await chamada('prof2', [entry('ana', 'falta', 'falta'), entry('bruno', 'falta', 'presente')]);
+    assert.equal(dayRecords('ana@presenca.local').length, 1, 'antes: o registro sem curso ficava ao lado do novo');
+    assert.equal(dayRecords('bruno@presenca.local').length, 1);
+    assert.deepEqual(auditOf('attendance_changed').map(e => e.studentEmail).sort(), ['ana@presenca.local', 'bruno@presenca.local'],
+        'antes: nenhuma das duas mudanças era auditada');
+    assert.equal(auditOf('attendance_changed').find(e => e.studentEmail === 'ana@presenca.local').details.before[0].id, 'att_sem_curso');
+    assert.deepEqual(dayRecords('bruno@presenca.local')[0].loginAccess, { horaAcesso: '07:58', ip: '10.0.0.9', source: 'login' }, 'antes: o acesso do login se perdia');
+
+    const after = await roster();
+    const ana = after.find(r => r.email === 'ana@presenca.local');
+    assert.deepEqual(ana.aulas.map(a => a.status), ['falta', 'falta'], 'antes: a chamada continuava mostrando o antigo');
+    assert.equal(ana.frequencia, 0, 'antes: 50% (o antigo e o novo contavam juntos)');
+    assert.equal(ana.faltasAcumuladas, 2);
+    assert.deepEqual(after.find(r => r.email === 'bruno@presenca.local').acessoAutomatico, { hora: '07:58', ip: '10.0.0.9', via: 'login' });
+});
+
+test('[UC-PRESENCA-004] marcação individual: cadastro encerrado só numa data que a chamada ainda mostra; sobre a chamada, a entrada diz que ela continua valendo', async () => {
+    const mark = (who, body) => as(who)(request(app).post('/api/admin/student/attendance/mark')).send({ studentClass: CLASS, courseId: COURSE, ...body });
+    const closed = await mark('admin', { email: 'carla@presenca.local', date: OTHER_DATE });
+    assert.equal(closed.status, 409, 'antes: criava o registro e o aluno inativo voltava para a chamada da data');
+    assert.equal(closed.body.code, 'student_closed');
+    assert.match(closed.body.error, /encerrado \(Inativo\)/);
+    assert.equal(dayRecords('carla@presenca.local', OTHER_DATE).length, 0);
+    assert.equal(auditOf('attendance_marked').length, 0);
+    assert.ok(!(await roster('prof', OTHER_DATE)).some(r => r.email === 'carla@presenca.local'));
+    // Antes do desligamento gravado (05/03), a data ainda aceita.
+    assert.equal((await mark('admin', { email: 'davi@presenca.local', date: DATE })).status, 200);
+    assert.equal((await mark('admin', { email: 'davi@presenca.local', date: OTHER_DATE })).status, 409);
+
+    // Sobre a chamada concluída com falta: a marcação não muda o dia, e a entrada diz isso.
+    await chamada('prof', [entry('ana', 'falta', 'falta')], { concluida: true });
+    const over = await mark('admin', { email: 'ana@presenca.local', date: DATE });
+    assert.equal(over.status, 200, over.body.error);
+    const marked = auditOf('attendance_marked').find(e => e.studentEmail === 'ana@presenca.local');
+    assert.equal(marked.oldValue, 'Falta (2 aulas)');
+    assert.equal(marked.newValue, 'Presente (2 aulas), mas a chamada do dia continua valendo',
+        'antes: "Falta → Presente", como se a presença tivesse mudado');
+    assert.equal(marked.details.afterPrevails, false);
+    assert.deepEqual((await roster()).find(r => r.email === 'ana@presenca.local').aulas.map(a => a.status), ['falta', 'falta']);
+    // Sem chamada no dia, a marcação vale e o texto é só a presença.
+    await mark('admin', { email: 'bruno@presenca.local', date: DATE });
+    const plain = auditOf('attendance_marked').find(e => e.studentEmail === 'bruno@presenca.local');
+    assert.equal(plain.newValue, 'Presente (2 aulas)');
+    assert.equal(plain.details.afterPrevails, undefined);
 });
 
 test('[UC-PRESENCA-004] marcação individual sempre grava attendance_marked com antes e depois', async () => {

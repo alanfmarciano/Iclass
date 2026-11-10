@@ -289,9 +289,19 @@ function computeAttendanceStats(records) {
 // - concludedAt: hora da primeira conclusão da chamada daquele dia, que passa de
 //   versão em versão (o autosave de rascunho depois de concluir não a apaga);
 // - loginAccess: { horaAcesso, ip, source } do registro automático do login que a
-//   chamada substituiu, também passado adiante.
-// Registro antigo sem esses campos vale como "nunca concluído" e "sem login guardado"
-// (o concluida: true gravado antes deles ainda conta como concluído).
+//   chamada substituiu, também passado adiante;
+// - baseVersion: { origin, markedBy, timestamp } da versão de referência da regra de
+//   quando auditar (a que a auditoria já conhece): a presença automática do login, a
+//   marcação individual, a primeira chamada do dia ou a última mudança que virou
+//   entrada. A tela da Chamada manda a turma inteira a cada autosave, e cada aluno volta
+//   com o markedBy e a hora de quem salvou, mesmo sem mudar nada. Sem este campo, a
+//   origem, o autor e a idade da situação se perdiam no primeiro autosave e a mudança
+//   seguinte (sobre a presença do login, de outra pessoa ou de mais de 15 min) passava
+//   como rascunho. Só a chamada leva o campo, e só quando a referência não é o próprio
+//   registro (mesma origem, autor e hora).
+// Registro antigo sem esses campos vale como "nunca concluído", "sem login guardado" e
+// "a referência é o próprio registro" (o concluida: true gravado antes deles ainda conta
+// como concluído).
 // ============================================================================
 
 // Edição contínua do mesmo professor: o autosave da Chamada grava a cada 2 s, e cada
@@ -343,6 +353,10 @@ function attendanceSnapshot(rec) {
     };
     const concludedAt = validTime(rec.concludedAt);
     if (concludedAt) snapshot.concludedAt = concludedAt;
+    // De onde vinha a situação regravada pelo autosave (ex.: a presença do login).
+    if (rec.origin === 'chamada' && rec.baseVersion && typeof rec.baseVersion === 'object') {
+        snapshot.baseVersion = attendanceBaseVersion(rec);
+    }
     return snapshot;
 }
 
@@ -410,23 +424,52 @@ function effectiveDayRecord(records) {
     return best;
 }
 
+// Versão de referência de um registro (ver baseVersion no começo desta seção): a guardada
+// na chamada regravada ou, sem ela (login, marcação individual, registro antigo, ou a
+// chamada que é a própria referência), o próprio registro.
+function attendanceBaseVersion(rec) {
+    if (!rec || typeof rec !== 'object') return null;
+    const stored = rec.origin === 'chamada' && rec.baseVersion && typeof rec.baseVersion === 'object' ? rec.baseVersion : null;
+    const from = stored || rec;
+    return {
+        origin: String(from.origin || '').slice(0, 20),
+        markedBy: from.markedBy == null ? null : String(from.markedBy).slice(0, 200),
+        timestamp: validTime(from.timestamp),
+    };
+}
+
 // Quando a regravação da chamada vira entrada da auditoria. Só se a situação mudou e:
-// - o registro anterior não era da chamada (presença automática do login ou marcação
-//   individual); ou
 // - a chamada já tinha sido concluída (concluida: true ou concludedAt); ou
-// - quem salva agora não é quem marcou antes; ou
-// - a versão anterior tem mais de 15 min (ATTENDANCE_EDIT_SESSION_MS).
-// A primeira chamada do dia (sem registro anterior) e o rascunho do mesmo professor
-// antes de concluir, dentro dos 15 min, não geram entrada.
+// - a situação não veio da chamada (presença automática do login ou marcação individual,
+//   mesmo que um autosave já tenha regravado o aluno sem mudar nada); ou
+// - quem salva agora não é quem marcou a situação; ou
+// - a versão de referência tem mais de 15 min (ATTENDANCE_EDIT_SESSION_MS). A janela
+//   não anda com o autosave: conta da referência (a primeira chamada do dia ou a última
+//   mudança que virou entrada), e o rascunho que não vira entrada não a renova.
+// Tudo isso pela versão de referência (attendanceBaseVersion), não pelo markedBy e pela
+// hora da última regravação. A primeira chamada do dia (sem registro anterior) e o
+// rascunho do mesmo professor antes de concluir, dentro dos 15 min, não geram entrada.
 function shouldAuditAttendanceChange(prev, next, actor, now = Date.now()) {
     if (!prev || typeof prev !== 'object') return false;
     if (statusKey(prev) === statusKey(next)) return false;
-    if (prev.origin !== 'chamada') return true;
     if (prev.concluida === true || validTime(prev.concludedAt)) return true;
-    if (emailOf(prev.markedBy) !== emailOf(actor)) return true;
-    const savedAt = validTime(prev.timestamp);
-    if (!savedAt) return true;
-    return Number(now) - savedAt > ATTENDANCE_EDIT_SESSION_MS;
+    const base = attendanceBaseVersion(prev);
+    if (base.origin !== 'chamada') return true;
+    if (emailOf(base.markedBy) !== emailOf(actor)) return true;
+    if (!base.timestamp) return true;
+    return Number(now) - base.timestamp > ATTENDANCE_EDIT_SESSION_MS;
+}
+
+// Versão de referência do registro novo da chamada, depois da decisão de auditar: o
+// próprio registro quando é a primeira chamada do dia ou quando a mudança virou entrada;
+// senão (situação igual, ou rascunho do mesmo professor), a referência anterior. Devolve
+// { baseVersion } só quando a referência não é o próprio registro, para espalhar nele.
+function attendanceBaseVersionFields(prev, record, { audited = false } = {}) {
+    if (!prev || audited || !record) return {};
+    const base = attendanceBaseVersion(prev);
+    const own = attendanceBaseVersion({ origin: record.origin, markedBy: record.markedBy, timestamp: record.timestamp });
+    if (base.origin === own.origin && emailOf(base.markedBy) === emailOf(own.markedBy) && base.timestamp === own.timestamp) return {};
+    return { baseVersion: base };
 }
 
 // Campos que passam da versão anterior para a nova regravação da chamada:
@@ -478,10 +521,19 @@ function formatDateBR(date) {
 // 'attendance'). action: 'attendance_changed' (chamada regravada) ou
 // 'attendance_marked' (marcação individual). before: os registros do dia que existiam
 // antes; after: o registro novo. Antes → Depois em texto (describe) pelo registro que
-// valia e pelo novo; details guarda as fotografias. Não grava no banco (db.save()
-// depois, em quem chama).
+// valia e pelo novo; details guarda as fotografias. Quando o novo não passa a valer no
+// dia (marcação individual sobre a chamada, que continua valendo na frequência), o texto
+// diz isso e details.afterPrevails = false. Não grava no banco (db.save() depois, em
+// quem chama).
 function recordAttendanceAudit(memory, { req, actor, action, studentEmail, courseId, studentClass, date, before = [], after = null, timestamp } = {}) {
     const previous = (Array.isArray(before) ? before : []).filter(r => r && typeof r === 'object');
+    const prevails = !after || effectiveDayRecord(previous.concat([after])) === after;
+    const details = {
+        date,
+        before: previous.map(attendanceSnapshot),
+        after: attendanceSnapshot(after),
+    };
+    if (!prevails) details.afterPrevails = false;
     return recordAudit(memory, {
         req,
         actor,
@@ -492,12 +544,8 @@ function recordAttendanceAudit(memory, { req, actor, action, studentEmail, cours
         studentClass: studentClass || '',
         field: `Presença em ${formatDateBR(date)}`,
         oldValue: describe(effectiveDayRecord(previous)),
-        newValue: describe(after),
-        details: {
-            date,
-            before: previous.map(attendanceSnapshot),
-            after: attendanceSnapshot(after),
-        },
+        newValue: prevails ? describe(after) : `${describe(after)}, mas a chamada do dia continua valendo`,
+        details,
     }, { timestamp });
 }
 
@@ -531,6 +579,7 @@ module.exports = {
     sanitizeAulas, sanitizeJustificativa, recordHasPresence, computeAttendanceStats,
     dedupeByDate,
     ATTENDANCE_EDIT_SESSION_MS, attendanceSnapshot, statusKey, describe, effectiveDayRecord,
-    shouldAuditAttendanceChange, attendanceCarryOver, formatDateBR, recordAttendanceAudit,
+    shouldAuditAttendanceChange, attendanceBaseVersion, attendanceBaseVersionFields,
+    attendanceCarryOver, formatDateBR, recordAttendanceAudit,
     localDateOf, closedStudentListedOn,
 };

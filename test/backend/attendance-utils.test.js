@@ -18,6 +18,8 @@ const {
     describe,
     effectiveDayRecord,
     shouldAuditAttendanceChange,
+    attendanceBaseVersion,
+    attendanceBaseVersionFields,
     attendanceCarryOver,
     formatDateBR,
     closedStudentListedOn,
@@ -192,6 +194,40 @@ test('[UC-PRESENCA-004] quando a regravação da chamada vira entrada da auditor
     assert.equal(shouldAuditAttendanceChange({ ...draft, timestamp: now - ATTENDANCE_EDIT_SESSION_MS }, next, 'prof@x.local', now), false, 'exatamente 15 min ainda é a mesma edição');
     assert.equal(shouldAuditAttendanceChange({ ...draft, timestamp: now - ATTENDANCE_EDIT_SESSION_MS - 1 }, next, 'prof@x.local', now), true, 'mais de 15 min');
     assert.equal(shouldAuditAttendanceChange({ ...draft, timestamp: undefined }, next, 'prof@x.local', now), true, 'sem hora gravada: grava');
+});
+
+test('[UC-PRESENCA-004] a regra de auditar olha a versão de referência, não a última regravação do autosave', () => {
+    const now = 1_800_000_000_000;
+    const next = { origin: 'chamada', markedBy: 'prof@x.local', timestamp: now, aulas: aulasDe('falta', 'presente') };
+    // Regravado pela professora 2 s atrás, sem mudar a situação de antes.
+    const rewritten = base => ({ origin: 'chamada', concluida: false, markedBy: 'prof@x.local', timestamp: now - 2000, aulas: aulasDe('presente', 'presente'), baseVersion: base });
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'login', markedBy: null, timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), true, 'a situação era da presença automática');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'manual', markedBy: 'prof@x.local', timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), true, 'era da marcação individual');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'chamada', markedBy: 'outra@x.local', timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), true, 'era de outra pessoa');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'chamada', markedBy: 'PROF@x.local', timestamp: now - ATTENDANCE_EDIT_SESSION_MS - 1 }), next, 'prof@x.local', now), true, 'referência com mais de 15 min');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'chamada', markedBy: 'PROF@x.local', timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), false, 'rascunho dela');
+    // Sem baseVersion, a referência é o próprio registro (registros de antes do campo).
+    const own = { origin: 'chamada', markedBy: 'prof@x.local', timestamp: now - ATTENDANCE_EDIT_SESSION_MS - 1, aulas: aulasDe('presente', 'presente') };
+    assert.equal(shouldAuditAttendanceChange(own, next, 'prof@x.local', now), true);
+    assert.deepEqual(attendanceBaseVersion(own), { origin: 'chamada', markedBy: 'prof@x.local', timestamp: own.timestamp });
+    // baseVersion só vale na chamada: o registro do login é a própria referência.
+    assert.deepEqual(attendanceBaseVersion({ origin: 'login', markedBy: null, timestamp: 5, baseVersion: { origin: 'chamada', markedBy: 'x', timestamp: 9 } }), { origin: 'login', markedBy: null, timestamp: 5 });
+    assert.equal(attendanceBaseVersion(null), null);
+
+    // O que o registro novo leva: nada na primeira chamada e na mudança que virou entrada
+    // (ele é a referência); a referência anterior quando a situação não mudou ou no rascunho.
+    const prevLogin = { origin: 'login', markedBy: null, timestamp: now - 60 * 1000, aulas: aulasDe('presente') };
+    assert.deepEqual(attendanceBaseVersionFields(null, next), {});
+    assert.deepEqual(attendanceBaseVersionFields(prevLogin, next, { audited: true }), {});
+    assert.deepEqual(attendanceBaseVersionFields(prevLogin, next, { audited: false }), { baseVersion: { origin: 'login', markedBy: null, timestamp: now - 60 * 1000 } });
+    const chain = rewritten({ origin: 'login', markedBy: null, timestamp: now - 60 * 1000 });
+    assert.deepEqual(attendanceBaseVersionFields(chain, next), { baseVersion: { origin: 'login', markedBy: null, timestamp: now - 60 * 1000 } }, 'passa adiante');
+    const sameAsRecord = { origin: 'chamada', markedBy: 'prof@x.local', timestamp: now };
+    assert.deepEqual(attendanceBaseVersionFields(sameAsRecord, next), {}, 'referência igual ao próprio registro não é gravada');
+
+    // A fotografia mostra a referência da chamada regravada (sem dado do aluno).
+    assert.deepEqual(attendanceSnapshot(chain).baseVersion, { origin: 'login', markedBy: null, timestamp: now - 60 * 1000 });
+    assert.equal(attendanceSnapshot(own).baseVersion, undefined);
 });
 
 test('[UC-PRESENCA-004] concludedAt e loginAccess passam de versão em versão', () => {
