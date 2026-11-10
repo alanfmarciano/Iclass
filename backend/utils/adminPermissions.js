@@ -113,6 +113,8 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/(flush-exam-state|server\/restart|reset)$/, permission: 'system.manage' },
     { methods: ['GET'], pattern: /^\/maintenance\/preview$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/settings$/, permission: 'system.manage' },
+    // Rede (painel em outros aparelhos): system.manage, e a rota recusa o professor.
+    { methods: ['GET', 'POST'], pattern: /^\/network-settings$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/trash(?:\/.*)?$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/backup(?:\/.*)?$/, permission: 'system.manage' },
     { methods: ['POST'], pattern: /^\/config$/, permission: 'page.dashboard' },

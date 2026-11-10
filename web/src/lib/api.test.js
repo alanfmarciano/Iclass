@@ -4,12 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const buildMock = vi.hoisted(() => ({ noteServerBuild: vi.fn() }))
 vi.mock('./buildVersion', async (importOriginal) => ({ ...(await importOriginal()), noteServerBuild: buildMock.noteServerBuild }))
 
-import { api, downloadFile, hasActiveSession, setAuthProvider } from './api'
+import { api, downloadFile, hasActiveSession, setAdminAccessDeniedHandler, setAuthProvider } from './api'
 
 afterEach(() => {
   buildMock.noteServerBuild.mockReset()
   vi.restoreAllMocks()
   setAuthProvider(() => ({}))
+  setAdminAccessDeniedHandler(null)
   localStorage.clear()
 })
 
@@ -85,5 +86,51 @@ describe('[UC-MANUT-001] versão do build nas respostas da API', () => {
     await api.get('/api/admin/classes')
     await api.get('/api/status?studentClass=1DES')
     expect(buildMock.noteServerBuild).not.toHaveBeenCalled()
+  })
+})
+
+// Fase 2, H6b (SEG-03): o cabeçalho com e-mail e senha acabou. O instrutor só manda o token
+// da sessão; a senha vai uma vez, no corpo do POST /api/session/admin-login.
+describe('[UC-AUTH-001] pedidos do instrutor só com o token da sessão', () => {
+  function okJson() { return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }) }
+
+  it('sessão antiga só com e-mail:senha no armazenamento não vira cabeçalho Authorization', async () => {
+    localStorage.setItem('iclass-v3-auth', JSON.stringify({ role: 'admin', adminAuth: 'admin@teste.local:teste' }))
+    setAuthProvider(() => ({ role: 'admin', adminAuth: 'admin@teste.local:teste' }))
+    const fetchMock = vi.fn(async () => okJson())
+    vi.stubGlobal('fetch', fetchMock)
+    await api.get('/api/admin/classes')
+    const headers = fetchMock.mock.calls[0][1].headers
+    expect(headers.Authorization).toBeUndefined()
+    expect(JSON.stringify(headers)).not.toContain('teste')
+    expect(hasActiveSession()).toBe(false)
+  })
+
+  it('com a sessão nova, só o x-admin-session vai no pedido', async () => {
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    const fetchMock = vi.fn(async () => okJson())
+    vi.stubGlobal('fetch', fetchMock)
+    await api.get('/api/admin/classes')
+    const headers = fetchMock.mock.calls[0][1].headers
+    expect(headers['x-admin-session']).toBe('sessao-admin')
+    expect(headers.Authorization).toBeUndefined()
+  })
+})
+
+describe('[UC-REDE-001] painel recusado neste aparelho', () => {
+  function json(body, status) { return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }) }
+
+  it('403 com adminAccess avisa o AuthProvider (pedido comum e download); outro 403 não', async () => {
+    const handler = vi.fn()
+    setAdminAccessDeniedHandler(handler)
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    const refusal = { error: 'O painel do professor só abre no computador onde o IClass está ligado. O administrador pode liberar outros aparelhos em Sistema → Rede.', adminAccess: 'local-only' }
+    vi.stubGlobal('fetch', vi.fn(async (path) => (path === '/api/admin/outro' ? json({ error: 'Turma não autorizada.' }, 403) : json(refusal, 403))))
+    await expect(api.get('/api/admin/classes')).rejects.toMatchObject({ status: 403, data: refusal })
+    expect(handler).toHaveBeenCalledWith(refusal)
+    await expect(downloadFile('/api/admin/gradebook?format=csv')).rejects.toMatchObject({ status: 403, data: refusal })
+    expect(handler).toHaveBeenCalledTimes(2)
+    await expect(api.get('/api/admin/outro')).rejects.toThrow('Turma não autorizada.')
+    expect(handler).toHaveBeenCalledTimes(2)
   })
 })

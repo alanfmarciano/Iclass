@@ -10,6 +10,7 @@ import { NotificationBell } from '../ui/NotificationBell'
 import { useAdminNotificationOpener } from './useAdminNotificationOpener'
 import { useApi } from '../../hooks/useApi'
 import { PageLoading } from '../ui/PageLoading'
+import { InsecureConnectionNotice } from '../ui/InsecureConnectionNotice'
 
 export function LumenAdminShell() {
   const { auth, logout, clearActiveWorkspace } = useAuth()
@@ -43,6 +44,8 @@ export function LumenAdminShell() {
       onLogout={() => { logout(); navigate('/login') }}
       notifications={<NotificationBell buttonClassName="lumen-icon-button relative" endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'} seenEndpoint="/api/admin/notifications/seen" onOpenItem={openNotification} />}
     >
+      {/* Painel por http em outro aparelho (SEG-03): aviso fixo, fora do key da rota. */}
+      <InsecureConnectionNotice className="mb-4" />
       <div key={pathname} className="app-enter"><Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense></div>
     </LumenShell>
   )

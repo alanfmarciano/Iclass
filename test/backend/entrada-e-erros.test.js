@@ -70,7 +70,6 @@ const KNOWN_TYPE_ERRORS_UNTIL_H9B = new Set([
     'POST /api/forum/reply',
     'POST /api/forum/reply/edit',
     'POST /api/student/log-keystrokes',
-    'POST /api/student/login',
 ]);
 
 // Campos mais usados nos corpos das rotas (grep de req.body em backend/routes).
@@ -843,7 +842,7 @@ test('[UC-ERRO-001] resolveAdminSession não altera nada e só aceita sessão ex
     assert.ok(db.memory.adminSessions[ADMIN_TOKEN], 'a consulta não apaga a sessão');
 });
 
-test('[UC-ERRO-001] credencial legada só vale como texto: password numérico ou objeto responde 401 sem gastar tentativas', async () => {
+test('[UC-ERRO-001] password no corpo não autentica (de nenhum tipo) e responde 401; o Authorization legado também não', async () => {
     restoreSeed();
     for (let attempt = 0; attempt < 35; attempt++) {
         const res = await request(app).post('/api/admin/student/observations/create')
@@ -855,10 +854,11 @@ test('[UC-ERRO-001] credencial legada só vale como texto: password numérico ou
     assert.ok(logout.status < 500, `logout: ${logout.status}`);
     const branding = await request(app).post('/api/branding').send({ password: ['a'] });
     assert.equal(branding.status, 401);
-    // O login legado em texto continua funcionando (até o H6b tirá-lo).
+    // O login legado em texto também deixou de valer (H6b): só a sessão do
+    // POST /api/session/admin-login entra.
     const legacy = await request(app).get('/api/admin/whoami')
         .set('Authorization', `${DEMO_ACCOUNTS.admin.email}:${DEMO_ACCOUNTS.admin.password}`);
-    assert.equal(legacy.status, 200);
+    assert.equal(legacy.status, 401);
 });
 
 test('[UC-ERRO-001] corpo sempre objeto: rota sem corpo responde 400 em vez de 500 ou ficar sem resposta, e o beacon de texto continua lido', async () => {

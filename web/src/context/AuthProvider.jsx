@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
-import { api, setAuthProvider } from '../lib/api'
+import { api, setAdminAccessDeniedHandler, setAuthProvider } from '../lib/api'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
 
@@ -41,8 +41,13 @@ export function AuthProvider({ children }) {
   }, [auth])
 
   // Encerra a sessão. Para instrutor, revoga o token no servidor (best-effort).
-  const doLogout = useCallback((reason) => {
+  // message (opcional): texto do servidor para o login mostrar (painel recusado neste aparelho).
+  const doLogout = useCallback((reason, message) => {
     try { if (reason) sessionStorage.setItem('iclass-logout-reason', reason) } catch {}
+    try {
+      if (message) sessionStorage.setItem('iclass-logout-message', String(message))
+      else sessionStorage.removeItem('iclass-logout-message')
+    } catch {}
     try { sessionStorage.removeItem('iclass-workspace-switch') } catch {}
     clearAllExamDrafts() // cópia local das respostas da prova não fica para o próximo usuário
     try {
@@ -55,6 +60,20 @@ export function AuthProvider({ children }) {
     setAuth({})
     setAuthReady(true)
   }, [])
+
+  // Painel recusado neste aparelho (403 com adminAccess, SEG-03): o administrador deixou o
+  // painel só no computador do IClass (ou só pela conexão segura). Encerra a sessão do
+  // instrutor e o login mostra o motivo. Só com sessão de instrutor aberta: a recusa do
+  // próprio login já aparece na tela de login.
+  const authRef = useRef(auth)
+  useEffect(() => { authRef.current = auth }, [auth])
+  useEffect(() => {
+    setAdminAccessDeniedHandler((data) => {
+      if (authRef.current?.role !== 'admin') return
+      doLogout('admin-network', data?.error)
+    })
+    return () => setAdminAccessDeniedHandler(null)
+  }, [doLogout])
 
   // Validação inicial da sessão guardada (uma vez, ao montar).
   useEffect(() => {
@@ -78,7 +97,9 @@ export function AuthProvider({ children }) {
           await api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`)
           if (!cancelled && serverInst && !auth.serverInstanceId) setAuth((c) => ({ ...c, serverInstanceId: serverInst }))
         } else if (auth.role === 'admin') {
-          if (!auth.adminSession && !auth.adminAuth) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
+          // Sessão guardada no formato antigo (só e-mail e senha, sem token) não vale mais:
+          // cai no login, e a senha some do armazenamento (SEG-03).
+          if (!auth.adminSession) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
           const who = await api.get('/api/admin/whoami')
           if (!cancelled) {
             setAuth((current) => ({
@@ -100,7 +121,9 @@ export function AuthProvider({ children }) {
         if (!cancelled) { lastActivityRef.current = Date.now(); setAuthReady(true) }
       } catch (err) {
         // 401/403 => sessão inválida (expirada/reiniciada). Erro de rede => mantém e tenta depois.
-        if (err && (err.status === 401 || err.status === 403)) { if (!cancelled) doLogout('expired') }
+        // 403 com adminAccess: o painel não abre neste aparelho (motivo vindo do servidor).
+        if (err && err.status === 403 && err.data?.adminAccess) { if (!cancelled) doLogout('admin-network', err.data.error) }
+        else if (err && (err.status === 401 || err.status === 403)) { if (!cancelled) doLogout('expired') }
         else if (!cancelled) setAuthReady(true)
       }
     }
@@ -178,11 +201,9 @@ export function AuthProvider({ children }) {
   }, [])
 
   const loginAdmin = useCallback(async (email, password) => {
-    const adminAuth = `${email}:${password}`
-    setAuthProvider(() => ({ adminAuth })) // credencial temporária só para autenticar
-    // whoami valida e emite um TOKEN de sessão + instanceId. Guardamos o token,
-    // NÃO a senha (deixa de ficar em texto puro no localStorage).
-    const who = await api.get('/api/admin/whoami')
+    // A senha vai uma vez, no corpo do POST de login (SEG-03); a resposta traz o TOKEN da
+    // sessão e o instanceId, como o whoami. Guardamos o token, nunca a senha.
+    const who = await api.post('/api/session/admin-login', { email, password }, { auth: false })
     return establishAdminSession(who, email, { localSetupMode: false })
   }, [establishAdminSession])
 

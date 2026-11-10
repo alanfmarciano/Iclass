@@ -9,7 +9,16 @@ export function setAuthProvider(fn) { authProvider = fn } // injetado pelo AuthP
 // para deixar a ida ao login passar sem confirmação só quando a sessão acabou de fato.
 export function hasActiveSession() {
   const current = authProvider() || {}
-  return !!(current.sessionToken || current.adminSession || current.adminAuth)
+  return !!(current.sessionToken || current.adminSession)
+}
+// Painel do professor recusado neste aparelho (403 com adminAccess, SEG-03): o servidor
+// diz que o painel só abre no computador do IClass ou só pela conexão segura. O
+// AuthProvider registra aqui o que fazer (encerrar a sessão e mostrar o motivo no login).
+let adminAccessDeniedHandler = null
+export function setAdminAccessDeniedHandler(fn) { adminAccessDeniedHandler = typeof fn === 'function' ? fn : null }
+function noteAdminAccessDenied(status, data) {
+  if (status !== 403 || !data || typeof data.adminAccess !== 'string' || !adminAccessDeniedHandler) return
+  try { adminAccessDeniedHandler(data) } catch {}
 }
 const AUTH_STORAGE_KEY = 'iclass-v3-auth'
 
@@ -21,10 +30,10 @@ function getStoredAuth() {
 function authHeaders() {
   const headers = {}
   const providedAuth = authProvider() || {}
-  const a = (providedAuth.adminSession || providedAuth.adminAuth || providedAuth.sessionToken) ? providedAuth : getStoredAuth()
-  // Instrutor: preferir TOKEN de sessão (não expõe senha). Fallback legado: "email:senha".
+  const a = (providedAuth.adminSession || providedAuth.sessionToken) ? providedAuth : getStoredAuth()
+  // Instrutor: só o token da sessão. A senha passa uma vez, no POST /api/session/admin-login;
+  // nenhum pedido leva cabeçalho com e-mail e senha (o servidor não aceita mais, SEG-03).
   if (a.adminSession) headers['x-admin-session'] = a.adminSession
-  else if (a.adminAuth) headers['Authorization'] = a.adminAuth
   if (a.sessionToken) headers['x-session-token'] = a.sessionToken       // aluno
   return headers
 }
@@ -34,7 +43,7 @@ function authHeaders() {
 // recarga no meio de uma edição perderia o que não foi salvo, e lá o F5 fica com ele.
 function noteBuildFrom(res, path, headers) {
   const studentRequest = !!headers['x-session-token'] || String(path || '').startsWith('/api/student/')
-  if (!studentRequest || headers['x-admin-session'] || headers['Authorization']) return
+  if (!studentRequest || headers['x-admin-session']) return
   noteServerBuild(res.headers?.get?.(BUILD_HEADER))
 }
 
@@ -54,6 +63,7 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
   if (ct.includes('application/json')) data = await res.json().catch(() => null)
   else if (raw) data = await res.text()
   if (!res.ok) {
+    noteAdminAccessDenied(res.status, data)
     const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)
     err.status = res.status; err.data = data
     throw err
@@ -69,8 +79,9 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
   noteBuildFrom(res, path, headers)
   if (!res.ok) {
     const data = await res.json().catch(() => null)
+    noteAdminAccessDenied(res.status, data)
     const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)
-    err.status = res.status
+    err.status = res.status; err.data = data
     throw err
   }
   const blob = await res.blob()

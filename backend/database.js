@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
+const { promisify } = require('util');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
 const { normalizeStoredStudentClasses } = require('./utils/students.js');
@@ -25,32 +26,98 @@ function legacyHashPassword(password) {
     return crypto.createHash('sha256').update(password + salt).digest('hex');
 }
 
+// Senhas: formato `scrypt$<sal base64>$<hash base64>` (64 bytes, parâmetros padrão do
+// Node). Os formatos antigos continuam conferindo: o hash SHA-256 legado (64 caracteres
+// hexadecimais), o texto puro e `scrypt-sha256$` (scrypt sobre o hash legado, gravado
+// pela proteção das senhas antigas do H5a). O login regrava em scrypt$ o que não está nele.
+//
+// As versões síncronas (hashPassword, verifyPassword) param a thread do servidor por
+// cerca de 50 ms a cada senha: ficam só no boot (migração de senhas em texto), nos
+// scripts e no modo de teste. As rotas usam hashPasswordAsync e verifyPasswordAsync, que
+// rodam o scrypt no pool de threads da libuv e deixam o servidor atender os outros
+// pedidos (DES-07: 40 logins juntos paravam o servidor por quase 2 s).
+const SCRYPT_KEY_LENGTH = 64;
+const SCRYPT_PREFIX = 'scrypt$';
+const SCRYPT_SHA256_PREFIX = 'scrypt-sha256$';
+const scryptAsync = promisify(crypto.scrypt);
+
+function parseScryptValue(value, prefix) {
+    const parts = value.slice(prefix.length).split('$');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    const salt = Buffer.from(parts[0], 'base64');
+    const expected = Buffer.from(parts[1], 'base64');
+    if (!salt.length || !expected.length) return null;
+    return { salt, expected };
+}
+
+// Como conferir o valor guardado: { scrypt: true, secret, salt, expected } nos formatos
+// com scrypt (secret é o texto que entra no scrypt); { legacy: true } no hash SHA-256;
+// {} no texto puro; null quando o valor com prefixo scrypt está ilegível (nunca confere).
+function passwordCheckPlan(stored, password) {
+    const value = String(stored);
+    if (value.startsWith(SCRYPT_PREFIX)) {
+        const parsed = parseScryptValue(value, SCRYPT_PREFIX);
+        return parsed && { scrypt: true, secret: String(password), ...parsed };
+    }
+    if (value.startsWith(SCRYPT_SHA256_PREFIX)) {
+        const parsed = parseScryptValue(value, SCRYPT_SHA256_PREFIX);
+        return parsed && { scrypt: true, secret: legacyHashPassword(String(password)), ...parsed };
+    }
+    if (/^[0-9a-f]{64}$/i.test(value)) return { legacy: true };
+    return {};
+}
+
+function uncryptedPasswordMatches(plan, stored, password) {
+    if (plan.legacy) return String(stored) === legacyHashPassword(String(password));
+    return String(stored) === String(password);
+}
+
+function scryptMatches(plan, actual) {
+    return plan.expected.length === actual.length && crypto.timingSafeEqual(plan.expected, actual);
+}
+
+function encodeScrypt(salt, derived) {
+    return `${SCRYPT_PREFIX}${salt.toString('base64')}$${derived.toString('base64')}`;
+}
+
 function hashPassword(password) {
     if (!password) return '';
     const salt = crypto.randomBytes(16);
-    const derived = crypto.scryptSync(String(password), salt, 64);
-    return `scrypt$${salt.toString('base64')}$${derived.toString('base64')}`;
+    return encodeScrypt(salt, crypto.scryptSync(String(password), salt, SCRYPT_KEY_LENGTH));
 }
 
 function verifyPassword(stored, password) {
     if (!stored || password == null) return false;
-    const value = String(stored);
-    if (value.startsWith('scrypt$')) {
-        const parts = value.split('$');
-        if (parts.length !== 3) return false;
-        try {
-            const salt = Buffer.from(parts[1], 'base64');
-            const expected = Buffer.from(parts[2], 'base64');
-            const actual = crypto.scryptSync(String(password), salt, expected.length);
-            return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
-        } catch (e) { return false; }
-    }
-    if (/^[0-9a-f]{64}$/i.test(value)) return value === legacyHashPassword(String(password));
-    return value === String(password);
+    const plan = passwordCheckPlan(stored, password);
+    if (!plan) return false;
+    if (!plan.scrypt) return uncryptedPasswordMatches(plan, stored, password);
+    try {
+        return scryptMatches(plan, crypto.scryptSync(plan.secret, plan.salt, plan.expected.length));
+    } catch (e) { return false; }
+}
+
+// Mesmo formato de hashPassword, sem parar a thread do servidor.
+async function hashPasswordAsync(password) {
+    if (!password) return '';
+    const salt = crypto.randomBytes(16);
+    return encodeScrypt(salt, await scryptAsync(String(password), salt, SCRYPT_KEY_LENGTH));
+}
+
+// Mesmo resultado de verifyPassword, sem parar a thread do servidor. Valor ilegível ou
+// falha do scrypt contam como senha errada.
+async function verifyPasswordAsync(stored, password) {
+    if (!stored || password == null) return false;
+    const plan = passwordCheckPlan(stored, password);
+    if (!plan) return false;
+    if (!plan.scrypt) return uncryptedPasswordMatches(plan, stored, password);
+    try {
+        return scryptMatches(plan, await scryptAsync(plan.secret, plan.salt, plan.expected.length));
+    } catch (e) { return false; }
 }
 
 function isHashed(password) {
-    return typeof password === 'string' && (password.startsWith('scrypt$') || /^[0-9a-f]{64}$/i.test(password));
+    return typeof password === 'string'
+        && (password.startsWith(SCRYPT_PREFIX) || password.startsWith(SCRYPT_SHA256_PREFIX) || /^[0-9a-f]{64}$/i.test(password));
 }
 
 function needsPasswordRehash(password) { return typeof password === 'string' && !password.startsWith('scrypt$'); }
@@ -1197,6 +1264,8 @@ module.exports = {
     DbWriteError,
     hashPassword,
     verifyPassword,
+    hashPasswordAsync,
+    verifyPasswordAsync,
     needsPasswordRehash,
     allClassAssignments,
     syncAdminClassAssignments,

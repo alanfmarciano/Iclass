@@ -80,7 +80,7 @@ async function studentLogin(account = ANA) {
 }
 
 async function adminLogin(account = ADMIN) {
-    const res = await request(app).get('/api/admin/whoami').set('Authorization', `${account.email}:${account.password}`);
+    const res = await request(app).post('/api/session/admin-login').send({ email: account.email, password: account.password });
     assert.equal(res.status, 200, `login do instrutor: ${res.status} ${res.body && res.body.error}`);
     assert.ok(res.body.sessionToken);
     return res.body.sessionToken;

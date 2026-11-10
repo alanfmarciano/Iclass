@@ -12,8 +12,10 @@ const {
     localIpAddresses,
     getReleasedItemsForClass,
     sendHandledFailure,
+    isProfessorAccount,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
+const { connectionInfo, httpsAvailable } = require('../utils/networkPolicy.js');
 const { saveServerBackup } = require('../utils/backup.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
@@ -352,6 +354,65 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 backup: backup.file,
                 message: `Sala ${cls.name} resetada: ${finished.length} prova(s) em andamento encerrada(s) com as respostas salvas (${submitted} entrega(s)), ${disconnected.length} aluno(s) desconectado(s)${sessions.keptInOtherExam.length ? ` (${sessions.keptInOtherExam.length} continua(m) conectado(s) por estar(em) em prova de outra turma)` : ''}, ${removed.removedStates} estado(s) de prova e ${removed.removedMessages} mensagem(ns) limpos. Conteúdos liberados, notas e logs foram preservados.`,
             });
+        });
+    });
+
+    // Rede (SEG-03): quem abre o painel do professor em outros aparelhos. Só o
+    // administrador troca (o professor recebe 403 mesmo com system.manage), com registro
+    // na auditoria. O POST genérico de configurações nunca mexe neste bloco
+    // (PROTECTED_SETTINGS_SECTIONS em utils/settings.js).
+    function networkSettingsPayload(req) {
+        const connection = connectionInfo(req);
+        return {
+            ...settingsUtil.networkSettings(),
+            modes: settingsUtil.ADMIN_ACCESS_MODES,
+            httpsAvailable: httpsAvailable(),
+            thisComputer: connection.thisComputer,
+            secure: connection.secure,
+        };
+    }
+
+    router.get('/api/admin/network-settings', (req, res) => {
+        validateAdmin(req, res, () => res.json(networkSettingsPayload(req)));
+    });
+
+    router.post('/api/admin/network-settings', (req, res) => {
+        validateAdmin(req, res, async (config, account) => {
+            if (isProfessorAccount(account)) {
+                return res.status(403).json({ error: 'Só o administrador pode mudar onde o painel do professor abre.' });
+            }
+            const requested = req.body.adminAccess;
+            if (typeof requested !== 'string' || !settingsUtil.ADMIN_ACCESS_MODES.includes(requested)) {
+                return res.status(400).json({ success: false, error: 'Escolha onde o painel do professor pode abrir.', field: 'adminAccess' });
+            }
+            if (requested === 'rede' && !httpsAvailable()) {
+                return res.status(409).json({
+                    success: false,
+                    field: 'adminAccess',
+                    error: 'A opção "Outros aparelhos só com conexão segura" ainda não pode ser usada: esta versão do IClass ainda não tem a conexão segura (https). Por enquanto, escolha "Todos os aparelhos da rede" ou "Só o computador do IClass".',
+                });
+            }
+            const before = settingsUtil.networkSettings();
+            if (before.adminAccess === requested) {
+                return res.json({ success: true, unchanged: true, network: networkSettingsPayload(req) });
+            }
+            if (!db.memory.config) db.memory.config = {};
+            const settings = db.memory.config.settings && typeof db.memory.config.settings === 'object' ? db.memory.config.settings : {};
+            const storedNetwork = settings.network && typeof settings.network === 'object' ? settings.network : {};
+            db.memory.config.settings = { ...settings, network: { ...storedNetwork, adminAccess: requested } };
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'network_settings_changed',
+                category: 'system',
+                field: 'adminAccess',
+                oldValue: before.adminAccess,
+                newValue: requested,
+                before: { adminAccess: before.adminAccess },
+                after: { adminAccess: requested },
+            });
+            await db.save();
+            res.json({ success: true, network: networkSettingsPayload(req) });
         });
     });
 

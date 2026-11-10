@@ -217,8 +217,8 @@ export default function EditorPage() {
     try {
       const res = await fetch('/api/admin/upload-image', {
         method: 'POST',
-        // Login atual guarda só a sessão (x-admin-session); a credencial legada fica de reserva.
-        headers: auth.adminSession ? { 'x-admin-session': auth.adminSession } : (auth.adminAuth ? { Authorization: auth.adminAuth } : {}),
+        // Só a sessão do instrutor (x-admin-session); a senha nunca vai junto.
+        headers: auth.adminSession ? { 'x-admin-session': auth.adminSession } : {},
         body: form,
       })
       const data = await res.json().catch(() => null)

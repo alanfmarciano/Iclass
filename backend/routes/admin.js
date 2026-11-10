@@ -320,12 +320,15 @@ router.post('/api/admin/enrollment-requests/:id/reject', (req, res) => {
 
 // Redefinir senha do aluno
 router.post('/api/admin/reset-password', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, async () => {
         const { email, newPassword } = req.body;
         if (!email || !newPassword || newPassword.trim() === '') {
             return res.status(400).json({ error: 'E-mail ou nova senha inválidos.' });
         }
 
+        // Hash com o scrypt assíncrono (DES-07) antes de ler o cadastro: a busca e a
+        // gravação acontecem depois da espera, sem nada mudar no meio.
+        const passwordHash = await db.hashPasswordAsync(newPassword.trim());
         const students = readJSON(DB_STUDENTS_FILE);
         const student = students.find(s => s.email && s.email.toLowerCase() === email.trim().toLowerCase());
 
@@ -333,7 +336,7 @@ router.post('/api/admin/reset-password', (req, res) => {
             return res.status(404).json({ error: 'Estudante não encontrado.' });
         }
 
-        student.password = db.hashPassword(newPassword.trim());
+        student.password = passwordHash;
         student.recoveryRequested = false; // Limpa a solicitação de redefinição
         writeJSON(DB_STUDENTS_FILE, students);
 
@@ -1245,8 +1248,11 @@ router.get('/api/admin/students', (req, res) => {
 
 // Criação manual de aluno pelo instrutor
 router.post('/api/admin/student/create', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const { studentPassword, studentClass, classes } = req.body;
+        // Hash com o scrypt assíncrono (DES-07) antes de qualquer leitura: validação,
+        // conferência de e-mail repetido e gravação rodam depois da espera, de uma vez.
+        const passwordHash = studentPassword ? await db.hashPasswordAsync(String(studentPassword).trim()) : '';
 
         // Suporte retroativo ou novo array. Turmas em objeto viram { name, courseId, period }
         // e `studentClass` guarda só o nome (DES-03).
@@ -1291,7 +1297,7 @@ router.post('/api/admin/student/create', (req, res) => {
             guardian: fields.guardian || null,
             // Dados de acessibilidade/saúde: só o administrador grava (SEG-04).
             accessibility: isProfessorAccount(matchedAdmin) ? null : (fields.accessibility || null),
-            password: db.hashPassword(String(studentPassword).trim()),
+            password: passwordHash,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade com submissões legadas (sempre o nome)
             period: fields.period || 'Tarde',
@@ -1317,8 +1323,10 @@ router.post('/api/admin/student/create', (req, res) => {
 
 // Atualização de cadastro de aluno pelo instrutor
 router.post('/api/admin/student/update', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const { originalEmail, password, studentClass, classes } = req.body;
+        // Senha nova com o scrypt assíncrono (DES-07), antes de ler o cadastro.
+        const passwordHash = password && !db.isHashed(password) ? await db.hashPasswordAsync(String(password).trim()) : null;
 
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
         const fields = extractStudentFields(req.body);
@@ -1363,7 +1371,7 @@ router.post('/api/admin/student/update', (req, res) => {
             guardian: fields.guardian !== undefined ? fields.guardian : (before.guardian || null),
             accessibility: fields.accessibility !== undefined ? fields.accessibility : (before.accessibility || null),
             password: password
-                ? (db.isHashed(password) ? password : db.hashPassword(String(password).trim()))
+                ? (db.isHashed(password) ? password : passwordHash)
                 : before.password,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade (sempre o nome)

@@ -13,12 +13,16 @@ Padrões para os endpoints Express. Fonte: `backend/server.js`, `backend/middlew
 
 O cliente (`web/src/lib/api.js`) envia credenciais por header conforme o perfil:
 
-| Perfil | Header preferido | Fallback legado |
-|--------|------------------|-----------------|
-| Instrutor/Admin | `x-admin-session: <token>` | `Authorization: email:senha` |
-| Aluno | `x-session-token: <token>` | — |
+| Perfil | Login (senha uma vez, no corpo) | Header dos outros pedidos |
+|--------|----------------------------------|---------------------------|
+| Instrutor/Admin | `POST /api/session/admin-login` `{ email, password }` | `x-admin-session: <token>` |
+| Aluno | `POST /api/student/login` `{ email, password }` | `x-session-token: <token>` |
 
-- **Preferir sempre o token de sessão** (não expõe senha). O `Authorization: email:senha` existe só por compatibilidade.
+- **Só o token da sessão autentica** (SEG-03). O cabeçalho `Authorization: email:senha` e o `password` no corpo de rotas do painel não autenticam mais (401). O `admin-login` responde `{ sessionToken, instanceId, email, name, role, assignedClasses, assignedCourseIds, assignedSchoolIds, additionalPermissions, mustChangePassword }`; o `GET /api/admin/whoami` devolve o mesmo formato para a sessão já aberta e nunca abre outra. Login: e-mail ou senha ausentes ou de outro tipo respondem 400 sem contar tentativa; senha errada, 401 `'E-mail ou senha incorretos.'`; mais de 30 tentativas por minuto por IP, 429 com `retryAfterSeconds` (`utils/passwordLogin.js`).
+- **Senha sem parar o servidor** (DES-07): login, cadastro, criação de conta e troca de senha conferem e gravam com o scrypt assíncrono (`hashPasswordAsync`/`verifyPasswordAsync` em `database.js`); as versões síncronas ficam só no boot, nos scripts e no modo de teste.
+- **Painel do professor conforme o aparelho** (SEG-03, `utils/networkPolicy.js`): `settings.network.adminAccess` decide quem abre o painel. `'rede-sem-https'` (padrão, também no banco antigo sem o campo) abre em qualquer aparelho da rede, como antes; `'local'` recusa todo pedido de professor de outro aparelho com 403 `{ error, adminAccess:'local-only' }`; `'rede'` exige a conexão segura (https) em outro aparelho, 403 `{ error, adminAccess:'https-required', httpsUrl }`, e só pode ser escolhido quando o IClass tiver https (H6c; até lá, 409). "Este computador" é o endereço da conexão (loopback ou um endereço atual desta máquina), nunca um cabeçalho. Pedido de professor: `/api/admin/*`, o `admin-login`, `x-admin-session`, ou token de professor em `?access=`/`x-session-token`. `POST /api/session/logout` passa sempre. Aluno nunca é afetado.
+- `GET /api/connection` (sem sessão, `no-store`): `{ secure, thisComputer, adminAccess:'ok'|'local-only'|'https-required', adminAccessMode, insecureAdmin, tlsAvailable, studentsHttps, httpsUrl }`. `insecureAdmin` é `true` quando o painel abre por http em outro aparelho: a tela de login e o painel mostram o aviso fixo de conexão sem proteção.
+- `GET/POST /api/admin/network-settings` (`system.manage`; o POST só para administrador, com `recordAudit` `network_settings_changed`): `{ adminAccess }` em `rede-sem-https`, `local` ou `rede`. O `POST /api/admin/settings` genérico não mexe nos blocos `backup`, `network` e `retention` (`PROTECTED_SETTINGS_SECTIONS` em `utils/settings.js`).
 - Sessão de aluno tem **token único + trava por IP** (anti-sequestro). Ver [SEGURANCA.md](./SEGURANCA.md).
 - O token de sessão (aluno e instrutor) é opaco: 32 bytes aleatórios em base64url, devolvido só na resposta do login. O servidor guarda apenas o sha256 (`utils/authSessions.js`); token vencido (prazo absoluto) ou de conta apagada responde 401 também em `/uploads`, `/imagens` (`?access=`) e nas rotas de conteúdo de prova.
 

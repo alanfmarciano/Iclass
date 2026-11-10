@@ -15,7 +15,8 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 
 const ICON = { image: ImageIcon, pdf: FileText, video: Film, link: Globe, zip: FileArchive, doc: FileText, sheet: FileText, other: File }
 function human(b) { if (!b) return ''; const u = ['B', 'KB', 'MB', 'GB']; let i = 0, n = b; while (n >= 1024 && i < 3) { n /= 1024; i++ } return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}` }
-function authHeaders() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
+// O envio de arquivo vai com a sessão do instrutor (x-admin-session); a senha nunca vai junto.
+function authHeaders() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; return a.adminSession ? { 'x-admin-session': a.adminSession } : {} } catch { return {} } }
 
 export default function BibliotecaPage() {
   const { courseId, courseName, className } = useAdminWorkspace()

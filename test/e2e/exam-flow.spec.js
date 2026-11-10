@@ -51,11 +51,15 @@ async function enterProfessorWorkspace(page) {
     await page.goto('/login');
     await page.getByRole('button', { name: 'Professor', exact: true }).click();
     await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/, { timeout: 15000 });
+    // A escolha de curso e turma aparece depois que a lista de cursos chega: espera ela
+    // ou o menu da turma antes de decidir (olhar uma vez só dependia do tempo do login).
     const chooseCourse = page.getByRole('heading', { name: 'Selecione o curso e a turma' });
+    const examsLink = page.getByRole('link', { name: 'Provas', exact: true });
+    await expect(chooseCourse.or(examsLink)).toBeVisible({ timeout: 15000 });
     if (await chooseCourse.isVisible().catch(() => false)) {
         await page.getByRole('button', { name: /Entrar em .+, turma/ }).first().click();
     }
-    await expect(page.getByRole('link', { name: 'Provas', exact: true })).toBeVisible();
+    await expect(examsLink).toBeVisible();
 }
 
 async function createStudentFromUi(page) {

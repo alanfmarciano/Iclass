@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
+import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
@@ -8,6 +8,8 @@ import { useAuth } from '../context/AuthProvider'
 import { useToast } from '../context/ToastProvider'
 import { api } from '../lib/api'
 import { useBranding } from '../context/BrandingProvider'
+import { InsecureConnectionNotice } from '../components/ui/InsecureConnectionNotice'
+import { adminAccessRefusalText, fetchConnectionInfo, LOCAL_ONLY_TEXT } from '../lib/adminAccess'
 
 const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }
 const LOCAL_QUICK_KEY = 'iclass-local-quick-token'
@@ -31,6 +33,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [quickLoginBusy, setQuickLoginBusy] = useState(null)
   const [demoEnabled, setDemoEnabled] = useState(false)
+  // Como o servidor trata o painel do professor neste aparelho (GET /api/connection, SEG-03).
+  const [connection, setConnection] = useState(null)
   const [localQuickToken, setLocalQuickToken] = useState(() => {
     if (typeof sessionStorage === 'undefined') return ''
     try { return sessionStorage.getItem(LOCAL_QUICK_KEY) || '' } catch { return '' }
@@ -78,10 +82,25 @@ export default function LoginPage() {
       const r = sessionStorage.getItem('iclass-logout-reason')
       if (r) {
         sessionStorage.removeItem('iclass-logout-reason')
+        let serverMessage = ''
+        try { serverMessage = sessionStorage.getItem('iclass-logout-message') || ''; sessionStorage.removeItem('iclass-logout-message') } catch {}
+        if (r === 'admin-network') {
+          // Painel recusado neste aparelho com a sessão aberta: volta na aba do instrutor,
+          // com o aviso da tela e o motivo do servidor.
+          setMode('admin')
+          toast.error(serverMessage || LOCAL_ONLY_TEXT)
+          return
+        }
         const msg = r === 'idle' ? 'Sua sessão expirou por inatividade. Faça login novamente.' : r === 'restart' ? 'O servidor foi reiniciado. Faça login novamente.' : 'Sua sessão expirou. Faça login novamente.'
         toast.info(msg)
       }
     } catch {}
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetchConnectionInfo().then((info) => { if (!cancelled) setConnection(info) })
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -93,11 +112,20 @@ export default function LoginPage() {
     api.get('/api/test-mode', { auth: false }).then((r) => setDemoEnabled(r?.enabled === true)).catch(() => setDemoEnabled(false))
   }, [])
 
+  // Recusa do painel vinda de um 403 (o administrador mudou a regra com a tela aberta):
+  // atualiza o aviso da aba do instrutor sem esperar outra consulta.
+  function noteRefusal(err) {
+    const adminAccess = err?.status === 403 && err?.data?.adminAccess
+    if (!adminAccess) return
+    setConnection((current) => ({ ...(current || {}), adminAccess, adminAccessError: err.data.error || '', insecureAdmin: false }))
+  }
+
   async function submit(e) {
     e.preventDefault(); setLoading(true)
     try {
       if (mode === 'admin') {
-        await loginAdmin(email, password); nav('/')
+        try { await loginAdmin(email, password) } catch (err) { noteRefusal(err); throw err }
+        nav('/')
       } else if (studentAction === 'register') {
         if (!acceptedTerms) { toast.error('Aceite os Termos de Uso e a Política de Privacidade'); setLoading(false); return }
         const courseId = courseValue
@@ -135,7 +163,7 @@ export default function LoginPage() {
         nav('/aluno')
       } else {
         const account = kind === 'admin' ? accounts.admin : accounts.professor
-        await loginAdmin(account.email, account.password)
+        try { await loginAdmin(account.email, account.password) } catch (err) { noteRefusal(err); throw err }
         nav('/')
       }
     } catch (err) {
@@ -150,6 +178,10 @@ export default function LoginPage() {
   }
 
   const isRegister = mode === 'student' && studentAction === 'register'
+  // Painel do professor recusado neste aparelho ('local' ou 'rede' sem conexão segura).
+  const adminRefusal = connection && connection.adminAccess && connection.adminAccess !== 'ok'
+    ? adminAccessRefusalText(connection.adminAccess, connection.adminAccessError)
+    : ''
   const activeCourses = Array.from(new Map((classes || []).map((c) => [c.courseId, c.courseName])).entries()).map(([id, name]) => ({ id, name }))
   const courseClasses = (classes || []).filter((c) => c.courseId === courseValue)
   const setG = (patch) => setGuardian((g) => ({ ...g, ...patch }))
@@ -238,6 +270,13 @@ export default function LoginPage() {
                 <button type="button" onClick={() => setStudentAction('recover')} className={`flex-1 rounded-lg py-2 font-semibold ${studentAction === 'recover' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Senha</button>
               </div>
             )}
+            {mode === 'admin' && adminRefusal && (
+              <div role="alert" data-testid="admin-access-refused" className="mt-4 flex items-start gap-2.5 rounded-lg border border-danger bg-danger-soft px-4 py-3 text-sm text-text">
+                <MonitorX aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-danger" />
+                <p>{adminRefusal}</p>
+              </div>
+            )}
+            {mode === 'admin' && !adminRefusal && <InsecureConnectionNotice connection={connection} className="mt-4" />}
             <form onSubmit={submit} className="mt-5 max-h-[58vh] space-y-4 overflow-auto pr-1">
             {isRegister && (
               <>
@@ -293,7 +332,7 @@ export default function LoginPage() {
                 <span>Li e aceito os <span className="text-text font-medium">Termos de Uso</span> e a <span className="text-text font-medium">Política de Privacidade</span>.</span>
               </label>
             )}
-            <Button type="submit" size="lg" icon={mode === 'admin' || studentAction === 'login' ? LogIn : studentAction === 'register' ? UserPlus : KeyRound} loading={loading} className="w-full">
+            <Button type="submit" size="lg" icon={mode === 'admin' || studentAction === 'login' ? LogIn : studentAction === 'register' ? UserPlus : KeyRound} loading={loading} disabled={mode === 'admin' && !!adminRefusal} className="w-full">
               {mode === 'admin' ? 'Entrar como instrutor' : studentAction === 'register' ? 'Criar conta' : studentAction === 'recover' ? 'Solicitar nova senha' : 'Entrar como aluno'}
               {!loading && <ArrowRight size={16} className="ml-auto" />}
             </Button>

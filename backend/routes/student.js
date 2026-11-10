@@ -58,6 +58,7 @@ const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeSco
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
 const { createStudentSession, revokeStudentSession } = require('../utils/authSessions.js');
+const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     createSubmissionFromAttempt,
@@ -676,7 +677,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
 });
 
 // Cadastro de Aluno
-router.post('/api/student/register', (req, res) => {
+router.post('/api/student/register', async (req, res) => {
     const { rateLimit } = require('../utils/rateLimit.js');
     const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
     if (!_rl.allowed) {
@@ -717,6 +718,15 @@ router.post('/api/student/register', (req, res) => {
         return res.status(400).json({ error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.' });
     }
 
+    // Hash com o scrypt assíncrono (DES-07). Durante a espera outro cadastro pode ter
+    // entrado com o mesmo e-mail: a conferência de e-mail repetido roda de novo depois.
+    const passwordHash = await db.hashPasswordAsync(String(password).trim());
+    const currentStudents = readJSON(DB_STUDENTS_FILE);
+    const recheck = validateStudentFields(selfFields, currentStudents, null);
+    if (!recheck.ok) {
+        return res.status(400).json({ error: recheck.error });
+    }
+
     const enrollmentRequest = {
         id: `enrollment_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
         courseId,
@@ -739,7 +749,7 @@ router.post('/api/student/register', (req, res) => {
         matricula: '',
         unidade: '',
         status: DEFAULT_STATUS,
-        password: db.hashPassword(String(password).trim()),
+        password: passwordHash,
         classes: [],
         studentClass: '',
         period: '',
@@ -751,8 +761,8 @@ router.post('/api/student/register', (req, res) => {
         createdAt: Date.now(),
         updatedAt: Date.now()
     };
-    students.push(studentObj);
-    writeJSON(DB_STUDENTS_FILE, students);
+    currentStudents.push(studentObj);
+    writeJSON(DB_STUDENTS_FILE, currentStudents);
 
     res.json({ success: true, enrollmentRequest });
 });
@@ -943,25 +953,16 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
 
 // Login do aluno
 router.post('/api/student/login', async (req, res) => {
-    const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-login:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 30, windowMs: 60000 });
-    if (!_rl.allowed) {
-        return res.status(429).json({ error: 'Muitas tentativas de login. Aguarde um instante e tente novamente.' });
+    // Senha conferida com o scrypt assíncrono (utils/passwordLogin.js, DES-07): a turma
+    // entrando junto não para o servidor. O hash antigo é regravado em scrypt$ lá.
+    const login = await attemptPasswordLogin({ kind: 'student', email: req.body.email, password: req.body.password, req });
+    if (!login.ok) {
+        // A falha fica em loginLogs (gravada pelo attemptPasswordLogin na memória).
+        if (login.status === 401) await db.save();
+        return res.status(login.status).json(login.body);
     }
-    const { email, password } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
-    }
-
-    const students = db.memory.students;
-    const normalizedEmail = email.trim().toLowerCase();
-    const student = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail && db.verifyPassword(s.password, password.trim()));
-
-    if (!student) {
-        recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'fail', reason: 'Credenciais inválidas', req });
-        await db.save();
-        return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
-    }
+    const student = login.account;
+    const normalizedEmail = login.email;
 
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
@@ -969,8 +970,6 @@ router.post('/api/student/login', async (req, res) => {
         await db.save();
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa. Procure o instrutor.' });
     }
-
-    if (db.needsPasswordRehash(student.password)) student.password = db.hashPassword(password.trim());
 
     student.loginTime = new Date().toISOString();
     student.lastLoginAt = Date.now();
@@ -2016,10 +2015,11 @@ router.get('/api/student/annotations', validateStudentSession, (req, res) => {
 // ==========================================
 // FÓRUM / DÚVIDAS INTEGRADO
 // ==========================================
-// Quando a chamada vem do painel administrativo, aplica também o RBAC e o
-// escopo de conteúdo da conta. Chamadas do portal do aluno mantêm o fluxo atual.
+// Quando a chamada vem do painel administrativo (x-admin-session), aplica também o RBAC
+// e o escopo de conteúdo da conta. Chamadas do portal do aluno mantêm o fluxo atual. O
+// 'Authorization: email:senha' não identifica instrutor (SEG-03).
 router.use('/api/forum', (req, res, next) => {
-    const hasAdminCredentials = !!(req.headers['x-admin-session'] || req.headers.authorization);
+    const hasAdminCredentials = !!req.headers['x-admin-session'];
     if (!hasAdminCredentials) return validateStudentSession(req, res, next);
     return validateAdminPermission(req, res, 'page.forum', (config, matchedAdmin) => {
         let key = (req.body && req.body.key) || (req.query && req.query.key);

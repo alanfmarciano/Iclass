@@ -10,6 +10,7 @@ const {
 } = require('../middlewares.js');
 const { parseAdditionalPermissions, isProfessorAccount } = require('../utils/adminPermissions.js');
 const { revokeAdminSession } = require('../utils/authSessions.js');
+const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 
 // Gestão de contas (criar/editar/excluir) é exclusiva de administradores.
 // Backstop além do RBAC: mesmo que a capability accounts.manage vaze para um
@@ -106,8 +107,39 @@ function recordAssignmentAudit(req, requester, targetEmail, before, after) {
     }, { timestamp, legacy: { type: 'professor_assignments_updated', actorEmail: requester && requester.email, at: timestamp } });
 }
 
+// Resposta do login e do whoami: a mesma, para o painel montar a sessão do mesmo jeito.
+function adminSessionPayload(account, sessionToken) {
+    return {
+        email: account.email,
+        name: account.name || '',
+        role: account.role || 'admin',
+        assignedSchoolIds: Array.isArray(account.assignedSchoolIds) ? account.assignedSchoolIds : [],
+        assignedCourseIds: Array.isArray(account.assignedCourseIds) ? account.assignedCourseIds : [],
+        assignedClasses: Array.isArray(account.assignedClasses) ? account.assignedClasses : [],
+        additionalPermissions: Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [],
+        mustChangePassword: account.mustChangePassword === true,
+        sessionToken,
+        instanceId: SERVER_INSTANCE_ID,
+    };
+}
+
 function createAdminAccountsRouter() {
     const router = express.Router();
+
+    // Login do professor e do administrador (SEG-03): a senha passa só aqui, uma vez, e
+    // a resposta traz o token da sessão (x-admin-session), igual ao whoami. Fica fora de
+    // /api/admin para não passar pelo adminRbacGuard; a política de rede (utils/
+    // networkPolicy.js) já decidiu antes se este aparelho pode abrir o painel. A senha é
+    // conferida pelo attemptPasswordLogin (scrypt assíncrono, teto por IP, regravação do
+    // hash antigo), o único caminho que confere senha.
+    router.post('/api/session/admin-login', async (req, res) => {
+        const login = await attemptPasswordLogin({ kind: 'admin', email: req.body.email, password: req.body.password, req });
+        if (!login.ok) return res.status(login.status).json(login.body);
+        const sessionToken = issueAdminSession(login.account.email);
+        // O login espera o COMMIT, como o do aluno (hash regravado e, com o H3a-2, a sessão).
+        await db.save();
+        res.json(adminSessionPayload(login.account, sessionToken));
+    });
 
     router.get('/api/admin/accounts', (req, res) => {
         validateAdmin(req, res, () => {
@@ -131,6 +163,9 @@ function createAdminAccountsRouter() {
             if (!name || !email || !password || name.trim() === '' || email.trim() === '' || password.trim() === '') {
                 return res.status(400).json({ error: 'Dados incompletos ou inválidos.' });
             }
+            // Hash com o scrypt assíncrono (DES-07) antes de ler as contas: a conferência de
+            // e-mail repetido e a gravação rodam depois da espera, de uma vez.
+            const passwordHash = await db.hashPasswordAsync(password.trim());
 
             const parsedRole = parseAdminAccountRole(req.body.role);
             if (!parsedRole.ok) return res.status(400).json({ error: parsedRole.error });
@@ -170,7 +205,7 @@ function createAdminAccountsRouter() {
             admins.push({
                 name: name.trim(),
                 email: normalizedEmail,
-                password: db.hashPassword(password.trim()),
+                password: passwordHash,
                 role,
                 assignedSchoolIds,
                 assignedCourseIds,
@@ -246,21 +281,11 @@ function createAdminAccountsRouter() {
         });
     });
 
+    // Confere a sessão guardada no navegador. Só aceita o token (validateAdmin): nunca
+    // cria sessão nova, e devolve o mesmo token que recebeu.
     router.get('/api/admin/whoami', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
-            const sessionToken = req.adminSessionToken || issueAdminSession(matchedAdmin.email);
-            res.json({
-                email: matchedAdmin.email,
-                name: matchedAdmin.name || '',
-                role: matchedAdmin.role || 'admin',
-                assignedSchoolIds: Array.isArray(matchedAdmin.assignedSchoolIds) ? matchedAdmin.assignedSchoolIds : [],
-                assignedCourseIds: Array.isArray(matchedAdmin.assignedCourseIds) ? matchedAdmin.assignedCourseIds : [],
-                assignedClasses: Array.isArray(matchedAdmin.assignedClasses) ? matchedAdmin.assignedClasses : [],
-                additionalPermissions: Array.isArray(matchedAdmin.additionalPermissions) ? matchedAdmin.additionalPermissions : [],
-                mustChangePassword: matchedAdmin.mustChangePassword === true,
-                sessionToken,
-                instanceId: SERVER_INSTANCE_ID,
-            });
+            res.json(adminSessionPayload(matchedAdmin, req.adminSessionToken));
         });
     });
 
@@ -340,12 +365,19 @@ function createAdminAccountsRouter() {
             }
             // Fora da troca obrigatória inicial (mustChangePassword), exige a senha
             // atual — impede que uma sessão sequestrada troque a senha sem conhecê-la.
+            // Conferência e hash com o scrypt assíncrono (DES-07).
+            const storedBefore = matchedAdmin.password;
             if (matchedAdmin.mustChangePassword !== true) {
-                if (!currentPassword || !db.verifyPassword(matchedAdmin.password, String(currentPassword).trim())) {
+                if (!currentPassword || !(await db.verifyPasswordAsync(storedBefore, String(currentPassword).trim()))) {
                     return res.status(400).json({ error: 'Senha atual incorreta.' });
                 }
             }
-            matchedAdmin.password = db.hashPassword(newPassword.trim());
+            const passwordHash = await db.hashPasswordAsync(newPassword.trim());
+            // Outra troca terminou durante a espera: não sobrescreve a senha que ela gravou.
+            if (matchedAdmin.password !== storedBefore) {
+                return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
+            }
+            matchedAdmin.password = passwordHash;
             matchedAdmin.mustChangePassword = false;
             await db.save();
             res.json({ success: true, message: 'Senha atualizada com sucesso!' });

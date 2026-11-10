@@ -41,13 +41,11 @@ const EXIGE_DOC = new Set(['atestado', 'declaracao'])
 const dispName = (r) => (r.nomeSocial && r.nomeSocial.trim()) || r.name || r.email
 const emptyJust = () => ({ tipo: 'atestado', de: '', ate: '', abonado: false, texto: '', arquivo: '', arquivoNome: '' })
 const hhmmToMin = (v) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(v || '') ? (+v.slice(0, 2)) * 60 + (+v.slice(3, 5)) : null)
+// O envio do anexo vai com a sessão do instrutor (x-admin-session); a senha nunca vai junto.
 function authHeaders() {
   try {
     const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}
-    const h = {}
-    if (a.adminSession) h['x-admin-session'] = a.adminSession
-    else if (a.adminAuth) h['Authorization'] = a.adminAuth
-    return h
+    return a.adminSession ? { 'x-admin-session': a.adminSession } : {}
   } catch { return {} }
 }
 

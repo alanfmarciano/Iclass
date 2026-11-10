@@ -257,9 +257,9 @@ test('[UC-AUTH-001] liberação individual para aluno de nome herdado não liber
 });
 
 test('[UC-AUTH-001] login de instrutor e sair continuam funcionando', async () => {
-    const whoami = await request(app).get('/api/admin/whoami').set('Authorization', 'prof@chaves.local:senha-prof');
-    assert.equal(whoami.status, 200);
-    const token = whoami.body.sessionToken;
+    const login = await request(app).post('/api/session/admin-login').send({ email: 'prof@chaves.local', password: 'senha-prof' });
+    assert.equal(login.status, 200);
+    const token = login.body.sessionToken;
     // A memória guarda só o hash do token (utils/authSessions.js, H3a-1).
     const storedKey = adminSessionKey(token);
     assert.ok(token && storedKey in db.memory.adminSessions);

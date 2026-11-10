@@ -5,6 +5,7 @@ const path = require('path');
 const db = require('../database.js');
 const { SERVER_INSTANCE_ID } = require('../utils/sessionConfig.js');
 const settingsUtil = require('../utils/settings.js');
+const { connectionInfo } = require('../utils/networkPolicy.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -43,6 +44,15 @@ router.get('/api/settings/public', (req, res) => {
 router.get('/api/session/status', (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ instanceId: SERVER_INSTANCE_ID, now: Date.now() });
+});
+
+// Como esta conexão é tratada (SEG-03), sem login: a tela de login e o painel do
+// professor mostram se o painel abre neste aparelho e o aviso de conexão sem proteção.
+// { secure, thisComputer, adminAccess: 'ok'|'local-only'|'https-required',
+//   adminAccessMode, insecureAdmin, tlsAvailable, studentsHttps, httpsUrl }.
+router.get('/api/connection', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(connectionInfo(req));
 });
 
 
@@ -272,9 +282,10 @@ function isCourseDeleted(course) {
 
 // Lista completa de cursos (estrutura, chaves de unidades e avaliações, excluídos)
 // só para o instrutor. Sem sessão de instrutor, devolve apenas id e nome dos cursos
-// ativos com turma aberta para cadastro.
+// ativos com turma aberta para cadastro. Instrutor é só quem manda x-admin-session: o
+// 'Authorization: email:senha' não vale mais (SEG-03) e cai na lista pública.
 router.get('/api/courses', (req, res) => {
-    const hasAdminCredentials = !!(req.get('x-admin-session') || req.headers.authorization);
+    const hasAdminCredentials = !!req.get('x-admin-session');
     if (!hasAdminCredentials) {
         const openCourseIds = new Set((db.memory.classes || []).filter(cls => cls.registrationEnabled).map(cls => cls.courseId));
         return res.json((db.memory.courses || [])

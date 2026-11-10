@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { RefreshCw, Trash2, Wifi, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
+import { RefreshCw, Trash2, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
@@ -14,6 +14,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { RedeCard } from './sistema/RedeCard'
 
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
 const UPLOAD_TYPES = [['pdf', 'PDF'], ['image', 'Imagem'], ['video', 'Vídeo'], ['doc', 'Documento'], ['sheet', 'Planilha'], ['zip', 'Compactado'], ['other', 'Outros']]
@@ -138,7 +139,7 @@ function TrashCard() {
   )
 }
 
-function _bkAuth() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
+function _bkAuth() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; return a.adminSession ? { 'x-admin-session': a.adminSession } : {} } catch { return {} } }
 
 const BACKUP_ACTION_LABEL = {
   backup_restored: 'Restauração concluída',
@@ -312,7 +313,6 @@ export function maintenanceClassOptions(classes, courses, current) {
 export default function SistemaPage() {
   const { auth } = useAuth()
   const workspace = useAdminWorkspace()
-  const { data: net } = useApi('/api/admin/network-info')
   const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.SYSTEM_MANAGE)
   const { data: classList } = useApi(canManage ? '/api/admin/classes' : null)
   const { data: courseList } = useApi(canManage ? '/api/courses' : null)
@@ -333,8 +333,6 @@ export default function SistemaPage() {
   const [flushApplication, setFlushApplication] = useState('')
   const [busy, setBusy] = useState(false)
   const toast = useToast()
-  const ips = (net && (net.addresses || net.ips || net)) || []
-  const list = Array.isArray(ips) ? ips : []
 
   async function loadPreview(applicationId = '') {
     setPreviewError(null)
@@ -385,19 +383,7 @@ export default function SistemaPage() {
     <div className="max-w-4xl mx-auto space-y-6">
       <PageHeader title="Sistema" subtitle="Rede, configurações e manutenção." />
 
-      <Card>
-        <CardHeader title="Rede local" subtitle="Endereços para os alunos acessarem" />
-        <CardBody className="space-y-2">
-          {list.length === 0 && <p className="text-sm text-muted flex items-center gap-2"><Wifi size={16} /> Endereços aparecem quando o servidor estiver rodando.</p>}
-          {list.map((ip, i) => (
-            <div key={i} className="flex items-center gap-2 text-sm">
-              <Wifi size={15} className="text-info" />
-              <code className="font-mono text-text">{ip.address || ip}</code>
-              {ip.name && <Badge tone="neutral">{ip.name}</Badge>}
-            </div>
-          ))}
-        </CardBody>
-      </Card>
+      <RedeCard canManage={canManage} isAdmin={auth?.accountRole !== 'professor'} />
 
       {canManage && <SettingsCard />}
 

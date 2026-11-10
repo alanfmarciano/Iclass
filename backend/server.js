@@ -17,6 +17,7 @@ const { createPersistenceContext } = require('./utils/persistenceContext.js');
 const { checkAdminSessionToken, checkStudentSessionToken, clearSessions } = require('./utils/authSessions.js');
 const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
+const { createNetworkPolicy } = require('./utils/networkPolicy.js');
 
 // ---------------------------------------------------------------------------
 // Rede de proteção contra quedas do servidor.
@@ -59,7 +60,9 @@ function parseQueryLastValue(queryString) {
 
 const PORT = process.env.PORT || 3000;
 
-function createApp() {
+// options.isThisComputer (só nos testes): troca a regra de "este computador" da
+// política de acesso do painel do professor (utils/networkPolicy.js).
+function createApp(options = {}) {
 const app = express();
 const { errorHandler, adminRbacGuard } = require('./middlewares.js');
 app.set('query parser', parseQueryLastValue);
@@ -129,6 +132,10 @@ app.use(createPersistenceContext({
     snapshot: () => db.captureSaveSnapshot(),
     onWriteFailure: (err, req, res) => errorHandler(err, req, res, () => {}),
 }));
+// 9) Painel do professor conforme o aparelho (H6b, SEG-03): settings.network.adminAccess
+// decide se outro aparelho da rede abre o painel. Antes de /assets, dos arquivos
+// (/uploads com ?access= de professor) e de qualquer rota de professor.
+app.use(createNetworkPolicy({ isThisComputer: options.isThisComputer }));
 // 10) Arquivos do app (/assets), antes de /uploads, /imagens e do express.static: o
 // handler é terminal, com cache imutável e as versões .br/.gz do build; nome que não
 // existe é 404 com no-store, nunca o index.html (utils/staticAssets.js, H2-A, DES-05).

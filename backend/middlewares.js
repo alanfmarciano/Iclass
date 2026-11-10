@@ -194,13 +194,6 @@ function resolveRequester(req) {
 // conferirem a matrícula na turma antes de devolver qualquer dado de prova.
 function validateAnySession(req, res, next) {
     const requester = resolveRequester(req);
-    if (!requester && req.headers.authorization) {
-        // Instrutor no login legado (Authorization "email:senha").
-        return validateAdmin(req, res, (config, account) => {
-            req.requester = { role: 'admin', email: String(account.email || '').toLowerCase() };
-            return next();
-        });
-    }
     if (!requester) {
         return res.status(401).json({ error: 'Autenticação necessária.', sessionRevoked: true });
     }
@@ -528,50 +521,12 @@ function validateAdmin(req, res, callback) {
         return runGuarded(req, res, callback, [cfg, tokenAdmin]);
     }
 
-    // 2) Fallback legado: Authorization "email:senha".
-    // Não aceita senha via query string (evita senha em logs/histórico do navegador).
-    // Só texto vale como credencial: password numérico ou objeto no corpo (ENG-03)
-    // dava 500 ('authHeader.includes is not a function') e agora conta como ausente,
-    // sem gastar o limite de tentativas.
-    const headerCredential = typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
-    const bodyCredential = req.body && typeof req.body.password === 'string' ? req.body.password : '';
-    const authHeader = headerCredential || bodyCredential;
-    if (!authHeader) {
-        return res.status(401).json({ error: 'Acesso não autorizado.' });
-    }
-
-    const { rateLimit } = require('./utils/rateLimit.js');
-    const _rlAdmin = rateLimit(`admin-login:${req.ip}`, { max: 30, windowMs: 60000 });
-    if (!_rlAdmin.allowed) {
-        return res.status(429).json({ error: 'Muitas tentativas de acesso. Aguarde um instante e tente novamente.' });
-    }
-
-    let email, password;
-    if (authHeader.includes(':')) {
-        const parts = authHeader.split(':');
-        email = parts[0].trim().toLowerCase();
-        password = parts.slice(1).join(':').trim();
-    } else {
-        email = db.defaultAdminEmail();
-        password = authHeader.trim();
-    }
-    
-    const admins = readJSON(DB_ADMINS_FILE);
-    const matchedAdmin = admins.find(a => a.email && a.email.toLowerCase() === email && db.verifyPassword(a.password, password));
-    
-    if (matchedAdmin) {
-        if (db.needsPasswordRehash(matchedAdmin.password)) {
-            matchedAdmin.password = db.hashPassword(password);
-            db.save();
-        }
-        const config = readJSON(CONFIG_FILE);
-        req.adminAccount = matchedAdmin;
-        req.adminConfig = config;
-        if (!validateRequestedAdminContext(req, res, matchedAdmin)) return;
-        installProfessorResponseRedaction(res, matchedAdmin);
-        return runGuarded(req, res, callback, [config, matchedAdmin]);
-    }
-    return res.status(401).json({ error: 'Acesso não autorizado. E-mail ou senha incorretos.' });
+    // 2) Sem sessão, sem acesso. A senha só passa uma vez, no POST
+    // /api/session/admin-login (routes/adminAccounts.js), que devolve o token. O antigo
+    // 'Authorization: email:senha' e o `password` no corpo não autenticam mais (SEG-03):
+    // a senha deixava de passar pela rede a cada pedido, e o corpo de "criar conta" com a
+    // sessão vencida deixava de valer como tentativa de login contra o administrador.
+    return res.status(401).json({ error: 'Acesso não autorizado.' });
 }
 
 // Sessão nova de instrutor (utils/authSessions.js): devolve o token cru, que só vai na

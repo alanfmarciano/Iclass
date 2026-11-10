@@ -6,6 +6,7 @@ import { AdminCourseGate } from '../../features/admin/AdminCourseGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenAdminShell } from './LumenAdminShell'
 import { PageLoading } from '../ui/PageLoading'
+import { InsecureConnectionNotice } from '../ui/InsecureConnectionNotice'
 const CRUMBS = {
   '/calendario': ['Gestão', 'Calendário'], '/avisos': ['Gestão', 'Avisos'],
   '/': ['Visão geral', 'Dashboard'], '/provas': ['Avaliações', 'Provas'],
@@ -36,6 +37,8 @@ export function AppShell() {
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar onMenu={() => setOpen((o) => !o)} breadcrumb={breadcrumb} />
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
+          {/* Painel por http em outro aparelho (SEG-03): aviso fixo, fora do key da rota. */}
+          <InsecureConnectionNotice className="mb-4" />
           <div key={pathname} className="app-enter">
             {/* Tela sob demanda (lib/lazyPage.js): "Carregando..." com o menu à vista. */}
             <Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense>
