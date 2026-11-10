@@ -20,7 +20,7 @@ const { createDbWriter, DbWriteError, MEMORY_KINDS } = require('./utils/dbWriter
 const { createKeystrokeStore, KEYSTROKE_COLLECTION, KEYSTROKE_SCHEMA, KEYSTROKE_TABLE, LEGACY_KEYSTROKE_TABLE } = require('./utils/keystrokeStore.js');
 const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('./utils/persistenceContext.js');
 const { logError } = require('./utils/errorLog.js');
-const { clearSessions, persistedSessionRows } = require('./utils/authSessions.js');
+const { clearSessions, persistedSessionRows, revokeAdminSessions, revokeStudentSession, sessionRowBelongsTo } = require('./utils/authSessions.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
@@ -171,8 +171,9 @@ function classStorageKey(cls) {
 //   a atual quando falta no backup) ou 'reset' (volta vazia); padrão 'replace';
 // - legacyTable (só 'store'): a tabela antiga que a migração do boot esvazia; continua
 //   sendo criada (schema) e é desta entrada;
-// - rows (só 'derived'): rows(memory) devolve as linhas [chave, texto JSON]; reset (só
-//   'derived'): reset(memory) esvazia na memória o que gera as linhas (restauração 'reset').
+// - rows (só 'derived'): rows(memory) devolve as linhas [chave, texto JSON]. Com restore
+//   'reset', quem esvazia na memória o que gera as linhas é o gancho da tabela em
+//   AFTER_RESTORE_HOOKS (db.afterRestore), não o laço da restauração.
 function tableEntry(collection, table, kind, key, extra = {}) {
     return Object.freeze({ collection, table, kind, key, append: false, backup: true, restore: 'replace', ...extra });
 }
@@ -227,12 +228,12 @@ const COLLECTION_TABLES = Object.freeze([
     // (utils/authSessions.js). Nunca o token cru, nem lastSeen (a tabela não muda a cada
     // ping). No boot as linhas lidas ficam como estão até a retomada (server.js
     // prepareServer: restoreSessions com db.takeBootAuthSessionRows()). Fora do backup; a
-    // restauração de um backup zera todas (todos entram de novo).
+    // restauração de um backup zera todas (todos entram de novo) pelo gancho
+    // 'authSessions' de db.afterRestore.
     tableEntry('authSessions', 'auth_sessions', 'derived', 'hash', {
         backup: false,
         restore: 'reset',
         rows: authSessionTableRows,
-        reset: resetAuthSessions,
     }),
 ]);
 
@@ -254,6 +255,44 @@ function authSessionTableRows(memory) {
 function resetAuthSessions(memory) {
     pendingBootRows.delete('authSessions');
     clearSessions(memory);
+}
+
+// Ganchos depois da restauração de um backup (contrato H3 x H4 x H5: "os ganchos
+// pós-restauração ficam em db.afterRestore"). A restauração (utils/backup.js
+// applySnapshot) aplica as coleções pelo modo de cada uma no registro e, antes da
+// gravação, roda estes ganchos na ordem, com a memória já restaurada (runAfterRestore).
+// - 'authSessions' (H3): todos saem, e a gravação esvazia a tabela auth_sessions;
+// - a conversão dos hashes de senha legados (H5, upgradeLegacyPasswordHashes) entra aqui.
+// Cada item: { name, run(memory) }; run pode devolver promessa.
+const AFTER_RESTORE_HOOKS = [
+    { name: 'authSessions', run: resetAuthSessions },
+];
+
+async function runAfterRestore(memory = memoryDB) {
+    for (const hook of AFTER_RESTORE_HOOKS) await hook.run(memory);
+}
+
+// Encerra de vez as sessões de uma conta (kind 'admin' = instrutor, ou 'student'): as da
+// memória e as linhas lidas no boot ainda não retomadas, para a gravação seguinte tirá-las
+// da tabela auth_sessions. Usado na redefinição de senha pelo launcher
+// (scripts/reset-admin-password.js), que roda com o servidor parado: o db.init() do script
+// lê as sessões gravadas e a gravação dele as regravava como estavam; no boot seguinte (até
+// 60 min fora do ar) a sessão de quem motivou a redefinição voltava e, com a troca
+// obrigatória, trocava a senha sem conhecer a temporária. Devolve quantas saíram.
+function revokeAccountSessions({ kind, email } = {}) {
+    if (kind !== 'admin' && kind !== 'student') throw new TypeError('Tipo de sessão inválido.');
+    let removed = kind === 'admin'
+        ? revokeAdminSessions(memoryDB, email)
+        : (revokeStudentSession(memoryDB, email) ? 1 : 0);
+    const pending = pendingBootRows.get('authSessions');
+    if (pending) {
+        for (const [key, value] of [...pending]) {
+            if (!sessionRowBelongsTo({ key, value }, { kind, email })) continue;
+            pending.delete(key);
+            removed += 1;
+        }
+    }
+    return removed;
 }
 
 // As sessões gravadas lidas no boot ([{ key, value }], value em texto JSON), uma vez:
@@ -1387,6 +1426,11 @@ module.exports = {
     keystrokes: keystrokeStore.api,
     // Sessões gravadas lidas no boot, para a retomada (server.js prepareServer).
     takeBootAuthSessionRows,
+    // Encerra as sessões de uma conta, também as do boot ainda não retomadas.
+    revokeAccountSessions,
+    // Ganchos pós-restauração ({ name, run }) e quem os roda (utils/backup.js).
+    afterRestore: AFTER_RESTORE_HOOKS,
+    runAfterRestore,
     COLLECTION_TABLES,
     emptyCollectionValue,
     save: saveToDisk,

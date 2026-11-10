@@ -536,6 +536,14 @@ function validateAdmin(req, res, callback) {
     const headerCredential = typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
     const bodyCredential = req.body && typeof req.body.password === 'string' ? req.body.password : '';
     const authHeader = headerCredential || bodyCredential;
+    if (!authHeader && typeof adminSessionToken === 'string' && adminSessionToken) {
+        // Token de sessão que o servidor não conhece mais: saiu na limpeza do prazo
+        // absoluto (pruneExpiredSessions), não voltou depois de um reinício longo
+        // (restoreSessions) ou foi encerrado. Mesmo 401 da sessão vencida, com
+        // sessionRevoked e reason (contrato das respostas de estado), em vez do "Acesso
+        // não autorizado." de quem nunca entrou.
+        return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
+    }
     if (!authHeader) {
         return res.status(401).json({ error: 'Acesso não autorizado.' });
     }

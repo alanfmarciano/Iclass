@@ -242,7 +242,8 @@ function snapshotSummary(snapshot, format) {
 //   não estiver ligado aqui, a auditoria do backup substitui a atual, como antes. Pelo
 //   plano, o H7a-2 liga o merge (junto com a nova regra da lixeira de notas, que hoje
 //   depende de grade_restore) e o H4a troca este trecho pelo laço por modo do registro;
-// - 'reset': volta vazia (sessões).
+// - 'reset': volta vazia (coleção da memória; a tabela derivada das sessões é zerada pelo
+//   gancho dela em db.afterRestore).
 function restoredCollectionValue(entry, restored) {
     if (entry.restore === 'reset') return db.emptyCollectionValue(entry);
     return structuredClone(restored);
@@ -251,12 +252,11 @@ function restoredCollectionValue(entry, restored) {
 async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
     db.COLLECTION_TABLES.forEach(entry => {
+        // Tabela derivada (auth_sessions) não tem valor próprio na memória nem no backup:
+        // ela sai do que outras coleções guardam, e quem zera esse conteúdo é o gancho dela
+        // em db.afterRestore, depois do laço.
+        if (entry.kind === 'derived') return;
         if (entry.restore === 'reset') {
-            // Tabela derivada (sessões): esvazia o que gera as linhas na memória (reset).
-            if (entry.kind === 'derived') {
-                if (typeof entry.reset === 'function') entry.reset(db.memory);
-                return;
-            }
             db.memory[entry.collection] = restoredCollectionValue(entry);
             return;
         }
@@ -273,9 +273,10 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     // A prova pausada no backup fica pausada desde o momento dele (exportedAt).
     const backupAt = Date.parse(String(snapshot.exportedAt || '')) || null;
     const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses({ backupAt }) : null;
-    // Restaurar desconecta todos (sessões não vão no backup): a entrada authSessions do
-    // registro ('reset') zerou as sessões no laço acima, e a gravação esvazia a tabela
-    // auth_sessions.
+    // Ganchos pós-restauração (database.js AFTER_RESTORE_HOOKS), com a memória já
+    // restaurada. Restaurar desconecta todos (sessões não vão no backup): o gancho
+    // 'authSessions' zera as sessões, e a gravação esvazia a tabela auth_sessions.
+    await db.runAfterRestore(db.memory);
     await db.save();
     return applications;
 }

@@ -22,8 +22,10 @@ const MIN = 60000;
 const sha256 = value => crypto.createHash('sha256').update(value).digest('hex');
 const running = new Set();
 
-// Sobe o servidor sobre dataDir e espera a porta abrir (até 30 s).
-function startServer(dataDir) {
+const resetScript = path.join(__dirname, '..', '..', 'backend', 'scripts', 'reset-admin-password.js');
+
+// Ambiente do servidor (e dos scripts do launcher) sobre dataDir.
+function serverEnv(dataDir) {
     const env = {
         ...process.env,
         ICLASS_DATA_DIR: dataDir,
@@ -35,6 +37,12 @@ function startServer(dataDir) {
     delete env.NODE_TEST_CONTEXT;
     delete env.ICLASS_ADMIN_SETUP_MODE;
     delete env.ICLASS_ADMIN_SETUP_TOKEN;
+    return env;
+}
+
+// Sobe o servidor sobre dataDir e espera a porta abrir (até 30 s).
+function startServer(dataDir) {
+    const env = serverEnv(dataDir);
     const child = spawn(process.execPath, [childScript], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     running.add(child);
     let output = '';
@@ -103,6 +111,23 @@ async function professorLogin(server) {
 
 const ping = (server, token) => call(server, `/api/ping?email=${encodeURIComponent(STUDENT.email)}`, { headers: { 'x-session-token': token } });
 const whoami = (server, token) => call(server, '/api/admin/whoami', { headers: { 'x-admin-session': token } });
+
+// Opção [senha] do launcher: o servidor já parado, roda o script sobre a mesma pasta.
+function runResetScript(dataDir, email) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [resetScript, email], { env: serverEnv(dataDir), stdio: ['ignore', 'pipe', 'pipe'] });
+        running.add(child);
+        let output = '';
+        child.stdout.on('data', chunk => { output += chunk; });
+        child.stderr.on('data', chunk => { output += chunk; });
+        const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`o script não terminou em 30 s:\n${output}`)); }, 30000);
+        child.once('exit', code => {
+            clearTimeout(timer);
+            running.delete(child);
+            resolve({ code, output });
+        });
+    });
+}
 
 // Linhas de uma tabela, lidas do arquivo por outra conexão (com o servidor parado).
 async function readTable(dataDir, table) {
@@ -190,7 +215,11 @@ test('[UC-AUTH-001] servidor que cai (kill -9) e volta: aluno e professor seguem
         fs.writeFileSync(heartbeatFile(dataDir), JSON.stringify({ ...beat, at: Date.now() - 61 * MIN }));
         const fourth = await startServer(dataDir);
         assert.match(fourth.output(), /Sessões não retomadas: o servidor ficou mais de 60 min fora do ar/);
-        assert.equal((await whoami(fourth, professorToken)).status, 401);
+        // O token que não voltou responde como sessão vencida (sessionRevoked e reason), não
+        // como quem nunca entrou (antes: 401 { error: 'Acesso não autorizado.' }).
+        const dropped = await whoami(fourth, professorToken);
+        assert.equal(dropped.status, 401);
+        assert.deepEqual(dropped.body, { error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
         await fourth.stop('SIGKILL');
         assert.deepEqual(await readTable(dataDir, 'auth_sessions'), []);
     } finally {
@@ -227,6 +256,53 @@ test('[UC-AUTH-001] gravação do próprio boot (migração) não apaga as sess�
         assert.equal((await whoami(fourth, professorToken)).status, 401);
         await fourth.stop('SIGTERM');
         assert.deepEqual(await readTable(dataDir, 'auth_sessions'), []);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
+test('[UC-AUTH-001] senha redefinida pelo launcher com o servidor parado: a sessão daquela conta não volta no boot; as outras voltam', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-server-restart-reset-'));
+    try {
+        // Aluno, professor e administrador logados; o launcher para o servidor à força
+        // (taskkill /f, aqui kill -9) antes de rodar o script.
+        const server = await startServer(dataDir);
+        assert.equal((await call(server, '/api/test/seed', { method: 'POST', body: {} })).status, 200);
+        const studentToken = await studentLogin(server);
+        const professorToken = await professorLogin(server);
+        const adminLogin = await call(server, '/api/session/admin-login', { method: 'POST', body: { email: 'admin@teste.local', password: 'teste' } });
+        const adminToken = adminLogin.status === 404
+            ? (await call(server, '/api/admin/whoami', { headers: { Authorization: 'admin@teste.local:teste' } })).body.sessionToken
+            : adminLogin.body.sessionToken;
+        assert.equal((await whoami(server, adminToken)).status, 200);
+        await server.stop('SIGKILL');
+
+        const reset = await runResetScript(dataDir, PROFESSOR.email);
+        assert.equal(reset.code, 0, reset.output);
+        assert.match(reset.output, /Senha temporária: \S+/);
+        assert.match(reset.output, /As sessões abertas desta conta foram encerradas/);
+
+        // No arquivo, a sessão do professor saiu; as outras ficaram como estavam.
+        const keys = (await readTable(dataDir, 'auth_sessions')).map(row => row.key).sort();
+        assert.deepEqual(keys, [sha256(studentToken), sha256(adminToken)].sort());
+
+        // Volta em menos de 60 min: o token antigo do professor não entra, nem para trocar a
+        // senha sem a temporária (antes: whoami 200 com mustChangePassword e a troca aceita,
+        // e quem tinha a sessão escolhia a senha nova). Aluno e administrador seguem.
+        const second = await startServer(dataDir);
+        assert.match(second.output(), /Sessões retomadas: 1 aluno e 1 professor \(0 descartadas\)/);
+        const me = await whoami(second, professorToken);
+        assert.equal(me.status, 401, JSON.stringify(me.body));
+        assert.equal(me.body.sessionRevoked, true);
+        const change = await call(second, '/api/admin/change-password', {
+            method: 'POST',
+            headers: { 'x-admin-session': professorToken },
+            body: { newPassword: 'senha-escolhida-por-outro' },
+        });
+        assert.equal(change.status, 401, JSON.stringify(change.body));
+        assert.equal((await whoami(second, adminToken)).status, 200);
+        assert.equal((await ping(second, studentToken)).status, 200);
+        await second.stop('SIGTERM');
     } finally {
         fs.rmSync(dataDir, { recursive: true, force: true });
     }

@@ -613,3 +613,103 @@ test('[UC-AUTH-001] fora de utils/authSessions.js ninguém mexe em sessions nem 
     });
     assert.deepEqual(offenders, []);
 });
+
+// Ajuste 1 do H3a-2. Com as sessões gravadas, a sessão de instrutor que sai da memória
+// (limpeza do prazo absoluto, que agora também tira as de instrutor, ou retomada que não a
+// trouxe) respondia { error: 'Acesso não autorizado.' }, sem sessionRevoked nem reason;
+// antes, vencida e ainda na memória, respondia 'Sessão expirada.' com reason 'expired'.
+test('[UC-AUTH-001] token de instrutor que saiu da memória responde 401 com sessionRevoked e reason (antes: "Acesso não autorizado.")', async () => {
+    // Sessões criadas direto pelo módulo (o login por HTTP tem limite de 30 por minuto).
+    const adminToken = createAdminSession(db.memory, ADMIN.email);
+    await whoami(adminToken).expect(200);
+    db.memory.adminSessions[adminSessionKey(adminToken)].createdAt = Date.now() - 9 * HOUR;
+    assert.equal(pruneExpiredSessions(db.memory, { now: Date.now() }), 1);
+    const expired = { error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' };
+    for (const token of [adminToken, 'token-que-nunca-existiu']) {
+        const res = await whoami(token);
+        assert.equal(res.status, 401);
+        assert.deepEqual(res.body, expired);
+    }
+    // Sem token nenhum continua como antes: quem nunca entrou.
+    const anonymous = await request(app).get('/api/admin/whoami');
+    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.body.sessionRevoked, undefined);
+});
+
+// Contrato H3 x H4 x H5: os ganchos pós-restauração ficam em db.afterRestore, e é por ele
+// que a restauração zera as sessões (antes: uma função reset na entrada do registro e um
+// ramo próprio no laço da restauração).
+test('[UC-AUTH-001] restaurar backup zera as sessões pelo gancho de db.afterRestore', async () => {
+    const backup = require('../../backend/utils/backup.js');
+    const entry = db.COLLECTION_TABLES.find(item => item.collection === 'authSessions');
+    assert.equal(entry.kind, 'derived');
+    assert.equal(entry.restore, 'reset');
+    assert.equal(entry.backup, false);
+    assert.equal(entry.reset, undefined, 'o zeramento não fica na entrada do registro');
+    assert.ok(Array.isArray(db.afterRestore));
+    assert.deepEqual(db.afterRestore.map(hook => hook.name).slice(0, 1), ['authSessions']);
+
+    const studentToken = await studentLogin();
+    const adminToken = createAdminSession(db.memory, ADMIN.email);
+    const snapshot = structuredClone(backup.buildDataSnapshot());
+    snapshot.data.students = snapshot.data.students.filter(student => student.email === ANA.email);
+    const seen = [];
+    const probe = {
+        name: 'teste',
+        async run(memory) {
+            await new Promise(resolve => setImmediate(resolve));
+            seen.push({
+                same: memory === db.memory,
+                students: memory.students.map(student => student.email),
+                sessions: persistedSessionRows(memory).length,
+            });
+        },
+    };
+    db.afterRestore.push(probe);
+    try {
+        await backup.restoreDataSnapshot(snapshot);
+    } finally {
+        db.afterRestore.splice(db.afterRestore.indexOf(probe), 1);
+    }
+    // O gancho rodou uma vez, com a memória já restaurada e depois do gancho das sessões.
+    assert.deepEqual(seen, [{ same: true, students: [ANA.email], sessions: 0 }]);
+    assert.deepEqual(await storedSessionRows(), {});
+    await ping(studentToken).expect(401);
+    await whoami(adminToken).expect(401);
+});
+
+// Redefinição de senha pelo launcher (scripts/reset-admin-password.js): as sessões da conta
+// acabam, as das outras contas ficam. O caminho com o servidor parado (linhas lidas no boot
+// do script) está em server-restart.test.js.
+test('[UC-AUTH-001] redefinir a senha pelo launcher encerra só as sessões daquela conta', async () => {
+    const { resetAdminPassword } = require('../../backend/scripts/reset-admin-password.js');
+    const profToken = createAdminSession(db.memory, PROF.email);
+    const profOther = createAdminSession(db.memory, PROF.email);
+    const adminToken = createAdminSession(db.memory, ADMIN.email);
+    const studentToken = await studentLogin();
+    await whoami(profToken).expect(200);
+    const result = await resetAdminPassword(PROF.email.toUpperCase());
+    assert.equal(result.email, PROF.email);
+    assert.equal(result.sessionsRevoked, 2);
+    for (const token of [profToken, profOther]) {
+        const res = await whoami(token);
+        assert.equal(res.status, 401);
+        assert.equal(res.body.sessionRevoked, true);
+    }
+    await whoami(adminToken).expect(200);
+    await ping(studentToken).expect(200);
+    assert.deepEqual(Object.keys(await storedSessionRows()).sort(), [sha256(adminToken), sha256(studentToken)].sort());
+    assert.throws(() => db.revokeAccountSessions({ kind: 'qualquer', email: ADMIN.email }), TypeError);
+    assert.equal(db.revokeAccountSessions({ kind: 'student', email: ANA.email }), 1);
+    await ping(studentToken).expect(401);
+});
+
+test('[UC-AUTH-001] sessionRowBelongsTo reconhece a conta da linha gravada', () => {
+    const row = { key: sha256('x'), value: JSON.stringify({ kind: 'admin', email: 'prof@x.local', createdAt: 1_700_000_000_000 }) };
+    assert.equal(authSessions.sessionRowBelongsTo(row, { kind: 'admin', email: 'PROF@x.local ' }), true);
+    assert.equal(authSessions.sessionRowBelongsTo(row, { kind: 'student', email: 'prof@x.local' }), false);
+    assert.equal(authSessions.sessionRowBelongsTo(row, { kind: 'admin', email: 'outro@x.local' }), false);
+    assert.equal(authSessions.sessionRowBelongsTo({ key: sha256('x'), value: '{estragada' }, { kind: 'admin', email: 'prof@x.local' }), false);
+    assert.equal(authSessions.sessionRowBelongsTo({ key: 'curta', value: row.value }, { kind: 'admin', email: 'prof@x.local' }), false);
+    assert.equal(authSessions.sessionRowBelongsTo(null, { kind: 'admin', email: 'prof@x.local' }), false);
+});

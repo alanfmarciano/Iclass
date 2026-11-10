@@ -395,6 +395,13 @@ function parseSessionRow(row) {
     return { hash, kind: value.kind, email, createdAt, ip: value.ip ? String(value.ip) : '', origin: value.origin ? String(value.origin) : '' };
 }
 
+// A linha gravada ({ key, value }, value em texto JSON ou objeto) é de uma sessão desta
+// conta? kind 'admin' (instrutor) ou 'student'. Linha ilegível não é de ninguém.
+function sessionRowBelongsTo(row, { kind, email } = {}) {
+    const parsed = parseSessionRow(row);
+    return !!parsed && parsed.kind === kind && parsed.email === normalizeEmail(email);
+}
+
 // Retomada das sessões gravadas depois de um reinício. Substitui sessions e
 // adminSessions. Uma sessão volta só se:
 // - o tempo fora do ar (downtimeMs, do heartbeat) é conhecido e cabe em maxDowntimeMs
@@ -486,5 +493,6 @@ module.exports = {
     clearSessions,
     pruneExpiredSessions,
     persistedSessionRows,
+    sessionRowBelongsTo,
     restoreSessions,
 };
