@@ -4,8 +4,18 @@ import { Select } from '../../components/ui/Select'
 function fmtDateTime(t) { return t ? new Date(t).toLocaleString('pt-BR') : '—' }
 
 // Tipo da entrada no filtro: o campo alterado do cadastro ou, sem ele (nota, certificado,
-// conta...), o rótulo da ação.
-function kindOf(row) { return row.field || row.label || row.action || '' }
+// conta...), o rótulo da ação. A presença leva a data no campo ("Presença em 10/11/2026"):
+// o filtro fica pelo rótulo ("Presença alterada"), sem uma opção por dia.
+function kindOf(row) {
+  if (row.category === 'attendance') return row.label || row.field || row.action || ''
+  return row.field || row.label || row.action || ''
+}
+
+// Título do registro: o campo (com a data, na presença) e, na presença, o rótulo da ação.
+function titleOf(row) {
+  if (row.category === 'attendance' && row.field && row.label) return `${row.field} · ${row.label}`
+  return kindOf(row)
+}
 
 function text(value) {
   if (value === null || value === undefined) return ''
@@ -43,7 +53,7 @@ export function StudentAuditPanel({ rows }) {
             return (
               <div key={a.id || `${a.timestamp}-${index}`} className="rounded-lg border border-border p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-text">{kindOf(a)}</span>
+                  <span className="text-sm font-medium text-text">{titleOf(a)}</span>
                   <span className="text-xs text-subtle">{fmtDateTime(a.timestamp)}</span>
                 </div>
                 {a.action !== 'create' && (oldValue || newValue) && <p className="text-xs text-muted mt-1 break-words"><span className="line-through text-subtle">{oldValue || '(vazio)'}</span> {'→'} <span className="text-text">{newValue || '(vazio)'}</span></p>}

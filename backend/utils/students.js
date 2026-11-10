@@ -10,6 +10,20 @@ const OBSERVATION_VISIBILITY = ['Restrita (coordenação)', 'Equipe pedagógica'
 const EXTRA_TIME_OPTIONS = [25, 50, 100];
 const DEFAULT_STATUS = 'Ativo';
 
+// Situações que encerram o vínculo do aluno com a escola (H7b: o aluno sai da chamada
+// das datas novas; o H7c usa a mesma lista em Cadastros encerrados). Comparadas sem
+// acento e sem diferenciar maiúscula ('concluido' e 'CONCLUÍDO' também valem).
+// 'Bloqueado' não encerra: só suspende o acesso, e o aluno continua na turma.
+// 'Anonimizado' é a situação do cadastro anonimizado (H7c).
+const CLOSED_STUDENT_STATUSES = ['Inativo', 'Concluído', 'Transferido', 'Evadido', 'Anonimizado'];
+function foldStatus(value) {
+    return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+}
+const CLOSED_STATUS_KEYS = new Set(CLOSED_STUDENT_STATUSES.map(foldStatus));
+function isClosedStudentStatus(status) {
+    return CLOSED_STATUS_KEYS.has(foldStatus(status));
+}
+
 // Campos escalares auditáveis do perfil do aluno.
 const AUDITABLE_FIELDS = [
     { key: 'name', label: 'Nome completo' },
@@ -274,6 +288,8 @@ module.exports = {
     OBSERVATION_VISIBILITY,
     EXTRA_TIME_OPTIONS,
     DEFAULT_STATUS,
+    CLOSED_STUDENT_STATUSES,
+    isClosedStudentStatus,
     AUDITABLE_FIELDS,
     normalizeEmail,
     isValidEmail,

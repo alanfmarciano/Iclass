@@ -1,7 +1,10 @@
 // ============================================================================
 // Utilidades de PRESENÇA POR AULA (grade horária + frequência por disciplina)
 // Compartilhado entre rotas (admin/student) e analytics. Sem estado.
+// No fim, as versões da presença (H7b): fotografia, resumo e quando auditar.
 // ============================================================================
+
+const { recordAudit } = require('./audit.js');
 
 const WEEKDAYS = ['0', '1', '2', '3', '4', '5', '6']; // 0=dom … 6=sáb
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -276,6 +279,249 @@ function computeAttendanceStats(records) {
     };
 }
 
+// ============================================================================
+// Versões da presença (H7b; CONF-09, FUN-04)
+// A chamada do dia é regravada inteira a cada salvamento: o registro do aluno naquele
+// dia sai e volta com id novo (inclusive o da presença automática do login), como
+// sempre foi. Para o valor anterior não se perder, a mudança que importa vira uma
+// entrada da auditoria (attendance_changed) com a fotografia dos registros que saíram
+// e do que entrou. O formato de attendance não muda; só ganha dois campos opcionais:
+// - concludedAt: hora da primeira conclusão da chamada daquele dia, que passa de
+//   versão em versão (o autosave de rascunho depois de concluir não a apaga);
+// - loginAccess: { horaAcesso, ip, source } do registro automático do login que a
+//   chamada substituiu, também passado adiante.
+// Registro antigo sem esses campos vale como "nunca concluído" e "sem login guardado"
+// (o concluida: true gravado antes deles ainda conta como concluído).
+// ============================================================================
+
+// Edição contínua do mesmo professor: o autosave da Chamada grava a cada 2 s, e cada
+// rascunho dentro desta janela não vira entrada da auditoria.
+const ATTENDANCE_EDIT_SESSION_MS = 15 * 60 * 1000;
+
+const JUST_TIPO_LABELS = { atestado: 'atestado', responsavel: 'responsável', declaracao: 'declaração', outro: 'outro motivo' };
+
+// Hora gravada (ms ou texto ISO) em ms; ausente ou inválida vira null.
+function validTime(value) {
+    let n = NaN;
+    if (typeof value === 'number') n = value;
+    else if (typeof value === 'string' && value.trim()) n = /^\d+$/.test(value.trim()) ? Number(value.trim()) : Date.parse(value);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function emailOf(actor) {
+    const value = actor && typeof actor === 'object' ? actor.email : actor;
+    return String(value ?? '').trim().toLowerCase();
+}
+
+// Aulas do registro (legado vira 1 aula) só com ordem e situação, em ordem de aula.
+function aulaStatuses(rec) {
+    return recordAulas(rec)
+        .map(a => ({ ordem: Number(a && a.ordem) || 0, status: String((a && a.status) || '').toLowerCase() }))
+        .sort((x, y) => x.ordem - y.ordem);
+}
+
+// Fotografia do registro para a auditoria: quem marcou, quando, por onde e a situação
+// de cada aula. Sem o texto da justificativa, o comprovante, a observação, o IP e o
+// navegador (a auditoria fica com o que mudou, não com o dado pessoal do aluno).
+function attendanceSnapshot(rec) {
+    if (!rec || typeof rec !== 'object') return null;
+    const just = rec.justificativa && typeof rec.justificativa === 'object' ? rec.justificativa : null;
+    const snapshot = {
+        id: rec.id === undefined ? null : rec.id,
+        origin: String(rec.origin || ''),
+        concluida: rec.concluida === true,
+        markedBy: rec.markedBy === undefined ? null : rec.markedBy,
+        timestamp: validTime(rec.timestamp),
+        aulas: aulaStatuses(rec),
+        justificativa: just ? {
+            tipo: String(just.tipo || ''),
+            abonado: just.abonado === true,
+            temTexto: !!String(just.texto || '').trim(),
+            temArquivo: !!String(just.arquivo || '').trim(),
+        } : null,
+        temObservacao: !!String(rec.observacao || '').trim(),
+    };
+    const concludedAt = validTime(rec.concludedAt);
+    if (concludedAt) snapshot.concludedAt = concludedAt;
+    return snapshot;
+}
+
+// O que conta como "a presença mudou": a situação de cada aula e, havendo aula
+// justificada, o tipo e o abono da justificativa (o abono muda a frequência). Texto da
+// justificativa, observação, hora de chegada e conclusão da chamada não entram.
+function statusKey(rec) {
+    if (!rec || typeof rec !== 'object') return '';
+    const aulas = aulaStatuses(rec);
+    let key = aulas.map(a => `${a.ordem}:${a.status}`).join(',');
+    if (aulas.some(a => a.status === 'justificada')) {
+        const just = rec.justificativa && typeof rec.justificativa === 'object' ? rec.justificativa : null;
+        key += `|j:${just ? String(just.tipo || '') : ''}:${just && just.abonado === true ? 1 : 0}`;
+    }
+    return key;
+}
+
+function countText(n, one, many) {
+    return `${n} ${n === 1 ? one : many}`;
+}
+
+function joinWithE(parts) {
+    if (parts.length <= 1) return parts.join('');
+    return `${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}`;
+}
+
+// Resumo em português para a auditoria (Antes → Depois): "Presente (2 aulas)", "Falta",
+// "1 presença e 1 falta (2 aulas)", "Falta justificada (atestado, abonada)".
+function describe(rec) {
+    if (!rec || typeof rec !== 'object') return 'Sem registro';
+    const aulas = aulaStatuses(rec);
+    const total = aulas.length;
+    const count = { presente: 0, falta: 0, justificada: 0 };
+    aulas.forEach(a => { if (Object.prototype.hasOwnProperty.call(count, a.status)) count[a.status] += 1; });
+    const kinds = Object.keys(count).filter(k => count[k] > 0);
+    let text;
+    if (kinds.length === 1 && count[kinds[0]] === total) {
+        text = { presente: 'Presente', falta: 'Falta', justificada: 'Falta justificada' }[kinds[0]];
+    } else {
+        const parts = [];
+        if (count.presente) parts.push(countText(count.presente, 'presença', 'presenças'));
+        if (count.falta) parts.push(countText(count.falta, 'falta', 'faltas'));
+        if (count.justificada) parts.push(countText(count.justificada, 'falta justificada', 'faltas justificadas'));
+        text = parts.length ? joinWithE(parts) : 'Sem aulas lançadas';
+        if (parts.length) text = text.charAt(0).toUpperCase() + text.slice(1);
+    }
+    const notes = [];
+    if (total > 1) notes.push(`${total} aulas`);
+    if (count.justificada) {
+        const just = rec.justificativa && typeof rec.justificativa === 'object' ? rec.justificativa : null;
+        if (just && JUST_TIPO_LABELS[just.tipo]) notes.push(JUST_TIPO_LABELS[just.tipo]);
+        notes.push(just && just.abonado === true ? 'abonada' : 'não abonada');
+    }
+    return notes.length ? `${text} (${notes.join(', ')})` : text;
+}
+
+// O registro que vale naquele dia (o mesmo que dedupeByDate escolhe): a chamada sobre a
+// marcação manual, a manual sobre a do login; empate, o último da lista.
+function effectiveDayRecord(records) {
+    let best = null;
+    (records || []).forEach(r => {
+        if (!r || typeof r !== 'object') return;
+        if (!best || (ORIGIN_RANK[r.origin] || 0) >= (ORIGIN_RANK[best.origin] || 0)) best = r;
+    });
+    return best;
+}
+
+// Quando a regravação da chamada vira entrada da auditoria. Só se a situação mudou e:
+// - o registro anterior não era da chamada (presença automática do login ou marcação
+//   individual); ou
+// - a chamada já tinha sido concluída (concluida: true ou concludedAt); ou
+// - quem salva agora não é quem marcou antes; ou
+// - a versão anterior tem mais de 15 min (ATTENDANCE_EDIT_SESSION_MS).
+// A primeira chamada do dia (sem registro anterior) e o rascunho do mesmo professor
+// antes de concluir, dentro dos 15 min, não geram entrada.
+function shouldAuditAttendanceChange(prev, next, actor, now = Date.now()) {
+    if (!prev || typeof prev !== 'object') return false;
+    if (statusKey(prev) === statusKey(next)) return false;
+    if (prev.origin !== 'chamada') return true;
+    if (prev.concluida === true || validTime(prev.concludedAt)) return true;
+    if (emailOf(prev.markedBy) !== emailOf(actor)) return true;
+    const savedAt = validTime(prev.timestamp);
+    if (!savedAt) return true;
+    return Number(now) - savedAt > ATTENDANCE_EDIT_SESSION_MS;
+}
+
+// Campos que passam da versão anterior para a nova regravação da chamada:
+// - concludedAt: a primeira conclusão (a mais antiga entre os registros que saem). Um
+//   registro concluído de antes deste campo conta pela hora em que foi gravado, a mais
+//   antiga que se conhece; sem nenhuma, a hora de agora se esta gravação conclui.
+// - loginAccess: o acesso guardado numa versão anterior ou, na primeira vez, o do
+//   registro automático do login que a chamada substitui.
+// Devolve só os campos que existem (nada de chave com undefined no registro).
+function attendanceCarryOver(previous, { concluida = false, now = Date.now() } = {}) {
+    const carried = {};
+    let concludedAt = null;
+    let loginAccess = null;
+    (previous || []).forEach(r => {
+        if (!r || typeof r !== 'object') return;
+        const concluded = validTime(r.concludedAt) || (r.concluida === true ? validTime(r.timestamp) : null);
+        if (concluded && (!concludedAt || concluded < concludedAt)) concludedAt = concluded;
+        if (!loginAccess && r.loginAccess && typeof r.loginAccess === 'object') {
+            loginAccess = {
+                horaAcesso: String(r.loginAccess.horaAcesso || ''),
+                ip: String(r.loginAccess.ip || ''),
+                source: r.loginAccess.source === 'heartbeat' ? 'heartbeat' : 'login',
+            };
+        }
+    });
+    if (!loginAccess) {
+        const login = (previous || []).find(r => r && r.origin === 'login');
+        if (login) {
+            loginAccess = {
+                horaAcesso: String(login.horaAcesso || ''),
+                ip: String(login.ip || ''),
+                source: login.source === 'heartbeat' ? 'heartbeat' : 'login',
+            };
+        }
+    }
+    if (!concludedAt && concluida === true) concludedAt = Number(now);
+    if (concludedAt) carried.concludedAt = concludedAt;
+    if (loginAccess) carried.loginAccess = loginAccess;
+    return carried;
+}
+
+// 'AAAA-MM-DD' → 'DD/MM/AAAA' (campo da entrada na auditoria).
+function formatDateBR(date) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ''));
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : String(date || '');
+}
+
+// Grava na auditoria a mudança de presença de um aluno num dia (recordAudit, categoria
+// 'attendance'). action: 'attendance_changed' (chamada regravada) ou
+// 'attendance_marked' (marcação individual). before: os registros do dia que existiam
+// antes; after: o registro novo. Antes → Depois em texto (describe) pelo registro que
+// valia e pelo novo; details guarda as fotografias. Não grava no banco (db.save()
+// depois, em quem chama).
+function recordAttendanceAudit(memory, { req, actor, action, studentEmail, courseId, studentClass, date, before = [], after = null, timestamp } = {}) {
+    const previous = (Array.isArray(before) ? before : []).filter(r => r && typeof r === 'object');
+    return recordAudit(memory, {
+        req,
+        actor,
+        action,
+        category: 'attendance',
+        studentEmail,
+        courseId: courseId || '',
+        studentClass: studentClass || '',
+        field: `Presença em ${formatDateBR(date)}`,
+        oldValue: describe(effectiveDayRecord(previous)),
+        newValue: describe(after),
+        details: {
+            date,
+            before: previous.map(attendanceSnapshot),
+            after: attendanceSnapshot(after),
+        },
+    }, { timestamp });
+}
+
+// Data local (AAAA-MM-DD) de uma hora (ms ou ISO) no fuso das configurações.
+function localDateOf(value, timezone) {
+    const time = validTime(value);
+    if (!time) return null;
+    try {
+        return new Intl.DateTimeFormat('en-CA', { timeZone: timezone || undefined, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(time));
+    } catch (e) {
+        return new Date(time).toISOString().slice(0, 10);
+    }
+}
+
+// Aluno com cadastro encerrado (Inativo, Concluído, Transferido, Evadido) fica fora da
+// chamada das datas novas. Aparece numa data só se já tem registro nela ou, quando a
+// mudança de situação tem hora gravada (statusChangedAt, do Desligar aluno), se a data é
+// anterior ao dia da mudança: a chamada atrasada de quando ele ainda estava na turma.
+function closedStudentListedOn({ hasRecord = false, date, statusChangedAt, timezone } = {}) {
+    if (hasRecord) return true;
+    const changedOn = localDateOf(statusChangedAt, timezone);
+    return !!changedOn && YMD_RE.test(String(date || '')) && String(date) < changedOn;
+}
+
 module.exports = {
     WEEKDAYS, HHMM_RE, AULA_STATUS, JUST_TIPOS,
     configDefault, sanitizeDisciplinas, sanitizeGradeTemplates, sanitizeAttendanceConfig,
@@ -284,4 +530,7 @@ module.exports = {
     classDayWindow, withinClassDayWindow,
     sanitizeAulas, sanitizeJustificativa, recordHasPresence, computeAttendanceStats,
     dedupeByDate,
+    ATTENDANCE_EDIT_SESSION_MS, attendanceSnapshot, statusKey, describe, effectiveDayRecord,
+    shouldAuditAttendanceChange, attendanceCarryOver, formatDateBR, recordAttendanceAudit,
+    localDateOf, closedStudentListedOn,
 };

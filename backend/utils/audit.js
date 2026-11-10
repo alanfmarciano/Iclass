@@ -104,6 +104,9 @@ const ACTION_LABELS = Object.freeze({
     announcement_deleted: 'Aviso excluído',
     calendar_event_deleted: 'Evento do calendário excluído',
     question_deleted: 'Questão excluída do banco de questões',
+    // Presença (versões da chamada, utils/attendance.js)
+    attendance_changed: 'Presença alterada',
+    attendance_marked: 'Presença marcada manualmente',
     // Conteúdo
     content_material_updated: 'Material alterado',
     content_unit_created: 'Unidade de conteúdo criada',

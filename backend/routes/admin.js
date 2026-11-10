@@ -1929,6 +1929,9 @@ function isValidIsoDate(value) {
 }
 
 // Marcar presença manualmente (Fase 4). Valida e-mail, data e matrícula (CONF-14).
+// Toda marcação fica na auditoria (attendance_marked, H7b) com os registros que o dia
+// já tinha e o novo; a marcação não apaga nada (a chamada do dia, se houver, continua
+// valendo na frequência por cima da manual).
 router.post('/api/admin/student/attendance/mark', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const body = req.body || {};
@@ -1963,8 +1966,12 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
         const gradeAulas = attendanceUtil.gradeForDate(cls, date);
         const aulas = (gradeAulas.length ? gradeAulas : [{ ordem: 1, inicio: '', disciplinaId: '' }])
             .map(a => ({ ordem: a.ordem, disciplinaId: a.disciplinaId || '', inicio: a.inicio || '', status: 'presente', hora: '' }));
-        db.memory.attendance.push({
-            id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        const now = Date.now();
+        // Registros do aluno naquele dia, turma e curso (o mesmo grupo da frequência).
+        const previous = db.memory.attendance.filter(a => a && a.studentEmail === email && a.date === date
+            && String(a.courseId || '') === courseId && a.studentClass === studentClass);
+        const record = {
+            id: 'att_' + now + '_' + Math.random().toString(36).slice(2, 8),
             studentEmail: email,
             studentClass,
             courseId,
@@ -1973,7 +1980,13 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
             aulas,
             justificativa: null,
             markedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
-            timestamp: Date.now(),
+            timestamp: now,
+        };
+        db.memory.attendance.push(record);
+        attendanceUtil.recordAttendanceAudit(db.memory, {
+            req, actor: matchedAdmin, action: 'attendance_marked',
+            studentEmail: email, courseId, studentClass, date,
+            before: previous, after: record, timestamp: now,
         });
         db.save();
         res.json({ success: true, date });
@@ -1984,6 +1997,37 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
 // ===================== CHAMADA POR TURMA (presença em massa) =====================
 // Status válidos. Ausência (ausente/justificado) NÃO conta como presença nas métricas.
 const ATT_STATUS = ['presente', 'ausente', 'atrasado', 'justificado'];
+// Aluno com cadastro encerrado (Inativo, Concluído, Transferido, Evadido) sai da chamada
+// das datas novas (H7b); a regra de quando ele ainda aparece está em
+// attendanceUtil.closedStudentListedOn.
+const { isClosedStudentStatus } = require('../utils/students.js');
+
+// Registros do aluno que a chamada daquela turma e data mostra (o mesmo filtro do
+// roster: registro sem curso ou sem turma, de versões antigas, também aparece).
+function _rosterDayRecords(email, date, className, courseId) {
+    return (db.memory.attendance || []).filter(a => a && a.studentEmail === email && a.date === date
+        && (!courseId || !a.courseId || String(a.courseId) === courseId)
+        && (!a.studentClass || a.studentClass === className));
+}
+
+// O aluno entra na chamada desta data? Ativo (ou Bloqueado) sempre; encerrado só com
+// registro na data ou em data anterior à mudança de situação.
+function _rosterListsStudent(student, { date, hasRecord, timezone }) {
+    if (!isClosedStudentStatus(student && student.status)) return true;
+    return attendanceUtil.closedStudentListedOn({ hasRecord, date, statusChangedAt: student.statusChangedAt, timezone });
+}
+
+// Presença automática (acesso do aluno) para o professor conferir: a do próprio registro
+// do login ou a guardada (loginAccess) na chamada que o substituiu.
+function _rosterLoginAccess(rec) {
+    if (!rec) return null;
+    const via = source => (source === 'heartbeat' ? 'sessão aberta' : 'login');
+    if (rec.origin === 'login') return { hora: rec.horaAcesso || '', ip: rec.ip || '', via: via(rec.source) };
+    if (rec.loginAccess && typeof rec.loginAccess === 'object') {
+        return { hora: rec.loginAccess.horaAcesso || '', ip: rec.loginAccess.ip || '', via: via(rec.loginAccess.source) };
+    }
+    return null;
+}
 
 function _studentInClass(student, className, courseId) {
     const cn = String(className || '').trim();
@@ -2023,13 +2067,14 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
         const gradeAulas = _gradeAulasForRoster(cls, course, date);
+        const timezone = settingsUtil.getSettings().timezone;
 
         const roster = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
             .map(s => {
                 const email = (s.email || '').toLowerCase();
-                const recs = (db.memory.attendance || []).filter(a => a.studentEmail === email && a.date === date
-                    && (!courseId || !a.courseId || String(a.courseId) === courseId)
-                    && (!a.studentClass || a.studentClass === className));
+                const recs = _rosterDayRecords(email, date, className, courseId);
+                // Cadastro encerrado fica fora das datas novas (H7b).
+                if (!_rosterListsStudent(s, { date, hasRecord: recs.length > 0, timezone })) return null;
                 const rec = recs.find(a => a.origin === 'chamada') || recs.find(a => a.origin !== 'chamada') || null;
                 // Aulas salvas têm prioridade; senão, monta a partir da grade (padrão presente).
                 let aulas;
@@ -2052,11 +2097,14 @@ router.get('/api/admin/attendance/roster', (req, res) => {
                     nomeSocial: s.nomeSocial || '',
                     matricula: s.matricula || '',
                     origin: rec ? (rec.origin || '') : '',
+                    // Situação do cadastro: o encerrado só aparece aqui com registro na data
+                    // (ou em data anterior ao desligamento), e a tela mostra a situação.
+                    situacao: s.status || DEFAULT_STATUS,
+                    encerrado: isClosedStudentStatus(s.status),
                     // Presença automática (acesso do aluno): hora, IP e origem para o
-                    // professor conferir antes de concluir a chamada (CRIT-02).
-                    acessoAutomatico: rec && rec.origin === 'login'
-                        ? { hora: rec.horaAcesso || '', ip: rec.ip || '', via: rec.source === 'heartbeat' ? 'sessão aberta' : 'login' }
-                        : null,
+                    // professor conferir antes de concluir a chamada (CRIT-02). Depois que
+                    // a chamada substitui o registro do login, vem do loginAccess guardado.
+                    acessoAutomatico: _rosterLoginAccess(rec),
                     salvo: !!rec,
                     concluida: !!(rec && rec.concluida),
                     aulas,
@@ -2067,6 +2115,7 @@ router.get('/api/admin/attendance/roster', (req, res) => {
                     emRisco: freq != null && freq < cfg.limiarRiscoPct,
                 };
             })
+            .filter(Boolean)
             .sort((a, b) => (a.nomeSocial || a.name).localeCompare(b.nomeSocial || b.name, 'pt-BR'));
         res.json({
             studentClass: className, courseId, date,
@@ -2080,6 +2129,13 @@ router.get('/api/admin/attendance/roster', (req, res) => {
 });
 
 // Salva a chamada de uma turma numa data (upsert por aluno/data) — por aula.
+// Cada gravação substitui o registro do dia de cada aluno por um novo (id novo), como
+// sempre. O que se perdia vai para a auditoria (H7b): quando a situação muda depois da
+// conclusão, sobre a presença automática ou a marcação individual, por outra pessoa ou
+// depois de 15 min, fica uma entrada attendance_changed com antes e depois
+// (attendanceUtil.shouldAuditAttendanceChange). O rascunho do mesmo professor (autosave
+// a cada 2 s) não vira entrada. A hora da primeira conclusão (concludedAt) e o acesso
+// do login substituído (loginAccess) passam de versão em versão.
 router.post('/api/admin/attendance/bulk', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.body.studentClass || '').trim();
@@ -2091,22 +2147,56 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         const concluida = req.body.concluida === true;
         if (!className || !courseId || !date || !entries) return res.status(400).json({ error: 'Curso, turma, data e lançamentos são obrigatórios.' });
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
+        const now = Date.now();
+        const markedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
+        const timezone = settingsUtil.getSettings().timezone;
 
-        let saved = 0;
+        // Lançamentos válidos, um por aluno (repetido no mesmo pedido: vale o último).
+        const studentsByEmail = new Map();
+        (db.memory.students || []).forEach(s => { if (s && s.email) studentsByEmail.set(String(s.email).toLowerCase(), s); });
+        const pending = new Map();
         entries.forEach(entry => {
             const email = String(entry && entry.email || '').trim().toLowerCase();
             if (!email) return;
-            const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+            const student = studentsByEmail.get(email);
             if (!student || !_studentInClass(student, className, courseId)) return;
+            pending.delete(email);
+            pending.set(email, { entry, student });
+        });
+
+        // Uma passada pela presença: sai qualquer registro daquele dia, turma e curso dos
+        // alunos lançados (inclusive o do login automático), guardado para a auditoria.
+        const removedByEmail = new Map();
+        const shownOnDay = new Set();
+        const kept = [];
+        db.memory.attendance.forEach(a => {
+            const email = a && a.studentEmail;
+            if (email && pending.has(email) && a.date === date) {
+                if ((!a.courseId || String(a.courseId) === courseId) && (!a.studentClass || a.studentClass === className)) shownOnDay.add(email);
+                if (String(a.courseId || '') === courseId && a.studentClass === className) {
+                    if (!removedByEmail.has(email)) removedByEmail.set(email, []);
+                    removedByEmail.get(email).push(a);
+                    return;
+                }
+            }
+            kept.push(a);
+        });
+
+        const added = [];
+        let saved = 0;
+        let skipped = 0;
+        pending.forEach(({ entry, student }, email) => {
+            // Cadastro encerrado que a chamada desta data não mostra (página aberta antes
+            // do desligamento) não ganha registro novo. Sem registro na data, também não
+            // havia nada para tirar.
+            if (!_rosterListsStudent(student, { date, hasRecord: shownOnDay.has(email), timezone })) { skipped++; return; }
+            const previous = removedByEmail.get(email) || [];
             const aulas = attendanceUtil.sanitizeAulas(entry.aulas);
             const temJustificada = aulas.some(a => a.status === 'justificada');
             const justificativa = temJustificada ? attendanceUtil.sanitizeJustificativa(entry.justificativa) : null;
             const observacao = String((entry && entry.observacao) || '').slice(0, 500);
-            // Remove qualquer registro daquele dia (inclusive login automático) e grava o da chamada.
-            db.memory.attendance = db.memory.attendance.filter(a => !(a.studentEmail === email && a.date === date
-                && String(a.courseId || '') === courseId && a.studentClass === className));
-            db.memory.attendance.push({
-                id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+            const record = {
+                id: 'att_' + now + '_' + Math.random().toString(36).slice(2, 8),
                 studentEmail: email,
                 studentClass: className,
                 courseId: courseId || (student.classes && student.classes[0] && student.classes[0].courseId) || '',
@@ -2116,13 +2206,24 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
                 aulas,
                 justificativa,
                 observacao,
-                markedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
-                timestamp: Date.now(),
-            });
+                markedBy,
+                timestamp: now,
+                ...attendanceUtil.attendanceCarryOver(previous, { concluida, now }),
+            };
+            const prev = attendanceUtil.effectiveDayRecord(previous);
+            if (attendanceUtil.shouldAuditAttendanceChange(prev, record, markedBy, now)) {
+                attendanceUtil.recordAttendanceAudit(db.memory, {
+                    req, actor: matchedAdmin, action: 'attendance_changed',
+                    studentEmail: email, courseId: record.courseId, studentClass: className, date,
+                    before: previous, after: record, timestamp: now,
+                });
+            }
+            added.push(record);
             saved++;
         });
+        db.memory.attendance = kept.concat(added);
         db.save();
-        res.json({ success: true, saved, concluida });
+        res.json({ success: true, saved, skipped, concluida });
     });
 });
 

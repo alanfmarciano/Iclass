@@ -108,9 +108,15 @@ Um registro por aluno/data/turma, contendo o array de aulas do dia.
     texto: '', arquivo: '', arquivoNome: '',
   } | null,
   markedBy, timestamp,
+  concludedAt,             // opcional (H7b): hora da primeira conclusão da chamada do dia
+  loginAccess: {           // opcional (H7b): o acesso do login que a chamada substituiu
+    horaAcesso: '07:58', ip: '10.0.0.7', source: 'login' | 'heartbeat',
+  },
 }
 ```
 
+- Versões (H7b): a chamada regrava o registro do dia com id novo a cada salvamento. `concludedAt` e `loginAccess` passam de versão em versão, e a mudança de situação depois da conclusão, sobre a presença automática ou a marcação individual, por outra pessoa ou depois de 15 min vira `attendance_changed` na auditoria, com a fotografia de antes e de depois (sem o texto da justificativa, a observação nem o IP). A marcação individual grava `attendance_marked`. O rascunho do mesmo professor e a primeira chamada do dia não geram entrada. Regras em `backend/utils/attendance.js`.
+- Aluno com cadastro encerrado (Inativo, Concluído, Transferido, Evadido) não entra na chamada das datas novas: só numa data em que já tem registro ou anterior ao dia do desligamento (`statusChangedAt`).
 - Status por aula ∈ `presente` | `falta` | `justificada`. "Atrasado" é derivado (aluno com faltas nas aulas iniciais + presença nas seguintes) e exibido na UI, mas cada aula é P/F/J.
 - `justificativa.abonado === true` ⇒ as aulas `justificada` daquele dia **não contam** como falta em nenhuma disciplina.
 - Retrocompat: registro antigo sem `aulas` é lido como 1 aula presente (ou falta, conforme `status` legado) sem disciplina (`disciplinaId: null` ⇒ entra só na frequência geral).
