@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reportFailure, reportResponse, reportSuccess, resetConnectionForTests, setConnectionProbe } from '../../lib/connection'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { BANNER_DELAY_MS, BANNER_HEIGHT_VAR, EXAM_HINT_TEXT, OFFLINE_TEXT, RECOVERED_MS, RECOVERED_TEXT, STARTING_TEXT, ServerConnectionBanner } from './ServerConnectionBanner'
+import { BANNER_DELAY_MS, BANNER_HEIGHT_VAR, COMPACT_MEDIA, EXAM_HINT_SHORT_TEXT, EXAM_HINT_TEXT, OFFLINE_SHORT_TEXT, OFFLINE_TEXT, RECOVERED_MS, RECOVERED_TEXT, STARTING_SHORT_TEXT, STARTING_TEXT, ServerConnectionBanner } from './ServerConnectionBanner'
 
 // Frente do H3 (CONF-03, UXA-06): a faixa diz que é o servidor (não a prova) e, na rota
 // da prova, pede para não recarregar. Antes a tela não dizia nada até cair no login.
@@ -132,5 +132,66 @@ describe('[UC-AUTH-001] faixa de conexão não cobre a tela', () => {
     renderAt('/aluno')
     act(() => { vi.advanceTimersByTime(5000) })
     expect(document.documentElement.style.getPropertyValue(BANNER_HEIGHT_VAR)).toBe('')
+  })
+})
+
+// Frente do H3, ajuste 2: com zoom de 200% num celular de 390 px (195 x 422 px CSS, o caso
+// do UC-PROVA-003) a faixa completa ocupava 241 px e, com o cabeçalho fixo da prova,
+// sobravam 39 px para as questões. Em tela estreita ou baixa a faixa fica compacta.
+describe('[UC-AUTH-001] faixa compacta em tela estreita (zoom de 200%)', () => {
+  const originalMatchMedia = window.matchMedia
+  let listeners
+  let compact
+  beforeEach(() => {
+    listeners = new Set()
+    compact = true
+    window.matchMedia = vi.fn((query) => ({
+      get matches() { return query === COMPACT_MEDIA ? compact : false },
+      media: query,
+      addEventListener: (_type, fn) => listeners.add(fn),
+      removeEventListener: (_type, fn) => listeners.delete(fn),
+    }))
+  })
+  afterEach(() => { window.matchMedia = originalMatchMedia })
+
+  it('na prova: textos curtos na mesma linha, sem a coluna do ícone', () => {
+    renderAt('/aluno/prova/Avaliacao?applicationId=app-1')
+    goOffline()
+    act(() => { vi.advanceTimersByTime(BANNER_DELAY_MS) })
+    const box = screen.getByTestId('server-connection-banner-box')
+    expect(box).toHaveAttribute('data-compact', 'true')
+    expect(box).toHaveTextContent(`${OFFLINE_SHORT_TEXT} ${EXAM_HINT_SHORT_TEXT}`)
+    expect(screen.queryByText(OFFLINE_TEXT)).not.toBeInTheDocument()
+    expect(screen.queryByText(EXAM_HINT_TEXT)).not.toBeInTheDocument()
+    expect(box.querySelector('svg')).toBeNull()
+    expect(box.querySelector('.block')).toBeNull()
+    // O pedido de não recarregar continua lá, só mais curto.
+    expect(EXAM_HINT_SHORT_TEXT).toMatch(/não recarregue/)
+    act(() => { reportResponse(503, { starting: true }) })
+    expect(screen.getByText(STARTING_SHORT_TEXT)).toBeVisible()
+    expect(box.textContent.length).toBeLessThan((STARTING_TEXT + EXAM_HINT_TEXT).length / 2)
+  })
+
+  it('fora da prova, só o título curto; ao alargar a tela (giro, zoom) volta a faixa completa', () => {
+    renderAt('/aluno')
+    goOffline()
+    act(() => { vi.advanceTimersByTime(BANNER_DELAY_MS) })
+    expect(screen.getByTestId('server-connection-banner-box')).toHaveTextContent(OFFLINE_SHORT_TEXT)
+    expect(screen.queryByText(EXAM_HINT_SHORT_TEXT)).not.toBeInTheDocument()
+    act(() => { compact = false; listeners.forEach((fn) => fn()) })
+    const box = screen.getByTestId('server-connection-banner-box')
+    expect(box).not.toHaveAttribute('data-compact')
+    expect(screen.getByText(OFFLINE_TEXT)).toBeVisible()
+    expect(box.querySelector('svg')).not.toBeNull()
+  })
+
+  it('tela larga: a faixa completa de antes', () => {
+    compact = false
+    renderAt('/aluno/prova/Avaliacao?applicationId=app-1')
+    goOffline()
+    act(() => { vi.advanceTimersByTime(BANNER_DELAY_MS) })
+    expect(screen.getByText(OFFLINE_TEXT)).toBeVisible()
+    expect(screen.getByText(EXAM_HINT_TEXT)).toBeVisible()
+    expect(window.matchMedia).toHaveBeenCalledWith(COMPACT_MEDIA)
   })
 })

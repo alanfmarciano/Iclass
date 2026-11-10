@@ -18,12 +18,21 @@ import { isStudentExamPath } from '../../lib/sessionActivity'
 //   de ficar por cima. Antes cobria o cabeçalho fixo da prova inteiro (cronômetro, x/y
 //   respondidas, o aviso de salvamento e o botão Enviar), e um toque na faixa acionava o
 //   Enviar escondido por baixo.
+// - Tela estreita ou baixa (zoom de 200% num celular de 390 px dá 195 x 422 px CSS; celular
+//   deitado): faixa compacta, sem a coluna do ícone, com textos curtos e a dica da prova na
+//   mesma linha do título. A faixa completa ocupava 241 px dos 422 e, com o cabeçalho fixo
+//   da prova, sobravam 39 px para as questões: a faixa pedia para continuar respondendo e o
+//   aluno quase não conseguia. O tamanho da letra fica o mesmo (quem usa zoom precisa dele).
 export const BANNER_DELAY_MS = 1500
 export const RECOVERED_MS = 4000
 export const OFFLINE_TEXT = 'Sem conexão com o servidor. Tentando reconectar…'
 export const STARTING_TEXT = 'O servidor está reiniciando. Aguarde alguns segundos…'
 export const EXAM_HINT_TEXT = 'Continue respondendo e não feche nem recarregue esta página: as respostas são enviadas quando a conexão voltar.'
 export const RECOVERED_TEXT = 'Conexão restabelecida.'
+export const OFFLINE_SHORT_TEXT = 'Sem conexão. Tentando reconectar…'
+export const STARTING_SHORT_TEXT = 'Servidor reiniciando…'
+export const EXAM_HINT_SHORT_TEXT = 'Continue respondendo e não recarregue a página.'
+export const COMPACT_MEDIA = '(max-width: 359px), (max-height: 479px)'
 
 export const BANNER_HEIGHT_VAR = '--connection-banner-h'
 
@@ -32,6 +41,30 @@ function setBannerHeight(px) {
   const root = document.documentElement
   if (px > 0) root.style.setProperty(BANNER_HEIGHT_VAR, `${Math.ceil(px)}px`)
   else root.style.removeProperty(BANNER_HEIGHT_VAR)
+}
+
+function matchesCompact() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return !!window.matchMedia(COMPACT_MEDIA)?.matches
+}
+
+// Acompanha a largura e a altura da tela (zoom, giro do celular).
+function useCompactBanner() {
+  const [compact, setCompact] = useState(matchesCompact)
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+    const media = window.matchMedia(COMPACT_MEDIA)
+    if (!media) return undefined
+    const update = () => setCompact(!!media.matches)
+    update()
+    if (typeof media.addEventListener === 'function') media.addEventListener('change', update)
+    else if (typeof media.addListener === 'function') media.addListener(update)
+    return () => {
+      if (typeof media.removeEventListener === 'function') media.removeEventListener('change', update)
+      else if (typeof media.removeListener === 'function') media.removeListener(update)
+    }
+  }, [])
+  return compact
 }
 
 export function ServerConnectionBanner() {
@@ -62,6 +95,7 @@ export function ServerConnectionBanner() {
   }, [state])
 
   const exam = isStudentExamPath(pathname)
+  const compact = useCompactBanner()
   const visible = !!shown
   const boxRef = useRef(null)
 
@@ -82,11 +116,17 @@ export function ServerConnectionBanner() {
       window.removeEventListener('resize', measure)
       setBannerHeight(0)
     }
-  }, [visible, shown, exam])
+  }, [visible, shown, exam, compact])
 
   const recovered = shown === 'recovered'
   const Icon = recovered ? CheckCircle2 : shown === 'starting' ? RefreshCw : WifiOff
-  const text = recovered ? RECOVERED_TEXT : shown === 'starting' ? STARTING_TEXT : OFFLINE_TEXT
+  const text = recovered
+    ? RECOVERED_TEXT
+    : shown === 'starting'
+      ? (compact ? STARTING_SHORT_TEXT : STARTING_TEXT)
+      : (compact ? OFFLINE_SHORT_TEXT : OFFLINE_TEXT)
+  const hint = !recovered && exam ? (compact ? EXAM_HINT_SHORT_TEXT : EXAM_HINT_TEXT) : null
+  const tone = recovered ? 'border-success bg-success-soft' : 'border-warning bg-warning-soft'
   return (
     <div role="status" aria-live="polite" data-testid="server-connection-banner" className="fixed inset-x-0 top-0 z-[60] pointer-events-none">
       {visible && (
@@ -94,16 +134,25 @@ export function ServerConnectionBanner() {
         // baixo. Largura inteira (o espaço reservado em cima vai de ponta a ponta) e o texto
         // centralizado. Recebe o toque (pointer-events-auto): nada passa para o que estiver
         // por baixo dela.
-        <div ref={boxRef} data-testid="server-connection-banner-box" className="w-full bg-surface shadow-sm pointer-events-auto">
-          <div className={`border-b px-4 py-2.5 text-sm text-text break-words ${recovered ? 'border-success bg-success-soft' : 'border-warning bg-warning-soft'}`}>
-            <div className="mx-auto flex w-full max-w-3xl items-start gap-2">
-              <Icon aria-hidden="true" size={18} className={`mt-0.5 shrink-0 ${recovered ? 'text-success' : 'text-warning'}`} />
-              <p className="min-w-0">
+        <div ref={boxRef} data-testid="server-connection-banner-box" data-compact={compact ? 'true' : undefined} className="w-full bg-surface shadow-sm pointer-events-auto">
+          {compact ? (
+            <div className={`border-b px-2 py-1 text-sm leading-snug text-text text-center break-words ${tone}`}>
+              <p className="mx-auto max-w-3xl">
                 <strong className="font-semibold">{text}</strong>
-                {!recovered && exam && <span className="block">{EXAM_HINT_TEXT}</span>}
+                {hint && <span> {hint}</span>}
               </p>
             </div>
-          </div>
+          ) : (
+            <div className={`border-b px-4 py-2.5 text-sm text-text break-words ${tone}`}>
+              <div className="mx-auto flex w-full max-w-3xl items-start gap-2">
+                <Icon aria-hidden="true" size={18} className={`mt-0.5 shrink-0 ${recovered ? 'text-success' : 'text-warning'}`} />
+                <p className="min-w-0">
+                  <strong className="font-semibold">{text}</strong>
+                  {hint && <span className="block">{hint}</span>}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
