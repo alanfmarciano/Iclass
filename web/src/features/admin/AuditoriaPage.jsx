@@ -162,6 +162,21 @@ export default function AuditoriaPage() {
     }, { replace: true })
   }
 
+  // Voltar/avançar do navegador ou um link trocam o endereço: o texto digitado acompanha.
+  // Compara com o texto aparado, para o espaço no fim do que a pessoa ainda está
+  // digitando não sumir quando a pausa leva o texto para o endereço.
+  useEffect(() => {
+    setDraft(current => {
+      let changed = false
+      const next = { ...current }
+      TEXT_KEYS.forEach(key => {
+        const fromAddress = filters[key] || ''
+        if ((current[key] || '').trim() !== fromAddress) { next[key] = fromAddress; changed = true }
+      })
+      return changed ? next : current
+    })
+  }, [filters.student, filters.q])
+
   useEffect(() => {
     const timers = [...TEXT_KEYS].map(key => {
       if ((draft[key] || '') === (filters[key] || '')) return null

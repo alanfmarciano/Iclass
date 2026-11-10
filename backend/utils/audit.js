@@ -441,6 +441,22 @@ function normalizeAuditEntry(raw) {
     };
 }
 
+// Entrada já normalizada, pronta para mostrar (tela Auditoria, CSV e aba Auditoria da
+// ficha do aluno): valores, antes, depois e detalhes passam de novo pelo stripSecrets,
+// porque a entrada antiga (de antes do recordAudit, às vezes vinda de um backup) não
+// passou por ele. Devolve uma cópia; a entrada gravada não muda.
+function auditEntryWithoutSecrets(item) {
+    if (!isPlainObject(item)) return item;
+    return {
+        ...item,
+        oldValue: stripSecrets(item.oldValue),
+        newValue: stripSecrets(item.newValue),
+        before: stripSecrets(item.before),
+        after: stripSecrets(item.after),
+        details: stripSecrets(item.details),
+    };
+}
+
 // ------------------------------------------------------------ restauração
 // Identidade da entrada para juntar duas trilhas: o id; sem id, o conteúdo inteiro.
 function entryIdentity(entry) {
@@ -475,6 +491,7 @@ module.exports = {
     ACTION_CATEGORIES,
     recordAudit,
     normalizeAuditEntry,
+    auditEntryWithoutSecrets,
     mergeAuditTrails,
     stripSecrets,
     inferAuditCategory,

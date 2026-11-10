@@ -82,7 +82,9 @@ function uniquePath(target, isDir) {
 
 // Move um arquivo/pasta (abs) para a lixeira, registrando a origem para restaurar.
 // meta (opcional): curso/turma do material e quem excluiu, para a lixeira do professor
-// mostrar só o que está no escopo dele (ver hiddenFromAccount em adminRecovery.js).
+// mostrar só o que está no escopo dele (ver hiddenFromAccount em adminRecovery.js), e o
+// nome que a pessoa conhece (originalName: o do material na biblioteca ou o do arquivo
+// enviado), porque o arquivo em /uploads tem um nome gerado ('1700000000000-123.pdf').
 function moveToTrash(absPath, meta = {}) {
     try {
         if (!absPath || !fs.existsSync(absPath)) return null;
@@ -99,9 +101,11 @@ function moveToTrash(absPath, meta = {}) {
         const courseId = String((meta && meta.courseId) || '').trim();
         const studentClass = String((meta && meta.studentClass) || '').trim();
         const deletedBy = String((meta && meta.deletedBy) || '').trim().toLowerCase();
+        const originalName = String((meta && meta.originalName) || '').trim().slice(0, 200);
         if (courseId) record.courseId = courseId;
         if (courseId && studentClass) record.studentClass = studentClass;
         if (deletedBy) record.deletedBy = deletedBy;
+        if (originalName && originalName !== record.name) record.originalName = originalName;
         idx.push(record);
         writeIndex(idx);
         return stored;
@@ -134,6 +138,7 @@ function listTrash() {
         out.push({
             id: e.id, name: e.name, originalRel: e.originalRel, isDir: !!e.isDir, deletedAt: e.deletedAt, size,
             courseId: e.courseId || '', studentClass: e.studentClass || '', deletedBy: e.deletedBy || '',
+            originalName: e.originalName || '',
         });
     });
     if (changed) writeIndex(idx.filter(e => fs.existsSync(path.join(LIXEIRA_DIR, e.id))));

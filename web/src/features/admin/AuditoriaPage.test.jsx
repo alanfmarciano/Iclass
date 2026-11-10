@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AuditoriaPage, { auditSummary } from './AuditoriaPage'
 
@@ -125,6 +125,41 @@ describe('Tela Auditoria', () => {
     await user.click(screen.getByRole('button', { name: 'Limpar filtros' }))
     await waitFor(() => expect(lastQuery().get('applicationId')).toBe(null))
     expect(screen.getByLabelText('Buscar')).toHaveValue('')
+  })
+
+  it('[UC-AUDITORIA-003] voltar e avançar no navegador: os campos de texto acompanham o endereço', async () => {
+    function Navegar() {
+      const navigate = useNavigate()
+      return (
+        <>
+          <button type="button" onClick={() => navigate('/auditoria?student=ana&q=prova')}>Abrir link</button>
+          <button type="button" onClick={() => navigate(-1)}>Voltar</button>
+        </>
+      )
+    }
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/auditoria?q=nota']}>
+        <Routes><Route path="/auditoria" element={<><AuditoriaPage /><Navegar /></>} /></Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByText('100 de 101 evento(s)')
+    expect(screen.getByLabelText('Buscar')).toHaveValue('nota')
+    await user.click(screen.getByRole('button', { name: 'Abrir link' }))
+    // Antes: o campo continuava com o texto de antes, e a lista com o filtro novo.
+    await waitFor(() => expect(screen.getByLabelText('Buscar')).toHaveValue('prova'))
+    expect(screen.getByLabelText('Aluno')).toHaveValue('ana')
+    await waitFor(() => expect(lastQuery().get('q')).toBe('prova'))
+    await user.click(screen.getByRole('button', { name: 'Voltar' }))
+    await waitFor(() => expect(screen.getByLabelText('Buscar')).toHaveValue('nota'))
+    expect(screen.getByLabelText('Aluno')).toHaveValue('')
+    await waitFor(() => expect(lastQuery().get('q')).toBe('nota'))
+    expect(lastQuery().get('student')).toBe(null)
+    // Espaço no fim do que ainda está sendo digitado não some depois da pausa.
+    await user.type(screen.getByLabelText('Buscar'), ' ')
+    await waitFor(() => expect(lastQuery().get('q')).toBe('nota'), { timeout: 2000 })
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(screen.getByLabelText('Buscar')).toHaveValue('nota ')
   })
 
   it('[UC-AUDITORIA-003] data inválida: a mensagem do servidor aparece no campo e a exportação fica desligada', async () => {

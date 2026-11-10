@@ -17,7 +17,8 @@ process.env.TEST_MODE = '1';
 
 // Módulos novos antes do servidor: server.js registra o process.on('uncaughtException'),
 // que engoliria a falha destes require e o arquivo passaria sem rodar nenhum teste.
-const { parseAuditQuery, zonedDayStart } = require('../../backend/routes/adminAudit.js');
+const { auditFacets, parseAuditQuery, zonedDayStart } = require('../../backend/routes/adminAudit.js');
+const settingsUtil = require('../../backend/utils/settings.js');
 const { gradeChangeReason, GRADE_REASON_REQUIRED_MESSAGE } = require('../../backend/utils/gradebook.js');
 const { canAccessAdminPermission, parseAdditionalPermissions } = require('../../backend/utils/adminPermissions.js');
 if (typeof gradeChangeReason !== 'function' || typeof zonedDayStart !== 'function') throw new Error('H7a-2: gradeChangeReason e zonedDayStart ausentes.');
@@ -99,6 +100,30 @@ test('[UC-AUDITORIA-003] audit.view é só do administrador: o professor recebe 
     professorAccount.additionalPermissions = ['audit.view'];
     assert.equal((await professor(request(app).get('/api/admin/audit'))).status, 403);
     assert.equal(entries('audit_exported').length, 1, 'só a exportação do administrador fica registrada');
+});
+
+test('[UC-AUDITORIA-003] aba Auditoria da ficha: entrada antiga com segredo (vinda de backup) sai limpa, como na tela Auditoria', async () => {
+    // Entrada de antes do recordAudit: nunca passou pela limpeza de segredos.
+    db.memory.auditLogs.push({
+        id: 'a_antiga_segredo', actor: 'admin@auditoria.local', studentEmail: 'ana@auditoria.local', action: 'update', field: 'Cadastro', timestamp: T - 3 * DAY,
+        oldValue: { name: 'Ana', passwordHash: 'scrypt$antigo' }, newValue: { name: 'Ana Souza', password: '123' },
+        details: { sessionToken: 'tok-123', accessTokenHash: 'h-1', nota: 'mantida' },
+    });
+    for (const url of ['/api/admin/student/audit?email=ana@auditoria.local', '/api/admin/audit?student=ana@auditoria.local']) {
+        const response = await admin(request(app).get(url));
+        assert.equal(response.status, 200);
+        const rows = Array.isArray(response.body) ? response.body : response.body.items;
+        const entry = rows.find(item => item.id === 'a_antiga_segredo');
+        assert.ok(entry, url);
+        const text = JSON.stringify(entry);
+        // Antes: a aba da ficha devolvia o hash, a senha e o token como estavam gravados.
+        for (const secret of ['scrypt$antigo', '"123"', 'tok-123', 'h-1']) assert.equal(text.includes(secret), false, `${url}: ${secret}`);
+        assert.deepEqual(entry.oldValue, { name: 'Ana' });
+        assert.deepEqual(entry.newValue, { name: 'Ana Souza' });
+        assert.deepEqual(entry.details, { nota: 'mantida' });
+    }
+    // A entrada gravada não muda.
+    assert.equal(db.memory.auditLogs.find(item => item.id === 'a_antiga_segredo').details.sessionToken, 'tok-123');
 });
 
 test('[UC-AUDITORIA-003] o professor continua vendo o histórico da nota, com o motivo, em Resultados', async () => {
@@ -248,6 +273,49 @@ test('[UC-AUDITORIA-003] exportação acima do limite pede para filtrar por per�
     assert.equal(response.body.field, 'from');
     assert.match(response.body.error, /Filtre por período/);
     assert.equal(entries('audit_exported').length, 0);
+});
+
+// ------------------------------------------------------------ fuso inválido
+test('[UC-AUDITORIA-003] fuso que o Intl não conhece (banco ou backup antigo) não derruba a Auditoria: vale o padrão', async () => {
+    // Antes: GET /api/admin/audit?facets=1 respondia 500 (RangeError no toLocaleDateString
+    // das opções de aplicação) e a tela /auditoria, que sempre pede as opções, não abria.
+    db.memory.config = db.memory.config || {};
+    db.memory.config.settings = { timezone: 'Brasil/Hora' };
+    assert.equal(settingsUtil.getSettings().timezone, 'America/Sao_Paulo', 'getSettings troca o fuso inválido pelo padrão');
+    const listed = await admin(request(app).get('/api/admin/audit?facets=1'));
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    assert.match(listed.body.facets.applications[0].label, /Prova 1 — Fundamentos · 1DES · 10\/03\/2026/);
+    // O período continua no fuso padrão (São Paulo), não no UTC.
+    const day = await admin(request(app).get('/api/admin/audit?from=2026-03-10&to=2026-03-10'));
+    assert.deepEqual(day.body.items.map(item => item.id), ['a_prova']);
+    const csv = await admin(request(app).get('/api/admin/audit/export?category=grade'));
+    assert.equal(csv.status, 200);
+    assert.match(csv.text, /11\/03\/2026 12:00:00/, 'hora do CSV no fuso padrão');
+    // Chamada direta com o fuso inválido também não lança.
+    const facets = auditFacets(db.memory, { names: new Map(), courses: new Map(), evaluations: {}, timeZone: 'Brasil/Hora' });
+    assert.match(facets.applications[0].label, /10\/03\/2026/);
+});
+
+test('[UC-AUDITORIA-002] gravar configurações com fuso desconhecido responde 400 e não muda nada', async () => {
+    const before = entries('settings_updated').length;
+    const refused = await admin(request(app).post('/api/admin/settings')).send({ timezone: 'Brasil/Hora' });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.success, false);
+    assert.equal(refused.body.field, 'timezone');
+    assert.match(refused.body.error, /Fuso horário desconhecido/);
+    assert.equal(db.memory.config && db.memory.config.settings, undefined, 'nada gravado');
+    assert.equal(entries('settings_updated').length, before);
+    // mergeSettings também ignora o nome inválido (mantém o fuso de antes).
+    assert.equal(settingsUtil.mergeSettings({ timezone: 'Brasil/Hora' }).timezone, 'America/Sao_Paulo');
+    assert.equal(settingsUtil.isValidTimeZone('America/Recife'), true);
+    assert.equal(settingsUtil.isValidTimeZone('Brasil/Hora'), false);
+    assert.equal(settingsUtil.isValidTimeZone(''), false);
+    assert.equal(settingsUtil.isValidTimeZone(42), false);
+    // Fuso válido grava e entra na trilha.
+    const saved = await admin(request(app).post('/api/admin/settings')).send({ timezone: 'America/Recife' });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.body.settings.timezone, 'America/Recife');
+    assert.deepEqual(entries('settings_updated').at(-1).details.changes, [{ key: 'timezone', before: 'America/Sao_Paulo', after: 'America/Recife' }]);
 });
 
 // ------------------------------------------------------------ motivo

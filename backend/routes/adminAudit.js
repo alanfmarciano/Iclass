@@ -16,10 +16,10 @@ const { validateAdminPermission } = require('../middlewares.js');
 const {
     AUDIT_CATEGORIES,
     CATEGORY_LABELS,
+    auditEntryWithoutSecrets,
     auditTimestamp,
     normalizeAuditEntry,
     recordAudit,
-    stripSecrets,
 } = require('../utils/audit.js');
 const { buildCsv, examTitle } = require('../utils/gradebook.js');
 const settingsUtil = require('../utils/settings.js');
@@ -69,6 +69,15 @@ function zoneFormatter(timeZone) {
         zoneFormatters.set(timeZone, formatter);
     }
     return zoneFormatters.get(timeZone);
+}
+
+// Fuso das datas da auditoria: o das configurações. getSettings já troca o nome que o
+// Intl não conhece pelo padrão (America/Sao_Paulo); a conferência aqui é a segunda
+// linha de defesa, porque uma data formatada com fuso inválido derrubava a tela inteira
+// (as opções dos filtros saem junto com a primeira página).
+function auditTimeZone() {
+    const timeZone = settingsUtil.getSettings().timezone;
+    return zoneFormatter(timeZone) ? timeZone : settingsUtil.DEFAULTS.timezone;
 }
 
 function zoneOffsetMs(instant, timeZone) {
@@ -230,17 +239,13 @@ function applicationIndex(memory) {
 
 // Entrada normalizada com os nomes para a tela (quem fez, aluno, curso, prova) e o
 // aparelho (user-agent) da entrada gravada. Antes, depois e detalhes passam de novo pelo
-// stripSecrets: entrada antiga, de antes do recordAudit, pode ter vindo de um backup.
+// stripSecrets (auditEntryWithoutSecrets): entrada antiga, de antes do recordAudit, pode
+// ter vindo de um backup.
 function enrichItem(item, context, raw) {
     const { names, courses, evaluations } = context;
     const device = raw && typeof raw.device === 'string' ? raw.device : '';
     return {
-        ...item,
-        oldValue: stripSecrets(item.oldValue),
-        newValue: stripSecrets(item.newValue),
-        before: stripSecrets(item.before),
-        after: stripSecrets(item.after),
-        details: stripSecrets(item.details),
+        ...auditEntryWithoutSecrets(item),
         device,
         categoryLabel: CATEGORY_LABELS[item.category] || CATEGORY_LABELS.other,
         actorName: personName(names, item.actor),
@@ -294,6 +299,7 @@ function auditFacets(memory, context) {
         }
     });
     const byLabel = (a, b) => a.label.localeCompare(b.label, 'pt-BR');
+    const dayFormatter = dateFormatter(context.timeZone);
     return {
         categories: AUDIT_CATEGORIES.map(value => ({ value, label: CATEGORY_LABELS[value] })),
         actors: [...actors.entries()].map(([email, name]) => ({ value: email, label: name ? `${name} (${email})` : email })).sort(byLabel).slice(0, FACET_MAX),
@@ -306,18 +312,30 @@ function auditFacets(memory, context) {
             .map(app => {
                 const title = app.examKey ? examTitle(app.examKey, { evaluations: context.evaluations }) : '';
                 const when = Number(app.createdAt) || Date.parse(app.createdAt || '') || app.lastAt;
-                const date = when ? new Date(when).toLocaleDateString('pt-BR', { timeZone: context.timeZone || undefined }) : '';
+                const date = when && Number.isFinite(new Date(when).getTime()) ? dayFormatter.format(new Date(when)) : '';
                 return { value: app.id, examKey: app.examKey, label: [title || app.examKey || 'Aplicação', app.studentClass, date].filter(Boolean).join(' · ') };
             }),
     };
 }
 
-// ------------------------------------------------------------ CSV
-function dateTimeFormatter(timeZone) {
-    const options = { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' };
-    try { return new Intl.DateTimeFormat('pt-BR', { ...options, timeZone }); } catch (error) { return new Intl.DateTimeFormat('pt-BR', options); }
+// ------------------------------------------------------------ datas na tela e no CSV
+// Formatadores pt-BR no fuso pedido; fuso que o Intl recusa cai no padrão das
+// configurações, nunca num erro.
+function zonedFormatter(timeZone, options) {
+    try { return new Intl.DateTimeFormat('pt-BR', { ...options, timeZone: timeZone || settingsUtil.DEFAULTS.timezone }); } catch (error) {
+        return new Intl.DateTimeFormat('pt-BR', { ...options, timeZone: settingsUtil.DEFAULTS.timezone });
+    }
 }
 
+function dateFormatter(timeZone) {
+    return zonedFormatter(timeZone, { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function dateTimeFormatter(timeZone) {
+    return zonedFormatter(timeZone, { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+}
+
+// ------------------------------------------------------------ CSV
 function shortText(text) {
     const value = String(text || '');
     return value.length > CSV_VALUE_MAX ? `${value.slice(0, CSV_VALUE_MAX - 1)}…` : value;
@@ -373,7 +391,7 @@ function createAdminAuditRouter() {
 
     router.get('/api/admin/audit', (req, res) => {
         validateAdminPermission(req, res, 'audit.view', () => {
-            const timeZone = settingsUtil.getSettings().timezone;
+            const timeZone = auditTimeZone();
             const parsed = parseAuditQuery(req.query, { timeZone });
             if (!parsed.ok) return res.status(400).json(parsed.body);
             const context = { ...readContext(db.memory), timeZone };
@@ -388,7 +406,7 @@ function createAdminAuditRouter() {
 
     router.get('/api/admin/audit/export', (req, res) => {
         validateAdminPermission(req, res, 'audit.view', async (config, account) => {
-            const timeZone = settingsUtil.getSettings().timezone;
+            const timeZone = auditTimeZone();
             const parsed = parseAuditQuery(req.query, { timeZone });
             if (!parsed.ok) return res.status(400).json(parsed.body);
             const context = { ...readContext(db.memory), timeZone };
@@ -419,6 +437,7 @@ function createAdminAuditRouter() {
 module.exports = {
     AUDIT_EXPORT_MAX,
     AUDIT_PAGE_MAX,
+    auditFacets,
     createAdminAuditRouter,
     parseAuditQuery,
     zonedDayStart,

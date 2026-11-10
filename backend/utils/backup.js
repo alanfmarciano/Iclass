@@ -249,8 +249,9 @@ function mergeRowsByKey(entry, restored, current) {
 // - 'merge': o backup junta com a atual. A auditoria passa por mergeAuditTrails
 //   (utils/audit.js): todas as entradas do backup (a do backup vence no mesmo id) mais as
 //   atuais que o backup não tem, em ordem de hora. Restaurar dados não apaga o registro de
-//   quem fez o quê depois do backup (FUN-03, CONF-09), e por isso a lixeira de notas não
-//   depende mais de grade_restore (deletedGradeEntries em routes/admin.js). Outra coleção
+//   quem fez o quê depois do backup (FUN-03, CONF-09), e por isso o grade_restore deixa
+//   de valer na lixeira de notas quando há restauração de backup depois dele
+//   (gradeTrashIndex em routes/admin.js). Outra coleção
 //   em 'merge' junta pela chave do registro. Pelo plano, o H4a troca este trecho pelo laço
 //   por modo do registro e mantém o mergeAuditTrails;
 // - 'reset': volta vazia (sessões).

@@ -197,8 +197,9 @@ const COLLECTION_TABLES = Object.freeze([
     tableEntry('broadcastMessages', 'broadcast_messages', 'array', 'id'),
     tableEntry('questionBank', 'question_bank', 'array', 'key'),
     // Auditoria: a restauração junta a trilha do backup com a atual (mergeAuditTrails,
-    // utils/audit.js). Pelo plano, o H7a-2 liga o merge na restauração e o H4a faz o
-    // laço por modo do registro ('merge' e 'keep'); até lá a restauração substitui.
+    // utils/audit.js, ligado no applySnapshot de utils/backup.js pelo H7a-2): o que foi
+    // registrado depois do backup fica. O laço genérico por modo do registro ('merge',
+    // 'keep', 'reset') para as outras coleções é do H4a.
     tableEntry('auditLogs', 'audit_logs', 'array', 'id', { append: true, restore: 'merge' }),
     tableEntry('loginLogs', 'login_logs', 'array', 'id', { append: true }), // segurança/LGPD
     tableEntry('pedagogicalObservations', 'pedagogical_observations', 'array', 'id'),

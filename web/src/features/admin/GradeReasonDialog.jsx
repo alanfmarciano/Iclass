@@ -25,16 +25,20 @@ export function gradeReasonError(text, required) {
 // reason: 'required' (nota publicada), 'optional' (o motivo vai junto se escrito) ou
 // 'none' (só a confirmação). onConfirm(reason) devolve uma promessa; se o servidor
 // responder reason_required (a nota foi publicada nesse meio-tempo), o diálogo fica
-// aberto, passa a exigir o motivo e mostra a mensagem.
+// aberto, passa a exigir o motivo e mostra a mensagem no campo. Outra recusa (registro
+// que outra pessoa já excluiu, servidor fora do ar) aparece num aviso do próprio
+// diálogo, que continua aberto com o motivo digitado para tentar de novo ou cancelar.
 export function GradeReasonDialog({ open, onClose, onConfirm, title, description, note, confirmLabel = 'Confirmar', danger = false, reason = 'optional' }) {
   const [text, setText] = useState('')
   const [error, setError] = useState('')
+  const [failure, setFailure] = useState('')
   const [forced, setForced] = useState(false)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     if (!open) return
     setText('')
     setError('')
+    setFailure('')
     setForced(false)
     setBusy(false)
   }, [open])
@@ -46,14 +50,15 @@ export function GradeReasonDialog({ open, onClose, onConfirm, title, description
     const problem = gradeReasonError(text, required)
     if (problem) { setError(problem); return }
     setBusy(true)
+    setFailure('')
     try {
       await onConfirm(mode === 'none' ? '' : text.trim())
-    } catch (failure) {
-      if (isReasonRequiredError(failure)) {
+    } catch (refusal) {
+      if (isReasonRequiredError(refusal)) {
         setForced(true)
-        setError(failure.message)
+        setError(refusal.message)
       } else {
-        setError(failure?.message || 'Não foi possível concluir.')
+        setFailure(refusal?.message || 'Não foi possível concluir.')
       }
     } finally {
       setBusy(false)
@@ -79,7 +84,7 @@ export function GradeReasonDialog({ open, onClose, onConfirm, title, description
             required={required}
           />
         )}
-        {mode === 'none' && error && <p role="alert" className="text-xs text-danger">{error}</p>}
+        {failure && <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{failure}</p>}
         {required && <p className="text-xs text-subtle">O motivo fica na auditoria e no histórico da nota.</p>}
       </form>
     </Modal>

@@ -39,9 +39,13 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     }
 
     // O que a auditoria guarda de um item da lixeira de arquivos (SEG-07): nome, tamanho,
-    // se é pasta e o curso/turma, nunca o conteúdo.
+    // se é pasta e o curso/turma, nunca o conteúdo. O nome é o que a pessoa conhece (o do
+    // material ou o do arquivo enviado); o nome gerado em /uploads vai junto em file.
     function trashAuditItem(entry) {
-        const item = { name: String((entry && entry.name) || ''), size: Number(entry && entry.size) || 0, isDir: !!(entry && entry.isDir) };
+        const storedName = String((entry && entry.name) || '');
+        const originalName = String((entry && entry.originalName) || '');
+        const item = { name: originalName || storedName, size: Number(entry && entry.size) || 0, isDir: !!(entry && entry.isDir) };
+        if (originalName && originalName !== storedName) item.file = storedName;
         if (entry && entry.courseId) item.courseId = entry.courseId;
         if (entry && entry.studentClass) item.studentClass = entry.studentClass;
         return item;

@@ -165,6 +165,21 @@ describe('SistemaPage · manutenção', () => {
     const early = maintenanceClassOptions(null, null, { courseId: 'DES', className: '1DES', courseName: 'Técnico em TI' })
     expect(early).toEqual([{ key: 'DES::1DES', className: '1DES', courseId: 'DES', courseName: 'Técnico em TI' }])
   })
+
+  it('[UC-AUDITORIA-002] lixeira mostra o nome do material, não o nome gerado em /uploads (item antigo: o nome do arquivo)', () => {
+    mocks.apiData['/api/admin/trash'] = [
+      { id: 't1', name: '1700000000000-123456789.pdf', originalName: 'Apostila de Redes', originalRel: 'uploads/1700000000000-123456789.pdf', isDir: false, deletedAt: Date.now(), size: 8 },
+      { id: 't2', name: 'rascunho.txt', originalName: '', originalRel: 'uploads/rascunho.txt', isDir: false, deletedAt: Date.now(), size: 4 },
+    ]
+    try {
+      render(<SistemaPage />)
+      expect(screen.getByText('Apostila de Redes')).toBeInTheDocument()
+      expect(screen.queryByText('1700000000000-123456789.pdf')).not.toBeInTheDocument()
+      expect(screen.getByText('rascunho.txt')).toBeInTheDocument()
+    } finally {
+      delete mocks.apiData['/api/admin/trash']
+    }
+  })
 })
 
 describe('Sistema · histórico de backup', () => {

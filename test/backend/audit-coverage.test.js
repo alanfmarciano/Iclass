@@ -217,6 +217,28 @@ test('[UC-AUDITORIA-002] lixeira de arquivos: restaurar, apagar de vez e esvazia
     assert.equal(entries('trash_emptied').length, 1);
 });
 
+test('[UC-AUDITORIA-002] lixeira de arquivos: a trilha guarda o nome do material, não o nome gerado em /uploads', async () => {
+    // Arquivo da biblioteca com o nome gerado pelo envio ('<hora>-<sorteio>.pdf').
+    const stored = `${Date.now()}-123456789.pdf`;
+    fs.mkdirSync(path.join(tempRoot, 'uploads'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'uploads', stored), 'apostila');
+    db.memory.library = [{ id: 'lib_redes', kind: 'file', courseId: COURSE, studentClass: '', name: 'Apostila de Redes', originalName: 'redes-v2.pdf', filename: stored, url: `/uploads/${stored}` }];
+    assert.equal((await admin(request(app).post('/api/admin/library/delete')).send({ id: 'lib_redes', courseId: COURSE })).status, 200);
+    const inTrash = fileStore.listTrash().find(entry => entry.name === stored);
+    assert.ok(inTrash, 'o arquivo foi para a lixeira');
+    assert.equal(inTrash.originalName, 'Apostila de Redes');
+
+    assert.equal((await admin(request(app).post('/api/admin/trash/delete')).send({ id: inTrash.id })).status, 200);
+    // Antes: details.item.name era '<hora>-123456789.pdf', sem como saber que material era.
+    assert.deepEqual(last('trash_deleted').details.item, { name: 'Apostila de Redes', size: 8, isDir: false, file: stored, courseId: COURSE });
+
+    // Envio recusado (tipo não permitido) também guarda o nome do arquivo enviado.
+    const refusedId = trashFile('1700000000000-42.exe', { originalName: 'instalador.exe' });
+    assert.equal((await admin(request(app).post('/api/admin/trash/restore')).send({ id: refusedId })).status, 200);
+    assert.equal(last('trash_restored').details.item.name, 'instalador.exe');
+    assert.equal(last('trash_restored').details.item.file, '1700000000000-42.exe');
+});
+
 test('[UC-AUDITORIA-002] dúvida e resposta apagadas de vez registram forum_purged sem o texto', async () => {
     db.memory.forum = [{ id: 'c1', key: 'u1', courseId: COURSE, studentClass: '1DES', studentEmail: 'ana@cobertura.local', text: 'texto da dúvida', replies: [{ id: 'r1', text: 'resposta' }, { id: 'r2', text: 'outra' }] }];
     assert.equal((await admin(request(app).post('/api/admin/forum/purge')).send({ commentId: 'c1', replyId: 'r1' })).status, 200);
@@ -319,6 +341,45 @@ test('[UC-AUDITORIA-002] lixeira de notas depois de restaurar backup: nota viva 
     const back = await trash();
     assert.equal(back.length, 1, 'a exclusão continua na trilha juntada e a nota pode ser restaurada');
     assert.equal(back[0].submissionId, id);
+});
+
+test('[UC-AUDITORIA-002] nota que voltou da lixeira e saiu com o curso arquivado não reaparece na lixeira', async () => {
+    // Ana também está numa turma de outro curso: continua no cadastro depois do arquivamento.
+    db.memory.courses.push({ id: 'curso-outro', name: 'Administração', structure: [] });
+    db.memory.classes.push({ name: '2ADM', courseId: 'curso-outro', period: 'Tarde' });
+    db.memory.students[0].classes.push({ name: '2ADM', courseId: 'curso-outro' });
+    // O arquivamento leva as entregas com curso e turma no topo do registro.
+    const create = async grade => {
+        const created = await admin(request(app).post('/api/admin/submissions/create')).send({ studentEmail: 'ana@cobertura.local', examKey: 'Avaliacao_P1', grade, courseId: COURSE, studentClass: '1DES', type: 'impressa' });
+        assert.equal(created.status, 200, created.body.error);
+        const submission = db.memory.submissions.find(item => item.id === created.body.submissionId);
+        Object.assign(submission, { courseId: COURSE, studentClass: '1DES' });
+        return created.body.submissionId;
+    };
+    const restoredId = await create(7);
+    const neverRestoredId = await create(5);
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: restoredId })).status, 200);
+    const firstDelete = last('grade_delete').id;
+    assert.equal((await admin(request(app).post('/api/admin/submissions/restore')).send({ auditId: firstDelete })).status, 200);
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: neverRestoredId })).status, 200);
+    const neverRestoredDelete = last('grade_delete').id;
+
+    const purge = await admin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
+    assert.equal(purge.status, 200, purge.body.error);
+    assert.equal(db.memory.submissions.some(item => item.id === restoredId), false, 'a nota foi para o curso arquivado');
+    const trash = async () => (await admin(request(app).get(`/api/admin/submissions/deleted?courseId=${COURSE}&studentClass=1DES`))).body.items.map(item => item.auditId);
+    // Antes: a exclusão velha voltava para a lixeira, e restaurá-la punha de volta a cópia
+    // velha, que depois fazia a restauração do curso arquivado pular a nota guardada lá.
+    assert.deepEqual(await trash(), [neverRestoredDelete], 'só a nota que nunca voltou continua na lixeira');
+    const stale = await admin(request(app).post('/api/admin/submissions/restore')).send({ auditId: firstDelete });
+    assert.equal(stale.status, 409);
+    assert.match(stale.body.error, /já voltou da lixeira antes e depois saiu das notas por outro caminho/);
+    assert.equal(db.memory.submissions.some(item => item.id === restoredId), false, 'nada voltou');
+
+    // O curso volta do arquivo com a nota que estava lá.
+    assert.equal((await admin(request(app).post('/api/admin/archived-courses/restore')).send({ folder: purge.body.folder })).status, 200);
+    assert.equal(db.memory.submissions.filter(item => item.id === restoredId).length, 1);
+    assert.deepEqual(await trash(), [neverRestoredDelete]);
 });
 
 test('[UC-AUDITORIA-002] mergeRowsByKey e mergeAuditTrails: o backup vence na mesma chave e o resto fica', () => {

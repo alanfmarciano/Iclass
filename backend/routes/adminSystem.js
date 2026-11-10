@@ -385,6 +385,11 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     // SEG-07) com o valor de antes e o de depois. Salvar sem mudar nada não grava entrada.
     router.post('/api/admin/settings', (req, res) => {
         validateAdmin(req, res, async (config, account) => {
+            // Fuso que o Intl não conhece não é gravado: cada data feita com ele quebrava.
+            const timezone = req.body && req.body.timezone;
+            if (typeof timezone === 'string' && timezone.trim() && !settingsUtil.isValidTimeZone(timezone.trim())) {
+                return res.status(400).json({ success: false, error: 'Fuso horário desconhecido. Escolha um fuso da lista.', field: 'timezone' });
+            }
             if (!db.memory.config) db.memory.config = {};
             const before = settingsUtil.getSettings();
             db.memory.config.settings = settingsUtil.mergeSettings(req.body || {});

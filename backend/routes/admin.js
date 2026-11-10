@@ -49,7 +49,7 @@ const {
     studentInClass,
     normalizeClassEntriesForStorage,
 } = require('../utils/students.js');
-const { recordAudit, auditTimestamp, normalizeAuditEntry } = require('../utils/audit.js');
+const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecrets } = require('../utils/audit.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -789,24 +789,52 @@ router.post('/api/admin/submissions/delete', (req, res) => {
 
 // Lixeira de notas (AVA-08, FUN-03): uma nota está na lixeira quando a entrega não existe
 // mais (nenhuma entrega atual com aquele id) e há pelo menos uma exclusão (grade_delete
-// com a cópia do registro). De cada entrega aparece só a exclusão mais recente. O
-// grade_restore não decide mais quem aparece: a restauração de backup junta a trilha
-// (mergeAuditTrails), e a entrega pode ter voltado com o backup (sai da lixeira sozinha),
-// ter sido excluída de novo (uma linha só, a última) ou ter sumido de novo depois de
-// restaurada da lixeira (volta para a lixeira).
-function deletedGradeEntries() {
+// com a cópia do registro). De cada entrega aparece só a exclusão mais recente. A
+// restauração de backup junta a trilha (mergeAuditTrails), e a entrega pode ter voltado
+// com o backup (sai da lixeira sozinha), ter sido excluída de novo (uma linha só, a
+// última) ou ter sumido de novo com o backup depois de restaurada da lixeira (volta
+// para a lixeira).
+// O grade_restore só conta quando nenhuma restauração de backup veio depois dele: a nota
+// que voltou da lixeira e depois saiu das notas por outro caminho (curso arquivado, aluno
+// excluído, tentativa reaberta) não reaparece na lixeira com a cópia velha, como antes do
+// merge. Restaurar essa cópia sobrepunha a versão guardada no curso arquivado.
+function gradeTrashIndex() {
     const current = new Set((db.memory.submissions || []).map(item => String(item && item.id)));
     const latest = new Map();
+    const restoredAt = new Map();
+    let lastBackupRestore = -Infinity;
     (db.memory.auditLogs || []).forEach(entry => {
-        if (!entry || entry.action !== 'grade_delete' || !entry.details || !entry.details.deletedSubmission) return;
+        if (!entry || typeof entry !== 'object') return;
+        const action = entry.action || entry.type;
+        const time = auditTimestamp(entry.timestamp !== undefined && entry.timestamp !== null ? entry.timestamp : entry.at);
+        if (action === 'backup_restored') {
+            lastBackupRestore = Math.max(lastBackupRestore, time);
+            return;
+        }
+        if (action === 'grade_restore' && entry.details && entry.details.fromAuditId) {
+            const key = String(entry.details.fromAuditId);
+            restoredAt.set(key, Math.max(restoredAt.has(key) ? restoredAt.get(key) : -Infinity, time));
+            return;
+        }
+        if (action !== 'grade_delete' || !entry.details || !entry.details.deletedSubmission) return;
         const copyId = entry.details.deletedSubmission.id;
         if (copyId === undefined || copyId === null || current.has(String(copyId))) return;
-        const time = auditTimestamp(entry.timestamp !== undefined && entry.timestamp !== null ? entry.timestamp : entry.at);
         const previous = latest.get(String(copyId));
         // Mesma hora: vale a que veio depois na trilha.
         if (!previous || time >= previous.time) latest.set(String(copyId), { entry, time });
     });
-    return [...latest.values()].map(item => item.entry);
+    const visible = [];
+    const leftByOtherPath = new Set();
+    latest.forEach(({ entry }) => {
+        const restoredTime = restoredAt.get(String(entry.id));
+        if (restoredTime === undefined || lastBackupRestore >= restoredTime) visible.push(entry);
+        else leftByOtherPath.add(String(entry.id));
+    });
+    return { visible, latest, leftByOtherPath };
+}
+
+function deletedGradeEntries() {
+    return gradeTrashIndex().visible;
 }
 
 function registeredStudentByEmail(email) {
@@ -875,10 +903,16 @@ router.post('/api/admin/submissions/restore', (req, res) => {
         if (!entry || filterSubmissionsForAdmin([copy], matchedAdmin).length === 0) {
             return res.status(404).json({ error: 'Nota excluída não encontrada.' });
         }
-        if (!deletedGradeEntries().some(item => item.id === entry.id)) {
+        const trash = gradeTrashIndex();
+        if (!trash.visible.some(item => item.id === entry.id)) {
             const copyId = String(entry.details.deletedSubmission.id);
             if ((db.memory.submissions || []).some(item => String(item && item.id) === copyId)) {
                 return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+            }
+            // Já voltou da lixeira e saiu das notas depois por outro caminho (curso arquivado,
+            // aluno excluído): a cópia da exclusão é mais velha que a nota que saiu.
+            if (trash.leftByOtherPath.has(String(entry.id))) {
+                return res.status(409).json({ error: 'Esta nota já voltou da lixeira antes e depois saiu das notas por outro caminho (por exemplo, curso arquivado ou aluno excluído). Ela não está mais na lixeira.' });
             }
             // A mesma entrega foi excluída de novo depois: a lixeira mostra só a exclusão mais recente.
             return res.status(409).json({ error: 'Esta nota foi excluída de novo depois. Atualize a lista de notas excluídas e restaure de lá.' });
@@ -1624,7 +1658,8 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
 // Histórico de auditoria de um aluno (aba Auditoria da ficha) — somente admin
 // (audit.view, decisão P5: o professor recebe 403 e a aba some para ele). As entradas
 // saem lidas por normalizeAuditEntry, como na tela Auditoria: as antigas que guardavam o
-// aluno só em details também aparecem, e a hora em texto ordena certo.
+// aluno só em details também aparecem, e a hora em texto ordena certo. Como lá, os
+// valores passam de novo pela limpeza de segredos (entrada antiga vinda de backup).
 router.get('/api/admin/student/audit', (req, res) => {
     validateAdminPermission(req, res, 'audit.view', () => {
         const email = (req.query.email || '').trim().toLowerCase();
@@ -1632,7 +1667,8 @@ router.get('/api/admin/student/audit', (req, res) => {
         const logs = (Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [])
             .map(normalizeAuditEntry)
             .filter(entry => entry && entry.studentEmail === email)
-            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+            .map(auditEntryWithoutSecrets);
         res.json(logs);
     });
 });
@@ -3176,7 +3212,7 @@ function rejectInvalidUpload(req, res, { discard = false } = {}) {
     if (result.valid) return false;
     try {
         if (discard) fs.rmSync(req.file.path, { force: true });
-        else fileStore.moveToTrash(req.file.path);
+        else fileStore.moveToTrash(req.file.path, { originalName: req.file.originalname });
     } catch (e) {}
     res.status(400).json({ error: result.reason });
     return true;
@@ -3299,7 +3335,7 @@ router.post('/api/admin/library/upload', (req, res) => {
             const ext = path.extname(req.file.originalname).toLowerCase();
             const _st = settingsUtil.getSettings();
             // Envio recusado da biblioteca: na lixeira, fica visível para quem enviou.
-            const refusedMeta = { deletedBy: matchedAdmin && matchedAdmin.email };
+            const refusedMeta = { deletedBy: matchedAdmin && matchedAdmin.email, originalName: req.file.originalname };
             if (req.file.size > _st.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _st.upload.maxSizeMb + ' MB.' }); }
             if (!_st.upload.allowedTypes.includes(settingsUtil.extCategory(ext))) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Tipo de arquivo não permitido nas configurações.' }); }
             let tags = [];
@@ -3436,12 +3472,12 @@ router.post('/api/admin/library/delete', (req, res) => {
             });
         } else if (scope === 'class') {
             db.memory.library = (db.memory.library || []).filter(x => x.id !== id);
-            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename), { courseId, studentClass, deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
+            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename), { courseId, studentClass, deletedBy: matchedAdmin && matchedAdmin.email, originalName: e.name || e.originalName }); } catch (err) {}
         } else {
             const sourceId = e.sourceLibraryId || e.id;
             const base = (db.memory.library || []).find(item => item.id === sourceId) || e;
             db.memory.library = (db.memory.library || []).filter(item => item.id !== sourceId && item.sourceLibraryId !== sourceId);
-            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename), { courseId: base.courseId || courseId, studentClass: base.studentClass || '', deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
+            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename), { courseId: base.courseId || courseId, studentClass: base.studentClass || '', deletedBy: matchedAdmin && matchedAdmin.email, originalName: base.name || base.originalName }); } catch (err) {}
         }
         const affectedClasses = scope === 'class' ? [studentClass] : contentCourseClasses(courseId).map(cls => cls.name);
         recordAcademicAudit(req, matchedAdmin, 'content_library_deleted', { courseId, className: studentClass, id, scope }, null, { affectedClasses });

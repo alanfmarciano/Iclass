@@ -488,23 +488,20 @@ export default function ResultadosPage() {
   }
 
   // Excluir: nota publicada pede o motivo (o diálogo confere antes; o servidor também).
-  // A recusa por falta de motivo volta para o diálogo, que passa a exigi-lo.
+  // Toda recusa volta para o diálogo, que continua aberto: a de falta de motivo passa a
+  // exigi-lo; as outras aparecem no aviso do diálogo (antes só num toast, com o diálogo
+  // aberto por trás sem dizer nada).
   async function remove(reason) {
-    try {
-      await api.post('/api/admin/submissions/delete', {
-        id: del.id,
-        studentEmail: del.studentEmail || del.email || del.student?.email,
-        examKey: del.examKey,
-        ...(reason ? { reason } : {}),
-      })
-      toast.success('Entrega excluída. Ela pode ser restaurada em "Notas excluídas".')
-      setDel(null)
-      if (submissionId) navigate(selectedStudentPath)
-      else await refetch()
-    } catch (e) {
-      if (isReasonRequiredError(e)) throw e
-      toast.error(e.message)
-    }
+    await api.post('/api/admin/submissions/delete', {
+      id: del.id,
+      studentEmail: del.studentEmail || del.email || del.student?.email,
+      examKey: del.examKey,
+      ...(reason ? { reason } : {}),
+    })
+    toast.success('Entrega excluída. Ela pode ser restaurada em "Notas excluídas".')
+    setDel(null)
+    if (submissionId) navigate(selectedStudentPath)
+    else await refetch()
   }
 
   async function sendResultControl(submission, action, policy, reason) {
