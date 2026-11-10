@@ -59,6 +59,7 @@ const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
 const { createStudentSession, revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
+const { studentSessionProfile } = require('../utils/studentProfile.js');
 const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const {
     passwordChangeRuleActive,
@@ -254,19 +255,29 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
     });
 });
 
-// Beacon de saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer
-// pessoa na rede derrubava a sessão de um aluno pelo e-mail, inclusive durante a prova.
-router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, res, next) => {
+// Saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer pessoa na
+// rede derrubava a sessão de um aluno pelo e-mail, inclusive durante a prova.
+// - POST /api/student/logout: o "Sair" do portal (H5b, SEG-10). Antes o "Sair" só
+//   apagava o navegador e o token seguia valendo no servidor por até 8 h (computador de
+//   laboratório compartilhado);
+// - POST /api/student/leave: o mesmo, com o corpo em texto (beacon de saída antigo).
+function parseLeaveBody(req, res, next) {
     if (typeof req.body === 'string') {
         let parsed = null;
         try { parsed = req.body.trim().startsWith('{') ? JSON.parse(req.body) : null; } catch (jsonErr) {}
         req.body = parsed && typeof parsed === 'object' ? parsed : { email: req.body.trim() };
     }
     next();
-}, validateStudentSession, (req, res) => {
+}
+
+async function endStudentSession(req, res) {
     revokeStudentSession(db.memory, req.studentEmail);
+    await db.save();
     res.json({ success: true });
-});
+}
+
+router.post('/api/student/logout', express.text({ type: 'text/plain' }), parseLeaveBody, validateStudentSession, endStudentSession);
+router.post('/api/student/leave', express.text({ type: 'text/plain' }), parseLeaveBody, validateStudentSession, endStudentSession);
 
 // Remove apenas sessões que atingiram o prazo absoluto. O heartbeat controla
 // a presença exibida no monitor, mas uma aba em segundo plano pode ter seus
@@ -693,8 +704,10 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
 
 // Cadastro de Aluno
 router.post('/api/student/register', async (req, res) => {
+    // 60 cadastros a cada 10 min por IP (H5b, DES-X2): a turma toda se cadastrando na
+    // primeira aula, atrás do mesmo roteador, cabe; antes eram 10 por minuto.
     const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 60, windowMs: 10 * 60 * 1000 });
     if (!_rl.allowed) {
         return res.status(429).json({ error: 'Muitos cadastros seguidos. Aguarde um instante e tente novamente.' });
     }
@@ -977,12 +990,11 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
 router.post('/api/student/login', async (req, res) => {
     // Senha conferida com o scrypt assíncrono (utils/passwordLogin.js, DES-07): a turma
     // entrando junto não para o servidor. O hash antigo é regravado em scrypt$ lá.
+    // A senha errada não espera o banco (H5b): a falha fica em loginLogs na memória e a
+    // gravação é agrupada (no máximo uma a cada 60 s, utils/security.js). Antes cada
+    // senha errada fazia um db.save() inteiro.
     const login = await attemptPasswordLogin({ kind: 'student', email: req.body.email, password: req.body.password, req });
-    if (!login.ok) {
-        // A falha fica em loginLogs (gravada pelo attemptPasswordLogin na memória).
-        if (login.status === 401) await db.save();
-        return res.status(login.status).json(login.body);
-    }
+    if (!login.ok) return res.status(login.status).json(login.body);
     const student = login.account;
     const normalizedEmail = login.email;
 
@@ -1092,7 +1104,9 @@ router.post('/api/student/login', async (req, res) => {
 
     res.json({
         success: true,
-        student: safeStudent,
+        // Só o que o portal usa (H5b): responsável, telefones e acessibilidade ficam no
+        // servidor (utils/studentProfile.js).
+        student: studentSessionProfile(safeStudent),
         sessionToken,
         mustChangePassword: passwordChange.required === true,
         ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
@@ -1106,8 +1120,9 @@ router.post('/api/student/recover', (req, res) => {
         return res.status(400).json({ error: 'E-mail é obrigatório.' });
     }
 
+    // 30 pedidos a cada 10 min por IP (H5b, DES-X2).
     const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-recover:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    const _rl = rateLimit(`student-recover:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 30, windowMs: 10 * 60 * 1000 });
     if (!_rl.allowed) {
         return res.status(429).json({ error: 'Muitas solicitações seguidas. Aguarde um instante e tente novamente.' });
     }
@@ -1157,8 +1172,8 @@ router.post('/api/student/change-password', validateStudentSession, async (req, 
     if (!check.ok && check.status === 429) return res.status(429).json(check.body);
     if (!check.ok && check.passwordChanged) return changedMeanwhile();
     if (!check.ok) {
-        // A tentativa errada fica em loginLogs (gravada pelo attemptPasswordLogin).
-        await db.save();
+        // A tentativa errada fica em loginLogs e conta no atraso da conta (loginGuard),
+        // com a gravação agrupada (attemptPasswordLogin).
         return res.status(400).json({ success: false, error: 'Senha atual incorreta.', field: 'currentPassword' });
     }
     if (check.account !== student || student.password !== check.password) return changedMeanwhile();

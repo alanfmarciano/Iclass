@@ -37,6 +37,9 @@ export default function LoginPage() {
   const [classValue, setClassValue] = useState('')
   const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(false)
+  // Login com atraso por senha errada (H5b; SEG-06, 429 { loginDelayed }): o aviso fica na
+  // tela, e não só no toast, para quem chamar o professor saber o que dizer.
+  const [delayNotice, setDelayNotice] = useState(null)
   const [quickLoginBusy, setQuickLoginBusy] = useState(null)
   const [demoEnabled, setDemoEnabled] = useState(false)
   // Como o servidor trata o painel do professor neste aparelho (GET /api/connection, SEG-03),
@@ -123,7 +126,7 @@ export default function LoginPage() {
   }
 
   async function submit(e) {
-    e.preventDefault(); setLoading(true)
+    e.preventDefault(); setLoading(true); setDelayNotice(null)
     try {
       if (mode === 'admin') {
         try { await loginAdmin(email, password) } catch (err) { noteRefusal(err); throw err }
@@ -147,7 +150,10 @@ export default function LoginPage() {
       } else {
         await loginStudent(email, password); nav('/aluno')
       }
-    } catch (err) { toast.error(err.message || 'Falha no login') } finally { setLoading(false) }
+    } catch (err) {
+      if (err?.status === 429 && err?.data?.loginDelayed) setDelayNotice({ mode, text: err.message })
+      toast.error(err.message || 'Falha no login')
+    } finally { setLoading(false) }
   }
 
   async function quickLogin(kind) {
@@ -350,6 +356,9 @@ export default function LoginPage() {
                 <input type="checkbox" checked={acceptedTerms} onChange={(e) => setAcceptedTerms(e.target.checked)} required className="mt-0.5" />
                 <span>Li e aceito os <span className="text-text font-medium">Termos de Uso</span> e a <span className="text-text font-medium">Política de Privacidade</span>.</span>
               </label>
+            )}
+            {delayNotice && delayNotice.mode === mode && (mode === 'admin' || studentAction === 'login') && (
+              <p role="status" data-testid="login-delayed" className="rounded-lg border border-warning bg-warning-soft px-4 py-3 text-sm text-text">{delayNotice.text}</p>
             )}
             <Button type="submit" size="lg" icon={mode === 'admin' || studentAction === 'login' ? LogIn : studentAction === 'register' ? UserPlus : KeyRound} loading={loading} disabled={mode === 'admin' && !!adminRefusal} className="w-full">
               {mode === 'admin' ? 'Entrar como instrutor' : studentAction === 'register' ? 'Criar conta' : studentAction === 'recover' ? 'Solicitar nova senha' : 'Entrar como aluno'}

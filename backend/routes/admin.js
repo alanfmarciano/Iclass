@@ -83,6 +83,7 @@ const {
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
+const loginGuard = require('../utils/loginGuard.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -373,6 +374,15 @@ router.post('/api/admin/reset-password', (req, res) => {
         student.passwordChangedAt = new Date(now).toISOString();
         requirePasswordChange(student, 'reset');
         student.updatedAt = now;
+        // Quem estava logado com a senha antiga sai (H5b, SEG-10): antes o aparelho onde o
+        // aluno estava (ou quem tinha a senha antiga) continuava entrando até 8 h. Em prova
+        // agora, a sessão termina a prova e acaba no primeiro pedido depois dela
+        // (sessionsInvalidBefore, conferido em validateStudentSession). O atraso de login
+        // por senhas erradas também é liberado: o aluno entra na hora com a senha nova.
+        student.sessionsInvalidBefore = now;
+        const inExamNow = studentHasExamInProgress(db.memory, student.email, student, now);
+        const sessionEnded = !inExamNow && revokeStudentSession(db.memory, student.email);
+        loginGuard.clear(loginGuard.accountKey('student', student.email));
         recordAudit(db.memory, {
             req,
             actor: matchedAdmin,
@@ -386,13 +396,47 @@ router.post('/api/admin/reset-password', (req, res) => {
         // Com TEST_MODE (demonstração) a troca não é pedida, e com o aluno em prova ela
         // fica para depois: a resposta diz o que vale.
         const changeRequired = passwordChangeRuleActive();
-        const deferred = changeRequired && studentHasExamInProgress(db.memory, student.email, student, now);
+        const deferred = changeRequired && inExamNow;
         res.json({
             success: true,
             message: resetPasswordMessage(changeRequired, deferred),
             mustChangePassword: changeRequired,
             passwordChangeDeferred: deferred,
+            sessionEnded,
             ...(temporaryPassword ? { temporaryPassword } : {}),
+        });
+    });
+});
+
+// Liberar login do aluno (H5b; SEG-06, decisão 6 do Alan): depois de muitas senhas
+// erradas a conta espera antes de tentar de novo (utils/loginGuard.js); o professor libera
+// na hora, sem mexer na senha. Mesmo escopo do "Redefinir senha": page.students e aluno
+// visível ao professor (validateProfessorRequestScope pelo e-mail do corpo). Fica na
+// auditoria (student_login_unlocked).
+router.post('/api/admin/student/unlock-login', (req, res) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
+        const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail do aluno.', field: 'email' });
+        const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === email);
+        if (!student) return res.status(404).json({ error: 'Estudante não encontrado.' });
+        const key = loginGuard.accountKey('student', email);
+        const before = loginGuard.protectionFor(key);
+        const released = loginGuard.clear(key);
+        if (released) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'student_login_unlocked',
+                category: 'account',
+                studentEmail: student.email,
+                details: before ? { failures: before.failures, retryAt: before.retryAt } : {},
+            });
+            await db.save();
+        }
+        res.json({
+            success: true,
+            unlocked: released,
+            message: released ? 'Login liberado. O aluno já pode entrar.' : 'Este aluno não estava com o login em espera.',
         });
     });
 });
@@ -1288,8 +1332,12 @@ router.get('/api/admin/students', (req, res) => {
             const session = s.email ? db.memory.sessions[s.email.toLowerCase()] : null;
             const lastSeen = sessionLastSeen(session);
             const isOnline = isStudentSessionOnline(session, now);
-            const { password, ...safeStudent } = s;
-            return { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
+            const { password, sessionsInvalidBefore, ...safeStudent } = s;
+            const enriched = { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
+            // Atraso de login por senhas erradas (H5b): o selo e o "Liberar login" em Alunos.
+            const loginProtection = s.email ? loginGuard.protectionFor(loginGuard.accountKey('student', s.email), now) : null;
+            if (loginProtection) enriched.loginProtection = loginProtection;
+            return enriched;
         });
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
@@ -4868,6 +4916,31 @@ router.get('/api/admin/dashboard/now', (req, res) => {
     });
 });
 
+// Bloco de segurança da fila (H5b; SEG-06, decisão 6 do Alan), já no escopo de quem vê:
+// - alunos da lista (os do escopo) que pediram nova senha ou estão com o login em espera
+//   por senhas erradas (utils/loginGuard.js, só na memória);
+// - só para administrador (adminOnly): contas de instrutor em espera e os alertas de
+//   muitas senhas erradas vindas do mesmo IP nas últimas 24 h (loginLogs, status 'alert').
+const IP_ALERT_QUEUE_MS = 24 * 60 * 60 * 1000;
+
+function _securityQueueBlock(matchedAdmin, students, { adminOnly = true, now = Date.now() } = {}) {
+    const list = Array.isArray(students) ? students : [];
+    const block = {
+        recoveryEmails: list.filter(student => student && student.email && student.recoveryRequested === true).map(student => String(student.email).toLowerCase()),
+        delayedEmails: list.filter(student => student && student.email && loginGuard.protectionFor(loginGuard.accountKey('student', student.email), now)).map(student => String(student.email).toLowerCase()),
+    };
+    if (!adminOnly || !canAccessAdminPermission(matchedAdmin, 'page.accounts')) return block;
+    const instructorEmails = new Set((db.memory.admins || []).filter(item => item && item.email).map(item => String(item.email).toLowerCase()));
+    block.delayedAccounts = loginGuard.protectedEmails('admin', now).filter(email => instructorEmails.has(email));
+    const seen = new Set();
+    block.ipAlerts = (Array.isArray(db.memory.loginLogs) ? db.memory.loginLogs : [])
+        .filter(entry => entry && entry.status === 'alert' && entry.ip && now - (Number(entry.lastAt || entry.timestamp) || 0) <= IP_ALERT_QUEUE_MS)
+        .sort((a, b) => (Number(b.lastAt || b.timestamp) || 0) - (Number(a.lastAt || a.timestamp) || 0))
+        .filter(entry => (seen.has(entry.ip) ? false : (seen.add(entry.ip), true)))
+        .map(entry => ({ ip: entry.ip, count: Number(entry.count) || 0, at: Number(entry.lastAt || entry.timestamp) || null }));
+    return block;
+}
+
 // Fila "Precisa de você": pendências com destino clicável. Respeita o snooze de
 // 24h persistido em preferences (dashboard.snoozed) e esconde matrículas de professor.
 router.get('/api/admin/dashboard/queue', (req, res) => {
@@ -4880,7 +4953,7 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
-        });
+        }, { security: _securityQueueBlock(matchedAdmin, scope.students, { now }) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
@@ -4950,10 +5023,11 @@ router.get('/api/admin/notifications', (req, res) => {
             const studentClass = String(scope.studentClass || (scope.cls && scope.cls.name) || '');
             // Matrículas pendentes são contadas pela turma pedida (o aluno pendente ainda
             // não está em `students` da turma).
+            // No sino, só o que é da turma (os alertas da escola ficam na fila do painel).
             const queue = computeQueue({
                 memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
                 today, now, canSeeMatriculas: false,
-            });
+            }, { security: _securityQueueBlock(matchedAdmin, scope.students, { adminOnly: false, now }) });
             if (canSeeMatriculas && scope.cls) {
                 const pending = _pendingEnrollmentsForClass(scope.cls);
                 if (pending.count) {

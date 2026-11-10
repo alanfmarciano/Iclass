@@ -33,6 +33,7 @@ const PASSWORD_CHANGE_REASONS = new Set(['created', 'reset', 'weak']);
 const STUDENT_PASSWORD_CHANGE_PATHS = new Set([
     '/api/ping',
     '/api/student/change-password',
+    '/api/student/logout',
     '/api/student/leave',
     '/api/client-error',
 ]);

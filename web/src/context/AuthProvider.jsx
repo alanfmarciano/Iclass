@@ -3,6 +3,7 @@ import { api, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeReq
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
 import { usePolling } from '../hooks/usePolling'
+import { reduceStoredStudentAuth, studentSessionProfile } from '../lib/studentProfile'
 
 const AuthCtx = createContext()
 const LS = 'iclass-v3-auth'
@@ -15,8 +16,10 @@ const NET_FAIL_TOLERANCE = 3           // falhas de rede toleradas antes de cons
 const SETTINGS_REFRESH_MS = 30 * 1000  // configurações públicas (tempo de sessão, manutenção)
 
 export function AuthProvider({ children }) {
+  // A sessão do aluno guardada por uma versão anterior trazia o cadastro inteiro: fica só
+  // o perfil que o portal usa (H5b; SEG-10, SEG-16), e o efeito abaixo regrava.
   const [auth, setAuth] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(LS)) || {} } catch { return {} }
+    try { return reduceStoredStudentAuth(JSON.parse(localStorage.getItem(LS)) || {}) || {} } catch { return {} }
   })
   const [authReady, setAuthReady] = useState(false)
   const [maintenance, setMaintenance] = useState({ enabled: false, message: '' })
@@ -41,7 +44,11 @@ export function AuthProvider({ children }) {
     else localStorage.removeItem(LS)
   }, [auth])
 
-  // Encerra a sessão. Para instrutor, revoga o token no servidor (best-effort).
+  // Encerra a sessão. Revoga o token no servidor (best-effort): o do instrutor em
+  // /api/session/logout e o do aluno em /api/student/logout (H5b; DES-X2: antes o "Sair" do
+  // aluno só limpava o navegador, e o token continuava valendo até expirar). Os cabeçalhos
+  // saem na hora da chamada, antes de a sessão ser limpa abaixo; keepalive para o pedido
+  // sobreviver à troca de página, e a falha de rede não segura a saída.
   // message (opcional): texto do servidor para o login mostrar (painel recusado neste aparelho).
   const doLogout = useCallback((reason, message) => {
     try { if (reason) sessionStorage.setItem('iclass-logout-reason', reason) } catch {}
@@ -54,7 +61,9 @@ export function AuthProvider({ children }) {
     try {
       const cur = JSON.parse(localStorage.getItem(LS)) || {}
       if (cur.role === 'admin' && cur.adminSession) {
-        api.post('/api/session/logout', {}, {}).catch(() => {})
+        api.post('/api/session/logout', {}, { keepalive: true }).catch(() => {})
+      } else if (cur.role === 'student' && cur.sessionToken) {
+        api.post('/api/student/logout', {}, { keepalive: true }).catch(() => {})
       }
     } catch {}
     setAuthProvider(() => ({}))
@@ -252,7 +261,7 @@ export function AuthProvider({ children }) {
     const nextAuth = {
       role: 'student', email: r.student?.email || r.email || fallbackEmail, sessionToken: r.sessionToken,
       serverInstanceId: instanceId, loginAt: Date.now(),
-      student: r.student, activeClass: firstClass,
+      student: studentSessionProfile(r.student), activeClass: firstClass,
       localSetupMode: r.localSetupMode === true,
       // Troca de senha obrigatória (H5a): o portal mostra o formulário de troca primeiro.
       mustChangePassword: r.mustChangePassword === true,

@@ -40,8 +40,9 @@ function seed() {
     db.memory.auditLogs = [];
 }
 
-// O teto de 30 tentativas por minuto é por IP, e todos os pedidos vêm do loopback: o
-// teste do teto vem depois dos outros logins deste arquivo.
+// O atraso é por conta (H5b, utils/loginGuard.js) e o teto de 300 tentativas por minuto é
+// por IP; todos os pedidos vêm do loopback, e o teste do atraso vem depois dos outros
+// logins deste arquivo.
 const login = body => request(app).post('/api/session/admin-login').send(body);
 
 test.before(async () => { await db.init(); app = createApp(); });
@@ -99,13 +100,15 @@ test('[UC-AUTH-001] o cabeçalho Authorization e o password no corpo não autent
     assert.deepEqual(db.memory.adminSessions, {}, 'nenhuma sessão nasce do cabeçalho antigo');
 });
 
-test('[UC-AUTH-001] teto de 30 tentativas por minuto no login do instrutor, com o tempo de espera', async () => {
+// Desde o H5b o teto por IP é de 300 por minuto (só protege a CPU) e quem segura a força
+// bruta é o atraso por conta (utils/loginGuard.js): a 6.ª senha errada seguida espera 30 s.
+test('[UC-AUTH-001] atraso por conta no login do instrutor, com o tempo de espera', async () => {
     let last;
-    for (let i = 0; i < 31; i += 1) last = await login({ email: ADMIN.email, password: 'errada-' + i });
+    for (let i = 0; i < 6; i += 1) last = await login({ email: ADMIN.email, password: 'errada-' + i });
     assert.equal(last.status, 429);
-    assert.equal(last.body.error, 'Muitas tentativas de acesso. Aguarde um instante e tente novamente.');
+    assert.equal(last.body.error, 'Muitas tentativas com senha errada para esta conta. Tente de novo em 30 segundos ou peça a um administrador para liberar.');
     assert.equal(last.body.loginDelayed, true, 'formato combinado do 429 de login');
-    assert.ok(Number.isInteger(last.body.retryAfterSeconds) && last.body.retryAfterSeconds >= 1 && last.body.retryAfterSeconds <= 60);
+    assert.ok(Number.isInteger(last.body.retryAfterSeconds) && last.body.retryAfterSeconds >= 1 && last.body.retryAfterSeconds <= 30);
     // Nem a senha certa passa enquanto o teto vale.
     assert.equal((await login(ADMIN)).status, 429);
     // O teto do aluno é outro (o login do aluno não sofre com o do instrutor).

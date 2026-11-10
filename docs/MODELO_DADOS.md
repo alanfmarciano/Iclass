@@ -26,7 +26,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 
 | Coleção | Tipo | Conteúdo |
 |---------|------|----------|
-| `students` | array | alunos (perfil, turmas, credencial) |
+| `students` | array | alunos (perfil, turmas, credencial; `sessionsInvalidBefore` opcional, ms: a sessão aberta antes dessa hora acaba fora de prova, gravado pelo "Redefinir senha", H5b) |
 | `classes` | array | turmas; `activeExamKey`, `examConfigs`, `onlineExamConfigs`, liberações |
 | `courses` | array | cursos (multi-curso); `structure`, `schoolId` |
 | `branding` | objeto | identidade white-label global |
@@ -53,7 +53,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `certificates` | array | certificados emitidos |
 | `moduleAccess` | array | histórico de módulos acessados |
 | `auditLogs` | array | trilha de auditoria (notas, cadastro do aluno, turmas e conteúdo, contas, sistema, backup, provas); ver [Auditoria](#auditoria-auditlogs) |
-| `loginLogs` | array | logs de login (segurança/LGPD) |
+| `loginLogs` | array | logs de login (segurança/LGPD): `{ email, role, status: success\|fail\|throttled\|alert, reason, ip, timestamp, count?, lastAt? }`; falhas seguidas iguais em 60 s viram uma linha com `count` (H5b) |
 | `pedagogicalObservations` | array | observações pedagógicas controladas |
 | `library` | array | biblioteca de materiais reutilizáveis |
 

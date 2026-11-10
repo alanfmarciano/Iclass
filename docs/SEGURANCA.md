@@ -22,7 +22,8 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 
 | Área | Controle | Onde |
 |------|----------|------|
-| Rate limiting | 30 req/min por IP em login (aluno e instrutor) e validação de token | `utils/rateLimit.js`, `utils/passwordLogin.js` |
+| Atraso no login e limites | atraso progressivo por conta da 5.ª senha errada seguida (30 s até 15 min, sem trava definitiva; "Liberar login" em Alunos e Contas), teto de 300 tentativas/min por IP só para proteger o servidor, alerta na fila com 50 senhas erradas em 10 min do mesmo IP; código da prova com 10 erros em 5 min por aluno (os certos não contam). Só na memória: reiniciar zera | `utils/loginGuard.js`, `utils/rateLimit.js`, `utils/passwordLogin.js` |
+| Fim da sessão | "Sair" do aluno encerra a sessão no servidor (`/api/student/logout`); "Redefinir senha" encerra a do aluno (depois da prova, se ele estiver em uma); troca de senha do instrutor encerra as outras sessões dele; token do aluno só no cabeçalho, nunca na URL; o navegador guarda só o perfil do portal (sem responsável, telefones e acessibilidade) | `routes/student.js`, `middlewares.js`, `utils/studentProfile.js`, `web/src/lib/studentProfile.js` |
 | CORS | Restrito a mesma origem e hosts locais/LAN (localhost, 10.x, 192.168.x, 172.16–31.x) | `server.js` |
 | Path traversal | Resolução segura de caminho ao servir arquivos | `utils/safePath.js`, `sendControlledFile` |
 | Upload | Validação de upload; aluno só acessa itens de biblioteca dentro de seus cursos | `utils/uploadSecurity.js`, `server.js` |

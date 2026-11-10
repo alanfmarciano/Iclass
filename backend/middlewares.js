@@ -31,11 +31,13 @@ const {
     touchSession,
     isUserActivityRequest,
     sessionAbsoluteTtlMs,
+    sessionPredatesRevocation,
 } = require('./utils/authSessions.js');
 const {
     STUDENT_PASSWORD_CHANGE_PATHS,
     adminPasswordChangeState,
     passwordChangeRequiredBody,
+    studentHasExamInProgress,
     studentPasswordChangeState,
 } = require('./utils/passwordChange.js');
 
@@ -88,9 +90,10 @@ function validateStudentSession(req, res, next) {
         return res.status(403).json({ error: 'A identidade informada não corresponde à sessão autenticada.' });
     }
 
+    // O token vem do cabeçalho (ou do corpo, no beacon de saída). Na URL (?sessionToken=)
+    // não vale mais (H5b, SEG-16): o endereço vai para o histórico e para os registros.
     const providedToken = req.headers['x-session-token']
-        || (req.body && req.body.sessionToken)
-        || (req.query && req.query.sessionToken);
+        || (req.body && req.body.sessionToken);
     let normalizedEmail = distinctClaims[0] || '';
     // A sessão é procurada pelo hash do token (utils/authSessions.js); o token cru só
     // existe no navegador.
@@ -150,8 +153,6 @@ function validateStudentSession(req, res, next) {
         revokeStudentSession(db.memory, normalizedEmail);
         return res.status(401).json({ error: 'Sessão expirada (limite máximo atingido). Faça login novamente.', sessionRevoked: true });
     }
-    touchSession(session, nowTs, { active: isUserActivityRequest(req) });
-
     const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === normalizedEmail);
     if (!student) {
         revokeStudentSession(db.memory, normalizedEmail);
@@ -162,6 +163,18 @@ function validateStudentSession(req, res, next) {
         revokeStudentSession(db.memory, normalizedEmail);
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa.', sessionRevoked: true });
     }
+    // Senha redefinida pelo professor depois deste login (H5b, SEG-10): a sessão de antes
+    // do "Redefinir senha" acaba. Quem está em prova agora termina a prova com ela; a
+    // sessão acaba no primeiro pedido depois da prova (studentHasExamInProgress).
+    if (sessionPredatesRevocation(student, session) && !studentHasExamInProgress(db.memory, normalizedEmail, student, nowTs)) {
+        revokeStudentSession(db.memory, normalizedEmail);
+        return res.status(401).json({
+            error: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
+            sessionRevoked: true,
+            reason: 'password_reset',
+        });
+    }
+    touchSession(session, nowTs, { active: isUserActivityRequest(req) });
 
     // Troca obrigatória de senha (H5a, utils/passwordChange.js): senha criada ou
     // redefinida pelo professor, ou senha fraca no login. Só a presença, a própria troca,
@@ -199,7 +212,7 @@ function resolveRequester(req) {
     if (admin && admin.ok) {
         return { role: 'admin', email: admin.email };
     }
-    const studentToken = String(req.get('x-session-token') || (req.query && req.query.sessionToken) || '');
+    const studentToken = String(req.get('x-session-token') || '');
     if (studentToken) {
         const match = findStudentSession(db.memory, studentToken);
         if (match) return { role: 'student', email: match.email };

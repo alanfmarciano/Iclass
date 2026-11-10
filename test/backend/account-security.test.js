@@ -727,18 +727,23 @@ test('[UC-SENHA-001] troca de senha tem teto por IP próprio e a senha atual err
     const failure = db.memory.loginLogs.filter(entry => entry.email === ANA.email && entry.status === 'fail').at(-1);
     assert.equal(failure.reason, 'change_password', 'antes, "Credenciais inválidas", igual ao login');
 
-    // A turma atrás do mesmo IP gastou o teto do login: a troca obrigatória ainda passa.
-    for (let i = 0; i < 40; i += 1) rateLimit('student-login:127.0.0.1', { max: 30, windowMs: 60000 });
+    // A turma atrás do mesmo IP gastou o teto do login (300 por minuto desde o H5b): a
+    // troca obrigatória ainda passa.
+    for (let i = 0; i < 310; i += 1) rateLimit('student-login-all:127.0.0.1', { max: 300, windowMs: 60000 });
     const blockedLogin = await request(app).post('/api/student/login').send({ email: ANA.email, password: ANA.password });
     assert.equal(blockedLogin.status, 429);
     const changed = await request(app).post('/api/student/change-password').set(headers).send({ currentPassword: ANA.password, newPassword: 'Ponte-Velha-48' });
     assert.equal(changed.status, 200, `antes, 429 com o teto do login (${changed.body.error})`);
-    // A troca tem o próprio teto: uma sessão roubada não testa senhas sem limite.
+    // A senha atual errada conta no atraso da conta (H5b, loginGuard): uma sessão roubada
+    // não testa senhas sem limite. A 6.ª seguida já espera.
     let last = null;
+    let attempts = 0;
     for (let i = 0; i < 31; i += 1) {
+        attempts += 1;
         last = await request(app).post('/api/student/change-password').set(headers).send({ currentPassword: 'Errada-Demais-1', newPassword: 'Ponte-Velha-49' });
         if (last.status === 429) break;
     }
     assert.equal(last.status, 429);
+    assert.equal(attempts, 6, 'cinco senhas erradas, e a sexta já espera');
     assert.equal(last.body.loginDelayed, true);
 });

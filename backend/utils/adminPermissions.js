@@ -107,7 +107,7 @@ function canAccessAdminPermission(account, permission) {
 const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET'], pattern: /^\/whoami$/, permission: 'page.dashboard' },
     { methods: ['GET'], pattern: /^\/accounts$/, permission: 'page.accounts' },
-    { methods: ['POST'], pattern: /^\/accounts\/(create|update|delete)$/, permission: 'accounts.manage' },
+    { methods: ['POST'], pattern: /^\/accounts\/(create|update|delete|unlock-login)$/, permission: 'accounts.manage' },
     { methods: ['POST'], pattern: /^\/teacher-assignments$/, permission: 'accounts.manage' },
     { methods: ['GET'], pattern: /^\/network-info$/, permission: 'page.system' },
     { methods: ['POST'], pattern: /^\/(flush-exam-state|server\/restart|reset)$/, permission: 'system.manage' },

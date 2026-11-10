@@ -9,8 +9,10 @@ const {
     SERVER_INSTANCE_ID,
 } = require('../middlewares.js');
 const { parseAdditionalPermissions, isProfessorAccount } = require('../utils/adminPermissions.js');
-const { revokeAdminSession } = require('../utils/authSessions.js');
-const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
+const { revokeAdminSession, revokeAdminSessions } = require('../utils/authSessions.js');
+const { attemptPasswordLogin, logRole } = require('../utils/passwordLogin.js');
+const loginGuard = require('../utils/loginGuard.js');
+const { recordLoginLog } = require('../utils/security.js');
 const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { adminPasswordChangeState, passwordChangeRuleActive, passwordChanged, requirePasswordChange } = require('../utils/passwordChange.js');
 
@@ -158,6 +160,8 @@ function createAdminAccountsRouter() {
             requirePasswordChange(login.account, 'weak');
         }
         const sessionToken = issueAdminSession(login.account.email);
+        // A entrada do instrutor também fica em loginLogs (H5b): antes só as do aluno.
+        recordLoginLog(db.memory, { email: login.email, role: logRole('admin', login.account), status: 'success', req });
         // O login espera o COMMIT, como o do aluno (hash regravado e, com o H3a-2, a sessão).
         await db.save();
         res.json(adminSessionPayload(login.account, sessionToken));
@@ -166,15 +170,55 @@ function createAdminAccountsRouter() {
     router.get('/api/admin/accounts', (req, res) => {
         validateAdmin(req, res, () => {
             const admins = readJSON(DB_ADMINS_FILE);
-            res.json(admins.map(account => ({
-                name: account.name,
-                email: account.email,
-                role: account.role || 'admin',
-                assignedSchoolIds: Array.isArray(account.assignedSchoolIds) ? account.assignedSchoolIds : [],
-                assignedCourseIds: Array.isArray(account.assignedCourseIds) ? account.assignedCourseIds : [],
-                assignedClasses: Array.isArray(account.assignedClasses) ? account.assignedClasses : [],
-                additionalPermissions: Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [],
-            })));
+            const now = Date.now();
+            res.json(admins.map(account => {
+                const listed = {
+                    name: account.name,
+                    email: account.email,
+                    role: account.role || 'admin',
+                    assignedSchoolIds: Array.isArray(account.assignedSchoolIds) ? account.assignedSchoolIds : [],
+                    assignedCourseIds: Array.isArray(account.assignedCourseIds) ? account.assignedCourseIds : [],
+                    assignedClasses: Array.isArray(account.assignedClasses) ? account.assignedClasses : [],
+                    additionalPermissions: Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [],
+                };
+                // Atraso de login por senhas erradas (H5b): selo e "Liberar login" em Contas.
+                const loginProtection = account.email ? loginGuard.protectionFor(loginGuard.accountKey('admin', account.email), now) : null;
+                if (loginProtection) listed.loginProtection = loginProtection;
+                return listed;
+            }));
+        });
+    });
+
+    // Liberar login de uma conta de instrutor (H5b; SEG-06): depois de muitas senhas
+    // erradas a conta espera antes de tentar de novo (utils/loginGuard.js). Só
+    // administrador (accounts.manage e requireAdminManager); fica na auditoria
+    // (account_login_unlocked). Não mexe na senha.
+    router.post('/api/admin/accounts/unlock-login', (req, res) => {
+        validateAdmin(req, res, async (config, currentAdmin) => {
+            if (!requireAdminManager(res, currentAdmin)) return;
+            const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+            if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail da conta.', field: 'email' });
+            const account = (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === email);
+            if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
+            const key = loginGuard.accountKey('admin', email);
+            const before = loginGuard.protectionFor(key);
+            const released = loginGuard.clear(key);
+            if (released) {
+                recordAudit(db.memory, {
+                    req,
+                    actor: currentAdmin,
+                    action: 'account_login_unlocked',
+                    category: 'account',
+                    targetEmail: email,
+                    details: before ? { failures: before.failures, retryAt: before.retryAt } : {},
+                });
+                await db.save();
+            }
+            res.json({
+                success: true,
+                unlocked: released,
+                message: released ? 'Login liberado. A conta já pode entrar.' : 'Esta conta não estava com o login em espera.',
+            });
         });
     });
 
@@ -478,16 +522,20 @@ function createAdminAccountsRouter() {
             const forced = adminPasswordChangeState(matchedAdmin).required === true;
             matchedAdmin.password = passwordHash;
             passwordChanged(matchedAdmin);
+            // As outras sessões da conta (outro navegador, outro computador) saem; a deste
+            // pedido continua (H5b, SEG-10). Antes a sessão aberta em outro lugar seguia
+            // valendo com a senha antiga.
+            const endedSessions = revokeAdminSessions(db.memory, matchedAdmin.email, { exceptToken: req.adminSessionToken });
             recordAudit(db.memory, {
                 req,
                 actor: matchedAdmin,
                 action: 'account_password_changed',
                 category: 'account',
                 targetEmail: matchedAdmin.email,
-                details: { forced },
+                details: { forced, endedSessions },
             });
             await db.save();
-            res.json({ success: true, message: 'Senha atualizada com sucesso!' });
+            res.json({ success: true, message: 'Senha atualizada com sucesso!', endedSessions });
         });
     });
 

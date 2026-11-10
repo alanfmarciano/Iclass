@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ClipboardList, Eye, History, KeyRound, MessageSquare, Pencil, ShieldAlert, ShieldCheck, Trash2, Unlock, UserPlus } from 'lucide-react'
+import { ClipboardList, Eye, History, KeyRound, LockOpen, MessageSquare, Pencil, ShieldAlert, ShieldCheck, Trash2, Unlock, UserPlus } from 'lucide-react'
 import { DataTable } from '../../components/ui/Table'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -11,6 +11,7 @@ import { Modal, ConfirmDialog } from '../../components/ui/Modal'
 import { STUDENT_DELETE_WARNING } from './studentDeletion'
 import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
 import { StudentAuditPanel } from './StudentAuditPanel'
+import { LoginProtectionBadge, UNLOCK_LOGIN_HINT } from './loginProtection'
 import { passwordHint } from '../../lib/passwordPolicy'
 import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
@@ -26,6 +27,9 @@ const STATUS_TONE = {
   Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger',
   'Concluído': 'success', Transferido: 'warning', Evadido: 'warning',
 }
+// Logs de login (Segurança): falha agrupada leva ×N (H5b, várias senhas erradas seguidas
+// numa linha só); "em espera" é a tentativa recusada durante o atraso, sem conferir a senha.
+const LOGIN_LOG_LABEL = { success: 'ok', fail: 'falha', throttled: 'em espera', blocked: 'bloqueado' }
 
 const OBS_CATEGORIES = ['Dificuldade de aprendizagem', 'Participação', 'Frequência', 'Entregas atrasadas', 'Acompanhamento pedagógico', 'Acessibilidade pedagógica', 'Comportamento acadêmico', 'Observação geral']
 const OBS_VISIBILITY = ['Restrita (coordenação)', 'Equipe pedagógica', 'Compartilhada']
@@ -260,13 +264,26 @@ export default function AlunosPage() {
     }
   }
 
+  // "Liberar login" (H5b; SEG-06): a conta com atraso por senha errada volta a entrar na hora.
+  const [unlocking, setUnlocking] = useState(false)
+  async function unlockLogin(row) {
+    setUnlocking(true)
+    try {
+      const r = await api.post('/api/admin/student/unlock-login', { email: row.email })
+      toast.success(r?.message || 'Login liberado.')
+      setMenuRow(null)
+      refetch()
+    } catch (e) { toast.error(e.message) } finally { setUnlocking(false) }
+  }
+
   const columns = [
     { key: 'name', label: 'Nome', render: (r) => (
       <div className="flex items-center gap-2">
         <span className="w-7 h-7 rounded-full bg-primary-soft text-primary grid place-items-center text-xs font-semibold">{(displayName(r) || '?').split(' ').map((x) => x[0]).slice(0, 2).join('')}</span>
         <span>{displayName(r)}</span>
         {r.nomeSocial && r.nomeSocial.trim() && <span className="text-xs text-subtle">({r.name})</span>}
-        {r.recoveryRequested && <Badge tone="warning">senha</Badge>}
+        {r.recoveryRequested && <Badge tone="warning" className="whitespace-nowrap">Pediu nova senha</Badge>}
+        <LoginProtectionBadge protection={r.loginProtection} />
       </div>) },
     { key: 'email', label: 'E-mail', render: (r) => <span className="text-muted">{r.email}</span> },
     { key: 'matricula', label: 'Matrícula', render: (r) => <span className="text-muted">{r.matricula || '-'}</span> },
@@ -298,6 +315,12 @@ export default function AlunosPage() {
       </Modal>
 
       <Modal open={!!menuRow} onClose={() => setMenuRow(null)} title={menuRow ? displayName(menuRow) : ''} description={menuRow?.email}>
+        {menuRow?.loginProtection && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-muted">
+            <LoginProtectionBadge protection={menuRow.loginProtection} />
+            <span>{UNLOCK_LOGIN_HINT}</span>
+          </div>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, originalEmail: menuRow.email, classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>
           <Button variant="secondary" icon={History} onClick={() => { setHistory(menuRow); setMenuRow(null) }}>Histórico</Button>
@@ -306,6 +329,7 @@ export default function AlunosPage() {
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
           <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>
           <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>
+          {menuRow?.loginProtection && <Button variant="secondary" icon={LockOpen} loading={unlocking} title={UNLOCK_LOGIN_HINT} onClick={() => unlockLogin(menuRow)}>Liberar login</Button>}
           {!isProfessor && <Button variant="destructive" icon={Trash2} onClick={() => { setDel(menuRow); setMenuRow(null) }}>Excluir aluno</Button>}
         </div>
       </Modal>
@@ -536,7 +560,7 @@ export default function AlunosPage() {
                     <span className="text-text">{new Date(l.timestamp).toLocaleString('pt-BR')}</span>
                     <span className="text-subtle"> · {l.browser}/{l.os} · {l.ip}</span>
                   </div>
-                  <Badge tone={l.status === 'success' ? 'success' : 'danger'}>{l.status === 'success' ? 'ok' : 'falha'}</Badge>
+                  <Badge tone={l.status === 'success' ? 'success' : (l.status === 'throttled' ? 'warning' : 'danger')}>{LOGIN_LOG_LABEL[l.status] || 'falha'}{l.count > 1 ? ` ×${l.count}` : ''}</Badge>
                 </div>
               ))}
               {secLogs.length === 0 && <p className="text-xs text-muted">Nenhum login registrado.</p>}

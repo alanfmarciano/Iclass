@@ -207,3 +207,39 @@ describe('[UC-SENHA-001] cadastro e pedido de nova senha', () => {
     expect(screen.queryByTestId('recover-sent')).toBeNull()
   })
 })
+
+// Fase 2, H5b (SEG-06): a conta com muitas senhas erradas espera antes de tentar de novo
+// (429 { loginDelayed, retryAfterSeconds }). O aviso fica na tela, e não só no toast.
+describe('[UC-AUTH-002] login com atraso por senha errada', () => {
+  const DELAYED = 'Muitas tentativas com senha errada para esta conta. Tente de novo em 30 segundos ou peça ao professor para liberar o seu login.'
+  const delayedError = () => Object.assign(new Error(DELAYED), { status: 429, data: { error: DELAYED, loginDelayed: true, retryAfterSeconds: 30 } })
+
+  it('aluno: mostra a espera na tela e some na tentativa seguinte', async () => {
+    mocks.loginStudent.mockRejectedValueOnce(delayedError()).mockRejectedValueOnce(Object.assign(new Error('E-mail ou senha incorretos'), { status: 401, data: {} }))
+    const user = userEvent.setup()
+    renderLogin()
+    await user.type(screen.getByLabelText('E-mail'), 'ana@escola.local')
+    await user.type(screen.getByLabelText('Senha'), 'errada-123')
+    await user.click(screen.getByRole('button', { name: /Entrar como aluno/ }))
+    expect(await screen.findByTestId('login-delayed')).toHaveTextContent(DELAYED)
+    expect(mocks.toast.error).toHaveBeenCalledWith(DELAYED)
+    // A aba do instrutor não herda o aviso do aluno.
+    await user.click(screen.getByRole('button', { name: 'Instrutor' }))
+    expect(screen.queryByTestId('login-delayed')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Aluno' }))
+    await user.click(screen.getByRole('button', { name: /Entrar como aluno/ }))
+    await waitFor(() => expect(mocks.loginStudent).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByTestId('login-delayed')).toBeNull())
+  })
+
+  it('outro erro (401) não mostra o aviso de espera', async () => {
+    mocks.loginStudent.mockRejectedValueOnce(Object.assign(new Error('E-mail ou senha incorretos'), { status: 401, data: {} }))
+    const user = userEvent.setup()
+    renderLogin()
+    await user.type(screen.getByLabelText('E-mail'), 'ana@escola.local')
+    await user.type(screen.getByLabelText('Senha'), 'errada-123')
+    await user.click(screen.getByRole('button', { name: /Entrar como aluno/ }))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('E-mail ou senha incorretos'))
+    expect(screen.queryByTestId('login-delayed')).toBeNull()
+  })
+})

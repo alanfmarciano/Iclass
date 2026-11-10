@@ -177,6 +177,18 @@ function revokeStudentSession(memory, email) {
     return true;
 }
 
+// Sessão de aluno aberta antes de o professor redefinir a senha (H5b, SEG-10)? O
+// "Redefinir senha" grava na conta sessionsInvalidBefore (ms) e encerra a sessão na hora;
+// se o aluno estava em prova, a sessão continua até o fim da prova e esta conferência
+// (validateStudentSession) a encerra depois. Vale também depois de um reinício (a sessão
+// retomada guarda o createdAt).
+function sessionPredatesRevocation(account, session) {
+    const cutoff = validTimestamp(account && account.sessionsInvalidBefore);
+    if (!cutoff) return false;
+    const createdAt = validTimestamp(session && session.createdAt);
+    return !createdAt || createdAt <= cutoff;
+}
+
 // Consulta, sem efeito colateral: { ok: true, email, session, account } ou
 // { ok: false, reason } com reason 'missing' (token desconhecido), 'expired' (prazo
 // absoluto), 'idle' (só com options.idleMs), 'account_missing' ou 'account_inactive'.
@@ -420,6 +432,7 @@ module.exports = {
     studentSessionByEmail,
     createStudentSession,
     revokeStudentSession,
+    sessionPredatesRevocation,
     checkStudentSessionToken,
     findAdminSession,
     createAdminSession,

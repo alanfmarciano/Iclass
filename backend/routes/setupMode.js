@@ -6,6 +6,7 @@ const { issueAdminSession, normalizeIp, SERVER_INSTANCE_ID } = require('../middl
 const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const { createStudentSession } = require('../utils/authSessions.js');
 const { adminPasswordChangeState } = require('../utils/passwordChange.js');
+const { studentSessionProfile } = require('../utils/studentProfile.js');
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
 
@@ -117,7 +118,7 @@ function createSetupModeRouter(options = {}) {
             actorEmail = email;
             response = {
                 sessionType: 'student', role: 'student', email,
-                student: normalizeStudentForQuickAccess(student), sessionToken, instanceId: SERVER_INSTANCE_ID,
+                student: studentSessionProfile(normalizeStudentForQuickAccess(student)), sessionToken, instanceId: SERVER_INSTANCE_ID,
                 localSetupMode: true,
             };
         } else {

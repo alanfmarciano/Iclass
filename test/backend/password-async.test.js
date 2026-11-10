@@ -335,12 +335,12 @@ test('[UC-AUTH-001] cadastro, contas e senhas pelo painel gravam scrypt$ sem cry
 const fakeReq = ip => ({ headers: {}, socket: { remoteAddress: ip } });
 
 test('[UC-AUTH-001] o 429 do login segue o formato combinado: loginDelayed e retryAfterSeconds', async () => {
+    const { rateLimit } = require('../../backend/utils/rateLimit.js');
     for (const kind of ['student', 'admin']) {
         const ip = kind === 'student' ? '10.77.0.1' : '10.77.0.2';
-        let last;
-        for (let i = 0; i < 31; i += 1) {
-            last = await attemptPasswordLogin({ kind, email: `ninguem-${i}@senhas.local`, password: 'x', req: fakeReq(ip) });
-        }
+        // Teto por IP do H5b: 300 tentativas por minuto, contando todas.
+        for (let i = 0; i < 300; i += 1) rateLimit(`${kind}-login-all:${ip}`, { max: 300, windowMs: 60000 });
+        const last = await attemptPasswordLogin({ kind, email: 'ninguem@senhas.local', password: 'x', req: fakeReq(ip) });
         assert.equal(last.ok, false);
         assert.equal(last.status, 429, kind);
         assert.equal(last.body.loginDelayed, true, `${kind}: loginDelayed`);
@@ -378,7 +378,7 @@ test('[UC-AUTH-001] troca de senha do instrutor: outra troca durante a conferên
 });
 
 // Por último neste arquivo: gasta o teto do loopback para o instrutor.
-test('[UC-AUTH-001] a senha atual da troca de senha passa pelo teto por IP do login do instrutor (429)', async () => {
+test('[UC-AUTH-001] a senha atual da troca de senha passa pelo atraso da conta do login do instrutor (429)', async () => {
     const token = createAdminSession(db.memory, ADMIN.email, { now: Date.now() });
     const before = db.memory.admins[0].password;
     const change = currentPassword => request(app).post('/api/admin/change-password').set('x-admin-session', token)
@@ -393,10 +393,11 @@ test('[UC-AUTH-001] a senha atual da troca de senha passa pelo teto por IP do lo
         wrong += 1;
     }
     assert.equal(res.status, 429, `depois de ${wrong} senhas atuais erradas`);
-    assert.ok(wrong <= 30, 'no máximo 30 tentativas por minuto');
+    // H5b: a senha atual errada conta no atraso da conta (5 seguidas), como no login.
+    assert.equal(wrong, 5, 'a 6.ª tentativa espera');
     assert.equal(res.body.loginDelayed, true);
     assert.ok(Number.isInteger(res.body.retryAfterSeconds) && res.body.retryAfterSeconds >= 1);
-    // Enquanto o teto vale, nem a senha atual certa troca a senha, e o login também espera.
+    // Enquanto a conta espera, nem a senha atual certa troca a senha, e o login também espera.
     assert.equal((await change(ADMIN.password)).status, 429);
     assert.equal(db.memory.admins[0].password, before, 'a senha não mudou');
     assert.equal((await request(app).post('/api/session/admin-login').send(ADMIN)).status, 429, 'o teto é o mesmo do login do instrutor');
