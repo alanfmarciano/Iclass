@@ -130,7 +130,7 @@ function TrashCard() {
           <div key={e.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
             <span className="w-8 h-8 rounded-md bg-surface-2 text-muted grid place-items-center shrink-0">{e.isDir ? <FolderOpen size={15} /> : <FileText size={15} />}</span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-text truncate">{e.name}{e.isDir ? ' (pasta)' : ''}</p>
+              <p className="text-sm font-medium text-text truncate">{e.originalName || e.name}{e.isDir ? ' (pasta)' : ''}</p>
               <p className="text-xs text-subtle truncate">de {e.originalRel} · excluído {_when(e.deletedAt)}{e.size ? ' · ' + _human(e.size) : ''}</p>
             </div>
             <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restore(e.id)}>Restaurar</Button>

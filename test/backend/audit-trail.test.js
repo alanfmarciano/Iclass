@@ -455,13 +455,13 @@ const MAY_ALTER = {
     'backend/routes/admin.js': ['renameStudentEmailEverywhere'],
 };
 // Onde entra entrada sem o recordAudit: o próprio audit.js, a carga do banco e a
-// restauração, que devolve o histórico de backup (keepBackupHistory, até o H7a-2 trocar
-// pela junção mergeAuditTrails).
+// restauração (backup.js, que junta a trilha do backup com a atual por mergeAuditTrails).
+// O keepBackupHistory de adminRecovery.js saiu no H7a-2: com a junção, o histórico de
+// backup já continua no registro.
 const MAY_APPEND = {
     'backend/utils/audit.js': '*',
     'backend/utils/backup.js': '*',
     'backend/database.js': '*',
-    'backend/routes/adminRecovery.js': ['keepBackupHistory'],
 };
 // Entrada de prova (type + applicationId) com o type vindo de fora: só no registrador de
 // prova, e quem o chama passa sempre um 'exam_...' escrito (teste abaixo).

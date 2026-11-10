@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ClipboardCheck, Download, Check, X, Clock, LogOut, FileText, Paperclip, Users,
-  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi,
+  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi, UserX,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -430,6 +430,16 @@ export default function ChamadaPage() {
                             {s.origin === 'login' && (
                               <span title="Registro criado pelo acesso do aluno ao sistema. Confira antes de concluir a chamada.">
                                 <Tag tone="info" Icon={Wifi}>Automática{s.acessoAutomatico?.hora ? ` · acesso às ${s.acessoAutomatico.hora}` : ''}{s.acessoAutomatico?.ip ? ` · IP ${s.acessoAutomatico.ip}` : ''}</Tag>
+                              </span>
+                            )}
+                            {s.origin !== 'login' && s.acessoAutomatico && (
+                              <span title={`O aluno entrou no sistema neste dia${s.acessoAutomatico.ip ? ` (IP ${s.acessoAutomatico.ip})` : ''}. A chamada substituiu a presença automática.`}>
+                                <Tag tone="info" Icon={Wifi}>Entrou no sistema{s.acessoAutomatico.hora ? ` às ${s.acessoAutomatico.hora}` : ''}</Tag>
+                              </span>
+                            )}
+                            {s.encerrado && (
+                              <span title="Cadastro encerrado: só aparece na chamada de uma data em que já tem registro ou que é anterior ao desligamento.">
+                                <Tag tone="warning" Icon={UserX}>{s.situacao || 'Cadastro encerrado'}</Tag>
                               </span>
                             )}
                           </div>

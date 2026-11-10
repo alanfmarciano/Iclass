@@ -104,8 +104,11 @@ export default function AlunoDetailPage() {
     // Média da matrícula no curso/turma ativos, consolidada como em Resultados.
     const dashQuery = new URLSearchParams({ email, courseId: workspace.courseId || '', studentClass: workspace.className || '' })
     api.get(`/api/admin/student/dashboard?${dashQuery}`).then(setDash).catch(() => setDash(null))
-    api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
-  }, [email, workspace.courseId, workspace.className])
+    // Aba Auditoria: só o administrador (audit.view, decisão P5). O professor nem pede
+    // a trilha (o servidor responde 403); o histórico de cada nota está em Resultados.
+    if (!isProfessor) api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
+    else setAuditRows([])
+  }, [email, workspace.courseId, workspace.className, isProfessor])
 
   const subs = academic?.submissions || []
   // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
@@ -131,8 +134,7 @@ export default function AlunoDetailPage() {
     { id: 'geral', label: 'Visão geral' },
     { id: 'academico', label: 'Acadêmico' },
     { id: 'frequencia', label: 'Frequência' },
-    { id: 'auditoria', label: 'Auditoria' },
-    ...(!isProfessor ? [{ id: 'seguranca', label: 'Segurança' }] : []),
+    ...(!isProfessor ? [{ id: 'auditoria', label: 'Auditoria' }, { id: 'seguranca', label: 'Segurança' }] : []),
   ]
 
   return (
@@ -300,8 +302,8 @@ export default function AlunoDetailPage() {
               </div>
             </Modal>
 
-            {tab === 'auditoria' && (
-              <Card title="Auditoria do cadastro">
+            {tab === 'auditoria' && !isProfessor && (
+              <Card title="Auditoria do aluno">
                 <StudentAuditPanel rows={auditRows} />
               </Card>
             )}

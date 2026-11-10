@@ -8,6 +8,7 @@ const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
 const { normalizeStoredStudentClasses } = require('./students.js');
 const zipInspect = require('./zipInspect.js');
+const { mergeAuditTrails } = require('./audit.js');
 
 const CONTENT_DIR = runtimePaths.CONTENT_DIR;
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -236,20 +237,48 @@ function snapshotSummary(snapshot, format) {
     };
 }
 
+// Junta uma lista do backup com a atual pela chave do registro (key): a linha do backup
+// vence quando a chave é a mesma, e as atuais que o backup não tem continuam (na ordem
+// de antes, depois das do backup). Linha sem chave fica como veio.
+function mergeRowsByKey(entry, restored, current) {
+    if (!Array.isArray(restored)) return Array.isArray(current) ? current.slice() : current;
+    const keyOf = typeof entry.key === 'function' ? entry.key : row => (row && typeof row === 'object' ? row[entry.key] : undefined);
+    const known = new Set(restored.map(row => keyOf(row)).filter(key => key !== undefined && key !== null && key !== '').map(String));
+    const extra = (Array.isArray(current) ? current : []).filter(row => {
+        const key = keyOf(row);
+        return key === undefined || key === null || key === '' || !known.has(String(key));
+    });
+    return [...restored, ...extra];
+}
+
 // Valor restaurado de uma coleção conforme o modo dela no registro (restore):
 // - 'replace' e 'keep': o backup substitui a atual (quando falta no backup, a atual fica);
-// - 'merge': a trilha do backup junta com a atual. Enquanto mergeAuditTrails (utils/audit.js)
-//   não estiver ligado aqui, a auditoria do backup substitui a atual, como antes. Pelo
-//   plano, o H7a-2 liga o merge (junto com a nova regra da lixeira de notas, que hoje
-//   depende de grade_restore) e o H4a troca este trecho pelo laço por modo do registro;
+// - 'merge': o backup junta com a atual. A auditoria passa por mergeAuditTrails
+//   (utils/audit.js): todas as entradas do backup (a do backup vence no mesmo id) mais as
+//   atuais que o backup não tem, em ordem de hora. Restaurar dados não apaga o registro de
+//   quem fez o quê depois do backup (FUN-03, CONF-09), e por isso o grade_restore deixa
+//   de valer na lixeira de notas quando há restauração de backup depois dele
+//   (gradeTrashIndex em routes/admin.js). Outra coleção
+//   em 'merge' junta pela chave do registro. Pelo plano, o H4a troca este trecho pelo laço
+//   por modo do registro e mantém o mergeAuditTrails;
 // - 'reset': volta vazia (coleção da memória; a tabela derivada das sessões é zerada pelo
 //   gancho dela em db.afterRestore).
-function restoredCollectionValue(entry, restored) {
+// exact: a volta ao estado de antes quando a restauração falha no meio. Aí tudo é
+// substituído pela cópia tirada antes, inclusive a auditoria (juntar traria de volta as
+// entradas do backup que acabou de ser recusado).
+function restoredCollectionValue(entry, restored, { exact = false } = {}) {
     if (entry.restore === 'reset') return db.emptyCollectionValue(entry);
+    if (entry.restore === 'merge' && !exact) {
+        const current = db.memory[entry.collection];
+        const value = entry.collection === 'auditLogs'
+            ? mergeAuditTrails(restored, current)
+            : mergeRowsByKey(entry, restored, current);
+        return structuredClone(value);
+    }
     return structuredClone(restored);
 }
 
-async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
+async function applySnapshot(snapshot, { replaceAccounts = false, exact = false } = {}) {
     validateDataSnapshot(snapshot);
     db.COLLECTION_TABLES.forEach(entry => {
         // Tabela derivada (auth_sessions) não tem valor próprio na memória nem no backup:
@@ -261,10 +290,11 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
             return;
         }
         if (!COLLECTIONS.includes(entry.collection) || STORE_COLLECTIONS.has(entry.collection)) return;
+        // Coleção que falta no backup (backup antigo sem a auditoria, por exemplo): a atual fica.
         if (snapshot.data[entry.collection] === undefined) return;
         // Contas de acesso só com o pedido explícito do administrador (SEG-X1).
         if (entry.collection === 'admins' && !replaceAccounts) return;
-        db.memory[entry.collection] = restoredCollectionValue(entry, snapshot.data[entry.collection]);
+        db.memory[entry.collection] = restoredCollectionValue(entry, snapshot.data[entry.collection], { exact });
     });
     // Backups antigos podem trazer `studentClass` em objeto (DES-03).
     (db.memory.students || []).forEach(student => normalizeStoredStudentClasses(student));
@@ -312,7 +342,7 @@ async function restoreDataSnapshot(snapshot, { replaceAccounts = false } = {}) {
                 else fs.writeFileSync(file.target, file.previous);
             } catch (e) {}
         });
-        await applySnapshot(previous, { replaceAccounts: true }).catch(() => {});
+        await applySnapshot(previous, { replaceAccounts: true, exact: true }).catch(() => {});
         throw error;
     }
 }
@@ -350,7 +380,7 @@ async function restoreFullZip(buffer, { replaceAccounts = false } = {}) {
                 if (fs.existsSync(item.recovery)) fs.renameSync(item.recovery, item.target);
             } catch (e) {}
         }
-        await applySnapshot(previous, { replaceAccounts: true }).catch(() => {});
+        await applySnapshot(previous, { replaceAccounts: true, exact: true }).catch(() => {});
         throw error;
     } finally {
         fs.rmSync(stageRoot, { recursive: true, force: true });
@@ -570,5 +600,5 @@ module.exports = {
     buildDataSnapshot, validateDataSnapshot, restoreDataSnapshot, saveServerBackup,
     runAutomaticBackup, lastAutomaticBackupAt,
     buildFullZipBuffer, streamFullZip, saveServerFullBackup, restoreFullZip, restoreFromFile, getZipLib, validateZip,
-    fileLooksLikeBackup,
+    fileLooksLikeBackup, mergeRowsByKey,
 };

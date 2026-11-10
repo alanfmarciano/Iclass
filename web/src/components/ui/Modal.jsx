@@ -14,10 +14,14 @@ export function Modal({ open, onClose, title, description, children, footer, siz
   const onCloseRef = useRef(onClose)
   const titleId = useId()
   const descriptionId = useId()
+  const wasOpenRef = useRef(false)
+  // O foco de quem abriu é lido ao abrir, ainda na renderização: o campo com autoFocus
+  // dentro do diálogo já recebe o foco antes dos efeitos rodarem.
+  if (open && !wasOpenRef.current && typeof document !== 'undefined') previousFocusRef.current = document.activeElement
+  wasOpenRef.current = open
   useEffect(() => { onCloseRef.current = onClose }, [onClose])
   useEffect(() => {
     if (!open) return
-    previousFocusRef.current = document.activeElement
     const dialog = dialogRef.current
     const focusable = () => Array.from(dialog?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])
     // Campo com autoFocus dentro do diálogo (ex.: TypedConfirm) já tem o foco: não o

@@ -49,7 +49,7 @@ function networkSettings(stored = storedSettings()) {
 function getSettings() {
     const s = storedSettings();
     return {
-        timezone: s.timezone || DEFAULTS.timezone,
+        timezone: isValidTimeZone(s.timezone) ? s.timezone : DEFAULTS.timezone,
         locale: DEFAULTS.locale,
         dateFormat: DEFAULTS.dateFormat,
         session: { ...DEFAULTS.session, ...(s.session || {}) },
@@ -67,7 +67,7 @@ function mergeSettings(patch) {
     const p = patch || {};
     const clampNum = (v, def, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def; };
     const next = {
-        timezone: typeof p.timezone === 'string' && p.timezone.trim() ? p.timezone.trim() : cur.timezone,
+        timezone: typeof p.timezone === 'string' && isValidTimeZone(p.timezone.trim()) ? p.timezone.trim() : cur.timezone,
         locale: DEFAULTS.locale,
         dateFormat: DEFAULTS.dateFormat,
         session: {
@@ -121,6 +121,22 @@ function withinAttendanceWindow(settings) {
     return t >= a.windowStart || t <= a.windowEnd;
 }
 
+// Fuso que o Intl conhece. Um nome que ele recusa ('Brasil/Hora', vindo pela API, de um
+// banco ou de um backup antigo) fazia cada data formatada com ele quebrar (a tela
+// Auditoria respondia 500) ou cair no UTC: getSettings devolve o padrão no lugar e
+// mergeSettings mantém o fuso de antes. A resposta fica guardada (poucos nomes por vez).
+const timeZoneChecks = new Map();
+function isValidTimeZone(value) {
+    if (typeof value !== 'string' || !value.trim()) return false;
+    if (!timeZoneChecks.has(value)) {
+        let valid = false;
+        try { new Intl.DateTimeFormat('en-US', { timeZone: value }); valid = true; } catch (e) { valid = false; }
+        if (timeZoneChecks.size >= 64) timeZoneChecks.clear();
+        timeZoneChecks.set(value, valid);
+    }
+    return timeZoneChecks.get(value);
+}
+
 // Extensão -> categoria (para regra de tipos de upload permitidos).
 function extCategory(ext) {
     ext = String(ext || '').toLowerCase();
@@ -141,6 +157,7 @@ module.exports = {
     mergeSettings,
     networkSettings,
     normalizeAdminAccess,
+    isValidTimeZone,
     todayInTz,
     today,
     nowHHMM,

@@ -243,7 +243,8 @@ test('[UC-NOTAS-001] lançar, publicar, mudar a regra e excluir ficam na auditor
 
     const publish = await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: [id], published: true });
     assert.equal(publish.status, 200);
-    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: id, action: 'policy', policy: 'average' });
+    // Nota já publicada: mudar a regra pede o motivo (H7a-2), que fica na auditoria.
+    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: id, action: 'policy', policy: 'average', reason: 'Regra combinada com a coordenação' });
     assert.equal(policy.status, 200);
     const removed = await admin(request(app).post('/api/admin/submissions/delete')).send({ id: second.body.submissionId });
     assert.equal(removed.status, 200);
@@ -261,6 +262,7 @@ test('[UC-NOTAS-001] lançar, publicar, mudar a regra e excluir ficam na auditor
     const policyEntry = audit.body.find(entry => entry.action === 'grade_result_policy');
     assert.match(policyEntry.oldValue, /Melhor nota/);
     assert.match(policyEntry.newValue, /Média das consideradas/);
+    assert.equal(policyEntry.reason, 'Regra combinada com a coordenação');
 
     const review = await admin(request(app).get(`/api/admin/submissions/${id}/review`));
     assert.equal(review.status, 200);
@@ -641,7 +643,7 @@ test('[UC-NOTAS-004] lixeira de notas: a exclusão pode ser desfeita e fica regi
     const created = await createGrade({ examKey: 'Avaliacao_P2', correctCount: 7, totalCount: 10 });
     const id = created.body.submissionId;
     await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: [id], published: true });
-    const removed = await professor(request(app).post('/api/admin/submissions/delete')).send({ id });
+    const removed = await professor(request(app).post('/api/admin/submissions/delete')).send({ id, reason: 'Lançada no aluno errado' });
     assert.equal(removed.status, 200);
     assert.equal(db.memory.submissions.some(item => item.id === id), false);
 
@@ -747,13 +749,14 @@ test('[UC-NOTAS-001] regra e "Usar esta nota" valem para o grupo inteiro, inclus
     const report = async () => (await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`))).body.overallAverage;
     assert.deepEqual((await list()).map(item => item.consolidatedScore), [90, 90], 'um grupo, maior nota');
 
-    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: novo, action: 'policy', policy: 'average' });
+    // O grupo tem nota publicada: mudar a regra e escolher a nota pedem o motivo (H7a-2).
+    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: novo, action: 'policy', policy: 'average', reason: 'Média combinada com a turma' });
     assert.equal(policy.status, 200, policy.body.error);
     assert.deepEqual(policy.body.submissions.map(item => [item.id, item.consolidatedScore]).sort(), [['antiga', 70], [novo, 70]], 'a resposta traz o grupo inteiro');
     assert.equal(db.memory.submissions.find(item => item.id === 'antiga').aggregationPolicy, 'average');
     assert.equal(await report(), 7);
 
-    const select = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: 'antiga', action: 'select' });
+    const select = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: 'antiga', action: 'select', reason: 'Vale a primeira tentativa' });
     assert.equal(select.status, 200, select.body.error);
     assert.deepEqual(select.body.submissions.map(item => [item.id, item.consolidatedScore]).sort(), [['antiga', 90], [novo, 90]]);
     const rows = await list();
@@ -886,8 +889,9 @@ test('[UC-NOTAS-004] excluir o aluno anonimiza as cópias das notas dele na lixe
         } }),
         submission('bia_p1', { email: 'bia@notas.local', name: 'Bia', score: 90 }),
     ];
-    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_online' })).status, 200);
-    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'bia_p1' })).status, 200);
+    // As duas notas estão publicadas (submission()): excluir pede o motivo (H7a-2).
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_online', reason: 'Lançada em duplicidade' })).status, 200);
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'bia_p1', reason: 'Lançada em duplicidade' })).status, 200);
     const before = db.memory.auditLogs.find(entry => entry.action === 'grade_delete' && entry.details.deletedSubmission.id === 'ana_online');
     assert.equal(before.details.deletedSubmission.student.matricula, 'MAT-2026-001', 'antes da exclusão do aluno a cópia é completa (restaurável)');
 
@@ -1013,7 +1017,8 @@ test('[UC-NOTAS-004] excluir o aluno tira o e-mail, o nome e o cadastro de todo 
         { id: 'audit_bia_x', actor: 'admin@notas.local', studentEmail: 'bia@notas.local', action: 'update', field: 'Nome', oldValue: 'Bia', newValue: 'Bia Lima', timestamp: Date.now() },
     );
     db.memory.submissions = [submission('ana_p1', { name: 'Ana Souza', score: 63, extra: { correctCount: 3, totalCount: 4 } })];
-    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_p1' })).status, 200);
+    // Nota publicada (submission()): excluir pede o motivo (H7a-2).
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_p1', reason: 'Lançada em duplicidade' })).status, 200);
 
     assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' })).status, 200);
 

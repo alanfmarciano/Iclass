@@ -25,7 +25,9 @@ const {
     validateAnySession,
     studentBelongsToClass,
     findClassByNameAndCourse,
-    getReleasedItemsForClass
+    getReleasedItemsForClass,
+    isProfessorAccount,
+    adminAllowedCourseIds
 } = require('../middlewares.js');
 const { logError, oneLine } = require('../utils/errorLog.js');
 const { rateLimit } = require('../utils/rateLimit.js');
@@ -341,9 +343,10 @@ function isCourseDeleted(course) {
 }
 
 // Lista completa de cursos (estrutura, chaves de unidades e avaliações, excluídos)
-// só para o instrutor. Sem sessão de instrutor, devolve apenas id e nome dos cursos
-// ativos com turma aberta para cadastro. Instrutor é só quem manda x-admin-session: o
-// 'Authorization: email:senha' não vale mais (SEG-03) e cai na lista pública.
+// só para o instrutor; o professor recebe só os cursos do escopo dele (SEG-12). Sem
+// sessão de instrutor, devolve apenas id e nome dos cursos ativos com turma aberta para
+// cadastro. Instrutor é só quem manda x-admin-session: o 'Authorization: email:senha'
+// não vale mais (SEG-03) e cai na lista pública.
 router.get('/api/courses', (req, res) => {
     const hasAdminCredentials = !!req.get('x-admin-session');
     if (!hasAdminCredentials) {
@@ -352,72 +355,23 @@ router.get('/api/courses', (req, res) => {
             .filter(course => !isCourseDeleted(course) && openCourseIds.has(course.id))
             .map(course => ({ id: course.id, name: course.name || '' })));
     }
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
-        const courses = db.memory.courses || [];
+        const allowed = isProfessorAccount(matchedAdmin) ? adminAllowedCourseIds(matchedAdmin) : null;
+        const courses = (db.memory.courses || []).filter(course => course && (!allowed || allowed.has(String(course.id))));
         res.json(includeDeleted ? courses : courses.filter(c => !isCourseDeleted(c)));
     });
 });
 
-router.post('/api/courses', (req, res) => {
-    validateAdminPermission(req, res, 'course.manage', () => {
-        const newCourse = { ...req.body };
-        if (!newCourse.id || !newCourse.name) {
-            return res.status(400).json({ error: 'ID e Nome são obrigatórios.' });
-        }
-        if (newCourse.branding !== undefined) {
-            if (rejectInvalidBranding(res, newCourse.branding)) return;
-            newCourse.branding = extractBranding(newCourse.branding);
-        }
-        if (!db.memory.courses) db.memory.courses = [];
-        const existing = db.memory.courses.find(c => c.id === newCourse.id);
-        if (existing) {
-            return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
-        }
-        if (!newCourse.structure) newCourse.structure = [];
-        newCourse.status = newCourse.status || 'active';
-        newCourse.deleted = false;
-        newCourse.deletedAt = null;
-        db.memory.courses.push(newCourse);
-        db.save();
-        res.json({ success: true, course: newCourse });
-    });
-});
-router.put('/api/courses/:id', (req, res) => {
-    validateAdminPermission(req, res, 'course.manage', () => {
-        const courseId = req.params.id;
-        if (!db.memory.courses) db.memory.courses = [];
-        const idx = db.memory.courses.findIndex(c => c.id === courseId);
-        if (idx === -1) {
-            return res.status(404).json({ error: 'Curso não encontrado.' });
-        }
-        const patch = { ...req.body };
-        if (patch.branding !== undefined) {
-            if (rejectInvalidBranding(res, patch.branding)) return;
-            patch.branding = { ...(db.memory.courses[idx].branding || {}), ...extractBranding(patch.branding) };
-        }
-        db.memory.courses[idx] = { ...db.memory.courses[idx], ...patch, id: courseId };
-        db.save();
-        res.json({ success: true, course: db.memory.courses[idx] });
-    });
-});
-
-router.delete('/api/courses/:id', (req, res) => {
-    validateAdminPermission(req, res, 'course.manage', () => {
-        const courseId = req.params.id;
-        if (!db.memory.courses) db.memory.courses = [];
-        const idx = db.memory.courses.findIndex(c => c.id === courseId);
-        if (idx === -1) {
-            return res.status(404).json({ error: 'Curso não encontrado.' });
-        }
-        db.memory.courses[idx] = {
-            ...db.memory.courses[idx],
-            status: 'deleted',
-            deleted: true,
-            deletedAt: new Date().toISOString()
-        };
-        db.save();
-        res.json({ success: true, course: db.memory.courses[idx] });
-    });
-});
+// Criar, alterar e excluir curso mudaram para /api/admin/courses (SEG-12), que passa
+// pela guarda do painel (escopo do professor, troca obrigatória de senha) e grava só os
+// campos permitidos. Uma aba aberta com o app de antes da atualização ainda chama estas
+// rotas: recebe 410 com o pedido de recarregar a página, e nada é gravado.
+const COURSE_ROUTE_MOVED = 'O IClass foi atualizado. Recarregue a página (F5) para continuar.';
+function courseRouteMoved(req, res) {
+    res.status(410).json({ success: false, error: COURSE_ROUTE_MOVED });
+}
+router.post('/api/courses', courseRouteMoved);
+router.put('/api/courses/:id', courseRouteMoved);
+router.delete('/api/courses/:id', courseRouteMoved);
 module.exports = router;

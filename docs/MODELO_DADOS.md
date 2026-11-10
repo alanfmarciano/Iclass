@@ -32,7 +32,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 |---------|------|----------|
 | `students` | array | alunos (perfil, turmas, credencial; `sessionsInvalidBefore` opcional, ms: a sessão aberta antes dessa hora acaba fora de prova, gravado pelo "Redefinir senha", H5b) |
 | `classes` | array | turmas; `activeExamKey`, `examConfigs`, `onlineExamConfigs`, liberações |
-| `courses` | array | cursos (multi-curso); `structure`, `schoolId` |
+| `courses` | array | cursos (multi-curso); `structure`, `schoolId`, `status`/`deleted`/`deletedAt` (lixeira), `branding`. O painel grava só `name`, `description`, `schoolId` e `branding` por `/api/admin/courses` (a estrutura vai por `/api/admin/courses/:id/structure`) |
 | `branding` | objeto | identidade white-label global |
 | `schools` | array | escolas/instituições (white-label, compartilháveis) |
 | `submissions` | array | submissões de prova |
@@ -60,6 +60,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `loginLogs` | array | logs de login (segurança/LGPD): `{ email, role, status: success\|fail\|throttled\|alert, reason, ip, timestamp, count?, lastAt? }`; falhas seguidas iguais em 60 s viram uma linha com `count` (H5b) |
 | `pedagogicalObservations` | array | observações pedagógicas controladas |
 | `library` | array | biblioteca de materiais reutilizáveis |
+| `legalDocuments` | array | Termos de Uso e Política de Privacidade (tabela `legal_documents`, H8a-1): `{ id, kind: 'termos'\|'privacidade', status: 'rascunho'\|'publicado', version, title, markdown, changeSummary, createdAt, updatedAt, updatedBy, publishedAt, publishedBy, modelId? }`. Rascunho com id fixo `rascunho_<kind>`; cada publicação é `<kind>_v<N>` e não muda mais. Na restauração, junta por id (`restore: 'merge'`). O encarregado (DPO) fica em `schools[].info.dpoName`, `dpoEmail` e `dpoPhone`, gravados só pela rota de LGPD |
 
 > A lista usada por backup/restore (`COLLECTIONS` em `backend/utils/backup.js`) é derivada do registro `COLLECTION_TABLES` (`backend/database.js`): toda entrada com `backup` diferente de `false` e que não é `derived`, na ordem do registro. Ao criar uma coleção nova, acrescente-a ao registro; ela entra no backup sozinha. As tabelas próprias (`kind: 'store'`, hoje só `examKeystrokes`) estão na lista, mas o JSON do backup e a restauração ainda não as levam: entram pelo `exportRows`/`importRows` do H4a; até lá o backup continua sem as teclas, como sempre foi, e restaurar não mexe nelas.
 

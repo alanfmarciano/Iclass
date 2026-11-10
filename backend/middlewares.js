@@ -823,7 +823,9 @@ function validateProfessorRequestScope(req, account) {
     if (forbiddenClass && !keepsExistingStudentClasses) return 'A turma solicitada não está atribuída a esta conta.';
 
     const courseIds = [body.courseId, query.courseId].filter(Boolean).map(value => String(value).trim());
-    const pathCourse = pathName.match(/^\/courses\/([^/]+)\/structure$/);
+    // Curso pelo caminho: estrutura, alterar e excluir (/courses/:id) e duplicar (a
+    // origem do /clone também precisa estar no escopo; SEG-12).
+    const pathCourse = pathName.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone))?$/);
     if (pathCourse) courseIds.push(safeDecode(pathCourse[1]));
     const forbiddenCourse = courseIds.filter(Boolean).find(courseId => !adminCanAccessCourse(account, courseId));
     if (forbiddenCourse) return 'O curso solicitado não pertence às turmas atribuídas a esta conta.';

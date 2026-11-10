@@ -16,6 +16,7 @@ const {
     getCourseItemKeys,
     isProfessorAccount,
     adminAllowedCourseIds,
+    adminAssignedSchoolIds,
     adminCanAccessCourse,
     adminCanAccessClass,
     adminCanAccessItem,
@@ -28,7 +29,8 @@ const {
     accessibilityExtraMinutes,
     guarded,
     sendInternalError,
-    sendRouteError
+    sendRouteError,
+    validateAdminPermission
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
@@ -47,8 +49,9 @@ const {
     classEntryName,
     studentInClass,
     normalizeClassEntriesForStorage,
+    isClosedStudentStatus,
 } = require('../utils/students.js');
-const { normalizeAuditEntry, recordAudit } = require('../utils/audit.js');
+const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecrets } = require('../utils/audit.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
@@ -71,6 +74,7 @@ const {
     parseCountInput,
     parseGradeInput,
     recordGradeAudit,
+    gradeChangeReason,
     safeFilePart,
     scopeLabel,
     scopeSubmissionsToContext,
@@ -135,6 +139,9 @@ const { createAdminSystemRouter } = require('./adminSystem.js');
 const { createAdminAccountsRouter } = require('./adminAccounts.js');
 const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
 const { createSystemHealthRouter } = require('./systemHealth.js');
+const { createAdminAuditRouter } = require('./adminAudit.js');
+const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
+const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
 const {
     addExtraUnit,
     courseClasses: contentCourseClasses,
@@ -631,6 +638,12 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
         if (group.length === 0) return res.status(404).json({ error: 'Tentativas não encontradas.' });
         const groupResult = () => enrichSubmissionsWithAttemptResult(group.map(groups.resolved));
         const before = groupResult().find(item => String(item.id) === String(target.id));
+        if (!['archive', 'restore', 'select', 'policy'].includes(action)) return res.status(400).json({ error: 'Ação de resultado inválida.' });
+        if (action === 'policy' && !VALID_POLICIES.has(policy)) return res.status(400).json({ error: 'Regra de cálculo inválida.' });
+        // Grupo com alguma tentativa já publicada: o aluno já viu a nota, então mudar a
+        // composição pede o motivo (CONF-09). Conferido antes de mexer em qualquer coisa.
+        const motive = gradeChangeReason(req.body, { required: group.some(item => item.gradePublished === true) });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
 
         if (action === 'archive') {
             target.resultStatus = 'archived';
@@ -679,6 +692,7 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
             field: 'Composição da nota',
             oldValue: `${title}: ${consolidated(before)} (regra: ${policyLabel(before?.aggregationPolicy)})`,
             newValue: `${title}: ${consolidated(after)} · ${actionLabel}`,
+            reason: motive.reason,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
         res.json({ success: true, submissions: refreshed });
@@ -772,11 +786,13 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
             .filter(Boolean);
 
         // Histórico da nota: auditoria desta entrega (lançamento, publicação,
-        // composição) e recorreções por anulação/troca de questão (scoreHistory).
+        // composição) e recorreções por anulação/troca de questão (scoreHistory). O motivo
+        // de mudar nota já publicada (H7a-2) vem junto: o professor não vê a tela
+        // Auditoria, mas vê aqui o porquê de cada mudança.
         const history = [
             ...(db.memory.auditLogs || [])
                 .filter(entry => entry && entry.submissionId != null && String(entry.submissionId) === String(submission.id))
-                .map(entry => ({ id: entry.id, at: entry.timestamp, actor: entry.actor, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue })),
+                .map(entry => ({ id: entry.id, at: entry.timestamp, actor: entry.actor, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue, reason: entry.reason || '' })),
             ...(Array.isArray(submission.scoreHistory) ? submission.scoreHistory : [])
                 .filter(entry => !entry.auditId)
                 .map((entry, index) => ({ id: `score_${index}`, at: Date.parse(entry.at) || entry.at, actor: entry.by || 'sistema', field: 'Nota recalculada', oldValue: formatGradeBR(entry.from), newValue: `${formatGradeBR(entry.to)}${entry.reason ? ` · ${entry.reason}` : ''}` })),
@@ -809,6 +825,11 @@ router.post('/api/admin/submissions/publish', (req, res) => {
         if (ids.size === 0) return res.status(400).json({ error: 'Selecione ao menos uma nota.' });
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const allowedIds = new Set(filterSubmissionsForAdmin(submissions, matchedAdmin).map(item => String(item.id)));
+        // Ocultar uma nota que o aluno já viu pede o motivo (CONF-09); publicar não. A
+        // conferência vem antes de qualquer mudança: sem o motivo, nenhuma nota muda.
+        const hidesPublished = !published && submissions.some(item => ids.has(String(item.id)) && allowedIds.has(String(item.id)) && item.gradePublished === true);
+        const motive = gradeChangeReason(req.body, { required: hidesPublished });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
         let updated = 0;
         let skippedInvalid = 0;
         submissions.forEach(item => {
@@ -829,6 +850,7 @@ router.post('/api/admin/submissions/publish', (req, res) => {
                     field: 'Publicação da nota',
                     oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
                     newValue: published ? 'publicada para o aluno' : 'oculta do aluno',
+                    reason: motive.reason,
                 });
             }
         });
@@ -862,6 +884,9 @@ router.post('/api/admin/submissions/delete', (req, res) => {
             ));
         }
         if (removed.length === 0) return res.status(404).json({ error: 'Tentativa não encontrada.' });
+        // Excluir uma nota que o aluno já viu pede o motivo (CONF-09), antes de excluir.
+        const motive = gradeChangeReason(req.body, { required: removed.some(item => item.gradePublished === true) });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
 
         const removedSet = new Set(removed);
         removed.forEach(item => {
@@ -874,6 +899,7 @@ router.post('/api/admin/submissions/delete', (req, res) => {
                 oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
                 newValue: 'registro excluído',
                 details: { deletedSubmission: item },
+                reason: motive.reason,
             });
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions.filter(item => !removedSet.has(item)));
@@ -881,19 +907,54 @@ router.post('/api/admin/submissions/delete', (req, res) => {
     });
 });
 
-// Lixeira de notas (AVA-08): exclusões (grade_delete) com a cópia do registro que
-// ainda não voltaram. "Voltou" = existe um grade_restore apontando para aquela
-// exclusão (a auditoria nunca é reescrita) ou a entrega já está de novo na lista.
-function deletedGradeEntries() {
-    const logs = db.memory.auditLogs || [];
-    const restored = new Set(logs
-        .filter(entry => entry && entry.action === 'grade_restore' && entry.details && entry.details.fromAuditId)
-        .map(entry => String(entry.details.fromAuditId)));
+// Lixeira de notas (AVA-08, FUN-03): uma nota está na lixeira quando a entrega não existe
+// mais (nenhuma entrega atual com aquele id) e há pelo menos uma exclusão (grade_delete
+// com a cópia do registro). De cada entrega aparece só a exclusão mais recente. A
+// restauração de backup junta a trilha (mergeAuditTrails), e a entrega pode ter voltado
+// com o backup (sai da lixeira sozinha), ter sido excluída de novo (uma linha só, a
+// última) ou ter sumido de novo com o backup depois de restaurada da lixeira (volta
+// para a lixeira).
+// O grade_restore só conta quando nenhuma restauração de backup veio depois dele: a nota
+// que voltou da lixeira e depois saiu das notas por outro caminho (curso arquivado, aluno
+// excluído, tentativa reaberta) não reaparece na lixeira com a cópia velha, como antes do
+// merge. Restaurar essa cópia sobrepunha a versão guardada no curso arquivado.
+function gradeTrashIndex() {
     const current = new Set((db.memory.submissions || []).map(item => String(item && item.id)));
-    return logs.filter(entry => entry && entry.action === 'grade_delete'
-        && entry.details && entry.details.deletedSubmission && entry.details.deletedSubmission.id != null
-        && !restored.has(String(entry.id))
-        && !current.has(String(entry.details.deletedSubmission.id)));
+    const latest = new Map();
+    const restoredAt = new Map();
+    let lastBackupRestore = -Infinity;
+    (db.memory.auditLogs || []).forEach(entry => {
+        if (!entry || typeof entry !== 'object') return;
+        const action = entry.action || entry.type;
+        const time = auditTimestamp(entry.timestamp !== undefined && entry.timestamp !== null ? entry.timestamp : entry.at);
+        if (action === 'backup_restored') {
+            lastBackupRestore = Math.max(lastBackupRestore, time);
+            return;
+        }
+        if (action === 'grade_restore' && entry.details && entry.details.fromAuditId) {
+            const key = String(entry.details.fromAuditId);
+            restoredAt.set(key, Math.max(restoredAt.has(key) ? restoredAt.get(key) : -Infinity, time));
+            return;
+        }
+        if (action !== 'grade_delete' || !entry.details || !entry.details.deletedSubmission) return;
+        const copyId = entry.details.deletedSubmission.id;
+        if (copyId === undefined || copyId === null || current.has(String(copyId))) return;
+        const previous = latest.get(String(copyId));
+        // Mesma hora: vale a que veio depois na trilha.
+        if (!previous || time >= previous.time) latest.set(String(copyId), { entry, time });
+    });
+    const visible = [];
+    const leftByOtherPath = new Set();
+    latest.forEach(({ entry }) => {
+        const restoredTime = restoredAt.get(String(entry.id));
+        if (restoredTime === undefined || lastBackupRestore >= restoredTime) visible.push(entry);
+        else leftByOtherPath.add(String(entry.id));
+    });
+    return { visible, latest, leftByOtherPath };
+}
+
+function deletedGradeEntries() {
+    return gradeTrashIndex().visible;
 }
 
 function registeredStudentByEmail(email) {
@@ -962,8 +1023,19 @@ router.post('/api/admin/submissions/restore', (req, res) => {
         if (!entry || filterSubmissionsForAdmin([copy], matchedAdmin).length === 0) {
             return res.status(404).json({ error: 'Nota excluída não encontrada.' });
         }
-        if (!deletedGradeEntries().some(item => item.id === entry.id)) {
-            return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+        const trash = gradeTrashIndex();
+        if (!trash.visible.some(item => item.id === entry.id)) {
+            const copyId = String(entry.details.deletedSubmission.id);
+            if ((db.memory.submissions || []).some(item => String(item && item.id) === copyId)) {
+                return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+            }
+            // Já voltou da lixeira e saiu das notas depois por outro caminho (curso arquivado,
+            // aluno excluído): a cópia da exclusão é mais velha que a nota que saiu.
+            if (trash.leftByOtherPath.has(String(entry.id))) {
+                return res.status(409).json({ error: 'Esta nota já voltou da lixeira antes e depois saiu das notas por outro caminho (por exemplo, curso arquivado ou aluno excluído). Ela não está mais na lixeira.' });
+            }
+            // A mesma entrega foi excluída de novo depois: a lixeira mostra só a exclusão mais recente.
+            return res.status(409).json({ error: 'Esta nota foi excluída de novo depois. Atualize a lista de notas excluídas e restaure de lá.' });
         }
         if (copy.anonymized === true) return res.status(409).json({ error: 'O aluno foi excluído e a nota ficou sem identificação; ela não pode voltar.' });
         const student = registeredStudentByEmail(copy.student?.email || copy.studentEmail);
@@ -1746,18 +1818,22 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
     });
 });
 
-// Histórico de auditoria de um aluno (alterações no perfil) — somente admin.
-// As entradas saem no formato canônico (normalizeAuditEntry), com o rótulo da ação
-// (label): a que não é campo do cadastro, como o "Redefinir senha" (H5a), aparece na
-// ficha pelo rótulo, não como uma linha sem título.
+// Histórico de auditoria de um aluno (aba Auditoria da ficha) — somente admin
+// (audit.view, decisão P5: o professor recebe 403 e a aba some para ele). As entradas
+// saem lidas por normalizeAuditEntry, como na tela Auditoria, com o rótulo da ação
+// (label): as antigas que guardavam o aluno só em details também aparecem, a hora em
+// texto ordena certo, e a que não é campo do cadastro, como o "Redefinir senha" (H5a),
+// aparece na ficha pelo rótulo. Como lá, os valores passam de novo pela limpeza de
+// segredos (entrada antiga vinda de backup).
 router.get('/api/admin/student/audit', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdminPermission(req, res, 'audit.view', () => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
         const logs = (Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [])
             .map(normalizeAuditEntry)
             .filter(entry => entry && entry.studentEmail === email)
-            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+            .map(auditEntryWithoutSecrets);
         res.json(logs);
     });
 });
@@ -2016,6 +2092,11 @@ function isValidIsoDate(value) {
 }
 
 // Marcar presença manualmente (Fase 4). Valida e-mail, data e matrícula (CONF-14).
+// Toda marcação fica na auditoria (attendance_marked, H7b) com os registros que o dia
+// já tinha e o novo; a marcação não apaga nada (a chamada do dia, se houver, continua
+// valendo na frequência por cima da manual, e a entrada diz isso). Cadastro encerrado
+// só recebe marcação numa data em que a chamada ainda o mostra (com registro, ou antes
+// do desligamento), a mesma regra da chamada (H7b).
 router.post('/api/admin/student/attendance/mark', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const body = req.body || {};
@@ -2050,8 +2131,17 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
         const gradeAulas = attendanceUtil.gradeForDate(cls, date);
         const aulas = (gradeAulas.length ? gradeAulas : [{ ordem: 1, inicio: '', disciplinaId: '' }])
             .map(a => ({ ordem: a.ordem, disciplinaId: a.disciplinaId || '', inicio: a.inicio || '', status: 'presente', hora: '' }));
-        db.memory.attendance.push({
-            id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        const now = Date.now();
+        // Registros do aluno naquele dia que a chamada da turma mostra.
+        const previous = _rosterDayRecords(email, date, studentClass, courseId);
+        if (!_rosterListsStudent(student, { date, hasRecord: previous.length > 0, timezone: settingsUtil.getSettings().timezone })) {
+            return res.status(409).json({
+                code: 'student_closed',
+                error: `O cadastro deste aluno está encerrado (${String(student.status || '').trim()}). A presença só pode ser marcada numa data em que ele ainda estava na turma.`,
+            });
+        }
+        const record = {
+            id: 'att_' + now + '_' + Math.random().toString(36).slice(2, 8),
             studentEmail: email,
             studentClass,
             courseId,
@@ -2060,7 +2150,13 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
             aulas,
             justificativa: null,
             markedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
-            timestamp: Date.now(),
+            timestamp: now,
+        };
+        db.memory.attendance.push(record);
+        attendanceUtil.recordAttendanceAudit(db.memory, {
+            req, actor: matchedAdmin, action: 'attendance_marked',
+            studentEmail: email, courseId, studentClass, date,
+            before: previous, after: record, timestamp: now,
         });
         db.save();
         res.json({ success: true, date });
@@ -2071,6 +2167,42 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
 // ===================== CHAMADA POR TURMA (presença em massa) =====================
 // Status válidos. Ausência (ausente/justificado) NÃO conta como presença nas métricas.
 const ATT_STATUS = ['presente', 'ausente', 'atrasado', 'justificado'];
+
+// O registro é do aluno naquela turma e data, do jeito que a chamada mostra? Registro sem
+// curso ou sem turma, de versões antigas (ou de turma sem curso), também conta. É o mesmo
+// filtro para mostrar (roster), para substituir (bulk) e para a marcação individual:
+// assim o registro antigo que a chamada mostra sai quando ela é regravada, em vez de
+// ficar ao lado do novo e contar duas vezes na frequência.
+function _isRosterDayRecord(a, email, date, className, courseId) {
+    return !!a && a.studentEmail === email && a.date === date
+        && (!courseId || !a.courseId || String(a.courseId) === courseId)
+        && (!a.studentClass || a.studentClass === className);
+}
+
+function _rosterDayRecords(email, date, className, courseId) {
+    return (db.memory.attendance || []).filter(a => _isRosterDayRecord(a, email, date, className, courseId));
+}
+
+// O aluno entra na chamada desta data? Ativo (ou Bloqueado) sempre. Cadastro encerrado
+// (Inativo, Concluído, Transferido, Evadido) sai das datas novas (H7b): só com registro
+// na data ou em data anterior à mudança de situação (attendanceUtil.closedStudentListedOn).
+function _rosterListsStudent(student, { date, hasRecord, timezone }) {
+    if (!isClosedStudentStatus(student && student.status)) return true;
+    return attendanceUtil.closedStudentListedOn({ hasRecord, date, statusChangedAt: student.statusChangedAt, timezone });
+}
+
+// Presença automática (acesso do aluno) para o professor conferir: a do próprio registro
+// do login, a guardada (loginAccess) na chamada que o substituiu ou a de um registro do
+// login que continua ao lado de uma marcação individual.
+function _rosterLoginAccess(rec, recs = []) {
+    if (!rec) return null;
+    const via = source => (source === 'heartbeat' ? 'sessão aberta' : 'login');
+    if (rec.loginAccess && typeof rec.loginAccess === 'object') {
+        return { hora: rec.loginAccess.horaAcesso || '', ip: rec.loginAccess.ip || '', via: via(rec.loginAccess.source) };
+    }
+    const login = rec.origin === 'login' ? rec : recs.find(a => a && a.origin === 'login');
+    return login ? { hora: login.horaAcesso || '', ip: login.ip || '', via: via(login.source) } : null;
+}
 
 function _studentInClass(student, className, courseId) {
     const cn = String(className || '').trim();
@@ -2110,14 +2242,16 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
         const gradeAulas = _gradeAulasForRoster(cls, course, date);
+        const timezone = settingsUtil.getSettings().timezone;
 
         const roster = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
             .map(s => {
                 const email = (s.email || '').toLowerCase();
-                const recs = (db.memory.attendance || []).filter(a => a.studentEmail === email && a.date === date
-                    && (!courseId || !a.courseId || String(a.courseId) === courseId)
-                    && (!a.studentClass || a.studentClass === className));
-                const rec = recs.find(a => a.origin === 'chamada') || recs.find(a => a.origin !== 'chamada') || null;
+                const recs = _rosterDayRecords(email, date, className, courseId);
+                // Cadastro encerrado fica fora das datas novas (H7b).
+                if (!_rosterListsStudent(s, { date, hasRecord: recs.length > 0, timezone })) return null;
+                // O registro que vale no dia (o mesmo da frequência): chamada, manual, login.
+                const rec = attendanceUtil.effectiveDayRecord(recs);
                 // Aulas salvas têm prioridade; senão, monta a partir da grade (padrão presente).
                 let aulas;
                 if (rec && Array.isArray(rec.aulas) && rec.aulas.length) {
@@ -2139,11 +2273,14 @@ router.get('/api/admin/attendance/roster', (req, res) => {
                     nomeSocial: s.nomeSocial || '',
                     matricula: s.matricula || '',
                     origin: rec ? (rec.origin || '') : '',
+                    // Situação do cadastro: o encerrado só aparece aqui com registro na data
+                    // (ou em data anterior ao desligamento), e a tela mostra a situação.
+                    situacao: s.status || DEFAULT_STATUS,
+                    encerrado: isClosedStudentStatus(s.status),
                     // Presença automática (acesso do aluno): hora, IP e origem para o
-                    // professor conferir antes de concluir a chamada (CRIT-02).
-                    acessoAutomatico: rec && rec.origin === 'login'
-                        ? { hora: rec.horaAcesso || '', ip: rec.ip || '', via: rec.source === 'heartbeat' ? 'sessão aberta' : 'login' }
-                        : null,
+                    // professor conferir antes de concluir a chamada (CRIT-02). Depois que
+                    // a chamada substitui o registro do login, vem do loginAccess guardado.
+                    acessoAutomatico: _rosterLoginAccess(rec, recs),
                     salvo: !!rec,
                     concluida: !!(rec && rec.concluida),
                     aulas,
@@ -2154,6 +2291,7 @@ router.get('/api/admin/attendance/roster', (req, res) => {
                     emRisco: freq != null && freq < cfg.limiarRiscoPct,
                 };
             })
+            .filter(Boolean)
             .sort((a, b) => (a.nomeSocial || a.name).localeCompare(b.nomeSocial || b.name, 'pt-BR'));
         res.json({
             studentClass: className, courseId, date,
@@ -2167,6 +2305,16 @@ router.get('/api/admin/attendance/roster', (req, res) => {
 });
 
 // Salva a chamada de uma turma numa data (upsert por aluno/data) — por aula.
+// Cada gravação substitui o registro do dia de cada aluno por um novo (id novo), como
+// sempre; a tela manda a turma inteira a cada autosave. O que se perdia vai para a
+// auditoria (H7b): quando a situação muda depois da conclusão, sobre a presença
+// automática ou a marcação individual, por outra pessoa ou mais de 15 min depois da
+// versão de referência, fica uma entrada attendance_changed com antes e depois
+// (attendanceUtil.shouldAuditAttendanceChange). O rascunho do mesmo professor (autosave
+// a cada 2 s) não vira entrada. A hora da primeira conclusão (concludedAt), o acesso do
+// login substituído (loginAccess) e a versão de referência (baseVersion: de onde, de
+// quem e de quando é a situação) passam de versão em versão, para o autosave que
+// regrava o aluno sem mudar nada não apagar a origem da situação.
 router.post('/api/admin/attendance/bulk', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.body.studentClass || '').trim();
@@ -2178,22 +2326,53 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         const concluida = req.body.concluida === true;
         if (!className || !courseId || !date || !entries) return res.status(400).json({ error: 'Curso, turma, data e lançamentos são obrigatórios.' });
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
+        const now = Date.now();
+        const markedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
+        const timezone = settingsUtil.getSettings().timezone;
 
-        let saved = 0;
+        // Lançamentos válidos, um por aluno (repetido no mesmo pedido: vale o último).
+        const studentsByEmail = new Map();
+        (db.memory.students || []).forEach(s => { if (s && s.email) studentsByEmail.set(String(s.email).toLowerCase(), s); });
+        const pending = new Map();
         entries.forEach(entry => {
             const email = String(entry && entry.email || '').trim().toLowerCase();
             if (!email) return;
-            const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+            const student = studentsByEmail.get(email);
             if (!student || !_studentInClass(student, className, courseId)) return;
+            pending.delete(email);
+            pending.set(email, { entry, student });
+        });
+
+        // Uma passada pela presença: sai o registro daquele dia que a chamada desta turma
+        // mostra para cada aluno lançado (inclusive o do login automático e o antigo sem
+        // curso ou sem turma), guardado para a auditoria.
+        const removedByEmail = new Map();
+        const kept = [];
+        db.memory.attendance.forEach(a => {
+            const email = a && a.studentEmail;
+            if (email && pending.has(email) && _isRosterDayRecord(a, email, date, className, courseId)) {
+                if (!removedByEmail.has(email)) removedByEmail.set(email, []);
+                removedByEmail.get(email).push(a);
+                return;
+            }
+            kept.push(a);
+        });
+
+        const added = [];
+        let saved = 0;
+        let skipped = 0;
+        pending.forEach(({ entry, student }, email) => {
+            // Cadastro encerrado que a chamada desta data não mostra (página aberta antes
+            // do desligamento) não ganha registro novo. Sem registro na data, também não
+            // havia nada para tirar.
+            const previous = removedByEmail.get(email) || [];
+            if (!_rosterListsStudent(student, { date, hasRecord: previous.length > 0, timezone })) { skipped++; return; }
             const aulas = attendanceUtil.sanitizeAulas(entry.aulas);
             const temJustificada = aulas.some(a => a.status === 'justificada');
             const justificativa = temJustificada ? attendanceUtil.sanitizeJustificativa(entry.justificativa) : null;
             const observacao = String((entry && entry.observacao) || '').slice(0, 500);
-            // Remove qualquer registro daquele dia (inclusive login automático) e grava o da chamada.
-            db.memory.attendance = db.memory.attendance.filter(a => !(a.studentEmail === email && a.date === date
-                && String(a.courseId || '') === courseId && a.studentClass === className));
-            db.memory.attendance.push({
-                id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+            const record = {
+                id: 'att_' + now + '_' + Math.random().toString(36).slice(2, 8),
                 studentEmail: email,
                 studentClass: className,
                 courseId: courseId || (student.classes && student.classes[0] && student.classes[0].courseId) || '',
@@ -2203,13 +2382,26 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
                 aulas,
                 justificativa,
                 observacao,
-                markedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
-                timestamp: Date.now(),
-            });
+                markedBy,
+                timestamp: now,
+                ...attendanceUtil.attendanceCarryOver(previous, { concluida, now }),
+            };
+            const prev = attendanceUtil.effectiveDayRecord(previous);
+            const audited = attendanceUtil.shouldAuditAttendanceChange(prev, record, markedBy, now);
+            Object.assign(record, attendanceUtil.attendanceBaseVersionFields(prev, record, { audited }));
+            if (audited) {
+                attendanceUtil.recordAttendanceAudit(db.memory, {
+                    req, actor: matchedAdmin, action: 'attendance_changed',
+                    studentEmail: email, courseId: record.courseId, studentClass: className, date,
+                    before: previous, after: record, timestamp: now,
+                });
+            }
+            added.push(record);
             saved++;
         });
+        db.memory.attendance = kept.concat(added);
         db.save();
-        res.json({ success: true, saved, concluida });
+        res.json({ success: true, saved, skipped, concluida });
     });
 });
 
@@ -2402,10 +2594,28 @@ router.post('/api/admin/announcements/delete', (req, res) => {
         }
         const before = db.memory.announcements.length;
         db.memory.announcements = db.memory.announcements.filter(a => a.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'announcement_deleted',
+            category: 'academic',
+            courseId: ann.courseId || undefined,
+            studentClass: ann.studentClass || undefined,
+            studentEmail: ann.target === 'aluno' && ann.targetValue ? ann.targetValue : undefined,
+            details: { deleted: deletedItemCopy(ann) },
+        });
         db.save();
         res.json({ success: true, removed: before - db.memory.announcements.length });
     });
 });
+
+// Cópia do item excluído para a auditoria (details.deleted, SEG-07): com ela dá para
+// refazer à mão um aviso, um evento do calendário ou uma questão excluídos (FUN-03),
+// sem uma lixeira para cada tipo. A lista de quem leu o aviso vira só a contagem.
+function deletedItemCopy(item) {
+    const { readBy, ...rest } = item || {};
+    return Array.isArray(readBy) ? { ...rest, readCount: readBy.length } : rest;
+}
 
 // ===================== CALENDARIO DO CURSO =====================
 const CALENDAR_TYPES = ['aula', 'prova', 'entrega', 'aviso', 'reuniao', 'outro'];
@@ -2501,6 +2711,15 @@ router.post('/api/admin/announcements/calendar/delete', (req, res) => {
         if (!item) return res.status(404).json({ error: 'Evento não encontrado.' });
         if (!_annInScope(item, matchedAdmin)) return res.status(403).json({ error: 'Evento fora do seu escopo.' });
         db.memory.announcements = db.memory.announcements.filter(entry => entry.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'calendar_event_deleted',
+            category: 'academic',
+            courseId: item.courseId || undefined,
+            studentClass: item.target === 'turma' && item.targetValue ? item.targetValue : undefined,
+            details: { deleted: deletedItemCopy(item) },
+        });
         db.save();
         res.json({ success: true });
     });
@@ -2526,6 +2745,15 @@ router.post('/api/admin/student/certificates/issue', (req, res) => {
             issuedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
         };
         db.memory.certificates.push(cert);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'certificate_issued',
+            category: 'academic',
+            studentEmail: email,
+            courseId: cert.courseId || undefined,
+            details: { certificateId: cert.id, code: cert.code, courseName: cert.courseName },
+        });
         db.save();
         res.json({ success: true, certificate: cert });
     });
@@ -2533,12 +2761,25 @@ router.post('/api/admin/student/certificates/issue', (req, res) => {
 
 // Cancelar certificado (Fase 4)
 router.post('/api/admin/student/certificates/revoke', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { id } = req.body;
         const cert = (db.memory.certificates || []).find(c => c.id === id);
         if (!cert) return res.status(404).json({ error: 'Certificado não encontrado.' });
+        const previousStatus = cert.status || 'Emitido';
         cert.status = 'Cancelado';
         cert.revokedAt = Date.now();
+        cert.revokedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'certificate_revoked',
+            category: 'academic',
+            studentEmail: cert.studentEmail || undefined,
+            courseId: cert.courseId || undefined,
+            before: { status: previousStatus },
+            after: { status: cert.status },
+            details: { certificateId: cert.id, code: cert.code, courseName: cert.courseName },
+        });
         db.save();
         res.json({ success: true });
     });
@@ -3252,7 +3493,7 @@ function rejectInvalidUpload(req, res, { discard = false } = {}) {
     if (result.valid) return false;
     try {
         if (discard) fs.rmSync(req.file.path, { force: true });
-        else fileStore.moveToTrash(req.file.path);
+        else fileStore.moveToTrash(req.file.path, { originalName: req.file.originalname });
     } catch (e) {}
     res.status(400).json({ error: result.reason });
     return true;
@@ -3266,6 +3507,9 @@ router.use(createAdminExamConfigRouter());
 // Saúde do servidor (/api/health, /api/admin/system/health) e a rota de controle do
 // launcher (/api/system/control), H3c.
 router.use(createSystemHealthRouter());
+router.use(createAdminAuditRouter());
+router.use(createAdminPrivacyRouter());
+router.use(createAdminCoursesRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -3377,7 +3621,7 @@ router.post('/api/admin/library/upload', (req, res) => {
             const ext = path.extname(req.file.originalname).toLowerCase();
             const _st = settingsUtil.getSettings();
             // Envio recusado da biblioteca: na lixeira, fica visível para quem enviou.
-            const refusedMeta = { deletedBy: matchedAdmin && matchedAdmin.email };
+            const refusedMeta = { deletedBy: matchedAdmin && matchedAdmin.email, originalName: req.file.originalname };
             if (req.file.size > _st.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _st.upload.maxSizeMb + ' MB.' }); }
             if (!_st.upload.allowedTypes.includes(settingsUtil.extCategory(ext))) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Tipo de arquivo não permitido nas configurações.' }); }
             let tags = [];
@@ -3514,12 +3758,12 @@ router.post('/api/admin/library/delete', (req, res) => {
             });
         } else if (scope === 'class') {
             db.memory.library = (db.memory.library || []).filter(x => x.id !== id);
-            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename), { courseId, studentClass, deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
+            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename), { courseId, studentClass, deletedBy: matchedAdmin && matchedAdmin.email, originalName: e.name || e.originalName }); } catch (err) {}
         } else {
             const sourceId = e.sourceLibraryId || e.id;
             const base = (db.memory.library || []).find(item => item.id === sourceId) || e;
             db.memory.library = (db.memory.library || []).filter(item => item.id !== sourceId && item.sourceLibraryId !== sourceId);
-            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename), { courseId: base.courseId || courseId, studentClass: base.studentClass || '', deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
+            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename), { courseId: base.courseId || courseId, studentClass: base.studentClass || '', deletedBy: matchedAdmin && matchedAdmin.email, originalName: base.name || base.originalName }); } catch (err) {}
         }
         const affectedClasses = scope === 'class' ? [studentClass] : contentCourseClasses(courseId).map(cls => cls.name);
         recordAcademicAudit(req, matchedAdmin, 'content_library_deleted', { courseId, className: studentClass, id, scope }, null, { affectedClasses });
@@ -4096,15 +4340,26 @@ router.post('/api/admin/send-broadcast-message', (req, res) => {
     });
 });
 
+// Mensagem da turma (ou de um aluno dela) que a conta pode ver ou apagar (SEG-11): o
+// professor só as das turmas dele; mensagem sem curso vale pela turma, quando o nome
+// dela é único (adminCanAccessClass); com nome repetido em dois cursos, fica escondida.
+function adminCanAccessMessage(account, message) {
+    if (!isProfessorAccount(account)) return true;
+    return !!message && adminCanAccessClass(account, message.studentClass, message.courseId);
+}
+
 router.get('/api/admin/message-history', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const studentClass = (req.query.studentClass || '').trim();
         const courseId = (req.query.courseId || '').trim();
         const examKey = (req.query.examKey || '').trim();
         const applicationId = (req.query.applicationId || '').trim();
         const targetEmail = (req.query.targetEmail || '').trim().toLowerCase();
+        // Sem turma no pedido, o professor recebia as mensagens de todas as turmas,
+        // inclusive as privadas para um aluno de outra turma.
         const messages = (db.memory.broadcastMessages || [])
             .filter(m => !m.adminDeleted)
+            .filter(m => adminCanAccessMessage(matchedAdmin, m))
             .filter(m => !studentClass || String(m.studentClass || '').toLowerCase() === studentClass.toLowerCase())
             .filter(m => !courseId || !m.courseId || String(m.courseId) === courseId)
             .filter(m => !examKey || !m.examKey || String(m.examKey) === examKey)
@@ -4115,17 +4370,38 @@ router.get('/api/admin/message-history', (req, res) => {
     });
 });
 
+// Apagar do histórico do Monitor: uma mensagem (messageId) ou as de uma turma
+// (studentClass, com curso, prova e aplicação opcionais). Sem nenhum dos dois, o corpo
+// vazio apagava as mensagens de todas as turmas (SEG-11); agora é recusado para todos,
+// inclusive o administrador. O professor nunca apaga mensagem fora das turmas dele.
 router.post('/api/admin/message-history/delete', (req, res) => {
-    validateAdmin(req, res, () => {
-        const { messageId, studentClass, courseId, examKey, applicationId } = req.body || {};
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const body = req.body || {};
+        const text = value => (typeof value === 'string' ? value.trim() : '');
+        const messageId = text(body.messageId);
+        const studentClass = text(body.studentClass);
+        const courseId = text(body.courseId);
+        const examKey = text(body.examKey);
+        const applicationId = text(body.applicationId);
+        if (!messageId && !studentClass) {
+            return res.status(400).json({ success: false, error: 'Informe a mensagem ou a turma.', field: 'studentClass' });
+        }
+        if (messageId) {
+            const target = (db.memory.broadcastMessages || []).find(m => m && m.id === messageId);
+            if (target && !adminCanAccessMessage(matchedAdmin, target)) {
+                return res.status(403).json({ success: false, error: 'Você não tem acesso a esta mensagem.' });
+            }
+        }
         let count = 0;
         (db.memory.broadcastMessages || []).forEach(m => {
+            if (!m) return;
             const match = messageId
                 ? m.id === messageId
-                : (!studentClass || String(m.studentClass || '').toLowerCase() === String(studentClass).trim().toLowerCase())
-                    && (!courseId || !m.courseId || String(m.courseId) === String(courseId))
-                    && (!examKey || !m.examKey || String(m.examKey) === String(examKey))
-                    && (!applicationId || m.applicationId === applicationId);
+                : String(m.studentClass || '').toLowerCase() === studentClass.toLowerCase()
+                    && (!courseId || !m.courseId || String(m.courseId) === courseId)
+                    && (!examKey || !m.examKey || String(m.examKey) === examKey)
+                    && (!applicationId || m.applicationId === applicationId)
+                    && adminCanAccessMessage(matchedAdmin, m);
             if (match && !m.adminDeleted) {
                 m.adminDeleted = true;
                 m.adminDeletedAt = new Date().toISOString();
@@ -4815,22 +5091,36 @@ router.post('/api/admin/question-bank/import-evaluation', (req, res) => {
 });
 
 router.post('/api/admin/question-bank/delete', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { key } = req.body;
         if (!key) return res.status(400).json({ error: 'key é obrigatório.' });
         const before = db.memory.questionBank.length;
+        const removed = db.memory.questionBank.filter(q => q.key === key);
         db.memory.questionBank = db.memory.questionBank.filter(q => q.key !== key);
+        removed.forEach(question => recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'question_deleted',
+            category: 'academic',
+            examKey: question.sourceExamKey || undefined,
+            details: { deleted: deletedItemCopy(question) },
+        }));
         db.save();
         res.json({ success: true, deleted: before - db.memory.questionBank.length });
     });
 });
 
 // ---- Escolas / Instituições (Fase I.1) ----
+// O que a auditoria guarda de uma escola: identificação e dados institucionais (a
+// identidade visual fica de fora: a logo pode ser uma imagem inteira).
+function schoolAuditView(school) {
+    return { id: school.id, name: school.name || '', info: school.info || {} };
+}
 router.get('/api/admin/schools', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => { res.json(filterSchoolsForAdmin(db.memory.schools || [], matchedAdmin)); });
 });
 router.post('/api/admin/schools/create', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const name = (req.body.name || '').trim();
         if (!name) return res.status(400).json({ error: 'Nome da escola é obrigatório.' });
         if (rejectInvalidBranding(res, req.body.branding || {})) return;
@@ -4843,26 +5133,50 @@ router.post('/api/admin/schools/create', (req, res) => {
             createdAt: Date.now(),
         };
         db.memory.schools.push(school);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'school_created',
+            category: 'academic',
+            after: schoolAuditView(school),
+        });
         db.save();
         res.json({ success: true, school });
     });
 });
 router.post('/api/admin/schools/update', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const school = (db.memory.schools || []).find(s => s.id === id);
         if (!school) return res.status(404).json({ error: 'Escola não encontrada.' });
         if (req.body.branding !== undefined && rejectInvalidBranding(res, req.body.branding)) return;
+        const before = schoolAuditView(school);
+        const previousBranding = { ...(school.branding || {}) };
         if (req.body.name !== undefined) school.name = String(req.body.name).trim();
         if (req.body.info !== undefined) school.info = { ...(school.info || {}), ...extractInstitutional(req.body.info) };
         if (req.body.branding !== undefined) school.branding = { ...(school.branding || {}), ...extractBranding(req.body.branding) };
         school.updatedAt = Date.now();
+        const after = schoolAuditView(school);
+        // Identidade visual: só os nomes do que mudou (a logo pode ser uma imagem inteira).
+        const brandingKeys = Object.keys({ ...previousBranding, ...(school.branding || {}) })
+            .filter(key => JSON.stringify(previousBranding[key]) !== JSON.stringify((school.branding || {})[key]));
+        if (JSON.stringify(before) !== JSON.stringify(after) || brandingKeys.length) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'school_updated',
+                category: 'academic',
+                before,
+                after,
+                details: brandingKeys.length ? { brandingKeys } : undefined,
+            });
+        }
         db.save();
         res.json({ success: true, school });
     });
 });
 router.post('/api/admin/schools/delete', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const schools = db.memory.schools || [];
         if (schools.length <= 1) return res.status(400).json({ error: 'Não é possível excluir a única escola.' });
@@ -4871,6 +5185,13 @@ router.post('/api/admin/schools/delete', (req, res) => {
         const inUse = (db.memory.courses || []).some(c => c.schoolId === id && !c.deleted);
         if (inUse) return res.status(400).json({ error: 'Escola em uso por cursos. Mova os cursos antes de excluir.' });
         db.memory.schools = schools.filter(s => s.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'school_deleted',
+            category: 'academic',
+            before: schoolAuditView(school),
+        });
         db.save();
         res.json({ success: true });
     });
@@ -5122,18 +5443,49 @@ router.get('/api/admin/dashboard/trends', (req, res) => {
 
 
 // Duplicar (clonar) curso para outra escola: copia independente de estrutura e conteudo.
+// Professor (SEG-12): a origem precisa estar no escopo dele (o caminho também é conferido
+// em validateProfessorRequestScope) e a escola de destino precisa estar atribuída a ele,
+// como ao criar curso: a cópia (com as turmas copiadas) nasce fora do escopo de quem só
+// tem turma ou curso atribuído, e ele não veria nem cuidaria do que acabou de criar.
 router.post('/api/admin/courses/:id/clone', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         if (!canAccessAdminPermission(matchedAdmin, 'course.manage')) {
             return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
         }
-        const src = (db.memory.courses || []).find(c => c.id === req.params.id);
+        const src = (db.memory.courses || []).find(c => c && c.id === req.params.id);
         if (!src) return res.status(404).json({ error: 'Curso de origem não encontrado.' });
-        const newId = String(req.body.newId || '').trim().toUpperCase();
-        const newName = String(req.body.newName || '').trim();
-        const schoolId = req.body.schoolId || src.schoolId || 'escola_default';
-        if (!newId || !newName) return res.status(400).json({ error: 'Informe ID e nome do novo curso.' });
-        if ((db.memory.courses || []).some(c => c.id === newId)) return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
+        if (!adminCanAccessCourse(matchedAdmin, src.id)) {
+            return res.status(403).json({ error: 'O curso solicitado não pertence às turmas atribuídas a esta conta.' });
+        }
+        const body = req.body || {};
+        if (typeof body.newId !== 'string' || !body.newId.trim()) {
+            return res.status(400).json({ success: false, error: 'Informe o código e o nome do novo curso.', field: 'newId' });
+        }
+        if (typeof body.newName !== 'string' || !body.newName.trim()) {
+            return res.status(400).json({ success: false, error: 'Informe o código e o nome do novo curso.', field: 'newName' });
+        }
+        const newId = body.newId.trim().toUpperCase();
+        // O código entra no nome dos arquivos copiados (<chave>_<código>.md): só letras,
+        // números, '-' e '_' (antes, '../' no código gravava fora da pasta de conteúdo).
+        const idError = courseIdError(newId);
+        if (idError) return res.status(400).json({ success: false, error: idError, field: 'newId' });
+        const parsedName = parseCourseName(body.newName);
+        if (parsedName.error) return res.status(400).json({ success: false, error: parsedName.error, field: 'newName' });
+        const newName = parsedName.value;
+        if (body.schoolId !== undefined && body.schoolId !== null && typeof body.schoolId !== 'string') {
+            return res.status(400).json({ success: false, error: 'Escola inválida.', field: 'schoolId' });
+        }
+        const requestedSchoolId = typeof body.schoolId === 'string' ? body.schoolId.trim() : '';
+        const schoolId = requestedSchoolId || src.schoolId || 'escola_default';
+        if (isProfessorAccount(matchedAdmin) && !adminAssignedSchoolIds(matchedAdmin).includes(String(schoolId))) {
+            return res.status(403).json({ success: false, error: 'Você só pode duplicar curso para uma escola atribuída à sua conta.', field: 'schoolId' });
+        }
+        if (requestedSchoolId && requestedSchoolId !== String(src.schoolId || '') && !schoolExists(requestedSchoolId)) {
+            return res.status(400).json({ success: false, error: 'Escola não encontrada.', field: 'schoolId' });
+        }
+        if ((db.memory.courses || []).some(c => c && c.id === newId)) {
+            return res.status(400).json({ success: false, error: 'Já existe um curso com esse código.', field: 'newId' });
+        }
 
         function copyContentFile(oldKey, newKey) {
             const oldP = path.join(runtimePaths.CONTENT_DIR, `${oldKey}.md`);
@@ -5233,7 +5585,7 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
             return cloned;
         });
         db.memory.classes.push(...clonedClasses);
-        recordAcademicAudit(req, matchedAdmin, 'course_cloned', { courseId: src.id }, null, { newCourseId: newId, clonedClasses: clonedClasses.map(cls => cls.name) });
+        recordAcademicAudit(req, matchedAdmin, 'course_cloned', { courseId: src.id }, null, { newCourseId: newId, schoolId, clonedClasses: clonedClasses.map(cls => cls.name) });
         db.save();
         res.json({ success: true, course: newCourse, classes: clonedClasses });
     });

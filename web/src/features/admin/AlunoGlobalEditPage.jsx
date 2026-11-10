@@ -60,10 +60,12 @@ export default function AlunoGlobalEditPage() {
     if (student) setForm({ ...emptyForm(), ...student, originalEmail: student.email, classes: scn(student), guardian: student.guardian || { name: '', phone: '', email: '', parentesco: '' } })
   }, [student, isNew, form])
 
+  // Aba Auditoria: só o administrador (audit.view, decisão P5); o professor nem pede a
+  // trilha (o servidor responde 403).
   useEffect(() => {
-    if (isNew || !student) return
+    if (isNew || !student || isProfessor) return
     api.get(`/api/admin/student/audit?email=${encodeURIComponent(student.email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
-  }, [student, isNew])
+  }, [student, isNew, isProfessor])
 
   function toggleClass(name) {
     setForm((f) => ({ ...f, classes: f.classes.includes(name) ? f.classes.filter((x) => x !== name) : [...f.classes, name] }))
@@ -103,7 +105,7 @@ export default function AlunoGlobalEditPage() {
   const enrollCount = form ? form.classes.length : 0
   const tabs = [
     { id: 'cadastro', label: 'Cadastro' },
-    { id: 'auditoria', label: 'Auditoria' },
+    ...(!isProfessor ? [{ id: 'auditoria', label: 'Auditoria' }] : []),
   ]
 
   return (
@@ -157,8 +159,8 @@ export default function AlunoGlobalEditPage() {
               </>
             )}
 
-            {!isNew && tab === 'auditoria' && (
-              <Card title="Auditoria do cadastro">
+            {!isNew && tab === 'auditoria' && !isProfessor && (
+              <Card title="Auditoria do aluno">
                 <StudentAuditPanel rows={auditRows} />
               </Card>
             )}

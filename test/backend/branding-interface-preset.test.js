@@ -173,7 +173,7 @@ test('rotas validam e persistem a herança de preset sem quebrar dados antigos',
     assert.equal(inheritedFromSchool.body.interfacePreset, 'premium');
 
     await request(app)
-        .put('/api/courses/curso-1')
+        .put('/api/admin/courses/curso-1')
         .set('x-admin-session', adminToken)
         .send({ branding: { interfacePreset: 'lumen' } })
         .expect(200);
@@ -189,7 +189,7 @@ test('rotas validam e persistem a herança de preset sem quebrar dados antigos',
     await request(app).get('/api/branding?courseId=curso-1&schoolId=escola-1').expect(400);
 
     const invalidCourse = await request(app)
-        .put('/api/courses/curso-1')
+        .put('/api/admin/courses/curso-1')
         .set('x-admin-session', adminToken)
         .send({ branding: { interfacePreset: 'classic' } })
         .expect(400);
@@ -205,14 +205,14 @@ test('rotas validam e persistem a herança de preset sem quebrar dados antigos',
     assert.equal(db.memory.schools[0].branding.interfacePreset, 'premium');
 
     await request(app)
-        .post('/api/courses')
+        .post('/api/admin/courses')
         .set('x-admin-session', adminToken)
         .send({ id: 'curso-invalido', name: 'Curso Inválido', branding: { interfacePreset: 'classic' } })
         .expect(400);
     assert.equal(db.memory.courses.some(course => course.id === 'curso-invalido'), false);
 
     await request(app)
-        .put('/api/courses/curso-1')
+        .put('/api/admin/courses/curso-1')
         .set('x-admin-session', adminToken)
         .send({ branding: { interfacePreset: '' } })
         .expect(200);

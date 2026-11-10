@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ResultadosPage from './ResultadosPage'
 
@@ -12,6 +12,13 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
   applications: [],
   deletedItems: [],
+  // Mesmos objetos a cada render, como o useApi de verdade: a tela da prova corrigida
+  // (rota com :submissionId) recarrega a revisão quando a entrega muda de referência.
+  stable: {
+    students: [{ name: 'Ana', email: 'ana@x.local', classes: [{ name: '1DES', courseId: 'DES' }] }],
+    classes: [{ name: '1DES', courseId: 'DES' }],
+    submissions: [{ id: 'old', student: { name: 'Ana', email: 'ana@x.local', courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'Avaliacao_P2', score: 150, scoreInvalid: true, consolidatedScore: null, gradePublished: true, timestamp: '2026-03-01T10:00:00Z' }],
+  },
 }))
 
 vi.mock('../../lib/api', () => ({
@@ -28,8 +35,8 @@ vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
     if (!path) return { data: null, loading: false, error: null, refetch: vi.fn() }
-    if (path.startsWith('/api/admin/students')) return { data: [{ name: 'Ana', email: 'ana@x.local', classes: [{ name: '1DES', courseId: 'DES' }] }], loading: false, error: null, refetch: vi.fn() }
-    if (path.startsWith('/api/admin/classes')) return { data: [{ name: '1DES', courseId: 'DES' }], loading: false, error: null, refetch: vi.fn() }
+    if (path.startsWith('/api/admin/students')) return { data: mocks.stable.students, loading: false, error: null, refetch: vi.fn() }
+    if (path.startsWith('/api/admin/classes')) return { data: mocks.stable.classes, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/exam-applications/') && path.endsWith('/audit')) {
       return {
         data: {
@@ -46,10 +53,7 @@ vi.mock('../../hooks/useApi', () => ({
     if (path.startsWith('/api/admin/exam-applications')) return { data: { applications: mocks.applications }, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/submissions/deleted')) return { data: { items: mocks.deletedItems }, loading: false, error: null, refetch: mocks.refetch }
     if (path.startsWith('/api/admin/submissions')) {
-      return {
-        data: [{ id: 'old', student: { name: 'Ana', email: 'ana@x.local', courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'Avaliacao_P2', score: 150, scoreInvalid: true, consolidatedScore: null, gradePublished: true, timestamp: '2026-03-01T10:00:00Z' }],
-        loading: false, error: null, refetch: vi.fn(),
-      }
+      return { data: mocks.stable.submissions, loading: false, error: null, refetch: mocks.refetch }
     }
     return { data: null, loading: false, error: null, refetch: vi.fn() }
   },
@@ -203,5 +207,51 @@ describe('Resultados · lixeira e registro da aplicação', () => {
     expect(within(dialog).getByText('Questão 3 anulada (ponto para todos)')).toBeInTheDocument()
     expect(within(dialog).getByText(/motivo: enunciado ambíguo/)).toBeInTheDocument()
     expect(within(dialog).getByText('Nota · Ana')).toBeInTheDocument()
+  })
+})
+
+describe('Resultados · motivo ao mudar nota publicada', () => {
+  it('[UC-AUDITORIA-004] ocultar nota publicada pede o motivo antes de mandar e envia o motivo junto', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Ocultar notas' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Ocultar 1 nota(s) para os alunos?' })
+    expect(within(dialog).getByLabelText('Motivo (obrigatório: a nota já foi publicada)')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Ocultar' }))
+    expect(await within(dialog).findByText('Informe o motivo: esta nota já foi publicada para o aluno.')).toBeInTheDocument()
+    await user.type(within(dialog).getByLabelText(/^Motivo/), 'ok')
+    await user.click(within(dialog).getByRole('button', { name: 'Ocultar' }))
+    expect(await within(dialog).findByText('O motivo precisa ter pelo menos 3 letras.')).toBeInTheDocument()
+    expect(mocks.post).not.toHaveBeenCalled()
+    await user.type(within(dialog).getByLabelText(/^Motivo/), ' revisão da correção')
+    await user.click(within(dialog).getByRole('button', { name: 'Ocultar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/submissions/publish', { ids: ['old'], published: false, reason: 'ok revisão da correção' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(mocks.toast.success).toHaveBeenCalledWith('Notas ocultadas')
+  })
+
+  it('[UC-AUDITORIA-004] excluir: recusa que não é do motivo aparece no diálogo, que fica aberto para tentar de novo', async () => {
+    const notFound = Object.assign(new Error('Tentativa não encontrada.'), { status: 404, data: { error: 'Tentativa não encontrada.' } })
+    mocks.post.mockRejectedValueOnce(notFound).mockResolvedValueOnce({ success: true, removed: 1 })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local/prova/old']}>
+        <Routes>
+          <Route path="/resultados/aluno/:studentId/prova/:submissionId" element={<ResultadosPage />} />
+          <Route path="/resultados/aluno/:studentId" element={<p>Notas da Ana</p>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Excluir registro' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Excluir esta entrega?' })
+    await user.type(within(dialog).getByLabelText(/^Motivo/), 'Lançada em duplicidade')
+    await user.click(within(dialog).getByRole('button', { name: 'Excluir registro' }))
+    // Antes: só um toast, com o diálogo aberto por trás sem dizer nada.
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Tentativa não encontrada.')
+    expect(mocks.toast.error).not.toHaveBeenCalled()
+    expect(mocks.post).toHaveBeenLastCalledWith('/api/admin/submissions/delete', expect.objectContaining({ id: 'old', reason: 'Lançada em duplicidade' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Excluir registro' }))
+    expect(await screen.findByText('Notas da Ana')).toBeInTheDocument()
+    expect(mocks.toast.success).toHaveBeenCalledWith('Entrega excluída. Ela pode ser restaurada em "Notas excluídas".')
   })
 })

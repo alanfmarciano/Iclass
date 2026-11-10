@@ -22,11 +22,15 @@ const ADMIN_PERMISSION_VALUES = Object.freeze([
     'schools.scope',
     'course.purge',
     'forum.purge',
+    'audit.view',
 ]);
 
 const ADMIN_PERMISSION_SET = new Set(ADMIN_PERMISSION_VALUES);
 // Exclusivas de administrador: nunca fazem parte do professor nem podem ser concedidas.
-const ADMIN_ONLY_PERMISSION_SET = new Set(['page.accounts', 'accounts.manage', 'students.destroy', 'students.certificates', 'students.security', 'course.purge', 'forum.purge']);
+// audit.view (SEG-07, decisão P5): a trilha de auditoria mostra IP, contas e o que os
+// outros professores fizeram; é só do administrador. O professor continua vendo o
+// histórico de cada nota em Resultados (rota das entregas, page.results).
+const ADMIN_ONLY_PERMISSION_SET = new Set(['page.accounts', 'accounts.manage', 'students.destroy', 'students.certificates', 'students.security', 'course.purge', 'forum.purge', 'audit.view']);
 const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([
     'page.dashboard',
     'page.exams',
@@ -136,6 +140,15 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/delete-student$/, permission: 'students.destroy' },
     { methods: ['POST'], pattern: /^\/student\/certificates\/(issue|revoke)$/, permission: 'students.certificates' },
     { methods: ['GET'], pattern: /^\/student\/login-logs$/, permission: 'students.security' },
+    // Aba Auditoria da ficha do aluno: só o administrador (decisão P5; antes valia
+    // page.students e o professor lia a trilha de qualquer aluno pela API). Fica antes da
+    // regra genérica de aluno, porque a primeira regra que casa é a que vale.
+    { methods: ['GET'], pattern: /^\/student\/audit$/, permission: 'audit.view' },
+    // Tela Auditoria e exportação em CSV (SEG-07, FUN-04).
+    { methods: ['GET'], pattern: /^\/audit(?:\/export)?$/, permission: 'audit.view' },
+    // Privacidade (LGPD): Termos, Política e encarregado (H8a-1). Só o administrador
+    // (students.security é exclusiva dele); fica antes das regras genéricas de aluno.
+    { methods: ['GET', 'POST'], pattern: /^\/lgpd(?:\/.*)?$/, permission: 'students.security' },
     { methods: ['GET', 'POST'], pattern: /^\/(students|student(?:\/.*)?|reset-password|delete-student)$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/enrollment-requests(?:\/.*)?$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/attendance(?:\/.*)?$/, permission: 'page.students' },
@@ -151,6 +164,10 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/class\/(create|update|toggle-registration|delete)$/, permission: 'classes.manage' },
     { methods: ['POST'], pattern: /^\/course\/disciplinas$/, permission: 'course.manage' },
     { methods: ['POST'], pattern: /^\/course\/grade-templates$/, permission: 'course.manage' },
+    // Criar, alterar e excluir curso (SEG-12): antes em /api/courses, fora desta guarda
+    // e do escopo do professor. O id no caminho é conferido em validateProfessorRequestScope.
+    { methods: ['POST'], pattern: /^\/courses$/, permission: 'course.manage' },
+    { methods: ['PUT', 'DELETE'], pattern: /^\/courses\/[^/]+$/, permission: 'course.manage' },
     { methods: ['GET'], pattern: /^\/courses\/[^/]+\/structure$/, permission: 'page.editor' },
     { methods: ['POST'], pattern: /^\/courses\/[^/]+\/structure$/, permission: 'page.editor' },
     { methods: ['POST'], pattern: /^\/courses\/[^/]+\/clone$/, permission: 'course.manage' },

@@ -126,10 +126,10 @@ export default function TurmasPage() {
     if (!form.name?.trim() || !form.schoolId || (form.mode !== 'edit' && !form.id?.trim())) return toast.error('Informe os dados obrigatórios do curso.')
     const ok = await run(async () => {
       if (form.mode === 'create') {
-        const result = await api.post('/api/courses', { id: form.id.trim().toUpperCase(), name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId, structure: [] })
+        const result = await api.post('/api/admin/courses', { id: form.id.trim().toUpperCase(), name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
         setSelectedCourseId(result.course.id)
       } else if (form.mode === 'edit') {
-        await api.put(`/api/courses/${encodeURIComponent(form.id)}`, { name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
+        await api.put(`/api/admin/courses/${encodeURIComponent(form.id)}`, { name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
       } else {
         const result = await api.post(`/api/admin/courses/${encodeURIComponent(form.sourceId)}/clone`, { newId: form.id.trim().toUpperCase(), newName: form.name.trim(), schoolId: form.schoolId }, { timeoutMs: 0 })
         setSelectedCourseId(result.course.id)
@@ -198,7 +198,7 @@ export default function TurmasPage() {
     if (!current) return
     let ok = false
     if (current.type === 'class') ok = await run(() => api.post('/api/admin/class/delete', { name: current.target.name, courseId: selectedCourse.id }), 'Turma excluída.')
-    if (current.type === 'course') ok = await run(() => api.delete(`/api/courses/${encodeURIComponent(current.target.id)}`, { timeoutMs: 0 }), 'Curso excluído e preservado para restauração.')
+    if (current.type === 'course') ok = await run(() => api.delete(`/api/admin/courses/${encodeURIComponent(current.target.id)}`, { timeoutMs: 0 }), 'Curso excluído e preservado para restauração.')
     if (current.type === 'archive') ok = await run(() => api.post(`/api/admin/courses/${encodeURIComponent(current.target.id)}/purge`, {}, { timeoutMs: 0 }), 'Curso arquivado com segurança.')
     if (current.type === 'archive-delete') ok = await run(() => api.post('/api/admin/archived-courses/delete', { folder: current.target.folder }, { timeoutMs: 0 }), 'Arquivo excluído definitivamente.')
     if (ok) setConfirm(null)
@@ -246,7 +246,7 @@ export default function TurmasPage() {
               <Card><CardBody className="space-y-5 pt-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div><div className="flex items-center gap-2"><h2 className="text-xl font-semibold text-text">{selectedCourse.name}</h2>{isDeleted(selectedCourse) && <Badge tone="warning">Excluído</Badge>}</div><p className="mt-1 flex items-center gap-1.5 text-sm text-muted"><Building2 size={15} /> {selectedSchool?.name || 'Sem escola vinculada'}</p></div>
-                  {isAdmin && <div className="flex flex-wrap gap-2">{isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>}</div>}
+                  {isAdmin && <div className="flex flex-wrap gap-2">{isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>}</div>}
                 </div>
 
                 <div className="border-t border-border pt-4">

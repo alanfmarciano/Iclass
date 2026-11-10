@@ -192,3 +192,43 @@ describe('Ficha do aluno · desempenho por módulo', () => {
     expect(within(kpi).queryByText('6,0')).not.toBeInTheDocument()
   })
 })
+
+describe('Ficha do aluno · aba Auditoria', () => {
+  function renderDetail() {
+    return render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  it('[UC-AUDITORIA-003] professor: a aba Auditoria some e a trilha nem é pedida ao servidor (que responde 403)', async () => {
+    mocks.auth = { accountRole: 'professor' }
+    renderDetail()
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/admin\/student\/academic/)))
+    expect(screen.getByRole('button', { name: 'Visão geral' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Auditoria' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Segurança' })).not.toBeInTheDocument()
+    expect(mocks.get.mock.calls.some(([path]) => String(path).startsWith('/api/admin/student/audit'))).toBe(false)
+  })
+
+  it('[UC-AUDITORIA-003] administrador: a aba mostra a trilha do aluno, com o motivo da mudança de nota', async () => {
+    const user = userEvent.setup()
+    const fallback = mocks.get.getMockImplementation()
+    mocks.get.mockImplementation(async (path) => (path.startsWith('/api/admin/student/audit')
+      ? [
+        { id: 'a1', action: 'grade_unpublish', label: 'Nota ocultada do aluno', field: 'Publicação da nota', oldValue: 'Prova 1: 7,0 · publicada', newValue: 'oculta do aluno', reason: 'Revisão da correção', actor: 'admin@x.local', timestamp: Date.parse('2026-03-02T12:00:00Z') },
+        { id: 'a2', action: 'certificate_issued', label: 'Certificado emitido', field: '', oldValue: null, newValue: null, actor: 'admin@x.local', timestamp: Date.parse('2026-03-01T12:00:00Z') },
+      ]
+      : fallback(path)))
+    renderDetail()
+    await user.click(screen.getByRole('button', { name: 'Auditoria' }))
+    expect(await screen.findByText('Revisão da correção')).toBeInTheDocument()
+    // O tipo aparece no cartão e no filtro; a entrada sem campo (certificado) entra pelo
+    // rótulo da ação, sem "(vazio) → (vazio)".
+    expect(screen.getAllByText('Publicação da nota')).toHaveLength(2)
+    expect(screen.getAllByText('Certificado emitido')).toHaveLength(2)
+    expect(screen.getByRole('option', { name: 'Certificado emitido' })).toBeInTheDocument()
+    expect(screen.queryByText('(vazio)')).not.toBeInTheDocument()
+  })
+})

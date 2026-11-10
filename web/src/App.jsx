@@ -41,6 +41,10 @@ const IdentidadePage = lazyPage(() => import('./features/admin/IdentidadePage'))
 const EscolasPage = lazyPage(() => import('./features/admin/EscolasPage'))
 const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
 const SistemaPage = lazyPage(() => import('./features/admin/SistemaPage'))
+const AuditoriaPage = lazyPage(() => import('./features/admin/AuditoriaPage'))
+const PrivacidadePage = lazyPage(() => import('./features/admin/PrivacidadePage'))
+// Públicas (sem login): Termos de Uso e Política de Privacidade (H8a-1).
+const LegalDocumentPage = lazyPage(() => import('./features/LegalDocumentPage'))
 // Aluno
 const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
 const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
@@ -132,6 +136,8 @@ export default function App() {
         <Route path="escolas/:id" element={<RequireAdminPath path="/escolas"><EscolaEditPage /></RequireAdminPath>} />
         <Route path="identidade" element={<RequireAdminPath path="/identidade"><IdentidadePage /></RequireAdminPath>} />
         <Route path="sistema" element={<RequireAdminPath path="/sistema"><SistemaPage /></RequireAdminPath>} />
+        <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
+        <Route path="lgpd" element={<RequireAdministrator><RequireAdminPath path="/lgpd"><PrivacidadePage /></RequireAdminPath></RequireAdministrator>} />
       </Route>
 
       {/* Aluno */}
@@ -150,6 +156,10 @@ export default function App() {
         <Route path="biblioteca" element={<BibliotecaStudentPage />} />
         <Route path="conta" element={<ContaStudentPage />} />
       </Route>
+
+      {/* Termos e Privacidade: abertos a qualquer um, com ou sem login (H8a-1). */}
+      <Route path="/termos" element={<LegalDocumentPage kind="termos" />} />
+      <Route path="/privacidade" element={<LegalDocumentPage kind="privacidade" />} />
 
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>

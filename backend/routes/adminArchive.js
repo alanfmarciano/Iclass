@@ -6,6 +6,7 @@ const { validateAdmin, isProfessorAccount, sendInternalError } = require('../mid
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside, assertSafeId } = require('../utils/safePath.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
+const { recordAudit } = require('../utils/audit.js');
 
 const ARCHIVE_DIR = runtimePaths.ARCHIVE_DIR;
 
@@ -133,6 +134,16 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     try { fs.unlinkSync(file); } catch (error) {}
                 }
             });
+            // O que saiu do sistema e para onde foi (SEG-07): a cópia inteira está na pasta.
+            const counts = { turmas: courseClasses.length, alunos: orphanStudents.length, submissoes: submissions.length, arquivos: Object.keys(contentFiles).length };
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'course_archived',
+                category: 'academic',
+                courseId,
+                details: { folder: folderName, name: course.name || '', schoolId: course.schoolId || null, classes: courseClasses.map(item => item.name), counts },
+            });
 
             await db.save();
             res.json({ success: true, folder: folderName, counts: { turmas: courseClasses.length, alunos: orphanStudents.length, submissoes: submissions.length } });
@@ -197,6 +208,22 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     Object.assign(db.memory[collection], bundle[collection]);
                 }
             });
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'course_archive_restored',
+                category: 'academic',
+                courseId: course.id,
+                details: {
+                    folder: path.basename(directory),
+                    name: course.name || '',
+                    counts: {
+                        turmas: (bundle.classes || []).length,
+                        alunos: (bundle.students || []).length,
+                        submissoes: (bundle.submissions || []).length,
+                    },
+                },
+            });
             await db.save();
             try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) {}
             res.json({ success: true, course });
@@ -204,12 +231,29 @@ function createAdminArchiveRouter({ studentClassNames }) {
     });
 
     router.post('/api/admin/archived-courses/delete', (req, res) => {
-        validateAdmin(req, res, (config, matchedAdmin) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
             if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
             let directory;
             try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta inválida.' }); }
             if (!directory) return res.status(404).json({ error: 'Arquivo não encontrado.' });
+            // O manifesto diz o que foi apagado (curso e contagens), para a auditoria.
+            let manifest = {};
+            try { manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifesto.json'), 'utf8')) || {}; } catch (error) { manifest = {}; }
             try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) { return sendInternalError(error, req, res); }
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'course_archive_deleted',
+                category: 'academic',
+                courseId: manifest.courseId ? String(manifest.courseId) : undefined,
+                details: {
+                    folder: path.basename(directory),
+                    name: String(manifest.name || ''),
+                    archivedAt: manifest.archivedAt || null,
+                    counts: manifest.counts && typeof manifest.counts === 'object' ? manifest.counts : null,
+                },
+            });
+            await db.save();
             res.json({ success: true });
         });
     });

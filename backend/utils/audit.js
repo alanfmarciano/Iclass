@@ -90,9 +90,23 @@ const ACTION_LABELS = Object.freeze({
     course_cloned: 'Curso duplicado',
     course_disciplinas_updated: 'Disciplinas do curso alteradas',
     course_grade_templates_updated: 'Modelos de avaliação do curso alterados',
+    course_archived: 'Curso arquivado (saiu do sistema e foi para Cursos arquivados)',
+    course_archive_restored: 'Curso arquivado restaurado',
+    course_archive_deleted: 'Arquivo de curso apagado de vez',
     class_created: 'Turma criada',
     class_updated: 'Turma alterada',
     class_deleted: 'Turma excluída',
+    school_created: 'Escola criada',
+    school_updated: 'Escola alterada',
+    school_deleted: 'Escola excluída',
+    certificate_issued: 'Certificado emitido',
+    certificate_revoked: 'Certificado cancelado',
+    announcement_deleted: 'Aviso excluído',
+    calendar_event_deleted: 'Evento do calendário excluído',
+    question_deleted: 'Questão excluída do banco de questões',
+    // Presença (versões da chamada, utils/attendance.js)
+    attendance_changed: 'Presença alterada',
+    attendance_marked: 'Presença marcada manualmente',
     // Conteúdo
     content_material_updated: 'Material alterado',
     content_unit_created: 'Unidade de conteúdo criada',
@@ -108,6 +122,11 @@ const ACTION_LABELS = Object.freeze({
     class_reset: 'Sala resetada',
     exam_state_flushed: 'Estado de prova limpo',
     server_restart_requested: 'Reinício do servidor pedido',
+    trash_restored: 'Item restaurado da lixeira de arquivos',
+    trash_deleted: 'Item apagado de vez da lixeira de arquivos',
+    trash_emptied: 'Lixeira de arquivos esvaziada',
+    forum_purged: 'Dúvida ou resposta do fórum apagada de vez',
+    audit_exported: 'Auditoria exportada (CSV)',
     // Backup
     backup_server_created: 'Cópia de segurança gerada no servidor',
     backup_downloaded: 'Backup baixado',
@@ -116,6 +135,7 @@ const ACTION_LABELS = Object.freeze({
     // Privacidade (LGPD)
     privacy_accept: 'Termos e Política de Privacidade aceitos',
     legal_publish: 'Documento legal publicado',
+    dpo_changed: 'Encarregado de dados (LGPD) alterado',
     retention_purge: 'Registros antigos apagados pelo prazo de guarda',
     lgpd_export: 'Dados pessoais exportados',
     // Provas (formato próprio, gravado fora de recordAudit)
@@ -161,6 +181,7 @@ const ACTION_CATEGORIES = Object.freeze({
     network_settings_changed: 'system',
     class_reset: 'system',
     exam_state_flushed: 'system',
+    dpo_changed: 'privacy',
 });
 
 const CATEGORY_PREFIXES = [
@@ -426,6 +447,22 @@ function normalizeAuditEntry(raw) {
     };
 }
 
+// Entrada já normalizada, pronta para mostrar (tela Auditoria, CSV e aba Auditoria da
+// ficha do aluno): valores, antes, depois e detalhes passam de novo pelo stripSecrets,
+// porque a entrada antiga (de antes do recordAudit, às vezes vinda de um backup) não
+// passou por ele. Devolve uma cópia; a entrada gravada não muda.
+function auditEntryWithoutSecrets(item) {
+    if (!isPlainObject(item)) return item;
+    return {
+        ...item,
+        oldValue: stripSecrets(item.oldValue),
+        newValue: stripSecrets(item.newValue),
+        before: stripSecrets(item.before),
+        after: stripSecrets(item.after),
+        details: stripSecrets(item.details),
+    };
+}
+
 // ------------------------------------------------------------ restauração
 // Identidade da entrada para juntar duas trilhas: o id; sem id, o conteúdo inteiro.
 function entryIdentity(entry) {
@@ -460,6 +497,7 @@ module.exports = {
     ACTION_CATEGORIES,
     recordAudit,
     normalizeAuditEntry,
+    auditEntryWithoutSecrets,
     mergeAuditTrails,
     stripSecrets,
     inferAuditCategory,

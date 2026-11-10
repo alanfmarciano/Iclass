@@ -12,6 +12,17 @@ const {
     sanitizeJustificativa,
     dedupeByDate,
     computeAttendanceStats,
+    ATTENDANCE_EDIT_SESSION_MS,
+    attendanceSnapshot,
+    statusKey,
+    describe,
+    effectiveDayRecord,
+    shouldAuditAttendanceChange,
+    attendanceBaseVersion,
+    attendanceBaseVersionFields,
+    attendanceCarryOver,
+    formatDateBR,
+    closedStudentListedOn,
 } = require('../../backend/utils/attendance.js');
 
 test('[UC-PRESENCA-001] normaliza disciplinas e limita a grade às disciplinas do curso', () => {
@@ -123,4 +134,135 @@ test('[UC-PRESENCA-002] prioriza chamada, valida justificativa e calcula abono p
     assert.equal(stats.faltasContam, 1);
     assert.equal(stats.porDisciplina.MAT.frequencia, 0);
     assert.equal(stats.porDisciplina.HIS.frequencia, null);
+});
+
+// ------------------------------------------------------------ versões da presença (H7b)
+const aulasDe = (...statuses) => statuses.map((status, i) => ({ ordem: i + 1, disciplinaId: 'MAT', inicio: '08:00', status, hora: i ? '' : '08:20' }));
+
+test('[UC-PRESENCA-004] resumo em português e chave de situação da presença', () => {
+    assert.equal(describe(null), 'Sem registro');
+    assert.equal(describe({ aulas: aulasDe('presente') }), 'Presente');
+    assert.equal(describe({ aulas: aulasDe('presente', 'presente') }), 'Presente (2 aulas)');
+    assert.equal(describe({ aulas: aulasDe('falta', 'falta', 'falta') }), 'Falta (3 aulas)');
+    assert.equal(describe({ aulas: aulasDe('presente', 'falta', 'falta') }), '1 presença e 2 faltas (3 aulas)');
+    assert.equal(describe({ aulas: aulasDe('presente', 'falta', 'justificada'), justificativa: { tipo: 'responsavel', abonado: false } }),
+        '1 presença, 1 falta e 1 falta justificada (3 aulas, responsável, não abonada)');
+    assert.equal(describe({ aulas: aulasDe('justificada'), justificativa: { tipo: 'atestado', abonado: true } }), 'Falta justificada (atestado, abonada)');
+    // Registro antigo sem aulas[]: 1 aula pelo status de antes.
+    assert.equal(describe({ status: 'ausente' }), 'Falta');
+    assert.equal(describe({ status: 'atrasado' }), 'Presente');
+
+    // A chave muda com a situação de uma aula e com o abono; não muda com texto, hora,
+    // observação, disciplina nem com a conclusão da chamada.
+    const base = { aulas: aulasDe('presente', 'justificada'), justificativa: { tipo: 'atestado', abonado: false, texto: 'a' }, observacao: 'x', concluida: false };
+    assert.equal(statusKey(base), statusKey({ ...base, justificativa: { ...base.justificativa, texto: 'outro texto' }, observacao: '', concluida: true, aulas: base.aulas.map(a => ({ ...a, hora: '', disciplinaId: 'HIS' })) }));
+    assert.notEqual(statusKey(base), statusKey({ ...base, justificativa: { ...base.justificativa, abonado: true } }));
+    assert.notEqual(statusKey(base), statusKey({ ...base, aulas: aulasDe('falta', 'justificada') }));
+    assert.equal(statusKey({ aulas: [{ ordem: 2, status: 'falta' }, { ordem: 1, status: 'presente' }] }), statusKey({ aulas: [{ ordem: 1, status: 'presente' }, { ordem: 2, status: 'falta' }] }), 'a ordem do array não importa');
+    assert.equal(formatDateBR('2026-03-02'), '02/03/2026');
+});
+
+test('[UC-PRESENCA-004] fotografia do registro sem texto da justificativa, observação nem IP', () => {
+    const snap = attendanceSnapshot({
+        id: 'att_1', origin: 'chamada', concluida: true, concludedAt: 1700000000000, markedBy: 'prof@x.local', timestamp: 1700000005000,
+        aulas: aulasDe('justificada', 'presente'), observacao: 'Avisou a coordenação', ip: '10.0.0.9', userAgent: 'Navegador',
+        loginAccess: { horaAcesso: '07:55', ip: '10.0.0.9', source: 'login' },
+        justificativa: { tipo: 'atestado', abonado: true, texto: 'Consulta médica', arquivo: '/uploads/a.pdf', arquivoNome: 'a.pdf' },
+    });
+    assert.deepEqual(snap, {
+        id: 'att_1', origin: 'chamada', concluida: true, markedBy: 'prof@x.local', timestamp: 1700000005000,
+        aulas: [{ ordem: 1, status: 'justificada' }, { ordem: 2, status: 'presente' }],
+        justificativa: { tipo: 'atestado', abonado: true, temTexto: true, temArquivo: true },
+        temObservacao: true, concludedAt: 1700000000000,
+    });
+    assert.equal(attendanceSnapshot(null), null);
+});
+
+test('[UC-PRESENCA-004] quando a regravação da chamada vira entrada da auditoria', () => {
+    const now = 1_800_000_000_000;
+    const draft = { origin: 'chamada', concluida: false, markedBy: 'Prof@X.local', timestamp: now - 60 * 1000, aulas: aulasDe('presente', 'presente') };
+    const next = { origin: 'chamada', aulas: aulasDe('falta', 'presente') };
+    assert.equal(shouldAuditAttendanceChange(null, next, 'prof@x.local', now), false, 'primeira chamada do dia');
+    assert.equal(shouldAuditAttendanceChange(draft, { ...next, aulas: draft.aulas }, 'outro@x.local', now), false, 'situação igual nunca grava');
+    assert.equal(shouldAuditAttendanceChange(draft, next, 'prof@x.local', now), false, 'rascunho do mesmo professor (e-mail sem diferenciar maiúscula)');
+    assert.equal(shouldAuditAttendanceChange(draft, next, { email: 'prof@x.local', role: 'professor' }, now), false, 'conta como quem salva');
+    assert.equal(shouldAuditAttendanceChange(draft, next, 'outro@x.local', now), true, 'outra pessoa');
+    assert.equal(shouldAuditAttendanceChange({ ...draft, concluida: true }, next, 'prof@x.local', now), true, 'chamada concluída');
+    assert.equal(shouldAuditAttendanceChange({ ...draft, concludedAt: now - 1000 }, next, 'prof@x.local', now), true, 'já concluída antes (rascunho depois)');
+    assert.equal(shouldAuditAttendanceChange({ ...draft, origin: 'login', markedBy: null }, next, 'prof@x.local', now), true, 'presença automática do login');
+    assert.equal(shouldAuditAttendanceChange({ ...draft, origin: 'manual' }, next, 'prof@x.local', now), true, 'marcação individual');
+    assert.equal(shouldAuditAttendanceChange({ ...draft, timestamp: now - ATTENDANCE_EDIT_SESSION_MS }, next, 'prof@x.local', now), false, 'exatamente 15 min ainda é a mesma edição');
+    assert.equal(shouldAuditAttendanceChange({ ...draft, timestamp: now - ATTENDANCE_EDIT_SESSION_MS - 1 }, next, 'prof@x.local', now), true, 'mais de 15 min');
+    assert.equal(shouldAuditAttendanceChange({ ...draft, timestamp: undefined }, next, 'prof@x.local', now), true, 'sem hora gravada: grava');
+});
+
+test('[UC-PRESENCA-004] a regra de auditar olha a versão de referência, não a última regravação do autosave', () => {
+    const now = 1_800_000_000_000;
+    const next = { origin: 'chamada', markedBy: 'prof@x.local', timestamp: now, aulas: aulasDe('falta', 'presente') };
+    // Regravado pela professora 2 s atrás, sem mudar a situação de antes.
+    const rewritten = base => ({ origin: 'chamada', concluida: false, markedBy: 'prof@x.local', timestamp: now - 2000, aulas: aulasDe('presente', 'presente'), baseVersion: base });
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'login', markedBy: null, timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), true, 'a situação era da presença automática');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'manual', markedBy: 'prof@x.local', timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), true, 'era da marcação individual');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'chamada', markedBy: 'outra@x.local', timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), true, 'era de outra pessoa');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'chamada', markedBy: 'PROF@x.local', timestamp: now - ATTENDANCE_EDIT_SESSION_MS - 1 }), next, 'prof@x.local', now), true, 'referência com mais de 15 min');
+    assert.equal(shouldAuditAttendanceChange(rewritten({ origin: 'chamada', markedBy: 'PROF@x.local', timestamp: now - 60 * 1000 }), next, 'prof@x.local', now), false, 'rascunho dela');
+    // Sem baseVersion, a referência é o próprio registro (registros de antes do campo).
+    const own = { origin: 'chamada', markedBy: 'prof@x.local', timestamp: now - ATTENDANCE_EDIT_SESSION_MS - 1, aulas: aulasDe('presente', 'presente') };
+    assert.equal(shouldAuditAttendanceChange(own, next, 'prof@x.local', now), true);
+    assert.deepEqual(attendanceBaseVersion(own), { origin: 'chamada', markedBy: 'prof@x.local', timestamp: own.timestamp });
+    // baseVersion só vale na chamada: o registro do login é a própria referência.
+    assert.deepEqual(attendanceBaseVersion({ origin: 'login', markedBy: null, timestamp: 5, baseVersion: { origin: 'chamada', markedBy: 'x', timestamp: 9 } }), { origin: 'login', markedBy: null, timestamp: 5 });
+    assert.equal(attendanceBaseVersion(null), null);
+
+    // O que o registro novo leva: nada na primeira chamada e na mudança que virou entrada
+    // (ele é a referência); a referência anterior quando a situação não mudou ou no rascunho.
+    const prevLogin = { origin: 'login', markedBy: null, timestamp: now - 60 * 1000, aulas: aulasDe('presente') };
+    assert.deepEqual(attendanceBaseVersionFields(null, next), {});
+    assert.deepEqual(attendanceBaseVersionFields(prevLogin, next, { audited: true }), {});
+    assert.deepEqual(attendanceBaseVersionFields(prevLogin, next, { audited: false }), { baseVersion: { origin: 'login', markedBy: null, timestamp: now - 60 * 1000 } });
+    const chain = rewritten({ origin: 'login', markedBy: null, timestamp: now - 60 * 1000 });
+    assert.deepEqual(attendanceBaseVersionFields(chain, next), { baseVersion: { origin: 'login', markedBy: null, timestamp: now - 60 * 1000 } }, 'passa adiante');
+    const sameAsRecord = { origin: 'chamada', markedBy: 'prof@x.local', timestamp: now };
+    assert.deepEqual(attendanceBaseVersionFields(sameAsRecord, next), {}, 'referência igual ao próprio registro não é gravada');
+
+    // A fotografia mostra a referência da chamada regravada (sem dado do aluno).
+    assert.deepEqual(attendanceSnapshot(chain).baseVersion, { origin: 'login', markedBy: null, timestamp: now - 60 * 1000 });
+    assert.equal(attendanceSnapshot(own).baseVersion, undefined);
+});
+
+test('[UC-PRESENCA-004] concludedAt e loginAccess passam de versão em versão', () => {
+    const now = 1_800_000_000_000;
+    assert.deepEqual(attendanceCarryOver([], { concluida: false, now }), {});
+    assert.deepEqual(attendanceCarryOver([], { concluida: true, now }), { concludedAt: now });
+    assert.deepEqual(attendanceCarryOver([{ origin: 'chamada', concludedAt: now - 500, concluida: false }], { concluida: true, now }), { concludedAt: now - 500 }, 'a primeira conclusão fica');
+    assert.deepEqual(attendanceCarryOver([{ origin: 'chamada', concluida: true, timestamp: now - 900 }], { concluida: false, now }), { concludedAt: now - 900 }, 'concluída antes do campo: a hora da gravação');
+    assert.deepEqual(attendanceCarryOver([
+        { origin: 'chamada', concludedAt: now - 100 },
+        { origin: 'manual', concludedAt: now - 300 },
+    ], { now }), { concludedAt: now - 300 }, 'a mais antiga');
+    const login = { origin: 'login', horaAcesso: '07:58', ip: '10.0.0.7', source: 'heartbeat', userAgent: 'x' };
+    assert.deepEqual(attendanceCarryOver([login], { now }), { loginAccess: { horaAcesso: '07:58', ip: '10.0.0.7', source: 'heartbeat' } });
+    assert.deepEqual(attendanceCarryOver([{ origin: 'chamada', loginAccess: { horaAcesso: '07:40', ip: '10.0.0.8', source: 'login' } }], { now }),
+        { loginAccess: { horaAcesso: '07:40', ip: '10.0.0.8', source: 'login' } });
+
+    // O registro que vale no dia é o mesmo do dedupeByDate.
+    const manual = { origin: 'manual', id: 'm' };
+    const chamada = { origin: 'chamada', id: 'c' };
+    assert.equal(effectiveDayRecord([login, chamada, manual]).id, 'c');
+    assert.equal(effectiveDayRecord([login, manual]).id, 'm');
+    assert.equal(effectiveDayRecord([]), null);
+});
+
+test('[UC-PRESENCA-004] aluno encerrado na chamada: com registro, ou em data anterior ao dia do desligamento', () => {
+    const tz = 'America/Sao_Paulo';
+    // 05/03 às 01:30 em Brasília (04:30 UTC): o dia local é 05/03.
+    const changedAt = Date.parse('2026-03-05T04:30:00Z');
+    assert.equal(closedStudentListedOn({ hasRecord: true, date: '2026-04-01', timezone: tz }), true);
+    assert.equal(closedStudentListedOn({ hasRecord: false, date: '2026-04-01', timezone: tz }), false, 'sem a hora do desligamento, só com registro');
+    assert.equal(closedStudentListedOn({ date: '2026-03-04', statusChangedAt: changedAt, timezone: tz }), true);
+    assert.equal(closedStudentListedOn({ date: '2026-03-05', statusChangedAt: changedAt, timezone: tz }), false);
+    assert.equal(closedStudentListedOn({ date: '2026-03-04', statusChangedAt: new Date(changedAt).toISOString(), timezone: tz }), true, 'hora em texto ISO');
+    assert.equal(closedStudentListedOn({ date: '2026-03-04', statusChangedAt: 'não é data', timezone: tz }), false);
+    // Em UTC-3, 04/03 23:30 local é 05/03 02:30 UTC: vale o dia local.
+    assert.equal(closedStudentListedOn({ date: '2026-03-04', statusChangedAt: Date.parse('2026-03-05T02:30:00Z'), timezone: tz }), false);
 });

@@ -7,6 +7,7 @@ const { logError } = require('../utils/errorLog.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
 const backupAudit = require('../utils/backupAudit.js');
+const { recordAudit } = require('../utils/audit.js');
 
 // uploadErrorMessage e isUploadRequestError vêm de admin.js: o envio recusado (multer,
 // formulário cortado) responde 400 em português; o resto é falha do disco (500 com código).
@@ -37,6 +38,29 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         return !owner || owner !== String(matchedAdmin.email || '').trim().toLowerCase();
     }
 
+    // O que a auditoria guarda de um item da lixeira de arquivos (SEG-07): nome, tamanho,
+    // se é pasta e o curso/turma, nunca o conteúdo. O nome é o que a pessoa conhece (o do
+    // material ou o do arquivo enviado); o nome gerado em /uploads vai junto em file.
+    function trashAuditItem(entry) {
+        const storedName = String((entry && entry.name) || '');
+        const originalName = String((entry && entry.originalName) || '');
+        const item = { name: originalName || storedName, size: Number(entry && entry.size) || 0, isDir: !!(entry && entry.isDir) };
+        if (originalName && originalName !== storedName) item.file = storedName;
+        if (entry && entry.courseId) item.courseId = entry.courseId;
+        if (entry && entry.studentClass) item.studentClass = entry.studentClass;
+        return item;
+    }
+
+    // Item da lixeira com o tamanho (o índice não guarda o tamanho; listTrash mede).
+    function trashEntryWithSize(id) {
+        const safeId = String(id || '');
+        return fileStore.listTrash().find(entry => entry.id === safeId) || fileStore.getTrashEntry(safeId);
+    }
+
+    function recordTrashAudit(req, matchedAdmin, action, fields) {
+        recordAudit(db.memory, { req, actor: matchedAdmin, action, category: 'system', ...fields });
+    }
+
     router.get('/api/admin/trash', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             res.json(fileStore.listTrash().filter(entry => !hiddenFromAccount(entry, matchedAdmin)));
@@ -44,26 +68,40 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     });
 
     router.post('/api/admin/trash/restore', (req, res) => {
-        validateAdmin(req, res, (config, matchedAdmin) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
             const id = String((req.body && req.body.id) || '');
             if (hiddenFromAccount(fileStore.getTrashEntry(id), matchedAdmin)) {
                 return res.status(403).json({ error: 'Este item da lixeira está fora do seu escopo.' });
             }
+            const entry = trashEntryWithSize(id);
             const result = fileStore.restoreTrash(id);
             if (!result.ok) return res.status(400).json({ error: result.error });
+            recordTrashAudit(req, matchedAdmin, 'trash_restored', {
+                courseId: (entry && entry.courseId) || undefined,
+                studentClass: (entry && entry.studentClass) || undefined,
+                details: { item: trashAuditItem(entry), restoredTo: result.restoredTo },
+            });
+            await db.save();
             res.json({ success: true, restoredTo: result.restoredTo });
         });
     });
 
     router.post('/api/admin/trash/delete', (req, res) => {
-        validateAdmin(req, res, (config, matchedAdmin) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
             try {
                 const id = String((req.body && req.body.id) || '');
                 if (hiddenFromAccount(fileStore.getTrashEntry(id), matchedAdmin)) {
                     return res.status(403).json({ error: 'Este item da lixeira está fora do seu escopo.' });
                 }
+                const entry = trashEntryWithSize(id);
                 const removed = fileStore.deleteTrashItem(id);
                 if (!removed) return res.status(404).json({ error: 'Item não encontrado na lixeira.' });
+                recordTrashAudit(req, matchedAdmin, 'trash_deleted', {
+                    courseId: (entry && entry.courseId) || undefined,
+                    studentClass: (entry && entry.studentClass) || undefined,
+                    details: { item: trashAuditItem(entry) },
+                });
+                await db.save();
                 res.json({ success: true });
             } catch (error) {
                 // Identificador inválido (safePath) continua 400; falha do disco (arquivo
@@ -73,10 +111,26 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         });
     });
 
+    // Itens listados na auditoria do esvaziar (o resto entra só na contagem).
+    const TRASH_EMPTY_LISTED = 200;
+
     router.post('/api/admin/trash/empty', (req, res) => {
-        validateAdmin(req, res, (config, matchedAdmin) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
             // O professor esvazia só o que ele vê.
+            const visible = fileStore.listTrash().filter(entry => !hiddenFromAccount(entry, matchedAdmin));
             const removed = fileStore.emptyTrash(entry => !hiddenFromAccount(entry, matchedAdmin));
+            if (removed > 0 || visible.length > 0) {
+                recordTrashAudit(req, matchedAdmin, 'trash_emptied', {
+                    details: {
+                        removed,
+                        totalSize: visible.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0),
+                        scope: isProfessorAccount(matchedAdmin) ? 'itens do escopo do professor' : 'lixeira inteira',
+                        items: visible.slice(0, TRASH_EMPTY_LISTED).map(trashAuditItem),
+                        moreItems: Math.max(0, visible.length - TRASH_EMPTY_LISTED),
+                    },
+                });
+                await db.save();
+            }
             res.json({ success: true, removed });
         });
     });
@@ -185,14 +239,6 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         try { fs.rmSync(file, { force: true }); } catch (e) {}
     }
 
-    // A restauração troca o registro de auditoria pelo do backup; o histórico de
-    // backup (inclusive as falhas anteriores) volta para o registro restaurado.
-    function keepBackupHistory(history) {
-        if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-        const present = new Set(db.memory.auditLogs.map(entry => entry && entry.id).filter(Boolean));
-        history.forEach(entry => { if (!entry.id || !present.has(entry.id)) db.memory.auditLogs.push(entry); });
-    }
-
     router.post('/api/admin/backup/restore', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             // Tentativa de restaurar sem ser administrador é evento de segurança: fica no histórico.
@@ -244,11 +290,12 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 // Backup de versão anterior: só depois de a tela mostrar o aviso (acceptLegacy).
                 const acceptLegacy = ['1', 'true', 'sim', 'on'].includes(String(req.body.acceptLegacy || '').trim().toLowerCase());
                 const fileInfo = { file: String(req.file.originalname || '').slice(0, 200), size: req.file.size || 0, replaceAccounts };
-                const backupHistory = (db.memory.auditLogs || []).filter(isBackupAuditEntry).map(entry => structuredClone(entry));
                 try {
                     const summary = await backupUtil.restoreFromFile(temporaryFile, req.file.originalname, { replaceAccounts, acceptLegacy });
                     discardUpload(temporaryFile);
-                    keepBackupHistory(backupHistory);
+                    // A trilha de auditoria do backup foi juntada com a atual (mergeAuditTrails
+                    // em utils/backup.js): o histórico de backup e tudo o que foi feito depois
+                    // do backup continuam no registro.
                     // Contas do backup que não existem aqui e ficaram de fora (só sem a substituição).
                     const current = new Set((db.memory.admins || []).map(account => String((account && account.email) || '').toLowerCase()));
                     const accountsNotRestored = replaceAccounts ? 0 : (summary.accountEmails || []).filter(email => !current.has(email)).length;
@@ -268,7 +315,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                         // Nada foi restaurado: a tela mostra o aviso e pede a confirmação.
                         return res.status(409).json({ error: backupUtil.LEGACY_BACKUP_WARNING, legacyBackup: true, exportedAt: restoreError.exportedAt });
                     }
-                    keepBackupHistory(backupHistory);
+                    // A falha no meio volta tudo ao estado de antes (applySnapshot exact),
+                    // inclusive a auditoria: o histórico de backup continua lá.
                     // Recusa prevista do arquivo (formato, versão, JSON ou ZIP cortado, contas:
                     // status 400 em utils/backup.js) volta com a própria mensagem. O resto
                     // (disco cheio, arquivo preso por outro programa, falha inesperada) é erro
