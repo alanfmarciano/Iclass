@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -140,6 +141,45 @@ test('[UC-DESEMPENHO-001] orçamento sem build: avisa e passa; o código-fonte a
 test('[UC-DESEMPENHO-001] web/src não importa todos os ícones (StatCard usa o mapa de ícones nomeados)', async () => {
     const { findWildcardIconImports } = await loadScript('check-bundle-size.mjs');
     assert.deepEqual(findWildcardIconImports(path.join(ROOT, 'web', 'src')), []);
+});
+
+test('[UC-DESEMPENHO-001] scripts chamados por um caminho que passa por link simbólico (ou junção do Windows) rodam de verdade', (t) => {
+    // Antes, comparar process.argv[1] cru com o import.meta.url (que o Node resolve) fazia
+    // os dois scripts saírem com 0 sem fazer nada: sem pré-compressão e com o orçamento
+    // "aprovado" sem conferir, se a pasta do IClass estivesse atrás de um link.
+    const real = path.join(tempRoot, 'pasta-real');
+    const scripts = path.join(real, 'web', 'scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    for (const name of ['compress-assets.mjs', 'check-bundle-size.mjs']) {
+        fs.copyFileSync(path.join(ROOT, 'web', 'scripts', name), path.join(scripts, name));
+    }
+    const { distDir, srcDir } = fakeBuild('pasta-real/web');
+    assert.equal(distDir, path.join(real, 'web', 'dist'));
+    assert.equal(srcDir, path.join(real, 'web', 'src'));
+    const link = path.join(tempRoot, 'pasta-pelo-link');
+    try {
+        fs.symlinkSync(real, link, 'junction');
+    } catch (error) {
+        t.skip(`sem permissão para criar link: ${error.code}`);
+        return;
+    }
+    const viaLink = path.join(link, 'web', 'scripts');
+
+    const compressed = execFileSync(process.execPath, [path.join(viaLink, 'compress-assets.mjs')], { encoding: 'utf8' });
+    assert.match(compressed, /^Pré-compressão: \d+ arquivo\(s\), \d+ versão\(ões\) \.gz\/\.br gravada\(s\)/);
+    assert.ok(fs.existsSync(path.join(distDir, 'assets', 'index-abc.js.gz')));
+    assert.ok(fs.existsSync(path.join(distDir, 'assets', 'index-abc.js.br')));
+
+    const budget = execFileSync(process.execPath, [path.join(viaLink, 'check-bundle-size.mjs')], { encoding: 'utf8' });
+    assert.match(budget, /JavaScript da primeira abertura: .* em gzip \(limite 130,0 KB\), 2 arquivo\(s\)\./);
+    assert.match(budget, /Orçamento do pacote da interface: dentro do limite\./);
+
+    // Orçamento estourado pelo link: sai com 1, não com 0 calado.
+    fs.writeFileSync(path.join(distDir, 'assets', 'MonitorPage-jkl.js'), 'x'.repeat(360 * 1024));
+    assert.throws(
+        () => execFileSync(process.execPath, [path.join(viaLink, 'check-bundle-size.mjs')], { encoding: 'utf8', stdio: 'pipe' }),
+        (error) => error.status === 1 && /acima do limite de 350,0 KB/.test(String(error.stderr)),
+    );
 });
 
 test('[UC-DESEMPENHO-001] build e suítes: pré-compressão no npm run build; check:bundle fora do build e dentro da suíte rápida e do npm run check', () => {

@@ -11,7 +11,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const COMPRESSIBLE_EXTENSIONS = ['.js', '.mjs', '.css', '.svg', '.json', '.html', '.txt']
 export const MIN_BYTES = 1024
@@ -76,7 +76,20 @@ function formatKb(bytes) {
   return `${(bytes / 1024).toFixed(1).replace('.', ',')} KB`
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+// Rodando como script (node web/scripts/...), e não importado pelo teste? O Node resolve
+// os links simbólicos e as junções do Windows no import.meta.url, mas não no argv: com a
+// pasta do IClass atrás de um link, comparar os caminhos crus fazia o script sair com 0
+// sem fazer nada.
+function runsAsScript() {
+  if (!process.argv[1]) return false
+  try {
+    return pathToFileURL(fs.realpathSync(path.resolve(process.argv[1]))).href === import.meta.url
+  } catch {
+    return false
+  }
+}
+
+const isMain = runsAsScript()
 if (isMain) {
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const assetsDir = path.join(webRoot, 'dist', 'assets')

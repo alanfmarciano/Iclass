@@ -18,10 +18,14 @@ process.env.ICLASS_CONTENT_DIR = path.join(tempRoot, 'content');
 process.env.ICLASS_ARCHIVE_DIR = path.join(tempRoot, 'archives');
 process.env.TEST_MODE = '1';
 
+const express = require('express');
 const db = require('../../backend/database.js');
 const runtimePaths = require('../../backend/runtimePaths.js');
 const { resetBuildIdCache } = require('../../backend/utils/buildIntegrity.js');
 const { createApp } = require('../../backend/server.js');
+const { assignRequestId } = require('../../backend/middlewares.js');
+const { createStudentSession } = require('../../backend/utils/authSessions.js');
+const { serveBuildAssets } = require('../../backend/utils/staticAssets.js');
 
 const originalDistDir = runtimePaths.WEB_DIST_DIR;
 const distDir = path.join(tempRoot, 'dist');
@@ -52,9 +56,9 @@ function writeBuild() {
 }
 
 // Pedido cru (sem descompressão automática), para conferir os bytes e os cabeçalhos.
-function raw(method, urlPath, headers = {}) {
+function raw(method, urlPath, headers = {}, base = baseUrl) {
     return new Promise((resolve, reject) => {
-        const req = http.request(`${baseUrl}${urlPath}`, { method, headers }, (res) => {
+        const req = http.request(`${base}${urlPath}`, { method, headers }, (res) => {
             const chunks = [];
             res.on('data', chunk => chunks.push(chunk));
             res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -210,9 +214,101 @@ test('[UC-DESEMPENHO-001] toda resposta /api sai com no-store, inclusive 401 e r
         const res = await raw('GET', urlPath, { 'Accept-Encoding': 'gzip' });
         assert.match(String(res.headers['cache-control'] || ''), /no-store/, `${urlPath} (${res.status})`);
     }
-    // Rota que define o próprio Cache-Control continua definindo.
+    // Rota que define o próprio Cache-Control continua definindo: as do aluno mandam um
+    // valor diferente do padrão de /api, e é o delas que chega.
+    db.memory.students = [{ name: 'Ana Assets', email: 'ana@assets.local', status: 'Ativo', password: db.hashPassword('x'), classes: [] }];
+    const token = createStudentSession(db.memory, 'ana@assets.local');
+    for (const urlPath of ['/api/student/exam-applications', '/api/student/sync?studentClass=TURMA-QUE-NAO-EXISTE']) {
+        const res = await raw('GET', urlPath, { 'x-session-token': token, 'Accept-Encoding': 'gzip' });
+        assert.equal(res.status, 200, urlPath);
+        assert.equal(res.headers['cache-control'], 'no-store, no-cache, must-revalidate, private', urlPath);
+    }
     const status = await raw('GET', '/api/session/status');
     assert.equal(status.headers['cache-control'], 'no-store');
+});
+
+// App mínimo com o handler de /assets e o código do pedido (como no createApp), com o
+// envio do arquivo trocado por uma falha de disco: como root, chmod não impede a leitura.
+async function withFailingAssets(breakResponse, fn) {
+    const app = express();
+    app.use(assignRequestId);
+    app.use((req, res, next) => { breakResponse(res); next(); });
+    app.use('/assets', serveBuildAssets(distDir));
+    const failing = await new Promise(resolve => {
+        const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+    try {
+        return await fn(`http://127.0.0.1:${failing.address().port}`);
+    } finally {
+        await new Promise(resolve => failing.close(resolve));
+    }
+}
+
+function crashLogText() {
+    const file = path.join(runtimePaths.DATA_DIR, 'crash.log');
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+}
+
+function assertContractInternalError(res, label) {
+    const requestId = res.headers['x-request-id'];
+    assert.ok(requestId, label);
+    assert.equal(res.status, 500, label);
+    assert.match(res.headers['content-type'], /application\/json/, label);
+    assert.deepEqual(JSON.parse(res.body.toString('utf8')), {
+        success: false,
+        error: `Ocorreu um erro interno no servidor. Código do erro: ${requestId}.`,
+        requestId,
+    }, label);
+    const cacheControl = String(res.headers['cache-control'] || '');
+    assert.match(cacheControl, /no-store/, label);
+    assert.doesNotMatch(cacheControl, /immutable|max-age=31536000/, label);
+    assert.equal(res.headers['content-encoding'], undefined, label);
+    // O ETag do arquivo (preparado pelo envio) não fica na resposta de erro.
+    assert.notEqual(res.headers.etag, 'W/"123-abc"', label);
+    assert.match(crashLogText(), new RegExp(`erro interno ${requestId} GET /assets/${ENTRY.replace(/\./g, '\\.')}`), label);
+    return requestId;
+}
+
+test('[UC-DESEMPENHO-001] falha inesperada ao enviar um arquivo de /assets: 500 do contrato, com o código do erro e o registro no crash.log', async () => {
+    // Antes: texto próprio ("Não foi possível enviar um arquivo do app"), sem o código do
+    // erro, fora do padrão do H9a.
+    await withFailingAssets((res) => {
+        res.sendFile = function sendFileWithDiskError(file, options, callback) {
+            // O envio já tinha preparado o cache imutável e o ETag quando o disco falhou.
+            this.set('Cache-Control', 'public, max-age=31536000, immutable');
+            this.set('ETag', 'W/"123-abc"');
+            const err = new Error('EIO: i/o error, read');
+            err.code = 'EIO';
+            setImmediate(() => callback(err));
+        };
+    }, async (base) => {
+        const res = await raw('GET', `/assets/${ENTRY}`, { 'Accept-Encoding': 'gzip' }, base);
+        assertContractInternalError(res, 'falha de disco no envio');
+        assert.match(crashLogText(), /EIO: i\/o error, read/);
+        assert.match(crashLogText(), /Falha ao enviar um arquivo do app \(\/assets\)\./);
+    });
+
+    await withFailingAssets((res) => {
+        res.vary = () => { throw new TypeError('vary quebrado'); };
+    }, async (base) => {
+        const res = await raw('GET', `/assets/${ENTRY}`, { 'Accept-Encoding': 'gzip' }, base);
+        assertContractInternalError(res, 'exceção antes do envio');
+    });
+
+    // O arquivo que some entre a conferência e o envio continua 404, sem registro.
+    await withFailingAssets((res) => {
+        res.sendFile = function sendFileVanished(file, options, callback) {
+            const err = new Error('ENOENT: no such file or directory');
+            err.code = 'ENOENT';
+            err.status = 404;
+            setImmediate(() => callback(err));
+        };
+    }, async (base) => {
+        const res = await raw('GET', `/assets/${ENTRY}`, { 'Accept-Encoding': 'gzip' }, base);
+        assert.equal(res.status, 404);
+        assert.equal(res.body.toString('utf8'), 'Arquivo não encontrado.');
+        assert.doesNotMatch(crashLogText(), new RegExp(res.headers['x-request-id']));
+    });
 });
 
 test('[UC-DESEMPENHO-001] index.html ausente (build sendo refeito): 503 em português, sem cache, e /assets continua 404', async () => {

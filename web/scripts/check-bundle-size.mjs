@@ -14,7 +14,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const INITIAL_JS_GZIP_LIMIT = 130 * 1024
 export const JS_RAW_LIMIT = 350 * 1024
@@ -114,7 +114,20 @@ export function checkBundle({ distDir, srcDir, initialLimit = INITIAL_JS_GZIP_LI
   return { ok: errors.length === 0, built: true, errors, lines }
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+// Rodando como script (node web/scripts/...), e não importado pelo teste? O Node resolve
+// os links simbólicos e as junções do Windows no import.meta.url, mas não no argv: com a
+// pasta do IClass atrás de um link, comparar os caminhos crus fazia o script sair com 0
+// sem fazer nada.
+function runsAsScript() {
+  if (!process.argv[1]) return false
+  try {
+    return pathToFileURL(fs.realpathSync(path.resolve(process.argv[1]))).href === import.meta.url
+  } catch {
+    return false
+  }
+}
+
+const isMain = runsAsScript()
 if (isMain) {
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const result = checkBundle({ distDir: path.join(webRoot, 'dist'), srcDir: path.join(webRoot, 'src') })

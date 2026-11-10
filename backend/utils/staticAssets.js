@@ -18,7 +18,6 @@
 const fs = require('fs');
 const path = require('path');
 const { acceptsEncoding } = require('./httpCompression.js');
-const { logError } = require('./errorLog.js');
 
 // Só nomes simples, como os que o Vite gera: sem barra, sem '%', sem começar com ponto.
 const ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -44,6 +43,25 @@ async function isFile(file) {
     } catch (error) {
         return false;
     }
+}
+
+// Falha inesperada ao enviar um arquivo (disco, permissão): o 500 do contrato de erros
+// (H9a), com "Código do erro: <id>" e o registro no crash.log por logError, como toda
+// falha interna. Antes de responder, tira o que o envio já tinha preparado (cache
+// imutável, ETag, Content-Encoding): a resposta de erro nunca fica guardada no aparelho.
+// O require fica aqui dentro para o handler de boot do H3c não carregar as rotas.
+function discardPreparedHeaders(res) {
+    for (const header of ['Content-Encoding', 'ETag', 'Last-Modified', 'Accept-Ranges']) res.removeHeader(header);
+}
+
+function sendAssetError(err, req, res) {
+    if (!res.headersSent) {
+        discardPreparedHeaders(res);
+        setNoStore(res);
+        res.set('X-Content-Type-Options', 'nosniff');
+    }
+    const { sendInternalError } = require('../middlewares.js');
+    return sendInternalError(err, req, res, 'Falha ao enviar um arquivo do app (/assets).');
 }
 
 // Versão a enviar: [codificação, caminho], com a codificação null para o original.
@@ -86,20 +104,12 @@ function serveBuildAssets(distDir) {
                 if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') return;
                 // Sumiu entre a conferência e o envio (build refeito com o servidor ligado).
                 if (err.status === 404 || err.statusCode === 404 || err.code === 'ENOENT') {
-                    res.removeHeader('Content-Encoding');
+                    discardPreparedHeaders(res);
                     return sendAssetNotFound(res);
                 }
-                logError('arquivo do app', err, { req });
-                res.removeHeader('Content-Encoding');
-                setNoStore(res);
-                res.status(500).type('text/plain').send('Não foi possível enviar um arquivo do app. Recarregue a página.');
+                sendAssetError(err, req, res);
             });
-        })().catch((err) => {
-            logError('arquivo do app', err, { req });
-            if (res.headersSent) return;
-            setNoStore(res);
-            res.status(500).type('text/plain').send('Não foi possível enviar um arquivo do app. Recarregue a página.');
-        });
+        })().catch((err) => sendAssetError(err, req, res));
     };
 }
 
