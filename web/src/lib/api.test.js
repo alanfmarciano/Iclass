@@ -284,6 +284,54 @@ describe('[UC-ERRO-002] tempo-limite e falhas de conexão do cliente', () => {
     expect(fetchMock.mock.calls[1][1].headers).not.toHaveProperty('X-IClass-Background')
   })
 
+  it('envio de arquivo (FormData) vai pelo cliente: corpo como está, sem Content-Type JSON, com a sessão, sem prazo e, sem rede, a mensagem em português', async () => {
+    vi.useFakeTimers()
+    setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
+    const fetchMock = hangingFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    const form = new FormData()
+    form.append('file', new Blob(['conteúdo']), 'material.pdf')
+    let settled = false
+    api.post('/api/admin/library/upload', form).catch(() => {}).finally(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+    // Arquivo grande na Wi-Fi da sala: sem o prazo de 60 s do instrutor.
+    expect(settled).toBe(false)
+    const init = fetchMock.mock.calls[0][1]
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(form)
+    expect(init.headers).not.toHaveProperty('Content-Type')
+    expect(init.headers).toEqual({ 'x-admin-session': 'sessao-admin' })
+    expect(init.signal).toBeUndefined()
+    vi.useRealTimers()
+
+    // Antes, esses envios usavam fetch direto e a tela mostrava "Failed to fetch".
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    const error = await api.post('/api/admin/backup/restore', form, { timeoutMs: 0 }).catch((err) => err)
+    expect(error.status).toBe(0)
+    expect(error.network).toBe(true)
+    expect(error.message).toBe(NETWORK_MESSAGE)
+    // Recusa do servidor: status e corpo dele (a restauração lê o 409 legacyBackup).
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'Backup de versão anterior.', legacyBackup: true }), { status: 409, headers: { 'content-type': 'application/json' } })))
+    const refused = await api.post('/api/admin/backup/restore', form, { timeoutMs: 0 }).catch((err) => err)
+    expect(refused.status).toBe(409)
+    expect(refused.data).toEqual({ error: 'Backup de versão anterior.', legacyBackup: true })
+  })
+
+  it('nenhuma tela chama fetch direto: tudo passa por lib/api.js (só a conferência do lazyPage fica de fora)', () => {
+    const sources = import.meta.glob('../**/*.{js,jsx}', { query: '?raw', import: 'default', eager: true })
+    const allowed = new Set(['lib/api.js', 'lib/lazyPage.js'])
+    const offenders = []
+    for (const [key, source] of Object.entries(sources)) {
+      const file = key.startsWith('./') ? `lib/${key.slice(2)}` : key.replace(/^\.\.\//, '')
+      if (/\.test\.[jt]sx?$/.test(file) || allowed.has(file)) continue
+      source.split('\n').forEach((line, index) => {
+        if (/(^|[^\w.])fetch\(|\b(window|globalThis|self)\.fetch\(/.test(line)) offenders.push(`${file}:${index + 1}: ${line.trim()}`)
+      })
+    }
+    expect(offenders, 'Use api.get/post (lib/api.js), que tem prazo, sessão e mensagem de rede em português').toEqual([])
+    expect(Object.keys(sources).some((key) => key.endsWith('features/admin/SistemaPage.jsx'))).toBe(true)
+  })
+
   it('resposta de erro do servidor continua com o status e a mensagem dele', async () => {
     setAuthProvider(() => ({ role: 'admin', adminSession: 'sessao-admin' }))
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'Turma não encontrada.' }), { status: 404, headers: { 'content-type': 'application/json' } })))

@@ -62,6 +62,10 @@ function noteBuildFrom(res, path, headers) {
 //   prazo quando quem chama não diz nada (o servidor termina a operação de qualquer
 //   jeito, e um "não respondeu" no meio dela seria um aviso falso).
 // O pedido com keepalive (saída da página) nunca tem prazo: a página já está indo embora.
+// Envio de arquivo (corpo FormData: restauração de backup, Biblioteca, comprovante da
+// chamada, imagem do editor) também fica sem prazo quando quem chama não diz nada: o
+// tempo depende do tamanho do arquivo e da rede da sala. Antes esses envios usavam fetch
+// direto e, sem rede, a tela mostrava o "Failed to fetch" do navegador.
 // Estourado o prazo ou sem rede, o erro sai com status 0, err.timeout ou err.network e
 // uma mensagem fixa em português (quem tenta de novo, como o envio automático da prova,
 // trata status 0 como falha passageira).
@@ -92,10 +96,14 @@ export function isLongAdminOperation(path) {
 }
 
 // Prazo do pedido quando quem chama não passa timeoutMs.
-function defaultTimeoutMs(path, headers) {
+function defaultTimeoutMs(path, headers, fileUpload) {
   const instructor = !!headers['x-admin-session'] || INSTRUCTOR_LOGIN_PATHS.includes(pathOnly(path))
-  if (!instructor || isLongAdminOperation(path)) return 0
+  if (!instructor || fileUpload || isLongAdminOperation(path)) return 0
   return INSTRUCTOR_TIMEOUT_MS
+}
+
+function isFormData(body) {
+  return typeof FormData !== 'undefined' && body instanceof FormData
 }
 
 function connectionError(kind) {
@@ -122,10 +130,13 @@ function abortError(signal) {
 // timeoutMs: prazo em ms (0 = sem prazo; sem o campo, o padrão acima). background: true
 // manda X-IClass-Background: 1. signal: AbortSignal de quem chama (cancelar é dele: o
 // erro sai como AbortError, sem mensagem de conexão).
+// body: objeto (vai como JSON) ou FormData (envio de arquivo: vai como está, e o
+// navegador põe o Content-Type multipart com o separador).
 async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false, timeoutMs, background = false, signal } = {}) {
-  const headers = { 'Content-Type': 'application/json', ...(auth ? authHeaders() : {}) }
+  const fileUpload = isFormData(body)
+  const headers = { ...(fileUpload ? {} : { 'Content-Type': 'application/json' }), ...(auth ? authHeaders() : {}) }
   if (background) headers[BACKGROUND_HEADER] = '1'
-  const limit = keepalive ? 0 : (timeoutMs === undefined || timeoutMs === null ? defaultTimeoutMs(path, headers) : Math.max(0, Number(timeoutMs) || 0))
+  const limit = keepalive ? 0 : (timeoutMs === undefined || timeoutMs === null ? defaultTimeoutMs(path, headers, fileUpload) : Math.max(0, Number(timeoutMs) || 0))
   const canAbort = typeof AbortController === 'function'
   const controller = canAbort && (limit > 0 || signal) ? new AbortController() : null
   let timedOut = false
@@ -153,7 +164,7 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
     res = await fetch(path, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: fileUpload ? body : (body ? JSON.stringify(body) : undefined),
       ...(keepalive ? { keepalive: true } : {}),
       ...(controller ? { signal: controller.signal } : {}),
     })

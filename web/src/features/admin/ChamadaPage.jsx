@@ -41,14 +41,6 @@ const EXIGE_DOC = new Set(['atestado', 'declaracao'])
 const dispName = (r) => (r.nomeSocial && r.nomeSocial.trim()) || r.name || r.email
 const emptyJust = () => ({ tipo: 'atestado', de: '', ate: '', abonado: false, texto: '', arquivo: '', arquivoNome: '' })
 const hhmmToMin = (v) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(v || '') ? (+v.slice(0, 2)) * 60 + (+v.slice(3, 5)) : null)
-// O envio do anexo vai com a sessão do instrutor (x-admin-session); a senha nunca vai junto.
-function authHeaders() {
-  try {
-    const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}
-    return a.adminSession ? { 'x-admin-session': a.adminSession } : {}
-  } catch { return {} }
-}
-
 // Estado de UI de um aluno a partir das aulas salvas.
 function deriveUi(aulas) {
   const base = { st: 'p', arrOrdem: null, arrHora: '', early: false, lvOrdem: null, lvHora: '' }
@@ -184,9 +176,9 @@ export default function ChamadaPage() {
     if (!file) return
     const fd = new FormData(); fd.append('file', file); fd.append('studentEmail', email)
     try {
-      const res = await fetch('/api/admin/attendance/justification-upload', { method: 'POST', headers: authHeaders(), body: fd })
-      const data = await res.json().catch(() => null)
-      if (!res.ok) throw new Error((data && data.error) || 'Falha no upload')
+      // Pelo cliente da API: só a sessão do instrutor (a senha nunca vai junto), sem prazo
+      // e, sem rede, a mensagem em português (fase 2, H9c).
+      const data = await api.post('/api/admin/attendance/justification-upload', fd)
       patch(email, (cur) => ({ ...cur, just: { ...(cur.just || emptyJust()), arquivo: data.file, arquivoNome: data.name } }))
       toast.success('Comprovante anexado')
     } catch (e) { toast.error(e.message) }

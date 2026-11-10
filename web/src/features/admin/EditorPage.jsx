@@ -28,7 +28,6 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { markdownToHtml, htmlToMarkdown, resolveContentUrl } from '../../lib/contentMarkdown'
 import { useToast } from '../../context/ToastProvider'
-import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 
 function ToolButton({ icon: Icon, label, onClick, disabled }) {
@@ -52,7 +51,6 @@ function escapeAttr(value) {
 
 export default function EditorPage() {
   const { data: summaries } = useApi('/api/admin/course-summaries')
-  const { auth } = useAuth()
   const workspace = useAdminWorkspace()
   const courseId = workspace.courseId
   const className = workspace.className
@@ -215,14 +213,9 @@ export default function EditorPage() {
     form.append('image', file)
     setUploading(true)
     try {
-      const res = await fetch('/api/admin/upload-image', {
-        method: 'POST',
-        // Só a sessão do instrutor (x-admin-session); a senha nunca vai junto.
-        headers: auth.adminSession ? { 'x-admin-session': auth.adminSession } : {},
-        body: form,
-      })
-      const data = await res.json().catch(() => null)
-      if (!res.ok) throw new Error(data?.error || 'Falha no upload da imagem')
+      // Pelo cliente da API: só a sessão do instrutor (a senha nunca vai junto), sem prazo
+      // e, sem rede, a mensagem em português (fase 2, H9c).
+      const data = await api.post('/api/admin/upload-image', form)
 
       // No Markdown vai o endereço limpo; a sessão só entra na imagem exibida no editor.
       const url = resolveContentUrl(data.url)

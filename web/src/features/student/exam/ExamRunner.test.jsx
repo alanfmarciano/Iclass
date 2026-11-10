@@ -1130,6 +1130,87 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
     expect(keystrokeBatches()[3].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 42))
   }, 15000)
 
+  it('lote recusado pela turma (403) não é reenviado a cada recuo: espera uma sincronização aceita e então sai, sem perder teclas', async () => {
+    // Variação do recuo no mínimo (0,8): o primeiro recuo é de 1,6 s.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    let syncRefused = false
+    let refusedSyncs = 0
+    apiMock.get.mockImplementation(async (url) => {
+      if (String(url).startsWith('/api/student/sync') && syncRefused) {
+        refusedSyncs += 1
+        throw Object.assign(new Error('Turma não autorizada para este estudante.'), { status: 403 })
+      }
+      return syncResponse({ timerRemaining: 600 })
+    })
+    let keystrokeCalls = 0
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      keystrokeCalls += 1
+      if (keystrokeCalls === 1) throw Object.assign(new Error('Turma não autorizada para este estudante.'), { status: 403 })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // recusado com 403
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(1))
+    syncRefused = true
+    const refusedAt = Date.now()
+    // O recuo (1,6 s) passa e uma sincronização também é recusada: nenhum reenvio (antes
+    // saía um a cada recuo, até 30 s, enquanto a tela estivesse aberta).
+    await waitFor(() => {
+      expect(refusedSyncs).toBeGreaterThan(0)
+      expect(Date.now() - refusedAt).toBeGreaterThan(2500)
+    }, { timeout: 6000 })
+    expect(keystrokeBatches()).toHaveLength(1)
+    // A turma volta a valer: a sincronização seguinte é aceita e as 20 teclas saem.
+    syncRefused = false
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(2), { timeout: 6000 })
+    expect(keystrokeBatches()[1].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 1))
+    await act(async () => {})
+    expect(keystrokeBatches()).toHaveLength(2)
+  }, 20000)
+
+  it('lote de aplicação que não existe mais (404) é descartado; sessão recusada (401) não tenta de novo depois que a prova sai da tela', async () => {
+    let sessionGone = false
+    apiMock.get.mockImplementation(async (url) => {
+      if (String(url).startsWith('/api/student/sync') && sessionGone) {
+        throw Object.assign(new Error('Sessão encerrada.'), { status: 401, data: { sessionRevoked: true } })
+      }
+      return syncResponse({ timerRemaining: 600 })
+    })
+    let keystrokeCalls = 0
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      keystrokeCalls += 1
+      if (keystrokeCalls === 1) throw Object.assign(new Error('Aplicação de prova não encontrada.'), { status: 404 })
+      throw Object.assign(new Error('Sessão encerrada.'), { status: 401, data: { sessionRevoked: true } })
+    })
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // 1 a 20: 404, descartado
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(1))
+    await act(async () => {})
+    typeKeys(20) // 21 a 40: sai na hora, sem as 20 descartadas e sem esperar recuo
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(2))
+    expect(keystrokeBatches()[1].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 21))
+    sessionGone = true
+    await act(async () => {})
+    vi.useFakeTimers()
+    try {
+      // A prova sai da tela: o resto vai uma vez com a saída e, recusado pela sessão, é
+      // descartado (antes eram mais 5 tentativas com recuo).
+      act(() => { router.unmountView() })
+      expect(keystrokeBatches()).toHaveLength(3)
+      expect(keystrokeBatches()[2].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 21))
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+      expect(keystrokeBatches()).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 15000)
+
   it('recuo do envio da digitação: dobra a cada falha seguida, de 2 s até 30 s, com variação de 0,8 a 1,2', () => {
     expect(keystrokeRetryDelay(1, () => 0.5)).toBe(2000)
     expect(keystrokeRetryDelay(2, () => 0.5)).toBe(4000)

@@ -9,7 +9,7 @@ import { TypedConfirm, typedConfirmMatches } from '../../components/ui/TypedConf
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Badge } from '../../components/ui/Badge'
 import { useApi } from '../../hooks/useApi'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -139,8 +139,6 @@ function TrashCard() {
   )
 }
 
-function _bkAuth() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; return a.adminSession ? { 'x-admin-session': a.adminSession } : {} } catch { return {} } }
-
 const BACKUP_ACTION_LABEL = {
   backup_restored: 'Restauração concluída',
   backup_restore_failed: 'Restauração com falha',
@@ -207,15 +205,11 @@ function BackupCard({ isAdmin }) {
       if (isAdmin) history.refetch(true)
     } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
   }
+  // Download e restauração passam pelo cliente da API (lib/api.js): sem rede, a mensagem
+  // em português em vez do "Failed to fetch" do navegador (fase 2, H9c).
   async function download(kind) {
     try {
-      const res = await fetch('/api/admin/backup/' + kind, { headers: _bkAuth() })
-      if (!res.ok) { const d = await res.json().catch(() => null); throw new Error((d && d.error) || 'Falha ao gerar backup') }
-      const blob = await res.blob()
-      const cd = res.headers.get('Content-Disposition') || ''
-      const m = cd.match(/filename="([^"]+)"/)
-      const name = m ? m[1] : (kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
-      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url)
+      await downloadFile('/api/admin/backup/' + kind, kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
       history.refetch(true)
     } catch (e) { toast.error(e.message) }
   }
@@ -230,13 +224,7 @@ function BackupCard({ isAdmin }) {
     setLegacyWarning(null)
     setBusy(true)
     try {
-      const res = await fetch('/api/admin/backup/restore', { method: 'POST', headers: _bkAuth(), body: fd })
-      const d = await res.json().catch(() => null)
-      if (res.status === 409 && d?.legacyBackup) {
-        setLegacyWarning({ message: d.error, exportedAt: d.exportedAt || '' })
-        return
-      }
-      if (!res.ok) throw new Error((d && d.error) || 'Falha ao restaurar')
+      const d = await api.post('/api/admin/backup/restore', fd, { timeoutMs: 0 })
       const skipped = Number(d && d.accountsNotRestored) || 0
       const legacy = d?.legacyApplications ? ` ${legacyRestoreNote(d)}` : ''
       toast.success(skipped > 0
@@ -244,6 +232,10 @@ function BackupCard({ isAdmin }) {
         : `Backup restaurado. Recarregue a página para ver os dados.${legacy}`)
       setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
     } catch (e) {
+      if (e.status === 409 && e.data?.legacyBackup) {
+        setLegacyWarning({ message: e.data.error, exportedAt: e.data.exportedAt || '' })
+        return
+      }
       toast.error(e.message)
       // A falha fica no histórico (a restauração bem-sucedida encerra as sessões).
       history.refetch(true)

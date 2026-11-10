@@ -46,6 +46,12 @@ const KEYSTROKE_FLUSH_SIZE = 20
 // - Falha de rede, prazo ou servidor fora: os eventos voltam para a frente do buffer e o
 //   envio seguinte espera o recuo (2 s, 4 s, 8 s... até 30 s, com variação de 0,8 a
 //   1,2), em vez de sair a cada tecla. Uma nova tentativa fica agendada no fim do recuo.
+// - Lote recusado pelo conteúdo (400, 413) ou de aplicação que não existe mais (404):
+//   descartado, porque reenviar daria o mesmo erro para sempre.
+// - Sessão recusada (401) ou turma e identidade recusadas (403): os eventos ficam no
+//   buffer, mas nada é reenviado sozinho (antes tentava de novo a cada recuo enquanto a
+//   tela estivesse aberta, sem chance de dar certo). O envio volta quando uma
+//   sincronização for aceita, no fim do recuo; se a prova sair da tela antes, descarta.
 // - Saída da prova (Sair e desmontagem): o que sobrou sai na hora, sem esperar o envio em
 //   andamento; depois que a tela saiu, o recuo vale por no máximo 5 tentativas e só com a
 //   sessão aberta.
@@ -155,6 +161,7 @@ export default function ExamRunner() {
   const flushRetryAtRef = useRef(0) // até quando o envio espera o recuo
   const flushRetryTimerRef = useRef(null)
   const flushLeaveFailuresRef = useRef(0) // falhas depois que a prova saiu da tela
+  const flushRefusedRef = useRef(false) // sessão ou turma recusada: espera uma sincronização aceita
   const flushRef = useRef(null)
   const syncInFlightRef = useRef(false) // sincronização em andamento
   const syncQueuedRef = useRef(false) // pedido explícito de sincronização durante uma
@@ -413,8 +420,21 @@ export default function ExamRunner() {
   }, [saveLocalCopy, runAutoSubmit])
   startTimeUpRef.current = startTimeUp
 
+  // Próximo envio da digitação no fim do recuo (o relógio do navegador pode disparar um
+  // instante antes da conta).
+  const scheduleKeystrokeRetry = useCallback(() => {
+    clearTimeout(flushRetryTimerRef.current)
+    const wait = Math.max(0, flushRetryAtRef.current - Date.now())
+    flushRetryTimerRef.current = setTimeout(() => {
+      flushRetryTimerRef.current = null
+      flushRetryAtRef.current = 0
+      flushRef.current?.()
+    }, wait)
+  }, [])
+
   // flushKeystrokes() envia o próximo lote; { keepalive: true } é a saída da página e
-  // { final: true } a saída da prova (não espera o envio em andamento nem o recuo).
+  // { final: true } a saída da prova (não espera o envio em andamento, o recuo nem uma
+  // sincronização aceita depois de uma recusa da sessão).
   const flushKeystrokes = useCallback(({ keepalive = false, final = false } = {}) => {
     const buffer = keyBufferRef.current
     if (!buffer.length) return
@@ -424,9 +444,10 @@ export default function ExamRunner() {
       keyBufferRef.current = []
       return
     }
-    // Um envio por vez e, depois de uma falha, só no fim do recuo: o pedido fica marcado
-    // e os eventos esperam no buffer.
-    if (!keepalive && !final && (flushInFlightRef.current > 0 || Date.now() < flushRetryAtRef.current)) {
+    // Um envio por vez e, depois de uma falha, só no fim do recuo (e, se o servidor recusou
+    // a sessão ou a turma, só depois de uma sincronização aceita): o pedido fica marcado e
+    // os eventos esperam no buffer.
+    if (!keepalive && !final && (flushInFlightRef.current > 0 || flushRefusedRef.current || Date.now() < flushRetryAtRef.current)) {
       flushQueuedRef.current = true
       return
     }
@@ -434,10 +455,11 @@ export default function ExamRunner() {
     const events = keepalive ? keepaliveKeystrokeBatch(base, buffer) : buffer.slice(0, KEYSTROKE_BATCH_MAX)
     keyBufferRef.current = buffer.slice(events.length)
     const payload = { ...base, events }
-    // Lote recusado pelo conteúdo (400 ou 413): reenviar daria o mesmo erro para sempre.
-    // Rede, prazo ou servidor fora: volta para a frente do buffer (não perde a cauda).
+    // Lote recusado pelo conteúdo (400 ou 413) ou de aplicação que não existe mais (404):
+    // reenviar daria o mesmo erro para sempre. Os outros (rede, prazo, servidor fora,
+    // sessão ou turma recusada) voltam para a frente do buffer (não perde a cauda).
     const requeue = (err) => {
-      if (err?.status === 400 || err?.status === 413) return false
+      if (err?.status === 400 || err?.status === 404 || err?.status === 413) return false
       keyBufferRef.current = events.concat(keyBufferRef.current)
       return true
     }
@@ -454,6 +476,7 @@ export default function ExamRunner() {
       flushInFlightRef.current = Math.max(0, flushInFlightRef.current - 1)
       flushFailuresRef.current = 0
       flushRetryAtRef.current = 0
+      flushRefusedRef.current = false
       if (flushInFlightRef.current > 0) return
       // Sobrou um lote inteiro (fila de uma queda da rede), houve pedido durante o envio,
       // a prova saiu da fase ativa (sem o relógio de 2 s) ou saiu da tela: o próximo lote
@@ -466,6 +489,20 @@ export default function ExamRunner() {
       flushInFlightRef.current = Math.max(0, flushInFlightRef.current - 1)
       if (!requeue(err)) return
       flushFailuresRef.current += 1
+      flushRetryAtRef.current = Date.now() + keystrokeRetryDelay(flushFailuresRef.current)
+      // Sessão (401) ou turma e identidade (403) recusadas: tentar de novo no recuo não
+      // muda nada. Nenhuma tentativa fica agendada; a sincronização aceita seguinte retoma
+      // o envio (runSync). Fora da tela, ninguém retoma: descarta.
+      if (err?.status === 401 || err?.status === 403) {
+        clearTimeout(flushRetryTimerRef.current)
+        flushRetryTimerRef.current = null
+        if (!mountedRef.current) {
+          keyBufferRef.current = []
+          return
+        }
+        flushRefusedRef.current = true
+        return
+      }
       // Saiu da tela: tenta mais algumas vezes e desiste (a página não guarda mais nada).
       if (!mountedRef.current) {
         flushLeaveFailuresRef.current += 1
@@ -474,17 +511,9 @@ export default function ExamRunner() {
           return
         }
       }
-      const delay = keystrokeRetryDelay(flushFailuresRef.current)
-      flushRetryAtRef.current = Date.now() + delay
-      clearTimeout(flushRetryTimerRef.current)
-      flushRetryTimerRef.current = setTimeout(() => {
-        // Fim do recuo (o relógio do navegador pode disparar um instante antes da conta).
-        flushRetryTimerRef.current = null
-        flushRetryAtRef.current = 0
-        flushRef.current?.()
-      }, delay)
+      scheduleKeystrokeRetry()
     })
-  }, [email, studentClass, courseId, examKey, applicationId, attemptId])
+  }, [email, studentClass, courseId, examKey, applicationId, attemptId, scheduleKeystrokeRetry])
   flushRef.current = flushKeystrokes
 
   // Pede a tela cheia e diz se a página ficou em tela cheia. Sem a API (iPhone) ou com a
@@ -688,6 +717,12 @@ export default function ExamRunner() {
         setFatal('Esta prova não está mais disponível para sua turma.')
         setPhase('error')
         return
+      }
+      // Sessão e turma aceitas de novo: a digitação que o servidor tinha recusado (401 ou
+      // 403) volta a sair, no fim do recuo.
+      if (flushRefusedRef.current) {
+        flushRefusedRef.current = false
+        if (keyBufferRef.current.length) scheduleKeystrokeRetry()
       }
       setCfg(c)
       setExamConfigVersion(r.examConfigVersion || null)
