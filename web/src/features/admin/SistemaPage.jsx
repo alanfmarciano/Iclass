@@ -19,6 +19,9 @@ import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { RedeCard } from './sistema/RedeCard'
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
+// Texto do diálogo Reiniciar (H3c). Sem "Ninguém precisa entrar de novo" até a frente do H3.
+export const RESTART_DESCRIPTION = 'O IClass fica fora do ar por alguns segundos e volta sozinho. Quem estiver usando pode precisar entrar de novo.'
+
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
 const UPLOAD_TYPES = [['pdf', 'PDF'], ['image', 'Imagem'], ['video', 'Vídeo'], ['doc', 'Documento'], ['sheet', 'Planilha'], ['zip', 'Compactado'], ['other', 'Outros']]
 
@@ -438,7 +441,10 @@ export default function SistemaPage() {
 
       {!canManage && <Badge tone="neutral">Ações de manutenção não liberadas para esta conta.</Badge>}
 
-      <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description="O IClass fica fora do ar por alguns segundos e volta sozinho. Ninguém precisa entrar de novo."
+      {/* Até a frente do H3 (J3), o navegador ainda pede login de novo quando vê o servidor
+          novo (AuthProvider, troca de instanceId), mesmo com a sessão guardada no servidor
+          (H3a-2): o texto não promete que ninguém entra de novo (decisões §9). */}
+      <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description={RESTART_DESCRIPTION}
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} onClick={restart}>Reiniciar agora</Button></>}>
         {previewError && <p className="text-sm text-danger">{previewError}</p>}
         {restartActive.length > 0 ? (
