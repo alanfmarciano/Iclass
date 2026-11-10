@@ -179,4 +179,45 @@ describe('[UC-DESEMPENHO-002] usePolling: uma consulta por vez, pausa com a aba 
     expect(first).toHaveBeenCalledTimes(1)
     expect(second).toHaveBeenCalledTimes(1)
   })
+
+  it('resetKey: o endereço da consulta mudou, então ela recomeça e pergunta na hora (sem immediate, depois de um intervalo)', async () => {
+    const task = vi.fn(async () => true)
+    const { rerender } = renderHook(({ resetKey }) => usePolling(task, { intervalMs: 30000, resetKey }), { initialProps: { resetKey: 'turma=A' } })
+    expect(task).toHaveBeenCalledTimes(1)
+    rerender({ resetKey: 'turma=A' })
+    expect(task).toHaveBeenCalledTimes(1)
+    // Antes, trocar de turma não consultava: a contagem da turma anterior ficava até 30 s.
+    rerender({ resetKey: 'turma=B' })
+    expect(task).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(29999) })
+    expect(task).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(task).toHaveBeenCalledTimes(3)
+
+    const later = vi.fn(async () => true)
+    const view = renderHook(({ resetKey }) => usePolling(later, { intervalMs: 1000, immediate: false, resetKey }), { initialProps: { resetKey: 'curso=1' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+    view.rerender({ resetKey: 'curso=2' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(999) })
+    expect(later).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(later).toHaveBeenCalledTimes(1)
+  })
+
+  it('resetKey: a troca zera o recuo das falhas do endereço anterior', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    try {
+      const task = vi.fn(async () => false)
+      const { rerender } = renderHook(({ resetKey }) => usePolling(task, { intervalMs: 1000, maxBackoffMs: 15000, resetKey }), { initialProps: { resetKey: 'a' } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000 + 4000 + 8000) })
+      expect(task).toHaveBeenCalledTimes(4)
+      task.mockImplementation(async () => true)
+      rerender({ resetKey: 'b' })
+      expect(task).toHaveBeenCalledTimes(5)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(task).toHaveBeenCalledTimes(6)
+    } finally {
+      Math.random.mockRestore()
+    }
+  })
 })

@@ -949,6 +949,18 @@ test('[UC-ERRO-001] crash.log: só logError escreve, sem query string, e o arqui
         logError('erro de tela', new Error('x'.repeat(200000)), { details: { area: 'admin', caminho: '/provas' } });
         assert.ok(fs.statSync(file).size < 100000);
         assert.match(fs.readFileSync(file, 'utf8'), /area: admin\n {2}caminho: \/provas\n/);
+
+        // Mensagem com quebra de linha não forja outro bloco (fase 2, H9c): a linha que
+        // começa com "[" é recuada, \r e U+2028 viram \n e caracteres de controle saem.
+        const forged = '[2026-01-01T00:00:00.000Z] unhandledRejection deadbeef GET /api/admin/backup (instrutor admin@teste.local)';
+        logError('erro interno', new Error(`falhou\n${forged}\r${forged}\u2028${forged}\u001b[0m`), { req: { id: 'cafe0002', method: 'GET', originalUrl: '/api/x' } });
+        logError(`tipo\n${forged}`, `[${forged}`, { details: { [`chave\n${forged}`]: `valor\r\n${forged}` } });
+        const injected = fs.readFileSync(file, 'utf8');
+        assert.doesNotMatch(injected, /\r|\u2028|\u001b/);
+        assert.ok(!injected.split('\n').some(line => line.startsWith('[2026-01-01')), 'nenhuma linha forjada começa um bloco');
+        assert.match(injected, /\] erro interno cafe0002 GET \/api\/x\nError: falhou\n {2}\[2026-01-01T00:00:00\.000Z\] unhandledRejection/);
+        assert.match(injected, /\] tipo \[2026-01-01T00:00:00\.000Z\] unhandledRejection [^\n]+\n {2}\[\[2026-01-01/);
+        assert.match(injected, /\n {2}chave \[2026-01-01[^\n]+: valor \[2026-01-01/);
     } finally {
         console.error = originalError;
     }

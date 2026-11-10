@@ -27,7 +27,7 @@ const {
     findClassByNameAndCourse,
     getReleasedItemsForClass
 } = require('../middlewares.js');
-const { logError } = require('../utils/errorLog.js');
+const { logError, oneLine } = require('../utils/errorLog.js');
 const { rateLimit } = require('../utils/rateLimit.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
@@ -63,7 +63,10 @@ router.get('/api/connection', (req, res) => {
 // caminho da página e a versão do build. Não grava no banco. Pede sessão (aluno ou
 // instrutor) e aceita até 10 avisos por minuto por e-mail (acima disso, 429): com o
 // limite do arquivo (5 MB, utils/errorLog.js) e o tamanho dos campos, um aparelho não
-// enche o disco. Fora de /api/admin: o aluno também avisa.
+// enche o disco. Só o aviso aceito conta no limite: o recusado (400) não grava nada.
+// Cada campo vira uma linha só (quebras de linha e caracteres de controle saem), para
+// o texto mandado pelo navegador não forjar no arquivo um bloco com cabeçalho de outro
+// usuário. Fora de /api/admin: o aluno também avisa.
 // O schema fica aqui até o H9b trazer o utils/inputSchema.js (mesmas mensagens).
 const CLIENT_ERROR_AREAS = ['raiz', 'admin', 'aluno', 'prova'];
 const CLIENT_ERROR_FIELDS = [
@@ -95,17 +98,17 @@ function clientErrorProblem(body) {
 }
 
 router.post('/api/client-error', validateAnySession, (req, res) => {
+    const problem = clientErrorProblem(req.body);
+    if (problem) return res.status(400).json({ success: false, ...problem });
     const email = String((req.requester && req.requester.email) || '').toLowerCase();
     const limit = rateLimit(`client-error:${email}`, CLIENT_ERROR_RATE_LIMIT);
     if (!limit.allowed) {
         res.set('Retry-After', String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))));
         return res.status(429).json({ success: false, error: 'Muitos avisos de erro seguidos. Aguarde um instante.' });
     }
-    const problem = clientErrorProblem(req.body);
-    if (problem) return res.status(400).json({ success: false, ...problem });
-    const text = (name) => (typeof req.body[name] === 'string' ? req.body[name].trim() : '');
+    const text = (name) => (typeof req.body[name] === 'string' ? oneLine(req.body[name]) : '');
     // Objeto sem stack: o stack do servidor não diz nada sobre o erro do navegador.
-    logError('erro de tela', { message: text('message') }, {
+    logError('erro de tela', { message: text('message') || '(sem mensagem)' }, {
         req,
         details: { 'área': text('area'), caminho: text('path'), build: text('build') },
     });

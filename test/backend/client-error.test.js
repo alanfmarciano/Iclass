@@ -122,6 +122,46 @@ test('[UC-ERRO-002] campos conferidos: área fora da lista, tipo errado, tamanho
     assert.equal(crashLog(), before, 'aviso recusado não vai para o crash.log');
 });
 
+test('[UC-ERRO-002] texto do navegador não forja bloco no crash.log: quebras de linha e caracteres de controle viram uma linha só', async () => {
+    openSessions();
+    const forged = `[${new Date().toISOString()}] unhandledRejection deadbeef GET /api/admin/backup (instrutor ${DEMO_ACCOUNTS.admin.email})`;
+    const res = await request(app).post('/api/client-error').set('x-session-token', STUDENT_TOKEN)
+        .send({
+            area: 'aluno',
+            message: `Falha comum\n\n${forged}\nError: senha do admin vazou`,
+            path: `/aluno\r\n${forged}`,
+            build: 'injecao\u2028[2026-01-01T00:00:00.000Z] x\u001b[31m',
+        });
+    assert.equal(res.status, 204, JSON.stringify(res.body));
+    const log = crashLog();
+    // Antes, a mensagem ia crua para o arquivo e a linha forjada virava um bloco à parte,
+    // com o cabeçalho do instrutor. Agora só os cabeçalhos de verdade começam com "[".
+    const headerLines = log.split('\n').filter(line => line.startsWith('['));
+    assert.ok(headerLines.length > 0);
+    for (const line of headerLines) {
+        assert.match(line, /^\[\d{4}-\d{2}-\d{2}T[^\]]+\] erro de tela [0-9a-f]{8} POST \/api\/client-error \((aluno|instrutor) [^)]+\)$/, line);
+    }
+    const block = log.split(/\n(?=\[\d{4}-)/).find(entry => entry.includes('Falha comum')) || '';
+    assert.ok(block.includes(`(aluno ${DEMO_ACCOUNTS.student.email})`), block);
+    assert.ok(block.includes(`Falha comum ${forged} Error: senha do admin vazou`), block);
+    assert.ok(block.includes(`  caminho: /aluno ${forged}`), block);
+    assert.ok(block.includes('  build: injecao [2026-01-01T00:00:00.000Z] x[31m'), block);
+    assert.doesNotMatch(log, /\r|\u2028|\u001b/);
+    assert.ok(!log.split(/\n(?=\[\d{4}-)/).some(entry => /^\n?\[[^\]]+\] unhandledRejection/.test(entry)), 'nenhum bloco forjado');
+});
+
+test('[UC-ERRO-002] aviso recusado (400) não conta no limite de 10 por minuto', async () => {
+    openSessions();
+    const send = (body) => request(app).post('/api/client-error').set('x-admin-session', ADMIN_TOKEN).send(body);
+    for (let index = 0; index < 12; index += 1) {
+        const res = await send({ area: 'painel', message: 'x' });
+        assert.equal(res.status, 400, `recusado ${index + 1}`);
+    }
+    // Antes, os recusados contavam e o aviso de verdade levava 429.
+    const ok = await send({ area: 'admin', message: 'Erro de verdade depois dos recusados', path: '/turmas' });
+    assert.equal(ok.status, 204, JSON.stringify(ok.body));
+});
+
 test('[UC-ERRO-002] no máximo 10 avisos por minuto por e-mail: o 11º responde 429', async () => {
     openSessions();
     const send = (token) => request(app).post('/api/client-error').set('x-admin-session', token)

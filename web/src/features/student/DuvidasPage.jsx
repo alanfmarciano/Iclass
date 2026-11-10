@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Send, MessagesSquare, CheckCircle2, Clock3 } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
@@ -41,18 +41,26 @@ export default function DuvidasPage() {
 
   // requestOptions: o que o usePolling manda na consulta periódica (prazo e cabeçalho de
   // consulta de fundo). Devolve se a resposta chegou (recuo do usePolling).
+  // A resposta que chega depois de trocar de curso ou turma é descartada: antes, a
+  // consulta lenta da turma anterior voltava por cima das dúvidas da turma nova.
+  const classKey = `${courseId || ''}|${studentClass || ''}`
+  const classKeyRef = useRef(classKey)
+  classKeyRef.current = classKey
   async function load(silent = false, requestOptions = undefined) {
+    const current = () => classKeyRef.current === classKey
     if (!silent) { setLoading(true); setError(null) }
     try {
       const r = await api.get(`/api/student/my-forum?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`, requestOptions)
+      if (!current()) return true
       setComments(r.comments || [])
       if (Array.isArray(r.topics) && r.topics.length) setTopics(r.topics)
       return true
-    } catch (e) { if (!silent) setError(e); return false } finally { if (!silent) setLoading(false) }
+    } catch (e) { if (!silent && current()) setError(e); return false } finally { if (!silent && current()) setLoading(false) }
   }
   useEffect(() => { load() /* eslint-disable-next-line */ }, [courseId, studentClass])
-  // A cada 15 s, uma consulta por vez e só com a aba à vista (usePolling).
-  usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 15000, immediate: false })
+  // A cada 15 s, uma consulta por vez e só com a aba à vista (usePolling); a troca de
+  // curso ou turma recomeça a contagem (a carga acima já consulta na hora).
+  usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 15000, immediate: false, resetKey: classKey })
 
   async function post() {
     if (!text.trim()) return

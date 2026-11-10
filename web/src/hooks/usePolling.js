@@ -8,7 +8,7 @@ import { POLL_TIMEOUT_MS } from '../lib/requestTimeouts'
 // lentidão da sala inteira; com a aba em segundo plano, continuava perguntando à toa.
 //
 // usePolling(task, { intervalMs, enabled, pauseWhenHidden, maxBackoffMs, immediate,
-//   background, timeoutMs }) → { runNow }
+//   background, timeoutMs, resetKey }) → { runNow }
 // - task(requestOptions): a consulta. Recebe { background, timeoutMs } para repassar à
 //   api (api.get(caminho, requestOptions)): por padrão a consulta sai com
 //   X-IClass-Background: 1 (a pessoa não fez nada; o servidor não conta como uso da
@@ -23,6 +23,11 @@ import { POLL_TIMEOUT_MS } from '../lib/requestTimeouts'
 //   hora;
 // - runNow(): consulta agora (depois de uma ação na tela). Com uma em andamento, marca
 //   uma única consulta logo depois dela;
+// - resetKey: o que a consulta pergunta (endpoint, curso e turma...). Quando muda, a
+//   consulta recomeça do zero, como se tivesse acabado de ligar: com immediate, pergunta
+//   na hora o endereço novo (antes a resposta da turma anterior ficava na tela até o
+//   intervalo seguinte); sem immediate, a primeira vem depois de um intervalo. A
+//   resposta atrasada do endereço anterior fica a cargo da tela, que a descarta;
 // - desligar (enabled false), trocar o intervalo ou desmontar limpa tudo.
 // A sincronização da prova (ExamRunner) é a exceção: não pausa com a aba oculta e tem a
 // própria guarda.
@@ -48,6 +53,7 @@ export function usePolling(task, options = {}) {
     immediate = true,
     background = true,
     timeoutMs = POLL_TIMEOUT_MS,
+    resetKey = null,
   } = options
   const taskRef = useRef(task)
   taskRef.current = task
@@ -115,7 +121,7 @@ export function usePolling(task, options = {}) {
       document.removeEventListener('visibilitychange', onVisibility)
       if (controlRef.current === runNow) controlRef.current = null
     }
-  }, [active, interval, pauseWhenHidden, maxBackoffMs, immediate])
+  }, [active, interval, pauseWhenHidden, maxBackoffMs, immediate, resetKey])
 
   const runNow = useCallback(() => {
     if (controlRef.current) controlRef.current()

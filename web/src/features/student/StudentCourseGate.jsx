@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Clock3, GraduationCap, RefreshCw, XCircle } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -59,16 +59,11 @@ export function StudentCourseGate({ children }) {
 
   // Sem turma ou com pedido de matrícula em análise: confere a cada 5 s, uma consulta por
   // vez e só com a aba à vista (usePolling); o acesso abre sozinho depois da aprovação.
+  // A lista mudou (ação na tela, outra conta): a consulta recomeça e confere já, uma vez
+  // só (antes, ligar a espera fazia dois pedidos iguais no mesmo instante).
   const waitingEnrollment = !!auth.email && !(classes.length > 0 && pending.length === 0)
-  const enrollmentPolling = usePolling((requestOptions) => refresh(requestOptions), { intervalMs: 5000, enabled: waitingEnrollment })
-  // Ação na tela (cancelar, pedir de novo) ou a lista mudou: confere já.
   const enrollmentKey = `${auth.email}|${classes.length}|${pending.length}`
-  const enrollmentKeyRef = useRef(enrollmentKey)
-  useEffect(() => {
-    if (enrollmentKeyRef.current === enrollmentKey) return
-    enrollmentKeyRef.current = enrollmentKey
-    if (waitingEnrollment) enrollmentPolling.runNow()
-  }, [enrollmentKey, waitingEnrollment, enrollmentPolling.runNow])
+  usePolling((requestOptions) => refresh(requestOptions), { intervalMs: 5000, enabled: waitingEnrollment, resetKey: enrollmentKey })
 
   async function cancel(request) {
     setBusy(request.id)

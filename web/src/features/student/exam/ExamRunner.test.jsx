@@ -13,7 +13,7 @@ vi.mock('../../../lib/api', () => ({ api: apiMock, hasActiveSession: sessionMock
 vi.mock('../useStudent', () => ({ useStudent: () => ({ email: 'ana@escola.local', studentClass: '1DES', courseId: 'curso' }) }))
 vi.mock('../../../context/ToastProvider', () => ({ useToast: () => toast }))
 
-import ExamRunner, { KEYSTROKE_BATCH_MAX, KEYSTROKE_KEEPALIVE_MAX_BYTES, keepaliveKeystrokeBatch } from './ExamRunner'
+import ExamRunner, { KEYSTROKE_BATCH_MAX, KEYSTROKE_KEEPALIVE_MAX_BYTES, keepaliveKeystrokeBatch, keystrokeRetryDelay } from './ExamRunner'
 import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
 import { ExamErrorScreen } from './ExamErrorScreen'
 import { clearInterruptedExam, clearRenderError } from '../../../lib/renderErrors'
@@ -125,6 +125,7 @@ afterEach(() => {
   cleanup()
   delete document.fullscreenElement
   removeFullscreenApi()
+  if (vi.isMockFunction(Math.random)) Math.random.mockRestore()
 })
 
 describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', () => {
@@ -1091,7 +1092,9 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
     batches.forEach((batch) => expect(batch.options).toEqual({ timeoutMs: 10000 }))
   }, 15000)
 
-  it('envio que falha pela rede volta para a frente do buffer; lote recusado pelo servidor (413) não é reenviado para sempre', async () => {
+  it('envio que falha pela rede volta para a frente do buffer e sai no fim do recuo; lote recusado pelo servidor (413) não é reenviado para sempre', async () => {
+    // Variação do recuo no mínimo (0,8): o primeiro recuo é de 1,6 s.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
     apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
     const outcomes = [
       Object.assign(new Error('Sem conexão'), { status: 0, network: true }),
@@ -1111,9 +1114,11 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
     typeKeys(20) // falha pela rede
     await waitFor(() => expect(keystrokeBatches()).toHaveLength(1))
     await act(async () => {})
-    // A tecla seguinte já encontra 21 no buffer: as 20 que falharam, na ordem, e a nova.
+    // A tecla seguinte não reenvia na hora (antes saía um envio a cada tecla com a rede
+    // fora): espera o recuo e então leva as 20 que falharam, na ordem, e a nova.
     typeKeys(1)
-    await waitFor(() => expect(keystrokeBatches()).toHaveLength(2))
+    expect(keystrokeBatches()).toHaveLength(1)
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(2), { timeout: 4000 })
     expect(keystrokeBatches()[1].seqs).toEqual(Array.from({ length: 21 }, (_, index) => index + 1))
     await act(async () => {})
     typeKeys(20) // 22 a 41: recusado com 413
@@ -1123,6 +1128,155 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
     typeKeys(20)
     await waitFor(() => expect(keystrokeBatches()).toHaveLength(4))
     expect(keystrokeBatches()[3].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 42))
+  }, 15000)
+
+  it('recuo do envio da digitação: dobra a cada falha seguida, de 2 s até 30 s, com variação de 0,8 a 1,2', () => {
+    expect(keystrokeRetryDelay(1, () => 0.5)).toBe(2000)
+    expect(keystrokeRetryDelay(2, () => 0.5)).toBe(4000)
+    expect(keystrokeRetryDelay(3, () => 0.5)).toBe(8000)
+    expect(keystrokeRetryDelay(4, () => 0.5)).toBe(16000)
+    expect(keystrokeRetryDelay(5, () => 0.5)).toBe(30000)
+    expect(keystrokeRetryDelay(50, () => 0.5)).toBe(30000)
+    expect(keystrokeRetryDelay(1, () => 0)).toBe(1600)
+    expect(keystrokeRetryDelay(1, () => 0.999999)).toBe(2400)
+    expect(keystrokeRetryDelay(5, () => 0.999999)).toBe(36000)
+  })
+
+  it('com a rede caída, a digitação não vira um envio por tecla: o próximo envio espera o recuo e leva tudo, na ordem', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    let offline = true
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      if (offline) throw Object.assign(new Error('Sem conexão'), { status: 0, network: true })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    // Dez rajadas de 20 teclas, cada uma depois da falha da anterior: antes, cada rajada
+    // fazia um envio na hora (a falha devolvia os eventos e a tecla seguinte reenviava).
+    for (let round = 0; round < 10; round += 1) {
+      typeKeys(20)
+      await act(async () => {})
+    }
+    expect(keystrokeBatches()).toHaveLength(1)
+    offline = false
+    await waitFor(() => expect(keystrokeBatches().length).toBeGreaterThan(1), { timeout: 4000 })
+    await waitFor(() => expect(keystrokeBatches().slice(1).flatMap((batch) => batch.seqs)).toHaveLength(200))
+    expect(keystrokeBatches().slice(1).flatMap((batch) => batch.seqs)).toEqual(Array.from({ length: 200 }, (_, index) => index + 1))
+  }, 15000)
+
+  it('Sair da prova com um envio da digitação em andamento: o resto sai na hora e nenhuma tecla se perde', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    let releaseFirst
+    const first = new Promise((resolve) => { releaseFirst = resolve })
+    let calls = 0
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      calls += 1
+      if (calls === 1) await first
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // o primeiro lote fica pendurado
+    typeKeys(10)
+    expect(keystrokeBatches()).toHaveLength(1)
+    await user.click(screen.getByRole('button', { name: 'Sair', exact: true }))
+    await user.click(await screen.findByRole('button', { name: 'Salvar e sair' }))
+    expect(await screen.findByText('Lista de provas')).toBeVisible()
+    // Antes, o envio da saída voltava sem enviar (havia um em andamento) e a tela já
+    // tinha saído quando ele terminava: as 10 últimas teclas se perdiam.
+    expect(keystrokeBatches().flatMap((batch) => batch.seqs).sort((a, b) => a - b)).toEqual(Array.from({ length: 30 }, (_, index) => index + 1))
+    await act(async () => { releaseFirst() })
+    await act(async () => {})
+    expect(keystrokeBatches()).toHaveLength(2)
+  }, 15000)
+
+  it('a prova sai da tela com mais de um lote no buffer: os lotes seguintes continuam saindo depois da desmontagem', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const releases = []
+    apiMock.post.mockImplementation((url) => {
+      if (url !== '/api/student/log-keystrokes') return Promise.resolve({ success: true })
+      return new Promise((resolve) => { releases.push(() => resolve({ success: true })) })
+    })
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // pendurado
+    typeKeys(1180)
+    expect(keystrokeBatches()).toHaveLength(1)
+    // Desmontagem (fim da sessão no meio, navegação que o roteador não segurou): o que
+    // sobrou sai sem esperar o envio pendurado, 500 por vez.
+    act(() => { router.unmountView() })
+    expect(keystrokeBatches()).toHaveLength(2)
+    expect(keystrokeBatches()[1].seqs[0]).toBe(21)
+    expect(keystrokeBatches()[1].seqs).toHaveLength(500)
+    // Antes, o encadeamento exigia a tela montada e as 680 restantes ficavam no buffer.
+    for (let round = 0; round < 6 && releases.length; round += 1) {
+      await act(async () => { releases.splice(0).forEach((release) => release()) })
+      await act(async () => {})
+    }
+    const seqs = keystrokeBatches().flatMap((batch) => batch.seqs)
+    expect(seqs).toHaveLength(1200)
+    expect([...seqs].sort((a, b) => a - b)).toEqual(Array.from({ length: 1200 }, (_, index) => index + 1))
+    keystrokeBatches().forEach((batch) => expect(batch.seqs.length).toBeLessThanOrEqual(500))
+  }, 15000)
+
+  it('depois que a prova sai da tela, sem rede: o resto tenta de novo com recuo, no máximo 5 vezes, e sem sessão não envia', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/log-keystrokes') throw Object.assign(new Error('Sem conexão'), { status: 0, network: true })
+      return { success: true }
+    })
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5)
+    expect(keystrokeBatches()).toHaveLength(0)
+    vi.useFakeTimers()
+    try {
+      act(() => { router.unmountView() })
+      expect(keystrokeBatches()).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+      // O envio da saída e mais 5 tentativas, cada uma com as mesmas 5 teclas; depois desiste.
+      expect(keystrokeBatches()).toHaveLength(6)
+      keystrokeBatches().forEach((batch) => expect(batch.seqs).toEqual([1, 2, 3, 4, 5]))
+    } finally {
+      vi.useRealTimers()
+    }
+
+    cleanup()
+    apiMock.post.mockClear()
+    const again = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5)
+    sessionMock.mockReturnValue(false)
+    act(() => { again.unmountView() })
+    await act(async () => {})
+    expect(keystrokeBatches()).toHaveLength(0)
+  }, 15000)
+
+  it('lote do keepalive que falha com a página ainda aberta volta para o buffer e sai no envio seguinte', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url, body, options) => {
+      if (url === '/api/student/log-keystrokes' && options?.keepalive) throw Object.assign(new Error('Sem conexão'), { status: 0, network: true })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5)
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    await act(async () => {})
+    // Página voltou do cache do navegador (voltar/avançar): as 5 teclas não se perderam.
+    act(() => { window.dispatchEvent(new Event('pageshow')) })
+    await waitFor(() => expect(keystrokeBatches().filter((batch) => !batch.options?.keepalive)).toHaveLength(1), { timeout: 4000 })
+    expect(keystrokeBatches().filter((batch) => !batch.options?.keepalive)[0].seqs).toEqual([1, 2, 3, 4, 5])
   }, 15000)
 
   it('na saída da página o lote com keepalive leva no máximo 500 teclas e cabe no limite do navegador', async () => {

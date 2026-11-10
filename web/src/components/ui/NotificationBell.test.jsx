@@ -25,6 +25,47 @@ afterEach(() => {
 })
 
 describe('Sino de notificações', () => {
+  it('[UC-NOTIF-001] trocar de turma consulta o sino da turma nova na hora e não mostra nem marca a contagem da anterior', async () => {
+    const turmaA = { unread: 3, items: [{ id: 'nota:a', key: 'c1::A::nota:a', type: 'nota', title: 'Nota da turma A', unread: true }] }
+    const turmaB = { unread: 1, items: [{ id: 'nota:b', key: 'c1::B::nota:b', type: 'nota', title: 'Nota da turma B', unread: true }] }
+    let releaseB
+    mocks.get.mockImplementation((url) => {
+      if (url.includes('studentClass=A')) return Promise.resolve(turmaA)
+      return new Promise((resolve) => { releaseB = () => resolve(turmaB) })
+    })
+    const bell = (cls) => <MemoryRouter><NotificationBell endpoint={`/api/student/notifications?courseId=c1&studentClass=${cls}`} seenEndpoint={`/api/student/notifications/seen?courseId=c1&studentClass=${cls}`} /></MemoryRouter>
+    const view = render(bell('A'))
+    expect(await screen.findByRole('button', { name: 'Notificações: 3 novas' })).toBeInTheDocument()
+    view.rerender(bell('B'))
+    // Antes, a consulta da turma B só saía no intervalo seguinte (30 s) e o sino seguia
+    // com as 3 da turma A.
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/student/notifications?courseId=c1&studentClass=B', expect.anything()))
+    expect(screen.getByRole('button', { name: 'Notificações' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Notificações' }))
+    expect(screen.queryByText('Nota da turma A')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Marcar como lidas/ })).not.toBeInTheDocument()
+    releaseB()
+    expect(await screen.findByText('Nota da turma B')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Marcar como lidas/ }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalled())
+    expect(mocks.post).toHaveBeenCalledWith('/api/student/notifications/seen?courseId=c1&studentClass=B', { keys: ['c1::B::nota:b'], ids: ['nota:b'] })
+  })
+
+  it('[UC-NOTIF-001] a resposta atrasada da turma anterior não sobrescreve a da turma nova', async () => {
+    let releaseA
+    mocks.get.mockImplementation((url) => {
+      if (url.includes('studentClass=A')) return new Promise((resolve) => { releaseA = () => resolve({ unread: 5, items: [{ id: 'x', type: 'nota', title: 'Antiga', unread: true }] }) })
+      return Promise.resolve({ unread: 1, items: [{ id: 'y', type: 'nota', title: 'Nova', unread: true }] })
+    })
+    const bell = (cls) => <MemoryRouter><NotificationBell endpoint={`/api/student/notifications?studentClass=${cls}`} seenEndpoint="/api/student/notifications/seen" /></MemoryRouter>
+    const view = render(bell('A'))
+    view.rerender(bell('B'))
+    expect(await screen.findByRole('button', { name: 'Notificações: 1 nova' })).toBeInTheDocument()
+    releaseA()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(screen.getByRole('button', { name: 'Notificações: 1 nova' })).toBeInTheDocument()
+  })
+
   it('[UC-NOTIF-001] "Marcar como lidas" envia os ids (avisos) e as chaves por curso + turma do servidor', async () => {
     mocks.get.mockResolvedValue({
       unread: 1,

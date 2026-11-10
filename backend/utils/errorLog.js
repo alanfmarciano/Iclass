@@ -5,6 +5,11 @@
 // do stack. Nunca grava corpo nem query string do pedido (podem trazer senha ou
 // ?access=). Ao passar de 5 MB o arquivo vira crash.log.1 (substitui o anterior), para
 // uma rajada de erros não encher o disco.
+// Só a linha de cabeçalho de um bloco começa com "[": a mensagem e o stack vêm de
+// fora (o texto de um erro, ou o aviso de erro de tela que o navegador manda), e uma
+// linha deles que comece com "[" é recuada, com as quebras de linha normalizadas e os
+// caracteres de controle tirados. Assim ninguém forja no arquivo um bloco com cabeçalho
+// de outro usuário (fase 2, H9c).
 const fs = require('fs');
 const path = require('path');
 const runtimePaths = require('../runtimePaths.js');
@@ -17,8 +22,25 @@ function crashLogPath() {
     return path.join(runtimePaths.DATA_DIR, 'crash.log');
 }
 
+// Quebras de linha de todo tipo (inclusive U+2028, U+2029 e NEL, que alguns editores
+// mostram como linha nova) e os outros caracteres de controle, menos a tabulação.
+const LINE_BREAKS = /\r\n|[\r\n\u0085\u2028\u2029]/g;
+const LINE_BREAK_RUNS = /(?:\r\n|[\r\n\u0085\u2028\u2029])+/g;
+const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
+
 function oneLine(value) {
-    return String(value == null ? '' : value).replace(/[\r\n]+/g, ' ').trim();
+    return String(value == null ? '' : value).replace(LINE_BREAK_RUNS, ' ').replace(CONTROL_CHARS, '').trim();
+}
+
+// Texto de várias linhas que vem de fora (mensagem e stack): quebras normalizadas para
+// \n, sem caracteres de controle, e linha que comece com "[" recuada em dois espaços.
+function safeMultiline(text) {
+    return String(text == null ? '' : text)
+        .replace(LINE_BREAKS, '\n')
+        .replace(CONTROL_CHARS, '')
+        .split('\n')
+        .map(line => (line.startsWith('[') ? `  ${line}` : line))
+        .join('\n');
 }
 
 // Caminho do pedido sem a query string (req.path é relativo ao ponto de montagem do
@@ -45,7 +67,9 @@ function errorDetail(err) {
     if (err && typeof err === 'object' && err.stack) detail = String(err.stack);
     else if (err && typeof err === 'object' && err.message) detail = String(err.message);
     else detail = String(err);
-    return detail.length > MAX_DETAIL_CHARS ? `${detail.slice(0, MAX_DETAIL_CHARS)}\n[... cortado]` : detail;
+    const cut = detail.length > MAX_DETAIL_CHARS;
+    detail = safeMultiline(cut ? detail.slice(0, MAX_DETAIL_CHARS) : detail);
+    return cut ? `${detail}\n  [... cortado]` : detail;
 }
 
 function errorSummary(err) {
@@ -128,5 +152,6 @@ module.exports = {
     CRASH_LOG_MAX_BYTES,
     crashLogPath,
     logError,
+    oneLine,
     requestActor,
 };

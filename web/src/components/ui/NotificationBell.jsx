@@ -45,26 +45,32 @@ function timeAgo(at) {
 // quando há algo novo, em vez do ponto vermelho fixo que existia antes.
 // `onOpenItem(item)` (opcional) abre o item: troca de turma no painel do instrutor,
 // marca o aviso como lido no do aluno. Se devolver true, o item fica lido na hora.
+const NO_NOTIFICATIONS = { endpoint: null, items: [], unread: 0 }
+
 export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName, onOpenItem }) {
-  const [data, setData] = useState({ items: [], unread: 0 })
+  // A lista guarda de qual endpoint veio: depois de trocar de turma ou curso, a da turma
+  // anterior não aparece nem é marcada como lida (o sino fica vazio até a nova chegar).
+  const [stored, setData] = useState(NO_NOTIFICATIONS)
+  const data = stored.endpoint === endpoint ? stored : NO_NOTIFICATIONS
   const [open, setOpen] = useState(false)
   const [shift, setShift] = useState(0)
   const rootRef = useRef(null)
   const navigate = useNavigate()
 
   // Consulta periódica pelo usePolling (uma por vez, pausa com a aba oculta, recuo com o
-  // servidor fora). A resposta de um endpoint anterior (troca de turma) não vale mais.
+  // servidor fora). Trocar de turma ou curso (endpoint novo) consulta na hora; a
+  // resposta atrasada do endpoint anterior não vale mais.
   const endpointRef = useRef(endpoint)
   endpointRef.current = endpoint
   const load = useCallback(async (requestOptions) => {
     if (!endpoint) return true
     try {
       const next = await api.get(endpoint, requestOptions)
-      if (endpointRef.current === endpoint) setData(next)
+      if (endpointRef.current === endpoint) setData({ items: [], unread: 0, ...(next || {}), endpoint })
       return true
     } catch { return false /* mantém o último estado */ }
   }, [endpoint])
-  const polling = usePolling(load, { intervalMs: pollMs, enabled: !!endpoint })
+  const polling = usePolling(load, { intervalMs: pollMs, enabled: !!endpoint, resetKey: endpoint })
 
   useEffect(() => {
     if (!endpoint) return undefined
@@ -99,7 +105,10 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
     // `key` vem do servidor (curso + turma + item); `ids` deixa o aluno marcar os avisos.
     const keys = data.items.map((item) => item.key || `${item.id}:${item.count || 0}`)
     const ids = data.items.map((item) => item.id)
-    setData((current) => ({ ...current, unread: 0, items: current.items.map((item) => ({ ...item, unread: false })) }))
+    if (!ids.length) return
+    setData((current) => (current.endpoint === endpoint
+      ? { ...current, unread: 0, items: current.items.map((item) => ({ ...item, unread: false })) }
+      : current))
     try { await api.post(seenEndpoint, { keys, ids }) } catch { /* silencioso */ }
   }
 
@@ -112,11 +121,13 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
     let markedRead = false
     try { markedRead = await onOpenItem(item) } catch { /* a navegação já aconteceu */ }
     if (markedRead && item.unread) {
-      setData((current) => ({
-        ...current,
-        unread: Math.max(0, Number(current.unread || 0) - 1),
-        items: current.items.map((other) => (other.id === item.id ? { ...other, unread: false } : other)),
-      }))
+      setData((current) => (current.endpoint === endpoint
+        ? {
+            ...current,
+            unread: Math.max(0, Number(current.unread || 0) - 1),
+            items: current.items.map((other) => (other.id === item.id ? { ...other, unread: false } : other)),
+          }
+        : current))
     }
   }
 
