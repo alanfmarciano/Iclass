@@ -258,6 +258,21 @@ describe('Sistema · restaurar backup de versão anterior', () => {
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
   })
 
+  it('[UC-BACKUP-001] RESTAURAR digitado sem arquivo: Enter avisa que falta o arquivo e não envia nada', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<SistemaPage />)
+    const field = screen.getByLabelText('Digite RESTAURAR para confirmar')
+    expect(screen.queryByText('Escolha o arquivo de backup para liberar o botão Restaurar.')).not.toBeInTheDocument()
+    await user.type(field, 'RESTAURAR')
+    expect(screen.getByText('Escolha o arquivo de backup para liberar o botão Restaurar.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restaurar' })).toBeDisabled()
+    await user.type(field, '{Enter}')
+    expect(mocks.toast.error).toHaveBeenCalledWith('Escolha o arquivo de backup')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('[UC-BACKUP-001] histórico anota a restauração de backup de versão anterior', () => {
     render(<BackupHistory entries={[{ id: 'r1', action: 'backup_restored', actor: 'admin@x.local', timestamp: Date.parse('2026-10-18T11:00:00Z'), file: 'antigo.json', legacyApplications: true, applicationsDiscarded: 1, applicationsRebuilt: 2 }]} />)
     expect(screen.getByRole('listitem')).toHaveTextContent('Backup de versão anterior: as aplicações de prova foram refeitas a partir das turmas do backup (1 aplicação atual descartada, 2 refeitas).')

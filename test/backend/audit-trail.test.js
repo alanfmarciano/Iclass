@@ -18,11 +18,13 @@ process.env.ICLASS_CONTENT_DIR = path.join(tempRoot, 'content');
 process.env.ICLASS_ARCHIVE_DIR = path.join(tempRoot, 'archives');
 process.env.TEST_MODE = '1';
 
+// audit.js antes do servidor: server.js registra o process.on('uncaughtException'), que
+// engoliria a falha deste require e o arquivo passaria sem rodar nenhum teste.
+const { normalizeAuditEntry } = require('../../backend/utils/audit.js');
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { recordGradeAudit } = require('../../backend/utils/gradebook.js');
 const { recordStudentAudit } = require('../../backend/utils/students.js');
-const { normalizeAuditEntry } = require('../../backend/utils/audit.js');
 
 const REPO = path.resolve(__dirname, '..', '..');
 const BACKEND = path.join(REPO, 'backend');
@@ -167,104 +169,279 @@ function functionRange(code, name) {
 }
 
 const ASSIGN = '(?:[-+*/%&|^]|\\*\\*|<<|>>>?|&&|\\|\\||\\?\\?)?=(?![=>])';
-const MUTATORS = '(?:splice|pop|shift|unshift|sort|reverse|fill|copyWithin)';
+// Depois da expressão: atribuição (=, +=, ??=...) ou ++/--.
+const ASSIGN_AFTER = new RegExp(`^\\s*(?:${ASSIGN}|\\+\\+|--)`);
+// Métodos que mudam a própria lista.
+const MUTATORS = new Set(['splice', 'pop', 'shift', 'unshift', 'sort', 'reverse', 'fill', 'copyWithin']);
+// Métodos que passam entradas a um callback, com a posição dos parâmetros que são entradas.
+const CALLBACK_PARAMS = {
+    forEach: [0], map: [0], flatMap: [0], some: [0], every: [0], find: [0], findLast: [0],
+    findIndex: [0], findLastIndex: [0], filter: [0], reduce: [1], reduceRight: [1], sort: [0, 1], toSorted: [0, 1],
+};
+// Lista nova com as mesmas entradas (mexer nela não muda a trilha; mexer numa entrada dela, sim).
+const RETURNS_ENTRIES = new Set(['filter', 'slice', 'concat', 'toSorted', 'toReversed', 'toSpliced', 'values', 'flat']);
+// Uma entrada da trilha.
+const RETURNS_ENTRY = new Set(['find', 'findLast', 'at']);
 // "Cria a lista se faltar" não altera nada que já existe.
-const ENSURE_IDIOM = /if\s*\(\s*!\s*Array\.isArray\(\s*([\w$.]+?)\.auditLogs\s*\)\s*\)\s*\1\.auditLogs\s*=\s*\[\s*\]\s*;?/g;
-// Entrada de prova no formato próprio (type + applicationId), lida por buildApplicationAuditTrail.
-const isExamEntryLiteral = text => /^\s*\{/.test(text) && /\btype\s*[:,]/.test(text) && /\bapplicationId\s*[:,]/.test(text);
+const ENSURE_IDIOMS = [
+    /if\s*\(\s*!\s*Array\.isArray\(\s*([\w$.]+?)\.auditLogs\s*\)\s*\)\s*\1\.auditLogs\s*=\s*\[\s*\]\s*;?/g,
+    /(?<![\w$.])([\w$.]+?)\.auditLogs\s*(?:\?\?|\|\|)=\s*\[\s*\]\s*;?/g,
+    /(?<![\w$.])([\w$.]+?)\.auditLogs\s*=\s*\1\.auditLogs\s*(?:\?\?|\|\|)\s*\[\s*\]\s*;?/g,
+];
 
-// O que um arquivo faz com auditLogs: 'alter' (muda ou remove entrada existente, troca a
-// lista) e 'append' (entrada nova sem passar pelo recordAudit).
+// Fecho do colchete aberto em openIndex (o texto entre aspas já está em branco).
+function matchingBracket(code, openIndex) {
+    let depth = 0;
+    for (let i = openIndex; i < code.length; i += 1) {
+        if (code[i] === '[') depth += 1;
+        else if (code[i] === ']') {
+            depth -= 1;
+            if (depth === 0) return i;
+        }
+    }
+    return code.length - 1;
+}
+
+// Partes de uma lista separada por vírgula no primeiro nível: [{ from, to }].
+function topLevelParts(code, from, to) {
+    const parts = [];
+    let depth = 0;
+    let start = from;
+    for (let i = from; i < to; i += 1) {
+        const ch = code[i];
+        if ('([{'.includes(ch)) depth += 1;
+        else if (')]}'.includes(ch)) depth -= 1;
+        else if (ch === ',' && depth === 0) { parts.push({ from: start, to: i }); start = i + 1; }
+    }
+    if (code.slice(start, to).trim()) parts.push({ from: start, to });
+    return parts;
+}
+
+// Nomes dos parâmetros de um callback (x => ..., (a, b) => ..., function (x) {...});
+// parâmetro desestruturado fica null (não dá nome à entrada).
+function callbackParams(code, from, to) {
+    const text = code.slice(from, to);
+    const arrow = /^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/.exec(text);
+    if (arrow) return [arrow[1]];
+    const head = /^\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?\(/.exec(text);
+    if (!head) return [];
+    const open = from + head[0].length - 1;
+    const inner = callArgument(code, open);
+    return topLevelParts(code, open + 1, open + 1 + inner.length).map(part => {
+        const name = /^\s*([A-Za-z_$][\w$]*)\s*(?:=[^]*)?$/.exec(code.slice(part.from, part.to));
+        return name ? name[1] : null;
+    });
+}
+
+// Chaves de primeiro nível de um objeto literal { ... } que começa em from: { nome: texto do valor no fonte original }.
+function literalKeys(code, original, from, to) {
+    const open = code.indexOf('{', from);
+    if (open < 0 || open >= to || code.slice(from, open).trim()) return null;
+    let depth = 0;
+    let close = to;
+    for (let i = open; i < to; i += 1) {
+        if (code[i] === '{') depth += 1;
+        else if (code[i] === '}') { depth -= 1; if (depth === 0) { close = i; break; } }
+    }
+    const keys = {};
+    topLevelParts(code, open + 1, close).forEach(part => {
+        const key = /^\s*([A-Za-z_$][\w$]*)\s*(:)?/.exec(code.slice(part.from, part.to));
+        if (key) keys[key[1]] = key[2] ? original.slice(part.from + key[0].length, part.to).trim() : key[1];
+    });
+    return keys;
+}
+
+const KEYWORDS_BEFORE_PAREN = new Set([...REGEX_WORDS, 'if', 'while', 'for', 'switch', 'catch', 'return']);
+
+// Acesso por colchete com o nome fixo (memory['auditLogs']) vira .auditLogs, com espaços
+// no lugar do que sobra, para manter as posições.
+function normalizeTrailAccess(code) {
+    return code.replace(/(\?\.)?\[\s*(['"])auditLogs\2\s*\]/g, (match, optional, quote, offset) => {
+        const before = code.slice(0, offset).replace(/\s+$/, '');
+        const last = before[before.length - 1] || '';
+        if (!/[\w$)\]]/.test(last)) return match;
+        const word = /[\w$]+$/.exec(before);
+        if (word && REGEX_WORDS.has(word[0])) return match;
+        return '.auditLogs'.padEnd(match.length, ' ');
+    });
+}
+
+// O que um arquivo faz com auditLogs, seguindo a lista e as entradas dela pelo código:
+// - 'alter': muda, troca ou remove entrada existente, ou troca/esvazia a lista;
+// - 'append': entrada nova sem passar pelo recordAudit;
+// - 'exam': entrada de prova (type + applicationId) sem type 'exam_...' escrito no
+//   próprio objeto (só vale dentro de um registrador de prova, EXAM_REGISTRARS).
+// Cada ocorrência tem um papel: a lista guardada (X.auditLogs), outro nome para a lista
+// (const { auditLogs } = db.memory, const logs = db.memory.auditLogs, parâmetro
+// auditLogs), uma lista nova com as mesmas entradas (filter, slice, [...lista]) ou uma
+// entrada (find, at, lista[i], for...of, o parâmetro do callback). Cada nome novo é
+// seguido no trecho onde vale.
 function auditLogFindings(source) {
-    const code = blankNonCode(source).replace(ENSURE_IDIOM, match => match.replace(/[^\n]/g, ' '));
+    const original = source.replace(/`auditLogs`/g, '\'auditLogs\'');
+    let code = normalizeTrailAccess(blankNonCode(original));
+    ENSURE_IDIOMS.forEach(pattern => { code = code.replace(pattern, match => match.replace(/[^\n]/g, ' ')); });
     const findings = [];
-    const add = (kind, index, length) => findings.push({ kind, index, line: lineOf(code, index), text: code.slice(index, index + length).replace(/\s+/g, ' ').trim() });
-    const alterPatterns = [
-        new RegExp(`\\.\\s*auditLogs\\s*${ASSIGN}`, 'g'),
-        new RegExp(`\\.\\s*auditLogs\\s*\\[[^\\]]*\\]\\s*${ASSIGN}`, 'g'),
-        new RegExp(`\\.\\s*auditLogs\\s*(?:\\|\\|\\s*\\[\\s*\\]\\s*)?\\)?\\s*\\.\\s*${MUTATORS}\\s*\\(`, 'g'),
-        /\.\s*auditLogs\s*\.\s*length\s*=(?!=)/g,
-        /\bdelete\s+[\w$.]*\.auditLogs\b/g,
-        // Lista de coleções percorrida por nome (como na troca de e-mail).
-        /\[[^[\]]*['"`]auditLogs['"`][^[\]]*\]\s*\.\s*(?:forEach|map)\s*\(/g,
+    const reported = new Set();
+    const add = (kind, index, length) => {
+        if (reported.has(`${kind}:${index}`)) return;
+        reported.add(`${kind}:${index}`);
+        findings.push({ kind, index, line: lineOf(code, index), text: code.slice(index, index + length).replace(/\s+/g, ' ').trim() });
+    };
+    const queue = [];
+    const queued = new Set();
+    const enqueue = (index, end, role, member = false) => {
+        const key = `${index}:${role}`;
+        if (queued.has(key)) return;
+        queued.add(key);
+        queue.push({ index, end, role, member });
+    };
+    // Um nome que passa a valer (lista, entradas ou entrada) entre from e to.
+    const bind = (name, role, from, to) => {
+        const pattern = new RegExp(`(?<![.\\w$'"])${name.replace(/\$/g, '\\$')}(?![\\w$])(?!\\s*:)`, 'g');
+        for (const found of code.slice(from, to).matchAll(pattern)) enqueue(from + found.index, from + found.index + found[0].length, role);
+    };
+
+    for (const match of code.matchAll(/\.\s*auditLogs(?![\w$])/g)) enqueue(match.index, match.index + match[0].length, 'list', true);
+    // O nome auditLogs solto (desestruturação, parâmetro) é a lista no arquivo todo.
+    bind('auditLogs', 'list', 0, code.length);
+    // const { auditLogs: logs } = db.memory
+    for (const match of code.matchAll(/\b(?:const|let|var)\s*\{([^{}]*)\}\s*=/g)) {
+        for (const renamed of match[1].matchAll(/(?<![\w$])auditLogs\s*:\s*([A-Za-z_$][\w$]*)/g)) bind(renamed[1], 'list', match.index + match[0].length, blockEnd(code, match.index));
+    }
+
+    while (queue.length) {
+        const ref = queue.shift();
+        let role = ref.role;
+        // Começo da expressão: volta pelo objeto (db.memory.) para ver o que vem antes.
+        let start = ref.index;
+        while (start > 0 && (/[\w$.]/.test(code[start - 1]) || (code[start - 1] === '?' && code[start] === '.'))) start -= 1;
+        // Expressão não começa por ponto: o que sobrou é o "..." de um espalhamento.
+        while (start < ref.index && code[start] === '.') start += 1;
+        let cursor = ref.end;
+        // X.auditLogs || [], (X.auditLogs || []) e ((memory && memory.auditLogs) || []):
+        // o parêntese que só agrupa sai; o de uma chamada (f(X.auditLogs)) fica.
+        for (let level = 0; level < 3; level += 1) {
+            const fallback = /^\s*(?:\|\||\?\?)\s*\[\s*\]/.exec(code.slice(cursor));
+            if (fallback) cursor += fallback[0].length;
+            const opening = /\(\s*(?:[\w$.]+\s*&&\s*)?$/.exec(code.slice(0, start));
+            const closing = /^\s*\)/.exec(code.slice(cursor));
+            if (!opening || !closing) break;
+            const callee = /([\w$]+|[\])])\s*$/.exec(code.slice(0, opening.index));
+            if (callee && !KEYWORDS_BEFORE_PAREN.has(callee[1])) break;
+            start = opening.index;
+            cursor += closing[0].length;
+        }
+        // O que vem depois: .nome, .metodo(...), [índice].
+        const segments = [];
+        for (;;) {
+            const rest = code.slice(cursor);
+            let found = /^\s*(?:\?\.|\.)\s*([A-Za-z_$][\w$]*)/.exec(rest);
+            if (found) {
+                const after = cursor + found[0].length;
+                const call = /^[ \t]*(?:\?\.)?\(/.exec(code.slice(after));
+                if (call) {
+                    const open = after + call[0].length - 1;
+                    const args = callArgument(code, open);
+                    segments.push({ type: 'call', name: found[1], at: cursor, from: open + 1, to: open + 1 + args.length });
+                    cursor = open + args.length + 2;
+                } else {
+                    segments.push({ type: 'prop', name: found[1], at: cursor });
+                    cursor = after;
+                }
+                continue;
+            }
+            found = /^[ \t]*(?:\?\.)?\[/.exec(rest);
+            if (found) {
+                const open = cursor + found[0].length - 1;
+                segments.push({ type: 'index', at: cursor });
+                cursor = matchingBracket(code, open) + 1;
+                continue;
+            }
+            break;
+        }
+        // Segue a expressão: a lista, uma lista com as mesmas entradas, uma entrada, uma
+        // parte de uma entrada (entry.details), [índice, entrada] (entries()) ou outra coisa.
+        let state = role;
+        let listElement = false;
+        for (const segment of segments) {
+            if (state === 'list' || state === 'entries') {
+                if (segment.type === 'index') { listElement = state === 'list'; state = 'entry'; continue; }
+                if (segment.type === 'prop') { state = segment.name === 'length' && state === 'list' ? 'length' : 'other'; continue; }
+                if (CALLBACK_PARAMS[segment.name]) {
+                    const params = callbackParams(code, segment.from, segment.to);
+                    CALLBACK_PARAMS[segment.name].forEach(position => { if (params[position]) bind(params[position], 'entry', segment.from, segment.to); });
+                }
+                if (state === 'list' && MUTATORS.has(segment.name)) {
+                    add('alter', segment.at, segment.name.length + 2);
+                    state = ['sort', 'reverse', 'fill', 'copyWithin'].includes(segment.name) ? 'list' : (segment.name === 'splice' ? 'entries' : (['pop', 'shift'].includes(segment.name) ? 'entry' : 'other'));
+                    continue;
+                }
+                if (state === 'list' && segment.name === 'push') {
+                    // Entrada de prova: objeto com type 'exam_...' escrito e applicationId no
+                    // primeiro nível. Com o type vindo de uma variável, só no registrador de prova.
+                    const keys = literalKeys(code, original, segment.from, segment.to);
+                    const examShape = !!keys && 'type' in keys && 'applicationId' in keys;
+                    const writtenType = examShape && /^['"`]/.test(keys.type);
+                    if (!examShape || (writtenType && !/^(['"])exam_[a-z0-9_]+\1$/.test(keys.type))) add('append', segment.at, 45);
+                    else if (!writtenType) add('exam', segment.at, 45);
+                    state = 'other';
+                    continue;
+                }
+                if (RETURNS_ENTRIES.has(segment.name) || MUTATORS.has(segment.name)) { state = 'entries'; continue; }
+                if (RETURNS_ENTRY.has(segment.name)) { state = 'entry'; listElement = false; continue; }
+                state = segment.name === 'entries' ? 'pairs' : 'other';
+                continue;
+            }
+            if (state === 'entry' || state === 'part') {
+                if (segment.type !== 'call') { state = 'part'; continue; }
+                if (state === 'part' && (MUTATORS.has(segment.name) || segment.name === 'push')) add('alter', segment.at, segment.name.length + 2);
+                state = 'other';
+                continue;
+            }
+            state = 'other';
+            break;
+        }
+        const before = code.slice(Math.max(0, start - 160), start);
+        const after = code.slice(cursor);
+        const changesStored = state === 'part' || state === 'length' || (state === 'entry' && listElement) || (ref.member && !segments.length);
+        if (changesStored && ASSIGN_AFTER.test(after)) add('alter', start, cursor - start + 3);
+        if (changesStored && /\bdelete\s+$/.test(before)) add('alter', start, cursor - start);
+        if (['list', 'entry', 'part'].includes(state) && /\bObject\.assign\(\s*$/.test(before) && /^\s*[,)]/.test(after)) add('alter', start, cursor - start);
+        // Nome novo para o resultado: const x = ..., const [a, b] = ..., for (const x of ...).
+        const ends = /^\s*(?:[;,)}\]\n]|$)/.test(after);
+        // (const copy = entry && entry.details && entry.details.deletedSubmission: o último operando)
+        const declared = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[^;\n]*?(?:&&|\|\||\?\?)\s*)?$/.exec(before);
+        const spread = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:\[\s*\.\.\.|Array\.from\(\s*)$/.exec(before);
+        const destructured = /\b(?:const|let|var)\s*\[([^\]]*)\]\s*=\s*$/.exec(before);
+        const forOf = /\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+$/.exec(before);
+        const forPairs = /\bfor\s*\(\s*(?:const|let|var)\s+\[\s*[\w$]*\s*,\s*([A-Za-z_$][\w$]*)\s*\]\s+of\s+$/.exec(before);
+        const scopeOf = match => [start, blockEnd(code, start - (before.length - match.index))];
+        if (declared && ends && ['list', 'entries', 'entry', 'part', 'pairs'].includes(state)) {
+            bind(declared[1], state === 'part' ? 'entry' : state, ...scopeOf(declared));
+        }
+        if (spread && ['list', 'entries'].includes(state)) bind(spread[1], 'entries', ...scopeOf(spread));
+        if (destructured && ['list', 'entries'].includes(state)) {
+            destructured[1].split(',').map(name => name.trim()).filter(name => /^[A-Za-z_$][\w$]*$/.test(name)).forEach(name => bind(name, 'entry', ...scopeOf(destructured)));
+        }
+        if (forOf && ['list', 'entries'].includes(state)) bind(forOf[1], 'entry', ...scopeOf(forOf));
+        if (forPairs && state === 'pairs') bind(forPairs[1], 'entry', ...scopeOf(forPairs));
+    }
+
+    // Lista de coleções percorrida por nome (como na troca de e-mail).
+    const nameLists = [
+        /\[[^[\]]*['"]auditLogs['"][^[\]]*\]\s*\.\s*(?:forEach|map)\s*\(/g,
+        /\bfor\s*\(\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*\s+of\s+\[[^[\]]*['"]auditLogs['"][^[\]]*\]/g,
     ];
-    alterPatterns.forEach(pattern => {
+    nameLists.forEach(pattern => {
         for (const match of code.matchAll(pattern)) add('alter', match.index, match[0].length);
     });
-    for (const match of code.matchAll(/\.\s*auditLogs\s*\.\s*push\s*\(/g)) {
-        const argument = callArgument(code, match.index + match[0].length - 1);
-        if (!isExamEntryLiteral(argument)) add('append', match.index, match[0].length + 40);
+    // Object.assign(db.memory, { auditLogs: [] }) troca a lista.
+    for (const match of code.matchAll(/\bObject\s*\.\s*assign\s*\(/g)) {
+        const args = callArgument(code, match.index + match[0].length - 1);
+        if (/(?<![.\w$'"])auditLogs\s*(?::|[,}])/.test(args)) add('alter', match.index, match[0].length + args.length + 1);
     }
-    // Apelido: const logs = db.memory.auditLogs (|| []); logs.splice(...)
-    for (const match of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[\w$.]*\.auditLogs\s*(?:\|\|\s*\[\s*\]\s*)?(?:;|\n)/g)) {
-        const alias = match[1];
-        const scope = code.slice(match.index, blockEnd(code, match.index));
-        const offset = match.index;
-        const aliasPatterns = [
-            [new RegExp(`\\b${alias}\\s*\\.\\s*${MUTATORS}\\s*\\(`, 'g'), 'alter'],
-            [new RegExp(`\\b${alias}\\s*\\[[^\\]]*\\]\\s*${ASSIGN}`, 'g'), 'alter'],
-            [new RegExp(`\\b${alias}\\s*\\.\\s*length\\s*=(?!=)`, 'g'), 'alter'],
-        ];
-        aliasPatterns.forEach(([pattern, kind]) => {
-            for (const found of scope.matchAll(pattern)) add(kind, offset + found.index, found[0].length);
-        });
-        for (const found of scope.matchAll(new RegExp(`\\b${alias}\\s*\\.\\s*push\\s*\\(`, 'g'))) {
-            const argument = callArgument(scope, found.index + found[0].length - 1);
-            if (!isExamEntryLiteral(argument)) add('append', offset + found.index, found[0].length + 40);
-        }
-        // E as entradas lidas pelo apelido: logs.forEach(entry => { entry.x = ... }).
-        entryCallbacks(scope, new RegExp(`(?<![.\\w$])${alias}\\s*`, 'g')).forEach(({ index, length }) => add('alter', offset + index, length));
-    }
-    // Entrada existente alterada no lugar: no callback que percorre a trilha
-    // (auditLogs.forEach(entry => { entry.campo = ... })), no for...of e numa entrada
-    // achada por find ou por posição (const entry = auditLogs.find(...); entry.campo = ...).
-    entryCallbacks(code, /\.\s*auditLogs\s*(?:\|\|\s*\[\s*\]\s*)?\)?\s*/g).forEach(({ index, length }) => add('alter', index, length));
-    for (const match of code.matchAll(/\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+[^)\n]*\.auditLogs\b[^)\n]*\)/g)) {
-        const scope = code.slice(match.index, blockEnd(code, match.index));
-        for (const found of scope.matchAll(entryMutation(match[1]))) add('alter', match.index + found.index, found[0].length);
-    }
-    for (const match of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^;\n]*\.auditLogs\s*(?:\|\|\s*\[\s*\]\s*)?\)?\s*(?:\.\s*(?:find|findLast)\s*\(|\[)/g)) {
-        const scope = code.slice(match.index + match[0].length, blockEnd(code, match.index));
-        const offset = match.index + match[0].length;
-        for (const found of scope.matchAll(entryMutation(match[1]))) add('alter', offset + found.index, found[0].length);
-    }
+    findings.sort((a, b) => a.index - b.index);
     return { code, findings };
-}
-
-// Mudança numa entrada pelo nome que ela tem no trecho: entry.campo = x, entry[k] += x,
-// delete entry.campo, Object.assign(entry, ...).
-function entryMutation(name) {
-    return new RegExp(`(?<![.\\w$])${name}\\s*(?:\\.\\s*[\\w$]+|\\[[^\\]\\n]*\\])+\\s*${ASSIGN}|\\bdelete\\s+${name}\\s*[.[]|\\bObject\\.assign\\(\\s*${name}\\b`, 'g');
-}
-
-// Callbacks que recebem as entradas da trilha, a partir de onde a lista aparece (start):
-// auditLogs.forEach/map/some/every/find/filter(entry => ...), também depois de um
-// filter/slice no meio (auditLogs.filter(...).forEach(entry => ...)). Devolve onde o
-// callback muda a entrada que recebe.
-const ENTRY_METHODS = new Set(['forEach', 'map', 'flatMap', 'some', 'every', 'find', 'findLast', 'findIndex', 'findLastIndex', 'filter']);
-const PASS_THROUGH = new Set(['filter', 'slice']);
-function entryCallbacks(code, start) {
-    const results = [];
-    for (const match of code.matchAll(start)) {
-        let cursor = match.index + match[0].length;
-        for (;;) {
-            const call = /^\.\s*([A-Za-z_$][\w$]*)\s*\(/.exec(code.slice(cursor));
-            if (!call) break;
-            const open = cursor + call[0].length - 1;
-            const argument = callArgument(code, open);
-            if (ENTRY_METHODS.has(call[1])) {
-                const param = /^\s*(?:async\s+)?(?:\(\s*([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*=>|function\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*))/.exec(argument);
-                const name = param && (param[1] || param[2] || param[3]);
-                if (name) {
-                    for (const found of argument.matchAll(entryMutation(name))) results.push({ index: open + 1 + found.index, length: found[0].length });
-                }
-            }
-            if (!PASS_THROUGH.has(call[1])) break;
-            cursor = open + argument.length + 2;
-            while (/\s/.test(code[cursor] || '')) cursor += 1;
-        }
-    }
-    return results;
 }
 
 // Onde a trilha pode mudar (contrato 6): a troca de e-mail do aluno, a anonimização, o
@@ -286,6 +463,13 @@ const MAY_APPEND = {
     'backend/database.js': '*',
     'backend/routes/adminRecovery.js': ['keepBackupHistory'],
 };
+// Entrada de prova (type + applicationId) com o type vindo de fora: só no registrador de
+// prova, e quem o chama passa sempre um 'exam_...' escrito (teste abaixo).
+const EXAM_REGISTRARS = {
+    'backend/utils/examFinish.js': ['recordExamAudit'],
+};
+const RULES_BY_KIND = { alter: MAY_ALTER, append: MAY_APPEND, exam: EXAM_REGISTRARS };
+const KIND_TEXT = { alter: 'altera a trilha', append: 'entrada nova sem recordAudit', exam: 'entrada de prova sem type \'exam_...\' escrito' };
 
 function backendFiles(directory = BACKEND) {
     return fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -307,53 +491,97 @@ function allowedAt(rules, rel, code, index) {
 }
 
 test('[UC-AUDITORIA-001] a varredura acha cada forma de alterar a trilha e ignora leitura, comentário e prova', () => {
+    // Cada linha que a varredura deve acusar termina com //! e o tipo (alter, append, exam).
     const sample = [
         "// db.memory.auditLogs = []; comentário não conta",
         "/* memory.auditLogs.splice(0, 1) */",
         "const text = 'memory.auditLogs.pop() dentro de texto // não é comentário';",
         "if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];",
+        "db.memory.auditLogs ??= [];",
         "const lidos = (db.memory.auditLogs || []).filter(item => item.ok).sort();",
         "function trilha(application, auditLogs = []) { return auditLogs; }",
         "if (db.memory.auditLogs === lidos) {}",
         "const re = /auditLogs = \\//g;",
         "const label = `${a ? `x ${b}` : ''} // dentro do template`;",
-        "memory.auditLogs.push({ id: 1, type, actor, applicationId: app.id, details: {} });",
-        "db.memory.auditLogs = db.memory.auditLogs.filter(item => item.keep);", // 11
-        "memory.auditLogs.splice(2, 1);", // 12
-        "memory.auditLogs[index] = next;", // 13
-        "(db.memory.auditLogs || []).sort((a, b) => a - b);", // 14
-        "memory.auditLogs.length = 0;", // 15
-        "delete memory.auditLogs;", // 16
-        "['students', 'auditLogs'].forEach(name => { memory[name] = []; });", // 17
-        "memory.auditLogs.push({ id: 'x', type: 'class_reset', actorEmail: 'a' });", // 18
+        "memory.auditLogs.push({ id: 1, type, actor, applicationId: app.id, details: {} }); //! exam",
+        "db.memory.auditLogs = db.memory.auditLogs.filter(item => item.keep); //! alter",
+        "memory.auditLogs.splice(2, 1); //! alter",
+        "memory.auditLogs[index] = next; //! alter",
+        "(db.memory.auditLogs || []).sort((a, b) => a - b); //! alter",
+        "memory.auditLogs.length = 0; //! alter",
+        "delete memory.auditLogs; //! alter",
+        "['students', 'auditLogs'].forEach(name => { memory[name] = []; }); //! alter",
+        "memory.auditLogs.push({ id: 'x', type: 'class_reset', actorEmail: 'a' }); //! append",
         "function f() {",
         "    const logs = db.memory.auditLogs || [];",
-        "    logs.pop();", // 21
-        "    logs.push({ action: 'x' });", // 22
+        "    logs.pop(); //! alter",
+        "    logs.push({ action: 'x' }); //! append",
         "}",
         "const outra = db.memory.loginLogs || [];",
         "outra.pop();",
-        "(db.memory.auditLogs || []).forEach(entry => { if (entry.ok) entry.studentEmail = novo; });", // 26
-        "memory.auditLogs.filter(item => item.ok).forEach((item, index) => { delete item.ip; });", // 27
+        "(db.memory.auditLogs || []).forEach(entry => { if (entry.ok) entry.studentEmail = novo; }); //! alter",
+        "memory.auditLogs.filter(item => item.ok).forEach((item, index) => { delete item.ip; }); //! alter",
         "for (const registro of db.memory.auditLogs) {",
-        "    registro.oldValue += '!';", // 29
+        "    registro.oldValue += '!'; //! alter",
         "}",
         "const achada = (db.memory.auditLogs || []).find(item => item.id === id);",
-        "Object.assign(achada, { reason: 'x' });", // 32
+        "Object.assign(achada, { reason: 'x' }); //! alter",
         "const lidas = db.memory.auditLogs.map(entry => ({ ...entry, label: 'x' }));",
         "const copia = { ...lidas[0] }; copia.label = 'y';",
         "db.memory.auditLogs.forEach(entry => { const next = { ...entry }; next.ip = ''; outro.entry.x = 1; });",
         "function g() {",
         "    const trilha = memory.auditLogs;",
-        "    trilha.forEach(entry => { entry.at = 0; });", // 38
+        "    trilha.forEach(entry => { entry.at = 0; }); //! alter",
         "}",
-    ].join('\n');
-    const { findings } = auditLogFindings(sample);
-    assert.deepEqual(findings.map(item => `${item.kind}:${item.line}`).sort(), [
-        'alter:11', 'alter:12', 'alter:13', 'alter:14', 'alter:15', 'alter:16', 'alter:17', 'alter:21',
-        'alter:26', 'alter:27', 'alter:29', 'alter:32', 'alter:38',
-        'append:18', 'append:22',
-    ].sort());
+        // Formas que a primeira versão da varredura deixava passar.
+        "db.memory.auditLogs[0].actor = 'x'; //! alter",
+        "for (let i = 0; i < total; i += 1) db.memory.auditLogs[i].ip = ''; //! alter",
+        "db.memory.auditLogs[db.memory.auditLogs.length - 1].reason = 'x'; //! alter",
+        "db.memory.auditLogs.find(entry => entry.id === id).reason = 'x'; //! alter",
+        "function h() {",
+        "    const filtradas = db.memory.auditLogs.filter(entry => entry.ok);",
+        "    filtradas.forEach(entry => { entry.ip = ''; }); //! alter",
+        "    filtradas.sort(); filtradas.push({ nova: true }); filtradas.length = 0;",
+        "}",
+        "function k() {",
+        "    const { auditLogs } = db.memory;",
+        "    auditLogs.splice(0, 1); //! alter",
+        "}",
+        "db.memory['auditLogs'] = []; //! alter",
+        "db.memory[`auditLogs`].pop(); //! alter",
+        "Object.assign(db.memory, { auditLogs: [] }); //! alter",
+        "db.memory.auditLogs.push({ type: 'account_created', applicationId: null, actor }); //! append",
+        "db.memory.auditLogs.push({ details: { type: 'exam_x', applicationId: 1 }, action: 'y' }); //! append",
+        "db.memory.auditLogs.push({ type: 'exam_question_reported', actor, applicationId: app.id, details: { type: 'x' } });",
+        "function m() {",
+        "    const { auditLogs: registro } = db.memory;",
+        "    registro.map(entry => ({ ...entry }));",
+        "    registro.pop(); //! alter",
+        "    const ultima = registro[registro.length - 1];",
+        "    const copiaUltima = { ...ultima }; copiaUltima.x = 1;",
+        "    ultima.details.lista.push('x'); //! alter",
+        "    ultima.contador++; //! alter",
+        "}",
+        "res.json({ auditLogs: lidos, total: lidos.length });",
+        "db.memory['auditLogs'].at(-1).ip = ''; //! alter",
+        "db.memory?.['auditLogs']?.forEach(entry => { entry.ip = ''; }); //! alter",
+        "const ordenadas = [...db.memory.auditLogs]; ordenadas.sort(); ordenadas[0].ip = ''; //! alter",
+        "for (const [posicao, item] of db.memory.auditLogs.entries()) {",
+        "    item.reason = posicao; //! alter",
+        "}",
+        "const [primeira] = db.memory.auditLogs; delete primeira.ip; //! alter",
+        "db.memory.auditLogs.reduce((total, entry) => { entry.x = 1; return total; }, 0); //! alter",
+        "db.memory.auditLogs.forEach(entry => { const copy = entry && entry.details && entry.details.deletedSubmission; if (copy) copy.student = null; }); //! alter",
+        "((memory && memory.auditLogs) || []).forEach(entry => { entry.ip = ''; }); //! alter",
+        "return (db.memory.auditLogs || []).filter(entry => entry.ok).map(entry => ({ id: entry.id, at: entry.timestamp }));",
+        "const restored = new Set(logs.filter(entry => entry.action === 'grade_restore').map(entry => String(entry.id)));",
+    ];
+    const expected = sample.flatMap((line, index) => {
+        const mark = /\/\/! (alter|append|exam)$/.exec(line);
+        return mark ? [`${mark[1]}:${index + 1}`] : [];
+    });
+    const { findings } = auditLogFindings(sample.join('\n'));
+    assert.deepEqual(findings.map(item => `${item.kind}:${item.line}`).sort(), expected.sort());
     const ranged = 'x();\n    function keep() {\n        a.auditLogs.pop();\n    }\nb.auditLogs.pop();\n';
     const { code, findings: rangedFindings } = auditLogFindings(ranged);
     const rules = { 'f.js': ['keep'] };
@@ -362,21 +590,47 @@ test('[UC-AUDITORIA-001] a varredura acha cada forma de alterar a trilha e ignor
 
 test('[UC-AUDITORIA-001] só acréscimo: nenhum arquivo do backend altera a trilha fora das funções permitidas', () => {
     const violations = [];
+    let scanned = 0;
     for (const file of backendFiles()) {
         const rel = path.relative(REPO, file).split(path.sep).join('/');
         const source = fs.readFileSync(file, 'utf8');
         if (!source.includes('auditLogs')) continue;
+        scanned += 1;
         const { code, findings } = auditLogFindings(source);
         findings.forEach(finding => {
-            const rules = finding.kind === 'alter' ? MAY_ALTER : MAY_APPEND;
-            if (!allowedAt(rules, rel, code, finding.index)) violations.push(`${rel}:${finding.line} (${finding.kind === 'alter' ? 'altera a trilha' : 'entrada nova sem recordAudit'}): ${finding.text}`);
+            if (!allowedAt(RULES_BY_KIND[finding.kind], rel, code, finding.index)) violations.push(`${rel}:${finding.line} (${KIND_TEXT[finding.kind]}): ${finding.text}`);
         });
     }
+    assert.ok(scanned >= 8, `a varredura leu só ${scanned} arquivos com auditLogs`);
     assert.deepEqual(violations, [], `Use recordAudit (utils/audit.js) para gravar auditoria; só as funções de MAY_ALTER podem mudar entradas existentes.\n${violations.join('\n')}`);
 });
 
+test('[UC-AUDITORIA-001] entrada de prova: o registrador de prova só é chamado com um type \'exam_...\' escrito', () => {
+    const calls = [];
+    for (const file of backendFiles()) {
+        const source = fs.readFileSync(file, 'utf8');
+        if (!source.includes('recordExamAudit') && !source.includes('RecordExamAudit')) continue;
+        const code = blankNonCode(source);
+        const rel = path.relative(REPO, file).split(path.sep).join('/');
+        const wrapper = functionRange(code, 'recordExamAudit');
+        for (const match of code.matchAll(/(?<![\w$.])(?:recordExamAudit|sharedRecordExamAudit)\s*\(/g)) {
+            if (/\bfunction\s+$/.test(code.slice(Math.max(0, match.index - 20), match.index))) continue;
+            const open = match.index + match[0].length - 1;
+            const args = callArgument(code, open);
+            const parts = topLevelParts(code, open + 1, open + 1 + args.length).map(part => source.slice(part.from, part.to).trim());
+            const written = parts.find(part => /^['"`]/.test(part));
+            // O atalho de uma linha que repassa o próprio type (adminExamConfig.js) é um registrador também.
+            const forwards = !written && parts.includes('type') && !!wrapper && match.index >= wrapper.start && match.index < wrapper.end;
+            const where = `${rel}:${lineOf(code, match.index)}`;
+            calls.push(where);
+            assert.ok(forwards || /^(['"])exam_[a-z0-9_]+\1$/.test(written || ''), `${where}: registrador de prova chamado sem type 'exam_...' escrito`);
+        }
+    }
+    assert.ok(calls.length >= 8, `achou só ${calls.length} chamadas: ${calls.join(', ')}`);
+});
+
 test('[UC-AUDITORIA-001] as funções permitidas continuam existindo onde a lista diz', () => {
-    for (const rules of [MAY_ALTER, MAY_APPEND]) {
+    for (const rules of [MAY_ALTER, MAY_APPEND, EXAM_REGISTRARS]) {
         for (const [rel, names] of Object.entries(rules)) {
             if (!Array.isArray(names)) continue;
             const code = blankNonCode(fs.readFileSync(path.join(REPO, rel), 'utf8'));
@@ -388,6 +642,8 @@ test('[UC-AUDITORIA-001] as funções permitidas continuam existindo onde a list
     assert.ok(gradebook.findings.some(item => item.kind === 'alter'), 'anonymizeStudentAuditTrail troca entradas');
     const admin = auditLogFindings(fs.readFileSync(path.join(BACKEND, 'routes/admin.js'), 'utf8'));
     assert.ok(admin.findings.some(item => item.kind === 'alter'), 'a troca de e-mail renomeia entradas');
+    const examFinish = auditLogFindings(fs.readFileSync(path.join(BACKEND, 'utils/examFinish.js'), 'utf8'));
+    assert.deepEqual(examFinish.findings.map(item => item.kind), ['exam'], 'o registrador de prova é visto como tal');
 });
 
 // ------------------------------------------------------------ registradores
@@ -464,14 +720,57 @@ test('[UC-AUDITORIA-001] turma criada e alterada: entrada canônica, campos anti
     assert.equal(normalizeAuditEntry(updatedEntry).label, 'Turma alterada');
 });
 
-test('[UC-AUDITORIA-001] turma com token de prova: a auditoria guarda a turma sem o token', async () => {
-    db.memory.classes[0].onlineExamConfigs = { Avaliacao_A: { status: 'running', token: 'PROVA123', requireToken: true } };
-    const updated = await asAdmin(request(app).post('/api/admin/class/update')).send({ name: '1AUD', courseId, period: 'Tarde' });
+test('[UC-AUDITORIA-001] turma com prova preparada com token: a auditoria guarda a turma sem o token nem o hash dele', async () => {
+    // Prova preparada pelas rotas de verdade: a turma fica com o token em examHistory e
+    // o sha256 do token em onlineExamConfigs[prova].accessTokenHash (adminExamConfig.js).
+    // O token tem 5 letras e o hash não tem sal: o hash na auditoria é o token.
+    const { hashExamToken } = require('../../backend/utils/examToken.js');
+    db.memory.courses[0].structure = [{ id: 'm1', title: 'Módulo 1', units: [{ id: 'u1', title: 'Unidade 1', avaliacaoKey: 'Avaliacao_A' }] }];
+    const questions = [1, 2].map(number => ({
+        originalNumber: number, examNumber: number, text: `Questão ${number}`, correctAnswer: 'A',
+        alternatives: [{ letter: 'A', displayLetter: 'A', text: 'certa', isCorrect: true }, { letter: 'B', displayLetter: 'B', text: 'errada', isCorrect: false }],
+    }));
+    const history = await asAdmin(request(app).post('/api/admin/exam-history/add')).send({
+        studentClass: '1AUD', courseId, examKey: 'Avaliacao_A', type: 'online', questionNumbers: [1, 2],
+        printSnapshot: [{ version: 'A', questions, answerKey: { 1: 'A', 2: 'A' } }], durationMinutes: 30, waitingRoomMinutes: 0, maxAttempts: 1, accessToken: 'PROVA',
+    });
+    assert.equal(history.status, 200, history.body.error);
+    const prepared = await asAdmin(request(app).post('/api/admin/exam-applications')).send({
+        studentClass: '1AUD', courseId, examKey: 'Avaliacao_A', historyId: history.body.entry.id,
+        applicationOptions: { timerMode: 'per_attempt', waitingRoomMinutes: 0, maxAttempts: 1, tokenEnabled: true, accessToken: 'PROVA' },
+    });
+    assert.equal(prepared.status, 201, prepared.body.error);
+    const tokenHash = hashExamToken('PROVA');
+    const cls = db.memory.classes[0];
+    assert.equal(cls.onlineExamConfigs.Avaliacao_A.accessTokenHash, tokenHash, 'o campo real que a turma guarda');
+    assert.equal(cls.examHistory.Avaliacao_A[0].accessToken, 'PROVA');
+
+    const updated = await asAdmin(request(app).post('/api/admin/class/update')).send({ name: '1AUD', courseId, period: 'Manhã' });
     assert.equal(updated.status, 200, updated.body.error);
-    const entry = db.memory.auditLogs.find(item => item.type === 'class_updated');
-    assert.equal(JSON.stringify(entry).includes('PROVA123'), false);
-    assert.equal(entry.after.onlineExamConfigs.Avaliacao_A.requireToken, true);
-    assert.equal(db.memory.classes[0].onlineExamConfigs.Avaliacao_A.token, 'PROVA123', 'a turma continua com o token');
+    const toggled = await asAdmin(request(app).post('/api/admin/class/toggle-registration')).send({ name: '1AUD', courseId });
+    assert.equal(toggled.status, 200, toggled.body.error);
+    const classEntries = db.memory.auditLogs.filter(item => item.type === 'class_updated');
+    assert.equal(classEntries.length, 2);
+    const trail = JSON.stringify(db.memory.auditLogs);
+    assert.equal(trail.includes(tokenHash), false, 'o hash do token da prova não vai para a auditoria');
+    assert.equal(trail.includes('accessTokenHash'), false);
+    assert.equal(trail.includes('"accessToken"'), false);
+    assert.equal(trail.includes('PROVA'), false);
+    // O resto da configuração continua na fotografia da turma.
+    for (const entry of classEntries) {
+        assert.equal(entry.before.onlineExamConfigs.Avaliacao_A.tokenEnabled, true);
+        assert.equal(entry.after.onlineExamConfigs.Avaliacao_A.status, 'prepared');
+    }
+    // E a turma continua com o hash, para a prova pedir o token.
+    assert.equal(cls.onlineExamConfigs.Avaliacao_A.accessTokenHash, tokenHash, 'a turma continua com o hash');
+
+    // Excluir a turma também copia a turma inteira para before.
+    const removed = await asAdmin(request(app).post('/api/admin/class/delete')).send({ name: '1AUD', courseId });
+    assert.equal(removed.status, 200, removed.body.error);
+    const deleted = db.memory.auditLogs.find(item => item.type === 'class_deleted');
+    assert.ok(deleted, 'turma excluída auditada');
+    assert.equal(JSON.stringify(deleted).includes(tokenHash), false);
+    assert.equal(JSON.stringify(deleted).includes('PROVA'), false);
 });
 
 test('[UC-AUDITORIA-001] escopo do professor: account com os campos antigos e cópia das listas', async () => {

@@ -218,14 +218,17 @@ const REASON_MAX_LENGTH = 500;
 // ------------------------------------------------------------ segredos
 // Senha, hash, sal e tokens nunca vão para a auditoria, nem dentro de um objeto
 // copiado inteiro (a turma em before/after, a conta, o pedido). Vale para o nome exato
-// e para nomes terminados em password/senha/token/secret (studentPassword,
-// controlToken, examAnswerSecret...). Valor booleano fica (mustChangePassword: true
-// não é segredo; só diz que a senha precisa ser trocada).
+// e para nomes terminados em password/senha/token/secret/hash/salt (studentPassword,
+// controlToken, examAnswerSecret, accessTokenHash da prova, tokenHash da sessão...).
+// O hash também sai: o token da prova tem 5 letras e o accessTokenHash é sha256 sem
+// sal, que volta ao token por tentativa em segundos. Valor booleano fica
+// (mustChangePassword: true não é segredo; só diz que a senha precisa ser trocada).
+// O vazio (null) também sai: a trilha nem mostra que o campo existe.
 const SECRET_KEYS = new Set(['password', 'passwordhash', 'hash', 'salt', 'token', 'sessiontoken', 'accesstoken', 'adminsessiontoken', 'secret', 'senha']);
-const SECRET_SUFFIXES = /(password|senha|token|secret)$/;
+const SECRET_SUFFIXES = /(password|senha|token|secret|hash|salt)$/;
 
 function isSecretKey(key, value) {
-    if (typeof value === 'boolean' || value === null || value === undefined) return false;
+    if (typeof value === 'boolean') return false;
     const name = String(key).toLowerCase();
     return SECRET_KEYS.has(name) || SECRET_SUFFIXES.test(name);
 }

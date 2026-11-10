@@ -100,13 +100,21 @@ test('[UC-AUDITORIA-001] before, after e details entram como cópia, sem senha, 
         requireToken: false,
         profile: { salt: 's', hash: 'h', email: 'p@e.l', sessions: [{ token: 'T1', sessionToken: 'T2', ok: 1 }] },
         nested: { accessToken: 'a', adminSessionToken: 'b', studentPassword: '123', examAnswerSecret: 'segredo', Token: 'X', when: new Date(0) },
+        // Hash e sal com prefixo: o accessTokenHash da prova (sha256 sem sal de 5 letras)
+        // e o tokenHash das sessões voltam ao segredo por tentativa.
+        exam: { accessTokenHash: 'f'.repeat(64), accessTokenIssuedAt: 1700000000000, tokenEnabled: true, requiresToken: true },
+        session: { tokenHash: 'e'.repeat(64), keySalt: 'pimenta', SESSIONHASH: 'd'.repeat(64), examKey: 'Avaliacao_A' },
     };
     const memory = { auditLogs: [] };
     const entry = recordAudit(memory, { action: 'account_updated', before: live, after: { list: [live] }, details: { senha: '1', novaSenha: '2', controlToken: 'c', keep: 'sim' } });
     const serialized = JSON.stringify(entry);
-    for (const secret of ['scrypt$abc', '"salt"', '"hash"', 'T1', 'T2', '"accessToken"', '"adminSessionToken"', 'studentPassword', 'segredo', '"senha"', 'novaSenha', 'controlToken', '"Token"', 'passwordHash']) {
+    for (const secret of ['scrypt$abc', '"salt"', '"hash"', 'T1', 'T2', '"accessToken"', '"adminSessionToken"', 'studentPassword', 'segredo', '"senha"', 'novaSenha', 'controlToken', '"Token"', 'passwordHash',
+        'accessTokenHash', 'f'.repeat(64), 'tokenHash', 'e'.repeat(64), 'keySalt', 'pimenta', 'SESSIONHASH', 'd'.repeat(64)]) {
         assert.equal(serialized.includes(secret), false, `${secret} vazou para a auditoria`);
     }
+    // O que não é segredo continua: a hora de emissão do token e as chaves booleanas.
+    assert.deepEqual(entry.before.exam, { accessTokenIssuedAt: 1700000000000, tokenEnabled: true, requiresToken: true });
+    assert.deepEqual(entry.before.session, { examKey: 'Avaliacao_A' });
     assert.equal(entry.before.mustChangePassword, true, 'booleano não é segredo');
     assert.equal(entry.before.requireToken, false);
     assert.equal(entry.before.profile.email, 'p@e.l');

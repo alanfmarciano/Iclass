@@ -264,8 +264,10 @@ function BackupCard({ isAdmin }) {
           <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
           <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
           <div className="max-w-sm">
-            <TypedConfirm id="bk-confirm" word="RESTAURAR" value={confirmTxt} onChange={setConfirmTxt} disabled={busy} onConfirm={() => file && restore()} />
+            {/* Enter sem arquivo: restore() avisa "Escolha o arquivo de backup", como o botão fazia antes de ficar desligado. */}
+            <TypedConfirm id="bk-confirm" word="RESTAURAR" value={confirmTxt} onChange={setConfirmTxt} disabled={busy} onConfirm={() => restore()} />
           </div>
+          {!file && typedConfirmMatches(confirmTxt, 'RESTAURAR') && <p className="text-xs text-muted">Escolha o arquivo de backup para liberar o botão Restaurar.</p>}
           <Button variant="destructive" icon={Upload} loading={busy} disabled={!file || !typedConfirmMatches(confirmTxt, 'RESTAURAR')} onClick={() => restore()}>Restaurar</Button>
         </div>}
         {isAdmin && <BackupHistory entries={history.data?.entries} />}
