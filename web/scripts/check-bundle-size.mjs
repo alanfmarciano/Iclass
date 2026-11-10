@@ -7,14 +7,21 @@
 //   <link rel="modulepreload">) passa de 130 KB em gzip;
 // - algum .js de web/dist/assets passa de 350 KB sem compressão;
 // - algum arquivo de web/src faz `import * as` de 'lucide-react' (traz os ~1.500 ícones
-//   para o pacote; StatCard usava assim e o pacote único chegava a 1,5 MB).
+//   para o pacote; StatCard usava assim e o pacote único chegava a 1,5 MB);
+// - algum arquivo de web/dist/assets tem um nome que o servidor não entrega por /assets
+//   (a mesma regra de backend/utils/staticAssets.js: acento, espaço, sinal, ponto no
+//   começo ou subpasta), porque a tela que depende dele não abriria.
 // Sem web/dist, confere só o código-fonte e avisa que o orçamento do build não foi
 // conferido. O tamanho em gzip vem do .gz do build (compress-assets.mjs) ou, sem ele, de
 // zlib nível 9.
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
+import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const require = createRequire(import.meta.url)
+const { isServableAssetName } = require('../../backend/utils/staticAssets.js')
 
 export const INITIAL_JS_GZIP_LIMIT = 130 * 1024
 export const JS_RAW_LIMIT = 350 * 1024
@@ -63,6 +70,24 @@ export function initialScripts(indexHtml) {
   return [...new Set(scripts.map((item) => item.replace(/^\.?\//, '').split(/[?#]/)[0]))]
 }
 
+// Nomes de web/dist/assets que o servidor recusaria (staticAssets.js). As versões .gz e
+// .br de um arquivo que existe ao lado não contam: saem como a versão comprimida dele.
+// Subpasta conta: /assets só entrega arquivos direto da pasta.
+export function unservableAssetNames(assetsDir) {
+  if (!fs.existsSync(assetsDir)) return []
+  const entries = fs.readdirSync(assetsDir, { withFileTypes: true })
+  const files = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name))
+  return entries
+    .filter((entry) => {
+      if (!entry.isFile()) return true
+      const original = entry.name.replace(/\.(?:gz|br)$/i, '')
+      if (original !== entry.name && files.has(original)) return false
+      return !isServableAssetName(entry.name)
+    })
+    .map((entry) => (entry.isFile() ? entry.name : `${entry.name}/`))
+    .sort()
+}
+
 function gzipSize(file) {
   const precompressed = `${file}.gz`
   if (fs.existsSync(precompressed)) return fs.statSync(precompressed).size
@@ -99,6 +124,9 @@ export function checkBundle({ distDir, srcDir, initialLimit = INITIAL_JS_GZIP_LI
   }
 
   const assetsDir = path.join(distDir, 'assets')
+  for (const name of unservableAssetNames(assetsDir)) {
+    errors.push(`assets/${name} tem um nome que o servidor não entrega em /assets (só letras sem acento, números, '.', '_' e '-', sem começar com ponto e sem subpasta). Renomeie o arquivo de origem ou confira o sanitizeFileName do web/vite.config.js.`)
+  }
   const jsFiles = fs.existsSync(assetsDir)
     ? fs.readdirSync(assetsDir).filter((name) => /\.m?js$/.test(name))
     : []

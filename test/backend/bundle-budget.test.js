@@ -125,6 +125,49 @@ test('[UC-DESEMPENHO-001] orçamento: entrada acima de 130 KB em gzip, .js acima
     assert.match(checkBundle(broken).errors.join('\n'), /aponta para assets\/icons-def\.js, que não está no build/);
 });
 
+test('[UC-DESEMPENHO-001] orçamento: todo arquivo de web/dist/assets tem um nome que o servidor entrega em /assets', async () => {
+    // Antes, o servidor recusava nomes começando com '_', que o Vite dá a pedaços
+    // compartilhados (_commonjsHelpers-<hash>.js, ou um módulo _baseHelper.js de uma
+    // dependência): o arquivo dava 404 e a tela quebrava, sem o check:bundle perceber.
+    const { checkBundle, unservableAssetNames } = await loadScript('check-bundle-size.mjs');
+    const dirs = fakeBuild('nomes');
+    const assets = path.join(dirs.distDir, 'assets');
+    for (const name of ['_commonjsHelpers-Bx1a.js', '__vite-browser-external-9aZ.js', '_baseHelper-Do-915rM.js', 'EscolaEditPage--m_4JLv_.js']) {
+        write(path.join(assets, name), texto(2));
+        write(path.join(assets, `${name}.gz`), zlib.gzipSync(Buffer.from(texto(2))));
+    }
+    assert.deepEqual(unservableAssetNames(assets), []);
+    assert.equal(checkBundle(dirs).ok, true, checkBundle(dirs).errors.join('\n'));
+
+    write(path.join(assets, 'Matrícula-abc.js'), texto(1));
+    write(path.join(assets, 'Minha Tela-abc.js'), texto(1));
+    write(path.join(assets, '.oculto-abc.js'), texto(1));
+    write(path.join(assets, 'img', 'logo-abc.png'), 'png');
+    // .gz sem o original ao lado não é versão comprimida de nada.
+    write(path.join(assets, 'sozinho-abc.js.gz'), zlib.gzipSync(Buffer.from('x')));
+    assert.deepEqual(unservableAssetNames(assets), ['.oculto-abc.js', 'Matrícula-abc.js', 'Minha Tela-abc.js', 'img/', 'sozinho-abc.js.gz']);
+    const result = checkBundle(dirs);
+    assert.equal(result.ok, false);
+    assert.match(result.errors.join('\n'), /assets\/Matrícula-abc\.js tem um nome que o servidor não entrega em \/assets/);
+    assert.match(result.errors.join('\n'), /assets\/img\/ tem um nome que o servidor não entrega/);
+});
+
+test('[UC-DESEMPENHO-001] o build só grava nomes que o servidor entrega (sanitizeFileName do vite.config.js)', () => {
+    const { isServableAssetName, toServableAssetName } = require('../../backend/utils/staticAssets.js');
+    const viteConfig = fs.readFileSync(path.join(ROOT, 'web', 'vite.config.js'), 'utf8');
+    assert.match(viteConfig, /require\('\.\.\/backend\/utils\/staticAssets\.js'\)/);
+    assert.match(viteConfig, /sanitizeFileName: toServableAssetName/);
+    // Nomes que o Rollup deixaria passar com a regra padrão dele: com o padrão do Vite
+    // ([name]-[hash].js), o arquivo final sempre passa na regra do servidor.
+    for (const name of ['Matrícula', 'Minha Tela', 'tela(1)', ".oculto", '\0commonjsHelpers', '_baseHelper', 'ação!@~', 'índice.css', 'ExamRunner']) {
+        const fileName = `${toServableAssetName(name)}-AbC_9-x.js`;
+        assert.equal(isServableAssetName(fileName), true, `${name} → ${fileName}`);
+    }
+    assert.equal(toServableAssetName('ExamRunner'), 'ExamRunner');
+    assert.equal(toServableAssetName('_commonjsHelpers'), '_commonjsHelpers');
+    assert.equal(toServableAssetName('pasta/Matrícula'), 'pasta/Matr_cula');
+});
+
 test('[UC-DESEMPENHO-001] orçamento sem build: avisa e passa; o código-fonte ainda é conferido', async () => {
     const { checkBundle, NO_BUILD_MESSAGE } = await loadScript('check-bundle-size.mjs');
     const src = path.join(tempRoot, 'sem-build', 'src');
@@ -152,6 +195,11 @@ test('[UC-DESEMPENHO-001] scripts chamados por um caminho que passa por link sim
     fs.mkdirSync(scripts, { recursive: true });
     for (const name of ['compress-assets.mjs', 'check-bundle-size.mjs']) {
         fs.copyFileSync(path.join(ROOT, 'web', 'scripts', name), path.join(scripts, name));
+    }
+    // O check:bundle usa a regra de nomes do servidor (backend/utils/staticAssets.js).
+    fs.mkdirSync(path.join(real, 'backend', 'utils'), { recursive: true });
+    for (const name of ['staticAssets.js', 'httpCompression.js']) {
+        fs.copyFileSync(path.join(ROOT, 'backend', 'utils', name), path.join(real, 'backend', 'utils', name));
     }
     const { distDir, srcDir } = fakeBuild('pasta-real/web');
     assert.equal(distDir, path.join(real, 'web', 'dist'));

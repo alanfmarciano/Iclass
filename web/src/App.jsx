@@ -6,14 +6,18 @@ import { lazyPage } from './lib/lazyPage'
 import { Input } from './components/ui/Input'
 import { Button } from './components/ui/Button'
 import { api } from './lib/api'
+import { PageLoading } from './components/ui/PageLoading'
 import LoginPage from './features/LoginPage'
 
 // Telas e layouts sob demanda (H2-A, DES-06): cada um é um arquivo próprio do build, e o
 // navegador só baixa o que abre. O login continua no pacote inicial (é a primeira tela).
-// Tela nova entra aqui com lazyPage(() => import(...)).
-const AppShell = lazyPage(() => import('./components/layout/AppShell'), 'AppShell')
-const StudentShell = lazyPage(() => import('./features/student/StudentShell'), 'StudentShell')
-const StudentExamShell = lazyPage(() => import('./features/student/StudentExamShell'), 'StudentExamShell')
+// Tela nova entra aqui com lazyPage(() => import(...)). Layout cujo arquivo não chegou
+// (servidor fora, Wi-Fi caída) espera na tela inteira (LayoutLoading); a tela dentro do
+// layout espera no lugar da página, com o menu à vista.
+const layoutOptions = { loading: LayoutLoading }
+const AppShell = lazyPage(() => import('./components/layout/AppShell'), 'AppShell', layoutOptions)
+const StudentShell = lazyPage(() => import('./features/student/StudentShell'), 'StudentShell', layoutOptions)
+const StudentExamShell = lazyPage(() => import('./features/student/StudentExamShell'), 'StudentExamShell', layoutOptions)
 // Instrutor
 const DashboardPage = lazyPage(() => import('./features/admin/DashboardPage'))
 const ProvasPage = lazyPage(() => import('./features/admin/ProvasPage'))
@@ -76,6 +80,14 @@ function SessionLoading() {
   return (
     <div className="min-h-screen grid place-items-center bg-bg text-text">
       <div className="text-sm text-muted">Validando sessão...</div>
+    </div>
+  )
+}
+
+function LayoutLoading() {
+  return (
+    <div className="min-h-screen grid place-items-center bg-bg text-text">
+      <PageLoading />
     </div>
   )
 }

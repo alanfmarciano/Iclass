@@ -58,10 +58,31 @@ function withUtf8Charset(type) {
     return `${String(type).replace(/;\s*charset=[^;]*/ig, '')}; charset=utf-8`;
 }
 
+// Status e cabeçalhos da resposta no momento do envio. Enquanto o gzip roda, a resposta
+// ainda não saiu (res.headersSent é false), e quem vem depois pode mexer nela: a rota que
+// respondeu um CSV e depois lançou leva o errorHandler a tirar o Content-Disposition e o
+// Content-Type e a pôr o 500. Sem compressão, a resposta já teria saído e nada disso a
+// alcançaria; com a compressão, a resposta que sai é a mesma: a guardada aqui.
+function snapshotResponse(res) {
+    return { statusCode: res.statusCode, statusMessage: res.statusMessage, headers: res.getHeaders() };
+}
+
+function restoreResponse(res, snapshot) {
+    for (const name of res.getHeaderNames()) {
+        if (!Object.prototype.hasOwnProperty.call(snapshot.headers, name)) res.removeHeader(name);
+    }
+    for (const name of Object.keys(snapshot.headers)) {
+        if (res.getHeader(name) !== snapshot.headers[name]) res.setHeader(name, snapshot.headers[name]);
+    }
+    res.statusCode = snapshot.statusCode;
+    res.statusMessage = snapshot.statusMessage;
+}
+
 function compressTextResponses(options = {}) {
     const { minBytes, maxBytes, level } = { ...DEFAULTS, ...options };
     return function compressTextResponsesMiddleware(req, res, next) {
         const originalSend = res.send;
+        const originalEnd = res.end;
         // idle: nada enviado; pending: comprimindo; sent: já entregue ao Express.
         let state = 'idle';
         res.send = function sendCompressed(body) {
@@ -91,13 +112,13 @@ function compressTextResponses(options = {}) {
                 return originalSend.call(this, body);
             }
             state = 'pending';
-            const statusCode = this.statusCode;
             if (isText) this.set('Content-Type', withUtf8Charset(type));
+            const snapshot = snapshotResponse(this);
             const input = isText ? Buffer.from(body, 'utf8') : body;
             zlib.gzip(input, { level }, (err, compressed) => {
                 state = 'sent';
                 if (res.headersSent || res.writableEnded) return;
-                res.statusCode = statusCode;
+                restoreResponse(res, snapshot);
                 if (err) {
                     // Sem gzip (não deveria acontecer): vai o corpo original.
                     originalSend.call(res, input);
@@ -107,6 +128,15 @@ function compressTextResponses(options = {}) {
                 originalSend.call(res, compressed);
             });
             return this;
+        };
+        // res.end direto durante o gzip (sem passar por res.send) também não encerra a
+        // resposta pela metade: a que está no gzip sai inteira.
+        res.end = function endAfterCompression(...args) {
+            if (state === 'pending') {
+                console.warn('[COMPRESSÃO] resposta encerrada durante a compressão', req.path);
+                return this;
+            }
+            return originalEnd.apply(this, args);
         };
         next();
     };

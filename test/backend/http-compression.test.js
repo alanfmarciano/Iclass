@@ -289,6 +289,61 @@ test('[UC-DESEMPENHO-001] segundo envio durante a compressão é ignorado com av
     }
 });
 
+test('[UC-DESEMPENHO-001] download que responde e depois lança: com gzip, sai o mesmo arquivo de sem gzip (tipo, nome e status)', async () => {
+    // Antes, enquanto o gzip rodava, o errorHandler tirava o Content-Disposition e o
+    // Content-Type e punha o 500 na resposta que ainda ia sair: o CSV chegava como
+    // application/json, sem o nome do arquivo. Sem compressão, chegava certo.
+    const { assignRequestId, errorHandler } = require('../../backend/middlewares.js');
+    const app = express();
+    app.use(assignRequestId);
+    app.use(compressTextResponses({ minBytes: 1024 }));
+    const csvBody = `aluno;nota\n${'Aluna da Silva;9,5\n'.repeat(300)}`;
+    app.get('/notas.csv', (req, res) => {
+        res.set('Content-Disposition', 'attachment; filename="notas.csv"');
+        res.set('X-Planilha', 'notas');
+        res.type('text/csv');
+        res.send(csvBody);
+        throw new Error('falhou depois de responder');
+    });
+    app.get('/encerra-no-meio', (req, res) => {
+        res.type('application/json').send(JSON.stringify({ itens: Array.from({ length: 200 }, (_, i) => ({ i, nome: 'Aluna da Silva' })) }));
+        res.status(500).end('fim antes da hora');
+    });
+    app.use(errorHandler);
+    const local = await listen(app);
+    const base = `http://127.0.0.1:${local.address().port}`;
+    const warnings = [];
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    console.error = () => {};
+    try {
+        const plain = await raw('GET', '/notas.csv', {}, base);
+        const gzip = await raw('GET', '/notas.csv', { 'Accept-Encoding': 'gzip' }, base);
+        assert.equal(plain.status, 200);
+        assert.equal(plain.headers['content-disposition'], 'attachment; filename="notas.csv"');
+        assert.equal(gzip.headers['content-encoding'], 'gzip');
+        assert.equal(gzip.status, plain.status);
+        assert.equal(gzip.headers['content-disposition'], plain.headers['content-disposition']);
+        assert.equal(gzip.headers['content-type'], plain.headers['content-type']);
+        assert.match(gzip.headers['content-type'], /^text\/csv; charset=utf-8$/);
+        assert.equal(gzip.headers['x-planilha'], 'notas');
+        assert.equal(decoded(gzip), csvBody);
+        assert.ok(warnings.some(line => line.includes('[COMPRESSÃO] resposta enviada duas vezes') && line.includes('/notas.csv')));
+
+        // res.end direto durante o gzip não corta a resposta: sai a primeira, inteira.
+        const ended = await raw('GET', '/encerra-no-meio', { 'Accept-Encoding': 'gzip' }, base);
+        assert.equal(ended.status, 200);
+        assert.equal(ended.headers['content-encoding'], 'gzip');
+        assert.equal(JSON.parse(decoded(ended)).itens.length, 200);
+        assert.ok(warnings.some(line => line.includes('[COMPRESSÃO] resposta encerrada durante a compressão')));
+    } finally {
+        console.warn = originalWarn;
+        console.error = originalError;
+        await new Promise(resolve => local.close(resolve));
+    }
+});
+
 test('[UC-DESEMPENHO-001] leitura do Accept-Encoding', () => {
     assert.equal(acceptsEncoding('gzip, deflate, br', 'gzip'), true);
     assert.equal(acceptsEncoding('GZIP', 'gzip'), true);

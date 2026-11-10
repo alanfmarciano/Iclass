@@ -19,8 +19,13 @@ const fs = require('fs');
 const path = require('path');
 const { acceptsEncoding } = require('./httpCompression.js');
 
-// Só nomes simples, como os que o Vite gera: sem barra, sem '%', sem começar com ponto.
-const ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Só nomes simples, como os que o Vite gera: letras sem acento, números, '.', '_' e '-',
+// sem barra nem '%', sem começar nem terminar com ponto. '_' e '-' no começo valem: o
+// Vite dá esses nomes a pedaços compartilhados (_commonjsHelpers-<hash>.js, ou um módulo
+// _baseHelper.js de uma dependência), e recusá-los quebraria a tela depois de uma
+// atualização. O build só grava nomes assim (toServableAssetName no vite.config.js) e o
+// `npm run check:bundle` confere cada arquivo de web/dist/assets com esta mesma regra.
+const ASSET_NAME = /^[A-Za-z0-9_-](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/;
 const PRECOMPRESSED_SUFFIX = /\.(gz|br)$/i;
 const ASSET_MAX_AGE = '365d';
 const NOT_FOUND_TEXT = 'Arquivo não encontrado.';
@@ -64,6 +69,22 @@ function sendAssetError(err, req, res) {
     return sendInternalError(err, req, res, 'Falha ao enviar um arquivo do app (/assets).');
 }
 
+// O nome sai por /assets/<nome>? As versões .gz e .br não saem pelo próprio nome (só como
+// a versão comprimida do original).
+function isServableAssetName(name) {
+    const text = String(name || '');
+    return ASSET_NAME.test(text) && !PRECOMPRESSED_SUFFIX.test(text);
+}
+
+// Nome que o build grava (sanitizeFileName do Rollup, em web/vite.config.js): troca por
+// '_' o que a regra acima recusa (acento, espaço, sinais) e o ponto do começo. Mantém a
+// barra, que no padrão do Rollup separa pastas.
+function toServableAssetName(name) {
+    return String(name || '').split('/')
+        .map(part => part.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\./, '_'))
+        .join('/');
+}
+
 // Versão a enviar: [codificação, caminho], com a codificação null para o original.
 async function pickVariant(file, acceptEncoding) {
     if (acceptsEncoding(acceptEncoding, 'br') && await isFile(`${file}.br`)) return ['br', `${file}.br`];
@@ -83,7 +104,7 @@ function serveBuildAssets(distDir) {
         }
         // req.path é relativo ao ponto de montagem: '/index-abc123.js'.
         const name = String(req.path || '').replace(/^\//, '');
-        if (!ASSET_NAME.test(name) || PRECOMPRESSED_SUFFIX.test(name)) return sendAssetNotFound(res);
+        if (!isServableAssetName(name)) return sendAssetNotFound(res);
         const file = path.join(assetsDir, name);
         (async () => {
             if (!await isFile(file)) return sendAssetNotFound(res);
@@ -113,4 +134,4 @@ function serveBuildAssets(distDir) {
     };
 }
 
-module.exports = { serveBuildAssets, sendAssetNotFound, setNoStore, ASSET_MAX_AGE };
+module.exports = { serveBuildAssets, sendAssetNotFound, setNoStore, isServableAssetName, toServableAssetName, ASSET_MAX_AGE };

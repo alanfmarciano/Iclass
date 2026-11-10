@@ -176,6 +176,38 @@ test('[UC-DESEMPENHO-001] versões comprimidas e caminhos fora da pasta não sae
     }
 });
 
+test('[UC-DESEMPENHO-001] nomes que o Vite dá a pedaços compartilhados (começando com _ ou -) saem com cache imutável', async () => {
+    // Antes, o servidor recusava nome começando com '_' (404 no-store), e o Vite gera
+    // nomes assim (_commonjsHelpers-<hash>.js, ou um módulo _baseHelper.js de uma
+    // dependência): depois de uma atualização, a tela que usasse esse pedaço quebrava.
+    const shared = ['_baseHelper-Do-915rM.js', '__vite-browser-external-9aZ.js', '-inicio-x1.js'];
+    const source = `export const ajuda = ${JSON.stringify('pedaço compartilhado '.repeat(80))};\n`;
+    for (const name of shared) {
+        fs.writeFileSync(path.join(assetsDir, name), source);
+        fs.writeFileSync(path.join(assetsDir, `${name}.gz`), zlib.gzipSync(Buffer.from(source), { level: 9 }));
+    }
+    try {
+        for (const name of shared) {
+            const res = await raw('GET', `/assets/${name}`, { 'Accept-Encoding': 'gzip' });
+            assert.equal(res.status, 200, name);
+            assert.equal(res.headers['content-encoding'], 'gzip', name);
+            assert.match(String(res.headers['cache-control']), /immutable/, name);
+            assert.match(String(res.headers['content-type']), /javascript/, name);
+            assert.equal(zlib.gunzipSync(res.body).toString('utf8'), source, name);
+        }
+        // Ponto no começo ou no fim continua recusado (arquivo oculto; no Windows, o ponto
+        // final some e o nome cairia em outro arquivo).
+        fs.writeFileSync(path.join(assetsDir, '.oculto.js'), source);
+        for (const urlPath of ['/assets/.oculto.js', `/assets/${ENTRY}.`, `/assets/${ENTRY}.gz.`]) {
+            const res = await raw('GET', urlPath, { 'Accept-Encoding': 'gzip' });
+            assert.equal(res.status, 404, urlPath);
+            assert.match(String(res.headers['cache-control'] || ''), /no-store/, urlPath);
+        }
+    } finally {
+        for (const name of [...shared, ...shared.map(n => `${n}.gz`), '.oculto.js']) fs.rmSync(path.join(assetsDir, name), { force: true });
+    }
+});
+
 test('[UC-DESEMPENHO-001] HEAD e revalidação (ETag → 304) em /assets; outro método é 405', async () => {
     const head = await raw('HEAD', `/assets/${ENTRY}`, { 'Accept-Encoding': 'gzip' });
     assert.equal(head.status, 200);
