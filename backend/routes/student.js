@@ -271,7 +271,9 @@ function parseLeaveBody(req, res, next) {
 }
 
 async function endStudentSession(req, res) {
-    revokeStudentSession(db.memory, req.studentEmail);
+    // O motivo fica guardado: o pedido seguinte do token antigo (outra aba) recebe 401
+    // com reason 'logout'.
+    revokeStudentSession(db.memory, req.studentEmail, { reason: 'logout' });
     await db.save();
     res.json({ success: true });
 }
@@ -824,6 +826,13 @@ function enrollmentPayload(student) {
     }).sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
     return { classes, courses, requests };
 }
+
+// Dados da conta para Minha conta (H5b; SEG-16): a matrícula não vai no perfil do login
+// (utils/studentProfile.js), que fica guardado no navegador; a tela a lê aqui, na hora.
+router.get('/api/student/account', validateStudentSession, (req, res) => {
+    const student = req.studentAccount || {};
+    res.json({ success: true, matricula: typeof student.matricula === 'string' ? student.matricula : (student.matricula == null ? '' : String(student.matricula)) });
+});
 
 router.get('/api/student/enrollments', validateStudentSession, (req, res) => {
     res.json(enrollmentPayload(req.studentAccount));

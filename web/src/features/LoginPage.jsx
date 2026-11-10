@@ -102,6 +102,12 @@ export default function LoginPage() {
           toast.error(serverMessage || LOCAL_ONLY_TEXT)
           return
         }
+        // Sessão encerrada por uma ação no servidor (lib/sessionRevoked.js): o texto vem dele.
+        if (r === 'logout') return
+        if (r === 'password_reset' || r === 'password_changed') {
+          toast.info(serverMessage || 'A senha desta conta foi alterada. Entre de novo com a senha nova.')
+          return
+        }
         const msg = r === 'idle' ? 'Sua sessão expirou por inatividade. Faça login novamente.' : r === 'restart' ? 'O servidor foi reiniciado. Faça login novamente.' : 'Sua sessão expirou. Faça login novamente.'
         toast.info(msg)
       }
@@ -151,8 +157,11 @@ export default function LoginPage() {
         await loginStudent(email, password); nav('/aluno')
       }
     } catch (err) {
-      if (err?.status === 429 && err?.data?.loginDelayed) setDelayNotice({ mode, text: err.message })
-      toast.error(err.message || 'Falha no login')
+      // Login em espera: o aviso fixo acima do botão já mostra o texto; o toast repetido
+      // cobria o botão "Entrar" no celular.
+      const delayed = err?.status === 429 && err?.data?.loginDelayed
+      if (delayed) setDelayNotice({ mode, text: err.message })
+      if (!delayed || !(mode === 'admin' || studentAction === 'login')) toast.error(err.message || 'Falha no login')
     } finally { setLoading(false) }
   }
 

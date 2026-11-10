@@ -32,6 +32,7 @@ const {
     isUserActivityRequest,
     sessionAbsoluteTtlMs,
     sessionPredatesRevocation,
+    revokedSessionReason,
 } = require('./utils/authSessions.js');
 const {
     STUDENT_PASSWORD_CHANGE_PATHS,
@@ -79,6 +80,21 @@ function normalizeIp(ip) {
     return ip;
 }
 
+// Sessão encerrada há pouco por uma ação (H5b; contrato das respostas de estado: 401
+// { sessionRevoked: true, reason }): o pedido seguinte do token antigo diz o motivo, em vez
+// do "sessão expirada" genérico. utils/authSessions.js guarda o motivo (revokedSessionReason).
+const REVOKED_SESSION_MESSAGES = Object.freeze({
+    logout: 'Esta sessão foi encerrada pelo botão Sair. Faça login novamente.',
+    password_reset: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
+    password_changed: 'A senha desta conta foi trocada em outro aparelho. Entre de novo com a senha nova.',
+});
+
+function revokedSessionBody(token) {
+    const reason = typeof token === 'string' && token ? revokedSessionReason(token) : null;
+    if (!reason || !REVOKED_SESSION_MESSAGES[reason]) return null;
+    return { error: REVOKED_SESSION_MESSAGES[reason], sessionRevoked: true, reason };
+}
+
 function validateStudentSession(req, res, next) {
     const claimedEmails = [
         req.body && req.body.email,
@@ -98,6 +114,10 @@ function validateStudentSession(req, res, next) {
     // A sessão é procurada pelo hash do token (utils/authSessions.js); o token cru só
     // existe no navegador.
     const tokenMatch = typeof providedToken === 'string' ? findStudentSession(db.memory, providedToken) : null;
+    // Token de uma sessão que acabou por uma ação (Sair, "Redefinir senha"): o 401 diz o
+    // motivo, também quando o aluno já entrou de novo em outro aparelho.
+    const revokedBody = !tokenMatch ? revokedSessionBody(providedToken) : null;
+    if (revokedBody) return res.status(401).json(revokedBody);
     if (normalizedEmail && tokenMatch && tokenMatch.email !== normalizedEmail) {
         return res.status(403).json({ error: 'A identidade informada não corresponde à sessão autenticada.' });
     }
@@ -167,8 +187,8 @@ function validateStudentSession(req, res, next) {
     // do "Redefinir senha" acaba. Quem tem uma tentativa aberta agora termina a prova com
     // ela; a sessão acaba no primeiro pedido depois da entrega (studentHasOpenAttempt).
     // A prova da turma que o aluno ainda não abriu não segura a sessão antiga.
-    if (sessionPredatesRevocation(student, session) && !studentHasOpenAttempt(db.memory, normalizedEmail)) {
-        revokeStudentSession(db.memory, normalizedEmail);
+    if (sessionPredatesRevocation(student, session) && !studentHasOpenAttempt(db.memory, normalizedEmail, nowTs)) {
+        revokeStudentSession(db.memory, normalizedEmail, { reason: 'password_reset', now: nowTs });
         return res.status(401).json({
             error: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
             sessionRevoked: true,
@@ -227,6 +247,9 @@ function resolveRequester(req) {
 function validateAnySession(req, res, next) {
     const requester = resolveRequester(req);
     if (!requester) {
+        const revokedBody = revokedSessionBody(String(req.get('x-session-token') || ''))
+            || revokedSessionBody(String(req.get('x-admin-session') || ''));
+        if (revokedBody) return res.status(401).json(revokedBody);
         return res.status(401).json({ error: 'Autenticação necessária.', sessionRevoked: true });
     }
     if (requester.role !== 'student') {
@@ -527,6 +550,10 @@ function validateAdmin(req, res, callback) {
         : { ok: false, reason: 'missing' };
     if (check.reason !== 'missing') {
         if (!check.ok) {
+            // Sessão encerrada há pouco por uma ação (troca de senha em outro aparelho,
+            // Sair): o 401 diz o motivo.
+            const revokedBody = REVOKED_SESSION_MESSAGES[check.reason] ? revokedSessionBody(adminSessionToken) : null;
+            if (revokedBody) return res.status(401).json(revokedBody);
             revokeAdminSession(db.memory, adminSessionToken);
             if (check.reason === 'account_missing') {
                 return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });

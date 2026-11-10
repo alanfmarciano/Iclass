@@ -101,10 +101,11 @@ describe('[UC-AUTH-003] sessão do aluno no navegador', () => {
     const stored = JSON.parse(localStorage.getItem(LS))
     expect(stored.sessionToken).toBe('tok-1')
     expect(stored.student).toEqual({
-      email: 'ana@escola.local', name: 'Ana', nomeSocial: '', status: 'active', matricula: '2024-01',
+      email: 'ana@escola.local', name: 'Ana', nomeSocial: '', status: 'active',
       classes: [{ name: 'T1', courseId: 'c1' }], courses: [{ id: 'c1', name: 'Curso' }],
     })
-    for (const field of ['guardian', 'guardianPhone', 'phone', 'accessibility', 'birthDate', 'password']) {
+    // A matrícula também sai (H5b, ajuste 2): Minha conta a lê do servidor na hora.
+    for (const field of ['guardian', 'guardianPhone', 'phone', 'accessibility', 'birthDate', 'password', 'matricula', '2024-01']) {
       expect(JSON.stringify(stored)).not.toContain(field)
     }
   })
@@ -135,3 +136,44 @@ describe('[UC-AUTH-003] sessão do aluno no navegador', () => {
     expect(mocks.post).not.toHaveBeenCalledWith('/api/student/logout', expect.anything(), expect.anything())
   })
 })
+
+// Fase 2, H5b ajuste 2 (contrato 401 { sessionRevoked, reason }): a sessão que o servidor
+// encerrou por uma ação chega ao login com o motivo dele.
+describe('[UC-AUTH-003] motivo da sessão encerrada', () => {
+  const RESET = 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.'
+
+  it('ao abrir, senha redefinida pelo professor: guarda o motivo e o texto do servidor para o login', async () => {
+    mocks.get.mockImplementation(async (path) => {
+      if (path === '/api/session/status') return { instanceId: 'inst-1' }
+      if (path.startsWith('/api/ping')) throw Object.assign(new Error(RESET), { status: 401, data: { error: RESET, sessionRevoked: true, reason: 'password_reset' } })
+      return {}
+    })
+    localStorage.setItem(LS, JSON.stringify({ role: 'student', email: 'ana@escola.local', sessionToken: 'tok-1', serverInstanceId: 'inst-1', loginAt: Date.now(), student: { email: 'ana@escola.local' } }))
+    renderProvider()
+    await waitFor(() => expect(sessionStorage.getItem('iclass-logout-reason')).toBe('password_reset'))
+    expect(sessionStorage.getItem('iclass-logout-message')).toBe(RESET)
+    await waitFor(() => expect(screen.getByTestId('role')).toHaveTextContent('none'))
+  })
+
+  it('401 sem motivo conhecido continua como sessão expirada', async () => {
+    mocks.get.mockImplementation(async (path) => {
+      if (path === '/api/session/status') return { instanceId: 'inst-1' }
+      if (path.startsWith('/api/ping')) throw Object.assign(new Error('Sessão expirada.'), { status: 401, data: { sessionRevoked: true, reason: 'expired' } })
+      return {}
+    })
+    localStorage.setItem(LS, JSON.stringify({ role: 'student', email: 'ana@escola.local', sessionToken: 'tok-1', serverInstanceId: 'inst-1', loginAt: Date.now(), student: { email: 'ana@escola.local' } }))
+    renderProvider()
+    await waitFor(() => expect(sessionStorage.getItem('iclass-logout-reason')).toBe('expired'))
+    expect(sessionStorage.getItem('iclass-logout-message')).toBeNull()
+  })
+
+  it('logout(evento) de um onClick não vira motivo', async () => {
+    localStorage.setItem(LS, JSON.stringify({ role: 'student', email: 'ana@escola.local', sessionToken: 'tok-1', serverInstanceId: 'inst-1', loginAt: Date.now(), student: { email: 'ana@escola.local' } }))
+    renderProvider()
+    await waitFor(() => expect(screen.getByTestId('role')).toHaveTextContent('student'))
+    act(() => { ctx.logout({ type: 'click' }) })
+    await waitFor(() => expect(screen.getByTestId('role')).toHaveTextContent('none'))
+    expect(sessionStorage.getItem('iclass-logout-reason')).toBeNull()
+  })
+})
+

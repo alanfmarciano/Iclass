@@ -6,11 +6,16 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { PasswordChangeForm } from '../../components/PasswordChangeForm'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
+import { useApi } from '../../hooks/useApi'
 
 // Minha conta (/aluno/conta, H5a; UXA-13): os dados da conta, só para ler (quem muda
 // nome, e-mail e turma é o professor), e o "Alterar senha", que pede a senha atual.
+// A matrícula vem do servidor na hora (GET /api/student/account): ela não fica guardada no
+// navegador com a sessão (H5b, SEG-16).
 export default function ContaPage() {
   const { auth } = useAuth()
+  const account = useApi(auth.email ? '/api/student/account' : null, [auth.email])
+  const matricula = account.data && typeof account.data.matricula === 'string' ? account.data.matricula : ''
   const toast = useToast()
   const [changing, setChanging] = useState(false)
   const student = auth.student || {}
@@ -24,7 +29,7 @@ export default function ContaPage() {
   const rows = [
     ['Nome', name],
     ['E-mail', student.email || auth.email || ''],
-    ...(student.matricula ? [['Matrícula', student.matricula]] : []),
+    ...(matricula ? [['Matrícula', matricula]] : []),
     ...(classes.length ? [[classes.length > 1 ? 'Turmas' : 'Turma', classes.map(classLabel).join(', ')]] : []),
   ]
   return (

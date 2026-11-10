@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { api, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from '../lib/api'
+import { revokedLogoutFromError } from '../lib/sessionRevoked'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
 import { usePolling } from '../hooks/usePolling'
@@ -162,7 +163,12 @@ export function AuthProvider({ children }) {
         // 401/403 => sessão inválida (expirada/reiniciada). Erro de rede => mantém e tenta depois.
         // 403 com adminAccess: o painel não abre neste aparelho (motivo vindo do servidor).
         if (err && err.status === 403 && err.data?.adminAccess) { if (!cancelled) doLogout('admin-network', err.data.error) }
-        else if (err && (err.status === 401 || err.status === 403)) { if (!cancelled) doLogout('expired') }
+        else if (err && (err.status === 401 || err.status === 403)) {
+          // Sessão encerrada por uma ação (senha redefinida ou trocada, Sair em outra aba):
+          // o login mostra o motivo do servidor.
+          const revoked = revokedLogoutFromError(err)
+          if (!cancelled) { if (revoked) doLogout(revoked.reason, revoked.message); else doLogout('expired') }
+        }
         else if (!cancelled) setAuthReady(true)
       }
     }
@@ -316,7 +322,10 @@ export function AuthProvider({ children }) {
     setAuth((current) => ({ ...current, activeWorkspace: null, activeCourse: null }))
   }, [])
 
-  const logout = useCallback(() => { doLogout() }, [doLogout])
+  // logout(reason?, message?): reason só como texto (um onClick={logout} passaria o evento).
+  const logout = useCallback((reason, message) => {
+    doLogout(typeof reason === 'string' ? reason : undefined, typeof message === 'string' ? message : undefined)
+  }, [doLogout])
 
   return (
     <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>

@@ -396,7 +396,7 @@ function createAdminAccountsRouter() {
 
     router.post('/api/session/logout', (req, res) => {
         validateAdmin(req, res, () => {
-            revokeAdminSession(db.memory, req.adminSessionToken);
+            revokeAdminSession(db.memory, req.adminSessionToken, { reason: 'logout' });
             res.json({ success: true });
         });
     });
@@ -525,7 +525,7 @@ function createAdminAccountsRouter() {
             // As outras sessões da conta (outro navegador, outro computador) saem; a deste
             // pedido continua (H5b, SEG-10). Antes a sessão aberta em outro lugar seguia
             // valendo com a senha antiga.
-            const endedSessions = revokeAdminSessions(db.memory, matchedAdmin.email, { exceptToken: req.adminSessionToken });
+            const endedSessions = revokeAdminSessions(db.memory, matchedAdmin.email, { exceptToken: req.adminSessionToken, reason: 'password_changed' });
             recordAudit(db.memory, {
                 req,
                 actor: matchedAdmin,

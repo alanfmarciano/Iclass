@@ -13,7 +13,8 @@
 //   "teste"): a regra inteira é ignorada, nem o login marca nem o servidor recusa, para
 //   o aluno e para o instrutor (adminPasswordChangeState); só a senha temporária do
 //   launcher continua pedindo a troca do instrutor, como antes;
-// - durante uma prova em andamento (tentativa aberta numa aplicação ativa, ou aplicação
+// - durante uma prova em andamento (tentativa aberta numa aplicação ativa, dentro da janela
+//   da tentativa (openAttemptWindowEnd), ou aplicação
 //   ativa na turma do aluno, dentro da janela da prova, para quem ainda não abriu a
 //   tentativa nela; ver studentHasExamInProgress): o login não
 //   marca a senha fraca (fica para o login seguinte) e, se a troca já estava pedida, a
@@ -107,10 +108,28 @@ function classExamWindowEnd(application, now = Date.now()) {
     return start + length + pausedMilliseconds(application, now);
 }
 
+// Fim da janela de uma tentativa aberta (ms), ou 0 quando a tentativa não traz a hora de
+// início (instruções, estado antigo: continua contando como aberta, como no H5a). Prova
+// com cronômetro: o prazo da tentativa (início, duração, ajustes e pausas,
+// computeAttemptDeadline) mais 30 min de folga. Sem cronômetro: 4 h desde o início da
+// tentativa, somando o tempo em pausa. Sem isso, uma tentativa aberta numa aplicação
+// esquecida em andamento (prova sem cronômetro nunca vence) contava como "em prova" para
+// sempre: o "Redefinir senha" deixava a sessão de antes valendo até o prazo absoluto e a
+// troca obrigatória ficava adiada.
+function openAttemptWindowEnd(state, application, now = Date.now()) {
+    const startedAt = timeValue(state && state.startedAt);
+    if (!startedAt) return 0;
+    // Carregado aqui: examDeadline.js puxa a correção das provas (sem dependência circular).
+    const { computeAttemptDeadline } = require('./examDeadline.js');
+    const deadline = Number(computeAttemptDeadline({ application, state, now }));
+    if (Number.isFinite(deadline) && deadline > 0) return deadline + CLASS_EXAM_MARGIN_MS;
+    return startedAt + CLASS_EXAM_UNTIMED_WINDOW_MS + pausedMilliseconds(application, now);
+}
+
 // Tentativas do aluno no estado das provas: { openAttempt, attemptedApplications }.
 // openAttempt: alguma tentativa ainda não entregue numa aplicação aguardando, em
-// andamento ou pausada.
-function scanStudentAttempts(memory, target) {
+// andamento ou pausada, dentro da janela dela (openAttemptWindowEnd).
+function scanStudentAttempts(memory, target, now = Date.now()) {
     const states = memory.studentExamState && typeof memory.studentExamState === 'object' ? memory.studentExamState : {};
     const attemptedApplications = new Set();
     let openAttempt = false;
@@ -121,20 +140,22 @@ function scanStudentAttempts(memory, target) {
         attemptedApplications.add(state.applicationId);
         if (openAttempt || CLOSED_ATTEMPT_STATUSES.has(state.status)) return;
         const application = findExamApplication(memory.examApplications, state.applicationId);
-        if (application && ACTIVE_APPLICATION_STATUSES.has(application.status)) openAttempt = true;
+        if (!application || !ACTIVE_APPLICATION_STATUSES.has(application.status)) return;
+        const windowEnd = openAttemptWindowEnd(state, application, now);
+        if (!windowEnd || now <= windowEnd) openAttempt = true;
     });
     return { openAttempt, attemptedApplications };
 }
 
 // O aluno tem uma tentativa aberta agora (H5b, SEG-10)? Só a tentativa já aberta e ainda
-// não entregue numa aplicação ativa; a aplicação da turma que ele ainda não abriu não
-// conta. É o que decide se o "Redefinir senha" deixa a sessão de antes terminar a prova:
-// com a regra da turma (studentHasExamInProgress), quem tinha a senha antiga continuava
-// entrando por até 4 h só porque a turma estava em prova.
-function studentHasOpenAttempt(memory, email) {
+// não entregue numa aplicação ativa, dentro da janela dela; a aplicação da turma que ele
+// ainda não abriu não conta. É o que decide se o "Redefinir senha" deixa a sessão de antes
+// terminar a prova: com a regra da turma (studentHasExamInProgress), quem tinha a senha
+// antiga continuava entrando por até 4 h só porque a turma estava em prova.
+function studentHasOpenAttempt(memory, email, now = Date.now()) {
     const target = normalizeEmail(email);
     if (!target || !memory) return false;
-    return scanStudentAttempts(memory, target).openAttempt;
+    return scanStudentAttempts(memory, target, now).openAttempt;
 }
 
 // O aluno está fazendo uma prova agora? Duas situações contam:
@@ -150,7 +171,7 @@ function studentHasOpenAttempt(memory, email) {
 function studentHasExamInProgress(memory, email, student, now = Date.now()) {
     const target = normalizeEmail(email || (student && student.email));
     if (!target || !memory) return false;
-    const { openAttempt, attemptedApplications } = scanStudentAttempts(memory, target);
+    const { openAttempt, attemptedApplications } = scanStudentAttempts(memory, target, now);
     if (openAttempt) return true;
     const record = student || (Array.isArray(memory.students) ? memory.students.find(item => item && normalizeEmail(item.email) === target) : null);
     if (!record) return false;

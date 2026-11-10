@@ -383,9 +383,11 @@ router.post('/api/admin/reset-password', (req, res) => {
         // depois da prova pela regra do H5a). O atraso de login por senhas erradas também
         // é liberado: o aluno entra na hora com a senha nova.
         student.sessionsInvalidBefore = now;
-        const attemptOpen = studentHasOpenAttempt(db.memory, student.email);
+        const attemptOpen = studentHasOpenAttempt(db.memory, student.email, now);
         const inExamNow = studentHasExamInProgress(db.memory, student.email, student, now);
-        const sessionEnded = !attemptOpen && revokeStudentSession(db.memory, student.email);
+        // O aparelho de antes recebe 401 { reason: 'password_reset' } no pedido seguinte
+        // (e não o "sessão expirada" genérico).
+        const sessionEnded = !attemptOpen && revokeStudentSession(db.memory, student.email, { reason: 'password_reset', now });
         loginGuard.clear(loginGuard.accountKey('student', student.email));
         recordAudit(db.memory, {
             req,

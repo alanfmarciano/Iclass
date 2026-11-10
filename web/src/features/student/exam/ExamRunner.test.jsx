@@ -1248,6 +1248,63 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
     expect(keystrokeBatches().slice(1).flatMap((batch) => batch.seqs)).toEqual(Array.from({ length: 200 }, (_, index) => index + 1))
   }, 15000)
 
+  it('"Enviar prova" manda a digitação que está no buffer antes da entrega (H5b: depois dela a sessão pode acabar)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const order = []
+    let releaseKeys
+    const keysHeld = new Promise((resolve) => { releaseKeys = resolve })
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/log-keystrokes') {
+        order.push('keys:start')
+        await keysHeld
+        order.push('keys:done')
+        return { success: true }
+      }
+      if (url === '/api/student/submit') {
+        order.push('submit')
+        return { success: true, gradePublished: false, answeredCount: 1 }
+      }
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5) // abaixo do lote de 20: ficaria no buffer até a limpeza do efeito
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    await waitFor(() => expect(order).toContain('keys:start'))
+    expect(order).not.toContain('submit')
+    await act(async () => { releaseKeys() })
+    await waitFor(() => expect(order).toContain('submit'))
+    expect(order.indexOf('keys:done')).toBeLessThan(order.indexOf('submit'))
+    expect(keystrokeBatches()[0].seqs).toEqual([1, 2, 3, 4, 5])
+  }, 15000)
+
+  it('"Enviar prova" não fica preso no envio da digitação: com a rede lenta, a entrega sai depois de no máximo 3 s', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      apiMock.post.mockImplementation((url) => {
+        if (url === '/api/student/log-keystrokes') return new Promise(() => {})
+        if (url === '/api/student/submit') return Promise.resolve({ success: true, gradePublished: false, answeredCount: 1 })
+        return Promise.resolve({ success: true })
+      })
+      renderRunner()
+      enterFullscreen()
+      await screen.findByRole('button', { name: /Dois/ })
+      typeKeys(3)
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+      await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+      expect(postsTo('/api/student/submit')).toHaveLength(0)
+      await act(async () => { vi.advanceTimersByTime(3100) })
+      await waitFor(() => expect(postsTo('/api/student/submit')).toHaveLength(1))
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 15000)
+
   it('Sair da prova com um envio da digitação em andamento: o resto sai na hora e nenhuma tecla se perde', async () => {
     const user = userEvent.setup()
     apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))

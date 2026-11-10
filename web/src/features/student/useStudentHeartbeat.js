@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthProvider'
 import { api } from '../../lib/api'
 import { usePolling } from '../../hooks/usePolling'
+import { revokedLogoutFromError } from '../../lib/sessionRevoked'
 
 // Presença do aluno no portal e saída imediata quando a sessão é revogada. Usado pelo
 // portal e pelo layout da prova.
@@ -28,7 +29,10 @@ export function useStudentHeartbeat() {
       return true
     } catch (err) {
       if (err?.status === 401 || err?.data?.sessionRevoked === true) {
-        logout()
+        // Senha redefinida pelo professor (ou Sair em outra aba): o login mostra o motivo.
+        const revoked = revokedLogoutFromError(err)
+        if (revoked) logout(revoked.reason, revoked.message)
+        else logout()
         nav('/login')
         return true
       }

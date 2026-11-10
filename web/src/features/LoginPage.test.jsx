@@ -222,7 +222,8 @@ describe('[UC-AUTH-002] login com atraso por senha errada', () => {
     await user.type(screen.getByLabelText('Senha'), 'errada-123')
     await user.click(screen.getByRole('button', { name: /Entrar como aluno/ }))
     expect(await screen.findByTestId('login-delayed')).toHaveTextContent(DELAYED)
-    expect(mocks.toast.error).toHaveBeenCalledWith(DELAYED)
+    // Um aviso só: o toast repetido cobria o botão "Entrar" no celular (H5b, ajuste 2).
+    expect(mocks.toast.error).not.toHaveBeenCalled()
     // A aba do instrutor não herda o aviso do aluno.
     await user.click(screen.getByRole('button', { name: 'Instrutor' }))
     expect(screen.queryByTestId('login-delayed')).toBeNull()
@@ -241,5 +242,40 @@ describe('[UC-AUTH-002] login com atraso por senha errada', () => {
     await user.click(screen.getByRole('button', { name: /Entrar como aluno/ }))
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('E-mail ou senha incorretos'))
     expect(screen.queryByTestId('login-delayed')).toBeNull()
+  })
+
+  it('instrutor: o aviso de espera também aparece uma vez só, sem toast', async () => {
+    mocks.loginAdmin.mockRejectedValueOnce(delayedError())
+    const user = userEvent.setup()
+    renderLogin()
+    await user.click(screen.getByRole('button', { name: 'Instrutor' }))
+    await user.type(screen.getByLabelText('E-mail'), 'coordenacao@teste.local')
+    await user.type(screen.getByLabelText('Senha'), 'errada-123')
+    await user.click(screen.getByRole('button', { name: /Entrar como instrutor/ }))
+    expect(await screen.findByTestId('login-delayed')).toHaveTextContent(DELAYED)
+    expect(mocks.toast.error).not.toHaveBeenCalled()
+  })
+})
+
+// Fase 2, H5b ajuste 2 (contrato 401 { sessionRevoked, reason }): a sessão encerrada por
+// uma ação no servidor mostra o motivo dele, e não o "Sua sessão expirou" genérico.
+describe('[UC-AUTH-003] motivo da sessão encerrada no login', () => {
+  const RESET = 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.'
+
+  it('senha redefinida pelo professor: mostra o texto do servidor', async () => {
+    sessionStorage.setItem('iclass-logout-reason', 'password_reset')
+    sessionStorage.setItem('iclass-logout-message', RESET)
+    renderLogin()
+    await waitFor(() => expect(mocks.toast.info).toHaveBeenCalledWith(RESET))
+    expect(mocks.toast.info).not.toHaveBeenCalledWith('Sua sessão expirou. Faça login novamente.')
+    expect(sessionStorage.getItem('iclass-logout-reason')).toBeNull()
+  })
+
+  it('Sair em outra aba: nenhum aviso', async () => {
+    sessionStorage.setItem('iclass-logout-reason', 'logout')
+    renderLogin()
+    await waitFor(() => expect(sessionStorage.getItem('iclass-logout-reason')).toBeNull())
+    expect(mocks.toast.info).not.toHaveBeenCalled()
+    expect(mocks.toast.error).not.toHaveBeenCalled()
   })
 })

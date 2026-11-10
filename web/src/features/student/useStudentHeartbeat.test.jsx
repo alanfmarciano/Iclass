@@ -111,3 +111,24 @@ describe('[UC-SENHA-001] presença e troca de senha obrigatória', () => {
     expect(authMock.syncPasswordChange).not.toHaveBeenCalled()
   })
 })
+
+// Fase 2, H5b ajuste 2 (contrato 401 { sessionRevoked, reason }): a senha redefinida pelo
+// professor chega ao login com o texto do servidor, e não como "sessão expirada".
+describe('[UC-AUTH-003] presença com a sessão encerrada no servidor', () => {
+  const RESET = 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.'
+
+  it('401 com reason password_reset: logout com o motivo e o texto do servidor', async () => {
+    apiGet.mockRejectedValue(Object.assign(new Error(RESET), { status: 401, data: { error: RESET, sessionRevoked: true, reason: 'password_reset' } }))
+    renderPortal()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(authMock.logout).toHaveBeenCalledWith('password_reset', RESET)
+  })
+
+  it('401 sem motivo conhecido: logout sem motivo, como antes', async () => {
+    apiGet.mockRejectedValue(Object.assign(new Error('Sessão expirada.'), { status: 401, data: { sessionRevoked: true, reason: 'expired' } }))
+    renderPortal()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(authMock.logout).toHaveBeenCalledWith()
+  })
+})
+

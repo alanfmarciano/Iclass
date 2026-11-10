@@ -56,6 +56,18 @@ const KEYSTROKE_FLUSH_SIZE = 20
 //   andamento; depois que a tela saiu, o recuo vale por no máximo 5 tentativas e só com a
 //   sessão aberta.
 export const KEYSTROKE_BATCH_MAX = 500
+// Espera máxima do último envio da digitação antes de "Enviar prova" (rede lenta não
+// segura a entrega).
+export const KEYSTROKE_SUBMIT_WAIT_MS = 3000
+
+export function waitForKeystrokeFlush(pending, waitMs = KEYSTROKE_SUBMIT_WAIT_MS) {
+  if (!pending || typeof pending.then !== 'function') return Promise.resolve()
+  let timer = null
+  return Promise.race([
+    Promise.resolve(pending).catch(() => {}),
+    new Promise((resolve) => { timer = setTimeout(resolve, waitMs) }),
+  ]).finally(() => clearTimeout(timer))
+}
 export const KEYSTROKE_RETRY_BASE_MS = 2000
 export const KEYSTROKE_RETRY_MAX_MS = 30000
 const KEYSTROKE_RETRIES_AFTER_LEAVE = 5
@@ -289,6 +301,10 @@ export default function ExamRunner() {
     submittedRef.current = true
     setSubmitting(true)
     try {
+      // A digitação que ainda está no buffer sai antes da entrega, com espera curta
+      // (KEYSTROKE_SUBMIT_WAIT_MS): depois da entrega o servidor pode recusar a sessão (senha
+      // redefinida pelo professor durante a prova, H5b) e o último lote sumia do Monitor.
+      await waitForKeystrokeFlush(flushRef.current?.({ final: true }))
       const r = await api.post('/api/student/submit', {
         email,
         studentClass,
@@ -434,7 +450,9 @@ export default function ExamRunner() {
 
   // flushKeystrokes() envia o próximo lote; { keepalive: true } é a saída da página e
   // { final: true } a saída da prova (não espera o envio em andamento, o recuo nem uma
-  // sincronização aceita depois de uma recusa da sessão).
+  // sincronização aceita depois de uma recusa da sessão). Devolve a promessa do envio
+  // (resolvida também na falha), ou undefined quando nada saiu: o "Enviar prova" espera o
+  // último lote antes da entrega (submit).
   const flushKeystrokes = useCallback(({ keepalive = false, final = false } = {}) => {
     const buffer = keyBufferRef.current
     if (!buffer.length) return
@@ -472,7 +490,7 @@ export default function ExamRunner() {
     }
     flushQueuedRef.current = false
     flushInFlightRef.current += 1
-    api.post('/api/student/log-keystrokes', payload, { timeoutMs: KEYSTROKE_TIMEOUT_MS }).then(() => {
+    return api.post('/api/student/log-keystrokes', payload, { timeoutMs: KEYSTROKE_TIMEOUT_MS }).then(() => {
       flushInFlightRef.current = Math.max(0, flushInFlightRef.current - 1)
       flushFailuresRef.current = 0
       flushRetryAtRef.current = 0

@@ -3,13 +3,13 @@
 // O login do aluno devolvia o cadastro inteiro (responsável, telefones, acessibilidade...)
 // e o portal guardava tudo em localStorage ('iclass-v3-auth'). O servidor agora manda só
 // estes campos (backend/utils/studentProfile.js, mesma lista); aqui o portal reduz também
-// o que já estava guardado de uma versão anterior, ao abrir.
+// o que já estava guardado de uma versão anterior, ao abrir. A matrícula fica fora: Minha
+// conta a lê na hora (GET /api/student/account).
 export const STUDENT_SESSION_PROFILE_FIELDS = Object.freeze([
   'email',
   'name',
   'nomeSocial',
   'status',
-  'matricula',
   'studentClass',
   'period',
   'classes',

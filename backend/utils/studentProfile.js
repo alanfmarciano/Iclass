@@ -4,9 +4,10 @@
 // unidade, datas de acesso...), e o portal guardava tudo em localStorage
 // ('iclass-v3-auth'): num computador de laboratório compartilhado, ou com um script
 // injetado, esses dados ficavam à vista. O portal só usa estes campos: nome e nome
-// social, e-mail, situação, matrícula (Minha conta), turmas, cursos, pedidos de
-// matrícula e a troca de senha pedida. Os outros dados continuam no servidor e nas telas
-// do professor.
+// social, e-mail, situação, turmas, cursos, pedidos de matrícula e a troca de senha
+// pedida. Os outros dados continuam no servidor e nas telas do professor; a matrícula
+// (número do aluno na escola) aparece em Minha conta, lida na hora por
+// GET /api/student/account, sem ficar guardada no navegador.
 //
 // A tela faz o mesmo com o que já estava guardado (web/src/lib/studentProfile.js): o
 // perfil antigo do navegador é reduzido a estes campos ao abrir o portal.
@@ -16,7 +17,6 @@ const STUDENT_SESSION_PROFILE_FIELDS = Object.freeze([
     'name',
     'nomeSocial',
     'status',
-    'matricula',
     'studentClass',
     'period',
     'classes',
