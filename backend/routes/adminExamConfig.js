@@ -113,6 +113,25 @@ async function persistClasses(classes) {
     await db.save();
 }
 
+// Ações do professor numa aplicação em andamento (Monitor: iniciar, pausar, retomar, +N
+// min, token novo): gravação parcial (rota quente, H1-c, DES-01). Entregas e logs só
+// ganham linhas novas aqui; quando a ação mexe numa entrega que já existia (encerrar com
+// as respostas em andamento, devolver a entrega do fim do tempo no "+N min", entregar
+// tentativa vencida), a rota usa a gravação completa.
+const APPLICATION_ACTION_COLLECTIONS = Object.freeze([
+    'examApplications',
+    'classes',
+    'studentExamState',
+    'submissions',
+    'auditLogs',
+    'proctoringLogs',
+    'broadcastMessages',
+]);
+
+function saveApplicationAction({ full = false } = {}) {
+    return full ? db.save() : db.save({ only: [...APPLICATION_ACTION_COLLECTIONS] });
+}
+
 function adminActor(req) {
     return (req.adminAccount && (req.adminAccount.email || req.adminAccount.name)) || 'Administrador';
 }
@@ -445,7 +464,7 @@ function createAdminExamConfigRouter() {
             }
             // O token nunca vai para a auditoria: só o registro de que foi trocado.
             recordExamAudit('exam_application_token_regenerated', application, actor, { status: application.status });
-            await db.save();
+            await saveApplicationAction();
             res.json({ success: true, accessToken, accessTokenIssuedAt: application.accessTokenIssuedAt, applicationId: application.id });
         });
     });
@@ -531,7 +550,9 @@ function createAdminExamConfigRouter() {
             cls.releasedItems[application.examKey] = active;
             cls.activeExamKey = active ? application.examKey : (cls.activeExamKey === application.examKey ? null : cls.activeExamKey);
             cls.activeApplicationId = active ? application.id : (cls.activeApplicationId === application.id ? null : cls.activeApplicationId);
-            await persistClasses(db.memory.classes || []);
+            // Encerrar com tentativas em andamento resolve entregas (algumas já existiam):
+            // gravação completa. As outras transições, parcial.
+            await saveApplicationAction({ full: !!plan.resolve });
             res.json({ success: true, application, config: cls.onlineExamConfigs[application.examKey], finish: processedFinish });
         });
     });
@@ -579,7 +600,9 @@ function createAdminExamConfigRouter() {
                 : null;
             application.updatedAt = new Date().toISOString();
             application.updatedBy = adminActor(req);
-            await db.save();
+            // Tentativa vencida entregue agora ou entrega do fim do tempo devolvida à prova
+            // mexem em entregas: gravação completa. O "+N min" sozinho, parcial.
+            await saveApplicationAction({ full: !!settled.changed || !!(reopened && reopened.reopened.length) });
             // Ajuste da turma: quem voltou para a prova com o tempo extra e quem já tinha
             // entregue e ficou sem ele.
             if (targetEmail) return res.json({ success: true, application, deliveredAtDeadline: 0 });

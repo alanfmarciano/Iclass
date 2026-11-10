@@ -9,6 +9,7 @@
 
 const attendanceUtil = require('./attendance.js');
 const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js');
+const { studentSessionByEmail } = require('./authSessions.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -128,11 +129,13 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
         ? { id: futuras[0].id, titulo: evalTitle(memory, futuras[0].examKey), startsAt: Number(futuras[0].startsAt) }
         : null;
 
-    // "0 conectados" precisa de janela e da última leitura — sessions não é
-    // persistido, então zero sem contexto é indistinguível de reboot do servidor.
+    // "0 conectados" precisa de janela e da última leitura: a presença (lastSeen) não é
+    // gravada, e depois de um reinício a sessão retomada aparece offline até o próximo
+    // ping, então zero sem contexto é indistinguível de reboot do servidor. A sessão é
+    // lida pelo authSessions (chave própria, e-mail em minúsculas).
     let count = 0, ultimoAcessoAt = null;
     students.forEach(s => {
-        const sess = (memory.sessions || {})[s.email] || (memory.sessions || {})[lower(s.email)];
+        const sess = studentSessionByEmail(memory, s.email);
         const ts = typeof sess === 'number' ? sess : (sess && (sess.lastSeen || sess.lastPing)) || null;
         if (ts == null) return;
         if (now - ts <= ONLINE_JANELA_MIN * 60000) count++;
@@ -145,8 +148,11 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // ---------------------------------------------------------------------------
 // PRECISA DE VOCÊ — cada item é uma pendência com destino clicável.
 // `canSeeMatriculas` vem da rota (admin pleno); snooze é aplicado na rota.
+// `extras` (contrato da fase 2): blocos montados pela rota, cada um já filtrado pelo
+// escopo de quem vê. storage (H1-c): { freeBytes, databaseBytes } quando o banco tem
+// espaço a recuperar e quem vê é administrador (db.storageStatus().compactSuggested).
 // ---------------------------------------------------------------------------
-function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }) {
+function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }, extras = {}) {
     const emails = emailSet(students);
     const items = [];
 
@@ -257,6 +263,23 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
             titulo: 'Provas recuperadas depois do encerramento',
             detalhe: 'entregues com as respostas salvas no fim do tempo, aguardando revisão · Resultados',
             count: recuperadas.length, tone: 'warning', href: '/resultados', permissao: 'page.results',
+        });
+    }
+
+    // 7. Banco com muito espaço livre dentro do arquivo (mais de 25% depois de apagar
+    // dados): o botão Compactar do cartão Armazenamento devolve esse espaço ao disco.
+    const storage = extras && extras.storage;
+    if (storage && Number(storage.freeBytes) > 0) {
+        const freeMb = Math.max(1, Math.round(Number(storage.freeBytes) / (1024 * 1024)));
+        // O número fica na coluna da direita (count, em MB) e também no texto, para a
+        // linha se ler sozinha: "12 MB sem uso dentro do arquivo do banco (40%) · ...".
+        const allocated = Number(storage.allocatedBytes) || 0;
+        const percent = allocated > 0 ? Math.min(100, Math.round((Number(storage.freeBytes) / allocated) * 100)) : null;
+        items.push({
+            id: 'compactar_banco', tipo: 'compactar_banco',
+            titulo: 'Compactar o banco',
+            detalhe: `${freeMb} MB sem uso dentro do arquivo do banco${percent !== null ? ` (${percent}%)` : ''} · Sistema → Armazenamento`,
+            count: freeMb, tone: 'info', href: '/sistema', permissao: 'system.manage',
         });
     }
 

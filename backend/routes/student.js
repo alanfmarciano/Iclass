@@ -40,6 +40,8 @@ const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
+const { parseEvaluationMarkdown } = require('../utils/parser.js');
+const { logError } = require('../utils/errorLog.js');
 const { normalizeExamToken } = require('../utils/examToken.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -56,9 +58,9 @@ const {
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
-const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
-const { createStudentSession, revokeStudentSession } = require('../utils/authSessions.js');
+const { createStudentSession, revokeStudentSession, pruneExpiredSessions } = require('../utils/authSessions.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
     createSubmissionFromAttempt,
     questionsForAttempt,
@@ -73,6 +75,7 @@ const {
     canReplaceServerFinalization,
     computeAttemptDeadline,
     countAnswers,
+    extendedByServerOutage,
     finalizeAttemptState,
     lateSubmitDecision,
     markLateSubmission,
@@ -172,7 +175,7 @@ function applicationForClass(cls, examKey, applicationId) {
 function applyPageReturn(state, { sessionToken, application, cls, examKey }) {
     if (!state || state.focusLocked !== true || !state.pageExit) return false;
     const now = Date.now();
-    const decision = pageExitReturnDecision(state, { sessionToken, now });
+    const decision = pageExitReturnDecision(state, { sessionToken, now, outages: application?.outages });
     if (decision.expired) {
         // Passou do prazo: vale a regra de saída de sempre (o professor libera).
         delete state.pageExit;
@@ -233,8 +236,10 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
     if (req.query.email) {
         // Presença automática também no heartbeat: cobre alunos com sessão já ativa
         // (retomada do navegador), que não passam de novo pelo POST /api/student/login.
+        // Rota quente (H1-c, DES-01): só a presença nova, sem segurar a resposta do
+        // heartbeat (detached); a falha fica com a regravação de fundo do motor.
         if (ensureDailyLoginAttendance(req.studentEmail, { req, source: 'heartbeat' })) {
-            db.save().catch(() => {});
+            db.save({ only: ['attendance', 'authSessions'], detached: true }).catch(() => {});
         }
     }
     res.json({ success: true });
@@ -249,19 +254,26 @@ router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, re
         req.body = parsed && typeof parsed === 'object' ? parsed : { email: req.body.trim() };
     }
     next();
-}, validateStudentSession, (req, res) => {
+}, validateStudentSession, async (req, res) => {
     revokeStudentSession(db.memory, req.studentEmail);
+    // A sessão sai também da tabela auth_sessions (H3a-2): sem a gravação ela voltaria
+    // depois de um reinício do servidor.
+    await db.save();
     res.json({ success: true });
 });
 
 // Remove apenas sessões que atingiram o prazo absoluto. O heartbeat controla
 // a presença exibida no monitor, mas uma aba em segundo plano pode ter seus
 // timers suspensos pelo navegador e não pode perder a autenticação por isso.
-const sessionCleanupInterval = setInterval(() => {
+// Tarefa de fundo: gravação { detached: true } (a falha vai para o crash.log pelo
+// motor de gravação, que regrava sozinho).
+// Registrada no ciclo de vida do servidor (H3c): o desligamento ordenado a para antes do
+// db.close, e uma volta no meio do desligamento não grava num banco já fechado.
+serverLifecycle.registerTimer('session-prune', setInterval(() => {
     const absoluteHours = Number(settingsUtil.getSettings().session.absoluteHours) || 8;
-    pruneExpiredStudentSessions(db.memory.sessions, { absoluteTtlMs: absoluteHours * 3600000 });
-}, 15 * 60 * 1000);
-sessionCleanupInterval.unref();
+    const removed = pruneExpiredSessions(db.memory, { absoluteTtlMs: absoluteHours * 3600000 });
+    if (removed) db.save({ detached: true }).catch(() => {});
+}, 15 * 60 * 1000));
 
 // ----------------------------------------------------
 // ROTAS DE API DO ALUNO
@@ -443,6 +455,16 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
 // Sincronização unificada durante a prova: estado, mensagens pop-up, configuração da
 // prova e itens liberados em UMA única requisição (reduz a carga de polling na rede
 // local quando há muitos alunos simultâneos).
+// Gravação parcial nas rotas quentes do aluno (H1-c, DES-01): db.save({ only }) com as
+// coleções que a rota muda. Toda lista leva 'authSessions': a validação da sessão
+// (validateStudentSession) registra o IP novo do aparelho (celular que troca de Wi-Fi) e
+// completa a sessão de formato antigo, e isso vai para a tabela auth_sessions.
+// Gravação parcial do sync: o estado da tentativa (sorteio,
+// volta à página, chave da cópia local), o log da volta à página e a aplicação (a
+// tentativa nova consome o "+N min" guardado para o aluno). A entrega de uma tentativa
+// vencida (settleStudentAttempt) continua com a gravação completa.
+const SYNC_SAVE_COLLECTIONS = ['studentExamState', 'proctoringLogs', 'examApplications', 'authSessions'];
+
 router.get('/api/student/sync', validateStudentSession, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     try {
@@ -555,12 +577,12 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 rawState.courseId = cls.courseId || null;
                 if (application) rawState.applicationId = application.id;
                 db.memory.studentExamState[stateKey] = rawState;
-                db.save();
+                db.save({ only: SYNC_SAVE_COLLECTIONS });
             }
-            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save();
+            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save({ only: SYNC_SAVE_COLLECTIONS });
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
-            if (application && context.state && ensureLocalCopyKey(rawState)) db.save();
+            if (application && context.state && ensureLocalCopyKey(rawState)) db.save({ only: SYNC_SAVE_COLLECTIONS });
             localCopyKey = application && context.state ? localCopyKeyFor(rawState) : null;
 
             // Não expõe a flag interna de validação de token nem a chave dentro do estado.
@@ -905,7 +927,7 @@ router.post('/api/student/announcements/read', validateStudentSession, (req, res
     const id = String(req.body.id || '');
     const ann = (db.memory.announcements || []).find(a => a.id === id);
     if (!ann || !studentCanSeeAnnouncement(req.studentAccount, email, ann)) return res.status(404).json({ error: 'Aviso não encontrado.' });
-    if (markAnnouncementRead(ann, email)) db.save();
+    if (markAnnouncementRead(ann, email)) db.save({ only: ['announcements', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -961,14 +983,14 @@ router.post('/api/student/login', async (req, res) => {
 
     if (!student) {
         recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'fail', reason: 'Credenciais inválidas', req });
-        await db.save();
+        await db.save({ only: ['loginLogs'] });
         return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
     }
 
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
         recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'blocked', reason: `Status: ${student.status || 'não informado'}`, req });
-        await db.save();
+        await db.save({ only: ['loginLogs'] });
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa. Procure o instrutor.' });
     }
 
@@ -988,7 +1010,10 @@ router.post('/api/student/login', async (req, res) => {
         ip: normalizeIp(req.ip || req.socket.remoteAddress),
         now: Date.now(),
     });
-    await db.save();
+    // Rota quente no começo da aula (H1-c, DES-01): a conta (hora do login, hash novo), o
+    // registro do login, a presença automática e a sessão gravada (contrato: rota anotada
+    // que cria sessão leva 'authSessions'; a que audita leva 'auditLogs').
+    await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs'] });
 
     // Retorna dados do estudante sem expor o campo de senha
     const { password: _, ...safeStudent } = student;
@@ -1187,7 +1212,9 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     initializeExamState(state, config);
     ensureLocalCopyKey(state);
     db.memory.studentExamState[context.key] = state;
-    await db.save();
+    // Rota quente (H1-c, DES-01): a tentativa e a aplicação (o "+N min" guardado para o
+    // aluno passa para a tentativa nova).
+    await db.save({ only: ['studentExamState', 'examApplications', 'authSessions'] });
     // A tentativa acabou de começar: as questões da versão do aluno já vão na resposta,
     // com os identificadores opacos das alternativas (AVA-05).
     const delivered = attemptQuestionsAvailable({ application, onlineConfig: config, state })
@@ -1299,7 +1326,7 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
         details: { reportId: report.id, questionNumber: number, reason },
         timestamp: now,
     });
-    await db.save();
+    await db.save({ only: ['examApplications', 'auditLogs', 'authSessions'] });
     res.status(201).json({ success: true, report });
 });
 
@@ -1515,30 +1542,44 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
     }
 
     // Envio automático com o prazo ainda bem à frente: a tela não viu o tempo extra
-    // (o professor deu mais tempo ou reabriu a tentativa no "+N min" da turma). A
-    // prova continua; o navegador volta para as questões com o tempo novo.
+    // (o professor deu mais tempo ou reabriu a tentativa no "+N min" da turma, ou o
+    // servidor devolveu o tempo em que ficou fora do ar). A prova continua; o navegador
+    // volta para as questões com o tempo novo. reason 'server_outage': o prazo só está
+    // à frente pelo tempo devolvido da queda (H3b), e a tela diz isso ao aluno.
     if (auto === true && timing.overdueMs !== null && timing.overdueMs < -AUTO_SUBMIT_EARLY_TOLERANCE_MS) {
+        const serverOutage = !!application && extendedByServerOutage(lockedState, application, nowTs);
         return res.status(409).json({
-            error: 'O professor deu mais tempo. A prova continua.',
+            error: serverOutage
+                ? 'O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'
+                : 'O professor deu mais tempo. A prova continua.',
             deadlineExtended: true,
             timerRemaining: Math.max(0, Math.ceil(-timing.overdueMs / 1000)),
+            ...(serverOutage ? { reason: 'server_outage' } : {}),
         });
     }
 
     // Tenta obter questoes estruturadas do banco de dados primeiro
     let questions;
-    const evaluation = db.memory.evaluations[examKey];
+    let evaluation = db.memory.evaluations[examKey];
     if (evaluation) {
         questions = evaluation.questions;
     } else {
-        // Fallback: Localiza e lê o arquivo da prova antigo .md
+        // Fallback: a prova antiga só em .md (content/<prova>.md), sem entrada em
+        // evaluations. Antes o leitor do .md não estava importado aqui: o caminho sempre
+        // dava ReferenceError, engolido pelo catch, e o aluno recebia 500 "Falha ao
+        // processar avaliação no servidor.". A avaliação lida do .md também vale para a
+        // correção (gabarito das questões que a versão aplicada não trouxer).
         const filePath = path.join(CONTENT_DIR, `${examKey}.md`);
         try {
-            await fs.promises.access(filePath, fs.constants.F_OK);
             const mdContent = await fs.promises.readFile(filePath, 'utf8');
             const parsedObj = parseEvaluationMarkdown(mdContent, examKey);
             questions = parsedObj ? parsedObj.questions : [];
-        } catch (err) {}
+            if (parsedObj && Array.isArray(parsedObj.questions) && parsedObj.questions.length) evaluation = parsedObj;
+        } catch (err) {
+            // Sem o arquivo: segue para o erro de prova sem questões, abaixo. Outra falha
+            // (arquivo ilegível) fica no crash.log.
+            if (!err || err.code !== 'ENOENT') logError('[PROVA] Não foi possível ler a prova em .md', err, { req, details: { examKey } });
+        }
     }
     
     if (!questions || questions.length === 0) {
@@ -1599,16 +1640,18 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         if (reopenable) submissionObj.reopenableState = reopenable;
     }
     
-    const submissions = db.memory.submissions;
-    submissions.push(submissionObj);
-    writeJSON(DB_SUBMISSIONS_FILE, submissions);
+    // A entrega nova entra na lista (submissions é só acréscimo) e a tentativa sai dos
+    // estados. Rota quente (H1-c, DES-01): uma gravação parcial só, em vez do writeJSON
+    // (gravação completa) seguido de outra; os caminhos raros acima (entrega pelo
+    // servidor fora do prazo, troca da entrega automática) continuam completos.
+    db.memory.submissions.push(submissionObj);
 
     lockedState.status = 'submitted';
     lockedState.submittedAt = submissionObj.timestamp;
     if (stateKey && db.memory.studentExamState[stateKey]) {
         delete db.memory.studentExamState[stateKey];
     }
-    await db.save();
+    await db.save({ only: ['submissions', 'studentExamState', 'auditLogs', 'examApplications', 'authSessions'] });
 
     res.json({
         success: true,
@@ -1931,7 +1974,7 @@ router.post('/api/student/progress', validateStudentSession, (req, res) => {
     }
 
     db.memory.progress[email.toLowerCase()] = completedUnits;
-    db.save();
+    db.save({ only: ['progress', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -1949,7 +1992,8 @@ router.post('/api/student/track-access', validateStudentSession, (req, res) => {
         timestamp: Date.now(),
     });
     if (db.memory.moduleAccess.length > 10000) db.memory.moduleAccess.splice(0, db.memory.moduleAccess.length - 10000);
-    db.save();
+    // Só acréscimo (e a poda das mais antigas, que a gravação parcial apaga).
+    db.save({ only: ['moduleAccess', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -1965,7 +2009,7 @@ router.post('/api/student/notes/save', validateStudentSession, (req, res) => {
         db.memory.notes[email] = {};
     }
     db.memory.notes[email][moduleKey] = note;
-    db.save();
+    db.save({ only: ['notes', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -2014,7 +2058,7 @@ router.post('/api/student/annotation', validateStudentSession, (req, res) => {
         };
     }
     
-    db.save();
+    db.save({ only: ['annotations', 'authSessions'] });
     res.json({ success: true });
 });
 

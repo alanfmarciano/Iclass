@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds } from './examAutoSubmit'
+import { autoSubmitExtendedMessage, autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds } from './examAutoSubmit'
 
 describe('[UC-TENTATIVA-001] envio automático do fim do tempo (CONF-01, UXA-01)', () => {
   it('insiste quando não há rede ou o servidor falha, com espera crescente e limitada', () => {
@@ -15,6 +15,15 @@ describe('[UC-TENTATIVA-001] envio automático do fim do tempo (CONF-01, UXA-01)
     expect(classifyAutoSubmitError({ status: 403, data: { applicationPaused: true } })).toBe('paused')
     expect(classifyAutoSubmitError({ status: 409 })).toBe('fatal')
     expect(countAnswered({ 1: 'A', 2: '', 3: null, 4: 'C' })).toBe(2)
+  })
+
+  it('tempo devolvido pela queda do servidor: o aviso diz que foi o servidor, não o professor (CONF-03)', () => {
+    const outage = { status: 409, data: { deadlineExtended: true, timerRemaining: 40, reason: 'server_outage' } }
+    const teacher = { status: 409, data: { deadlineExtended: true, timerRemaining: 300 } }
+    expect(classifyAutoSubmitError(outage)).toBe('extended')
+    expect(autoSubmitExtendedMessage(outage)).toBe('O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.')
+    expect(autoSubmitExtendedMessage(teacher)).toBe('O professor deu mais tempo. A prova continua.')
+    expect(autoSubmitExtendedMessage(null)).toBe('O professor deu mais tempo. A prova continua.')
   })
 })
 

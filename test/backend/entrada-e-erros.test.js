@@ -69,7 +69,6 @@ const KNOWN_TYPE_ERRORS_UNTIL_H9B = new Set([
     'POST /api/forum/comment/edit',
     'POST /api/forum/reply',
     'POST /api/forum/reply/edit',
-    'POST /api/student/log-keystrokes',
     'POST /api/student/login',
 ]);
 
@@ -811,11 +810,11 @@ test('[UC-ERRO-001] lote de teclas grande com sessão de aluno continua aceito (
     }));
     const payload = { email: DEMO_ACCOUNTS.student.email, studentClass: '1DES', courseId: 'curso_legacy_01', examKey: 'Avaliacao_FUTEC_5', events };
     assert.ok(Buffer.byteLength(JSON.stringify(payload)) > 512 * 1024);
-    const before = db.memory.examKeystrokes.length;
+    const before = db.keystrokes.stats({ email: DEMO_ACCOUNTS.student.email }).total;
     const accepted = await request(app).post('/api/student/log-keystrokes').set('x-session-token', STUDENT_TOKEN).send(payload);
     assert.equal(accepted.status, 200, `${accepted.status} ${accepted.body && accepted.body.error}`);
     assert.equal(accepted.body.inserted, 500, 'o servidor guarda no máximo 500 por envio, como antes');
-    assert.equal(db.memory.examKeystrokes.length, before + 500);
+    assert.equal(db.keystrokes.stats({ email: DEMO_ACCOUNTS.student.email }).total, before + 500);
 
     const anonymous = await request(app).post('/api/student/log-keystrokes').send(payload);
     assert.equal(anonymous.status, 413);

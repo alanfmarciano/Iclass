@@ -8,7 +8,6 @@ const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
 const { normalizeStoredStudentClasses } = require('./students.js');
 const zipInspect = require('./zipInspect.js');
-const { clearSessions } = require('./authSessions.js');
 
 const CONTENT_DIR = runtimePaths.CONTENT_DIR;
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -22,6 +21,10 @@ const MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024;
 // descartadas e refeitas a partir das turmas do backup (ver legacyApplications).
 const BACKUP_TABLES = db.COLLECTION_TABLES.filter(entry => entry.backup !== false && entry.kind !== 'derived');
 const COLLECTIONS = BACKUP_TABLES.map(entry => entry.collection);
+// Tabelas próprias (kind 'store', fora da memória: o histórico de digitação). Entram no
+// JSON e na restauração pelo exportRows/importRows do H4a; até lá o backup continua sem
+// elas, como sempre foi, e restaurar não mexe nelas (as teclas atuais ficam).
+const STORE_COLLECTIONS = new Set(BACKUP_TABLES.filter(entry => entry.kind === 'store').map(entry => entry.collection));
 
 // Backup gerado por versão anterior do IClass, que não guardava as aplicações de prova.
 function hasLegacyApplications(snapshot) {
@@ -45,7 +48,7 @@ function getZipLib() { try { return require('adm-zip'); } catch (e) { return nul
 
 function buildDataSnapshot() {
     const data = {};
-    COLLECTIONS.forEach(key => { if (db.memory[key] !== undefined) data[key] = db.memory[key]; });
+    COLLECTIONS.forEach(key => { if (!STORE_COLLECTIONS.has(key) && db.memory[key] !== undefined) data[key] = db.memory[key]; });
     const content = {};
     if (fs.existsSync(CONTENT_DIR)) {
         fs.readdirSync(CONTENT_DIR).filter(filename => filename.endsWith('.md')).forEach(filename => {
@@ -80,6 +83,10 @@ function validateDataSnapshot(snapshot) {
     if (!String(snapshot.version || '').startsWith('3.')) throw backupRefusal('Versão de backup incompatível.');
     COLLECTIONS.forEach(key => {
         if (snapshot.data[key] === undefined) return;
+        if (STORE_COLLECTIONS.has(key)) {
+            if (!Array.isArray(snapshot.data[key])) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
+            return;
+        }
         const current = db.memory[key];
         if (Array.isArray(current) !== Array.isArray(snapshot.data[key])) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
         if (current && typeof current === 'object' && (!snapshot.data[key] || typeof snapshot.data[key] !== 'object')) throw backupRefusal(`Schema incompatível na coleção ${key}.`);
@@ -235,7 +242,8 @@ function snapshotSummary(snapshot, format) {
 //   não estiver ligado aqui, a auditoria do backup substitui a atual, como antes. Pelo
 //   plano, o H7a-2 liga o merge (junto com a nova regra da lixeira de notas, que hoje
 //   depende de grade_restore) e o H4a troca este trecho pelo laço por modo do registro;
-// - 'reset': volta vazia (sessões).
+// - 'reset': volta vazia (coleção da memória; a tabela derivada das sessões é zerada pelo
+//   gancho dela em db.afterRestore).
 function restoredCollectionValue(entry, restored) {
     if (entry.restore === 'reset') return db.emptyCollectionValue(entry);
     return structuredClone(restored);
@@ -244,11 +252,15 @@ function restoredCollectionValue(entry, restored) {
 async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
     db.COLLECTION_TABLES.forEach(entry => {
+        // Tabela derivada (auth_sessions) não tem valor próprio na memória nem no backup:
+        // ela sai do que outras coleções guardam, e quem zera esse conteúdo é o gancho dela
+        // em db.afterRestore, depois do laço.
+        if (entry.kind === 'derived') return;
         if (entry.restore === 'reset') {
             db.memory[entry.collection] = restoredCollectionValue(entry);
             return;
         }
-        if (!COLLECTIONS.includes(entry.collection)) return;
+        if (!COLLECTIONS.includes(entry.collection) || STORE_COLLECTIONS.has(entry.collection)) return;
         if (snapshot.data[entry.collection] === undefined) return;
         // Contas de acesso só com o pedido explícito do administrador (SEG-X1).
         if (entry.collection === 'admins' && !replaceAccounts) return;
@@ -261,8 +273,10 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     // A prova pausada no backup fica pausada desde o momento dele (exportedAt).
     const backupAt = Date.parse(String(snapshot.exportedAt || '')) || null;
     const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses({ backupAt }) : null;
-    // Restaurar desconecta todos (sessões não vão no backup).
-    clearSessions(db.memory);
+    // Ganchos pós-restauração (database.js AFTER_RESTORE_HOOKS), com a memória já
+    // restaurada. Restaurar desconecta todos (sessões não vão no backup): o gancho
+    // 'authSessions' zera as sessões, e a gravação esvazia a tabela auth_sessions.
+    await db.runAfterRestore(db.memory);
     await db.save();
     return applications;
 }

@@ -19,7 +19,10 @@ npm run test:e2e       # playwright test
 npm run build          # gera web/dist com as versões .gz/.br (obrigatório antes do e2e/start)
 npm run check:bundle   # orçamento do pacote da interface (não roda no build)
 npm run check          # test:docs + test:backend + test:web + build + check:bundle + test:e2e (verificação completa)
+npm run test:perf      # desempenho do banco com um ano de dados (fora do check; pesado)
 ```
+
+O `test:perf` (`test/perf/storage-volume.js`) gera numa pasta temporária um banco sintético de um ano de 10 turmas (440 alunos, 6.111 entregas, 72 mil presenças, 18 mil logs do Monitor, 150 mil teclas; cerca de 160 MB) e, num processo novo, mede o boot, a primeira gravação depois do boot, 40 gravações parciais do rascunho da prova (`studentExamState`) e uma gravação completa. Falha se a primeira gravação depois do boot escrever alguma linha, se o p95 do bloqueio do servidor numa gravação parcial passar de 50 ms ou se o boot passar de 10 s. `-- --scale 0.1` gera um banco menor (confere o script em segundos); `-- --dir <pasta>` usa a pasta dada (e reaproveita o banco que já estiver nela); `-- --keep` mantém a pasta para subir o servidor com `ICLASS_DATA_DIR` apontando para ela. Medido na nuvem (Linux, 4 CPUs) com escala 1: boot 2,7 s, primeira gravação 0 linha, p95 do bloqueio na gravação parcial 0,9 ms, gravação completa cerca de 0,4 s.
 
 O `check:bundle` (`web/scripts/check-bundle-size.mjs`) falha com o JavaScript da primeira abertura (script de entrada mais os `modulepreload` do `index.html`) acima de 130 KB em gzip, com qualquer `.js` do build acima de 350 KB, com `import * as` de `lucide-react` em `web/src` ou com um arquivo de `web/dist/assets` cujo nome o servidor não entrega em `/assets` (a mesma regra de `backend/utils/staticAssets.js`). Sem `web/dist`, confere só o código-fonte e avisa "Sem build da interface: orçamento não conferido.". Ele fica de fora do `npm run build` de propósito: o orçamento é para quem desenvolve e nunca impede compilar e ligar o sistema.
 

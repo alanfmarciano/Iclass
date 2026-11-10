@@ -243,11 +243,11 @@ test('[UC-GRAVACAO-001] kill -9 logo depois do 200 não perde o que foi confirma
     assert.equal(JSON.parse(row.value).Apostila_FUTEC_3, 'sobrevive ao kill -9');
 });
 
-// Fechar o banco no Reiniciar (db.close) e os sinais SIGHUP/SIGBREAK ficam com o H3c
-// (plano da fase 2, conflito H1 x H3). Aqui: o que recebeu 200 antes do Reiniciar já está
-// no arquivo (o -wal é aplicado na subida seguinte), e a falha de gravação que a rota do
-// Reiniciar trata de propósito não vira 503 (antes o administrador lia "Não foi possível
-// gravar" e o servidor reiniciava assim mesmo).
+// O Reiniciar passa pelo desligamento ordenado do H3c (requestShutdown com db.close; os
+// testes do processo ficam em server-health e supervisor). Aqui: o que recebeu 200 antes
+// do Reiniciar já está no arquivo, e a falha de gravação que a rota do Reiniciar trata de
+// propósito não vira 503 (antes o administrador lia "Não foi possível gravar" e o
+// servidor reiniciava assim mesmo).
 async function adminSessionToken(server, email, password) {
     const whoami = await fetch(`${server.base}/api/admin/whoami`, { headers: { Authorization: `${email}:${password}` } });
     assert.equal(whoami.status, 200);
@@ -298,7 +298,7 @@ test('[UC-GRAVACAO-001] Reiniciar com o banco travado responde "reiniciando", n�
         const restart = await postJson(`${server.base}/api/admin/server/restart`, { confirm: 'REINICIAR' }, { 'x-admin-session': adminToken });
         const body = await restart.json();
         assert.equal(restart.status, 200, JSON.stringify(body));
-        assert.deepEqual(body, { success: true, message: 'Servidor reiniciando...' });
+        assert.deepEqual(body, { success: true, ok: true, supervised: false, message: 'Servidor reiniciando...' });
         const result = await Promise.race([server.exited, wait(10000).then(() => null)]);
         assert.ok(result, 'o processo não saiu depois do Reiniciar');
         assert.equal(result.code, 0);

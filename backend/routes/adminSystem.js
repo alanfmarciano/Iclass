@@ -1,6 +1,8 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
+const { DATA_DIR } = require('../runtimePaths.js');
 const { recordAudit } = require('../utils/audit.js');
 const {
     DB_CLASSES_FILE,
@@ -11,9 +13,12 @@ const {
     getCourseItemKeys,
     localIpAddresses,
     getReleasedItemsForClass,
+    isProfessorAccount,
     sendHandledFailure,
+    sendInternalError,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
+const serverLifecycle = require('../utils/serverLifecycle.js');
 const { saveServerBackup } = require('../utils/backup.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
@@ -65,6 +70,8 @@ function classHelpers(cls) {
         isClassStudent: email => emails.has(normalizedEmail(email)),
         courseExamKeys: getCourseItemKeys(cls),
         examTitle: examTitleFor,
+        // Teclas preservadas: pelos contadores do histórico de digitação (tabela própria).
+        keystrokeEntries: () => db.keystrokes.statsEntries(),
     };
 }
 
@@ -107,8 +114,111 @@ function recordMaintenanceAudit(req, account, type, cls, details) {
     }, { timestamp, legacy: { type, actorEmail: account && account.email, at: timestamp } });
 }
 
+// Armazenamento (H1-c: CONF-06, DES-11, CONF-05). O VACUUM reescreve o arquivo inteiro
+// e precisa de espaço livre no disco (o arquivo novo é montado antes de o antigo sair):
+// pelo menos o tamanho do banco (com o -wal) mais 10%.
+const COMPACT_DISK_MARGIN = 1.1;
+
+function activeApplicationCount() {
+    return (db.memory.examApplications || []).filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status)).length;
+}
+
+function storageTotalBytes(status) {
+    return (Number(status && status.databaseBytes) || 0) + (Number(status && status.walBytes) || 0);
+}
+
+function formatMegabytes(bytes) {
+    return `${(Math.max(0, Number(bytes) || 0) / (1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+}
+
+// Espaço livre no disco da pasta de dados (null quando o sistema não informa).
+async function diskFreeBytes(dir) {
+    try {
+        const stats = await fs.promises.statfs(dir);
+        const free = Number(stats.bavail) * Number(stats.bsize);
+        return Number.isFinite(free) ? free : null;
+    } catch (e) {
+        return null;
+    }
+}
+
 function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     const router = express.Router();
+
+    // Cartão Armazenamento da tela Sistema: tamanho do banco e do -wal, espaço
+    // recuperável, linhas por coleção, teclas, gravação completa, p95 de gravação, último
+    // erro, aviso de OneDrive (db.storageStatus(), fonte única) e se dá para compactar.
+    router.get('/api/admin/storage', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            await db.refreshStorageStats();
+            res.json({
+                success: true,
+                storage: db.storageStatus(),
+                activeApplications: activeApplicationCount(),
+                diskFreeBytes: await diskFreeBytes(DATA_DIR),
+                // Compactar é só do administrador (o professor vê o cartão sem o botão).
+                canCompact: !isProfessorAccount(matchedAdmin),
+            });
+        });
+    });
+
+    // Compactar o banco (VACUUM): só administrador, com COMPACTAR digitado, sem prova em
+    // andamento (o VACUUM para a fila de gravação por alguns segundos) e com espaço no
+    // disco. Grava a auditoria 'storage_compacted' com o tamanho antes e depois.
+    router.post('/api/admin/storage/compact', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (isProfessorAccount(matchedAdmin)) {
+                return res.status(403).json({ error: 'Apenas administradores podem compactar o banco.' });
+            }
+            // Só texto: um array ['COMPACTAR'] viraria 'COMPACTAR' no String().
+            const confirm = (req.body || {}).confirm;
+            if (typeof confirm !== 'string' || confirm.trim().toUpperCase() !== 'COMPACTAR') {
+                return res.status(400).json({ error: 'Digite COMPACTAR para confirmar.', confirmationRequired: true });
+            }
+            const active = activeApplicationCount();
+            if (active) {
+                return res.status(409).json({
+                    error: 'Há prova em andamento. Compacte o banco depois que as provas terminarem.',
+                    activeApplications: active,
+                });
+            }
+            await db.refreshStorageStats();
+            const neededBytes = Math.ceil(storageTotalBytes(db.storageStatus()) * COMPACT_DISK_MARGIN);
+            const freeOnDisk = await diskFreeBytes(DATA_DIR);
+            if (freeOnDisk !== null && freeOnDisk < neededBytes) {
+                return res.status(409).json({
+                    error: `Espaço livre em disco insuficiente para compactar: são necessários ${formatMegabytes(neededBytes)} e há ${formatMegabytes(freeOnDisk)}.`,
+                    diskFreeBytes: freeOnDisk,
+                    neededBytes,
+                });
+            }
+            let result;
+            try {
+                result = await db.compactDatabase();
+            } catch (error) {
+                if (error && (error.code === 'SQLITE_BUSY' || error.code === 'SQLITE_LOCKED')) {
+                    return res.status(409).json({ error: 'O banco está em uso por outro programa agora. Feche o programa que abriu o banco e tente de novo.' });
+                }
+                return sendInternalError(error, req, res, 'compactar o banco');
+            }
+            const antes = storageTotalBytes(result.before);
+            const depois = storageTotalBytes(result.after);
+            // O antes soma o -wal, que o checkpoint zera de qualquer jeito: o espaço vazio
+            // devolvido ao disco é o freeBytes que sumiu do arquivo.
+            const recuperadoBytes = Math.max(0, (Number(result.before.freeBytes) || 0) - (Number(result.after.freeBytes) || 0));
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'storage_compacted',
+                category: 'system',
+                before: { bytes: antes, freeBytes: result.before.freeBytes },
+                after: { bytes: depois, freeBytes: result.after.freeBytes },
+                details: { antes, depois, recuperadoBytes, ms: result.ms },
+            });
+            await db.save();
+            res.json({ success: true, antes, depois, recuperadoBytes, ms: result.ms, storage: db.storageStatus() });
+        });
+    });
 
     router.post('/api/admin/config', (req, res) => {
         validateAdmin(req, res, config => {
@@ -233,43 +343,37 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         });
     });
 
+    // Reiniciar (H3c, CONF-12, OPS-06): o desligamento ordenado único do servidor
+    // (serverLifecycle.requestShutdown), o mesmo dos sinais e do launcher: fecha a porta,
+    // para os timers, grava tudo e fecha o banco (db.close) e marca a parada limpa no
+    // heartbeat. Sob o supervisor o processo sai com 75 e volta na hora; sem ele, o próprio
+    // servidor dispara o novo processo antes de sair. As sessões (H3a-2) e o tempo das
+    // provas (H3b) voltam com ele: ninguém precisa entrar de novo. Antes saía sem db.close
+    // e, fora do Windows, não voltava.
     router.post('/api/admin/server/restart', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            // Reiniciar derruba a conexão de todos os alunos: só com confirmação explícita.
+            // Reiniciar deixa todos sem conexão por alguns segundos: só com confirmação explícita.
             if (String((req.body || {}).confirm || '').trim().toUpperCase() !== 'REINICIAR') {
                 return res.status(400).json({ error: 'Confirme o reinício do servidor.', confirmationRequired: true });
             }
+            // Sem o desligamento registrado (app montado pelos testes, sem o startServer)
+            // não há como voltar: nada é feito.
+            if (!serverLifecycle.hasShutdownHandler()) {
+                return res.status(503).json({ error: 'Reinício indisponível neste modo.' });
+            }
             recordMaintenanceAudit(req, matchedAdmin, 'server_restart_requested', null, {
                 activeApplications: (db.memory.examApplications || []).filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status)).length,
+                supervised: serverLifecycle.isSupervised(),
             });
+            // Falha de gravação aqui não impede o reinício: o db.close do desligamento grava
+            // de novo, e a resposta não vira o 503 de gravação.
             try { await db.save(); } catch (_) {}
-            res.json({ success: true, message: 'Servidor reiniciando...' });
-            const serverInstance = req.app.get('serverInstance');
-
-            const spawnRestart = () => {
-                console.log('Iniciando processo de reinicialização...');
-                const { spawn } = require('child_process');
-                const child = spawn('cmd.exe', ['/c', 'ping 127.0.0.1 -n 3 >nul && node backend/server.js'], {
-                    detached: true,
-                    stdio: 'ignore',
-                    cwd: process.cwd(),
-                    shell: true,
-                });
-                child.unref();
-                process.exit(0);
-            };
-
-            if (serverInstance) {
-                serverInstance.close(() => {
-                    console.log('Porta liberada.');
-                    spawnRestart();
-                });
-            }
-
-            setTimeout(() => {
-                console.log('Forçando reinicialização do servidor por timeout...');
-                spawnRestart();
-            }, 2000);
+            const supervised = serverLifecycle.isSupervised();
+            res.json({ success: true, ok: true, supervised, message: 'Servidor reiniciando...' });
+            // Depois que a resposta saiu (o desligamento fecha as conexões).
+            res.once('finish', () => setImmediate(() => {
+                serverLifecycle.requestShutdown({ restart: true, reason: 'admin_restart' });
+            }));
         });
     });
 

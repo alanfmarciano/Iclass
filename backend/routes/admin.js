@@ -80,7 +80,7 @@ const {
     studentEmailOwnership,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
-const { revokeStudentSession } = require('../utils/authSessions.js');
+const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -131,6 +131,7 @@ const { createAdminArchiveRouter } = require('./adminArchive.js');
 const { createAdminSystemRouter } = require('./adminSystem.js');
 const { createAdminAccountsRouter } = require('./adminAccounts.js');
 const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
+const { createSystemHealthRouter } = require('./systemHealth.js');
 const {
     addExtraUnit,
     courseClasses: contentCourseClasses,
@@ -349,7 +350,7 @@ router.post('/api/admin/reset-password', (req, res) => {
 // reaproveitado) é do outro aluno no período em que o e-mail era dele e fica; e-mail que
 // também é de professor não leva a autoria do professor (studentEmailOwnership).
 router.post('/api/admin/delete-student', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, async () => {
         const { email } = req.body || {};
         if (typeof email !== 'string' || email.trim() === '') {
             return res.status(400).json({ error: 'E-mail do estudante não informado.' });
@@ -379,9 +380,11 @@ router.post('/api/admin/delete-student', (req, res) => {
 
         emails.forEach(known => {
             if (!owns(known, null, 'renamed')) return;
-            ['progress', 'notes', 'annotations', 'sessions'].forEach(collection => {
+            ['progress', 'notes', 'annotations'].forEach(collection => {
                 if (db.memory[collection]) delete db.memory[collection][known];
             });
+            // A sessão sai pelo authSessions (e da tabela auth_sessions na gravação).
+            revokeStudentSession(db.memory, known);
         });
         // O log de auditoria é mantido como histórico, mas sem ligação com o aluno: as
         // entradas perdem o e-mail, o nome e a matrícula e as cópias das notas na lixeira
@@ -398,7 +401,7 @@ router.post('/api/admin/delete-student', (req, res) => {
         // certificados, logs de prova e de login). Login de professor com o mesmo e-mail fica.
         // O log de login não é renomeado na troca de e-mail: vale o dono do e-mail na data.
         const loginKind = item => (item.role && item.role !== 'student' ? 'anyone' : 'student');
-        ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs']
+        ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'loginLogs']
             .forEach(collection => {
                 if (!Array.isArray(db.memory[collection])) return;
                 db.memory[collection] = db.memory[collection].filter(item => !(item && ownedRecord(item, item.studentEmail || item.email,
@@ -476,6 +479,13 @@ router.post('/api/admin/delete-student', (req, res) => {
         } catch (e) {}
 
         db.save();
+        // Histórico de digitação (tabela própria): as teclas dele saem pelo mesmo critério
+        // dos outros registros. A busca vem depois de a sessão dele ter saído (acima): um
+        // lote de teclas já aceito está na fila e é achado também.
+        const keystrokeIds = (await db.keystrokes.findByEmails(emails))
+            .filter(item => ownedRecord(item, item.studentEmail, 'renamed'))
+            .map(item => item.id);
+        if (keystrokeIds.length) db.keystrokes.deleteRows(keystrokeIds);
         res.json({ success: true, message: 'Estudante removido com sucesso.' });
     });
 });
@@ -1226,10 +1236,11 @@ router.get('/api/admin/students', (req, res) => {
         const now = Date.now();
         const enrichedStudents = students.map(s => {
             // Só a presença (lastSeen): a sessão é { tokenHash, createdAt, lastSeen,
-            // lastActivityAt, ip } (utils/authSessions.js, sem o token cru). Também valem os
-            // formatos legados { token, lastSeen } e timestamp puro (este, só no seed do
-            // TEST_MODE). A chave é sempre o e-mail em minúsculas.
-            const session = s.email ? db.memory.sessions[s.email.toLowerCase()] : null;
+            // lastActivityAt, ip } (utils/authSessions.js, sem o token cru), ou só
+            // { lastSeen } na semente do TEST_MODE. Também valem os formatos legados
+            // { token, lastSeen } e timestamp puro. Lida pelo authSessions (chave própria,
+            // e-mail em minúsculas).
+            const session = s.email ? studentSessionByEmail(db.memory, s.email) : null;
             const lastSeen = sessionLastSeen(session);
             const isOnline = isStudentSessionOnline(session, now);
             const { password, ...safeStudent } = s;
@@ -1421,7 +1432,9 @@ function renameStudentEmailEverywhere(oldEmail, newEmail) {
         }
     });
     revokeStudentSession(memory, oldEmail);
-    ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'forum', 'auditLogs']
+    // Histórico de digitação (tabela própria): renomeado no mesmo ciclo da gravação.
+    db.keystrokes.renameEmail(oldEmail, newEmail);
+    ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'forum', 'auditLogs']
         .forEach(collection => (memory[collection] || []).forEach(item => { if (item && same(item.studentEmail)) item.studentEmail = newEmail; }));
     // Notas na lixeira: a cópia guardada na auditoria acompanha o novo e-mail, senão a
     // nota excluída aparece como "aluno fora do cadastro" e não pode ser restaurada.
@@ -3100,6 +3113,9 @@ router.use(createAdminArchiveRouter({ studentClassNames }));
 router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
 router.use(createAdminExamConfigRouter());
+// Saúde do servidor (/api/health, /api/admin/system/health) e a rota de controle do
+// launcher (/api/system/control), H3c.
+router.use(createSystemHealthRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -3891,7 +3907,8 @@ router.post('/api/admin/unlock-student-focus', (req, res) => {
             details: `Tela desbloqueada pelo instrutor${currentAdmin && currentAdmin.email ? ` (${currentAdmin.email})` : ''}`
         });
 
-        db.save();
+        // Rota quente do Monitor (H1-c, DES-01): o estado destravado e o log novo.
+        db.save({ only: ['studentExamState', 'proctoringLogs'] });
         const { localCopyKey, ...unlockedState } = db.memory.studentExamState[key];
         res.json({ success: true, state: unlockedState });
     });
@@ -3923,7 +3940,8 @@ router.post('/api/admin/send-broadcast-message', (req, res) => {
         };
         db.memory.broadcastMessages.push(message);
 
-        db.save();
+        // Rota quente do Monitor (H1-c, DES-01): só a mensagem nova.
+        db.save({ only: ['broadcastMessages'] });
         res.json({ success: true, message });
     });
 });
@@ -4031,7 +4049,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 individualTimeAdjustment: 0
             };
 
-            const session = db.memory.sessions[email];
+            const session = studentSessionByEmail(db.memory, email);
             const isOnline = isStudentSessionOnline(session);
             
             // Entregas do aluno nesta aplicação; a mais recente é a que o professor vê
@@ -4069,16 +4087,12 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 ? studentLogs.filter(l => !l.attemptId || l.attemptId === state.attemptId)
                 : studentLogs;
 
-            const studentKeystrokes = (db.memory.examKeystrokes || []).filter(k =>
-                k.studentEmail.toLowerCase() === email &&
-                k.examKey.toLowerCase() === examKey.toLowerCase() &&
-                (application ? k.applicationId === application.id : true)
-            );
-            const keystrokeCount = studentKeystrokes.length;
-            const suspiciousCount = studentKeystrokes.filter(k => k.suspicious || k.blocked).length;
-            const lastKeystrokeAt = keystrokeCount
-                ? Math.max(...studentKeystrokes.map(k => Number(k.serverTs) || 0))
-                : null;
+            // Teclas pelos contadores do histórico de digitação (db.keystrokes), sem
+            // percorrer as teclas: aluno e prova e, com aplicação, só as dela.
+            const keystrokeStats = db.keystrokes.stats({ email, examKey, applicationId: application ? application.id : undefined });
+            const keystrokeCount = keystrokeStats.total;
+            const suspiciousCount = keystrokeStats.suspicious;
+            const lastKeystrokeAt = keystrokeCount ? keystrokeStats.lastAt : null;
 
             let status = 'absent';
             if (submission) {
@@ -4772,6 +4786,16 @@ router.get('/api/admin/dashboard/now', (req, res) => {
     });
 });
 
+// "Compactar o banco" no "Precisa de você" (H1-c; decisões da fase 2, §3): só para
+// administrador (compactar é só dele) e quando o espaço livre dentro do arquivo passa de
+// 25% (db.storageStatus().compactSuggested). Vale para a escola toda, não para a turma.
+function _storageQueueBlock(matchedAdmin) {
+    if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
+    const status = db.storageStatus();
+    if (!status.compactSuggested) return null;
+    return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
+}
+
 // Fila "Precisa de você": pendências com destino clicável. Respeita o snooze de
 // 24h persistido em preferences (dashboard.snoozed) e esconde matrículas de professor.
 router.get('/api/admin/dashboard/queue', (req, res) => {
@@ -4784,7 +4808,7 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
-        });
+        }, { storage: _storageQueueBlock(matchedAdmin) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};

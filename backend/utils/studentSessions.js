@@ -1,3 +1,7 @@
+// Presença do aluno ("online" no painel e no Monitor) a partir da sessão gravada
+// (utils/authSessions.js): { lastSeen } ou, no formato antigo, o número cru. A limpeza
+// das sessões vencidas fica em authSessions.pruneExpiredSessions (H3a-2), o único
+// módulo que grava ou apaga sessão.
 const STUDENT_PRESENCE_WINDOW_MS = 90 * 1000;
 
 function sessionLastSeen(session) {
@@ -11,31 +15,8 @@ function isStudentSessionOnline(session, now = Date.now(), windowMs = STUDENT_PR
     return !!(lastSeen && now - lastSeen < windowMs);
 }
 
-// Presenca e autenticacao possuem ciclos de vida diferentes. A ausencia de um
-// heartbeat deixa o aluno "offline" no monitor, mas nao deve revogar o token:
-// navegadores reduzem ou congelam timers de abas em segundo plano. Uma sessao
-// autenticada so e removida aqui ao atingir seu prazo absoluto.
-function pruneExpiredStudentSessions(sessions, { now = Date.now(), absoluteTtlMs } = {}) {
-    const ttl = Number(absoluteTtlMs);
-    if (!sessions || typeof sessions !== 'object' || !Number.isFinite(ttl) || ttl <= 0) return 0;
-
-    let removed = 0;
-    Object.keys(sessions).forEach(email => {
-        const session = sessions[email];
-        const lastSeen = sessionLastSeen(session);
-        const createdAt = session && typeof session === 'object' ? Number(session.createdAt) : null;
-        const reference = Number.isFinite(createdAt) && createdAt > 0 ? createdAt : lastSeen;
-        if (!reference || now - reference > ttl) {
-            delete sessions[email];
-            removed += 1;
-        }
-    });
-    return removed;
-}
-
 module.exports = {
     STUDENT_PRESENCE_WINDOW_MS,
     isStudentSessionOnline,
-    pruneExpiredStudentSessions,
     sessionLastSeen,
 };

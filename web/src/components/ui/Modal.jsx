@@ -20,7 +20,12 @@ export function Modal({ open, onClose, title, description, children, footer, siz
     previousFocusRef.current = document.activeElement
     const dialog = dialogRef.current
     const focusable = () => Array.from(dialog?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])
-    requestAnimationFrame(() => (focusable()[0] || dialog)?.focus())
+    // Campo com autoFocus dentro do diálogo (ex.: TypedConfirm) já tem o foco: não o
+    // troca pelo primeiro botão (o X), senão o que se digita logo depois de abrir se perde.
+    requestAnimationFrame(() => {
+      if (dialog && dialog.contains(document.activeElement)) return
+      ;(focusable()[0] || dialog)?.focus()
+    })
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); onCloseRef.current?.(); return }
       if (e.key !== 'Tab') return

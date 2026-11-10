@@ -5,12 +5,17 @@ import SistemaPage, { BackupHistory, maintenanceClassOptions } from './SistemaPa
 
 const IN_CLASS = { courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }
 const INSTITUTION = { courseId: '', courseName: '', className: '' }
+// Espera dos waitFor/findBy dos casos de manutenção: o padrão de 1 s falhou uma vez com
+// a CPU cheia (J1). 5 s por espera e 20 s por caso.
+const SLOW = { timeout: 5000 }
+const CASE_MS = 20000
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
   workspace: null,
+  restart: { readServerHealth: vi.fn(), waitForServerRestart: vi.fn() },
   apiData: {
     '/api/admin/classes': [
       { name: '1DES', courseId: 'DES' },
@@ -24,6 +29,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../hooks/useApi', () => ({ useApi: (path) => ({ data: (path && mocks.apiData[path]) || null, loading: false, error: null, refetch: vi.fn() }) }))
+vi.mock('./sistema/serverRestart', () => ({
+  RESTART_WAIT_MS: 90000,
+  readServerHealth: (...args) => mocks.restart.readServerHealth(...args),
+  waitForServerRestart: (...args) => mocks.restart.waitForServerRestart(...args),
+}))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 vi.mock('../../context/AuthProvider', () => ({
   useAuth: () => ({ auth: { role: 'admin', accountRole: 'admin', activeWorkspace: mocks.workspace?.className ? mocks.workspace : null } }),
@@ -56,6 +66,8 @@ describe('SistemaPage · manutenção', () => {
     mocks.workspace = IN_CLASS
     mocks.get.mockResolvedValue(preview())
     mocks.post.mockResolvedValue({ success: true, message: 'ok' })
+    mocks.restart.readServerHealth.mockResolvedValue({ status: 'ok', instanceId: 'antes' })
+    mocks.restart.waitForServerRestart.mockResolvedValue({ ok: true, health: { status: 'ok', instanceId: 'depois' } })
   })
   afterEach(cleanup)
 
@@ -64,7 +76,7 @@ describe('SistemaPage · manutenção', () => {
     render(<SistemaPage />)
     await user.click(screen.getByRole('button', { name: 'Limpar estado de prova' }))
     expect(mocks.post).not.toHaveBeenCalled()
-    expect(await screen.findByText(/3 estados de tentativa sem entrega/)).toBeVisible()
+    expect(await screen.findByText(/3 estados de tentativa sem entrega/, {}, SLOW)).toBeVisible()
     expect(screen.getByText(/1 com respostas não entregues/)).toBeVisible()
     expect(screen.getByText(/5 registros de monitoramento/)).toBeVisible()
     expect(mocks.get).toHaveBeenCalledWith(expect.stringContaining('studentClass=1DES'))
@@ -74,8 +86,8 @@ describe('SistemaPage · manutenção', () => {
     await user.type(screen.getByLabelText('Digite LIMPAR para confirmar'), 'LIMPAR')
     expect(confirmButton).toBeEnabled()
     await user.click(confirmButton)
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '1DES', courseId: 'DES', confirm: 'LIMPAR' })))
-  })
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '1DES', courseId: 'DES', confirm: 'LIMPAR' })), SLOW)
+  }, CASE_MS)
 
   it('[UC-MANUT-001] limpeza fica travada com prova em andamento na turma', async () => {
     const user = userEvent.setup()
@@ -85,47 +97,98 @@ describe('SistemaPage · manutenção', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/Prova Z/)
     expect(screen.getByRole('button', { name: 'Limpar estado' })).toBeDisabled()
     expect(screen.queryByLabelText('Digite LIMPAR para confirmar')).not.toBeInTheDocument()
-  })
+  }, CASE_MS)
 
   it('[UC-MANUT-001] "Reiniciar servidor" pede confirmação e avisa das provas em andamento (CONF-10)', async () => {
     const user = userEvent.setup()
     render(<SistemaPage />)
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     expect(mocks.post).not.toHaveBeenCalled()
-    expect(await screen.findByText(/1 prova em andamento/)).toBeVisible()
+    expect(await screen.findByText(/1 prova em andamento/, {}, SLOW)).toBeVisible()
     expect(screen.getByText(/2DES · Prova X/)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Reiniciar agora' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/server/restart', { confirm: 'REINICIAR' }))
-  })
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/server/restart', { confirm: 'REINICIAR' }), SLOW)
+  }, CASE_MS)
 
-  it('[UC-MANUT-001] confirmação do reinício lista também a prova de turma fora da conta (derruba todos)', async () => {
+  it('[UC-MANUT-001] confirmação do reinício lista também a prova de turma fora da conta (vale para o servidor inteiro)', async () => {
     const user = userEvent.setup()
     const data = preview()
     data.restart.activeApplications.push({ id: 'app-9', examKey: 'Avaliacao_Q', examTitle: 'Prova Q', status: 'running', studentClass: '3RED', outsideScope: true })
     mocks.get.mockResolvedValue(data)
     render(<SistemaPage />)
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
-    expect(await screen.findByText(/2 provas em andamento/)).toBeVisible()
+    expect(await screen.findByText(/2 provas em andamento/, {}, SLOW)).toBeVisible()
     expect(screen.getByText(/3RED · Prova Q/)).toHaveTextContent('(turma de outro professor)')
     expect(screen.getByText(/2DES · Prova X/)).not.toHaveTextContent('outro professor')
-    expect(screen.getByText(/derruba todos os alunos do servidor, de todas as turmas/)).toBeVisible()
+    expect(screen.getByText(/vale para o servidor inteiro, com as provas de todas as turmas/)).toBeVisible()
     expect(screen.queryByText('Nenhuma prova em andamento agora.')).not.toBeInTheDocument()
-  })
+  }, CASE_MS)
+
+  it('[UC-MANUT-001] o reinício promete o que o servidor faz: ninguém entra de novo e o tempo parado volta (H3c, CONF-12)', async () => {
+    const user = userEvent.setup()
+    render(<SistemaPage />)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
+    expect(await screen.findByText(/1 prova em andamento/, {}, SLOW)).toBeVisible()
+    expect(screen.getByText('O IClass fica fora do ar por alguns segundos e volta sozinho. Ninguém precisa entrar de novo.')).toBeVisible()
+    expect(screen.getByText(/Quem estiver fazendo prova pode continuar respondendo: as respostas são enviadas quando a conexão voltar e o tempo parado é devolvido automaticamente \(até 15 minutos\)\./)).toBeVisible()
+    expect(screen.queryByText(/precisam entrar de novo/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/derruba/)).not.toBeInTheDocument()
+  }, CASE_MS)
+
+  it('[UC-MANUT-001] depois de confirmar mostra "Reiniciando…" e espera o instanceId novo: "Servidor reiniciado." ao voltar', async () => {
+    const user = userEvent.setup()
+    let finish
+    mocks.restart.waitForServerRestart.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    render(<SistemaPage />)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
+    await screen.findByText(/1 prova em andamento/, {}, SLOW)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar agora' }))
+    await waitFor(() => expect(mocks.restart.waitForServerRestart).toHaveBeenCalledWith(expect.objectContaining({ previousInstanceId: 'antes' })), SLOW)
+    expect(mocks.restart.readServerHealth.mock.invocationCallOrder[0]).toBeLessThan(mocks.post.mock.invocationCallOrder[0])
+    expect(screen.getByRole('button', { name: 'Reiniciando…' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('Reiniciando…')
+    expect(mocks.toast.success).not.toHaveBeenCalled()
+    finish({ ok: true, health: { status: 'ok', instanceId: 'depois' } })
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalledWith('Servidor reiniciado.'), SLOW)
+    expect(screen.getByRole('button', { name: 'Reiniciar servidor' })).toBeEnabled()
+  }, CASE_MS)
+
+  it('[UC-MANUT-001] se o servidor não voltar em 90 s, diz para olhar a janela do IClass', async () => {
+    const user = userEvent.setup()
+    mocks.restart.waitForServerRestart.mockResolvedValue({ ok: false })
+    render(<SistemaPage />)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
+    await screen.findByText(/1 prova em andamento/, {}, SLOW)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar agora' }))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('O servidor não voltou em 90 s. Veja a janela do IClass.'), SLOW)
+    expect(mocks.toast.success).not.toHaveBeenCalled()
+  }, CASE_MS)
+
+  it('[UC-MANUT-001] reinício recusado pelo servidor mostra o erro e não fica esperando', async () => {
+    const user = userEvent.setup()
+    mocks.post.mockRejectedValue(new Error('Reinício indisponível neste modo.'))
+    render(<SistemaPage />)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
+    await screen.findByText(/1 prova em andamento/, {}, SLOW)
+    await user.click(screen.getByRole('button', { name: 'Reiniciar agora' }))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Reinício indisponível neste modo.'), SLOW)
+    expect(mocks.restart.waitForServerRestart).not.toHaveBeenCalled()
+  }, CASE_MS)
 
   it('[UC-MANUT-001] "Resetar sala" nomeia a turma, mostra as provas que serão encerradas e envia a confirmação ao servidor (CONF-X3)', async () => {
     const user = userEvent.setup()
     render(<SistemaPage />)
     expect(screen.getByText(/Só na turma 1DES · Técnico em TI/)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Resetar sala' }))
-    expect(await screen.findByText(/Prova W/)).toBeVisible()
+    expect(await screen.findByText(/Prova W/, {}, SLOW)).toBeVisible()
     expect(screen.getByText(/4 tentativas em andamento/)).toBeVisible()
     expect(screen.getByText(/6 alunos desconectados/)).toBeVisible()
     // O backup é de todos os dados: restaurá-lo volta todas as turmas, e isso fica dito.
     expect(screen.getByText(/a restauração volta todas as turmas ao momento do reset/)).toBeVisible()
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }))
-  })
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }), SLOW)
+  }, CASE_MS)
 
   it('[UC-MANUT-001] no Ambiente da instituição (sem turma ativa) a turma é escolhida no próprio card de Manutenção (UXI-02, OPS-X3, CONF-X3)', async () => {
     const user = userEvent.setup()
@@ -145,19 +208,19 @@ describe('SistemaPage · manutenção', () => {
     expect(screen.getByText(/Só na turma 2DES · Técnico em TI/)).toBeVisible()
 
     await user.click(flushButton)
-    await screen.findByText(/3 estados de tentativa sem entrega/)
+    await screen.findByText(/3 estados de tentativa sem entrega/, {}, SLOW)
     expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/studentClass=2DES&courseId=DES/))
     await user.type(screen.getByLabelText('Digite LIMPAR para confirmar'), 'LIMPAR')
     await user.click(screen.getByRole('button', { name: 'Limpar estado' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '2DES', courseId: 'DES', confirm: 'LIMPAR' })))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '2DES', courseId: 'DES', confirm: 'LIMPAR' })), SLOW)
 
     await user.selectOptions(select, 'ADM::1ADM')
     await user.click(resetButton)
-    await screen.findByText(/Prova W/)
+    await screen.findByText(/Prova W/, {}, SLOW)
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1ADM', courseId: 'ADM', confirm: 'RESETAR' }))
-  })
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1ADM', courseId: 'ADM', confirm: 'RESETAR' }), SLOW)
+  }, CASE_MS)
 
   it('opções de turma: sem turmas excluídas, com o nome do curso e com a turma ativa mesmo antes da lista carregar', () => {
     const options = maintenanceClassOptions(mocks.apiData['/api/admin/classes'], mocks.apiData['/api/courses'], null)

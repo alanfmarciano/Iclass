@@ -9,7 +9,7 @@ const {
     SERVER_INSTANCE_ID,
 } = require('../middlewares.js');
 const { parseAdditionalPermissions, isProfessorAccount } = require('../utils/adminPermissions.js');
-const { revokeAdminSession } = require('../utils/authSessions.js');
+const { revokeAdminSession, revokeAdminSessions } = require('../utils/authSessions.js');
 
 // Gestão de contas (criar/editar/excluir) é exclusiva de administradores.
 // Backstop além do RBAC: mesmo que a capability accounts.manage vaze para um
@@ -178,6 +178,9 @@ function createAdminAccountsRouter() {
                 additionalPermissions,
             });
             db.memory.admins = admins;
+            // Conta nova com o e-mail de uma que já foi excluída não herda sessão que tenha
+            // ficado dela (gravada em auth_sessions e retomada no boot, H3a-2).
+            revokeAdminSessions(db.memory, normalizedEmail);
             await db.save();
             res.json({ success: true });
         });
@@ -265,8 +268,10 @@ function createAdminAccountsRouter() {
     });
 
     router.post('/api/session/logout', (req, res) => {
-        validateAdmin(req, res, () => {
+        validateAdmin(req, res, async () => {
             revokeAdminSession(db.memory, req.adminSessionToken);
+            // Também sai da tabela auth_sessions (H3a-2): não volta depois de um reinício.
+            await db.save();
             res.json({ success: true });
         });
     });
@@ -327,6 +332,11 @@ function createAdminAccountsRouter() {
             const filtered = admins.filter(account => !account.email || account.email.toLowerCase() !== targetEmail);
             if (admins.length === filtered.length) return res.status(404).json({ error: 'Administrador não encontrado.' });
             db.memory.admins = filtered;
+            // As sessões abertas da conta acabam aqui e saem da tabela auth_sessions na
+            // gravação (H3a-2). Antes ficavam na memória (401 'Conta não encontrada.' a cada
+            // pedido) e, gravadas, voltavam no boot: recriada a conta com o mesmo e-mail, o
+            // token antigo entrava de novo.
+            revokeAdminSessions(db.memory, targetEmail);
             await db.save();
             res.json({ success: true, message: 'Administrador removido com sucesso!' });
         });

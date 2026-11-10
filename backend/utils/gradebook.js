@@ -964,10 +964,43 @@ function regradedLabel(count) {
     return Number(count) > 0 ? countLabel(count, 'entrega recorrigida', 'entregas recorrigidas') : '';
 }
 
+// Duração em português, para o registro da aplicação: "36 s", "3 min 5 s", "22 min",
+// "1 h 5 min".
+function durationLabel(ms) {
+    const seconds = Math.max(0, Math.round(Number(ms) / 1000) || 0);
+    if (seconds < 60) return `${seconds} s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) {
+        const rest = seconds % 60;
+        return rest && minutes < 10 ? `${minutes} min ${rest} s` : `${minutes} min`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const restMinutes = minutes % 60;
+    return restMinutes ? `${hours} h ${restMinutes} min` : `${hours} h`;
+}
+
+// Por que o servidor ficou fora do ar (utils/serverLifecycle.js).
+const OUTAGE_REASON_LABELS = {
+    restart: 'reinício',
+    crash: 'queda do servidor',
+    suspended: 'computador suspenso ou travado',
+};
+
 function describeExamAudit(entry) {
     const details = entry.details || {};
     const join = (...parts) => parts.filter(Boolean).join(' · ');
     switch (entry.type) {
+        case 'exam_application_server_outage': {
+            const reason = OUTAGE_REASON_LABELS[details.reason];
+            const limit = Number(details.maxMinutes) > 0 ? Number(details.maxMinutes) : 15;
+            return {
+                title: 'Servidor fora do ar durante a prova',
+                detail: `Fora do ar por ${durationLabel(details.durationMs)}${reason ? ` (${reason})` : ''}. `
+                    + (details.compensated === false
+                        ? `Tempo não devolvido (mais de ${limit} min).`
+                        : 'Tempo devolvido a todos.'),
+            };
+        }
         case 'exam_application_finished':
             // Sem prova em andamento no encerramento, não há o que dizer (antes saía
             // "0 tentativas em andamento descartadas").

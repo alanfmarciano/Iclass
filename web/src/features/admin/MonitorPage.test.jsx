@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MonitorPage from './MonitorPage'
@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+  // Lista da turma consultada a cada 5 s (useApi); sem valor, a mesma da carga inicial.
+  liveApplications: null,
 }))
 
 const classes = [{ name: '1DES', courseId: 'C1', onlineExamConfigs: {} }]
@@ -22,7 +24,7 @@ vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => ({ co
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
     if (String(path).startsWith('/api/admin/classes')) return { data: classes, refetch: vi.fn(), loading: false }
-    if (String(path).startsWith('/api/admin/exam-applications')) return { data: { applications }, refetch: vi.fn(), loading: false }
+    if (String(path).startsWith('/api/admin/exam-applications')) return { data: { applications: mocks.liveApplications || applications }, refetch: vi.fn(), loading: false }
     return { data: null, refetch: vi.fn(), loading: false }
   },
 }))
@@ -86,5 +88,80 @@ describe('MonitorPage · tentativa atual com mais de uma tentativa', () => {
     const delivered = screen.getByText('Entregaram').closest('div').parentElement
     expect(delivered.textContent).toContain('1')
     expect(delivered.textContent).not.toContain('2')
+  })
+})
+
+describe('MonitorPage · servidor fora do ar durante a prova (H3b, CONF-03)', () => {
+  const startsAt = Date.parse('2026-10-18T10:00:00Z')
+  const withOutage = (outage) => applications.map((item) => (item.id !== 'app-antiga' ? item : {
+    ...item,
+    startsAt,
+    durationMinutes: 60,
+    timerEnabled: true,
+    pauses: outage.compensated ? [{ pausedAt: outage.from, resumedAt: outage.to, reason: 'server_outage' }] : [],
+    outages: [outage],
+  }))
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // A carga inicial ainda não tem a queda: ela só aparece na lista consultada a cada 5 s.
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return { monitorList: [] }
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(() => {
+    mocks.liveApplications = null
+    cleanup()
+  })
+
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+
+  it('[UC-TENTATIVA-001] queda curta: avisa que o tempo parado foi devolvido a todos', async () => {
+    mocks.liveApplications = withOutage({ from: startsAt + 600000, to: startsAt + 636000, durationMs: 36000, reason: 'crash', compensated: true })
+    renderMonitor()
+    const notice = await screen.findByText('Servidor fora do ar durante a prova.')
+    const text = notice.closest('[role="status"]').textContent
+    expect(text).toMatch(/O servidor ficou fora do ar das .+ às .+ \(36 s, queda do servidor\)\. O tempo parado foi devolvido a todos\./)
+    expect(text).not.toContain('não foi devolvido')
+  })
+
+  it('[UC-TENTATIVA-001] queda acima de 15 min: avisa que o tempo não foi devolvido e o professor decide', async () => {
+    mocks.liveApplications = withOutage({ from: startsAt + 600000, to: startsAt + 600000 + 22 * 60000, durationMs: 22 * 60000, reason: 'restart', compensated: false })
+    renderMonitor()
+    const notice = await screen.findByText('Servidor fora do ar durante a prova.')
+    const text = notice.closest('[role="status"]').textContent
+    expect(text).toMatch(/O servidor ficou fora do ar por 22 min \(das .+ às .+, reinício\)\./)
+    expect(text).toContain('O tempo não foi devolvido automaticamente (mais de 15 min); se precisar, dê mais tempo à turma.')
+  })
+
+  it('[UC-TENTATIVA-001] várias quedas: um aviso para cada uma, e a antiga sem devolução não some atrás das curtas', async () => {
+    const longOutage = { from: startsAt + 60000, to: startsAt + 60000 + 20 * 60000, durationMs: 20 * 60000, reason: 'crash', compensated: false }
+    const short = [1, 2, 3, 4].map((index) => ({ from: startsAt + (20 + index * 5) * 60000, to: startsAt + (20 + index * 5) * 60000 + 4000, durationMs: 4000, reason: 'restart', compensated: true }))
+    mocks.liveApplications = withOutage(longOutage).map((item) => (item.id !== 'app-antiga' ? item : {
+      ...item,
+      pauses: short.map((outage) => ({ pausedAt: outage.from, resumedAt: outage.to, reason: 'server_outage' })),
+      outages: [longOutage, ...short],
+    }))
+    renderMonitor()
+    const notice = (await screen.findByText('Servidor fora do ar durante a prova.')).closest('[role="status"]')
+    const visible = [...notice.querySelectorAll(':scope > div > ul > li')].map((item) => item.textContent)
+    expect(visible).toHaveLength(4)
+    expect(visible.slice(0, 3).every((text) => text.includes('(4 s, reinício). O tempo parado foi devolvido a todos.'))).toBe(true)
+    expect(visible[3]).toMatch(/^O servidor ficou fora do ar por 20 min \(das .+, queda do servidor\)\. O tempo não foi devolvido automaticamente/)
+    expect(within(notice).getByText('Ver a outra queda')).toBeInTheDocument()
+    expect(notice.querySelectorAll('details li')).toHaveLength(1)
+  })
+
+  it('[UC-TENTATIVA-001] sem queda registrada, nenhum aviso', async () => {
+    renderMonitor()
+    await waitFor(() => expect(screen.getAllByText('Avaliacao_Antiga').length).toBeGreaterThan(0))
+    expect(screen.queryByText('Servidor fora do ar durante a prova.')).not.toBeInTheDocument()
   })
 })

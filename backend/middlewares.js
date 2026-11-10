@@ -71,6 +71,24 @@ function normalizeIp(ip) {
     return ip;
 }
 
+// Respostas de sessão derrubada (contrato das respostas de estado: 401
+// { sessionRevoked: true, reason }). reason: 'expired' (sem sessão para o token, inclusive
+// a que não voltou depois de um reinício, ou fora do prazo absoluto), 'replaced' (a conta
+// entrou em outro aparelho), 'account_missing' (conta apagada), 'account_inactive' (aluno
+// bloqueado ou inativo, com 403) e 'missing' (pedido sem token nenhum).
+function sendSessionRevoked(res, status, error, reason) {
+    return res.status(status).json({ error, sessionRevoked: true, reason });
+}
+
+// Sessão que um 401/403 acabou de tirar da memória (vencida, conta apagada ou bloqueada):
+// sai também da tabela auth_sessions (H3a-2) antes da resposta; sem isso ela voltava no
+// boot seguinte e, com a conta desbloqueada ou recriada com o mesmo e-mail, o token antigo
+// entrava de novo. Falha de gravação não troca o 401 por 503: o motor regrava sozinho, e a
+// retomada do boot descarta a sessão de conta apagada ou bloqueada (restoreSessions).
+function persistSessionRevocation(removed) {
+    if (removed) db.save().catch(() => {});
+}
+
 function validateStudentSession(req, res, next) {
     const claimedEmails = [
         req.body && req.body.email,
@@ -103,18 +121,13 @@ function validateStudentSession(req, res, next) {
     const session = studentSessionByEmail(db.memory, normalizedEmail);
     
     if (!session) {
-        return res.status(401).json({
-            error: 'Sessão expirada ou não autenticada. Por favor, faça login novamente.',
-            sessionRevoked: true
-        });
+        return sendSessionRevoked(res, 401, 'Sessão expirada ou não autenticada. Por favor, faça login novamente.', 'expired');
     }
     
     if (!hasSessionCredential(session)) {
+        // Só presença (semente do TEST_MODE), que não é gravada em auth_sessions.
         revokeStudentSession(db.memory, normalizedEmail);
-        return res.status(401).json({
-            error: 'Sessão expirada. Faça login novamente.',
-            sessionRevoked: true
-        });
+        return sendSessionRevoked(res, 401, 'Sessão expirada. Faça login novamente.', 'expired');
     }
 
     const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
@@ -123,10 +136,7 @@ function validateStudentSession(req, res, next) {
     // Sessão única: exige que a requisição apresente o token da sessão gravada. Um novo
     // login gera token novo e invalida o dispositivo antigo.
     if (typeof providedToken !== 'string' || !sessionMatchesToken(session, providedToken)) {
-        return res.status(401).json({
-            error: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
-            sessionRevoked: true
-        });
+        return sendSessionRevoked(res, 401, 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.', 'replaced');
     }
 
     // O token (aleatório, um por login) já prova a identidade. Um IP diferente é registrado,
@@ -141,20 +151,20 @@ function validateStudentSession(req, res, next) {
     if (!session.createdAt) session.createdAt = nowTs;
     // Cap ABSOLUTO no servidor (backstop). A ociosidade e enforced no cliente.
     if (nowTs - session.createdAt > sessionAbsoluteTtlMs()) {
-        revokeStudentSession(db.memory, normalizedEmail);
-        return res.status(401).json({ error: 'Sessão expirada (limite máximo atingido). Faça login novamente.', sessionRevoked: true });
+        persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail));
+        return sendSessionRevoked(res, 401, 'Sessão expirada (limite máximo atingido). Faça login novamente.', 'expired');
     }
     touchSession(session, nowTs, { active: isUserActivityRequest(req) });
 
     const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === normalizedEmail);
     if (!student) {
-        revokeStudentSession(db.memory, normalizedEmail);
-        return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
+        persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail));
+        return sendSessionRevoked(res, 401, 'Conta não encontrada. Faça login novamente.', 'account_missing');
     }
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
-        revokeStudentSession(db.memory, normalizedEmail);
-        return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa.', sessionRevoked: true });
+        persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail));
+        return sendSessionRevoked(res, 403, 'Esta conta está bloqueada ou inativa.', 'account_inactive');
     }
 
     req.auth = { role: 'student', email: normalizedEmail, student };
@@ -202,7 +212,11 @@ function validateAnySession(req, res, next) {
         });
     }
     if (!requester) {
-        return res.status(401).json({ error: 'Autenticação necessária.', sessionRevoked: true });
+        // Com token (de aluno ou de instrutor) que o servidor não conhece mais: sessão
+        // vencida, como nas outras validações; sem token nenhum: 'missing'.
+        const presented = [req.get('x-admin-session'), req.get('x-session-token'), req.query && req.query.sessionToken]
+            .some(value => typeof value === 'string' && value !== '');
+        return sendSessionRevoked(res, 401, 'Autenticação necessária.', presented ? 'expired' : 'missing');
     }
     if (requester.role !== 'student') {
         req.requester = requester;
@@ -511,11 +525,11 @@ function validateAdmin(req, res, callback) {
         : { ok: false, reason: 'missing' };
     if (check.reason !== 'missing') {
         if (!check.ok) {
-            revokeAdminSession(db.memory, adminSessionToken);
+            persistSessionRevocation(revokeAdminSession(db.memory, adminSessionToken));
             if (check.reason === 'account_missing') {
-                return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
+                return sendSessionRevoked(res, 401, 'Conta não encontrada. Faça login novamente.', 'account_missing');
             }
-            return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
+            return sendSessionRevoked(res, 401, 'Sessão expirada. Faça login novamente.', 'expired');
         }
         const tokenAdmin = check.account;
         touchSession(check.session, now, { active: isUserActivityRequest(req) });
@@ -536,6 +550,14 @@ function validateAdmin(req, res, callback) {
     const headerCredential = typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
     const bodyCredential = req.body && typeof req.body.password === 'string' ? req.body.password : '';
     const authHeader = headerCredential || bodyCredential;
+    if (!authHeader && typeof adminSessionToken === 'string' && adminSessionToken) {
+        // Token de sessão que o servidor não conhece mais: saiu na limpeza do prazo
+        // absoluto (pruneExpiredSessions), não voltou depois de um reinício longo
+        // (restoreSessions) ou foi encerrado. Mesmo 401 da sessão vencida, com
+        // sessionRevoked e reason (contrato das respostas de estado), em vez do "Acesso
+        // não autorizado." de quem nunca entrou.
+        return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
+    }
     if (!authHeader) {
         return res.status(401).json({ error: 'Acesso não autorizado.' });
     }
@@ -576,8 +598,13 @@ function validateAdmin(req, res, callback) {
 
 // Sessão nova de instrutor (utils/authSessions.js): devolve o token cru, que só vai na
 // resposta; a memória guarda o hash. origin 'setup' no acesso rápido local.
+// A sessão vai para a tabela auth_sessions (H3a-2) na gravação completa pedida aqui:
+// dentro de um pedido, a resposta com o token só sai depois do COMMIT
+// (utils/persistenceContext.js), e um reinício logo depois não derruba o professor.
 function issueAdminSession(email, { origin } = {}) {
-    return createAdminSession(db.memory, email, { now: Date.now(), origin });
+    const token = createAdminSession(db.memory, email, { now: Date.now(), origin });
+    db.save();
+    return token;
 }
 
 function validateAdminPermission(req, res, permission, callback) {

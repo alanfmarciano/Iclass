@@ -1,6 +1,8 @@
 // Rate limiter em memória (sem dependências), por chave. Janela fixa simples.
 // Uso local-first: protege login e validação de token de prova contra força
 // bruta na rede da sala, sem afetar o uso legítimo (limites generosos).
+const { registerTimer } = require('./serverLifecycle.js');
+
 const buckets = new Map();
 
 // Retorna { allowed, remaining, retryAfterMs }. Conta a tentativa atual.
@@ -18,14 +20,13 @@ function rateLimit(key, { max = 30, windowMs = 60000 } = {}) {
     return { allowed: true, remaining: max - entry.count, retryAfterMs: 0 };
 }
 
-// Limpeza periódica para não acumular chaves expiradas. unref() para não
-// impedir o processo de encerrar.
-const cleanup = setInterval(() => {
+// Limpeza periódica para não acumular chaves expiradas. Registrada no ciclo de vida do
+// servidor (unref, e o desligamento ordenado para todos os timers; H3c).
+registerTimer('rate-limit-cleanup', setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of buckets) {
         if (now > entry.resetAt) buckets.delete(key);
     }
-}, 5 * 60 * 1000);
-if (typeof cleanup.unref === 'function') cleanup.unref();
+}, 5 * 60 * 1000));
 
 module.exports = { rateLimit };

@@ -25,6 +25,12 @@
 //   only: grava só as chaves novas e apaga as que sumiram; linha que já existia só é
 //   comparada se a chave estiver em changed. Coleção em changed entra em only.
 //   Singletons (config, branding, courseStructure) só entram quando listados.
+// - Tabela própria (kind 'store', como as teclas da prova em utils/keystrokeStore.js): fica
+//   fora da memória e do diff. O módulo dela tem a fila das operações pedidas e entrega
+//   ao ciclo um plano (plan()) com run(), feito dentro da mesma transação, e apply(),
+//   depois do COMMIT. Entra no ciclo quando listada em only e na gravação completa.
+// - Tabela derivada (kind 'derived', como as sessões em auth_sessions): as linhas saem de
+//   entry.rows(memory), pares [chave, texto JSON], e passam pelo mesmo diff das coleções.
 const { performance } = require('node:perf_hooks');
 
 const DB_WRITE_CODE = 'ICLASS_DB_WRITE';
@@ -50,6 +56,7 @@ const CRASH_LOG_INTERVAL_MS = 60000;
 // Tipos do registro que ficam na memória (db.memory[coleção]) e passam pelo diff.
 const MEMORY_KINDS = new Set(['array', 'object', 'singleton']);
 const DIFF_KINDS = new Set(['array', 'object', 'singleton', 'derived']);
+const STORE_KIND = 'store';
 
 class DbWriteError extends Error {
     constructor(message, { sqliteCode = null, cause } = {}) {
@@ -142,7 +149,9 @@ function collectionRows(entry, memory, options) {
     } else if (entry.kind === 'singleton') {
         rows.set(String(entry.key), stringifyValue(value));
     } else if (entry.kind === 'derived' && typeof entry.rows === 'function') {
-        for (const [key, row] of entry.rows(memory) || []) rows.set(String(key), stringifyValue(row));
+        // Linha derivada em texto já é o JSON gravado (as sessões do boot ainda não
+        // retomadas voltam exatamente como estavam no disco); outro valor vira JSON.
+        for (const [key, row] of entry.rows(memory) || []) rows.set(String(key), typeof row === 'string' ? row : stringifyValue(row));
     }
     return rows;
 }
@@ -153,7 +162,7 @@ function unreadableCopyKey(key, stamp) {
     return `${key}.ilegivel-${stamp}`;
 }
 
-// createDbWriter({ connection, tables, getMemory, ready, beforeCycle, logFailure, busyTimeoutMs })
+// createDbWriter({ connection, tables, getMemory, ready, beforeCycle, logFailure, busyTimeoutMs, stores })
 // - connection: sqlite3.Database;
 // - tables: o registro COLLECTION_TABLES (database.js);
 // - getMemory(): db.memory;
@@ -162,9 +171,11 @@ function unreadableCopyKey(key, stamp) {
 //   mudaram 'admins';
 // - logFailure(err, info): registro da falha (crash.log), no máximo uma vez por minuto;
 // - busyTimeoutMs(): o busy_timeout da conexão (PRAGMA), para limitar a espera de cada
-//   pedido pela trava a cerca de um busy_timeout.
-function createDbWriter({ connection, tables, getMemory, ready = () => Promise.resolve(), beforeCycle = () => false, logFailure = () => {}, busyTimeoutMs = () => null }) {
+//   pedido pela trava a cerca de um busy_timeout;
+// - stores: Map(coleção -> módulo da tabela própria, com plan()) das entradas 'store'.
+function createDbWriter({ connection, tables, getMemory, ready = () => Promise.resolve(), beforeCycle = () => false, logFailure = () => {}, busyTimeoutMs = () => null, stores = new Map() }) {
     const entries = tables.filter(entry => DIFF_KINDS.has(entry.kind));
+    const storeEntries = tables.filter(entry => entry.kind === STORE_KIND && stores.has(entry.collection));
     const byCollection = new Map(tables.map(entry => [entry.collection, entry]));
     const lastWritten = new Map();
     // Por tabela, as chaves das linhas do disco com JSON ilegível (fora de lastWritten).
@@ -193,6 +204,9 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
     let lastFullSaveMs = null;
     let lastCycle = null;
     let cycles = 0;
+    // Houve gravação parcial desde a última completa (rede de segurança do H1-c: a
+    // gravação completa periódica só roda quando isto é verdade).
+    let partialSinceFullSave = false;
 
     function exec(sql) {
         return new Promise((resolve, reject) => connection.exec(sql, err => (err ? reject(err) : resolve())));
@@ -283,9 +297,20 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         const selected = scope.full
             ? entries
             : entries.filter(entry => scope.only.has(entry.collection) || scope.changed.has(entry.collection));
-        return selected.map(entry => (!scope.full && entry.append && entry.kind === 'array'
+        const plan = selected.map(entry => (!scope.full && entry.append && entry.kind === 'array'
             ? planAppend(entry, memory, scope.changed.get(entry.collection))
             : planWhole(entry, memory)));
+        // Tabelas próprias: as operações que estão na fila agora.
+        storeEntries.forEach(entry => {
+            if (!scope.full && !scope.only.has(entry.collection)) return;
+            const storePlan = stores.get(entry.collection).plan();
+            if (storePlan && storePlan.rows > 0) plan.push({ entry, store: storePlan });
+        });
+        return plan;
+    }
+
+    function planRows(item) {
+        return item.store ? item.store.rows : item.deletes.length + item.upserts.length;
     }
 
     // busy_timeout deste ciclo: o que falta do busy_timeout para o pedido que espera há
@@ -321,17 +346,18 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         return item.upserts.filter(([key]) => keys.has(key)).map(([key]) => [unreadableCopyKey(key, stamp), key]);
     }
 
-    // Uma tentativa do ciclo. Devolve null (COMMIT feito) ou o erro (ROLLBACK feito).
+    // Uma tentativa do ciclo. Devolve { error } (ROLLBACK feito) ou { report } (COMMIT
+    // feito): o que o ciclo gravou, { full, rows, collections: { coleção: linhas } }.
     async function attemptCycle(scope, waitingSince = Infinity) {
         let plan;
         try {
             if (beforeCycle() && !scope.full) scope.only.add('admins');
             plan = buildPlan(scope);
         } catch (err) {
-            return err;
+            return { error: err };
         }
-        const tablesWithRows = plan.filter(item => item.deletes.length || item.upserts.length);
-        const rows = tablesWithRows.reduce((total, item) => total + item.deletes.length + item.upserts.length, 0);
+        const tablesWithRows = plan.filter(item => planRows(item) > 0);
+        const rows = tablesWithRows.reduce((total, item) => total + planRows(item), 0);
         const started = performance.now();
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const kept = [];
@@ -340,10 +366,15 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
                 await beginImmediate(waitingSince);
             } catch (err) {
                 await rollbackQuietly();
-                return err;
+                return { error: err };
             }
             let failure = null;
             for (const item of tablesWithRows) {
+                if (item.store) {
+                    failure = await item.store.run();
+                    if (failure) break;
+                    continue;
+                }
                 if (item.deletes.length) failure = await runStatement(`DELETE FROM ${item.entry.table} WHERE key = ?`, item.deletes);
                 // Linha ilegível que ia ser sobrescrita (o padrão de um singleton, uma chave
                 // que volta a ser usada): o texto original fica numa chave própria.
@@ -363,10 +394,10 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             }
             if (failure) {
                 await rollbackQuietly();
-                return failure;
+                return { error: failure };
             }
         }
-        plan.forEach(item => item.apply());
+        plan.forEach(item => (item.store ? item.store.apply() : item.apply()));
         kept.forEach(({ table, key, copyKey }) => {
             const keys = unreadableKeys.get(table);
             if (keys) keys.delete(key);
@@ -374,7 +405,10 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         });
         const elapsed = performance.now() - started;
         cycles += 1;
-        lastCycle = { at: new Date().toISOString(), full: scope.full, rows, ms: Math.round(elapsed * 10) / 10 };
+        // Linhas gravadas por coleção (só as que gravaram algo).
+        const collections = {};
+        tablesWithRows.forEach(item => { collections[item.entry.collection] = (collections[item.entry.collection] || 0) + planRows(item); });
+        lastCycle = { at: new Date().toISOString(), full: scope.full, rows, ms: Math.round(elapsed * 10) / 10, collections };
         if (tablesWithRows.length) {
             commitSamples.push(elapsed);
             if (commitSamples.length > COMMIT_SAMPLES) commitSamples.shift();
@@ -382,8 +416,11 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         if (scope.full) {
             lastFullSaveAt = lastCycle.at;
             lastFullSaveMs = lastCycle.ms;
+            partialSinceFullSave = false;
+        } else {
+            partialSinceFullSave = true;
         }
-        return null;
+        return { report: { full: scope.full, rows, collections: { ...collections } } };
     }
 
     function scheduleRetry() {
@@ -434,18 +471,19 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         // quem espere: usa o busy_timeout inteiro).
         const waitingSince = waiters.reduce((oldest, waiter) => Math.min(oldest, waiter.requestedAt), Infinity);
         let error = null;
+        let report = null;
         try {
             await ready();
         } catch (err) {
             error = err;
         }
         if (!error) {
-            error = await attemptCycle(scope, waitingSince);
+            ({ error = null, report = null } = await attemptCycle(scope, waitingSince));
             // Trava (SQLITE_BUSY/LOCKED): o SQLite já esperou o busy_timeout, desiste agora.
             // Outro erro: uma nova tentativa depois de 500 ms.
             if (error && !isBusyError(error)) {
                 await new Promise(resolve => setTimeout(resolve, IMMEDIATE_RETRY_MS));
-                error = await attemptCycle(scope, waitingSince);
+                ({ error = null, report = null } = await attemptCycle(scope, waitingSince));
             }
         }
         processedSeq = throughSeq;
@@ -456,7 +494,11 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         } else {
             lastWriteError = null;
             clearRetry();
-            waiters.forEach(waiter => waiter.resolve());
+            // A promessa de cada pedido resolve com o que o ciclo gravou; requests diz
+            // quantos pedidos foram juntos nele (a rede de segurança só acusa o que a
+            // gravação completa dela encontrou sozinha).
+            const result = Object.freeze({ ...report, requests: waiters.length });
+            waiters.forEach(waiter => waiter.resolve(result));
         }
         running = false;
         settleFlushWaiters();
@@ -533,7 +575,8 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         const scope = emptyScope();
         const known = name => {
             const entry = byCollection.get(name);
-            if (!entry || !DIFF_KINDS.has(entry.kind)) throw new TypeError(`db.save: coleção desconhecida "${String(name)}".`);
+            const storeEntry = !!entry && entry.kind === STORE_KIND && stores.has(entry.collection);
+            if (!entry || (!DIFF_KINDS.has(entry.kind) && !storeEntry)) throw new TypeError(`db.save: coleção desconhecida "${String(name)}".`);
             return entry.collection;
         };
         if (only !== undefined) {
@@ -577,12 +620,32 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         });
     }
 
+    function isIdle() {
+        return !running && !pendingScope && !exclusiveQueue.length;
+    }
+
     function idle() {
-        if (!running && !pendingScope && !exclusiveQueue.length) return Promise.resolve();
+        if (isIdle()) return Promise.resolve();
         return new Promise(resolve => {
             const check = () => {
-                if (!running && !pendingScope && !exclusiveQueue.length) return resolve();
+                if (isIdle()) return resolve();
                 setTimeout(check, 10);
+            };
+            check();
+        });
+    }
+
+    // Espera a fila esvaziar (nenhum ciclo rodando nem pedido esperando) por até
+    // timeoutMs. Resolve true quando esvaziou e false quando o tempo acabou antes.
+    function waitIdle(timeoutMs = 30000) {
+        if (isIdle()) return Promise.resolve(true);
+        const limit = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+        return new Promise(resolve => {
+            const check = () => {
+                if (isIdle()) return resolve(true);
+                if (Date.now() >= limit) return resolve(false);
+                const timer = setTimeout(check, 50);
+                if (typeof timer.unref === 'function') timer.unref();
             };
             check();
         });
@@ -663,9 +726,15 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             commitP95Ms: percentile(commitSamples, 0.95),
             lastWriteError: lastWriteError ? { ...lastWriteError } : null,
             pendingRetry: !!retryScope,
+            // Rodadas de nova tentativa desde a última gravação que deu certo (a espera
+            // crescente de RETRY_DELAYS_MS; zera no primeiro COMMIT).
+            retryAttempt,
             nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null,
             cycles,
-            lastCycle: lastCycle ? { ...lastCycle } : null,
+            lastCycle: lastCycle ? { ...lastCycle, collections: { ...lastCycle.collections } } : null,
+            partialSinceFullSave,
+            // Um ciclo de gravação ou uma tarefa exclusiva (VACUUM) rodando agora.
+            running,
             queued: !!pendingScope,
             closed,
         };
@@ -676,6 +745,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         scopeFromOptions,
         flush,
         runExclusive,
+        waitIdle,
         close,
         seed,
         snapshotRows,

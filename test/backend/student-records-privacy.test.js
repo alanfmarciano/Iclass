@@ -69,7 +69,6 @@ function seed() {
     db.memory.submissions = [];
     db.memory.studentExamState = {};
     db.memory.proctoringLogs = [];
-    db.memory.examKeystrokes = [];
     db.memory.examApplications = [];
     db.memory.auditLogs = [];
 }
