@@ -313,7 +313,7 @@ test('routers extraídos preservam contratos administrativos', async () => {
     await request(app).post('/api/admin/accounts/create').set('x-admin-session', 'admin-token').send({
         name: 'Professor Teste',
         email: 'professor@teste.local',
-        password: 'senha-professor',
+        password: 'Quadro-Verde-42',
         role: 'professor',
         assignedClasses: [{ courseId: 'curso-contas', className: 'Turma Contas' }],
     }).expect(200);

@@ -57,8 +57,16 @@ const {
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
-const { createStudentSession, revokeStudentSession } = require('../utils/authSessions.js');
+const { createStudentSession, revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
+const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const {
+    passwordChangeRuleActive,
+    passwordChanged,
+    requirePasswordChange,
+    studentHasExamInProgress,
+    studentPasswordChangeState,
+} = require('../utils/passwordChange.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     createSubmissionFromAttempt,
@@ -236,7 +244,14 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
             db.save().catch(() => {});
         }
     }
-    res.json({ success: true });
+    // A tela do portal acompanha a troca obrigatória de senha por aqui (H5a): pedida pelo
+    // professor com o aluno já logado, ou já feita em outro aparelho.
+    const passwordChange = req.studentPasswordChange || {};
+    res.json({
+        success: true,
+        passwordChangeRequired: passwordChange.required === true,
+        ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
+    });
 });
 
 // Beacon de saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer
@@ -689,6 +704,12 @@ router.post('/api/student/register', async (req, res) => {
     if (!fields.name || !fields.email || !password || !studentClass || !courseId) {
         return res.status(400).json({ error: 'Dados incompletos.' });
     }
+    // Política de senha (H5a, SEG-06): a senha "1" era aceita. O autocadastro nunca pede
+    // a troca no primeiro acesso: quem escolheu a senha foi o próprio aluno.
+    const policy = validateNewPassword(password, {
+        kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial,
+    });
+    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
 
     const classes = readJSON(DB_CLASSES_FILE);
     const matchedClass = classes.find(c => c.name === studentClass && c.courseId === courseId && c.registrationEnabled);
@@ -756,6 +777,7 @@ router.post('/api/student/register', async (req, res) => {
         enrollmentRequests: [enrollmentRequest],
         loginTime: null,
         recoveryRequested: false,
+        passwordChangedAt: new Date().toISOString(),
         termsAcceptance: buildAcceptance(DEFAULT_TERMS_VERSION, req),
         privacyAcceptance: buildAcceptance(DEFAULT_PRIVACY_VERSION, req),
         createdAt: Date.now(),
@@ -971,6 +993,15 @@ router.post('/api/student/login', async (req, res) => {
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa. Procure o instrutor.' });
     }
 
+    // Senha fraca pela política de hoje (H5a, decisão P3 do Alan): a troca passa a ser
+    // pedida, menos durante uma prova em andamento (fica para o login seguinte) e com
+    // TEST_MODE (contas demo). Quem já tinha a troca pedida e está em prova segue sem
+    // ela nesta sessão (utils/passwordChange.js).
+    const inExam = passwordChangeRuleActive() && studentHasExamInProgress(db.memory, normalizedEmail);
+    if (passwordChangeRuleActive() && login.weakPassword && student.mustChangePassword !== true && !inExam) {
+        requirePasswordChange(student, 'weak');
+    }
+
     student.loginTime = new Date().toISOString();
     student.lastLoginAt = Date.now();
     student.lastLoginIp = normalizeIp(req.ip || req.socket.remoteAddress);
@@ -985,10 +1016,15 @@ router.post('/api/student/login', async (req, res) => {
         ip: normalizeIp(req.ip || req.socket.remoteAddress),
         now: Date.now(),
     });
+    const passwordChange = studentPasswordChangeState(db.memory, student, studentSessionByEmail(db.memory, normalizedEmail));
     await db.save();
 
     // Retorna dados do estudante sem expor o campo de senha
     const { password: _, ...safeStudent } = student;
+    // A tela segue o que vale para esta sessão (em prova, a troca fica para depois).
+    safeStudent.mustChangePassword = passwordChange.required === true;
+    if (passwordChange.required) safeStudent.passwordChangeReason = passwordChange.reason;
+    else delete safeStudent.passwordChangeReason;
     
     const allClasses = db.memory.classes;
     const allCourses = db.memory.courses;
@@ -1054,7 +1090,13 @@ router.post('/api/student/login', async (req, res) => {
         safeStudent.studentClass = '';
     }
 
-    res.json({ success: true, student: safeStudent, sessionToken });
+    res.json({
+        success: true,
+        student: safeStudent,
+        sessionToken,
+        mustChangePassword: passwordChange.required === true,
+        ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
+    });
 });
 
 // Solicitação de recuperação de senha pelo aluno
@@ -1081,6 +1123,56 @@ router.post('/api/student/recover', (req, res) => {
     }
 
     res.json({ success: true, message: 'Se o e-mail estiver cadastrado, o instrutor receberá a solicitação.' });
+});
+
+
+// Troca de senha pelo próprio aluno (H5a; UXA-13, SEG-10): na tela Minha conta e na
+// troca obrigatória (senha criada ou redefinida pelo professor, ou senha fraca). Antes o
+// aluno não tinha como sair de uma senha que o professor conhecia.
+// - Sempre pede a senha atual (na troca obrigatória, a temporária que o professor
+//   entregou), conferida pelo attemptPasswordLogin, o único caminho que confere senha:
+//   scrypt assíncrono, o teto por IP do login e o erro em loginLogs. Assim quem só tem a
+//   sessão aberta (um aparelho de antes do "Redefinir senha") não escolhe a senha nova.
+// - A senha nova passa pela política (utils/passwordPolicy.js) e não pode ser a atual: a
+//   temporária, que o professor conhece, não vira a senha definitiva.
+// - A sessão atual continua (o aluno tem uma sessão só).
+router.post('/api/student/change-password', validateStudentSession, async (req, res) => {
+    const student = req.studentAccount;
+    const { currentPassword, newPassword } = req.body;
+    if (typeof currentPassword !== 'string' || !currentPassword.trim()) {
+        return res.status(400).json({ error: 'Informe a senha atual.', field: 'currentPassword' });
+    }
+    if (typeof newPassword !== 'string' || !newPassword.trim()) {
+        return res.status(400).json({ error: 'Informe a nova senha.', field: 'newPassword' });
+    }
+    const policy = validateNewPassword(newPassword, {
+        kind: 'student', email: student.email, name: student.name, nomeSocial: student.nomeSocial, matricula: student.matricula,
+    });
+    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+    if (newPassword.trim() === currentPassword.trim()) {
+        return res.status(400).json({ error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
+    }
+    const changedMeanwhile = () => res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Entre de novo e tente outra vez.' });
+    const check = await attemptPasswordLogin({ kind: 'student', email: req.studentEmail, password: currentPassword, req });
+    if (!check.ok && check.status === 429) return res.status(429).json(check.body);
+    if (!check.ok && check.passwordChanged) return changedMeanwhile();
+    if (!check.ok) {
+        // A tentativa errada fica em loginLogs (gravada pelo attemptPasswordLogin).
+        await db.save();
+        return res.status(400).json({ error: 'Senha atual incorreta.', field: 'currentPassword' });
+    }
+    if (check.account !== student || student.password !== check.password) return changedMeanwhile();
+    const storedBefore = check.password;
+    const passwordHash = await db.hashPasswordAsync(newPassword.trim());
+    // Outra troca (o professor redefiniu, outra aba) terminou durante a espera: não
+    // sobrescreve a senha que ela gravou.
+    if (student.password !== storedBefore || !(db.memory.students || []).includes(student)) return changedMeanwhile();
+    student.password = passwordHash;
+    passwordChanged(student);
+    student.recoveryRequested = false;
+    student.updatedAt = Date.now();
+    await db.save();
+    res.json({ success: true, message: 'Senha alterada.' });
 });
 
 

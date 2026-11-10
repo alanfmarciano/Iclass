@@ -32,6 +32,12 @@ const {
     isUserActivityRequest,
     sessionAbsoluteTtlMs,
 } = require('./utils/authSessions.js');
+const {
+    STUDENT_PASSWORD_CHANGE_PATHS,
+    passwordChangeReason,
+    passwordChangeRequiredBody,
+    studentPasswordChangeState,
+} = require('./utils/passwordChange.js');
 
 // Caminhos dos arquivos de banco de dados locais
 const DB_STUDENTS_FILE = path.join(DATA_DIR, 'db_students.json');
@@ -157,9 +163,21 @@ function validateStudentSession(req, res, next) {
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa.', sessionRevoked: true });
     }
 
+    // Troca obrigatória de senha (H5a, utils/passwordChange.js): senha criada ou
+    // redefinida pelo professor, ou senha fraca no login. Só a presença, a própria troca,
+    // a saída e o registro de erro da tela continuam; a prova em andamento nunca recebe
+    // o 403.
+    const passwordChange = studentPasswordChangeState(db.memory, student, session);
+    const routePath = `${req.baseUrl || ''}${req.path || ''}`;
+    if (passwordChange.required && !STUDENT_PASSWORD_CHANGE_PATHS.has(routePath)) {
+        return res.status(403).json(passwordChangeRequiredBody(passwordChange.reason));
+    }
+
     req.auth = { role: 'student', email: normalizedEmail, student };
     req.studentEmail = normalizedEmail;
     req.studentAccount = student;
+    req.studentSession = session;
+    req.studentPasswordChange = passwordChange;
     // Sessão do aparelho (o mesmo token do login): a regra de foco da saída da página
     // confere que quem volta à prova é a mesma sessão (utils/examFocusRules.js).
     req.studentSessionToken = providedToken;
@@ -784,7 +802,7 @@ function adminRbacGuard(req, res, next) {
                 .then(() => res.status(403).json(body));
         };
         if (matchedAdmin.mustChangePassword === true && !['/whoami', '/change-password'].includes(req.path)) {
-            return refuse({ error: 'Troque a senha temporária antes de continuar.', passwordChangeRequired: true });
+            return refuse(passwordChangeRequiredBody(passwordChangeReason(matchedAdmin)));
         }
         if (permission === undefined && isProfessorAccount(matchedAdmin)) {
             return refuse({ error: 'Esta operação administrativa não está liberada para professores.' });

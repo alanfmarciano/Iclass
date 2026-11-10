@@ -49,6 +49,8 @@ const {
     normalizeClassEntriesForStorage,
 } = require('../utils/students.js');
 const { recordAudit } = require('../utils/audit.js');
+const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const { requirePasswordChange } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -318,29 +320,64 @@ router.post('/api/admin/enrollment-requests/:id/reject', (req, res) => {
 
 
 
-// Redefinir senha do aluno
+// Redefinir senha do aluno (H5a; UXA-13, SEG-06).
+// - newPassword vazio ou ausente: o servidor gera uma senha temporária (xxxxx-xxxxx) e a
+//   devolve só nesta resposta (temporaryPassword), para o professor entregar ao aluno;
+// - newPassword digitado: passa pela política de senha (a senha "a" era aceita);
+// - nos dois casos o aluno troca a senha no próximo acesso (mustChangePassword, decisão
+//   P3 do Alan), o pedido de "Esqueci a senha" é atendido e o reset fica na auditoria
+//   (student_password_reset, nunca com a senha). Antes não ficava registro nenhum.
+// O escopo continua o de sempre: page.students e aluno visível ao professor (guarda).
 router.post('/api/admin/reset-password', (req, res) => {
-    validateAdmin(req, res, async () => {
-        const { email, newPassword } = req.body;
-        if (!email || !newPassword || newPassword.trim() === '') {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
+        const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        const typed = typeof req.body.newPassword === 'string' ? req.body.newPassword.trim() : '';
+        if (!email || (req.body.newPassword !== undefined && req.body.newPassword !== null && typeof req.body.newPassword !== 'string')) {
             return res.status(400).json({ error: 'E-mail ou nova senha inválidos.' });
         }
+        const findStudent = () => (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+        const target = findStudent();
+        if (!target) return res.status(404).json({ error: 'Estudante não encontrado.' });
 
-        // Hash com o scrypt assíncrono (DES-07) antes de ler o cadastro: a busca e a
-        // gravação acontecem depois da espera, sem nada mudar no meio.
-        const passwordHash = await db.hashPasswordAsync(newPassword.trim());
-        const students = readJSON(DB_STUDENTS_FILE);
-        const student = students.find(s => s.email && s.email.toLowerCase() === email.trim().toLowerCase());
-
-        if (!student) {
-            return res.status(404).json({ error: 'Estudante não encontrado.' });
+        const mode = typed ? 'typed' : 'generated';
+        let temporaryPassword = null;
+        if (typed) {
+            const policy = validateNewPassword(typed, {
+                kind: 'student', email: target.email, name: target.name, nomeSocial: target.nomeSocial, matricula: target.matricula,
+            });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+        } else {
+            temporaryPassword = generateTemporaryPassword();
         }
 
+        // Hash com o scrypt assíncrono (DES-07); a busca e a gravação acontecem depois da
+        // espera, sem nada mudar no meio.
+        const passwordHash = await db.hashPasswordAsync(typed || temporaryPassword);
+        const student = findStudent();
+        if (!student) return res.status(404).json({ error: 'Estudante não encontrado.' });
+
+        const now = Date.now();
         student.password = passwordHash;
         student.recoveryRequested = false; // Limpa a solicitação de redefinição
-        writeJSON(DB_STUDENTS_FILE, students);
+        student.passwordChangedAt = new Date(now).toISOString();
+        requirePasswordChange(student, 'reset');
+        student.updatedAt = now;
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'student_password_reset',
+            category: 'security',
+            studentEmail: student.email,
+            details: { mode, mustChangePassword: true },
+        }, { timestamp: now });
+        await db.save();
 
-        res.json({ success: true, message: 'Senha redefinida com sucesso!' });
+        res.json({
+            success: true,
+            message: 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.',
+            mustChangePassword: true,
+            ...(temporaryPassword ? { temporaryPassword } : {}),
+        });
     });
 });
 
@@ -1250,19 +1287,34 @@ router.get('/api/admin/students', (req, res) => {
 router.post('/api/admin/student/create', (req, res) => {
     validateAdmin(req, res, async (config, matchedAdmin) => {
         const { studentPassword, studentClass, classes } = req.body;
-        // Hash com o scrypt assíncrono (DES-07) antes de qualquer leitura: validação,
-        // conferência de e-mail repetido e gravação rodam depois da espera, de uma vez.
-        const passwordHash = studentPassword ? await db.hashPasswordAsync(String(studentPassword).trim()) : '';
-
         // Suporte retroativo ou novo array. Turmas em objeto viram { name, courseId, period }
         // e `studentClass` guarda só o nome (DES-03).
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
 
         const fields = extractStudentFields(req.body);
 
-        if (!fields.name || !fields.email || !studentPassword || studentClasses.length === 0) {
-            return res.status(400).json({ error: 'Dados incompletos. Informe nome, e-mail, senha e ao menos uma turma.' });
+        if (!fields.name || !fields.email || studentClasses.length === 0) {
+            return res.status(400).json({ error: 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.' });
         }
+        // Senha inicial (H5a; UXA-13, SEG-06): em branco, o servidor gera uma temporária e a
+        // devolve só nesta resposta; digitada, passa pela política. A caixa "Pedir troca no
+        // primeiro acesso" (requirePasswordChange) vem marcada; sem o campo (tela antiga),
+        // vale marcada.
+        if (studentPassword !== undefined && studentPassword !== null && typeof studentPassword !== 'string') {
+            return res.status(400).json({ error: 'Senha inicial inválida.', field: 'studentPassword' });
+        }
+        const typedPassword = typeof studentPassword === 'string' ? studentPassword.trim() : '';
+        if (typedPassword) {
+            const policy = validateNewPassword(typedPassword, {
+                kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial, matricula: fields.matricula,
+            });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+        }
+        const temporaryPassword = typedPassword ? null : generateTemporaryPassword();
+        const askPasswordChange = req.body.requirePasswordChange !== false;
+        // Hash com o scrypt assíncrono (DES-07) antes da conferência de e-mail repetido e da
+        // gravação, que rodam depois da espera, de uma vez.
+        const passwordHash = await db.hashPasswordAsync(typedPassword || temporaryPassword);
 
         const allClasses = db.memory.classes;
         const requestedCourseId = String(req.body.courseId || '').trim();
@@ -1303,9 +1355,11 @@ router.post('/api/admin/student/create', (req, res) => {
             period: fields.period || 'Tarde',
             loginTime: null,
             recoveryRequested: false,
+            passwordChangedAt: new Date().toISOString(),
             createdAt: Date.now(),
             updatedAt: Date.now()
         };
+        if (askPasswordChange) requirePasswordChange(newStudent, 'created');
         students.push(newStudent);
 
         recordStudentAudit(db.memory, {
@@ -1316,8 +1370,12 @@ router.post('/api/admin/student/create', (req, res) => {
             req
         });
 
-        db.save();
-        res.json({ success: true });
+        await db.save();
+        res.json({
+            success: true,
+            mustChangePassword: askPasswordChange,
+            ...(temporaryPassword ? { temporaryPassword } : {}),
+        });
     });
 });
 
@@ -1325,8 +1383,13 @@ router.post('/api/admin/student/create', (req, res) => {
 router.post('/api/admin/student/update', (req, res) => {
     validateAdmin(req, res, async (config, matchedAdmin) => {
         const { originalEmail, password, studentClass, classes } = req.body;
-        // Senha nova com o scrypt assíncrono (DES-07), antes de ler o cadastro.
-        const passwordHash = password && !db.isHashed(password) ? await db.hashPasswordAsync(String(password).trim()) : null;
+        // A senha nunca muda por aqui (H5a, SEG-06): antes esta rota gravava a senha
+        // digitada sem a política e até um hash vindo do navegador (isHashed). Trocar a
+        // senha é pelo "Redefinir senha" (reset-password), com auditoria e troca no
+        // próximo acesso. Campo vazio (telas antigas mandavam password: '') é ignorado.
+        if (password !== undefined && password !== null && password !== '') {
+            return res.status(400).json({ error: 'Para trocar a senha, use Redefinir senha.', field: 'password' });
+        }
 
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
         const fields = extractStudentFields(req.body);
@@ -1370,9 +1433,7 @@ router.post('/api/admin/student/update', (req, res) => {
             status: fields.status || before.status || DEFAULT_STATUS,
             guardian: fields.guardian !== undefined ? fields.guardian : (before.guardian || null),
             accessibility: fields.accessibility !== undefined ? fields.accessibility : (before.accessibility || null),
-            password: password
-                ? (db.isHashed(password) ? password : passwordHash)
-                : before.password,
+            password: before.password,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade (sempre o nome)
             period: fields.period || before.period,

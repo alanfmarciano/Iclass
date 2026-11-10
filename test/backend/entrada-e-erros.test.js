@@ -52,18 +52,14 @@ const SWEEP_EXCLUDED = [
 // leva a exceção ao errorHandler). O H9b zera esta lista; a varredura falha se uma
 // rota daqui deixar de falhar, para a lista não guardar rota já corrigida.
 const KNOWN_TYPE_ERRORS_UNTIL_H9B = new Set([
-    'POST /api/admin/accounts/create',
     'POST /api/admin/accounts/delete',
     'POST /api/admin/accounts/update',
     'POST /api/admin/assign-student-version',
-    'POST /api/admin/change-password',
-    'POST /api/admin/reset-password',
     'POST /api/admin/schools/create',
     'POST /api/admin/schools/delete',
     'POST /api/admin/schools/update',
     'POST /api/admin/student/certificates/issue',
     'POST /api/admin/student/observations/create',
-    'POST /api/admin/student/update',
     'POST /api/admin/unlock-student-focus',
     'POST /api/forum/comment',
     'POST /api/forum/comment/edit',

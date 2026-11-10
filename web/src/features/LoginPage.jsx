@@ -7,6 +7,7 @@ import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { useAuth } from '../context/AuthProvider'
 import { useToast } from '../context/ToastProvider'
 import { api } from '../lib/api'
+import { passwordHint } from '../lib/passwordPolicy'
 import { useBranding } from '../context/BrandingProvider'
 import { InsecureConnectionNotice } from '../components/ui/InsecureConnectionNotice'
 import { adminAccessRefusalText, LOCAL_ONLY_TEXT } from '../lib/adminAccess'
@@ -14,12 +15,16 @@ import { useConnectionInfo } from '../hooks/useConnectionInfo'
 
 const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }
 const LOCAL_QUICK_KEY = 'iclass-local-quick-token'
+export const RECOVER_SENT_TEXT = 'Pedido enviado. Avise o professor: ele vai gerar uma senha temporária para você. No próximo acesso, entre com ela e escolha uma senha nova.'
 export default function LoginPage() {
   const [mode, setMode] = useState(() => {
     if (typeof window === 'undefined') return 'student'
     return new URLSearchParams(window.location.search).get('mode') === 'admin' ? 'admin' : 'student'
   }) // 'student' | 'admin'
-  const [studentAction, setStudentAction] = useState('login') // login | register | recover
+  const [studentAction, setStudentActionState] = useState('login') // login | register | recover
+  // Pedido de nova senha enviado (UXA-13): a tela diz o próximo passo no lugar do formulário.
+  const [recoverSent, setRecoverSent] = useState(false)
+  const setStudentAction = (action) => { setRecoverSent(false); setStudentActionState(action) }
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
@@ -138,8 +143,7 @@ export default function LoginPage() {
         nav('/aluno')
       } else if (studentAction === 'recover') {
         await api.post('/api/student/recover', { email }, { auth: false })
-        toast.success('Solicitação enviada ao instrutor')
-        setStudentAction('login')
+        setRecoverSent(true)
       } else {
         await loginStudent(email, password); nav('/aluno')
       }
@@ -280,7 +284,18 @@ export default function LoginPage() {
               </div>
             )}
             {mode === 'admin' && !adminRefusal && <InsecureConnectionNotice connection={connection} className="mt-4" />}
-            <form onSubmit={submit} className="mt-5 max-h-[58vh] space-y-4 overflow-auto pr-1">
+            {mode === 'student' && studentAction === 'recover' && recoverSent ? (
+              <div role="status" data-testid="recover-sent" className="mt-5 space-y-4">
+                <div className="flex items-start gap-2.5 rounded-lg border border-border bg-surface-2 px-4 py-3 text-sm text-text">
+                  <KeyRound aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-primary" />
+                  <p>{RECOVER_SENT_TEXT}</p>
+                </div>
+                <Button type="button" size="lg" variant="secondary" icon={LogIn} className="w-full" onClick={() => setStudentAction('login')}>Voltar para o login</Button>
+              </div>
+            ) : (
+            // Sem altura máxima nem rolagem própria (UXA-13): o cadastro inteiro rola com a
+            // página, e o botão Criar conta não fica escondido numa caixa rolável no celular.
+            <form onSubmit={submit} className="mt-5 space-y-4">
             {isRegister && (
               <>
                 <Input id="ln" label="Nome completo" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -289,7 +304,8 @@ export default function LoginPage() {
             )}
             <Input id="le" label="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={mode === 'admin' ? 'admin@exemplo.com' : 'voce@exemplo.com'} required />
             {!(mode === 'student' && studentAction === 'recover') && (
-              <Input id="lp" label="Senha" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <Input id="lp" label="Senha" type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} value={password} onChange={(e) => setPassword(e.target.value)} required
+                helper={isRegister ? passwordHint('student') : undefined} />
             )}
             {isRegister && (
               <Input id="lph" label="Telefone (opcional)" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 90000-0000" />
@@ -340,6 +356,7 @@ export default function LoginPage() {
               {!loading && <ArrowRight size={16} className="ml-auto" />}
             </Button>
           </form>
+            )}
         </div>
           <p className="mt-5 flex items-center justify-center gap-2 text-center text-xs text-subtle"><ShieldCheck size={13} /> Ambiente protegido · acesso pela rede da instituição</p>
         </section>

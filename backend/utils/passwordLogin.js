@@ -19,18 +19,22 @@
 // - Falha do aluno vai para loginLogs, como antes (a rota grava). O registro das
 //   tentativas do instrutor entra com o H5b.
 //
-// Quem chama monta a resposta: { ok: true, account, email, rehashed, password } ou
+// Quem chama monta a resposta: { ok: true, account, email, rehashed, password,
+// weakPassword } ou
 // { ok: false, status, body } (400, 401 ou 429), já com a mensagem em português; o 401
 // leva passwordChanged: true (fora do body) quando a senha da conta mudou durante a
 // conferência e a digitada não vale para a nova. O 429
 // segue o formato combinado entre os grupos: { error, loginDelayed: true,
 // retryAfterSeconds }. `password` é o valor guardado na conta logo depois da conferência
 // (o hash novo, se foi regravado): quem ainda vai mudar a senha compara com ele para não
-// sobrescrever uma troca feita por outro pedido durante a espera.
+// sobrescrever uma troca feita por outro pedido durante a espera. `weakPassword` diz se
+// a senha digitada seria recusada hoje pela política (utils/passwordPolicy.js): a rota
+// do login pede a troca dela (H5a, decisão P3 do Alan).
 // ---------------------------------------------------------------------------
 const db = require('../database.js');
 const { rateLimit } = require('./rateLimit.js');
 const { getClientIp, recordLoginLog } = require('./security.js');
+const { isWeakPassword } = require('./passwordPolicy.js');
 
 const LOGIN_KINDS = Object.freeze({
     student: {
@@ -76,6 +80,18 @@ function currentHolder(settings, normalizedEmail, account, stored) {
     return list.find(item => accountEmail(item) === normalizedEmail && item.password === stored) || null;
 }
 
+// A senha digitada (já conferida) seria recusada hoje pela política? Com os dados da
+// conta, para a regra de "igual ao e-mail, nome ou matrícula".
+function weakPasswordFor(kind, account, secret) {
+    return isWeakPassword(secret, {
+        kind: kind === 'admin' ? 'instructor' : 'student',
+        email: account && account.email,
+        name: account && account.name,
+        nomeSocial: account && account.nomeSocial,
+        matricula: account && account.matricula,
+    });
+}
+
 function refusal(status, error, extra = {}) {
     return { ok: false, status, body: { error, ...extra } };
 }
@@ -111,13 +127,13 @@ async function attemptPasswordLogin({ kind, email, password, req }) {
         if (!matched) break;
 
         if (!db.needsPasswordRehash(matched.stored)) {
-            return { ok: true, account: matched.account, email: normalizedEmail, rehashed: false, password: matched.stored };
+            return { ok: true, account: matched.account, email: normalizedEmail, rehashed: false, password: matched.stored, weakPassword: weakPasswordFor(kind, matched.account, secret) };
         }
         const upgraded = await db.hashPasswordAsync(secret);
         const holder = currentHolder(settings, normalizedEmail, matched.account, matched.stored);
         if (!holder) { passwordChanged = true; continue; }
         holder.password = upgraded;
-        return { ok: true, account: holder, email: normalizedEmail, rehashed: true, password: upgraded };
+        return { ok: true, account: holder, email: normalizedEmail, rehashed: true, password: upgraded, weakPassword: weakPasswordFor(kind, holder, secret) };
     }
 
     if (kind === 'student') {

@@ -21,6 +21,15 @@ function noteAdminAccessDenied(status, data) {
   if (status !== 403 || !data || typeof data.adminAccess !== 'string' || !adminAccessDeniedHandler) return
   try { adminAccessDeniedHandler(data) } catch {}
 }
+// Troca de senha obrigatória (H5a, 403 { passwordChangeRequired: true }): o servidor
+// recusa tudo até a senha nova. O AuthProvider registra aqui o que fazer (marcar a
+// sessão, e o portal ou o painel mostram o formulário de troca no lugar da página).
+let passwordChangeRequiredHandler = null
+export function setPasswordChangeRequiredHandler(fn) { passwordChangeRequiredHandler = typeof fn === 'function' ? fn : null }
+function notePasswordChangeRequired(status, data) {
+  if (status !== 403 || !data || data.passwordChangeRequired !== true || !passwordChangeRequiredHandler) return
+  try { passwordChangeRequiredHandler(data) } catch {}
+}
 const AUTH_STORAGE_KEY = 'iclass-v3-auth'
 
 function getStoredAuth() {
@@ -188,6 +197,7 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
   if (signal && signal.aborted) throw abortError(signal)
   if (!res.ok) {
     noteAdminAccessDenied(res.status, data)
+    notePasswordChangeRequired(res.status, data)
     const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)
     err.status = res.status; err.data = data
     throw err
@@ -211,6 +221,7 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
   if (!res.ok) {
     const data = await res.json().catch(() => null)
     noteAdminAccessDenied(res.status, data)
+    notePasswordChangeRequired(res.status, data)
     const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)
     err.status = res.status; err.data = data
     throw err

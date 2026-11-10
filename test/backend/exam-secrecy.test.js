@@ -274,9 +274,9 @@ test('[UC-SIGILO-001] data.js do aluno: só apostilas liberadas do próprio curs
 test('[UC-SIGILO-001] conta autocadastrada pendente e aluno de outra turma não veem nada da prova (SEG-02)', async () => {
     const application = await prepareApplication();
     await request(app).post('/api/student/register').send({
-        name: 'Intruso', email: 'intruso@sigilo.local', password: '1', studentClass: classA, courseId: courseA, acceptedTerms: true,
+        name: 'Intruso', email: 'intruso@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true,
     }).expect(200);
-    const intruder = await loginStudent('intruso@sigilo.local', '1');
+    const intruder = await loginStudent('intruso@sigilo.local', 'Sigilo-Prova-77');
     const outsider = await loginStudent('bia@sigilo.local');
 
     for (const [label, token] of [['autocadastro pendente', intruder], ['aluno de outra turma', outsider]]) {
@@ -312,9 +312,9 @@ test('[UC-SIGILO-001] conta autocadastrada pendente e aluno de outra turma não 
 
 test('[UC-SIGILO-001] conta pendente não valida token de prova, nem com turma inexistente ou sem turma', async () => {
     await request(app).post('/api/student/register').send({
-        name: 'Pendente', email: 'pendente@sigilo.local', password: '1', studentClass: classA, courseId: courseA, acceptedTerms: true,
+        name: 'Pendente', email: 'pendente@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true,
     }).expect(200);
-    const pending = await loginStudent('pendente@sigilo.local', '1');
+    const pending = await loginStudent('pendente@sigilo.local', 'Sigilo-Prova-77');
     const application = await prepareApplication({ tokenEnabled: true });
     await control(application.id, 'start').expect(200);
     for (const studentClass of ['TURMA FANTASMA', '', classA, classA.toLowerCase()]) {
@@ -510,9 +510,9 @@ test('[UC-SIGILO-001] mensagens da prova só para aluno da turma, sem os e-mails
     db.memory.broadcastMessages.find(m => m.id === toClass.id).acknowledgedBy = ['colega@sigilo.local'];
 
     await request(app).post('/api/student/register').send({
-        name: 'Intruso', email: 'intruso@sigilo.local', password: '1', studentClass: classA, courseId: courseA, acceptedTerms: true,
+        name: 'Intruso', email: 'intruso@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true,
     }).expect(200);
-    const intruder = await loginStudent('intruso@sigilo.local', '1');
+    const intruder = await loginStudent('intruso@sigilo.local', 'Sigilo-Prova-77');
     const outsider = await loginStudent('bia@sigilo.local');
 
     for (const [label, email, token] of [['autocadastro pendente', 'intruso@sigilo.local', intruder], ['aluno de outra turma', 'bia@sigilo.local', outsider]]) {

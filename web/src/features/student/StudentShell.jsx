@@ -1,11 +1,12 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
 import { api } from '../../lib/api'
 import { StudentCourseGate } from './StudentCourseGate'
+import { StudentPasswordChangeGate } from './StudentPasswordChangeGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
@@ -22,6 +23,7 @@ const NAV = [
   { to: '/aluno/duvidas', icon: MessagesSquare, text: 'Dúvidas' },
   { to: '/aluno/avisos', icon: Megaphone, text: 'Avisos' },
   { to: '/aluno/calendario', icon: CalendarDays, text: 'Calendário' },
+  { to: '/aluno/conta', icon: UserRound, text: 'Minha conta' },
 ]
 // A tela da prova chega sob demanda (lib/lazyPage.js). Dois segundos depois de o portal
 // abrir, o navegador já busca o arquivo dela, uma vez: quando o professor libera a
@@ -70,7 +72,11 @@ export function StudentShell() {
     if (item.href) nav(item.href)
     return markedRead
   }
-  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} />
+  // Com a troca de senha pedida (H5a), o servidor recusa o sino e a faixa da prova (403):
+  // nenhum dos dois consulta até a senha nova.
+  const passwordChangePending = auth.mustChangePassword === true
+  const notifications = <NotificationBell endpoint={passwordChangePending ? null : notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} />
+  const examAvailability = passwordChangePending ? null : <StudentExamAvailability />
   useStudentHeartbeat()
   usePrefetchExamScreen()
 
@@ -96,9 +102,9 @@ export function StudentShell() {
           onLogout={() => { logout(); nav('/login') }}
           notifications={notifications}
         >
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></AppErrorBoundary></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
         </LumenShell>
-        <StudentExamAvailability />
+        {examAvailability}
       </>
     )
   }
@@ -156,10 +162,10 @@ export function StudentShell() {
           {notifications}
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></AppErrorBoundary></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
         </main>
       </div>
-      <StudentExamAvailability />
+      {examAvailability}
     </div>
   )
 }

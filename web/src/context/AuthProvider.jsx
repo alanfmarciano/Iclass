@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
-import { api, setAdminAccessDeniedHandler, setAuthProvider } from '../lib/api'
+import { api, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from '../lib/api'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
 import { usePolling } from '../hooks/usePolling'
@@ -76,6 +76,31 @@ export function AuthProvider({ children }) {
     return () => setAdminAccessDeniedHandler(null)
   }, [doLogout])
 
+  // Troca de senha obrigatória (H5a, 403 { passwordChangeRequired: true }): a sessão
+  // passa a mostrar o formulário de troca (portal do aluno e painel do instrutor).
+  useEffect(() => {
+    setPasswordChangeRequiredHandler((data) => {
+      if (!authRef.current?.role) return
+      setAuth((current) => (current.role ? {
+        ...current,
+        mustChangePassword: true,
+        passwordChangeReason: data?.passwordChangeReason || current.passwordChangeReason || null,
+      } : current))
+    })
+    return () => setPasswordChangeRequiredHandler(null)
+  }, [])
+
+  // O servidor disse (ping do aluno) se a troca vale para esta sessão agora.
+  const syncPasswordChange = useCallback((required, reason) => {
+    setAuth((current) => {
+      if (current.role !== 'student') return current
+      const nextRequired = required === true
+      const nextReason = nextRequired ? (reason || null) : null
+      if ((current.mustChangePassword === true) === nextRequired && (current.passwordChangeReason || null) === nextReason) return current
+      return { ...current, mustChangePassword: nextRequired, passwordChangeReason: nextReason }
+    })
+  }, [])
+
   // Validação inicial da sessão guardada (uma vez, ao montar).
   useEffect(() => {
     let cancelled = false
@@ -95,8 +120,11 @@ export function AuthProvider({ children }) {
 
         if (auth.role === 'student') {
           if (!auth.email || !auth.sessionToken) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
-          await api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`)
+          const presence = await api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`)
           if (!cancelled && serverInst && !auth.serverInstanceId) setAuth((c) => ({ ...c, serverInstanceId: serverInst }))
+          if (!cancelled && presence && typeof presence.passwordChangeRequired === 'boolean') {
+            syncPasswordChange(presence.passwordChangeRequired, presence.passwordChangeReason)
+          }
         } else if (auth.role === 'admin') {
           // Sessão guardada no formato antigo (só e-mail e senha, sem token) não vale mais:
           // cai no login, e a senha some do armazenamento (SEG-03).
@@ -116,6 +144,7 @@ export function AuthProvider({ children }) {
               assignedSchoolIds: who.assignedSchoolIds || [],
               additionalPermissions: who.additionalPermissions || [],
               mustChangePassword: who.mustChangePassword === true,
+              passwordChangeReason: who.mustChangePassword === true ? (who.passwordChangeReason || null) : null,
             }))
           }
         }
@@ -186,6 +215,7 @@ export function AuthProvider({ children }) {
       assignedSchoolIds: who.assignedSchoolIds || [],
       additionalPermissions: who.additionalPermissions || [],
       mustChangePassword: who.mustChangePassword === true,
+      passwordChangeReason: who.mustChangePassword === true ? (who.passwordChangeReason || null) : null,
       ...extra,
     }
     setAuthProvider(() => next)
@@ -224,6 +254,9 @@ export function AuthProvider({ children }) {
       serverInstanceId: instanceId, loginAt: Date.now(),
       student: r.student, activeClass: firstClass,
       localSetupMode: r.localSetupMode === true,
+      // Troca de senha obrigatória (H5a): o portal mostra o formulário de troca primeiro.
+      mustChangePassword: r.mustChangePassword === true,
+      passwordChangeReason: r.mustChangePassword === true ? (r.passwordChangeReason || null) : null,
     }
     setAuthProvider(() => nextAuth)
     localStorage.setItem(LS, JSON.stringify(nextAuth))
@@ -277,7 +310,7 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => { doLogout() }, [doLogout])
 
   return (
-    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace }}>
+    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
       {children}
     </AuthCtx.Provider>
   )

@@ -178,3 +178,32 @@ describe('[UC-REDE-001] login do instrutor conforme o aparelho', () => {
     expect(screen.queryByTestId('quick-admin-refused')).toBeNull()
   })
 })
+
+// Fase 2, H5a (UXA-13): o cadastro diz como é uma senha aceita, sem caixa rolável no
+// celular, e o pedido de nova senha explica o próximo passo.
+describe('[UC-SENHA-001] cadastro e pedido de nova senha', () => {
+  it('o formulário não tem altura máxima nem rolagem própria, e o cadastro mostra a dica da senha', async () => {
+    const user = userEvent.setup()
+    const { container } = renderLogin()
+    const form = container.querySelector('form')
+    expect(form.className).not.toMatch(/max-h-/)
+    expect(form.className).not.toMatch(/overflow-auto/)
+    await user.click(screen.getByRole('button', { name: 'Cadastro' }))
+    expect(screen.getByText('Use pelo menos 8 caracteres. Evite senhas óbvias, como 12345678 ou o seu nome.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Senha')).toHaveAttribute('autocomplete', 'new-password')
+  })
+
+  it('pedido de nova senha: mostra o que fazer e volta para o login', async () => {
+    mocks.post.mockResolvedValue({ success: true })
+    const user = userEvent.setup()
+    renderLogin()
+    await user.click(screen.getByRole('button', { name: 'Senha' }))
+    await user.type(screen.getByLabelText('E-mail'), 'ana@escola.local')
+    await user.click(screen.getByRole('button', { name: /Solicitar nova senha/ }))
+    expect(await screen.findByTestId('recover-sent')).toHaveTextContent('Pedido enviado. Avise o professor: ele vai gerar uma senha temporária para você. No próximo acesso, entre com ela e escolha uma senha nova.')
+    expect(mocks.post).toHaveBeenCalledWith('/api/student/recover', { email: 'ana@escola.local' }, { auth: false })
+    await user.click(screen.getByRole('button', { name: /Voltar para o login/ }))
+    expect(screen.getByRole('button', { name: /Entrar como aluno/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('recover-sent')).toBeNull()
+  })
+})

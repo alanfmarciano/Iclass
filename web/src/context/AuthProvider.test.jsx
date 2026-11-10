@@ -16,6 +16,7 @@ vi.mock('../lib/api', () => ({
   api: apiMock,
   setAuthProvider: apiMock.setAuthProvider,
   setAdminAccessDeniedHandler: (fn) => { apiMock.deniedHandler = fn },
+  setPasswordChangeRequiredHandler: (fn) => { apiMock.passwordChangeHandler = fn },
 }))
 
 import { AuthProvider, useAuth } from './AuthProvider'

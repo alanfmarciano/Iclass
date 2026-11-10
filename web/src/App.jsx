@@ -1,11 +1,9 @@
-import { Suspense, useState } from 'react'
+import { Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthProvider'
 import { canAccessAdminPath } from './lib/adminPermissions'
 import { lazyPage } from './lib/lazyPage'
-import { Input } from './components/ui/Input'
-import { Button } from './components/ui/Button'
-import { api } from './lib/api'
+import { PasswordChangeForm } from './components/PasswordChangeForm'
 import { PageLoading } from './components/ui/PageLoading'
 import LoginPage from './features/LoginPage'
 
@@ -53,6 +51,7 @@ const DuvidasPage = lazyPage(() => import('./features/student/DuvidasPage'))
 const AvisosStudentPage = lazyPage(() => import('./features/student/AvisosPage'))
 const CalendarioStudentPage = lazyPage(() => import('./features/student/CalendarioPage'))
 const BibliotecaStudentPage = lazyPage(() => import('./features/student/BibliotecaPage'))
+const ContaStudentPage = lazyPage(() => import('./features/student/ContaPage'))
 
 function RequireRole({ role, children }) {
   const { auth, authReady } = useAuth()
@@ -96,7 +95,7 @@ export default function App() {
   const { auth, authReady, maintenance, setAuth } = useAuth()
   if (!authReady) return <SessionLoading />
   if (auth.role === 'student' && maintenance?.enabled) return <MaintenanceScreen message={maintenance.message} />
-  if (auth.role === 'admin' && auth.mustChangePassword) return <PasswordChangeScreen onChanged={() => setAuth((current) => ({ ...current, mustChangePassword: false }))} />
+  if (auth.role === 'admin' && auth.mustChangePassword) return <PasswordChangeScreen reason={auth.passwordChangeReason} onChanged={() => setAuth((current) => ({ ...current, mustChangePassword: false, passwordChangeReason: null }))} />
   // O layout (painel do instrutor, portal do aluno ou prova) chega sob demanda: até lá,
   // a mesma tela de "Validando sessão...". As telas dentro do layout têm o próprio
   // "Carregando..." (PageLoading), com o menu à vista.
@@ -149,6 +148,7 @@ export default function App() {
         <Route path="avisos" element={<AvisosStudentPage />} />
         <Route path="calendario" element={<CalendarioStudentPage />} />
         <Route path="biblioteca" element={<BibliotecaStudentPage />} />
+        <Route path="conta" element={<ContaStudentPage />} />
       </Route>
 
         <Route path="*" element={<Navigate to="/login" replace />} />
@@ -168,27 +168,31 @@ function MaintenanceScreen({ message }) {
   )
 }
 
-function PasswordChangeScreen({ onChanged }) {
-  const [password, setPassword] = useState('')
-  const [confirmation, setConfirmation] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  async function submit(event) {
-    event.preventDefault()
-    if (password.length < 10) return setError('Use pelo menos 10 caracteres.')
-    if (password !== confirmation) return setError('As senhas não coincidem.')
-    setBusy(true); setError('')
-    try { await api.post('/api/admin/change-password', { newPassword: password }); onChanged() }
-    catch (submitError) { setError(submitError.message) } finally { setBusy(false) }
-  }
+// Troca obrigatória do instrutor (senha temporária do launcher, conta criada pelo
+// administrador ou senha fraca, H5a): o mesmo formulário do aluno, com o mínimo de 10
+// caracteres. A senha atual é pedida na conta criada pelo administrador e na senha fraca
+// (o servidor também pede, com 400 currentPasswordRequired, e o campo aparece).
+const ADMIN_PASSWORD_INTRO = {
+  created: 'A sua conta foi criada com uma senha definida pelo administrador. Antes de acessar o painel, escolha uma senha só sua.',
+  weak: 'A sua senha é fácil de adivinhar. Antes de acessar o painel, escolha uma senha nova.',
+}
+function PasswordChangeScreen({ reason, onChanged }) {
+  const askCurrent = reason === 'created' || reason === 'weak'
   return (
     <main className="min-h-screen grid place-items-center bg-bg p-6 text-text">
-      <form onSubmit={submit} className="w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-lg space-y-4">
-        <div><h1 className="text-xl font-bold">Troque a senha temporária</h1><p className="mt-1 text-sm text-muted">Esta etapa é obrigatória antes de acessar o painel.</p></div>
-        <Input label="Nova senha" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
-        <Input label="Confirmar nova senha" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} error={error} />
-        <Button type="submit" className="w-full" loading={busy}>Salvar nova senha</Button>
-      </form>
+      <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-lg space-y-4">
+        <div>
+          <h1 className="text-xl font-bold">{reason === 'weak' ? 'Troque a sua senha' : 'Troque a senha temporária'}</h1>
+          <p className="mt-1 text-sm text-muted">{ADMIN_PASSWORD_INTRO[reason] || 'Esta etapa é obrigatória antes de acessar o painel.'}</p>
+        </div>
+        <PasswordChangeForm
+          kind="instructor"
+          endpoint="/api/admin/change-password"
+          askCurrent={askCurrent}
+          currentLabel={reason === 'created' ? 'Senha recebida' : 'Senha atual'}
+          onChanged={onChanged}
+        />
+      </div>
     </main>
   )
 }

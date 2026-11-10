@@ -263,6 +263,11 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses({ backupAt }) : null;
     // Restaurar desconecta todos (sessões não vão no backup).
     clearSessions(db.memory);
+    // Hashes SHA-256 antigos do backup viram scrypt-sha256$ antes da gravação (H5a,
+    // SEG-X2), como no boot. Pelo contrato H3 x H4 x H5 este passo é um gancho de
+    // db.afterRestore; nesta trilha ainda não existe o registro de ganchos (H3a-2, trilha
+    // A), e a junção da J2 move a chamada para lá.
+    await db.upgradeLegacyPasswordHashes(db.memory);
     await db.save();
     return applications;
 }

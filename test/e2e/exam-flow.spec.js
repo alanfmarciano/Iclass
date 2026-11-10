@@ -3,7 +3,7 @@ const { test, expect } = require('@playwright/test');
 const STUDENT = {
     name: 'Aluno Fluxo E2E',
     email: 'aluno.fluxo.e2e@teste.local',
-    password: 'Fluxo@123',
+    password: 'Prova-Azul-77',
 };
 
 async function createStudentContext(browser) {

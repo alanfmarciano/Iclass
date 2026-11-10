@@ -4,13 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const buildMock = vi.hoisted(() => ({ noteServerBuild: vi.fn() }))
 vi.mock('./buildVersion', async (importOriginal) => ({ ...(await importOriginal()), noteServerBuild: buildMock.noteServerBuild }))
 
-import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, downloadFile, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider } from './api'
+import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, downloadFile, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from './api'
 
 afterEach(() => {
   buildMock.noteServerBuild.mockReset()
   vi.restoreAllMocks()
   setAuthProvider(() => ({}))
   setAdminAccessDeniedHandler(null)
+  setPasswordChangeRequiredHandler(null)
   localStorage.clear()
 })
 
@@ -131,6 +132,26 @@ describe('[UC-REDE-001] painel recusado neste aparelho', () => {
     await expect(downloadFile('/api/admin/gradebook?format=csv')).rejects.toMatchObject({ status: 403, data: refusal })
     expect(handler).toHaveBeenCalledTimes(2)
     await expect(api.get('/api/admin/outro')).rejects.toThrow('Turma não autorizada.')
+    expect(handler).toHaveBeenCalledTimes(2)
+  })
+})
+
+// Fase 2, H5a (UXA-13): com a troca de senha pedida, o servidor responde 403
+// { passwordChangeRequired: true } e o AuthProvider passa a mostrar o formulário de troca.
+describe('[UC-SENHA-001] troca de senha obrigatória', () => {
+  function json(body, status) { return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }) }
+
+  it('403 com passwordChangeRequired avisa o AuthProvider (pedido comum e download); outro 403 não', async () => {
+    const handler = vi.fn()
+    setPasswordChangeRequiredHandler(handler)
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    const refusal = { error: 'Troque a senha antes de continuar.', passwordChangeRequired: true, passwordChangeReason: 'reset' }
+    vi.stubGlobal('fetch', vi.fn(async (path) => (path === '/api/outro' ? json({ error: 'Aplicação não autorizada.' }, 403) : json(refusal, 403))))
+    await expect(api.post('/api/student/notes/get', { moduleKey: 'geral' })).rejects.toMatchObject({ status: 403, data: refusal })
+    expect(handler).toHaveBeenCalledWith(refusal)
+    await expect(downloadFile('/api/student/arquivo')).rejects.toMatchObject({ status: 403 })
+    expect(handler).toHaveBeenCalledTimes(2)
+    await expect(api.get('/api/outro')).rejects.toThrow('Aplicação não autorizada.')
     expect(handler).toHaveBeenCalledTimes(2)
   })
 })

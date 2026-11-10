@@ -131,7 +131,7 @@ test('[UC-MATRICULA-001] matrícula em lote com turma homônima exige o curso e 
 
 test('[UC-MATRICULA-001] cadastro com turmas em objeto grava studentClass como nome', async () => {
     const created = await request(app).post('/api/admin/student/create').set('x-admin-session', adminToken).send({
-        name: 'Eva', email: 'eva@g6.local', studentPassword: 'senha123', courseId: courseA,
+        name: 'Eva', email: 'eva@g6.local', studentPassword: 'Turma-C-noite', courseId: courseA,
         classes: [{ name: 'TURMA C', courseId: courseA, period: 'Noite' }],
     });
     assert.equal(created.status, 200, created.body && created.body.error);

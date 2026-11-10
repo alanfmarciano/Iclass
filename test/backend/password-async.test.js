@@ -312,7 +312,7 @@ test('[UC-AUTH-001] cadastro, contas e senhas pelo painel gravam scrypt$ sem cry
         });
         assert.ok(reg.status < 300, `cadastro: ${reg.status} ${reg.body && reg.body.error}`);
         const created = await request(app).post('/api/admin/accounts/create').set(admin).send({
-            email: 'prof@senhas.local', name: 'Prof', password: 'senha-prof', role: 'professor',
+            email: 'prof@senhas.local', name: 'Prof', password: 'giz-azul-2024', role: 'professor',
         });
         assert.ok(created.status < 300, `conta: ${created.status} ${created.body && created.body.error}`);
         const reset = await request(app).post('/api/admin/reset-password').set(admin).send({ email: ANA.email, newPassword: 'nova-ana' });

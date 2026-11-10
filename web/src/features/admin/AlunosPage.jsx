@@ -9,6 +9,8 @@ import { Select } from '../../components/ui/Select'
 import { Textarea } from '../../components/ui/Textarea'
 import { Modal, ConfirmDialog } from '../../components/ui/Modal'
 import { STUDENT_DELETE_WARNING } from './studentDeletion'
+import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
+import { passwordHint } from '../../lib/passwordPolicy'
 import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
 import { useApi } from '../../hooks/useApi'
@@ -43,7 +45,7 @@ function displayName(s) {
 function emptyForm() {
   return {
     name: '', nomeSocial: '', email: '', matricula: '', phone: '', status: 'Ativo',
-    studentPassword: '', unidade: '', courseId: '', classes: [],
+    studentPassword: '', requirePasswordChange: true, unidade: '', courseId: '', classes: [],
     guardian: { name: '', phone: '', email: '', parentesco: '', observacao: '' },
     accessibility: { fonteAmpliada: false, altoContraste: false, reducaoAnimacoes: false, leitorTela: false, tempoAdicional: false, tempoAdicionalPercent: 0, observacao: '' },
   }
@@ -67,6 +69,7 @@ export default function AlunosPage() {
   const [edit, setEdit] = useState(null)
   const [del, setDel] = useState(null)
   const [reset, setReset] = useState(null)
+  const [createdPassword, setCreatedPassword] = useState(null)
   const [history, setHistory] = useState(null)
   const [audit, setAudit] = useState(null)
   const [auditRows, setAuditRows] = useState([])
@@ -113,17 +116,19 @@ export default function AlunosPage() {
       phone: v.phone, guardianPhone: v.guardian?.phone || '', status: v.status,
       unidade: v.unidade, classes: v.classes, studentClass: v.classes[0], guardian: v.guardian, accessibility: v.accessibility,
     }
-    if (isEdit) { base.originalEmail = v.originalEmail; base.password = v.password; base.period = v.period }
-    else { base.studentPassword = v.studentPassword }
+    // A senha não vai na edição (H5a): troca de senha só pelo "Redefinir senha".
+    if (isEdit) { base.originalEmail = v.originalEmail; base.period = v.period }
+    else { base.studentPassword = v.studentPassword; base.requirePasswordChange = v.requirePasswordChange !== false }
     return base
   }
 
   async function create() {
-    if (!form.name || !form.email || !form.studentPassword || form.classes.length === 0) return toast.error('Preencha nome, e-mail, senha e ao menos uma turma')
+    if (!form.name || !form.email || form.classes.length === 0) return toast.error('Preencha nome, e-mail e ao menos uma turma')
     setSaving(true)
     try {
-      await api.post('/api/admin/student/create', payloadFrom(form, false))
+      const created = await api.post('/api/admin/student/create', payloadFrom(form, false))
       toast.success('Aluno cadastrado')
+      if (created?.temporaryPassword) setCreatedPassword({ email: form.email, password: created.temporaryPassword })
       setOpen(false)
       setForm(emptyForm())
       refetch()
@@ -146,10 +151,6 @@ export default function AlunosPage() {
     catch (e) { toast.error(e.message) }
   }
 
-  async function doReset() {
-    try { await api.post('/api/admin/reset-password', { email: reset.email, newPassword: reset.pw }); toast.success('Senha redefinida'); setReset(null); refetch() }
-    catch (e) { toast.error(e.message) }
-  }
 
   async function openAudit(row) {
     setAudit(row)
@@ -287,12 +288,12 @@ export default function AlunosPage() {
 
       <Modal open={open} onClose={() => setOpen(false)} title="Novo aluno" description="Cadastre uma conta de aluno."
         footer={<><Button variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button loading={saving} onClick={create}>Salvar aluno</Button></>}>
-        <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('form', name)} passwordField="studentPassword" passwordLabel="Senha inicial" accessibilityReadOnly={isProfessor} />
+        <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('form', name)} passwordField="studentPassword" passwordLabel="Senha inicial (opcional)" accessibilityReadOnly={isProfessor} />
       </Modal>
 
       <Modal open={!!edit} onClose={() => setEdit(null)} title="Editar aluno" description={edit?.originalEmail}
         footer={<><Button variant="ghost" onClick={() => setEdit(null)}>Cancelar</Button><Button loading={saving} onClick={saveEdit}>Salvar alterações</Button></>}>
-        {edit && <StudentFormTabs value={edit} onChange={setEdit} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('edit', name)} passwordField="password" passwordLabel="Senha/hash atual" passwordHelper="Mantenha como está para não trocar." accessibilityReadOnly={isProfessor} />}
+        {edit && <StudentFormTabs value={edit} onChange={setEdit} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('edit', name)} accessibilityReadOnly={isProfessor} />}
       </Modal>
 
       <Modal open={!!menuRow} onClose={() => setMenuRow(null)} title={menuRow ? displayName(menuRow) : ''} description={menuRow?.email}>
@@ -303,7 +304,7 @@ export default function AlunosPage() {
           {!isProfessor && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
           <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>
-          <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email, pw: '' }); setMenuRow(null) }}>Resetar senha</Button>
+          <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>
           {!isProfessor && <Button variant="destructive" icon={Trash2} onClick={() => { setDel(menuRow); setMenuRow(null) }}>Excluir aluno</Button>}
         </div>
       </Modal>
@@ -569,10 +570,8 @@ export default function AlunosPage() {
       <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir"
         title={`Excluir ${del ? displayName(del) : ''}?`} description={STUDENT_DELETE_WARNING} />
 
-      <Modal open={!!reset} onClose={() => setReset(null)} title="Resetar senha" description={reset?.email}
-        footer={<><Button variant="ghost" onClick={() => setReset(null)}>Cancelar</Button><Button onClick={doReset}>Redefinir</Button></>}>
-        <Input label="Nova senha" type="password" value={reset?.pw || ''} onChange={(e) => setReset({ ...reset, pw: e.target.value })} />
-      </Modal>
+      <StudentPasswordResetDialog email={reset?.email || null} onClose={() => setReset(null)} onDone={refetch} />
+      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} onClose={() => setCreatedPassword(null)} />
     </div>
   )
 }
@@ -615,7 +614,16 @@ export function StudentFormTabs({ value, onChange, classes, courses, schools, on
               {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
             </Select>
           </div>
-          <Input label={passwordLabel} type={passwordField === 'studentPassword' ? 'password' : 'text'} value={value[passwordField] || ''} onChange={(e) => set({ [passwordField]: e.target.value })} helper={passwordHelper} />
+          {passwordField && (
+            <div className="space-y-2">
+              <Input label={passwordLabel} type="password" autoComplete="new-password" value={value[passwordField] || ''} onChange={(e) => set({ [passwordField]: e.target.value })}
+                helper={passwordHelper || `Deixe em branco para o IClass gerar uma senha temporária. ${passwordHint('student')}`} />
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input type="checkbox" checked={value.requirePasswordChange !== false} onChange={(e) => set({ requirePasswordChange: e.target.checked })} />
+                Pedir troca no primeiro acesso
+              </label>
+            </div>
+          )}
         </div>
       )}
 

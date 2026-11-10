@@ -328,8 +328,9 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     const screens = staticImports.filter((specifier) => /^\.\/features\/|^\.\/components\/layout\//.test(specifier))
     expect(screens).toEqual(['./features/LoginPage'])
     const lazyScreens = [...appSource.matchAll(/lazyPage\(\(\) => import\('([^']+)'\)/g)].map((match) => match[1])
-    // 24 telas do instrutor, 8 do aluno, a prova e os 3 layouts.
-    expect(lazyScreens.length).toBe(36)
+    // 24 telas do instrutor, 9 do aluno (com Minha conta, H5a), a prova e os 3 layouts.
+    expect(lazyScreens.length).toBe(37)
+    expect(lazyScreens).toContain('./features/student/ContaPage')
     expect(lazyScreens).toContain('./features/student/exam/ExamRunner')
     expect(lazyScreens).toContain('./components/layout/AppShell')
     expect(appSource).toMatch(/<Suspense fallback=\{<SessionLoading \/>\}>/)
@@ -360,6 +361,12 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     }
     // AppShell, LumenAdminShell, StudentShell (clássico e lumen) e a prova.
     expect(outlets).toBe(5)
+    // Fase 2, H5a: no portal do aluno, a troca de senha obrigatória fica entre o Suspense
+    // e o portão da turma (nos dois layouts); a prova não passa por ela.
+    for (const line of studentShellSource.split('\n').filter((text) => text.includes('<Outlet'))) {
+      expect(line).toContain('<Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense>')
+    }
+    expect(studentExamShellSource).not.toContain('StudentPasswordChangeGate')
     expect(studentExamShellSource).toMatch(/<AppErrorBoundary area="prova" fallback=\{ExamErrorScreen\}><Suspense fallback=\{<PageLoading \/>\}><StudentCourseGate><Outlet \/><\/StudentCourseGate><\/Suspense><\/AppErrorBoundary>/)
     // Fase 2, H9c (ENG-05): todo Outlet tem a área de erro, com a área certa para o
     // registro no servidor e o texto do layout (o menu continua à vista).

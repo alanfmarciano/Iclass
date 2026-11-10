@@ -11,6 +11,8 @@ const {
 const { parseAdditionalPermissions, isProfessorAccount } = require('../utils/adminPermissions.js');
 const { revokeAdminSession } = require('../utils/authSessions.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
+const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const { passwordChangeReason, passwordChangeRuleActive, passwordChanged, requirePasswordChange } = require('../utils/passwordChange.js');
 
 // Gestão de contas (criar/editar/excluir) é exclusiva de administradores.
 // Backstop além do RBAC: mesmo que a capability accounts.manage vaze para um
@@ -107,6 +109,18 @@ function recordAssignmentAudit(req, requester, targetEmail, before, after) {
     }, { timestamp, legacy: { type: 'professor_assignments_updated', actorEmail: requester && requester.email, at: timestamp } });
 }
 
+// Fotografia da conta para a auditoria (account_created, account_updated,
+// account_deleted): sem senha e sem preferências da tela.
+function accountAuditSnapshot(account) {
+    if (!account) return null;
+    return {
+        name: account.name || '',
+        email: account.email || '',
+        role: account.role || 'admin',
+        additionalPermissions: Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [],
+    };
+}
+
 // Resposta do login e do whoami: a mesma, para o painel montar a sessão do mesmo jeito.
 function adminSessionPayload(account, sessionToken) {
     return {
@@ -118,6 +132,7 @@ function adminSessionPayload(account, sessionToken) {
         assignedClasses: Array.isArray(account.assignedClasses) ? account.assignedClasses : [],
         additionalPermissions: Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [],
         mustChangePassword: account.mustChangePassword === true,
+        ...(account.mustChangePassword === true ? { passwordChangeReason: passwordChangeReason(account) } : {}),
         sessionToken,
         instanceId: SERVER_INSTANCE_ID,
     };
@@ -135,6 +150,11 @@ function createAdminAccountsRouter() {
     router.post('/api/session/admin-login', async (req, res) => {
         const login = await attemptPasswordLogin({ kind: 'admin', email: req.body.email, password: req.body.password, req });
         if (!login.ok) return res.status(login.status).json(login.body);
+        // Senha fraca pela política de hoje (H5a, decisão P3 do Alan): a troca passa a ser
+        // pedida no painel (adminRbacGuard), menos com TEST_MODE (contas demo).
+        if (passwordChangeRuleActive() && login.weakPassword && login.account.mustChangePassword !== true) {
+            requirePasswordChange(login.account, 'weak');
+        }
         const sessionToken = issueAdminSession(login.account.email);
         // O login espera o COMMIT, como o do aluno (hash regravado e, com o H3a-2, a sessão).
         await db.save();
@@ -160,9 +180,17 @@ function createAdminAccountsRouter() {
         validateAdmin(req, res, async (config, currentAdmin) => {
             if (!requireAdminManager(res, currentAdmin)) return;
             const { name, email, password } = req.body;
-            if (!name || !email || !password || name.trim() === '' || email.trim() === '' || password.trim() === '') {
+            if (typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string'
+                || name.trim() === '' || email.trim() === '' || password.trim() === '') {
                 return res.status(400).json({ error: 'Dados incompletos ou inválidos.' });
             }
+            // Política de senha do instrutor (H5a, SEG-06): pelo menos 10 caracteres, como a
+            // troca de senha já exigia; antes a criação aceitava a senha "1".
+            const policy = validateNewPassword(password, { kind: 'instructor', email, name });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+            // "Pedir troca no primeiro acesso" vem marcada (decisão P3 do Alan); sem o campo
+            // (tela antiga), vale marcada.
+            const askPasswordChange = req.body.requirePasswordChange !== false;
             // Hash com o scrypt assíncrono (DES-07) antes de ler as contas: a conferência de
             // e-mail repetido e a gravação rodam depois da espera, de uma vez.
             const passwordHash = await db.hashPasswordAsync(password.trim());
@@ -202,7 +230,7 @@ function createAdminAccountsRouter() {
             if (admins.some(account => account.email && account.email.toLowerCase() === normalizedEmail)) {
                 return res.status(400).json({ error: 'E-mail administrativo já cadastrado.' });
             }
-            admins.push({
+            const created = {
                 name: name.trim(),
                 email: normalizedEmail,
                 password: passwordHash,
@@ -211,10 +239,22 @@ function createAdminAccountsRouter() {
                 assignedCourseIds,
                 assignedClasses,
                 additionalPermissions,
-            });
+                passwordChangedAt: new Date().toISOString(),
+            };
+            if (askPasswordChange) requirePasswordChange(created, 'created');
+            admins.push(created);
             db.memory.admins = admins;
+            recordAudit(db.memory, {
+                req,
+                actor: currentAdmin,
+                action: 'account_created',
+                category: 'account',
+                targetEmail: normalizedEmail,
+                after: accountAuditSnapshot(created),
+                details: { mustChangePassword: askPasswordChange },
+            });
             await db.save();
-            res.json({ success: true });
+            res.json({ success: true, mustChangePassword: askPasswordChange });
         });
     });
 
@@ -265,6 +305,7 @@ function createAdminAccountsRouter() {
                     : parsedPermissions.permissions)
                 : [];
 
+            const accountBefore = accountAuditSnapshot(account);
             account.name = nextName;
             account.role = nextRole;
             account.assignedSchoolIds = nextAssignedSchoolIds;
@@ -274,6 +315,20 @@ function createAdminAccountsRouter() {
             const assignmentsAfter = assignmentSnapshot(account);
             if (assignmentsBefore && JSON.stringify(assignmentsBefore) !== JSON.stringify(assignmentsAfter)) {
                 recordAssignmentAudit(req, currentAdmin, email, assignmentsBefore, assignmentsAfter);
+            }
+            // Nome, papel e permissões extras (as turmas, os cursos e as escolas já ficam em
+            // professor_assignments_updated, acima).
+            const accountAfter = accountAuditSnapshot(account);
+            if (JSON.stringify(accountBefore) !== JSON.stringify(accountAfter)) {
+                recordAudit(db.memory, {
+                    req,
+                    actor: currentAdmin,
+                    action: 'account_updated',
+                    category: 'account',
+                    targetEmail: email,
+                    before: accountBefore,
+                    after: accountAfter,
+                });
             }
             db.memory.admins = admins;
             await db.save();
@@ -352,6 +407,14 @@ function createAdminAccountsRouter() {
             const filtered = admins.filter(account => !account.email || account.email.toLowerCase() !== targetEmail);
             if (admins.length === filtered.length) return res.status(404).json({ error: 'Administrador não encontrado.' });
             db.memory.admins = filtered;
+            recordAudit(db.memory, {
+                req,
+                actor: currentAdmin,
+                action: 'account_deleted',
+                category: 'account',
+                targetEmail,
+                before: accountAuditSnapshot(target),
+            });
             await db.save();
             res.json({ success: true, message: 'Administrador removido com sucesso!' });
         });
@@ -360,16 +423,32 @@ function createAdminAccountsRouter() {
     router.post('/api/admin/change-password', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             const { newPassword, currentPassword } = req.body;
-            if (!newPassword || newPassword.trim().length < 10) {
-                return res.status(400).json({ error: 'A nova senha deve ter pelo menos 10 caracteres.' });
+            if (typeof newPassword !== 'string' || !newPassword.trim()) {
+                return res.status(400).json({ error: 'Informe a nova senha.', field: 'newPassword' });
             }
+            // Política de senha do instrutor (H5a): os 10 caracteres de antes e as regras de
+            // senha comum e de dado pessoal.
+            const policy = validateNewPassword(newPassword, { kind: 'instructor', email: matchedAdmin.email, name: matchedAdmin.name });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
             // Fora da troca obrigatória inicial (mustChangePassword), exige a senha
             // atual — impede que uma sessão sequestrada troque a senha sem conhecê-la.
+            // Também na troca obrigatória de uma conta criada pelo administrador (H5a: a
+            // senha nova não pode ser a que ele definiu e conhece) e na troca pedida por
+            // senha fraca (a sessão roubada não troca a senha sem saber a atual). Fica sem
+            // a senha atual só a troca da senha temporária do launcher, como antes.
             // A senha atual é conferida pelo attemptPasswordLogin, o único caminho que
             // confere senha: scrypt assíncrono (DES-07) e o mesmo teto por IP do login do
             // instrutor, para a sessão roubada não testar senhas sem limite (429).
             let storedBefore = matchedAdmin.password;
-            if (matchedAdmin.mustChangePassword !== true) {
+            const needsCurrent = matchedAdmin.mustChangePassword !== true
+                || matchedAdmin.passwordChangeReason === 'created' || matchedAdmin.passwordChangeReason === 'weak';
+            if (needsCurrent && (typeof currentPassword !== 'string' || !currentPassword.trim())) {
+                return res.status(400).json({ error: 'Informe a senha atual.', currentPasswordRequired: true, field: 'currentPassword' });
+            }
+            if (needsCurrent && newPassword.trim() === currentPassword.trim()) {
+                return res.status(400).json({ error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
+            }
+            if (needsCurrent) {
                 const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password: currentPassword, req });
                 if (!check.ok && check.status === 429) return res.status(429).json(check.body);
                 // Outra troca terminou durante a conferência (a senha digitada não vale
@@ -377,7 +456,7 @@ function createAdminAccountsRouter() {
                 if (!check.ok && check.passwordChanged) {
                     return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
                 }
-                if (!check.ok) return res.status(400).json({ error: 'Senha atual incorreta.' });
+                if (!check.ok) return res.status(400).json({ error: 'Senha atual incorreta.', field: 'currentPassword' });
                 // O valor que a conferência confirmou (o hash novo, se o antigo foi
                 // regravado): outra troca no meio da espera ainda dá o 409 abaixo.
                 if (check.account !== matchedAdmin || matchedAdmin.password !== check.password) {
@@ -390,8 +469,17 @@ function createAdminAccountsRouter() {
             if (matchedAdmin.password !== storedBefore) {
                 return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
             }
+            const forced = matchedAdmin.mustChangePassword === true;
             matchedAdmin.password = passwordHash;
-            matchedAdmin.mustChangePassword = false;
+            passwordChanged(matchedAdmin);
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'account_password_changed',
+                category: 'account',
+                targetEmail: matchedAdmin.email,
+                details: { forced },
+            });
             await db.save();
             res.json({ success: true, message: 'Senha atualizada com sucesso!' });
         });

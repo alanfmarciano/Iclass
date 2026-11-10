@@ -168,6 +168,62 @@ function isHashed(password) {
 
 function needsPasswordRehash(password) { return typeof password === 'string' && !password.startsWith('scrypt$'); }
 
+// Proteção dos hashes antigos (H5a, SEG-X2). O hash legado é sha256(senha + sal fixo):
+// num backup vazado ele se quebra rápido, e as contas de quem não entra mais (ex-alunos)
+// nunca passavam pelo login, que é onde a senha era regravada. Sem precisar da senha,
+// o valor legado vira 'scrypt-sha256$<sal>$<scrypt(hash legado)>', que verifyPassword
+// confere pela senha digitada (scrypt do sha256 dela); no próximo login a conta passa
+// para scrypt$ (needsPasswordRehash).
+// Roda no boot, antes de o servidor atender, e depois de restaurar um backup. Só toca
+// valores de 64 caracteres hexadecimais: rodar de novo não muda nada (idempotente). O
+// texto puro continua com a migração do boot (hashPassword), como sempre.
+function isLegacyPasswordHash(value) {
+    return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+// Lugares que guardam senha: alunos, contas de instrutor e a senha antiga do config.
+function legacyPasswordHolders(memory) {
+    const holders = [];
+    (Array.isArray(memory && memory.students) ? memory.students : []).forEach(student => {
+        if (student && isLegacyPasswordHash(student.password)) holders.push({ target: student, key: 'password' });
+    });
+    (Array.isArray(memory && memory.admins) ? memory.admins : []).forEach(admin => {
+        if (admin && isLegacyPasswordHash(admin.password)) holders.push({ target: admin, key: 'password' });
+    });
+    const config = memory && memory.config;
+    if (config && typeof config === 'object' && isLegacyPasswordHash(config.adminPassword)) {
+        holders.push({ target: config, key: 'adminPassword' });
+    }
+    return holders;
+}
+
+function countLegacyPasswordHashes(memory = memoryDB) {
+    return legacyPasswordHolders(memory).length;
+}
+
+async function protectLegacyPasswordHash(legacyHex) {
+    const salt = crypto.randomBytes(16);
+    const derived = await scryptAsync(String(legacyHex).toLowerCase(), salt, SCRYPT_KEY_LENGTH);
+    return `${SCRYPT_SHA256_PREFIX}${salt.toString('base64')}$${derived.toString('base64')}`;
+}
+
+// Converte os hashes legados da memória e devolve quantos converteu. Não grava: quem
+// chama faz o db.save(). O scrypt roda no pool de threads, pela mesma fila das senhas
+// (no máximo SCRYPT_CONCURRENCY ao mesmo tempo). Um valor que mudou durante a espera
+// (login que já regravou em scrypt$, troca de senha) fica como está.
+async function upgradeLegacyPasswordHashes(memory = memoryDB) {
+    const holders = legacyPasswordHolders(memory);
+    if (!holders.length) return 0;
+    const results = await Promise.all(holders.map(async holder => {
+        const legacy = holder.target[holder.key];
+        const protectedValue = await protectLegacyPasswordHash(legacy);
+        if (holder.target[holder.key] !== legacy) return false;
+        holder.target[holder.key] = protectedValue;
+        return true;
+    }));
+    return results.filter(Boolean).length;
+}
+
 // Turmas atribuídas sem repetição e numa ordem fixa (curso, depois turma). A ordem
 // não depende mais da ordem em que as turmas foram lidas do banco: depois de restaurar
 // um backup (turmas regravadas em outra ordem) cada boot reordenava a lista e regravava
@@ -1092,6 +1148,13 @@ async function init() {
         memoryDB.config.adminPassword = hashPassword(memoryDB.config.adminPassword);
         needsSave = true;
     }
+    // Hashes SHA-256 antigos viram scrypt-sha256$ antes de o servidor atender (SEG-X2).
+    // O aviso aparece só quando há o que converter (no primeiro boot depois de atualizar).
+    const legacyPasswordCount = countLegacyPasswordHashes(memoryDB);
+    if (legacyPasswordCount > 0) {
+        console.log(`Protegendo ${legacyPasswordCount} senha(s) no formato antigo...`);
+        if (await upgradeLegacyPasswordHashes(memoryDB)) needsSave = true;
+    }
     // Segredo dos identificadores opacos das alternativas da prova (AVA-05). Gerado uma
     // vez e gravado antes de servir: os identificadores não mudam ao reiniciar.
     if (memoryDB.config && typeof memoryDB.config === 'object'
@@ -1314,6 +1377,8 @@ module.exports = {
     verifyPasswordAsync,
     passwordHashQueueStatus,
     needsPasswordRehash,
+    countLegacyPasswordHashes,
+    upgradeLegacyPasswordHashes,
     allClassAssignments,
     syncAdminClassAssignments,
     rebuildExamApplicationsFromClasses,
