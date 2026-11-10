@@ -84,7 +84,7 @@ describe('AdminCourseGate', () => {
     const navPaths = getAdminNavGroups({ accountRole: 'admin', activeWorkspace: null })
       .flatMap(group => group.items.map(item => item.to))
       .filter(path => path !== '/')
-    expect(navPaths).toEqual(expect.arrayContaining(['/auditoria', '/lgpd']))
+    expect(navPaths).toEqual(expect.arrayContaining(['/auditoria', '/lgpd', '/encerrados']))
     navPaths.forEach(path => expect(INSTITUTION_PATHS).toContain(path))
   })
 

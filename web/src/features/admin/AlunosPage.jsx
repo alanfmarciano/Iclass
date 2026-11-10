@@ -1,14 +1,15 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ClipboardList, Eye, History, KeyRound, LockOpen, MessageSquare, Pencil, ShieldAlert, ShieldCheck, Trash2, Unlock, UserPlus } from 'lucide-react'
+import { ClipboardList, Eye, History, KeyRound, LockOpen, MessageSquare, Pencil, ShieldAlert, ShieldCheck, Trash2, Unlock, UserMinus, UserPlus } from 'lucide-react'
 import { DataTable } from '../../components/ui/Table'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { Textarea } from '../../components/ui/Textarea'
-import { Modal, ConfirmDialog } from '../../components/ui/Modal'
-import { STUDENT_DELETE_WARNING } from './studentDeletion'
+import { Modal } from '../../components/ui/Modal'
+import { StudentCloseDialog } from './StudentCloseDialog'
+import { isAnonymizedStatus, isClosedStatus } from './studentDeletion'
 import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { LoginProtectionBadge, UNLOCK_LOGIN_HINT } from './loginProtection'
@@ -25,7 +26,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 const STATUS_OPTIONS = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido']
 const STATUS_TONE = {
   Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger',
-  'Concluído': 'success', Transferido: 'warning', Evadido: 'warning',
+  'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', Anonimizado: 'neutral',
 }
 // Logs de login (Segurança): falha agrupada leva ×N (H5b, várias senhas erradas seguidas
 // numa linha só); "em espera" é a tentativa recusada durante o atraso, sem conferir a senha.
@@ -151,10 +152,6 @@ export default function AlunosPage() {
     } catch (e) { toast.error(e.message) } finally { setSaving(false) }
   }
 
-  async function remove() {
-    try { await api.post('/api/admin/delete-student', { email: del.email }); toast.success('Aluno removido'); setDel(null); refetch() }
-    catch (e) { toast.error(e.message) }
-  }
 
 
   async function openAudit(row) {
@@ -322,15 +319,16 @@ export default function AlunosPage() {
           </div>
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, originalEmail: menuRow.email, classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>
+          {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, originalEmail: menuRow.email, classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>}
           <Button variant="secondary" icon={History} onClick={() => { setHistory(menuRow); setMenuRow(null) }}>Histórico</Button>
           {!isProfessor && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(menuRow); setMenuRow(null) }}>Auditoria</Button>}
           {!isProfessor && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
           <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>
-          <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>
+          {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>}
           {menuRow?.loginProtection && <Button variant="secondary" icon={LockOpen} loading={unlocking} title={UNLOCK_LOGIN_HINT} onClick={() => unlockLogin(menuRow)}>Liberar login</Button>}
-          {!isProfessor && <Button variant="destructive" icon={Trash2} onClick={() => { setDel(menuRow); setMenuRow(null) }}>Excluir aluno</Button>}
+          {/* Desligar aluno (H7c): muda a situação; anonimizar ou apagar fica em Cadastros encerrados. */}
+          {!isProfessor && menuRow && !isClosedStatus(menuRow.status) && <Button variant="destructive" icon={UserMinus} onClick={() => { setDel(menuRow); setMenuRow(null) }}>Desligar aluno</Button>}
         </div>
       </Modal>
 
@@ -481,7 +479,7 @@ export default function AlunosPage() {
             </Section>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-              <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...profile, originalEmail: profile.email, classes: studentClassNames(profile), courseId: ((classes || []).find((c) => studentClassNames(profile).includes(c.name))?.courseId) || activeCourseId, guardian: profile.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setProfile(null) }}>Editar</Button>
+              {!isAnonymizedStatus(profile?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...profile, originalEmail: profile.email, classes: studentClassNames(profile), courseId: ((classes || []).find((c) => studentClassNames(profile).includes(c.name))?.courseId) || activeCourseId, guardian: profile.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setProfile(null) }}>Editar</Button>}
               <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(profile); setProfile(null) }}>Observações</Button>
               {!isProfessor && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(profile); setProfile(null) }}>Segurança</Button>}
               {!isProfessor && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(profile); setProfile(null) }}>Auditoria</Button>}
@@ -582,8 +580,7 @@ export default function AlunosPage() {
         </div>
       </Modal>
 
-      <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir"
-        title={`Excluir ${del ? displayName(del) : ''}?`} description={STUDENT_DELETE_WARNING} />
+      <StudentCloseDialog student={del} onClose={() => setDel(null)} onDone={refetch} />
 
       <StudentPasswordResetDialog email={reset?.email || null} onClose={() => setReset(null)} onDone={refetch} />
       <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} deferred={createdPassword?.deferred} onClose={() => setCreatedPassword(null)} />

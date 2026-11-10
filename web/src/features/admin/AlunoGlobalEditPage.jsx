@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, KeyRound, Save, Trash2 } from 'lucide-react'
+import { ArrowLeft, KeyRound, Save, UserMinus } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
 import { Card } from '../../components/ui/Card'
@@ -14,9 +14,10 @@ import { useAuth } from '../../context/AuthProvider'
 import { StudentFormTabs } from './AlunosPage'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
-import { STUDENT_DELETE_REMOVES, STUDENT_DELETE_KEEPS } from './studentDeletion'
+import { StudentCloseDialog } from './StudentCloseDialog'
+import { isAnonymizedStatus, isClosedStatus } from './studentDeletion'
 
-const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
+const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', Anonimizado: 'neutral' }
 
 function scn(s) {
   const raw = s.classes && s.classes.length ? s.classes : (s.studentClass ? [s.studentClass] : [])
@@ -46,7 +47,7 @@ export default function AlunoGlobalEditPage() {
   const { data: schools } = useApi('/api/admin/schools')
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [confirmDel, setConfirmDel] = useState(false)
+  const [closing, setClosing] = useState(null)
   const [auditRows, setAuditRows] = useState([])
   const [tab, setTab] = useState('cadastro')
   const [resetOpen, setResetOpen] = useState(false)
@@ -97,12 +98,16 @@ export default function AlunoGlobalEditPage() {
       nav('/diretorio')
     } catch (e) { toast.error(e.message) } finally { setSaving(false) }
   }
-  async function remove() {
-    try { await api.post('/api/admin/delete-student', { email: form.originalEmail }); toast.success('Aluno removido'); nav('/diretorio') }
-    catch (e) { toast.error(e.message) }
+  // Desligar aluno (H7c): a situação muda no servidor; a ficha relê o cadastro.
+  function afterClose(status) {
+    if (status) setForm((f) => (f ? { ...f, status } : f))
+    students.refetch()
   }
 
   const enrollCount = form ? form.classes.length : 0
+  // Cadastro anonimizado não se edita (o servidor responde 409); encerrado não se desliga de novo.
+  const anonymized = !isNew && !!form && isAnonymizedStatus(form.status)
+  const canClose = !isNew && !!form && !isProfessor && !isClosedStatus(student?.status)
   const tabs = [
     { id: 'cadastro', label: 'Cadastro' },
     ...(!isProfessor ? [{ id: 'auditoria', label: 'Auditoria' }] : []),
@@ -119,9 +124,9 @@ export default function AlunoGlobalEditPage() {
           <div className="space-y-5">
             <PageHeader title={isNew ? 'Novo aluno' : (displayName(form) || form.name || 'Aluno')} subtitle={isNew ? 'Cadastro global — turmas de qualquer curso' : form.originalEmail}>
               <div className="flex gap-2">
-                {!isNew && <Button variant="secondary" icon={KeyRound} onClick={() => setResetOpen(true)}>Redefinir senha</Button>}
-                {!isNew && <Button variant="destructive" icon={Trash2} onClick={() => setConfirmDel(true)}>Excluir</Button>}
-                <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>
+                {!isNew && !anonymized && <Button variant="secondary" icon={KeyRound} onClick={() => setResetOpen(true)}>Redefinir senha</Button>}
+                {canClose && <Button variant="destructive" icon={UserMinus} onClick={() => setClosing({ email: form.originalEmail, name: form.name, nomeSocial: form.nomeSocial })}>Desligar aluno</Button>}
+                {!anonymized && <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>}
               </div>
             </PageHeader>
 
@@ -135,14 +140,8 @@ export default function AlunoGlobalEditPage() {
               </div>
             )}
 
-            {confirmDel && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/40 bg-danger-soft px-4 py-3">
-                <div className="text-sm text-text space-y-1 flex-1 min-w-[16rem]"><p className="font-medium">Excluir {displayName(form)}? Não dá para desfazer.</p><p>{STUDENT_DELETE_REMOVES}</p><p>{STUDENT_DELETE_KEEPS}</p></div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancelar</Button>
-                  <Button size="sm" variant="destructive" onClick={remove}>Excluir definitivo</Button>
-                </div>
-              </div>
+            {anonymized && (
+              <p className="rounded-lg border border-border bg-surface-2 px-4 py-3 text-sm text-muted">Cadastro anonimizado: os dados pessoais saíram e ele não pode ser editado. As notas, a presença e os certificados continuam com este código.</p>
             )}
 
             {!isNew && <Tabs tabs={tabs} active={tab} onChange={setTab} />}
@@ -154,7 +153,7 @@ export default function AlunoGlobalEditPage() {
                 </Card>
                 <div className="flex justify-end gap-2">
                   <Button variant="ghost" onClick={() => nav('/diretorio')}>Cancelar</Button>
-                  <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>
+                  {!anonymized && <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>}
                 </div>
               </>
             )}
@@ -167,6 +166,7 @@ export default function AlunoGlobalEditPage() {
           </div>
         ) : null}
       </PageState>
+      <StudentCloseDialog student={closing} onClose={() => setClosing(null)} onDone={afterClose} />
       {!isNew && form && <StudentPasswordResetDialog email={resetOpen ? form.originalEmail : null} onClose={() => setResetOpen(false)} />}
       <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} deferred={createdPassword?.deferred} onClose={() => { setCreatedPassword(null); nav('/diretorio') }} />
     </div>

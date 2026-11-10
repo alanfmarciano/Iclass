@@ -787,13 +787,13 @@ function deletedCopyEmail(copy) {
     return normalizeEmailValue(student.email || copy.studentEmail);
 }
 
-function anonymizeDeletedCopy(copy, at) {
+function anonymizeDeletedCopy(copy, at, replacement = {}) {
     const student = copy.student && typeof copy.student === 'object' ? copy.student : {};
     const anonymized = { ...copy };
     PERSONAL_SUBMISSION_FIELDS.forEach(field => { delete anonymized[field]; });
     anonymized.student = {
-        name: ANONYMIZED_STUDENT_NAME,
-        email: '',
+        name: replacement.name || ANONYMIZED_STUDENT_NAME,
+        email: replacement.email || '',
         courseId: student.courseId || copy.courseId || null,
         studentClass: student.studentClass || copy.studentClass || '',
     };
@@ -808,8 +808,9 @@ function anonymizeDeletedCopy(copy, at) {
 // saem das entradas do próprio aluno (owned): numa entrada que só cita o e-mail, "Ana"
 // pode ser o começo de "Ana Paula".
 function scrubPersonalKey(key, identity, taken) {
-    let next = identity.emails.has(String(key).trim().toLowerCase()) ? ANONYMIZED_ACTOR : String(key);
-    identity.emailPatterns.forEach(pattern => { next = next.replace(pattern, ANONYMIZED_ACTOR); });
+    const emailText = identity.replacementEmail || ANONYMIZED_ACTOR;
+    let next = identity.emails.has(String(key).trim().toLowerCase()) ? emailText : String(key);
+    identity.emailPatterns.forEach(pattern => { next = next.replace(pattern, emailText); });
     if (next === key) return key;
     let unique = next;
     for (let index = 2; taken.has(unique); index += 1) unique = `${next} (${index})`;
@@ -828,14 +829,16 @@ function isIdentifierOrDateKey(key) {
 function scrubPersonalText(value, identity, key, owned) {
     if (typeof value === 'string') {
         const trimmed = value.trim();
-        if (identity.emails.has(trimmed.toLowerCase())) return key === 'actor' ? ANONYMIZED_ACTOR : '';
+        // Anonimizar (H7c): o e-mail vira o pseudônimo; apagar de vez: some (no autor,
+        // "aluno excluído").
+        if (identity.emails.has(trimmed.toLowerCase())) return identity.replacementEmail || (key === 'actor' ? ANONYMIZED_ACTOR : '');
         const personal = owned && !isIdentifierOrDateKey(key);
         if (personal && identity.matriculas.has(trimmed)) return '';
         let text = value;
-        identity.emailPatterns.forEach(pattern => { text = text.replace(pattern, ANONYMIZED_ACTOR); });
+        identity.emailPatterns.forEach(pattern => { text = text.replace(pattern, identity.replacementEmail || ANONYMIZED_ACTOR); });
         if (!personal) return text;
         identity.names.forEach(name => {
-            text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), `$1${ANONYMIZED_STUDENT_NAME}`);
+            text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), `$1${identity.replacementName || ANONYMIZED_STUDENT_NAME}`);
         });
         identity.matriculas.forEach(matricula => {
             text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(matricula)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), '$1');
@@ -857,6 +860,10 @@ function scrubPersonalText(value, identity, key, owned) {
 // identity: { emails, names, matriculas, owns } do aluno excluído; emails e owns vêm de
 // studentEmailOwnership (todos os e-mails conhecidos dele e de quem é cada registro).
 // Sem owns, todo registro com um desses e-mails conta como dele.
+// Anonimizar (H7c, utils/studentLifecycle.js): replacementEmail e replacementName (o
+// pseudônimo) entram no lugar do e-mail e do nome, e as entradas do aluno ficam com
+// studentEmail = pseudônimo (a ficha do cadastro anonimizado mostra a trilha dele). As
+// cópias das notas na lixeira continuam anonimizadas e não restauráveis.
 function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toISOString() } = {}) {
     if (!memory || !Array.isArray(memory.auditLogs)) return 0;
     const emails = [...new Set((identity.emails || []).map(normalizeEmailValue).filter(Boolean))];
@@ -864,6 +871,8 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
     const owns = typeof identity.owns === 'function'
         ? identity.owns
         : value => emails.includes(normalizeEmailValue(value));
+    const replacementEmail = normalizeEmailValue(identity.replacementEmail);
+    const replacementName = String(identity.replacementName || '').trim();
     const patterns = new Map(emails.map(email => [email, wholeEmailPattern(email)]));
     const names = new Set((identity.names || []).map(name => String(name || '').trim()).filter(name => name.length >= 3));
     const matriculas = new Set((identity.matriculas || []).map(value => String(value || '').trim()).filter(value => value.length >= 3));
@@ -896,7 +905,7 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
         if (!aboutStudent && !entryEmails.length) return;
         let next = { ...entry };
         if (copy && typeof copy === 'object' && copy.anonymized !== true && aboutStudent) {
-            next.details = { ...next.details, deletedSubmission: anonymizeDeletedCopy(copy, at) };
+            next.details = { ...next.details, deletedSubmission: anonymizeDeletedCopy(copy, at, { email: replacementEmail, name: replacementName }) };
         }
         // Alteração do cadastro (recordStudentAudit): o valor é o próprio dado pessoal.
         const profileChange = aboutStudent && !next.type && next.category !== 'grade' && !String(next.action || '').startsWith('grade_') && 'field' in next;
@@ -906,10 +915,12 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
             emailPatterns: entryEmails.map(email => patterns.get(email)),
             names: sortedNames,
             matriculas,
+            replacementEmail,
+            replacementName,
         };
         next = scrubPersonalText(next, scrubIdentity, '', aboutStudent || byStudent);
         if (aboutStudent) {
-            next.studentEmail = '';
+            next.studentEmail = replacementEmail;
             next.studentAnonymized = true;
             if (!next.anonymizedAt) next.anonymizedAt = at;
         }

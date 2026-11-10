@@ -141,7 +141,9 @@ test('[UC-BACKUP-001] lixeira do professor: pasta de aluno e atestado só para o
         .field('studentEmail', 'zeca@escopo.local').field('courseId', COURSE).field('studentClass', '2DES').field('scope', 'class')
         .attach('file', PDF, { filename: 'atestado-medico-zeca.pdf', contentType: 'application/pdf' });
     assert.equal(upload.status, 200, upload.body.error);
-    await asAdmin(request(app).post('/api/admin/delete-student')).send({ email: 'zeca@escopo.local' }).expect(200);
+    // Apagar de vez (H7c): desligar e depois apagar em Cadastros encerrados.
+    await asAdmin(request(app).post('/api/admin/student/bulk-status')).send({ emails: ['zeca@escopo.local'], status: 'Transferido' }).expect(200);
+    await asAdmin(request(app).post('/api/admin/students/purge')).send({ email: 'zeca@escopo.local', confirm: 'APAGAR', reason: 'Matrícula feita por engano' }).expect(200);
 
     // Material da biblioteca excluído em cada turma.
     for (const [id, studentClass, filename] of [['lib_1des', '1DES', 'material-1des.pdf'], ['lib_2des', '2DES', 'material-2des.pdf']]) {

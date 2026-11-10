@@ -138,6 +138,9 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/release-item$/, permission: 'page.materials' },
     { methods: ['GET', 'POST'], pattern: /^\/submissions(?:\/.*)?$/, permission: 'page.results' },
     { methods: ['POST'], pattern: /^\/delete-student$/, permission: 'students.destroy' },
+    // Cadastros encerrados (H7c): lista, anonimizar e apagar de vez, só do administrador.
+    { methods: ['GET'], pattern: /^\/students\/closed$/, permission: 'students.destroy' },
+    { methods: ['POST'], pattern: /^\/students\/(anonymize|purge)$/, permission: 'students.destroy' },
     { methods: ['POST'], pattern: /^\/student\/certificates\/(issue|revoke)$/, permission: 'students.certificates' },
     { methods: ['GET'], pattern: /^\/student\/login-logs$/, permission: 'students.security' },
     // Aba Auditoria da ficha do aluno: só o administrador (decisão P5; antes valia

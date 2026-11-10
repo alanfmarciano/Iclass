@@ -1,7 +1,7 @@
 // Fase 1 — Utilitários de cadastro de aluno: campos, validações e auditoria.
 // Mantém o padrão do projeto (objetos JSON em memoryDB, sem ORM/migrations).
 
-const { recordAudit, getClientIp } = require('./audit.js');
+const { recordAudit, getClientIp, auditTimestamp } = require('./audit.js');
 
 // Status permitidos para o aluno. "Ativo" é o padrão ao cadastrar.
 const STUDENT_STATUSES = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido'];
@@ -22,6 +22,68 @@ function foldStatus(value) {
 const CLOSED_STATUS_KEYS = new Set(CLOSED_STUDENT_STATUSES.map(foldStatus));
 function isClosedStudentStatus(status) {
     return CLOSED_STATUS_KEYS.has(foldStatus(status));
+}
+
+// Cadastro anonimizado (H7c, decisão 4 do Alan): fica com as notas, a presença e os
+// certificados sob um pseudônimo e não volta a ser editado nem reativado. A situação
+// não aparece no seletor nem se aplica por edição: só POST /api/admin/students/anonymize
+// a grava (com anonymizedAt, que a prévia da restauração do H4a lê).
+const ANONYMIZED_STATUS = 'Anonimizado';
+function isAnonymizedStudent(student) {
+    if (!student || typeof student !== 'object') return false;
+    return foldStatus(student.status) === foldStatus(ANONYMIZED_STATUS) || !!student.anonymizedAt;
+}
+
+// Motivo da mudança de situação (Desligar aluno, Reativar, bulk-status): opcional, até
+// 500 caracteres depois de aparar.
+const STATUS_REASON_MAX = 500;
+function cleanStatusReason(value) {
+    return typeof value === 'string' ? value.trim().slice(0, STATUS_REASON_MAX) : '';
+}
+
+// Muda a situação do aluno guardando quando, quem e por quê (statusChangedAt em ms,
+// statusChangedBy, statusReason). Devolve o aluno novo (cópia) ou o mesmo objeto quando
+// a situação não muda. A chamada (H7b) lê statusChangedAt para mostrar o encerrado nas
+// datas anteriores ao desligamento, e Cadastros encerrados mostra "encerrado desde".
+function applyStudentStatus(student, status, actor, reason, { now = Date.now() } = {}) {
+    const next = String(status || '').trim();
+    if (!student || !next || (student.status || DEFAULT_STATUS) === next) return student;
+    const by = actor && typeof actor === 'object' ? actor.email : actor;
+    return {
+        ...student,
+        status: next,
+        statusChangedAt: now,
+        statusChangedBy: String(by || 'admin').trim().toLowerCase(),
+        statusReason: cleanStatusReason(reason),
+        updatedAt: now,
+    };
+}
+
+// Desde quando o cadastro está na situação atual (ms), para Cadastros encerrados e para
+// a chamada de datas antigas: statusChangedAt (gravado desde o H7c); na falta (aluno
+// desligado antes da atualização), a última alteração de "Status" da auditoria do
+// cadastro que levou à situação atual; senão null ("data não registrada").
+// index: lastStatusChangeIndex(memory.auditLogs), montado uma vez por pedido.
+function lastStatusChangeIndex(auditLogs) {
+    const index = new Map();
+    (Array.isArray(auditLogs) ? auditLogs : []).forEach(entry => {
+        if (!entry || typeof entry !== 'object' || entry.field !== 'Status' || entry.type) return;
+        const email = normalizeEmail(entry.studentEmail);
+        const time = auditTimestamp(entry.timestamp !== undefined ? entry.timestamp : entry.at);
+        if (!email || !time) return;
+        const current = index.get(email);
+        if (!current || time >= current.timestamp) index.set(email, { timestamp: time, status: String(entry.newValue ?? '') });
+    });
+    return index;
+}
+
+function studentStatusSince(student, index) {
+    if (!student) return null;
+    const saved = auditTimestamp(student.statusChangedAt);
+    if (saved) return saved;
+    const last = index && index.get(normalizeEmail(student.email));
+    if (last && foldStatus(last.status) === foldStatus(student.status)) return last.timestamp;
+    return null;
 }
 
 // Campos escalares auditáveis do perfil do aluno.
@@ -267,7 +329,7 @@ function diffStudentForAudit(oldStudent, newFields) {
 // todas com a mesma hora. Atalho para recordAudit (utils/audit.js), na categoria
 // 'student', com os mesmos campos de antes (field/oldValue/newValue), que o painel
 // Auditoria da ficha do aluno lê. Não persiste (chame db.save() depois).
-function recordStudentAudit(memory, { actor, studentEmail, changes, req, action }) {
+function recordStudentAudit(memory, { actor, studentEmail, changes, req, action, reason }) {
     const timestamp = Date.now();
     const entries = (changes && changes.length ? changes : [{ field: action || 'Registro', oldValue: '', newValue: '' }]);
     entries.forEach(c => {
@@ -280,6 +342,7 @@ function recordStudentAudit(memory, { actor, studentEmail, changes, req, action 
             field: c.field,
             oldValue: c.oldValue,
             newValue: c.newValue,
+            reason,
         }, { timestamp });
     });
 }
@@ -292,6 +355,13 @@ module.exports = {
     DEFAULT_STATUS,
     CLOSED_STUDENT_STATUSES,
     isClosedStudentStatus,
+    ANONYMIZED_STATUS,
+    isAnonymizedStudent,
+    STATUS_REASON_MAX,
+    cleanStatusReason,
+    applyStudentStatus,
+    lastStatusChangeIndex,
+    studentStatusSince,
     AUDITABLE_FIELDS,
     normalizeEmail,
     isValidEmail,

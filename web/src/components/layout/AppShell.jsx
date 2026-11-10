@@ -17,6 +17,7 @@ const CRUMBS = {
   '/forum': ['Gestão', 'Fórum & Dúvidas'], '/escolas': ['Instituição', 'Escolas'],
   '/identidade': ['Instituição', 'Identidade Visual'], '/sistema': ['Instituição', 'Sistema'], '/auditoria': ['Instituição', 'Auditoria'],
   '/lgpd': ['Instituição', 'Privacidade (LGPD)'],
+  '/encerrados': ['Gestão acadêmica', 'Cadastros encerrados'],
 }
 export function AppShell() {
   const [open, setOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches)

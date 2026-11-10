@@ -477,7 +477,10 @@ test('[UC-DIGITACAO-001] excluir aluno apaga só as teclas dele; trocar o e-mail
     assert.ok(anaBefore > 0);
     assert.equal(await savedFor(students.caio.email), 6);
 
-    await admin('post', '/api/admin/delete-student').send({ email: 'CAIO@teclas.local' }).expect(200);
+    // Apagar de vez (H7c): desligar e depois apagar em Cadastros encerrados; as teclas
+    // saem no mesmo ciclo de gravação da memória, antes da resposta.
+    await admin('post', '/api/admin/student/bulk-status').send({ emails: ['caio@teclas.local'], status: 'Evadido' }).expect(200);
+    await admin('post', '/api/admin/students/purge').send({ email: 'CAIO@teclas.local', confirm: 'APAGAR', reason: 'Pedido da família' }).expect(200);
     assert.equal(await savedFor(students.caio.email), 0, 'apagadas no arquivo antes do 200');
     assert.equal(db.keystrokes.stats({ email: students.caio.email }).total, 0);
     assert.deepEqual(await db.keystrokes.findByEmails([students.caio.email]), []);

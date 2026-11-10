@@ -43,6 +43,7 @@ const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
 const SistemaPage = lazyPage(() => import('./features/admin/SistemaPage'))
 const AuditoriaPage = lazyPage(() => import('./features/admin/AuditoriaPage'))
 const PrivacidadePage = lazyPage(() => import('./features/admin/PrivacidadePage'))
+const CadastrosEncerradosPage = lazyPage(() => import('./features/admin/CadastrosEncerradosPage'))
 // Públicas (sem login): Termos de Uso e Política de Privacidade (H8a-1).
 const LegalDocumentPage = lazyPage(() => import('./features/LegalDocumentPage'))
 // Aluno
@@ -138,6 +139,7 @@ export default function App() {
         <Route path="sistema" element={<RequireAdminPath path="/sistema"><SistemaPage /></RequireAdminPath>} />
         <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="lgpd" element={<RequireAdministrator><RequireAdminPath path="/lgpd"><PrivacidadePage /></RequireAdminPath></RequireAdministrator>} />
+        <Route path="encerrados" element={<RequireAdministrator><RequireAdminPath path="/encerrados"><CadastrosEncerradosPage /></RequireAdminPath></RequireAdministrator>} />
       </Route>
 
       {/* Aluno */}

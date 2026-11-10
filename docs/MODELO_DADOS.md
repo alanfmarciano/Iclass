@@ -30,7 +30,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 
 | Coleção | Tipo | Conteúdo |
 |---------|------|----------|
-| `students` | array | alunos (perfil, turmas, credencial; `sessionsInvalidBefore` opcional, ms: a sessão aberta antes dessa hora acaba fora de prova, gravado pelo "Redefinir senha", H5b) |
+| `students` | array | alunos (perfil, turmas, credencial; `sessionsInvalidBefore` opcional, ms: a sessão aberta antes dessa hora acaba fora de prova, gravado pelo "Redefinir senha", H5b; situação com `statusChangedAt` (ms), `statusChangedBy` e `statusReason`, gravados ao mudar a situação, H7c; cadastro anonimizado: `status: 'Anonimizado'`, e-mail `anonimizado-<ref>@anonimizado.invalid`, nome "Aluno anonimizado <REF>", `anonymizedRef`, `anonymizedAt` (ms), `anonymizedBy`, senha vazia e só turmas e datas, H7c. Cadastro antigo sem `statusChangedAt` vale como "data não registrada" ou pela última mudança de "Status" na auditoria) |
 | `classes` | array | turmas; `activeExamKey`, `examConfigs`, `onlineExamConfigs`, liberações |
 | `courses` | array | cursos (multi-curso); `structure`, `schoolId`, `status`/`deleted`/`deletedAt` (lixeira), `branding`. O painel grava só `name`, `description`, `schoolId` e `branding` por `/api/admin/courses` (a estrutura vai por `/api/admin/courses/:id/structure`) |
 | `branding` | objeto | identidade white-label global |
