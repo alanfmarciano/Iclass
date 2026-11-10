@@ -1,6 +1,6 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SaudeCard, crashText, formatDuration, lastSaveText, outageText, supervisorText, HEALTH_POLL_MS } from './SaudeCard'
+import { SaudeCard, crashText, formatDuration, healthState, lastSaveText, outageText, supervisorText, HEALTH_POLL_MS, HEALTH_STALE_MS } from './SaudeCard'
 
 const mocks = vi.hoisted(() => ({ result: { data: null, error: null }, calls: [] }))
 
@@ -72,6 +72,76 @@ describe('SaudeCard · Saúde do servidor', () => {
     render(<SaudeCard />)
     expect(screen.getByText('Com problemas')).toBeVisible()
     expect(screen.getByText(/Não foi possível consultar o servidor agora/)).toBeVisible()
+  })
+
+  // Antes o selo vinha só de data.status: o useApi guarda a leitura antiga junto com o
+  // erro, e durante o reinício (503 starting) ou com o servidor travado o cartão seguia
+  // "Funcionando" com "Ligado há 1 s" parado.
+  it('[UC-SAUDE-001] reinício: com a leitura antiga na mão e 503 starting, mostra Iniciando e avisa que os números são de antes', () => {
+    const old = health()
+    mocks.result = { data: old, error: null }
+    const view = render(<SaudeCard />)
+    expect(screen.getByText('Funcionando')).toBeVisible()
+    const starting = Object.assign(new Error('O IClass está iniciando. Aguarde alguns segundos.'), { status: 503, data: { starting: true } })
+    mocks.result = { data: old, error: starting }
+    view.rerender(<SaudeCard />)
+    expect(screen.getByText('Iniciando')).toBeVisible()
+    expect(screen.queryByText('Funcionando')).toBeNull()
+    expect(screen.getByRole('status')).toHaveTextContent(/O servidor está iniciando; o cartão atualiza sozinho.*Os números abaixo são da última resposta/)
+    // O useApi limpa o erro no começo da consulta seguinte, ainda com a leitura antiga:
+    // o selo não volta a "Funcionando" antes de chegar uma leitura nova.
+    mocks.result = { data: old, error: null }
+    view.rerender(<SaudeCard />)
+    expect(screen.getByText('Iniciando')).toBeVisible()
+    // Leitura nova (outro instanceId): volta ao normal e o aviso some.
+    mocks.result = { data: health({ instanceId: 'novo', uptimeSeconds: 3 }), error: null }
+    view.rerender(<SaudeCard />)
+    expect(screen.getByText('Funcionando')).toBeVisible()
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByText(/^3 s/)).toBeVisible()
+  })
+
+  it('[UC-SAUDE-001] servidor fora depois de uma leitura boa: Com problemas e o aviso de sem resposta, não Funcionando', () => {
+    const old = health()
+    mocks.result = { data: old, error: null }
+    const view = render(<SaudeCard />)
+    mocks.result = { data: old, error: Object.assign(new Error('Sem conexão com o servidor.'), { status: 0, network: true }) }
+    view.rerender(<SaudeCard />)
+    expect(screen.getByText('Com problemas')).toBeVisible()
+    expect(screen.queryByText('Funcionando')).toBeNull()
+    expect(screen.getByRole('status')).toHaveTextContent(/O servidor não está respondendo\..*veja a janela do IClass/)
+  })
+
+  it('[UC-SAUDE-001] pedido preso (servidor travado): sem erro nenhum, a leitura velha vira Com problemas (sem resposta) depois de duas consultas perdidas', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(NOW)
+    mocks.result = { data: health(), error: null }
+    render(<SaudeCard />)
+    expect(screen.getByText('Funcionando')).toBeVisible()
+    act(() => { vi.advanceTimersByTime(HEALTH_POLL_MS + 5000) })
+    expect(screen.getByText('Funcionando')).toBeVisible()
+    act(() => { vi.advanceTimersByTime(HEALTH_STALE_MS - HEALTH_POLL_MS) })
+    expect(screen.getByText('Com problemas')).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('O servidor não está respondendo.')
+  })
+
+  it('[UC-SAUDE-001] primeira consulta ainda no boot: Iniciando, sem a mensagem de erro', () => {
+    mocks.result = { data: null, error: Object.assign(new Error('O IClass está iniciando.'), { status: 503, data: { starting: true } }) }
+    render(<SaudeCard />)
+    expect(screen.getByText('Iniciando')).toBeVisible()
+    expect(screen.getByText(/O servidor está iniciando/)).toBeVisible()
+    expect(screen.queryByText(/Não foi possível consultar/)).toBeNull()
+  })
+
+  it('healthState: problema vence a leitura, 503 sem starting é sem resposta, status desconhecido vale ok', () => {
+    const data = health()
+    expect(healthState({ data, problem: null, receivedAt: NOW, now: NOW + HEALTH_STALE_MS })).toBe('ok')
+    expect(healthState({ data, problem: null, receivedAt: NOW, now: NOW + HEALTH_STALE_MS + 1 })).toBe('unreachable')
+    expect(healthState({ data, problem: Object.assign(new Error('x'), { status: 503, data: { retryable: true } }), receivedAt: NOW, now: NOW })).toBe('unreachable')
+    expect(healthState({ data: null, problem: Object.assign(new Error('x'), { status: 503, data: { status: 'starting' } }) })).toBe('starting')
+    expect(healthState({ data: health({ status: 'degraded' }), problem: null, receivedAt: NOW, now: NOW })).toBe('degraded')
+    expect(healthState({ data: health({ status: 'estranho' }), problem: null, receivedAt: NOW, now: NOW })).toBe('ok')
+    expect(healthState({ data: null, problem: null })).toBe(null)
   })
 
   it('formatos: duração, salvamento com falhas, reinícios no singular, queda sem compensação e falha sem resumo', () => {

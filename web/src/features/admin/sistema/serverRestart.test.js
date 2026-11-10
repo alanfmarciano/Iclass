@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('../../../lib/api', () => ({ api: { get: mocks.get } }))
 
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS, REQUEST_TIMEOUT_MS } from './serverRestart'
+import serverRestartSource from './serverRestart.js?raw'
+import saudeCardSource from './SaudeCard.jsx?raw'
 
 // Relógio falso: cada espera avança o tempo, sem esperar de verdade.
 function fakeClock() {
@@ -80,5 +82,18 @@ describe('serverRestart · espera do Reiniciar', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // Contrato de polling (H2-C): a espera do Reiniciar é curta, com fim e encadeada por
+  // setTimeout, como a do lazyPage; o cartão Saúde consulta pelo useApi (pollMs, que na
+  // trilha B passa pelo usePolling) e o único setInterval dele é o relógio da tela. O
+  // teste estático da trilha B (pollingSources) só aceita setInterval de relógio.
+  it('contrato de polling: nada de setInterval de consulta na espera do Reiniciar nem no cartão Saúde', () => {
+    expect(serverRestartSource).not.toMatch(/setInterval\(/)
+    expect(serverRestartSource).toMatch(/RESTART_WAIT_MS = 90000/)
+    const intervals = saudeCardSource.split('\n').filter((line) => line.includes('setInterval('))
+    expect(intervals.length).toBe(1)
+    expect(intervals[0]).toMatch(/setInterval\(\s*\(\)\s*=>\s*set[A-Z]\w*\(/)
+    expect(saudeCardSource).toMatch(/useApi\('\/api\/admin\/system\/health', \[refreshKey\], \{ pollMs: HEALTH_POLL_MS \}\)/)
   })
 })

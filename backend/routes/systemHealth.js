@@ -20,7 +20,7 @@ const express = require('express');
 const db = require('../database.js');
 const { validateAdmin } = require('../middlewares.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
-const { readLastCrash } = require('../utils/errorLog.js');
+const { maskEmails, readLastCrash } = require('../utils/errorLog.js');
 const { SERVER_INSTANCE_ID } = require('../utils/sessionConfig.js');
 const { version: APP_VERSION } = require('../../package.json');
 
@@ -115,7 +115,7 @@ function lastOutage(memory) {
 function degradedForCard() {
     const degraded = serverLifecycle.degradedState();
     if (!degraded) return null;
-    return { at: degraded.at, reason: String(degraded.reason || '').replace(/[^\s@]+@[^\s@]+/g, '[e-mail]').slice(0, 300) };
+    return { at: degraded.at, reason: maskEmails(degraded.reason || '').slice(0, 300) };
 }
 
 const megabytes = bytes => Math.round((Number(bytes) || 0) / (1024 * 1024) * 10) / 10;

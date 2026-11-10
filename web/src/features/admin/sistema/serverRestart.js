@@ -10,7 +10,9 @@
 // prazo próprio (REQUEST_TIMEOUT_MS: uma resposta presa não segura a espera além dos
 // 90 s), e para sozinha quando o servidor volta, no fim do prazo ou quando a tela sai
 // (isCancelled). O que é periódico na tela Sistema (o cartão Saúde) usa o useApi com
-// pollMs, que passa pelo usePolling.
+// pollMs, que passa pelo usePolling depois da junção com a trilha B (H2-C reescreve o
+// useApi). Na lista de exceções do teste estático pollingSources esta espera entra na
+// mesma categoria do lazyPage: não usa setInterval (serverRestart.test.js confere).
 import { api } from '../../../lib/api'
 
 export const RESTART_WAIT_MS = 90000

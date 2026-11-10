@@ -273,6 +273,26 @@ test('[UC-SAUDE-001] readLastCrash lê só o fim do crash.log e devolve o últim
     assert.equal(readLastCrash({ file: path.join(tempRoot, 'nao-existe.log') }), null);
 });
 
+test('[UC-SAUDE-001] a última falha e o "com problemas" do cartão não levam e-mail que veio na mensagem do erro', async () => {
+    // Antes o resumo era a primeira linha da mensagem como estava: "falha ao gravar aluno
+    // joana@escola.com" chegava inteira a qualquer conta com page.system.
+    const file = path.join(tempRoot, 'crash-email.log');
+    fs.writeFileSync(file, '\n[2026-11-03T09:00:00.000Z] uncaughtException\nError: falha ao gravar aluno joana@escola.com (de <prof.ana@escola.com.br>)\n    at x\n');
+    assert.deepEqual(readLastCrash({ file }), { at: '2026-11-03T09:00:00.000Z', kind: 'uncaughtException', summary: 'Error: falha ao gravar aluno [e-mail] (de <[e-mail]>)' });
+    logError('teste-email', new Error('falha ao gravar aluno joana@escola.com'), { email: 'quem@teste.local' });
+    serverLifecycle.markDegraded('Erro: aluno pedro@escola.com sumiu');
+    try {
+        const token = await adminToken(request(app));
+        const res = await request(app).get('/api/admin/system/health').set('x-admin-session', token).expect(200);
+        const text = JSON.stringify(res.body);
+        assert.equal(res.body.lastCrash.summary, 'Error: falha ao gravar aluno [e-mail]');
+        assert.equal(res.body.degraded.reason, 'Erro: aluno [e-mail] sumiu');
+        for (const email of ['joana@escola.com', 'pedro@escola.com', 'quem@teste.local']) assert.equal(text.includes(email), false, email);
+    } finally {
+        serverLifecycle.resetProcessState();
+    }
+});
+
 // ---------------------------------------------------------------------------
 // O servidor de verdade num processo próprio.
 // ---------------------------------------------------------------------------
