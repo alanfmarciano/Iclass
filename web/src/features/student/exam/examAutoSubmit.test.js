@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered } from './examAutoSubmit'
+import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds } from './examAutoSubmit'
 
 describe('[UC-TENTATIVA-001] envio automático do fim do tempo (CONF-01, UXA-01)', () => {
   it('insiste quando não há rede ou o servidor falha, com espera crescente e limitada', () => {
@@ -15,5 +15,28 @@ describe('[UC-TENTATIVA-001] envio automático do fim do tempo (CONF-01, UXA-01)
     expect(classifyAutoSubmitError({ status: 403, data: { applicationPaused: true } })).toBe('paused')
     expect(classifyAutoSubmitError({ status: 409 })).toBe('fatal')
     expect(countAnswered({ 1: 'A', 2: '', 3: null, 4: 'C' })).toBe(2)
+  })
+})
+
+describe('[UC-TENTATIVA-002] tempo restante de prova sem prazo', () => {
+  it('null, ausente, texto vazio ou não numérico é "sem prazo" (null), nunca zero', () => {
+    expect([null, undefined, '', '   ', 'abc', NaN, Infinity, true, false, {}].map(remainingSeconds)).toEqual(Array(10).fill(null))
+    expect([null, undefined, '', 'abc', true].map(optionalNumber)).toEqual(Array(5).fill(null))
+  })
+
+  it('com prazo, o número que veio (texto numérico também), nunca menos que zero', () => {
+    expect(remainingSeconds(0)).toBe(0)
+    expect(remainingSeconds(125)).toBe(125)
+    expect(remainingSeconds('90')).toBe(90)
+    expect(remainingSeconds(-3)).toBe(0)
+    expect(optionalNumber(0)).toBe(0)
+    expect(optionalNumber('7')).toBe(7)
+    expect(optionalNumber(-2)).toBe(-2)
+  })
+
+  it('reconhece a recusa do envio automático de uma prova sem prazo', () => {
+    expect(classifyAutoSubmitError({ status: 409, data: { code: 'no_deadline', noDeadline: true } })).toBe('no_deadline')
+    expect(classifyAutoSubmitError({ status: 409, data: { code: 'outro' } })).toBe('fatal')
+    expect(classifyAutoSubmitError({ status: 409, data: { deadlineExtended: true } })).toBe('extended')
   })
 })

@@ -998,7 +998,7 @@ export default function ProvasPage() {
                       <div className="grid grid-cols-1 gap-2">
                         <Switch label="Embaralhar questões" checked={form.shuffleQuestions} onChange={(v) => setForm({ ...form, shuffleQuestions: v })} />
                         <Switch label="Embaralhar alternativas" checked={form.shuffleAnswers} onChange={(v) => setForm({ ...form, shuffleAnswers: v })} />
-                        {mode === 'online' && <Switch label="Cronometro ativo" checked={form.timerEnabled} onChange={(v) => setForm({ ...form, timerEnabled: v })} />}
+                        {mode === 'online' && <Switch label="Cronômetro ativo" checked={form.timerEnabled} onChange={(v) => setForm({ ...form, timerEnabled: v })} />}
                         {mode === 'online' && <Switch label="Exigir token de acesso" checked={form.tokenEnabled} onChange={(v) => setForm({ ...form, tokenEnabled: v, accessToken: form.accessToken || generateExamToken() })} />}
                         <Switch label="Usar apenas questões inéditas" checked={unusedOnly} onChange={setUnusedOnly} />
                       </div>

@@ -38,6 +38,12 @@ const CLASS_EXTRA_TIME_REOPEN_WINDOW_MS = 2 * 60 * 1000;
 // chega com o prazo ainda bem à frente é de uma tela que não viu o tempo extra (o
 // professor deu mais tempo, ou reabriu a tentativa): a prova continua.
 const AUTO_SUBMIT_EARLY_TOLERANCE_MS = 15 * 1000;
+// Envio automático (auto: true) de uma tentativa sem prazo: não há fim do tempo, a
+// tentativa continua aberta. O código é estável para a tela reconhecer a recusa; o
+// texto também aparece nas telas antigas (5b69148 mostra num aviso; 1615783 na tela
+// "Tempo esgotado", com o botão "Voltar às provas", e a prova volta ao abrir de novo).
+const NO_DEADLINE_CODE = 'no_deadline';
+const NO_DEADLINE_AUTO_SUBMIT_MESSAGE = 'Esta prova não tem tempo limite e continua aberta, com as suas respostas. Abra a prova de novo para continuar e envie quando terminar.';
 
 function normalizedEmail(value) {
     return String(value || '').trim().toLowerCase();
@@ -598,6 +604,8 @@ module.exports = {
     CLIENT_TIMER_SOURCE,
     LATE_AUTO_SUBMIT_TOLERANCE_MS,
     LATE_FLAG_THRESHOLD_MS,
+    NO_DEADLINE_AUTO_SUBMIT_MESSAGE,
+    NO_DEADLINE_CODE,
     SERVER_DEADLINE_SOURCE,
     SERVER_FINALIZE_DELAY_MS,
     attemptOverdueMs,
