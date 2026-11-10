@@ -53,7 +53,7 @@ export function getAdminNavGroups(auth, pendingEnrollments = 0) {
     .filter((group) => group.items.length > 0)
 }
 
-export function Sidebar({ open }) {
+export function Sidebar({ open, onNavigate }) {
   const { auth } = useAuth()
   const { branding } = useBranding()
   const logo = branding?.logoLightUrl || branding?.logoDarkUrl || ''
@@ -81,7 +81,7 @@ export function Sidebar({ open }) {
           <div key={g.label} className="mb-6">
             <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.18em] text-subtle">{g.label}</p>
             {g.items.map((it) => (
-              <NavLink key={it.to} to={it.to} end={it.end}
+              <NavLink key={it.to} to={it.to} end={it.end} onClick={onNavigate}
                 className={({ isActive }) => cn('group mb-1 flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] transition-all duration-300',
                   isActive ? 'bg-primary-soft font-semibold text-text shadow-[inset_0_0_0_1px_var(--primary-soft)]' : 'text-muted hover:bg-surface-2 hover:text-text')}>
                 {({ isActive }) => <><span className={cn('grid h-7 w-7 place-items-center rounded-lg transition-colors', isActive ? 'bg-primary text-primary-fg' : 'text-subtle group-hover:text-text')}><it.icon size={16} /></span><span className="truncate">{it.text}</span>{it.badge > 0 ? <span className="ml-auto rounded-full bg-warning px-2 py-0.5 text-[10px] font-bold text-white">{it.badge}</span> : isActive && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}</>}

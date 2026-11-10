@@ -81,7 +81,9 @@ function uniquePath(target, isDir) {
 }
 
 // Move um arquivo/pasta (abs) para a lixeira, registrando a origem para restaurar.
-function moveToTrash(absPath) {
+// meta (opcional): curso/turma do material e quem excluiu, para a lixeira do professor
+// mostrar só o que está no escopo dele (ver hiddenFromAccount em adminRecovery.js).
+function moveToTrash(absPath, meta = {}) {
     try {
         if (!absPath || !fs.existsSync(absPath)) return null;
         absPath = assertInside(DATA, absPath);
@@ -93,12 +95,19 @@ function moveToTrash(absPath) {
         const dest = path.join(LIXEIRA_DIR, stored);
         fs.renameSync(absPath, dest);
         const idx = readIndex();
-        idx.push({ id: stored, name: path.basename(originalRel), originalRel, isDir, deletedAt: Date.now() });
+        const record = { id: stored, name: path.basename(originalRel), originalRel, isDir, deletedAt: Date.now() };
+        const courseId = String((meta && meta.courseId) || '').trim();
+        const studentClass = String((meta && meta.studentClass) || '').trim();
+        const deletedBy = String((meta && meta.deletedBy) || '').trim().toLowerCase();
+        if (courseId) record.courseId = courseId;
+        if (courseId && studentClass) record.studentClass = studentClass;
+        if (deletedBy) record.deletedBy = deletedBy;
+        idx.push(record);
         writeIndex(idx);
         return stored;
     } catch (e) { return null; }
 }
-function moveDirToTrash(absDir) { return moveToTrash(absDir); }
+function moveDirToTrash(absDir, meta) { return moveToTrash(absDir, meta); }
 
 function dirSize(p) {
     let total = 0;
@@ -122,10 +131,32 @@ function listTrash() {
         if (!fs.existsSync(abs)) { changed = true; return; }
         let size = 0;
         try { const st = fs.statSync(abs); size = st.isDirectory() ? dirSize(abs) : st.size; } catch (e2) {}
-        out.push({ id: e.id, name: e.name, originalRel: e.originalRel, isDir: !!e.isDir, deletedAt: e.deletedAt, size });
+        out.push({
+            id: e.id, name: e.name, originalRel: e.originalRel, isDir: !!e.isDir, deletedAt: e.deletedAt, size,
+            courseId: e.courseId || '', studentClass: e.studentClass || '', deletedBy: e.deletedBy || '',
+        });
     });
     if (changed) writeIndex(idx.filter(e => fs.existsSync(path.join(LIXEIRA_DIR, e.id))));
     return out.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+}
+
+// SEG-X1: .json/.zip que saiu de /uploads pode ser um arquivo de backup enviado para
+// restauração (versões anteriores mandavam esse arquivo para a lixeira). Ele leva o
+// banco inteiro, com os hashes de senha das contas: só o administrador vê, restaura
+// ou apaga esse item. Arquivo de biblioteca excluído perde o item de biblioteca, então
+// restaurá-lo não serve ao professor de qualquer forma.
+// Pasta de aluno (alunos/...: documentos e atestados, que vão para a lixeira ao excluir o
+// aluno) também é só do administrador, como "Excluir aluno" e os atestados.
+function isAdminOnlyTrashEntry(entry) {
+    if (!entry) return false;
+    const rel = String(entry.originalRel || '').split('\\').join('/').replace(/^\/+/, '');
+    return /^uploads\/[^/]+\.(json|zip)$/i.test(rel) || /^alunos(\/|$)/i.test(rel);
+}
+
+// Registro do manifesto de um item (sem tocar no disco).
+function getTrashEntry(id) {
+    try { id = assertSafeId(id); } catch (e) { return null; }
+    return readIndex().find(x => x.id === id) || null;
 }
 
 // Restaura um item para o caminho original (sem sobrescrever).
@@ -162,12 +193,16 @@ function deleteTrashItem(id) {
     return true;
 }
 
-// Esvazia a lixeira inteira.
-function emptyTrash() {
+// Esvazia a lixeira inteira (ou só os itens aceitos por `shouldRemove`).
+function emptyTrash(shouldRemove) {
     const idx = readIndex();
+    const keep = [];
     let n = 0;
-    idx.forEach(e => { try { const abs = resolveInside(LIXEIRA_DIR, assertSafeId(e.id)); if (fs.existsSync(abs)) { fs.rmSync(abs, { recursive: true, force: true }); n++; } } catch (e2) {} });
-    writeIndex([]);
+    idx.forEach(e => {
+        if (typeof shouldRemove === 'function' && !shouldRemove(e)) { keep.push(e); return; }
+        try { const abs = resolveInside(LIXEIRA_DIR, assertSafeId(e.id)); if (fs.existsSync(abs)) { fs.rmSync(abs, { recursive: true, force: true }); n++; } } catch (e2) {}
+    });
+    writeIndex(keep);
     return n;
 }
 
@@ -192,5 +227,6 @@ module.exports = {
     DATA, ALUNOS_DIR, LIXEIRA_DIR, UPLOADS_DIR,
     safeName, studentFolderName, studentDir, storeStudentFile,
     moveToTrash, moveDirToTrash, purgeTrash, listTrash, restoreTrash, deleteTrashItem, emptyTrash,
+    isAdminOnlyTrashEntry, getTrashEntry,
     relFromData, absFromData, isInsideStudents, ensureDir,
 };

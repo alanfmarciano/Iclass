@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
@@ -10,6 +10,7 @@ import { useBranding } from '../../context/BrandingProvider'
 import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
 import { NotificationBell } from '../../components/ui/NotificationBell'
+import { useStudentHeartbeat } from './useStudentHeartbeat'
 const NAV = [
   { to: '/aluno', icon: Home, text: 'Início', end: true },
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
@@ -34,20 +35,21 @@ export function StudentShell() {
   const logo = branding?.logoLightUrl || branding?.logoDarkUrl || ''
   const brandName = branding?.displayName || 'IClass'
   const pageTitle = NAV.find((item) => item.to === pathname)?.text || 'Portal do Aluno'
-  const notificationsEndpoint = cls && activeClass.courseId ? `/api/student/notifications?courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : null
-  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint="/api/student/notifications/seen" />
-  useEffect(() => {
-    if (!auth.email) return
-    const ping = () => api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`).catch((err) => {
-      if (err?.status === 401 || err?.data?.sessionRevoked === true) {
-        logout()
-        nav('/login')
-      }
-    })
-    ping()
-    const id = setInterval(ping, 4000)
-    return () => clearInterval(id)
-  }, [auth.email, logout, nav])
+  const notificationsContext = cls && activeClass.courseId ? `courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : ''
+  const notificationsEndpoint = notificationsContext ? `/api/student/notifications?${notificationsContext}` : null
+  // "Marcar como lidas" vale só para o sino desta turma/curso (aluno em duas turmas).
+  const notificationsSeenEndpoint = notificationsContext ? `/api/student/notifications/seen?${notificationsContext}` : '/api/student/notifications/seen'
+  // Abrir um aviso pelo sino já conta como lido (UXA-X3).
+  const openNotification = async (item) => {
+    let markedRead = false
+    if (item.type === 'aviso' && String(item.id || '').startsWith('aviso:')) {
+      try { await api.post('/api/student/announcements/read', { id: item.id.slice('aviso:'.length) }); markedRead = true } catch { /* segue para a tela */ }
+    }
+    if (item.href) nav(item.href)
+    return markedRead
+  }
+  const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} />
+  useStudentHeartbeat()
 
   if (interfacePreset === 'lumen') {
     const studentName = ((s.nomeSocial && s.nomeSocial.trim()) || s.name) || auth.email || 'Aluno'
@@ -78,13 +80,16 @@ export function StudentShell() {
     )
   }
 
+  // No celular a gaveta do menu (e o fundo escuro) fica acima da faixa "Prova disponível"
+  // (z-[70]): antes a faixa cobria o rodapé da gaveta e o toque em Sair caía nela. No
+  // desktop a gaveta é estática e a faixa fica à direita, fora dela.
   return (
     <div className="app-canvas h-full flex text-text">
-      <aside aria-hidden={!open ? 'true' : undefined} inert={!open ? '' : undefined} className={cn('fixed inset-y-0 left-0 z-40 flex w-[272px] flex-col overflow-hidden border-r border-border bg-[var(--sidebar)] backdrop-blur-2xl transition-transform duration-300 md:static md:translate-x-0', open ? 'translate-x-0' : '-translate-x-full')}>
+      <aside aria-hidden={!open ? 'true' : undefined} inert={!open ? '' : undefined} className={cn('fixed inset-y-0 left-0 z-[80] flex w-[272px] flex-col overflow-hidden border-r border-border bg-[var(--sidebar)] backdrop-blur-2xl transition-transform duration-300 md:static md:translate-x-0', open ? 'translate-x-0' : '-translate-x-full')}>
         <div className="flex h-[72px] items-center gap-3 border-b border-border px-5">
           {logo ? <img src={logo} alt={brandName} className="h-9 max-w-[165px] object-contain" /> : <>
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-primary text-primary-fg shadow-[0_10px_28px_var(--primary-glow)]"><GraduationCap size={20} /></span>
-          <div><span className="block font-semibold tracking-[-0.025em]">{brandName}</span><span className="block text-[10px] font-medium uppercase tracking-[.16em] text-subtle">Student space</span></div></>}
+          <div><span className="block font-semibold tracking-[-0.025em]">{brandName}</span><span className="block text-[10px] font-medium uppercase tracking-[.16em] text-subtle">Área do aluno</span></div></>}
         </div>
         <div className="glass-panel mx-3 my-5 flex items-center gap-3 rounded-xl p-3.5">
           <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-hover text-sm font-semibold text-primary-fg shadow-[0_8px_22px_var(--primary-glow)]">{(((s.nomeSocial && s.nomeSocial.trim()) || s.name) || auth.email || 'A')[0]?.toUpperCase()}</span>
@@ -119,7 +124,7 @@ export function StudentShell() {
           <ThemeToggle />
         </div>
       </aside>
-      {open && <button type="button" aria-label="Fechar menu" className="fixed inset-0 z-30 bg-black/55 backdrop-blur-sm md:hidden" onClick={() => setOpen(false)} />}
+      {open && <button type="button" aria-label="Fechar menu" className="fixed inset-0 z-[75] bg-black/55 backdrop-blur-sm md:hidden" onClick={() => setOpen(false)} />}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="glass-panel z-20 flex h-[72px] items-center gap-2 border-x-0 border-t-0 px-4 md:px-7">
           <button onClick={() => setOpen((o) => !o)} className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-surface-2 md:hidden" aria-label="Menu"><Menu size={21} /></button>

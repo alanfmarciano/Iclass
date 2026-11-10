@@ -78,6 +78,37 @@ test('administradores são vinculados automaticamente a todas as turmas', async 
     assert.equal(db.memory.admins[0].assignedClasses.some(item => item.className === 'Turma B'), false);
 });
 
+test('turmas atribuídas ficam numa ordem fixa, qualquer que seja a ordem das turmas no banco', async () => {
+    // Depois de restaurar um backup as turmas podem voltar em outra ordem; antes a lista
+    // de turmas das contas seguia essa ordem, mudava a cada boot e era regravada sempre.
+    const turmaA = { name: 'Turma A', courseId: 'curso-1' };
+    const turmaB = { name: 'Turma B', courseId: 'curso-2' };
+    const turmaA2 = { name: 'Turma 2', courseId: 'curso-1' };
+    db.memory.classes = [turmaB, turmaA, turmaA2];
+    db.memory.admins = [
+        { name: 'Admin', email: 'admin-ordem@teste.local', role: 'admin', assignedClasses: [] },
+        { name: 'Professor', email: 'professor-ordem@teste.local', role: 'professor', assignedClasses: [
+            { courseId: 'curso-2', className: 'Turma B' }, { courseId: 'curso-1', className: 'Turma A' },
+        ] },
+    ];
+    await db.save();
+    const expectedAdmin = [
+        { courseId: 'curso-1', className: 'Turma 2' },
+        { courseId: 'curso-1', className: 'Turma A' },
+        { courseId: 'curso-2', className: 'Turma B' },
+    ];
+    const expectedProfessor = [{ courseId: 'curso-1', className: 'Turma A' }, { courseId: 'curso-2', className: 'Turma B' }];
+    assert.deepEqual(db.memory.admins[0].assignedClasses, expectedAdmin);
+    assert.deepEqual(db.memory.admins[1].assignedClasses, expectedProfessor);
+
+    // Mesmas turmas em outra ordem: nada muda (as funções de sincronização dizem que não houve mudança).
+    db.memory.classes = [turmaA2, turmaB, turmaA];
+    assert.equal(db.syncAdminClassAssignments(), false);
+    assert.deepEqual(db.memory.admins[0].assignedClasses, expectedAdmin);
+    await db.save();
+    assert.deepEqual(db.memory.admins[1].assignedClasses, expectedProfessor);
+});
+
 test('estado da prova fixa versão, questões e prazo no servidor', () => {
     const { initializeExamState } = require('../../backend/middlewares.js');
     const now = Date.now();
@@ -188,6 +219,9 @@ test('uploads exigem sessão e respeitam o curso da biblioteca', async () => {
     fs.writeFileSync(path.join(uploads, 'protegido.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     db.memory.sessions = { 'aluno@teste.local': { token: 'token-teste', lastSeen: Date.now(), ip: '::ffff:127.0.0.1' } };
     db.memory.students = [{ email: 'aluno@teste.local', status: 'Ativo', classes: [{ name: 'Turma 1', courseId: 'curso-1' }] }];
+    // O download segue a regra da listagem da biblioteca: turma cadastrada em que o aluno
+    // tem matrícula (studentLibrary.js).
+    db.memory.classes = [{ name: 'Turma 1', courseId: 'curso-1' }];
     db.memory.library = [{ id: 'lib-1', filename: 'protegido.png', url: '/uploads/protegido.png', courseId: 'curso-2' }];
     const app = createApp();
 
@@ -246,16 +280,27 @@ test('routers extraídos preservam contratos administrativos', async () => {
     const loadedSettings = await request(app).get('/api/admin/settings').set('x-admin-session', 'admin-token').expect(200);
     assert.equal(loadedSettings.body.maintenance.message, 'Manutenção de teste');
 
-    db.memory.studentExamState = { 'aluno@teste.local::prova-1': {} };
-    db.memory.proctoringLogs = [{ studentEmail: 'aluno@teste.local', examKey: 'prova-1' }];
-    db.memory.broadcastMessages = [{ targetEmail: 'aluno@teste.local', studentClass: 'Turma 1' }];
+    // Limpar estado de prova: só na turma informada, com confirmação digitada, e sem
+    // apagar logs de monitoramento nem entregas (evidência e notas ficam).
+    db.memory.classes = [{ name: 'Turma 1', courseId: 'curso-1' }];
+    db.memory.studentExamState = { 'aluno@teste.local_prova-1': { studentEmail: 'aluno@teste.local', studentClass: 'Turma 1', examKey: 'prova-1' } };
+    db.memory.proctoringLogs = [{ studentEmail: 'aluno@teste.local', studentClass: 'Turma 1', examKey: 'prova-1' }];
+    db.memory.broadcastMessages = [{ targetEmail: 'aluno@teste.local', studentClass: 'Turma 1', examKey: 'prova-1' }];
     db.memory.submissions = [{ email: 'aluno@teste.local', examKey: 'prova-1' }];
+    await request(app).post('/api/admin/flush-exam-state').set('x-admin-session', 'admin-token').send({
+        studentEmail: 'aluno@teste.local',
+        examKey: 'prova-1',
+        studentClass: 'Turma 1',
+    }).expect(400);
     const flushed = await request(app).post('/api/admin/flush-exam-state').set('x-admin-session', 'admin-token').send({
         studentEmail: 'aluno@teste.local',
         examKey: 'prova-1',
         studentClass: 'Turma 1',
+        confirm: 'LIMPAR',
     }).expect(200);
-    assert.equal(flushed.body.clearedCount, 4);
+    assert.equal(flushed.body.clearedCount, 2);
+    assert.equal(db.memory.proctoringLogs.length, 1);
+    assert.equal(db.memory.submissions.length, 1);
 
     const identity = await request(app).get('/api/admin/whoami').set('x-admin-session', 'admin-token').expect(200);
     assert.equal(identity.body.email, 'admin@teste.local');
@@ -428,4 +473,46 @@ test('acesso rapido local escolhe somente as contas oficiais de teste', async ()
     currentTime = 3605001;
     expiredApp.use(createSetupModeRouter({ enabled: true, setupToken, now: () => currentTime, startedAt: 5000 }));
     await request(expiredApp).post('/api/setup/quick-session').send({ token: setupToken, profile: 'admin' }).expect(410);
+});
+
+test('[UC-NOTAS-004] no boot, nada é anonimizado automaticamente: aluno excluído antes continua como estava', async () => {
+    // Decisão: a anonimização só acontece na ação explícita de excluir o aluno; quem foi
+    // excluído antes dela fica como está (o Alan decide caso a caso na tela da fase 2).
+    // Antes, a migração do boot anonimizava este histórico sozinha.
+    db.memory.students = [{ name: 'Ativa', email: 'ativa@teste.local', status: 'Ativo', classes: [] }];
+    db.memory.submissions = [];
+    const logs = [{
+        id: 'audit_grade_boot', actor: 'admin@teste.local', studentEmail: 'gabriela.lima@teste.local', action: 'grade_delete', field: 'Nota',
+        oldValue: 'Avaliação 1: 6,3 (3/4 acertos) · tentativa 1 · publicada', newValue: 'excluída', category: 'grade', submissionId: 'sub_boot', timestamp: 1,
+        details: { deletedSubmission: { id: 'sub_boot', examKey: 'Avaliacao_FUTEC_1', score: 63, student: { name: 'Gabriela Lima', email: 'gabriela.lima@teste.local', matricula: '2026-0042', courseId: 'curso-1', studentClass: '1DES' } } },
+    }, {
+        id: 'audit_perfil_boot', actor: 'admin@teste.local', studentEmail: 'gabriela.lima@teste.local', action: 'update', field: 'Telefone', oldValue: '(11) 98888-7777', newValue: '(11) 97777-6666', timestamp: 2,
+    }];
+    db.memory.auditLogs = JSON.parse(JSON.stringify(logs));
+    await db.save();
+    // Outro processo sobe o banco gravado (como o servidor ao ligar).
+    const script = `const db = require(${JSON.stringify(require.resolve('../../backend/database.js'))});
+db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(db.memory.auditLogs.filter(item => String(item.id).endsWith('_boot')))); await db.close(); });`;
+    const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
+    const after = JSON.parse(output.slice(output.indexOf('@@') + 2));
+    assert.deepEqual(after, logs);
+});
+
+test('[UC-NOTAS-004] no boot, histórico de aluna ativa que trocou de e-mail na versão antiga não é anonimizado', async () => {
+    // Formato das versões 2a69f47..68115bc: a troca de e-mail não atualizava auditLogs[].studentEmail.
+    db.memory.students = [{ name: 'Ana Maria Souza', email: 'ana.souza@escola.br', matricula: '2025-77', status: 'Ativo', classes: [{ name: '1DES', courseId: 'c1' }], studentClass: '1DES' }];
+    db.memory.submissions = [{ id: 's1', examKey: 'Avaliacao_X', score: 80, student: { name: 'Ana Maria Souza', email: 'ana.souza@escola.br', courseId: 'c1', studentClass: '1DES' } }];
+    const logs = [
+        { id: 'boot_a1', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Nome completo', oldValue: 'Ana Souza', newValue: 'Ana Maria Souza', timestamp: 1, ip: '10.0.0.1' },
+        { id: 'boot_a2', actor: 'admin@escola.br', studentEmail: 'ana@escola.br', action: 'update', field: 'Status', oldValue: 'Trancado', newValue: 'Ativo', timestamp: 2, ip: '10.0.0.1' },
+        { id: 'boot_a3', actor: 'admin@escola.br', studentEmail: 'ana.souza@escola.br', action: 'update', field: 'E-mail/login', oldValue: 'ana@escola.br', newValue: 'ana.souza@escola.br', timestamp: 3, ip: '10.0.0.1' },
+    ];
+    db.memory.auditLogs = JSON.parse(JSON.stringify(logs));
+    await db.save();
+    const script = `const db = require(${JSON.stringify(require.resolve('../../backend/database.js'))});
+db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(db.memory.auditLogs.filter(item => String(item.id).startsWith('boot_a')))); await db.close(); });`;
+    const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
+    const after = JSON.parse(output.slice(output.indexOf('@@') + 2));
+    // Antes: a1 e a2 ficavam com studentEmail '', oldValue '' e newValue ''; a3 perdia o e-mail antigo.
+    assert.deepEqual(after, logs);
 });

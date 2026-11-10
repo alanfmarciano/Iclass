@@ -90,8 +90,9 @@ test('[UC-CURSO-001] central gerencia heranças por escola e curso sem perder a 
     await expect(page.getByRole('heading', { name: 'Selecione o curso e a turma', exact: true })).toBeVisible();
     const firstClassCards = page.getByRole('button', { name: `Entrar em ${LEGACY_COURSE}, turma 1DES`, exact: true });
     const futureClassCards = page.getByRole('button', { name: `Entrar em ${LEGACY_COURSE}, turma ${FUTURE_CLASS}`, exact: true });
-    expect(await firstClassCards.count()).toBeGreaterThanOrEqual(1);
-    expect(await futureClassCards.count()).toBeGreaterThanOrEqual(1);
+    // Espera os cartões: eles chegam depois do título quando a máquina está carregada.
+    await expect(firstClassCards.first()).toBeVisible();
+    await expect(futureClassCards.first()).toBeVisible();
     // O gate atual também pode repetir um contexto na seção "Recentes".
     await futureClassCards.last().click();
     await expect(page.getByTitle('Trocar curso ou turma')).toContainText(FUTURE_CLASS);

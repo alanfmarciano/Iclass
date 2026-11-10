@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, Ban, CheckCircle2, Clock, Copy, Eye, GitBranch, History, Keyboard, Library, ListFilter, MonitorPlay, Pause, Pencil, Play, Send, Square, Trash2, Unlock, Users } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Ban, CheckCircle2, Clock, Eye, GitBranch, History, Keyboard, Library, ListFilter, MonitorPlay, Pause, Pencil, Play, Send, Square, Trash2, Unlock, Users } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -12,16 +12,23 @@ import { Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { fmtGrade } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { resolveMonitorTimer } from './monitorTimer'
+import { classTimeExtraFeedback, resolveMonitorTimer, rowStartedAttempt, rowTimerLabel } from './monitorTimer'
+import { attemptCountLabel, deliveryLabel, deliveryTone } from './attemptDelivery'
+import { liveCorrectionDraft } from './examTools'
 import { FinishApplicationModal } from './FinishApplicationModal'
+import { ApplicationTokenPanel } from './ApplicationTokenPanel'
+import { controlResultMessage } from './applicationControl'
 import { StudentAnswersModal } from './StudentAnswersModal'
+import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
+import { csvCell } from '../../lib/csv'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
 const DEFAULT_WAITING_ROOM_MINUTES = 10
-const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'] }
+const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'], time_over: ['warning', 'Tempo esgotado'], discarded: ['neutral', 'Desconsiderada'] }
 const EXAM_STATUS = {
   prepared: ['neutral', 'Preparada'],
   running: ['success', 'Em andamento'],
@@ -62,14 +69,6 @@ function keystrokeText(ev) {
   if (ev.key === 'Tab') return '⇥ tab'
   return ev.key || ev.code || '?'
 }
-function focusLogLabel(log) {
-  const type = log?.eventType
-  if (type === 'tab_blur') return 'Foco perdido'
-  if (type === 'tab_focus') return 'Foco recuperado'
-  if (type === 'exam_left') return 'Saiu da prova'
-  if (type === 'exam_return') return 'Retornou a prova'
-  return type || 'Evento'
-}
 
 /* ────────────────────────────────────────────────────────────────────────
  * KeystrokeViewer — leitura legível dos comandos capturados (Fase 1)
@@ -103,13 +102,7 @@ const SHORTCUT_INFO = {
   tecla_sistema: { label: 'Tecla de sistema', icon: '⊞', sev: 'low' },
   atalho: { label: 'Atalho de teclado', icon: '⌘', sev: 'low' },
 }
-const LOG_INFO = {
-  tab_blur: { label: 'Saiu do foco da prova', icon: '⇄', sev: 'high' },
-  exam_left: { label: 'Fechou ou recarregou a prova', icon: '⎋', sev: 'high' },
-  fullscreen_exit: { label: 'Saiu da tela cheia', icon: '⛶', sev: 'high' },
-}
 const ALERT_LOG_TYPES = new Set(Object.keys(LOG_INFO))
-const SEV_RANK = { high: 3, med: 2, low: 1 }
 
 // Classifica um keystroke → { reason, label, icon, sev }. Char/key não são comandos.
 function classifyKeystroke(ev) {
@@ -138,7 +131,8 @@ function buildItems(events, logs) {
   })
   const lg = (logs || []).filter((l) => ALERT_LOG_TYPES.has(l.eventType)).map((l) => {
     const info = LOG_INFO[l.eventType]
-    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: l.eventType, ...info, log: l }
+    const label = logLabel(l)
+    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: ['exam_left', 'page_return'].includes(l.eventType) ? `${l.eventType}:${label}` : l.eventType, ...info, label, log: l }
   })
   return [...ks, ...lg].sort((a, b) => a.t - b.t)
 }
@@ -166,19 +160,6 @@ function groupStream(items) {
   return segs
 }
 
-// Alertas = comandos de gravidade média/alta + logs de foco, com duplicados consecutivos colapsados.
-function buildAlerts(items) {
-  const out = []
-  for (const it of items) {
-    if (it.cat !== 'cmd') continue
-    if (SEV_RANK[it.sev] < SEV_RANK.med) continue
-    const last = out[out.length - 1]
-    if (last && last.sig === it.sig) { last.count++; last.lastT = it.t }
-    else out.push({ ...it, count: 1, lastT: it.t })
-  }
-  return out
-}
-
 function buildCounters(items) {
   const c = { copy: 0, paste: 0, focus: 0, ia: 0, devtools: 0, menu: 0 }
   for (const it of items) {
@@ -188,7 +169,7 @@ function buildCounters(items) {
     else if (it.reason === 'assistente_ia') c.ia++
     else if (it.reason === 'devtools') c.devtools++
     else if (it.reason === 'contextmenu') c.menu++
-    if (it.kind === 'focus') c.focus++
+    if (it.kind === 'focus' && it.pauses !== false) c.focus++
   }
   return c
 }
@@ -201,7 +182,7 @@ function buildTimeline(items, now, binMs = 10000, bins = 30) {
     if (it.t < start || it.t > end) continue
     const idx = Math.min(bins - 1, Math.max(0, Math.floor((it.t - start) / binMs)))
     arr[idx].count++
-    if (it.cat === 'cmd' && SEV_RANK[it.sev] >= SEV_RANK.med) arr[idx].sus = true
+    if (isSuspiciousItem(it)) arr[idx].sus = true
   }
   const max = Math.max(1, ...arr.map((b) => b.count))
   return { arr, max, start, end }
@@ -216,7 +197,7 @@ function exportKeystrokesCsv(events, name) {
     const info = isTypingEvent(ev) ? { label: 'digitação', sev: '-' } : classifyKeystroke(ev)
     return [ev.seq ?? '', ev.serverTs ? new Date(ev.serverTs).toLocaleString('pt-BR') : '', ev.question ?? '', ev.kind ?? '', info.label, info.sev, ev.key ?? '', ev.mods ?? '', ev.suspicious ? 'sim' : 'nao', ev.blocked ? 'sim' : 'nao']
   })
-  const csv = [header, ...lines].map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
+  const csv = [header, ...lines].map((r) => r.map(csvCell).join(',')).join('\n')
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -245,7 +226,7 @@ function KeystrokeViewer({ events, row, loading }) {
   const counters = useMemo(() => buildCounters(items), [items])
   const stream = useMemo(() => groupStream(items), [items])
   const timeline = useMemo(() => buildTimeline(items, Date.now()), [items])
-  const suspCount = alerts.reduce((n, a) => n + a.count, 0)
+  const suspCount = suspiciousCount(alerts)
   const focusExits = counters.focus
   const lastTs = row?.lastKeystrokeAt || (items.length ? items[items.length - 1].t : null)
   const lastAgo = lastTs ? Math.max(0, Math.round((Date.now() - lastTs) / 1000)) : null
@@ -317,8 +298,8 @@ function KeystrokeViewer({ events, row, loading }) {
                 <div className="space-y-2">
                   {alerts.map((a, i) => {
                     const tone = SEV_TONE[a.sev]
-                    const cls = tone === 'danger' ? 'bg-danger-soft border-danger/25' : 'bg-warning-soft border-warning/25'
-                    const ttone = tone === 'danger' ? 'text-danger' : 'text-warning'
+                    const cls = tone === 'danger' ? 'bg-danger-soft border-danger/25' : tone === 'warning' ? 'bg-warning-soft border-warning/25' : 'bg-surface-2 border-border'
+                    const ttone = tone === 'danger' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'text-text'
                     return (
                       <div key={i} className={`flex items-center gap-3 rounded-xl border p-3 ${cls}`}>
                         <div className="w-9 h-9 shrink-0 grid place-items-center rounded-lg bg-surface-2 text-base">{a.icon}</div>
@@ -326,7 +307,8 @@ function KeystrokeViewer({ events, row, loading }) {
                           <div className={`text-sm font-semibold flex items-center gap-2 flex-wrap ${ttone}`}>
                             {a.label}
                             {a.count > 1 && <span className="font-mono text-[10px] font-bold rounded-full px-1.5 py-0.5 bg-surface-2 text-danger border border-danger/30">×{a.count}</span>}
-                            {a.kind === 'focus' && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-warning border border-warning/30">pausou a prova</span>}
+                            {a.kind === 'focus' && a.pauses !== false && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-warning border border-warning/30">pausou a prova</span>}
+                            {a.kind === 'focus' && a.pauses === false && a.badge && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-subtle border border-border">{a.badge}</span>}
                           </div>
                           {(a.mods || a.key) && a.kind !== 'focus' && <div className="text-[11px] text-subtle mt-0.5 font-mono">{[a.mods, a.key].filter(Boolean).join('+')}</div>}
                         </div>
@@ -415,6 +397,9 @@ export default function MonitorPage() {
   const [examKey, setExamKey] = useState('')
   const [applicationId, setApplicationId] = useState('')
   const [applications, setApplications] = useState([])
+  // Turma cujas aplicações já chegaram do servidor: antes disso a lista vazia não quer
+  // dizer "sem aplicação" e a aplicação pedida no link (Materiais, Provas) não se perde.
+  const [applicationsLoadedFor, setApplicationsLoadedFor] = useState('')
   const [applicationCatalog, setApplicationCatalog] = useState([])
   const [applicationChooserOpen, setApplicationChooserOpen] = useState(false)
   const [applicationChooserLoading, setApplicationChooserLoading] = useState(false)
@@ -455,6 +440,12 @@ export default function MonitorPage() {
     .sort((a, b) => (ACTIVE_EXAM_STATUS_PRIORITY[a.status] ?? 99) - (ACTIVE_EXAM_STATUS_PRIORITY[b.status] ?? 99) || applicationTime(b) - applicationTime(a)), [activeApplicationsRequest.data])
   const selectedClass = useMemo(() => courseClasses.find((c) => c.name === className && (!courseId || c.courseId === courseId)), [courseClasses, className, courseId])
   const selectedApplication = useMemo(() => applications.find((item) => item.id === applicationId) || null, [applications, applicationId])
+  // Versão atual do token no servidor (a lista da turma é consultada a cada 5 s): se
+  // outro navegador trocou o token, o painel deixa de mostrar o guardado nesta aba.
+  const tokenIssuedAt = useMemo(() => {
+    const live = (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId)
+    return (live || selectedApplication)?.accessTokenIssuedAt || ''
+  }, [activeApplicationsRequest.data, applicationId, selectedApplication])
   const selectedConfig = useMemo(() => {
     const current = selectedClass?.onlineExamConfigs?.[examKey] || {}
     if (!selectedApplication) return current
@@ -470,6 +461,7 @@ export default function MonitorPage() {
       timerMode: selectedApplication.timerMode,
       globalTimeAdjustment: selectedApplication.globalTimeAdjustment,
       waitingRoomDuration: selectedApplication.waitingRoomDuration,
+      pauses: selectedApplication.pauses || [],
       maxAttempts: selectedApplication.maxAttempts,
       requiresToken: selectedApplication.tokenEnabled === true,
     }
@@ -537,14 +529,21 @@ export default function MonitorPage() {
       return () => { cancelled = true }
     }
     const params = new URLSearchParams({ studentClass: selectedClass.name, courseId: selectedClass.courseId || courseId })
-    api.get(`/api/admin/exam-applications?${params.toString()}`)
-      .then((response) => { if (!cancelled) setApplications(response.applications || []) })
+    const loadedKey = params.toString()
+    api.get(`/api/admin/exam-applications?${loadedKey}`)
+      .then((response) => {
+        if (cancelled) return
+        setApplications(response.applications || [])
+        setApplicationsLoadedFor(loadedKey)
+      })
       .catch((error) => { if (!cancelled) setErr(error) })
     return () => { cancelled = true }
   }, [selectedClass, courseId])
 
   useEffect(() => {
     if (!selectedClass) return
+    const classKey = new URLSearchParams({ studentClass: selectedClass.name, courseId: selectedClass.courseId || courseId }).toString()
+    if (applicationsLoadedFor !== classKey) return
     const selected = activeExamOptions.find((item) => item.application.id === applicationId)
     if (selected) {
       if (examKey !== selected.key) setExamKey(selected.key)
@@ -558,7 +557,7 @@ export default function MonitorPage() {
       setExamKey('')
       setRows([])
     }
-  }, [selectedClass, activeExamOptions, applicationId, examKey])
+  }, [selectedClass, activeExamOptions, applicationId, examKey, applicationsLoadedFor, courseId])
 
   useEffect(() => {
     setWaitMinutes(DEFAULT_WAITING_ROOM_MINUTES)
@@ -646,14 +645,10 @@ export default function MonitorPage() {
       if (response.application) {
         setApplications((items) => items.map((item) => item.id === response.application.id ? response.application : item))
       }
-      const messages = {
-        start: 'Prova iniciada. O aviso já está disponível para os alunos.',
-        resume: 'Prova retomada. O aviso aos alunos continua ativo.',
-        pause: 'Prova pausada. Os alunos verão o estado de pausa.',
-        waiting: 'Sala de espera aberta. Os alunos já podem entrar.',
-        adjust_waiting: 'Tempo da sala de espera ajustado.',
-      }
-      toast.success(messages[action] || `Ação concluída: ${action}`)
+      // Encerramento repetido (outra aba já encerrou): avisa que nada mudou.
+      const result = controlResultMessage(action, response)
+      if (result.tone === 'info') toast.info(result.text)
+      else toast.success(result.text)
       await refetchClasses(true)
       await activeApplicationsRequest.refetch(true)
       poll()
@@ -699,18 +694,7 @@ export default function MonitorPage() {
   }
 
   function openCorrection(group) {
-    const question = group.question || {}
-    const alternatives = (question.alternatives || []).map((alternative, index) => ({
-      letter: String(alternative.letter || String.fromCharCode(65 + index)).toUpperCase(),
-      text: alternative.text || '',
-    }))
-    const correctAnswer = String(question.correctAnswer || alternatives.find((alternative, index) => question.alternatives?.[index]?.isCorrect)?.letter || alternatives[0]?.letter || 'A').toUpperCase()
-    setCorrectIssue({
-      group,
-      text: question.questionText || question.text || '',
-      alternatives,
-      correctAnswer,
-    })
+    setCorrectIssue({ group, ...liveCorrectionDraft(group.question || {}) })
   }
 
   async function saveCorrection() {
@@ -799,8 +783,13 @@ export default function MonitorPage() {
 
   async function addTime(targetEmail = null, adjustmentMinutes = 5) {
     try {
-      await api.post('/api/admin/adjust-student-time', { studentClass: className, courseId, examKey, applicationId, targetEmail, adjustmentMinutes })
-      toast.success(targetEmail ? 'Tempo do aluno ajustado' : '+5 min para a turma')
+      const r = await api.post('/api/admin/adjust-student-time', { studentClass: className, courseId, examKey, applicationId, targetEmail, adjustmentMinutes })
+      if (r?.appliesToNextAttempt) toast.info('Ajuste registrado: vale quando o aluno iniciar a tentativa.')
+      else if (targetEmail) toast.success('Tempo do aluno ajustado')
+      else {
+        const feedback = classTimeExtraFeedback(r, adjustmentMinutes)
+        toast[feedback.tone](feedback.message)
+      }
       if (!targetEmail) await refetchClasses(true)
       poll()
     } catch (e) { toast.error(e.message) }
@@ -894,13 +883,6 @@ export default function MonitorPage() {
     selectApplication(application, activeApplicationsRequest.data?.applications || activeApplications)
   }
 
-  async function copyToken() {
-    const token = applicationId ? sessionStorage.getItem(`exam-token:${applicationId}`) || '' : selectedConfig.accessToken || ''
-    if (!token) return toast.info('O token está desativado nesta prova')
-    try { await navigator.clipboard.writeText(token); toast.success('Token copiado') }
-    catch { toast.error('Não foi possível copiar') }
-  }
-
   async function unlock(email) {
     try { await api.post('/api/admin/unlock-student-focus', { studentEmail: email, studentClass: className, courseId, examKey, applicationId }); toast.success('Aluno desbloqueado'); poll() }
     catch (e) { toast.error(e.message) }
@@ -956,10 +938,10 @@ export default function MonitorPage() {
   const totalStudents = rows.length
   const online = rows.filter((r) => ['online', 'active'].includes(r.status)).length
   const finished = rows.filter((r) => r.status === 'finished').length
-  const started = rows.filter((r) => !['absent', 'ausente'].includes(r.status)).length
+  // Só quem começou uma tentativa nesta aplicação (antes contava todo aluno online).
+  const started = rows.filter(rowStartedAttempt).length
   const alerts = rows.filter((r) => r.status === 'blur' || r.status === 'focus_locked' || r.focusLocked).length
   const absent = rows.filter((r) => ['absent', 'ausente'].includes(r.status)).length
-  const applicationToken = applicationId ? sessionStorage.getItem(`exam-token:${applicationId}`) || '' : selectedConfig.accessToken || ''
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -1136,13 +1118,7 @@ export default function MonitorPage() {
                     </p>
                   )}
                 </div>
-                <div className="rounded-lg border border-border bg-surface-2 px-4 py-3 min-w-[190px]">
-                  <p className="text-[11px] font-semibold uppercase text-muted">Token de acesso</p>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className={`font-mono font-bold ${applicationToken ? 'text-lg tracking-[0.2em] text-warning' : 'text-sm text-muted'}`}>{applicationToken || (selectedConfig.requiresToken ? 'Definido na preparação' : 'Desativado')}</span>
-                    {applicationToken && <Button size="sm" variant="ghost" icon={Copy} onClick={copyToken}>Copiar</Button>}
-                  </div>
-                </div>
+                <ApplicationTokenPanel applicationId={applicationId} requiresToken={!!selectedConfig.requiresToken} closed={applicationFinished || selectedConfig.status === 'cancelled'} legacyToken={selectedConfig.accessToken || ''} tokenIssuedAt={tokenIssuedAt} />
               </div>
             </div>
           </Card>
@@ -1225,13 +1201,21 @@ export default function MonitorPage() {
                 {rows.map((r, i) => {
                   const st = STATUS[r.status] || ['neutral', r.status || '-']
                   const recentLogs = (r.logs || []).slice(-2).map(focusLogLabel)
+                  const notStarted = rowTimerLabel(r, monitorTimer, fmt) === 'Não iniciou'
                   return (
                     <tr key={r.email || i} className="border-b border-border last:border-0">
                       <td className="px-4 py-3"><div className="font-medium text-text">{r.name || r.email}</div><div className="text-xs text-muted">{r.email}</div></td>
                       <td className="px-4 py-3 font-mono text-xs text-muted">{r.ip || '-'}</td>
-                      <td className="px-4 py-3"><Badge tone={st[0]} dot>{st[1]}</Badge></td>
+                      <td className="px-4 py-3">
+                        <Badge tone={st[0]} dot>{st[1]}</Badge>
+                        {attemptCountLabel(r) && <p className="mt-1 text-[11px] font-medium text-muted">{attemptCountLabel(r)}</p>}
+                        {r.status === 'time_over' && <p className="mt-1 text-[11px] text-subtle">Entrega automática em instantes</p>}
+                        {r.status === 'discarded' && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">Tentativa em andamento desconsiderada no encerramento</p>}
+                        {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
+                        {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLocked ? 'Reaberta com o tempo extra da turma: desbloqueie para o aluno continuar' : 'Reaberta com o tempo extra da turma'}</p>}
+                      </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email)}>{r.assignedVersion || 'A'}</Button></td>
-                      <td className="px-4 py-3 font-mono text-muted">{fmt(r.timerRemaining)}</td>
+                      <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
                       <td className="px-4 py-3 font-mono text-muted">{r.progress || '-'}</td>
                       <td className="px-4 py-3">
                         <button
@@ -1245,7 +1229,15 @@ export default function MonitorPage() {
                         </button>
                       </td>
                       <td className="px-4 py-3">
-                        {r.focusLocked ? <Badge tone="danger">Bloqueado</Badge> : recentLogs.length > 0 ? <span className="text-xs text-muted">{recentLogs.join(' | ')}</span> : <span className="text-subtle">ok</span>}
+                        {r.focusLocked ? (
+                          <div>
+                            <Badge tone="danger">Bloqueado</Badge>
+                            {r.focusLockReason && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLockReason}</p>}
+                          </div>
+                        ) : recentLogs.length > 0 ? <span className="text-xs text-muted">{recentLogs.join(' | ')}</span> : <span className="text-subtle">ok</span>}
+                        {r.fullscreenUnsupported && (
+                          <div className="mt-1" title="O navegador do aluno não permite tela cheia (iPhone). A prova seguiu sem ela; foco e aba continuam monitorados."><Badge tone="info">Sem tela cheia</Badge></div>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
@@ -1321,8 +1313,9 @@ export default function MonitorPage() {
             <div className="space-y-2">
               <p className="text-sm font-medium text-text">Alternativas e gabarito</p>
               {correctIssue.alternatives.map((alternative, index) => (
-                <div key={alternative.letter} className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-border p-2">
+                <div key={alternative.letter} className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-border p-2">
                   <input type="radio" name="live-correct-answer" checked={correctIssue.correctAnswer === alternative.letter} onChange={() => setCorrectIssue((current) => ({ ...current, correctAnswer: alternative.letter }))} aria-label={`Marcar ${alternative.letter} como correta`} />
+                  <span className="w-5 text-sm font-semibold text-text" aria-hidden="true">{alternative.letter})</span>
                   <Input value={alternative.text} onChange={(event) => setCorrectIssue((current) => ({ ...current, alternatives: current.alternatives.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item) }))} aria-label={`Texto da alternativa ${alternative.letter}`} />
                 </div>
               ))}
@@ -1384,7 +1377,7 @@ export default function MonitorPage() {
         {analytics && <div className="space-y-4">
           <div className="grid grid-cols-3 gap-3">
             <Card className="p-3"><span className="text-xs text-muted">Entregas</span><div className="text-2xl font-bold text-text">{analytics.totalSubmissions}</div></Card>
-            <Card className="p-3"><span className="text-xs text-muted">Média</span><div className="text-2xl font-bold text-text">{analytics.averageScore}</div></Card>
+            <Card className="p-3"><span className="text-xs text-muted">Média</span><div className="text-2xl font-bold text-text">{fmtGrade(analytics.averageScore)}</div></Card>
             <Card className="p-3"><span className="text-xs text-muted">Perdas de foco</span><div className="text-2xl font-bold text-text">{analytics.proctoringSummary?.totalFocusLosses || 0}</div></Card>
           </div>
           <div className="space-y-2">

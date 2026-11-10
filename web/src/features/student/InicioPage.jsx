@@ -5,6 +5,7 @@ import { Badge } from '../../components/ui/Badge'
 import { PageState } from '../../components/ui/PageState'
 import { useApi } from '../../hooks/useApi'
 import { useStudent } from './useStudent'
+import { fmtGradeValue } from '../../lib/grades'
 
 const EVENT_TONES = { aula: 'info', prova: 'danger', entrega: 'warning', aviso: 'neutral', reuniao: 'success' }
 
@@ -99,7 +100,7 @@ export default function InicioPage() {
         </Card>
 
         <div className="stagger-grid grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Metric label="Nota geral" value={data.overallNote == null ? '-' : data.overallNote.toFixed(1).replace('.', ',')} helper={data.overallNote == null ? 'Aguardando publicação' : 'Somente notas publicadas'} icon={TrendingUp} tone="text-success" />
+          <Metric label="Nota geral" value={fmtGradeValue(data.overallNote, '-')} helper={data.overallNote == null ? 'Aguardando publicação' : 'Somente notas publicadas'} icon={TrendingUp} tone="text-success" />
           <Metric label="Frequência" value={data.frequency == null ? '-' : `${data.frequency}%`} helper={data.frequency == null ? 'Sem registros ainda' : 'Presença registrada'} icon={UserCheck} tone="text-info" />
           <Metric label="Tópicos concluídos" value={`${data.completedCount || 0}/${data.totalUnits || 0}`} helper="Progresso no curso" icon={CheckCircle2} tone="text-success" />
           <Metric label="Pendências" value={data.pendingCount || 0} helper="Conteúdos liberados" icon={AlertTriangle} tone="text-warning" />
@@ -121,7 +122,7 @@ export default function InicioPage() {
               {modules.length === 0 ? <p className="p-5 text-sm text-muted">Nenhum módulo disponível.</p> : <div className="grid grid-cols-1 md:grid-cols-3">
                 {modules.slice(0, 6).map((module, index) => (
                   <button key={module.id || index} type="button" onClick={() => nav('/aluno/modulos')} className="border-b border-border p-4 text-left transition last:border-b-0 hover:bg-surface-2/40 md:border-b-0 md:border-r md:last:border-r-0">
-                    <div className="flex items-start justify-between gap-2"><span className="grid h-9 w-9 place-items-center rounded-md bg-surface-2 text-primary"><BookOpen size={17} /></span><span className="text-right">{module.noteStatus === 'published' ? <><small className="block text-[10px] uppercase text-subtle">Nota publicada</small><strong className="text-lg text-text">{module.note.toFixed(1).replace('.', ',')}</strong></> : module.noteStatus === 'review' ? <Badge tone="warning">Nota em revisão</Badge> : <small className="text-subtle">Sem nota</small>}</span></div>
+                    <div className="flex items-start justify-between gap-2"><span className="grid h-9 w-9 place-items-center rounded-md bg-surface-2 text-primary"><BookOpen size={17} /></span><span className="text-right">{module.noteStatus === 'published' ? <><small className="block text-[10px] uppercase text-subtle">Nota publicada</small><strong className="text-lg text-text">{fmtGradeValue(module.note)}</strong></> : module.noteStatus === 'review' ? <Badge tone="warning">Nota em revisão</Badge> : <small className="text-subtle">Sem nota</small>}</span></div>
                     <h3 className="mt-4 truncate text-sm font-semibold text-text">{module.name}</h3><p className="mt-1 text-xs text-muted">{module.done} de {module.total} tópicos concluídos</p>
                     <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-2"><div className="progress-reveal h-full rounded-full bg-primary" style={{ width: `${module.progress}%` }} /></div>
                   </button>
@@ -133,7 +134,7 @@ export default function InicioPage() {
             {data.performance?.length > 0 && <Card>
               <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="font-semibold text-text">Seu desempenho</h2><span className="text-xs text-muted">Últimas notas publicadas</span></div>
               <div className="flex h-40 items-end gap-3 p-5">
-                {data.performance.map((item) => <div key={item.id} className="flex h-full flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{item.note.toFixed(1)}</span><div className="mx-auto w-full max-w-10 rounded-t bg-info" style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={item.examKey}>{item.examKey?.replace(/^Avaliacao_/, '')}</span></div>)}
+                {data.performance.map((item) => <div key={item.id} className="flex h-full flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{fmtGradeValue(item.note)}</span><div className="mx-auto w-full max-w-10 rounded-t bg-info" style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={item.examKey}>{item.examKey?.replace(/^Avaliacao_/, '')}</span></div>)}
               </div>
             </Card>}
           </div>

@@ -46,7 +46,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
             if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores podem excluir definitivamente.' });
             const courseId = req.params.id;
             const course = (db.memory.courses || []).find(item => item.id === courseId);
-            if (!course) return res.status(404).json({ error: 'Curso nao encontrado.' });
+            if (!course) return res.status(404).json({ error: 'Curso não encontrado.' });
 
             const classes = db.memory.classes || [];
             const courseClasses = classes.filter(item => item.courseId === courseId);
@@ -151,16 +151,16 @@ function createAdminArchiveRouter({ studentClassNames }) {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
             let directory;
-            try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta invalida.' }); }
-            if (!directory) return res.status(404).json({ error: 'Arquivo nao encontrado.' });
+            try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta inválida.' }); }
+            if (!directory) return res.status(404).json({ error: 'Arquivo não encontrado.' });
             const courseFile = path.join(directory, 'curso.json');
-            if (!fs.existsSync(courseFile)) return res.status(404).json({ error: 'Arquivo nao encontrado.' });
+            if (!fs.existsSync(courseFile)) return res.status(404).json({ error: 'Arquivo não encontrado.' });
 
             let bundle;
             try { bundle = JSON.parse(fs.readFileSync(courseFile, 'utf8')); } catch (error) { return res.status(500).json({ error: 'Arquivo corrompido.' }); }
             const course = bundle.course;
-            if (!course || !course.id) return res.status(400).json({ error: 'Curso invalido no arquivo.' });
-            if ((db.memory.courses || []).some(item => item.id === course.id)) return res.status(400).json({ error: 'Ja existe um curso ativo com este ID.' });
+            if (!course || !course.id) return res.status(400).json({ error: 'Curso inválido no arquivo.' });
+            if ((db.memory.courses || []).some(item => item.id === course.id)) return res.status(400).json({ error: 'Já existe um curso ativo com este ID.' });
 
             const contentDirectory = path.join(directory, 'conteudo');
             if (fs.existsSync(contentDirectory)) {
@@ -200,8 +200,8 @@ function createAdminArchiveRouter({ studentClassNames }) {
         validateAdmin(req, res, (config, matchedAdmin) => {
             if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
             let directory;
-            try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta invalida.' }); }
-            if (!directory) return res.status(404).json({ error: 'Arquivo nao encontrado.' });
+            try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta inválida.' }); }
+            if (!directory) return res.status(404).json({ error: 'Arquivo não encontrado.' });
             try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) { return res.status(500).json({ error: error.message }); }
             res.json({ success: true });
         });

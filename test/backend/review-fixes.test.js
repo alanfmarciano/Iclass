@@ -216,8 +216,13 @@ test('/api/status e /data.js exigem sessão de aluno ou de instrutor', async () 
     const token = await loginStudent('celia@review.local');
     const asStudent = await request(app).get(`/api/status${query}`).set('x-session-token', token);
     assert.equal(asStudent.status, 200);
-    assert.equal(asStudent.body.onlineExamConfigs.P1.versionSnapshots[0].questions[0].text, 'Q1');
-    assert.equal(asStudent.body.onlineExamConfigs.P1.versionSnapshots[0].questions[0].correctAnswer, undefined, 'gabarito nunca vai para o aluno');
+    // O aluno recebe só os metadados da prova; enunciados saem apenas pela tentativa iniciada.
+    assert.equal(asStudent.body.onlineExamConfigs.P1.questionCount, 1);
+    assert.equal(asStudent.body.onlineExamConfigs.P1.versionSnapshots, undefined);
+
+    const statusAsAdmin = await request(app).get(`/api/status${query}`).set('x-admin-session', adminToken);
+    assert.equal(statusAsAdmin.body.onlineExamConfigs.P1.versionSnapshots[0].questions[0].text, 'Q1', 'o instrutor continua vendo a prova');
+    assert.equal(statusAsAdmin.body.onlineExamConfigs.P1.versionSnapshots[0].questions[0].correctAnswer, undefined);
 
     const asAdmin = await request(app).get(`/data.js?courseId=${courseB}`).set('x-admin-session', adminToken);
     assert.equal(asAdmin.status, 200);

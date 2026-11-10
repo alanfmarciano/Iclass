@@ -1,8 +1,16 @@
 // Cliente único de API do IClass V3.
 // Repository pattern: nenhuma tela usa fetch cru — tudo passa por aqui.
 // As REGRAS DE NEGÓCIO permanecem no backend Express (server-authoritative).
+import { BUILD_HEADER, noteServerBuild } from './buildVersion'
 let authProvider = () => ({})
 export function setAuthProvider(fn) { authProvider = fn } // injetado pelo AuthProvider
+// Há sessão aberta neste navegador? O logout limpa o provedor na hora (antes de o portal
+// trocar de rota), então logo depois dele a resposta já é não. A prova online usa isto
+// para deixar a ida ao login passar sem confirmação só quando a sessão acabou de fato.
+export function hasActiveSession() {
+  const current = authProvider() || {}
+  return !!(current.sessionToken || current.adminSession || current.adminAuth)
+}
 const AUTH_STORAGE_KEY = 'iclass-v3-auth'
 
 function getStoredAuth() {
@@ -10,21 +18,37 @@ function getStoredAuth() {
   try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) || {} } catch { return {} }
 }
 
-async function request(path, { method = 'GET', body, auth = true, raw } = {}) {
-  const headers = { 'Content-Type': 'application/json' }
-  if (auth) {
-    const providedAuth = authProvider() || {}
-    const a = (providedAuth.adminSession || providedAuth.adminAuth || providedAuth.sessionToken) ? providedAuth : getStoredAuth()
-    // Instrutor: preferir TOKEN de sessão (não expõe senha). Fallback legado: "email:senha".
-    if (a.adminSession) headers['x-admin-session'] = a.adminSession
-    else if (a.adminAuth) headers['Authorization'] = a.adminAuth
-    if (a.sessionToken) headers['x-session-token'] = a.sessionToken       // aluno
-  }
+function authHeaders() {
+  const headers = {}
+  const providedAuth = authProvider() || {}
+  const a = (providedAuth.adminSession || providedAuth.adminAuth || providedAuth.sessionToken) ? providedAuth : getStoredAuth()
+  // Instrutor: preferir TOKEN de sessão (não expõe senha). Fallback legado: "email:senha".
+  if (a.adminSession) headers['x-admin-session'] = a.adminSession
+  else if (a.adminAuth) headers['Authorization'] = a.adminAuth
+  if (a.sessionToken) headers['x-session-token'] = a.sessionToken       // aluno
+  return headers
+}
+
+// Versão do build anunciada pelo servidor (autorrecuperação depois de atualizar o IClass,
+// lib/buildVersion.js). Só o portal do aluno recarrega sozinho: nas telas do professor uma
+// recarga no meio de uma edição perderia o que não foi salvo, e lá o F5 fica com ele.
+function noteBuildFrom(res, path, headers) {
+  const studentRequest = !!headers['x-session-token'] || String(path || '').startsWith('/api/student/')
+  if (!studentRequest || headers['x-admin-session'] || headers['Authorization']) return
+  noteServerBuild(res.headers?.get?.(BUILD_HEADER))
+}
+
+// keepalive: a requisição sobrevive ao fechamento/recarga da página (pagehide).
+// Diferente do sendBeacon, leva os cabeçalhos de sessão.
+async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false } = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(auth ? authHeaders() : {}) }
   const res = await fetch(path, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    ...(keepalive ? { keepalive: true } : {}),
   })
+  noteBuildFrom(res, path, headers)
   let data = null
   const ct = res.headers.get('content-type') || ''
   if (ct.includes('application/json')) data = await res.json().catch(() => null)
@@ -36,6 +60,34 @@ async function request(path, { method = 'GET', body, auth = true, raw } = {}) {
   }
   return data
 }
+// Baixa um arquivo de rota autenticada (CSV, etc.). window.open não manda o
+// cabeçalho de sessão e abria "Acesso não autorizado." (UXI-01). O Blob preserva
+// os bytes (inclusive o BOM UTF-8 que o Excel usa para os acentos).
+export async function downloadFile(path, fallbackName = 'arquivo') {
+  const headers = authHeaders()
+  const res = await fetch(path, { headers })
+  noteBuildFrom(res, path, headers)
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  const blob = await res.blob()
+  const disposition = res.headers.get('content-disposition') || ''
+  const match = disposition.match(/filename="?([^";]+)"?/i)
+  const name = match ? match[1] : fallbackName
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  return name
+}
+
 export const api = {
   get: (p, opts) => request(p, { ...opts }),
   post: (p, body, opts) => request(p, { method: 'POST', body, ...opts }),

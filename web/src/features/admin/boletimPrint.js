@@ -15,6 +15,10 @@ export function boletimHtml(report) {
   const attendance = report.attendance || {}
   const frequencyClass = attendance.frequency == null ? '' : (attendance.frequency < (attendance.riskThreshold || 75) ? ' class="risk"' : '')
 
+  // Mesma prova em mais de uma linha = mais de uma aplicação (mesma regra da tela Resultados).
+  const examKeys = (report.modules || []).flatMap(module => (module.exams || []).filter(exam => exam.grade != null).map(exam => exam.examKey))
+  const hasRepeatedExam = new Set(examKeys).size < examKeys.length
+
   const moduleRows = (report.modules || []).map(module => {
     const exams = module.exams.length
       ? module.exams.map(exam => `<tr>
@@ -75,7 +79,7 @@ export function boletimHtml(report) {
     <table><thead><tr><th>Avaliação</th><th class="num">Tentativas</th><th class="num">Última</th><th class="num">Nota</th></tr></thead><tbody>${moduleRows || '<tr><td colspan="4" class="empty">Curso sem avaliações.</td></tr>'}</tbody></table>
     <h2>Frequência por disciplina</h2>
     <table><thead><tr><th>Disciplina</th><th class="num">Presenças</th><th class="num">Faltas</th><th class="num">Frequência</th></tr></thead><tbody>${disciplineRows}</tbody></table>
-    <p style="font-size:11px;color:#8790a0;margin-top:8px">Só notas publicadas entram na média. Faltas abonadas não contam. ${attendance.days ? `${attendance.days} dia(s) com registro de presença.` : ''}</p>
+    <p style="font-size:11px;color:#8790a0;margin-top:8px">Só notas publicadas entram na média.${hasRepeatedExam ? ' Prova aplicada mais de uma vez aparece em uma linha por aplicação, e cada aplicação entra na média.' : ''} Faltas abonadas não contam. ${attendance.days ? `${attendance.days} dia(s) com registro de presença.` : ''}</p>
     <div class="sign"><div>${escapeHtml(report.issuedBy || 'Instrutor')}</div><div>Responsável pelo aluno</div></div>
     <footer><span>${escapeHtml(report.institution || 'IClass')} · ${escapeHtml(report.course?.name || '')}</span><span>Gerado pelo IClass</span></footer>
   </div></body></html>`

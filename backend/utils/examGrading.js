@@ -148,16 +148,28 @@ function createSubmissionFromAttempt({
         examSnapshot: grade.examSnapshot,
         examConfigVersion: application?.contentVersion || onlineConfig?.updatedAt || state?.examConfigVersion || null,
         attemptNumber: state?.attemptNumber || previousAttempts.length + 1,
+        // "+N min" dado a este aluno nesta tentativa (o da aplicação inteira fica nela).
+        individualTimeAdjustment: Number(state?.individualTimeAdjustment || 0),
         resultStatus: 'considered',
         aggregationPolicy: previousPolicy,
         selectedForResult: false,
         gradePublished: false,
         submissionSource: source,
         timestamp,
+        // Letras que o aluno viu (posição na versão), para as revisões (AVA-05).
+        ...(state?.alternativeLabels ? { alternativeLabels: state.alternativeLabels } : {}),
+        // Tentativa reaberta pelo "+N min" da turma depois da entrega do fim do tempo:
+        // o professor vê que houve reabertura e qual entrega ela substituiu.
+        ...(Number(state?.reopenedAt) > 0 ? {
+            reopenedAt: new Date(Number(state.reopenedAt)).toISOString(),
+            reopenedFrom: clone(Array.isArray(state.reopenedFrom) ? state.reopenedFrom : []),
+        } : {}),
     };
 }
 
-function regradeSubmission({ submission, application, onlineConfig, evaluation } = {}) {
+// Recorrige uma entrega (anulação, correção ou troca de questão). Quando a nota
+// muda, a anterior fica em submission.scoreHistory com o motivo (AVA-08).
+function regradeSubmission({ submission, application, onlineConfig, evaluation, reason = '', by = '' } = {}) {
     const existing = Array.isArray(submission?.gradedAnswers) ? submission.gradedAnswers : [];
     const answers = Object.fromEntries(existing
         .filter(answer => answer?.studentChoice)
@@ -167,6 +179,19 @@ function regradeSubmission({ submission, application, onlineConfig, evaluation }
         assignedQuestionNumbers: existing.map(answer => Number(answer.questionNumber)).filter(Number.isFinite),
     };
     const grade = gradeAttempt({ application, onlineConfig, state, evaluation, answers });
+    const previous = { score: submission.score, correctCount: submission.correctCount, totalCount: submission.totalCount };
+    if (previous.score !== grade.score || previous.correctCount !== grade.correctCount || previous.totalCount !== grade.totalCount) {
+        if (!Array.isArray(submission.scoreHistory)) submission.scoreHistory = [];
+        submission.scoreHistory.push({
+            at: new Date().toISOString(),
+            from: previous.score ?? null,
+            to: grade.score,
+            fromCounts: `${previous.correctCount ?? '-'}/${previous.totalCount ?? '-'}`,
+            toCounts: `${grade.correctCount}/${grade.totalCount}`,
+            reason: reason || 'Recorreção da prova',
+            by: by || 'sistema',
+        });
+    }
     submission.score = grade.score;
     submission.correctCount = grade.correctCount;
     submission.totalCount = grade.totalCount;

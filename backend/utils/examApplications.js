@@ -22,6 +22,27 @@ const TRANSITIONS = Object.freeze({
     cancelled: new Set(),
 });
 
+// Como cada status aparece nas mensagens ao professor ("A aplicação está encerrada e
+// não pode ser cancelada."): nunca o nome interno em inglês.
+const STATUS_LABELS = Object.freeze({
+    draft: 'em rascunho',
+    prepared: 'preparada',
+    waiting: 'em sala de espera',
+    running: 'em andamento',
+    paused: 'pausada',
+    finished: 'encerrada',
+    cancelled: 'cancelada',
+});
+const TARGET_LABELS = Object.freeze({
+    draft: 'devolvida a rascunho',
+    prepared: 'preparada de novo',
+    waiting: 'colocada em sala de espera',
+    running: 'iniciada',
+    paused: 'pausada',
+    finished: 'encerrada',
+    cancelled: 'cancelada',
+});
+
 function clone(value) {
     return value == null ? value : JSON.parse(JSON.stringify(value));
 }
@@ -80,9 +101,15 @@ function createExamApplication({
         versionSnapshots: clone(Array.isArray(config.versionSnapshots) ? config.versionSnapshots : []),
         contentVersion: config.updatedAt || timestamp,
         accessTokenHash: config.accessTokenHash || null,
+        // Marca da versão do token (muda a cada troca): a aba que guardou o token em
+        // texto puro percebe que ele foi trocado em outra tela e deixa de mostrá-lo.
+        accessTokenIssuedAt: config.accessTokenHash ? (config.accessTokenIssuedAt || timestamp) : null,
         tokenEnabled: config.tokenEnabled === true || !!config.accessTokenHash || !!config.accessToken,
         globalTimeAdjustment: Number(config.globalTimeAdjustment || 0),
         studentAdjustments: clone(config.studentAdjustments || {}),
+        // "+N min" de um aluno guardado na aplicação vale só para a próxima tentativa
+        // dele (é consumido ao criá-la). Ver normalizeLegacyStudentAdjustments.
+        studentAdjustmentsMode: 'next_attempt',
         studentVersions: clone(config.studentVersions || {}),
         annulledQuestions: clone(Array.isArray(config.annulledQuestions) ? config.annulledQuestions : []),
         questionReports: clone(Array.isArray(config.questionReports) ? config.questionReports : []),
@@ -174,10 +201,97 @@ function attemptStatesForApplication(studentExamState, { applicationId, studentE
         .sort((a, b) => Number(b[1].attemptNumber || 0) - Number(a[1].attemptNumber || 0));
 }
 
+// Tentativa "em aberto" é a que ainda não virou entrega. Uma tentativa vencida
+// ('expired', gravada por versões antigas) continua sendo a tentativa atual até o
+// servidor finalizá-la: ela nunca é recriada nem sobrescrita por uma nova.
+const CLOSED_ATTEMPT_STATUSES = new Set(['submitted', 'invalidated']);
+
 function findOpenAttemptState(studentExamState, scope = {}) {
     const match = attemptStatesForApplication(studentExamState, scope)
-        .find(([, state]) => !['submitted', 'expired', 'invalidated'].includes(state.status));
+        .find(([, state]) => !CLOSED_ATTEMPT_STATUSES.has(state.status));
     return match ? { key: match[0], state: match[1] } : null;
+}
+
+// Pausas da aplicação ({ pausedAt, resumedAt }). Pausar congela o cronômetro: o
+// prazo de cada tentativa é empurrado pelo tempo em que a aplicação ficou pausada.
+function applicationPauses(application) {
+    return (Array.isArray(application?.pauses) ? application.pauses : [])
+        .filter(pause => pause && Number(pause.pausedAt) > 0)
+        .map(pause => ({ pausedAt: Number(pause.pausedAt), resumedAt: Number(pause.resumedAt) > 0 ? Number(pause.resumedAt) : null }))
+        .sort((a, b) => a.pausedAt - b.pausedAt);
+}
+
+function openApplicationPause(application, now = Date.now()) {
+    if (!Array.isArray(application.pauses)) application.pauses = [];
+    const open = application.pauses.find(pause => pause && !pause.resumedAt);
+    if (!open) application.pauses.push({ pausedAt: now, resumedAt: null });
+    application.pausedAt = open ? Number(open.pausedAt) : now;
+}
+
+function closeApplicationPause(application, now = Date.now()) {
+    (Array.isArray(application.pauses) ? application.pauses : []).forEach(pause => {
+        if (pause && !pause.resumedAt) pause.resumedAt = Math.max(Number(pause.pausedAt) || now, now);
+    });
+    application.pausedAt = null;
+}
+
+// Aplicações pausadas por versões antigas não registravam o início da pausa. Usa o
+// último updatedAt (gravado na transição) como melhor estimativa. Na versão anterior
+// (5b69148) a pausa não deixava outro registro de horário, e o que o professor fez
+// durante a pausa (corrigir, anular ou substituir questão, "+N min") também gravava
+// updatedAt: então a pausa pode contar de um pouco depois do real e esse intervalo sai
+// do tempo dos alunos. Nunca conta de antes (ninguém ganha de volta tempo já usado).
+// Idempotente.
+function normalizeLegacyApplicationPause(application, now = Date.now()) {
+    if (!application || application.status !== 'paused') return false;
+    if (applicationPauses(application).some(pause => !pause.resumedAt)) return false;
+    const updatedAt = Date.parse(application.updatedAt || '');
+    openApplicationPause(application, Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= now ? updatedAt : now);
+    return true;
+}
+
+// "+N min" de um aluno gravado por versões anteriores (5b69148): com a tentativa
+// aberta, o ajuste ia para a tentativa E para application.studentAdjustments, e cada
+// tentativa nova copiava o acumulado da aplicação. Depois da atualização, a tentativa
+// seguinte nascia de novo com o extra. Aqui fica na aplicação só o que ainda não foi
+// aplicado a nenhuma tentativa (dado depois de a última tentativa do aluno fechar, ou
+// antes da primeira): o acumulado menos o ajuste da última tentativa dele. Idempotente:
+// a aplicação passa a ter studentAdjustmentsMode 'next_attempt' (como as novas).
+function normalizeLegacyStudentAdjustments(application, studentExamState) {
+    if (!application || application.studentAdjustmentsMode === 'next_attempt') return false;
+    if (application.status === 'finished' || application.status === 'cancelled') return false;
+    const adjustments = application.studentAdjustments && typeof application.studentAdjustments === 'object'
+        ? application.studentAdjustments
+        : {};
+    Object.keys(adjustments).forEach(email => {
+        const total = Number(adjustments[email] || 0);
+        const attempts = attemptStatesForApplication(studentExamState, { applicationId: application.id, studentEmail: email });
+        const latest = attempts.reduce((last, [, state]) => (!last || Number(state.attemptNumber || 1) > Number(last.attemptNumber || 1) ? state : last), null);
+        const applied = latest ? Number(latest.individualTimeAdjustment || 0) : 0;
+        const pending = Number.isFinite(total) ? total - (Number.isFinite(applied) ? applied : 0) : 0;
+        if (pending > 0) adjustments[email] = pending;
+        else delete adjustments[email];
+    });
+    application.studentAdjustments = adjustments;
+    application.studentAdjustmentsMode = 'next_attempt';
+    return true;
+}
+
+// Empurra o prazo base de uma tentativa pelas pausas que aconteceram enquanto ela
+// ainda tinha tempo. Uma pausa que começou depois do fim do tempo não ressuscita a
+// tentativa; a pausa em curso conta até "agora" (cronômetro congelado).
+function extendDeadlineByPauses(application, startedAt, baseDeadline, now = Date.now()) {
+    let deadline = Number(baseDeadline);
+    const start = Number(startedAt);
+    if (!Number.isFinite(deadline) || !Number.isFinite(start)) return baseDeadline;
+    for (const pause of applicationPauses(application)) {
+        const from = Math.max(pause.pausedAt, start);
+        const until = pause.resumedAt || now;
+        if (!(until > from)) continue;
+        if (from >= deadline) break;
+        deadline += until - from;
+    }
+    return deadline;
 }
 
 function createAttemptState({ application, studentEmail, attemptNumber, studentClass, courseId, now = Date.now() } = {}) {
@@ -206,21 +320,43 @@ function createAttemptState({ application, studentEmail, attemptNumber, studentC
         createdAt: new Date(now).toISOString(),
         examConfigVersion: application.contentVersion || application.updatedAt || null,
         focusLocked: false,
+        // O aluno vê as alternativas pela letra da posição (AVA-05, utils/examAnswerIds.js).
+        alternativeLabels: 'position',
     };
     state.attemptId = state.id;
     return state;
 }
 
-function transitionExamApplication(application, action, options = {}) {
+const ACTION_ALIASES = Object.freeze({ start: 'running', resume: 'running', pause: 'paused', finish: 'finished', stop: 'finished', cancel: 'cancelled' });
+
+// Confere, sem mudar nada, se a ação é possível no status atual da aplicação. Devolve
+// o status de destino e se a aplicação já está nele (a ação não mudaria nada). As
+// rotas de controle chamam antes de mexer nas tentativas: uma ação impossível não
+// pode deixar entrega gerada nem decisão de encerramento sobrescrita pelo caminho.
+function checkExamApplicationTransition(application, action) {
     if (!application) throw Object.assign(new Error('Aplicação não encontrada.'), { status: 404 });
     const current = normalizeApplicationStatus(application.status);
-    const now = Number(options.now || Date.now());
-    const timestamp = new Date(now).toISOString();
-
     if (action === 'adjust_waiting') {
         if (current !== 'waiting') {
             throw Object.assign(new Error('A prova não está em sala de espera.'), { status: 409 });
         }
+        return { current, target: current, unchanged: false };
+    }
+    const target = ACTION_ALIASES[action] || action;
+    if (!APPLICATION_STATUSES.includes(target)) throw Object.assign(new Error('Estado de aplicação inválido.'), { status: 400 });
+    if (current === target) return { current, target, unchanged: true };
+    if (!TRANSITIONS[current] || !TRANSITIONS[current].has(target)) {
+        throw Object.assign(new Error(`A aplicação está ${STATUS_LABELS[current] || current} e não pode ser ${TARGET_LABELS[target] || target}.`), { status: 409 });
+    }
+    return { current, target, unchanged: false };
+}
+
+function transitionExamApplication(application, action, options = {}) {
+    const { current, target, unchanged } = checkExamApplicationTransition(application, action);
+    const now = Number(options.now || Date.now());
+    const timestamp = new Date(now).toISOString();
+
+    if (action === 'adjust_waiting') {
         const adjustmentSeconds = Number(options.adjustmentSeconds);
         if (!Number.isFinite(adjustmentSeconds)) {
             throw Object.assign(new Error('Ajuste de tempo inválido.'), { status: 400 });
@@ -236,28 +372,38 @@ function transitionExamApplication(application, action, options = {}) {
         return application;
     }
 
-    const aliases = { start: 'running', resume: 'running', pause: 'paused', finish: 'finished', stop: 'finished', cancel: 'cancelled' };
-    const target = aliases[action] || action;
-    if (!APPLICATION_STATUSES.includes(target)) throw Object.assign(new Error('Estado de aplicação inválido.'), { status: 400 });
-    if (current === target) return application;
-    if (!TRANSITIONS[current] || !TRANSITIONS[current].has(target)) {
-        throw Object.assign(new Error(`Não é possível alterar a aplicação de ${current} para ${target}.`), { status: 409 });
-    }
+    if (unchanged) return application;
 
     if (target === 'waiting') {
         const waitingSeconds = Math.max(0, Number(options.waitingRoomDuration ?? application.waitingRoomDuration ?? 0));
         application.waitingRoomDuration = waitingSeconds;
         application.startsAt = now + waitingSeconds * 1000;
     }
+    if (target === 'paused') openApplicationPause(application, now);
     if (target === 'running') {
-        if (current !== 'paused' || application.timerMode === 'collective') application.startsAt = now;
+        if (current === 'paused') {
+            // Retomar não reinicia o relógio: o início original fica e o tempo pausado é
+            // somado ao prazo de cada tentativa. Uma pausa ainda na sala de espera (início
+            // no futuro) começa a prova agora: o status 'running' já liberava o início
+            // nos dois modos (no modo por tentativa o startsAt antigo ficava no futuro,
+            // mas o aluno já podia iniciar); aqui o startsAt passa a dizer a verdade.
+            closeApplicationPause(application, now);
+            const startsAt = Number(application.startsAt);
+            if (!(startsAt > 0) || startsAt > now) application.startsAt = now;
+        } else {
+            application.startsAt = now;
+        }
         if (!application.startedAt) application.startedAt = timestamp;
     }
     if (target === 'finished') {
+        if (current === 'paused') closeApplicationPause(application, now);
         application.endsAt = now;
         application.finishedAt = timestamp;
     }
-    if (target === 'cancelled') application.cancelledAt = timestamp;
+    if (target === 'cancelled') {
+        if (current === 'paused') closeApplicationPause(application, now);
+        application.cancelledAt = timestamp;
+    }
     application.status = target;
     application.updatedAt = timestamp;
     if (options.actor) application.updatedBy = options.actor;
@@ -267,8 +413,13 @@ function transitionExamApplication(application, action, options = {}) {
 module.exports = {
     ACTIVE_APPLICATION_STATUSES,
     APPLICATION_STATUSES,
+    CLOSED_ATTEMPT_STATUSES,
+    applicationPauses,
     applicationToOnlineConfig,
     attemptStatesForApplication,
+    checkExamApplicationTransition,
+    closeApplicationPause,
+    extendDeadlineByPauses,
     createAttemptState,
     createExamApplication,
     examStateKey,
@@ -276,7 +427,10 @@ module.exports = {
     findOpenAttemptState,
     listExamApplications,
     normalizeApplicationStatus,
+    normalizeLegacyApplicationPause,
+    normalizeLegacyStudentAdjustments,
     normalizeTimerMode,
+    openApplicationPause,
     resolveExamApplication,
     transitionExamApplication,
 };

@@ -89,9 +89,11 @@ test('studentOverview: frequência, faltas e risco por disciplina', () => {
 // é o que permite ao Dashboard somar e comparar sem mentir.
 // ---------------------------------------------------------------------------
 
-const sub = (id, email, courseId, score, timestamp) => ({
-    id, examKey: 'Avaliacao_X_1', score, timestamp,
-    student: { name: 'Aluno', email, studentClass: 'Turma 1', courseId },
+// Cada registro é de uma prova diferente: várias tentativas da MESMA prova se
+// consolidam pela regra da prova (como em Resultados), não entram uma a uma na média.
+const sub = (id, email, courseId, score, timestamp, examKey = `Avaliacao_X_${id}`) => ({
+    id, examKey, score, timestamp,
+    student: { name: 'Aluno', email, studentClass: courseId === 'CURSO-B' ? 'Turma 3' : 'Turma 1', courseId },
 });
 
 test('media é null para aluno sem prova — nunca 0', () => {
@@ -155,4 +157,29 @@ test('temporal compara janelas móveis de 30 dias, não meses de calendário', (
     const dash = computeStudentDashboard(memory, email);
     assert.equal(dash.temporal.mediaAtual, 8, 'últimos 30 dias: (90+70)/2/10 = 8,0');
     assert.equal(dash.temporal.mediaAnterior, 4, '30 dias anteriores: (50+30)/2/10 = 4,0');
+});
+
+test('[UC-NOTAS-003] média do painel consolida as tentativas da mesma prova pela regra (maior, última, média) e ignora nota inválida', () => {
+    const memory = memoryWithAttendance();
+    const email = 'aluno@teste.local';
+    const attempt = (id, score, timestamp, extra = {}) => ({
+        ...sub(id, email, 'CURSO-A', score, timestamp, 'Avaliacao_REDES_1'), applicationId: 'app_r1', ...extra,
+    });
+    memory.submissions = [
+        attempt('t1', 40, '2026-07-01T10:00:00.000Z'),
+        attempt('t2', 80, '2026-07-01T11:00:00.000Z'),
+        sub('p2', email, 'CURSO-A', 60, '2026-07-02T10:00:00.000Z'),
+        sub('bad', email, 'CURSO-A', 150, '2026-07-03T10:00:00.000Z'),
+    ];
+    // Regra "maior" (padrão): (80 + 60) / 2 = 7,0. Antes: (40 + 80 + 60) / 3 = 6,0.
+    assert.equal(studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' }).media, 7);
+    const dash = computeStudentDashboard(memory, email);
+    assert.equal(dash.kpis.media, 7);
+    assert.equal(dash.kpis.provasFeitas, 3, 'tentativas da mesma prova contam uma vez');
+    // Regra "média" na Prova 1: (40 + 80) / 2 = 60, e a média do aluno fica (60 + 60) / 2 = 6,0.
+    memory.submissions.slice(0, 2).forEach(item => { item.aggregationPolicy = 'average'; });
+    assert.equal(studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' }).media, 6);
+    // Nota só inválida: sem média (nunca 0).
+    memory.submissions = [sub('bad2', email, 'CURSO-A', 150, '2026-07-03T10:00:00.000Z')];
+    assert.equal(studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' }).media, null);
 });

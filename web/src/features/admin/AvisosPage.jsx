@@ -9,6 +9,7 @@ import { Card } from '../../components/ui/Card'
 import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { PageHeader } from '../../components/ui/PageHeader'
+import { ConfirmDialog } from '../../components/ui/Modal'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
@@ -47,6 +48,7 @@ export default function AvisosPage() {
   const [query, setQuery] = useState('')
   const [view, setView] = useState('todos')
   const [page, setPage] = useState(1)
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase()
@@ -73,7 +75,11 @@ export default function AvisosPage() {
 
   function reset() { setEditingId(null); setTarget('turma'); setTargetValue(activeClassName); setTitle(''); setMessage(''); setPriority('normal'); setPinned(false); setExpiresAt('') }
 
+  // Aviso para toda a instituição: o professor lê, mas só o administrador muda (o servidor também recusa).
+  const canChange = (a) => a.canEdit !== false
+
   function startEdit(a) {
+    if (!canChange(a)) return
     setEditingId(a.id)
     setTarget(a.target); setTargetValue(a.targetValue || '')
     setTitle(a.title || ''); setMessage(a.message || '')
@@ -95,6 +101,7 @@ export default function AvisosPage() {
   }
 
   async function remove(id) {
+    setPendingDelete(null)
     try { await api.post('/api/admin/announcements/delete', { id }); toast.success('Aviso removido'); if (editingId === id) reset(); refetch() }
     catch (e) { toast.error(e.message) }
   }
@@ -169,8 +176,8 @@ export default function AvisosPage() {
               Mostrando {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} de {filtered.length} avisos
             </p>
             {pageRows.map((a) => (
-              <Card key={a.id} onClick={() => startEdit(a)}
-                className={`p-4 cursor-pointer transition hover:border-primary/50 ${editingId === a.id ? 'border-primary' : ''}`}>
+              <Card key={a.id} onClick={canChange(a) ? () => startEdit(a) : undefined}
+                className={`p-4 transition ${canChange(a) ? 'cursor-pointer hover:border-primary/50' : ''} ${editingId === a.id ? 'border-primary' : ''}`}>
                 <div className="flex items-start gap-3">
                   <span className={`w-8 h-8 rounded-md grid place-items-center shrink-0 ${a.priority === 'alta' ? 'bg-danger/15 text-danger' : 'bg-primary-soft text-primary'}`}>
                     {a.priority === 'alta' ? <AlertTriangle size={16} /> : <Megaphone size={16} />}
@@ -189,7 +196,9 @@ export default function AvisosPage() {
                       {a.expiresAt && <span>expira {a.expiresAt}</span>}
                     </p>
                   </div>
-                  <Button size="sm" variant="ghost" icon={Trash2} onClick={(ev) => { ev.stopPropagation(); remove(a.id) }} className="text-danger shrink-0">Excluir</Button>
+                  {canChange(a)
+                    ? <Button size="sm" variant="ghost" icon={Trash2} onClick={(ev) => { ev.stopPropagation(); setPendingDelete(a) }} className="text-danger shrink-0">Excluir</Button>
+                    : <span className="shrink-0 text-xs text-subtle">Só o administrador edita</span>}
                 </div>
               </Card>
             ))}
@@ -203,6 +212,16 @@ export default function AvisosPage() {
           </div>
         )}
       </PageState>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        onConfirm={() => remove(pendingDelete.id)}
+        danger
+        title="Excluir aviso?"
+        description={pendingDelete ? `"${pendingDelete.title}" deixa de aparecer para os alunos.` : ''}
+        confirmLabel="Excluir"
+      />
     </div>
   )
 }
