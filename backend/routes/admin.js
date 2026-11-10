@@ -434,8 +434,12 @@ router.post('/api/admin/student/unlock-login', (req, res) => {
         const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === email);
         if (!student) return res.status(404).json({ error: 'Estudante não encontrado.' });
         const key = loginGuard.accountKey('student', email);
+        // Só a conta que chegou ao atraso (5 senhas erradas ou mais) é liberada e vai para a
+        // auditoria. Com 1 a 4 falhas não há bloqueio: a resposta diz isso e nada muda
+        // (antes, o contador era apagado e a auditoria ganhava um desbloqueio vazio; sobra do
+        // H5b, J2).
         const before = loginGuard.protectionFor(key);
-        const released = loginGuard.clear(key);
+        const released = before ? loginGuard.clear(key) : false;
         if (released) {
             recordAudit(db.memory, {
                 req,
@@ -443,7 +447,7 @@ router.post('/api/admin/student/unlock-login', (req, res) => {
                 action: 'student_login_unlocked',
                 category: 'account',
                 studentEmail: student.email,
-                details: before ? { failures: before.failures, retryAt: before.retryAt } : {},
+                details: { failures: before.failures, retryAt: before.retryAt },
             });
             await db.save();
         }
@@ -5279,13 +5283,22 @@ const IP_ALERT_QUEUE_MS = 24 * 60 * 60 * 1000;
 
 function _securityQueueBlock(matchedAdmin, students, { adminOnly = true, now = Date.now() } = {}) {
     const list = Array.isArray(students) ? students : [];
+    // waiting*: as da lista que ainda esperam agora (retryAt no futuro). O item da fila
+    // fala em espera só para elas, como o selo (sobra do H5b, J2).
+    const waitingNow = (kind, email) => {
+        const protection = loginGuard.protectionFor(loginGuard.accountKey(kind, email), now);
+        return !!(protection && Number(protection.retryAt) > now);
+    };
+    const delayedEmails = list.filter(student => student && student.email && loginGuard.protectionFor(loginGuard.accountKey('student', student.email), now)).map(student => String(student.email).toLowerCase());
     const block = {
         recoveryEmails: list.filter(student => student && student.email && student.recoveryRequested === true).map(student => String(student.email).toLowerCase()),
-        delayedEmails: list.filter(student => student && student.email && loginGuard.protectionFor(loginGuard.accountKey('student', student.email), now)).map(student => String(student.email).toLowerCase()),
+        delayedEmails,
+        waitingEmails: delayedEmails.filter(email => waitingNow('student', email)),
     };
     if (!adminOnly || !canAccessAdminPermission(matchedAdmin, 'page.accounts')) return block;
     const instructorEmails = new Set((db.memory.admins || []).filter(item => item && item.email).map(item => String(item.email).toLowerCase()));
     block.delayedAccounts = loginGuard.protectedEmails('admin', now).filter(email => instructorEmails.has(email));
+    block.waitingAccounts = block.delayedAccounts.filter(email => waitingNow('admin', email));
     const seen = new Set();
     block.ipAlerts = (Array.isArray(db.memory.loginLogs) ? db.memory.loginLogs : [])
         .filter(entry => entry && entry.status === 'alert' && entry.ip && now - (Number(entry.lastAt || entry.timestamp) || 0) <= IP_ALERT_QUEUE_MS)

@@ -367,6 +367,52 @@ test('[UC-AUTH-002] fila "Precisa de você": professor vê os alunos da turma de
     assert.match(admItems.login_ip_alerta.detalhe, /127\.0\.0\.1/);
 });
 
+test('[UC-AUTH-002] fila: passada a espera, o item não diz mais que o login espera (sobra do H5b, J2)', async () => {
+    const adminSession = await adminToken(ADMIN);
+    const hourAgo = Date.now() - 60 * 60 * 1000;
+    // 5 senhas erradas há 1 h: o selo já diz "5 senhas erradas seguidas" (espera de 30 s acabou).
+    for (let n = 0; n < 5; n += 1) loginGuard.recordFailure(loginGuard.accountKey('student', 'ana@guard.local'), hourAgo);
+    for (let n = 0; n < 5; n += 1) loginGuard.recordFailure(loginGuard.accountKey('admin', OTHER_PROF.email), hourAgo);
+    const queue = async () => Object.fromEntries(((await request(app).get('/api/admin/dashboard/queue?courseId=DES&studentClass=1DES').set('x-admin-session', adminSession).expect(200)).body).map(item => [item.id, item]));
+    let items = await queue();
+    assert.equal(items.login_tentativas.count, 1);
+    assert.doesNotMatch(items.login_tentativas.detalhe, /o login espera/, `antes: "${items.login_tentativas.detalhe}"`);
+    assert.equal(items.login_tentativas.detalhe, '5 senhas erradas seguidas ou mais; a espera acabou, mas a próxima senha errada volta a atrasar; libere em Alunos → Liberar login');
+    assert.doesNotMatch(items.login_tentativas_contas.detalhe, /o login espera/);
+    // Uma conta esperando agora e outra não: o texto conta as duas situações.
+    await delay('student', 'bia@guard.local');
+    items = await queue();
+    assert.equal(items.login_tentativas.count, 2);
+    assert.match(items.login_tentativas.detalhe, /^1 espera para tentar de novo; nas outras a espera acabou/);
+    // Todas esperando: o texto de antes.
+    loginGuard.clear(loginGuard.accountKey('student', 'ana@guard.local'));
+    items = await queue();
+    assert.equal(items.login_tentativas.detalhe, 'o login espera antes de tentar de novo; libere em Alunos → Liberar login');
+});
+
+test('[UC-AUTH-002] "Liberar login" de conta com 1 a 4 senhas erradas: não havia bloqueio e nada vai para a auditoria (sobra do H5b, J2)', async () => {
+    const profSession = await adminToken(PROF);
+    const adminSession = await adminToken(ADMIN);
+    const studentKey = loginGuard.accountKey('student', 'ana@guard.local');
+    for (let n = 0; n < 3; n += 1) loginGuard.recordFailure(studentKey);
+    const res = await request(app).post('/api/admin/student/unlock-login').set('x-admin-session', profSession).send({ email: 'ana@guard.local' }).expect(200);
+    assert.equal(res.body.unlocked, false, 'antes, true (o contador era apagado)');
+    assert.equal(res.body.message, 'Este aluno não estava com o login em espera.');
+    assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'student_login_unlocked').length, 0, 'antes, um student_login_unlocked vazio');
+    const accountKey = loginGuard.accountKey('admin', OTHER_PROF.email);
+    for (let n = 0; n < 4; n += 1) loginGuard.recordFailure(accountKey);
+    const account = await request(app).post('/api/admin/accounts/unlock-login').set('x-admin-session', adminSession).send({ email: OTHER_PROF.email }).expect(200);
+    assert.equal(account.body.unlocked, false);
+    assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'account_login_unlocked').length, 0);
+    // Com o atraso atingido, libera e registra como antes, com as falhas no detalhe.
+    for (let n = 0; n < 2; n += 1) loginGuard.recordFailure(studentKey);
+    const released = await request(app).post('/api/admin/student/unlock-login').set('x-admin-session', profSession).send({ email: 'ana@guard.local' }).expect(200);
+    assert.equal(released.body.unlocked, true);
+    const audit = db.memory.auditLogs.filter(entry => entry.action === 'student_login_unlocked');
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].details.failures, 5);
+});
+
 test('[UC-AUTH-002] computeQueue sem o bloco de segurança fica como antes', () => {
     const items = computeQueue({ memory: { ...db.memory, students: [] }, cls: null, course: null, students: [], today: '2026-11-10', now: Date.now(), canSeeMatriculas: true });
     assert.equal(items.some(item => /^login_|^senhas_/.test(item.id)), false);

@@ -201,8 +201,12 @@ function createAdminAccountsRouter() {
             const account = (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === email);
             if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
             const key = loginGuard.accountKey('admin', email);
+            // Só a conta que chegou ao atraso (5 senhas erradas ou mais) é liberada e vai para a
+            // auditoria. Com 1 a 4 falhas não há bloqueio: a resposta diz isso e nada muda
+            // (antes, o contador era apagado e a auditoria ganhava um desbloqueio vazio; sobra do
+            // H5b, J2).
             const before = loginGuard.protectionFor(key);
-            const released = loginGuard.clear(key);
+            const released = before ? loginGuard.clear(key) : false;
             if (released) {
                 recordAudit(db.memory, {
                     req,
@@ -210,7 +214,7 @@ function createAdminAccountsRouter() {
                     action: 'account_login_unlocked',
                     category: 'account',
                     targetEmail: email,
-                    details: before ? { failures: before.failures, retryAt: before.retryAt } : {},
+                    details: { failures: before.failures, retryAt: before.retryAt },
                 });
                 await db.save();
             }

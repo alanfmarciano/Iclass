@@ -151,7 +151,8 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // `extras` (contrato da fase 2): blocos montados pela rota, cada um já filtrado pelo
 // escopo de quem vê. storage (H1-c): { freeBytes, allocatedBytes } quando o banco tem
 // espaço a recuperar e quem vê é administrador (db.storageStatus().compactSuggested).
-// security (H5b, SEG-06): { recoveryEmails, delayedEmails, delayedAccounts, ipAlerts } —
+// security (H5b, SEG-06): { recoveryEmails, delayedEmails, waitingEmails, delayedAccounts,
+// waitingAccounts, ipAlerts } (waiting*: as da lista que ainda esperam agora) —
 // alunos do escopo que pediram nova senha e alunos com o login em espera por senhas
 // erradas; contas de instrutor em espera e alertas de muitas senhas erradas vindas do
 // mesmo IP, esses dois só para administrador.
@@ -298,6 +299,18 @@ function countOf(list) {
     return Array.isArray(list) ? list.length : 0;
 }
 
+// Texto do item de senhas erradas, como o selo (web/src/features/admin/loginProtection.jsx):
+// "o login espera" só enquanto alguma conta da lista ainda espera agora (waiting: as que
+// esperam; sem a lista, de uma rota antiga, vale como antes). Passada a espera, a conta
+// continua na lista até ser liberada ou sair da memória, e a próxima senha errada volta a
+// atrasar: o texto diz isso em vez de prometer uma espera que já acabou (sobra do H5b, J2).
+function loginDelayText(waiting, total) {
+    const waitingCount = Array.isArray(waiting) ? waiting.length : total;
+    if (waitingCount >= total) return 'o login espera antes de tentar de novo';
+    if (waitingCount > 0) return `${waitingCount} ${waitingCount === 1 ? 'espera' : 'esperam'} para tentar de novo; nas outras a espera acabou, mas a próxima senha errada volta a atrasar`;
+    return '5 senhas erradas seguidas ou mais; a espera acabou, mas a próxima senha errada volta a atrasar';
+}
+
 function securityQueueItems(security) {
     if (!security || typeof security !== 'object') return [];
     const items = [];
@@ -315,7 +328,7 @@ function securityQueueItems(security) {
         items.push({
             id: 'login_tentativas', tipo: 'login_tentativas',
             titulo: 'Alunos com muitas senhas erradas',
-            detalhe: 'o login espera antes de tentar de novo; libere em Alunos → Liberar login',
+            detalhe: `${loginDelayText(security.waitingEmails, delayed)}; libere em Alunos → Liberar login`,
             count: delayed, tone: 'danger', href: '/alunos', permissao: 'page.students',
         });
     }
@@ -324,7 +337,7 @@ function securityQueueItems(security) {
         items.push({
             id: 'login_tentativas_contas', tipo: 'login_tentativas',
             titulo: 'Contas de instrutor com muitas senhas erradas',
-            detalhe: 'o login espera antes de tentar de novo; libere em Contas → Liberar login',
+            detalhe: `${loginDelayText(security.waitingAccounts, delayedAccounts)}; libere em Contas → Liberar login`,
             count: delayedAccounts, tone: 'danger', href: '/admins', permissao: 'page.accounts',
         });
     }
