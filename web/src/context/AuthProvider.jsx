@@ -251,6 +251,25 @@ export function AuthProvider({ children }) {
       return false
     }
   }
+  // Sessão recusada (401) numa chamada de fundo, como o ping de presença do aluno (15 s),
+  // que costuma chegar antes da conferência da instância (60 s). Mesmo critério da abertura
+  // e da revalidação: motivo do servidor (senha redefinida, Sair, outro aparelho) se houver;
+  // senão, se o servidor é outro (instanceId novo: reiniciou e a sessão não voltou, mais de
+  // 60 min fora do ar), "O servidor foi reiniciado"; senão, sessão expirada. Antes, o ping
+  // saía sem motivo e o aluno chegava ao login sem aviso nenhum (frente do H3, ajuste 1).
+  const endSessionFromError = useCallback(async (err) => {
+    const revoked = revokedLogoutFromError(err)
+    if (revoked) { doLogout(revoked.reason, revoked.message); return }
+    const known = authRef.current?.serverInstanceId || null
+    let restarted = false
+    if (known) {
+      try {
+        const st = await api.get('/api/session/status', { auth: false, background: true, timeoutMs: 5000 })
+        restarted = !!(st?.instanceId && st.instanceId !== known)
+      } catch { /* sem resposta: fica "expirada" */ }
+    }
+    doLogout(restarted ? 'restart' : 'expired')
+  }, [doLogout])
   const revalidation = usePolling(check, { intervalMs: REVALIDATE_MS, enabled: !!auth?.role, immediate: false })
   // A conexão voltou (lib/connection.js: de 'offline' ou 'starting' para 'online'): confere
   // na hora, sem esperar o minuto da revalidação (o servidor pode ter reiniciado).
@@ -381,7 +400,7 @@ export function AuthProvider({ children }) {
   }, [doLogout])
 
   return (
-    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
+    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
       {children}
     </AuthCtx.Provider>
   )

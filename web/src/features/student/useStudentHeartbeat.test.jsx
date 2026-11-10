@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // por vez, sem ping com a aba oculta e com ping na hora quando ela volta. Com 30 alunos,
 // eram 7,5 pedidos por segundo só de presença; agora são 2.
 const apiGet = vi.hoisted(() => vi.fn())
-const authMock = vi.hoisted(() => ({ logout: vi.fn(), syncPasswordChange: vi.fn() }))
+const authMock = vi.hoisted(() => ({ endSessionFromError: vi.fn(), syncPasswordChange: vi.fn() }))
 vi.mock('../../lib/api', () => ({ api: { get: apiGet } }))
-vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { role: 'student', email: 'ana@escola.local' }, logout: authMock.logout, syncPasswordChange: authMock.syncPasswordChange }) }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { role: 'student', email: 'ana@escola.local' }, endSessionFromError: authMock.endSessionFromError, syncPasswordChange: authMock.syncPasswordChange }) }))
 
 import { HEARTBEAT_MS, useStudentHeartbeat } from './useStudentHeartbeat'
 
@@ -37,7 +37,8 @@ beforeEach(() => {
   vi.useFakeTimers()
   apiGet.mockReset()
   apiGet.mockResolvedValue({ success: true })
-  authMock.logout.mockReset()
+  authMock.endSessionFromError.mockReset()
+  authMock.endSessionFromError.mockResolvedValue(undefined)
   authMock.syncPasswordChange.mockReset()
   setHidden(false)
 })
@@ -84,10 +85,12 @@ describe('[UC-DESEMPENHO-002] presença do aluno no portal', () => {
   })
 
   it('sessão revogada: sai para o login na hora', async () => {
-    apiGet.mockRejectedValueOnce(Object.assign(new Error('Sessão encerrada'), { status: 401, data: { sessionRevoked: true } }))
+    const err = Object.assign(new Error('Sessão encerrada'), { status: 401, data: { sessionRevoked: true } })
+    apiGet.mockRejectedValueOnce(err)
     const view = renderPortal()
     await act(async () => {})
-    expect(authMock.logout).toHaveBeenCalledTimes(1)
+    expect(authMock.endSessionFromError).toHaveBeenCalledTimes(1)
+    expect(authMock.endSessionFromError).toHaveBeenCalledWith(err)
     expect(view.getByText('Tela de login')).toBeInTheDocument()
   })
 })
@@ -117,18 +120,33 @@ describe('[UC-SENHA-001] presença e troca de senha obrigatória', () => {
 describe('[UC-AUTH-003] presença com a sessão encerrada no servidor', () => {
   const RESET = 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.'
 
-  it('401 com reason password_reset: logout com o motivo e o texto do servidor', async () => {
-    apiGet.mockRejectedValue(Object.assign(new Error(RESET), { status: 401, data: { error: RESET, sessionRevoked: true, reason: 'password_reset' } }))
-    renderPortal()
+  // O motivo (e o "servidor reiniciado" quando a sessão não voltou depois do reinício) é
+  // decidido no AuthProvider (endSessionFromError), com o mesmo critério da abertura e da
+  // revalidação; o ping só entrega o erro e vai para o login.
+  it('401 com reason password_reset: entrega o erro ao AuthProvider e vai para o login', async () => {
+    const err = Object.assign(new Error(RESET), { status: 401, data: { error: RESET, sessionRevoked: true, reason: 'password_reset' } })
+    apiGet.mockRejectedValue(err)
+    const view = renderPortal()
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
-    expect(authMock.logout).toHaveBeenCalledWith('password_reset', RESET)
+    expect(authMock.endSessionFromError).toHaveBeenCalledWith(err)
+    expect(view.getByText('Tela de login')).toBeInTheDocument()
   })
 
-  it('401 sem motivo conhecido: logout sem motivo, como antes', async () => {
-    apiGet.mockRejectedValue(Object.assign(new Error('Sessão expirada.'), { status: 401, data: { sessionRevoked: true, reason: 'expired' } }))
+  it('401 expired (servidor reiniciado mais de 60 min fora do ar): também passa pelo AuthProvider', async () => {
+    const err = Object.assign(new Error('Sessão expirada.'), { status: 401, data: { sessionRevoked: true, reason: 'expired' } })
+    apiGet.mockRejectedValue(err)
     renderPortal()
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
-    expect(authMock.logout).toHaveBeenCalledWith()
+    expect(authMock.endSessionFromError).toHaveBeenCalledWith(err)
+  })
+
+  it('falha de rede ou 503: não sai da sessão', async () => {
+    apiGet.mockRejectedValue(Object.assign(new Error('Sem conexão'), { status: 0, network: true }))
+    renderPortal()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    apiGet.mockRejectedValue(Object.assign(new Error('Iniciando'), { status: 503, data: { starting: true } }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(HEARTBEAT_MS) })
+    expect(authMock.endSessionFromError).not.toHaveBeenCalled()
   })
 })
 

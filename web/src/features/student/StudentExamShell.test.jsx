@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMock = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
-const authMock = vi.hoisted(() => ({ logout: vi.fn(), setAuth: vi.fn(), setActiveClass: vi.fn() }))
+const authMock = vi.hoisted(() => ({ logout: vi.fn(), endSessionFromError: vi.fn(), setAuth: vi.fn(), setActiveClass: vi.fn() }))
 vi.mock('../../lib/api', () => ({ api: apiMock }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => ({ info: vi.fn(), success: vi.fn(), error: vi.fn() }) }))
 vi.mock('../../context/AuthProvider', () => ({
@@ -56,7 +56,8 @@ describe('[UC-PROVA-003] layout da prova online (AVA-12, UXA-X1)', () => {
     apiMock.get.mockRejectedValue(Object.assign(new Error('Sessão encerrada'), { status: 401 }))
     const router = renderShell()
     expect(await screen.findByText('Tela de login')).toBeVisible()
-    expect(authMock.logout).toHaveBeenCalled()
+    // O motivo do login (senha redefinida, servidor reiniciado, expirada) sai do AuthProvider.
+    expect(authMock.endSessionFromError).toHaveBeenCalledWith(expect.objectContaining({ status: 401 }))
     expect(router.state.location.pathname).toBe('/login')
   })
 

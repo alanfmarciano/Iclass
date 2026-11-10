@@ -449,9 +449,9 @@ export default function SistemaPage() {
 
       {!canManage && <Badge tone="neutral">Ações de manutenção não liberadas para esta conta.</Badge>}
 
-      {/* Até a frente do H3 (J3), o navegador ainda pede login de novo quando vê o servidor
-          novo (AuthProvider, troca de instanceId), mesmo com a sessão guardada no servidor
-          (H3a-2): o texto não promete que ninguém entra de novo (decisões §9). */}
+      {/* "Ninguém precisa entrar de novo" (decisões §9): o servidor retoma as sessões
+          gravadas (H3a-2) e, desde a frente do H3, o AuthProvider confere a sessão quando vê
+          o servidor novo (troca de instanceId) em vez de mandar todos para o login. */}
       <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description={RESTART_DESCRIPTION}
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} onClick={restart}>Reiniciar agora</Button></>}>
         {previewError && <p className="text-sm text-danger">{previewError}</p>}

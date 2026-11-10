@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthProvider'
 import { api } from '../../lib/api'
 import { usePolling } from '../../hooks/usePolling'
-import { revokedLogoutFromError } from '../../lib/sessionRevoked'
 
 // Presença do aluno no portal e saída imediata quando a sessão é revogada. Usado pelo
 // portal e pelo layout da prova.
@@ -16,7 +15,7 @@ export const HEARTBEAT_MS = 15000
 // O ping também diz se a troca de senha obrigatória vale para esta sessão (H5a): o
 // professor redefiniu a senha com o aluno no portal, ou a prova que adiava a troca acabou.
 export function useStudentHeartbeat() {
-  const { auth, logout, syncPasswordChange } = useAuth()
+  const { auth, endSessionFromError, syncPasswordChange } = useAuth()
   const nav = useNavigate()
   const email = auth.email
   const ping = useCallback(async (requestOptions) => {
@@ -29,15 +28,15 @@ export function useStudentHeartbeat() {
       return true
     } catch (err) {
       if (err?.status === 401 || err?.data?.sessionRevoked === true) {
-        // Senha redefinida pelo professor (ou Sair em outra aba): o login mostra o motivo.
-        const revoked = revokedLogoutFromError(err)
-        if (revoked) logout(revoked.reason, revoked.message)
-        else logout()
+        // Senha redefinida pelo professor (ou Sair em outra aba, outro aparelho): o login
+        // mostra o motivo do servidor. Sem motivo, o AuthProvider confere se o servidor
+        // reiniciou ("O servidor foi reiniciado") ou se a sessão só expirou.
+        await endSessionFromError(err)
         nav('/login')
         return true
       }
       return false
     }
-  }, [email, logout, nav, syncPasswordChange])
+  }, [email, endSessionFromError, nav, syncPasswordChange])
   usePolling(ping, { intervalMs: HEARTBEAT_MS, enabled: !!email })
 }

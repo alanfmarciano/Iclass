@@ -182,3 +182,53 @@ describe('[UC-AUTH-001] servidor reiniciado: o navegador confere a sessão em ve
     expect(screen.getByTestId('role')).toHaveTextContent('student')
   })
 })
+
+// Frente do H3, ajuste 1: o ping de presença do aluno (15 s) recebe o 401 antes da
+// conferência da instância (60 s). Ele saía sem motivo, e o aluno chegava ao login sem
+// aviso nenhum quando a sessão não voltou depois do reinício (mais de 60 min fora do ar),
+// enquanto o professor via "O servidor foi reiniciado". Agora o ping entrega o erro ao
+// AuthProvider (endSessionFromError), com o mesmo critério da revalidação.
+describe('[UC-AUTH-001] sessão recusada numa chamada de fundo (ping do aluno)', () => {
+  const expired = () => Object.assign(new Error('Sessão expirada'), { status: 401, data: { sessionRevoked: true, reason: 'expired' } })
+
+  it('401 expired com o servidor de instância nova: login com "O servidor foi reiniciado"', async () => {
+    storeStudent()
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await waitFor(() => expect(ctx.authReady).toBe(true))
+    serverInstance = 'inst-2'
+    await act(async () => { await ctx.endSessionFromError(expired()) })
+    expect(screen.getByTestId('role')).toHaveTextContent('none')
+    expect(sessionStorage.getItem('iclass-logout-reason')).toBe('restart')
+  })
+
+  it('401 expired com o mesmo servidor: login com "Sua sessão expirou"', async () => {
+    storeStudent()
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await waitFor(() => expect(ctx.authReady).toBe(true))
+    await act(async () => { await ctx.endSessionFromError(expired()) })
+    expect(screen.getByTestId('role')).toHaveTextContent('none')
+    expect(sessionStorage.getItem('iclass-logout-reason')).toBe('expired')
+  })
+
+  it('401 expired sem resposta do /api/session/status: login com "Sua sessão expirou"', async () => {
+    storeStudent()
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await waitFor(() => expect(ctx.authReady).toBe(true))
+    mocks.get.mockImplementation(async () => { throw Object.assign(new Error('Sem conexão'), { status: 0, network: true }) })
+    await act(async () => { await ctx.endSessionFromError(expired()) })
+    expect(sessionStorage.getItem('iclass-logout-reason')).toBe('expired')
+  })
+
+  it('401 com motivo do servidor (outro aparelho) leva o motivo, sem consultar a instância', async () => {
+    storeStudent()
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await waitFor(() => expect(ctx.authReady).toBe(true))
+    serverInstance = 'inst-2'
+    const before = mocks.get.mock.calls.length
+    const replaced = Object.assign(new Error('Outro aparelho'), { status: 401, data: { sessionRevoked: true, reason: 'replaced', error: 'Sessão encerrada porque a conta foi acessada em outro dispositivo.' } })
+    await act(async () => { await ctx.endSessionFromError(replaced) })
+    expect(sessionStorage.getItem('iclass-logout-reason')).toBe('replaced')
+    expect(sessionStorage.getItem('iclass-logout-message')).toMatch(/outro dispositivo/)
+    expect(mocks.get.mock.calls.slice(before).map(([p]) => p)).not.toContain('/api/session/status')
+  })
+})

@@ -2,7 +2,9 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reportFailure, reportResponse, reportSuccess, resetConnectionForTests, setConnectionProbe } from '../../lib/connection'
-import { BANNER_DELAY_MS, EXAM_HINT_TEXT, OFFLINE_TEXT, RECOVERED_MS, RECOVERED_TEXT, STARTING_TEXT, ServerConnectionBanner } from './ServerConnectionBanner'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { BANNER_DELAY_MS, BANNER_HEIGHT_VAR, EXAM_HINT_TEXT, OFFLINE_TEXT, RECOVERED_MS, RECOVERED_TEXT, STARTING_TEXT, ServerConnectionBanner } from './ServerConnectionBanner'
 
 // Frente do H3 (CONF-03, UXA-06): a faixa diz que é o servidor (não a prova) e, na rota
 // da prova, pede para não recarregar. Antes a tela não dizia nada até cair no login.
@@ -22,6 +24,7 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
   resetConnectionForTests()
+  document.documentElement.style.removeProperty(BANNER_HEIGHT_VAR)
 })
 
 describe('[UC-AUTH-001] faixa de conexão com o servidor', () => {
@@ -43,8 +46,8 @@ describe('[UC-AUTH-001] faixa de conexão com o servidor', () => {
     act(() => { vi.advanceTimersByTime(BANNER_DELAY_MS) })
     expect(screen.getByText(STARTING_TEXT)).toBeVisible()
     expect(screen.getByText(EXAM_HINT_TEXT)).toBeVisible()
-    // Fica sobre o cabeçalho da prova: o tom "soft" é translúcido, então a faixa leva o
-    // fundo opaco da superfície (na conferência a 375 px o título da prova aparecia por trás).
+    // O tom "soft" é translúcido: a faixa leva o fundo opaco da superfície (na conferência a
+    // 375 px o título da prova aparecia por trás quando ela ficava por cima).
     expect(screen.getByTestId('server-connection-banner-box')).toHaveClass('bg-surface')
   })
 
@@ -78,5 +81,56 @@ describe('[UC-AUTH-001] faixa de conexão com o servidor', () => {
     act(() => { vi.advanceTimersByTime(BANNER_DELAY_MS) })
     act(() => { reportResponse(503, { starting: true }) })
     expect(screen.getByText(STARTING_TEXT)).toBeVisible()
+  })
+})
+
+// Frente do H3, ajuste 1: a faixa fixa ficava por cima do cabeçalho da prova durante toda a
+// queda (cronômetro, x/y respondidas, "Sem conexão: as respostas serão enviadas…" e o botão
+// Enviar), a 375 px e a 1280 px, e um toque nela acionava o Enviar escondido (a faixa não
+// recebia o toque). Agora a altura dela é reservada em cima do #root e ela recebe o toque.
+describe('[UC-AUTH-001] faixa de conexão não cobre a tela', () => {
+  function fakeHeight(px) {
+    const original = HTMLElement.prototype.getBoundingClientRect
+    HTMLElement.prototype.getBoundingClientRect = function rect() {
+      if (this.dataset?.testid === 'server-connection-banner-box') return { top: 0, left: 0, width: 375, height: px, right: 375, bottom: px, x: 0, y: 0 }
+      return original.call(this)
+    }
+    return () => { HTMLElement.prototype.getBoundingClientRect = original }
+  }
+
+  it('enquanto está à vista, reserva a altura dela em cima da tela; ao sumir, devolve', () => {
+    const restore = fakeHeight(121.4)
+    try {
+      renderAt('/aluno/prova/Avaliacao?applicationId=app-1')
+      const root = document.documentElement
+      goOffline()
+      act(() => { vi.advanceTimersByTime(BANNER_DELAY_MS - 100) })
+      expect(root.style.getPropertyValue(BANNER_HEIGHT_VAR)).toBe('')
+      act(() => { vi.advanceTimersByTime(200) })
+      expect(screen.getByText(OFFLINE_TEXT)).toBeVisible()
+      expect(root.style.getPropertyValue(BANNER_HEIGHT_VAR)).toBe('122px')
+      act(() => { reportSuccess() })
+      expect(screen.getByText(RECOVERED_TEXT)).toBeVisible()
+      expect(root.style.getPropertyValue(BANNER_HEIGHT_VAR)).toBe('122px')
+      act(() => { vi.advanceTimersByTime(RECOVERED_MS + 100) })
+      expect(screen.queryByText(RECOVERED_TEXT)).not.toBeInTheDocument()
+      expect(root.style.getPropertyValue(BANNER_HEIGHT_VAR)).toBe('')
+    } finally { restore() }
+  })
+
+  it('o #root desce a altura da faixa (index.css) e a faixa recebe o toque', () => {
+    // O vitest não entrega CSS por ?raw: lê o arquivo.
+    const indexCss = readFileSync(join(__dirname, '../../index.css'), 'utf8')
+    expect(indexCss).toMatch(/#root\s*\{[^}]*padding-top:\s*var\(--connection-banner-h,\s*0px\)/)
+    renderAt('/aluno/prova/Avaliacao?applicationId=app-1')
+    goOffline()
+    act(() => { vi.advanceTimersByTime(BANNER_DELAY_MS) })
+    expect(screen.getByTestId('server-connection-banner-box')).toHaveClass('pointer-events-auto')
+  })
+
+  it('sem faixa, nada reservado (servidor no ar o tempo todo)', () => {
+    renderAt('/aluno')
+    act(() => { vi.advanceTimersByTime(5000) })
+    expect(document.documentElement.style.getPropertyValue(BANNER_HEIGHT_VAR)).toBe('')
   })
 })
