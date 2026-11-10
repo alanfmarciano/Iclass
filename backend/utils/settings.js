@@ -13,10 +13,41 @@ const DEFAULTS = Object.freeze({
     attendance: { autoOnLogin: true, windowStart: '', windowEnd: '' },
     trash: { retentionDays: 0 },
     maintenance: { enabled: false, message: 'Sistema em manutenção. Tente novamente em instantes.' },
+    network: { adminAccess: 'rede-sem-https' },
 });
 
+// Blocos que o POST genérico de configurações (/api/admin/settings) nunca altera: cada
+// um só é gravado pela própria rota, com validação e auditoria (backup do H4, rede do
+// H6 em /api/admin/network-settings, retenção do H8). mergeSettings devolve o bloco
+// gravado como está, inclusive campos que esta versão ainda não conhece.
+const PROTECTED_SETTINGS_SECTIONS = Object.freeze(['backup', 'network', 'retention']);
+
+// Painel do professor em outros aparelhos (settings.network.adminAccess, SEG-03):
+// - 'rede-sem-https' (padrão; também quando o campo não existe, como no banco de antes
+//   desta versão): abre em qualquer aparelho da rede, como antes, e a tela avisa que a
+//   senha passa pela rede sem proteção quando não é o computador do IClass;
+// - 'local': só no computador onde o IClass está ligado;
+// - 'rede': outros aparelhos só pela conexão segura (https). Enquanto esta versão não
+//   tem https (H6c), a rota de rede recusa essa escolha.
+// Valor gravado desconhecido vale o padrão: ninguém fica trancado fora do painel.
+const ADMIN_ACCESS_MODES = Object.freeze(['rede-sem-https', 'local', 'rede']);
+
+function normalizeAdminAccess(value) {
+    return ADMIN_ACCESS_MODES.includes(value) ? value : DEFAULTS.network.adminAccess;
+}
+
+function storedSettings() {
+    const s = db.memory.config && db.memory.config.settings;
+    return s && typeof s === 'object' ? s : {};
+}
+
+function networkSettings(stored = storedSettings()) {
+    const network = stored.network && typeof stored.network === 'object' ? stored.network : {};
+    return { adminAccess: normalizeAdminAccess(network.adminAccess) };
+}
+
 function getSettings() {
-    const s = (db.memory.config && db.memory.config.settings) || {};
+    const s = storedSettings();
     return {
         timezone: s.timezone || DEFAULTS.timezone,
         locale: DEFAULTS.locale,
@@ -26,6 +57,7 @@ function getSettings() {
         attendance: { ...DEFAULTS.attendance, ...(s.attendance || {}) },
         trash: { ...DEFAULTS.trash, ...(s.trash || {}) },
         maintenance: { ...DEFAULTS.maintenance, ...(s.maintenance || {}) },
+        network: networkSettings(s),
     };
 }
 
@@ -57,6 +89,11 @@ function mergeSettings(patch) {
             message: typeof (p.maintenance && p.maintenance.message) === 'string' ? String(p.maintenance.message).slice(0, 300) : cur.maintenance.message,
         },
     };
+    // Blocos protegidos: o que está gravado continua, e o que veio no pedido é ignorado.
+    const stored = storedSettings();
+    PROTECTED_SETTINGS_SECTIONS.forEach(section => {
+        if (stored[section] !== undefined) next[section] = stored[section];
+    });
     return next;
 }
 
@@ -96,4 +133,17 @@ function extCategory(ext) {
     return 'other';
 }
 
-module.exports = { DEFAULTS, getSettings, mergeSettings, todayInTz, today, nowHHMM, withinAttendanceWindow, extCategory };
+module.exports = {
+    DEFAULTS,
+    PROTECTED_SETTINGS_SECTIONS,
+    ADMIN_ACCESS_MODES,
+    getSettings,
+    mergeSettings,
+    networkSettings,
+    normalizeAdminAccess,
+    todayInTz,
+    today,
+    nowHHMM,
+    withinAttendanceWindow,
+    extCategory,
+};

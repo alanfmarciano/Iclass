@@ -48,7 +48,8 @@ describe('[UC-PROVA-003] layout da prova online (AVA-12, UXA-X1)', () => {
     expect(screen.queryByRole('button', { name: /notifica/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Sair' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Menu' })).not.toBeInTheDocument()
-    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith('/api/ping?email=ana%40escola.local'))
+    // Presença como consulta de fundo, com prazo de 10 s (usePolling, H2-C).
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith('/api/ping?email=ana%40escola.local', { background: true, timeoutMs: 10000 }))
   })
 
   it('mantém a presença e leva ao login quando a sessão é revogada durante a prova', async () => {

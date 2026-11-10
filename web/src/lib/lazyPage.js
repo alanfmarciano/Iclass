@@ -37,6 +37,8 @@ export const CHUNK_RELOAD_KEY = 'iclass-chunk-reload'
 export const CHUNK_RELOAD_WINDOW_MS = 30000
 export const SERVER_WAIT_MS = 3 * 60 * 1000
 export const SERVER_PROBE_DELAYS_MS = [1000, 2000, 3000, 5000]
+// Prazo de cada conferência do servidor (o mesmo das consultas periódicas).
+export const SERVER_PROBE_TIMEOUT_MS = 10000
 
 function sessionStore() {
   try { return typeof sessionStorage === 'undefined' ? null : sessionStorage } catch { return null }
@@ -49,19 +51,27 @@ function currentAddress() {
 
 // O servidor entrega a página de novo? Pede o mesmo endereço que a recarga pediria
 // (HEAD, sem cache): só uma resposta 2xx vale. Erro de rede, 503 do build sendo refeito
-// ou do servidor iniciando: ainda não.
-async function serverAnswers() {
+// ou do servidor iniciando: ainda não. Cada conferência tem prazo (H2-C): com o servidor
+// travado (aceita a conexão e não responde), o fetch ficaria pendurado e o prazo de 3
+// minutos da espera nunca chegaria; estourado o prazo, a conferência conta como "ainda
+// não" e a espera segue.
+export async function serverAnswers(timeoutMs = SERVER_PROBE_TIMEOUT_MS) {
   if (typeof fetch !== 'function') return false
+  const controller = typeof AbortController === 'function' ? new AbortController() : null
+  const timer = controller && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null
   try {
     const response = await fetch(currentAddress() || '/', {
       method: 'HEAD',
       cache: 'no-store',
       credentials: 'same-origin',
       headers: { 'X-IClass-Background': '1' },
+      ...(controller ? { signal: controller.signal } : {}),
     })
     return !!response && response.ok
   } catch {
     return false
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -71,7 +81,7 @@ function defaultEnv() {
     reload: () => window.location.reload(),
     online: () => typeof navigator === 'undefined' || navigator.onLine !== false,
     now: () => Date.now(),
-    probe: serverAnswers,
+    probe: () => serverAnswers(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     waitMs: SERVER_WAIT_MS,
   }

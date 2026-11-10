@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { RefreshCw, Trash2, Wifi, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
+import { RefreshCw, Trash2, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
@@ -9,13 +9,14 @@ import { TypedConfirm, typedConfirmMatches } from '../../components/ui/TypedConf
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Badge } from '../../components/ui/Badge'
 import { useApi } from '../../hooks/useApi'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
 import { SaudeCard } from './sistema/SaudeCard'
 import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
+import { RedeCard } from './sistema/RedeCard'
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
@@ -141,8 +142,6 @@ function TrashCard() {
   )
 }
 
-function _bkAuth() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
-
 const BACKUP_ACTION_LABEL = {
   backup_restored: 'Restauração concluída',
   backup_restore_failed: 'Restauração com falha',
@@ -204,20 +203,16 @@ function BackupCard({ isAdmin }) {
   async function serverBackup() {
     setServerBusy(true)
     try {
-      const r = await api.post('/api/admin/backup/server', {})
+      const r = await api.post('/api/admin/backup/server', {}, { timeoutMs: 0 })
       toast.success(`Cópia de segurança gerada no servidor (${r.fileName}). Ficam as ${r.kept || 20} cópias manuais mais recentes.`)
       if (isAdmin) history.refetch(true)
     } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
   }
+  // Download e restauração passam pelo cliente da API (lib/api.js): sem rede, a mensagem
+  // em português em vez do "Failed to fetch" do navegador (fase 2, H9c).
   async function download(kind) {
     try {
-      const res = await fetch('/api/admin/backup/' + kind, { headers: _bkAuth() })
-      if (!res.ok) { const d = await res.json().catch(() => null); throw new Error((d && d.error) || 'Falha ao gerar backup') }
-      const blob = await res.blob()
-      const cd = res.headers.get('Content-Disposition') || ''
-      const m = cd.match(/filename="([^"]+)"/)
-      const name = m ? m[1] : (kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
-      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url)
+      await downloadFile('/api/admin/backup/' + kind, kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
       history.refetch(true)
     } catch (e) { toast.error(e.message) }
   }
@@ -232,13 +227,7 @@ function BackupCard({ isAdmin }) {
     setLegacyWarning(null)
     setBusy(true)
     try {
-      const res = await fetch('/api/admin/backup/restore', { method: 'POST', headers: _bkAuth(), body: fd })
-      const d = await res.json().catch(() => null)
-      if (res.status === 409 && d?.legacyBackup) {
-        setLegacyWarning({ message: d.error, exportedAt: d.exportedAt || '' })
-        return
-      }
-      if (!res.ok) throw new Error((d && d.error) || 'Falha ao restaurar')
+      const d = await api.post('/api/admin/backup/restore', fd, { timeoutMs: 0 })
       const skipped = Number(d && d.accountsNotRestored) || 0
       const legacy = d?.legacyApplications ? ` ${legacyRestoreNote(d)}` : ''
       toast.success(skipped > 0
@@ -246,6 +235,10 @@ function BackupCard({ isAdmin }) {
         : `Backup restaurado. Recarregue a página para ver os dados.${legacy}`)
       setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
     } catch (e) {
+      if (e.status === 409 && e.data?.legacyBackup) {
+        setLegacyWarning({ message: e.data.error, exportedAt: e.data.exportedAt || '' })
+        return
+      }
       toast.error(e.message)
       // A falha fica no histórico (a restauração bem-sucedida encerra as sessões).
       history.refetch(true)
@@ -315,7 +308,6 @@ export function maintenanceClassOptions(classes, courses, current) {
 export default function SistemaPage() {
   const { auth } = useAuth()
   const workspace = useAdminWorkspace()
-  const { data: net } = useApi('/api/admin/network-info')
   const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.SYSTEM_MANAGE)
   const { data: classList } = useApi(canManage ? '/api/admin/classes' : null)
   const { data: courseList } = useApi(canManage ? '/api/courses' : null)
@@ -341,8 +333,6 @@ export default function SistemaPage() {
   const unmountedRef = useRef(false)
   useEffect(() => () => { unmountedRef.current = true }, [])
   const toast = useToast()
-  const ips = (net && (net.addresses || net.ips || net)) || []
-  const list = Array.isArray(ips) ? ips : []
 
   async function loadPreview(applicationId = '') {
     setPreviewError(null)
@@ -380,7 +370,7 @@ export default function SistemaPage() {
     if (!typedConfirmMatches(confirmText, 'LIMPAR')) return toast.error('Digite LIMPAR para confirmar')
     setBusy(true)
     try {
-      const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() })
+      const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() }, { timeoutMs: 0 })
       toast.success(r?.message || 'Estado de prova limpo'); setDialog(null); setConfirmText('')
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
@@ -388,7 +378,7 @@ export default function SistemaPage() {
     if (!typedConfirmMatches(confirmText, 'RESETAR')) return toast.error('Digite RESETAR para confirmar')
     setBusy(true)
     try {
-      const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() })
+      const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() }, { timeoutMs: 0 })
       toast.success(r?.message || 'Sala resetada'); setDialog(null); setConfirmText('')
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
@@ -406,19 +396,7 @@ export default function SistemaPage() {
 
       <SaudeCard refreshKey={healthKey} />
 
-      <Card>
-        <CardHeader title="Rede local" subtitle="Endereços para os alunos acessarem" />
-        <CardBody className="space-y-2">
-          {list.length === 0 && <p className="text-sm text-muted flex items-center gap-2"><Wifi size={16} /> Endereços aparecem quando o servidor estiver rodando.</p>}
-          {list.map((ip, i) => (
-            <div key={i} className="flex items-center gap-2 text-sm">
-              <Wifi size={15} className="text-info" />
-              <code className="font-mono text-text">{ip.address || ip}</code>
-              {ip.name && <Badge tone="neutral">{ip.name}</Badge>}
-            </div>
-          ))}
-        </CardBody>
-      </Card>
+      <RedeCard canManage={canManage} isAdmin={auth?.accountRole !== 'professor'} />
 
       {canManage && <SettingsCard />}
 

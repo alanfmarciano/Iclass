@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { MessagesSquare, Send, Trash2, Star, CircleCheck, RotateCcw, History, Search, Zap, Plus, X, Clock, ChevronDown } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -15,6 +15,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
+import { usePolling } from '../../hooks/usePolling'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -64,13 +65,27 @@ export default function ForumPage() {
   const templates = pref('forum.templates', [])
   const lastSeen = pref('forum.lastSeen', null)
 
-  const load = async (silent = false) => {
+  // requestOptions: o que o usePolling manda na consulta periódica (prazo e cabeçalho
+  // de consulta de fundo). Devolve se a resposta chegou (recuo do usePolling).
+  // A resposta que chega depois de trocar de curso ou turma é descartada: antes, a
+  // consulta lenta do curso anterior voltava por cima da lista do curso novo.
+  const workspaceKey = `${activeCourseId || ''}|${activeClassName || ''}`
+  const workspaceKeyRef = useRef(workspaceKey)
+  workspaceKeyRef.current = workspaceKey
+  const load = async (silent = false, requestOptions = undefined) => {
+    const current = () => workspaceKeyRef.current === workspaceKey
     if (!silent) setLoading(true)
     setError(null)
-    try { setData(await api.post('/api/admin/forum/all', { courseId: activeCourseId, studentClass: activeClassName })) } catch (e) { if (!silent) setError(e) } finally { if (!silent) setLoading(false) }
+    try {
+      const next = await api.post('/api/admin/forum/all', { courseId: activeCourseId, studentClass: activeClassName }, requestOptions)
+      if (current()) setData(next)
+      return true
+    } catch (e) { if (!silent && current()) setError(e); return false } finally { if (!silent && current()) setLoading(false) }
   }
   useEffect(() => { load() }, [activeCourseId, activeClassName])
-  useEffect(() => { const id = setInterval(() => load(true), 12000); return () => clearInterval(id) }, [activeCourseId, activeClassName])
+  // A cada 12 s, uma consulta por vez e só com a aba à vista (usePolling); a troca de
+  // curso ou turma recomeça a contagem (a carga acima já consulta na hora).
+  usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 12000, immediate: false, resetKey: workspaceKey })
 
   useEffect(() => {
     if (!activeCourseId) { setCourseKeys(null); return }

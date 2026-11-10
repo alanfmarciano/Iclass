@@ -8,8 +8,9 @@ let lastRenderError = null
 let interrupted = null
 
 // Mensagem do erro sem endereços: no build de produção o React manda "Minified React
-// error #31; visit https://...", e o Monitor guarda só o código do erro.
-function errorText(error) {
+// error #31; visit https://...", e o Monitor guarda só o código do erro. O registro do
+// erro de tela no servidor (lib/clientErrors.js) usa o mesmo texto.
+export function errorText(error) {
   return String(error?.message || error?.statusText || error || '')
     .replace(/;\s*visit https?:\/\/\S+[\s\S]*$/, '')
     .replace(/https?:\/\/\S+/g, '')

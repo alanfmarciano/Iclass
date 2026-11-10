@@ -191,21 +191,74 @@ function createStudentSession(memory, email, { ip = '', now = Date.now(), origin
     return token;
 }
 
-function revokeStudentSession(memory, email) {
+// Sessões encerradas há pouco, com o motivo (H5b; contrato das respostas de estado: 401
+// { sessionRevoked: true, reason }). A sessão revogada sai da memória e da tabela, e o
+// pedido seguinte do token antigo cairia no "sessão expirada" genérico: o aluno cuja senha
+// o professor redefiniu lia "Sessão expirada" em vez do motivo. Aqui fica só o sha256 do
+// token e o motivo ('logout', 'password_reset', 'password_changed'), por no máximo o prazo
+// absoluto da sessão e até 5.000 entradas (a mais antiga sai primeiro). Só na memória: um
+// reinício volta ao genérico, sem prejuízo (a sessão já não vale de qualquer jeito).
+const RECENT_REVOCATIONS_MAX = 5000;
+const recentRevocations = new Map(); // sha256 do token → { reason, at }
+
+function rememberRevocation(hash, reason, now = Date.now()) {
+    if (!hash || !reason || !HASH_PATTERN.test(hash)) return;
+    recentRevocations.delete(hash);
+    recentRevocations.set(hash, { reason: String(reason), at: now });
+    while (recentRevocations.size > RECENT_REVOCATIONS_MAX) {
+        recentRevocations.delete(recentRevocations.keys().next().value);
+    }
+}
+
+// Motivo do encerramento recente da sessão deste token (cru), ou null.
+function revokedSessionReason(raw, now = Date.now()) {
+    const hash = hashSessionToken(raw);
+    const entry = hash ? recentRevocations.get(hash) : null;
+    if (!entry) return null;
+    if (now - entry.at > sessionAbsoluteTtlMs()) {
+        recentRevocations.delete(hash);
+        return null;
+    }
+    return entry.reason;
+}
+
+function clearRecentRevocationsForTests() {
+    recentRevocations.clear();
+}
+
+// Encerra a sessão do aluno. reason (opcional) fica guardado para o pedido seguinte do
+// token antigo receber o motivo (revokedSessionReason).
+function revokeStudentSession(memory, email, { reason, now = Date.now() } = {}) {
     const sessions = memory && memory.sessions;
     const normalizedEmail = normalizeEmail(email);
     if (ownValue(sessions, normalizedEmail) === undefined) return false;
+    if (reason) rememberRevocation(studentSessionHash(sessions[normalizedEmail]), reason, now);
     delete sessions[normalizedEmail];
     return true;
 }
 
+// Sessão de aluno aberta antes de o professor redefinir a senha (H5b, SEG-10)? O
+// "Redefinir senha" grava na conta sessionsInvalidBefore (ms) e encerra a sessão na hora;
+// se o aluno estava em prova, a sessão continua até o fim da prova e esta conferência
+// (validateStudentSession) a encerra depois. Vale também depois de um reinício (a sessão
+// retomada guarda o createdAt).
+function sessionPredatesRevocation(account, session) {
+    const cutoff = validTimestamp(account && account.sessionsInvalidBefore);
+    if (!cutoff) return false;
+    const createdAt = validTimestamp(session && session.createdAt);
+    return !createdAt || createdAt <= cutoff;
+}
+
 // Consulta, sem efeito colateral: { ok: true, email, session, account } ou
 // { ok: false, reason } com reason 'missing' (token desconhecido), 'expired' (prazo
-// absoluto), 'idle' (só com options.idleMs), 'account_missing' ou 'account_inactive'.
+// absoluto), 'idle' (só com options.idleMs), 'account_missing', 'account_inactive' ou
+// 'password_reset' (sessão de antes do "Redefinir senha", fora de uma tentativa aberta:
+// a mesma regra de validateStudentSession, para o token antigo não continuar abrindo
+// arquivo em /uploads e /imagens depois da prova).
 function checkStudentSessionToken(raw, now = Date.now(), options = {}) {
     const memory = options.memory || currentMemory();
     const found = findStudentSession(memory, raw);
-    if (!found) return { ok: false, reason: 'missing' };
+    if (!found) return { ok: false, reason: revokedSessionReason(raw, now) || 'missing' };
     const { email, session } = found;
     const absoluteTtlMs = options.absoluteTtlMs !== undefined ? options.absoluteTtlMs : sessionAbsoluteTtlMs();
     if (isSessionExpired(session, now, absoluteTtlMs)) return { ok: false, reason: 'expired', email, session };
@@ -214,6 +267,10 @@ function checkStudentSessionToken(raw, now = Date.now(), options = {}) {
     if (!account) return { ok: false, reason: 'account_missing', email, session };
     const status = String(account.status || '').trim().toLowerCase();
     if (!ACTIVE_STUDENT_STATUSES.includes(status)) return { ok: false, reason: 'account_inactive', email, session, account };
+    // Carregado aqui: passwordChange.js lê o estado das provas (sem dependência circular).
+    if (sessionPredatesRevocation(account, session) && !require('./passwordChange.js').studentHasOpenAttempt(memory, email, now)) {
+        return { ok: false, reason: 'password_reset', email, session, account };
+    }
     return { ok: true, email, session, account };
 }
 
@@ -257,17 +314,30 @@ function createAdminSession(memory, email, { now = Date.now(), origin = DEFAULT_
     return token;
 }
 
-// Remove a sessão deste token (válida, vencida ou com valor estragado).
-function revokeAdminSession(memory, raw) {
+// sha256 do token de uma chave de adminSessions ('h:' + hash, ou o token cru legado).
+function adminKeyHash(key) {
+    if (typeof key !== 'string' || !key) return '';
+    if (key.startsWith(ADMIN_KEY_PREFIX)) {
+        const hash = key.slice(ADMIN_KEY_PREFIX.length);
+        return HASH_PATTERN.test(hash) ? hash : '';
+    }
+    return hashSessionToken(key);
+}
+
+// Remove a sessão deste token (válida, vencida ou com valor estragado). reason
+// (opcional), como em revokeStudentSession.
+function revokeAdminSession(memory, raw, { reason, now = Date.now() } = {}) {
     const entry = adminSessionEntry(memory, raw);
     if (!entry) return false;
+    if (reason) rememberRevocation(adminKeyHash(entry.key), reason, now);
     delete memory.adminSessions[entry.key];
     return true;
 }
 
 // Remove todas as sessões de instrutor do e-mail, menos a do token exceptToken (a do
-// próprio pedido, na troca de senha). Devolve quantas saíram.
-function revokeAdminSessions(memory, email, { exceptToken } = {}) {
+// próprio pedido, na troca de senha). Devolve quantas saíram. reason (opcional), como em
+// revokeStudentSession.
+function revokeAdminSessions(memory, email, { exceptToken, reason, now = Date.now() } = {}) {
     const map = memory && memory.adminSessions;
     const normalizedEmail = normalizeEmail(email);
     if (!map || typeof map !== 'object' || !normalizedEmail) return 0;
@@ -277,6 +347,7 @@ function revokeAdminSessions(memory, email, { exceptToken } = {}) {
         const value = map[key];
         if (!isAdminSessionValue(value) || value.email.toLowerCase() !== normalizedEmail) return;
         if (kept && kept.key === key) return;
+        if (reason) rememberRevocation(adminKeyHash(key), reason, now);
         delete map[key];
         removed += 1;
     });
@@ -290,7 +361,7 @@ function revokeAdminSessions(memory, email, { exceptToken } = {}) {
 function checkAdminSessionToken(raw, now = Date.now(), options = {}) {
     const memory = options.memory || currentMemory();
     const entry = adminSessionEntry(memory, raw);
-    if (!entry) return { ok: false, reason: 'missing' };
+    if (!entry) return { ok: false, reason: revokedSessionReason(raw, now) || 'missing' };
     const { key, value: session } = entry;
     if (!isAdminSessionValue(session)) return { ok: false, reason: 'invalid', key };
     const email = session.email.toLowerCase();
@@ -504,6 +575,9 @@ module.exports = {
     markStudentPresence,
     createStudentSession,
     revokeStudentSession,
+    revokedSessionReason,
+    clearRecentRevocationsForTests,
+    sessionPredatesRevocation,
     checkStudentSessionToken,
     findAdminSession,
     createAdminSession,

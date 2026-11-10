@@ -52,24 +52,19 @@ const SWEEP_EXCLUDED = [
 // leva a exceção ao errorHandler). O H9b zera esta lista; a varredura falha se uma
 // rota daqui deixar de falhar, para a lista não guardar rota já corrigida.
 const KNOWN_TYPE_ERRORS_UNTIL_H9B = new Set([
-    'POST /api/admin/accounts/create',
     'POST /api/admin/accounts/delete',
     'POST /api/admin/accounts/update',
     'POST /api/admin/assign-student-version',
-    'POST /api/admin/change-password',
-    'POST /api/admin/reset-password',
     'POST /api/admin/schools/create',
     'POST /api/admin/schools/delete',
     'POST /api/admin/schools/update',
     'POST /api/admin/student/certificates/issue',
     'POST /api/admin/student/observations/create',
-    'POST /api/admin/student/update',
     'POST /api/admin/unlock-student-focus',
     'POST /api/forum/comment',
     'POST /api/forum/comment/edit',
     'POST /api/forum/reply',
     'POST /api/forum/reply/edit',
-    'POST /api/student/login',
 ]);
 
 // Campos mais usados nos corpos das rotas (grep de req.body em backend/routes).
@@ -801,32 +796,40 @@ test('[UC-ERRO-001] corpo JSON: 512 KB sem sessão de instrutor, 10 MB com sess�
     assert.equal(db.memory.adminSessions[ADMIN_TOKEN], undefined, 'sessão vencida removida');
 });
 
-test('[UC-ERRO-001] lote de teclas grande com sessão de aluno continua aceito (até o H2-C fatiar no cliente); sem sessão fica com 512 KB', async () => {
+test('[UC-ERRO-001] lote de teclas acima de 512 KB recebe 413 também com sessão de aluno; o lote de 500 do ExamRunner passa', async () => {
+    // Fase 2, H2-C (decisões §5): o ExamRunner manda no máximo 500 teclas por envio e
+    // envia o resto em seguida, então a exceção de 10 MB do lote de teclas saiu e o limite
+    // volta a ser o de 512 KB de todo pedido do aluno.
     restoreSeed();
-    // ~4.000 eventos como os do ExamRunner (> 512 KB): o buffer de uma queda longa de rede.
-    const events = Array.from({ length: 4000 }, (_, index) => ({
+    const keystroke = (index) => ({
         seq: index + 1, clientTs: Date.now(), key: 'a', code: 'KeyA', mods: '', kind: 'char', question: null,
         blocked: false, suspicious: false, padding: 'x'.repeat(60),
-    }));
-    const payload = { email: DEMO_ACCOUNTS.student.email, studentClass: '1DES', courseId: 'curso_legacy_01', examKey: 'Avaliacao_FUTEC_5', events };
-    assert.ok(Buffer.byteLength(JSON.stringify(payload)) > 512 * 1024);
+    });
+    const base = { email: DEMO_ACCOUNTS.student.email, studentClass: '1DES', courseId: 'curso_legacy_01', examKey: 'Avaliacao_FUTEC_5' };
+    // ~4.000 eventos (> 512 KB): o buffer inteiro de uma queda longa de rede, como o
+    // cliente antigo mandava.
+    const big = { ...base, events: Array.from({ length: 4000 }, (_, index) => keystroke(index)) };
+    assert.ok(Buffer.byteLength(JSON.stringify(big)) > 512 * 1024);
     const before = db.keystrokes.stats({ email: DEMO_ACCOUNTS.student.email }).total;
-    const accepted = await request(app).post('/api/student/log-keystrokes').set('x-session-token', STUDENT_TOKEN).send(payload);
+    const refused = await request(app).post('/api/student/log-keystrokes').set('x-session-token', STUDENT_TOKEN).send(big);
+    assert.equal(refused.status, 413);
+    assert.equal(db.keystrokes.stats({ email: DEMO_ACCOUNTS.student.email }).total, before, 'nada gravado do lote recusado');
+    const anonymous = await request(app).post('/api/student/log-keystrokes').send(big);
+    assert.equal(anonymous.status, 413);
+
+    // O lote do ExamRunner (500 teclas, KEYSTROKE_BATCH_MAX) fica bem abaixo do limite.
+    const batch = { ...base, events: Array.from({ length: 500 }, (_, index) => keystroke(index)) };
+    assert.ok(Buffer.byteLength(JSON.stringify(batch)) < 128 * 1024);
+    const accepted = await request(app).post('/api/student/log-keystrokes').set('x-session-token', STUDENT_TOKEN).send(batch);
     assert.equal(accepted.status, 200, `${accepted.status} ${accepted.body && accepted.body.error}`);
-    assert.equal(accepted.body.inserted, 500, 'o servidor guarda no máximo 500 por envio, como antes');
+    assert.equal(accepted.body.inserted, 500);
     assert.equal(db.keystrokes.stats({ email: DEMO_ACCOUNTS.student.email }).total, before + 500);
 
-    const anonymous = await request(app).post('/api/student/log-keystrokes').send(payload);
-    assert.equal(anonymous.status, 413);
-    const unknown = await request(app).post('/api/student/log-keystrokes').set('x-session-token', 'token-que-nao-existe').send(payload);
-    assert.equal(unknown.status, 413);
-    // A exceção vale só para o lote de teclas: o caderno do aluno segue com 512 KB.
+    // O caderno do aluno segue com 512 KB, como sempre.
     const notes = await request(app).post('/api/student/notes/save').set('x-session-token', STUDENT_TOKEN)
         .send({ email: DEMO_ACCOUNTS.student.email, moduleKey: 'geral', note: 'x'.repeat(600 * 1024) });
     assert.equal(notes.status, 413);
-    assert.equal(middlewares.hasStudentSessionToken({ headers: { 'x-session-token': STUDENT_TOKEN } }), true);
-    assert.equal(middlewares.hasStudentSessionToken({ headers: { 'x-session-token': '__proto__' } }), false);
-    assert.equal(middlewares.hasStudentSessionToken({ headers: {} }), false);
+    assert.equal(middlewares.hasStudentSessionToken, undefined, 'a exceção do lote de teclas saiu do servidor');
 });
 
 test('[UC-ERRO-001] resolveAdminSession não altera nada e só aceita sessão existente dentro do prazo', () => {
@@ -842,7 +845,7 @@ test('[UC-ERRO-001] resolveAdminSession não altera nada e só aceita sessão ex
     assert.ok(db.memory.adminSessions[ADMIN_TOKEN], 'a consulta não apaga a sessão');
 });
 
-test('[UC-ERRO-001] credencial legada só vale como texto: password numérico ou objeto responde 401 sem gastar tentativas', async () => {
+test('[UC-ERRO-001] password no corpo não autentica (de nenhum tipo) e responde 401; o Authorization legado também não', async () => {
     restoreSeed();
     for (let attempt = 0; attempt < 35; attempt++) {
         const res = await request(app).post('/api/admin/student/observations/create')
@@ -854,10 +857,11 @@ test('[UC-ERRO-001] credencial legada só vale como texto: password numérico ou
     assert.ok(logout.status < 500, `logout: ${logout.status}`);
     const branding = await request(app).post('/api/branding').send({ password: ['a'] });
     assert.equal(branding.status, 401);
-    // O login legado em texto continua funcionando (até o H6b tirá-lo).
+    // O login legado em texto também deixou de valer (H6b): só a sessão do
+    // POST /api/session/admin-login entra.
     const legacy = await request(app).get('/api/admin/whoami')
         .set('Authorization', `${DEMO_ACCOUNTS.admin.email}:${DEMO_ACCOUNTS.admin.password}`);
-    assert.equal(legacy.status, 200);
+    assert.equal(legacy.status, 401);
 });
 
 test('[UC-ERRO-001] corpo sempre objeto: rota sem corpo responde 400 em vez de 500 ou ficar sem resposta, e o beacon de texto continua lido', async () => {
@@ -940,6 +944,18 @@ test('[UC-ERRO-001] crash.log: só logError escreve, sem query string, e o arqui
         logError('erro de tela', new Error('x'.repeat(200000)), { details: { area: 'admin', caminho: '/provas' } });
         assert.ok(fs.statSync(file).size < 100000);
         assert.match(fs.readFileSync(file, 'utf8'), /area: admin\n {2}caminho: \/provas\n/);
+
+        // Mensagem com quebra de linha não forja outro bloco (fase 2, H9c): a linha que
+        // começa com "[" é recuada, \r e U+2028 viram \n e caracteres de controle saem.
+        const forged = '[2026-01-01T00:00:00.000Z] unhandledRejection deadbeef GET /api/admin/backup (instrutor admin@teste.local)';
+        logError('erro interno', new Error(`falhou\n${forged}\r${forged}\u2028${forged}\u001b[0m`), { req: { id: 'cafe0002', method: 'GET', originalUrl: '/api/x' } });
+        logError(`tipo\n${forged}`, `[${forged}`, { details: { [`chave\n${forged}`]: `valor\r\n${forged}` } });
+        const injected = fs.readFileSync(file, 'utf8');
+        assert.doesNotMatch(injected, /\r|\u2028|\u001b/);
+        assert.ok(!injected.split('\n').some(line => line.startsWith('[2026-01-01')), 'nenhuma linha forjada começa um bloco');
+        assert.match(injected, /\] erro interno cafe0002 GET \/api\/x\nError: falhou\n {2}\[2026-01-01T00:00:00\.000Z\] unhandledRejection/);
+        assert.match(injected, /\] tipo \[2026-01-01T00:00:00\.000Z\] unhandledRejection [^\n]+\n {2}\[\[2026-01-01/);
+        assert.match(injected, /\n {2}chave \[2026-01-01[^\n]+: valor \[2026-01-01/);
     } finally {
         console.error = originalError;
     }

@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Save, Trash2 } from 'lucide-react'
+import { ArrowLeft, KeyRound, Save, Trash2 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
 import { Card } from '../../components/ui/Card'
@@ -13,6 +13,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { StudentFormTabs } from './AlunosPage'
 import { StudentAuditPanel } from './StudentAuditPanel'
+import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
 import { STUDENT_DELETE_REMOVES, STUDENT_DELETE_KEEPS } from './studentDeletion'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
@@ -26,7 +27,7 @@ function initials(n) { return (n || '?').split(' ').map((x) => x[0]).slice(0, 2)
 function emptyForm() {
   return {
     name: '', nomeSocial: '', email: '', matricula: '', phone: '', status: 'Ativo',
-    studentPassword: '', unidade: '', courseId: '', classes: [],
+    studentPassword: '', requirePasswordChange: true, unidade: '', courseId: '', classes: [],
     guardian: { name: '', phone: '', email: '', parentesco: '', observacao: '' },
     accessibility: { fonteAmpliada: false, altoContraste: false, reducaoAnimacoes: false, leitorTela: false, tempoAdicional: false, tempoAdicionalPercent: 0, observacao: '' },
   }
@@ -48,6 +49,8 @@ export default function AlunoGlobalEditPage() {
   const [confirmDel, setConfirmDel] = useState(false)
   const [auditRows, setAuditRows] = useState([])
   const [tab, setTab] = useState('cadastro')
+  const [resetOpen, setResetOpen] = useState(false)
+  const [createdPassword, setCreatedPassword] = useState(null)
 
   const student = useMemo(() => isNew ? null : (students.data || []).find((s) => (s.email || '').toLowerCase() === decodeURIComponent(email || '').toLowerCase()), [students.data, email, isNew])
 
@@ -71,18 +74,24 @@ export default function AlunoGlobalEditPage() {
       phone: v.phone, guardianPhone: v.guardian?.phone || '', status: v.status,
       unidade: v.unidade, classes: v.classes, studentClass: v.classes[0], guardian: v.guardian, accessibility: v.accessibility,
     }
-    if (isEdit) { base.originalEmail = v.originalEmail; base.password = v.password; base.period = v.period }
-    else { base.studentPassword = v.studentPassword }
+    // A senha não vai na edição (H5a): troca de senha só pelo "Redefinir senha".
+    if (isEdit) { base.originalEmail = v.originalEmail; base.period = v.period }
+    else { base.studentPassword = v.studentPassword; base.requirePasswordChange = v.requirePasswordChange !== false }
     return base
   }
   async function save() {
     if (!form.name || !form.email || form.classes.length === 0) return toast.error('Informe nome, e-mail e ao menos uma turma')
-    if (isNew && !form.studentPassword) return toast.error('Defina a senha inicial')
     setSaving(true)
     try {
-      if (isNew) await api.post('/api/admin/student/create', payload(form, false))
-      else await api.post('/api/admin/student/update', payload(form, true))
-      toast.success(isNew ? 'Aluno cadastrado' : 'Aluno atualizado')
+      if (isNew) {
+        const created = await api.post('/api/admin/student/create', payload(form, false))
+        toast.success('Aluno cadastrado')
+        // Senha temporária gerada pelo servidor: mostra uma vez antes de voltar à lista.
+        if (created?.temporaryPassword) { setCreatedPassword({ email: form.email, password: created.temporaryPassword, mustChangePassword: created.mustChangePassword !== false, deferred: created.passwordChangeDeferred === true }); return }
+      } else {
+        await api.post('/api/admin/student/update', payload(form, true))
+        toast.success('Aluno atualizado')
+      }
       nav('/diretorio')
     } catch (e) { toast.error(e.message) } finally { setSaving(false) }
   }
@@ -108,6 +117,7 @@ export default function AlunoGlobalEditPage() {
           <div className="space-y-5">
             <PageHeader title={isNew ? 'Novo aluno' : (displayName(form) || form.name || 'Aluno')} subtitle={isNew ? 'Cadastro global — turmas de qualquer curso' : form.originalEmail}>
               <div className="flex gap-2">
+                {!isNew && <Button variant="secondary" icon={KeyRound} onClick={() => setResetOpen(true)}>Redefinir senha</Button>}
                 {!isNew && <Button variant="destructive" icon={Trash2} onClick={() => setConfirmDel(true)}>Excluir</Button>}
                 <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>
               </div>
@@ -138,7 +148,7 @@ export default function AlunoGlobalEditPage() {
             {(isNew || tab === 'cadastro') && (
               <>
                 <Card className="p-5">
-                  <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} schools={schools || []} multiCourse onToggleClass={toggleClass} passwordField={isNew ? 'studentPassword' : 'password'} passwordLabel={isNew ? 'Senha inicial' : 'Senha/hash atual'} passwordHelper={isNew ? undefined : 'Mantenha como está para não trocar.'} accessibilityReadOnly={isProfessor} />
+                  <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} schools={schools || []} multiCourse onToggleClass={toggleClass} passwordField={isNew ? 'studentPassword' : null} passwordLabel="Senha inicial (opcional)" accessibilityReadOnly={isProfessor} />
                 </Card>
                 <div className="flex justify-end gap-2">
                   <Button variant="ghost" onClick={() => nav('/diretorio')}>Cancelar</Button>
@@ -155,6 +165,8 @@ export default function AlunoGlobalEditPage() {
           </div>
         ) : null}
       </PageState>
+      {!isNew && form && <StudentPasswordResetDialog email={resetOpen ? form.originalEmail : null} onClose={() => setResetOpen(false)} />}
+      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} deferred={createdPassword?.deferred} onClose={() => { setCreatedPassword(null); nav('/diretorio') }} />
     </div>
   )
 }

@@ -275,7 +275,9 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses({ backupAt }) : null;
     // Ganchos pós-restauração (database.js AFTER_RESTORE_HOOKS), com a memória já
     // restaurada. Restaurar desconecta todos (sessões não vão no backup): o gancho
-    // 'authSessions' zera as sessões, e a gravação esvazia a tabela auth_sessions.
+    // 'authSessions' zera as sessões, e a gravação esvazia a tabela auth_sessions; o
+    // 'legacyPasswordHashes' troca os hashes SHA-256 antigos do backup por
+    // scrypt-sha256$ antes da gravação (H5a, SEG-X2), como no boot.
     await db.runAfterRestore(db.memory);
     await db.save();
     return applications;

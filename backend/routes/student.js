@@ -58,7 +58,17 @@ const {
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
-const { createStudentSession, revokeStudentSession, pruneExpiredSessions } = require('../utils/authSessions.js');
+const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
+const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
+const { studentSessionProfile } = require('../utils/studentProfile.js');
+const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const {
+    passwordChangeRuleActive,
+    passwordChanged,
+    requirePasswordChange,
+    studentHasExamInProgress,
+    studentPasswordChangeState,
+} = require('../utils/passwordChange.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
@@ -242,25 +252,42 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
             db.save({ only: ['attendance', 'authSessions'], detached: true }).catch(() => {});
         }
     }
-    res.json({ success: true });
+    // A tela do portal acompanha a troca obrigatória de senha por aqui (H5a): pedida pelo
+    // professor com o aluno já logado, ou já feita em outro aparelho.
+    const passwordChange = req.studentPasswordChange || {};
+    res.json({
+        success: true,
+        passwordChangeRequired: passwordChange.required === true,
+        ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
+    });
 });
 
-// Beacon de saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer
-// pessoa na rede derrubava a sessão de um aluno pelo e-mail, inclusive durante a prova.
-router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, res, next) => {
+// Saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer pessoa na
+// rede derrubava a sessão de um aluno pelo e-mail, inclusive durante a prova.
+// - POST /api/student/logout: o "Sair" do portal (H5b, SEG-10). Antes o "Sair" só
+//   apagava o navegador e o token seguia valendo no servidor por até 8 h (computador de
+//   laboratório compartilhado);
+// - POST /api/student/leave: o mesmo, com o corpo em texto (beacon de saída antigo).
+function parseLeaveBody(req, res, next) {
     if (typeof req.body === 'string') {
         let parsed = null;
         try { parsed = req.body.trim().startsWith('{') ? JSON.parse(req.body) : null; } catch (jsonErr) {}
         req.body = parsed && typeof parsed === 'object' ? parsed : { email: req.body.trim() };
     }
     next();
-}, validateStudentSession, async (req, res) => {
-    revokeStudentSession(db.memory, req.studentEmail);
-    // A sessão sai também da tabela auth_sessions (H3a-2): sem a gravação ela voltaria
-    // depois de um reinício do servidor.
+}
+
+async function endStudentSession(req, res) {
+    // O motivo fica guardado: o pedido seguinte do token antigo (outra aba) recebe 401
+    // com reason 'logout'. A sessão sai também da tabela auth_sessions (H3a-2): sem a
+    // gravação ela voltaria depois de um reinício do servidor.
+    revokeStudentSession(db.memory, req.studentEmail, { reason: 'logout' });
     await db.save();
     res.json({ success: true });
-});
+}
+
+router.post('/api/student/logout', express.text({ type: 'text/plain' }), parseLeaveBody, validateStudentSession, endStudentSession);
+router.post('/api/student/leave', express.text({ type: 'text/plain' }), parseLeaveBody, validateStudentSession, endStudentSession);
 
 // Remove apenas sessões que atingiram o prazo absoluto. O heartbeat controla
 // a presença exibida no monitor, mas uma aba em segundo plano pode ter seus
@@ -700,9 +727,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
 });
 
 // Cadastro de Aluno
-router.post('/api/student/register', (req, res) => {
+router.post('/api/student/register', async (req, res) => {
+    // 60 cadastros a cada 10 min por IP (H5b, DES-X2): a turma toda se cadastrando na
+    // primeira aula, atrás do mesmo roteador, cabe; antes eram 10 por minuto.
     const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 60, windowMs: 10 * 60 * 1000 });
     if (!_rl.allowed) {
         return res.status(429).json({ error: 'Muitos cadastros seguidos. Aguarde um instante e tente novamente.' });
     }
@@ -712,6 +741,12 @@ router.post('/api/student/register', (req, res) => {
     if (!fields.name || !fields.email || !password || !studentClass || !courseId) {
         return res.status(400).json({ error: 'Dados incompletos.' });
     }
+    // Política de senha (H5a, SEG-06): a senha "1" era aceita. O autocadastro nunca pede
+    // a troca no primeiro acesso: quem escolheu a senha foi o próprio aluno.
+    const policy = validateNewPassword(password, {
+        kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial,
+    });
+    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
 
     const classes = readJSON(DB_CLASSES_FILE);
     const matchedClass = classes.find(c => c.name === studentClass && c.courseId === courseId && c.registrationEnabled);
@@ -741,6 +776,15 @@ router.post('/api/student/register', (req, res) => {
         return res.status(400).json({ error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.' });
     }
 
+    // Hash com o scrypt assíncrono (DES-07). Durante a espera outro cadastro pode ter
+    // entrado com o mesmo e-mail: a conferência de e-mail repetido roda de novo depois.
+    const passwordHash = await db.hashPasswordAsync(String(password).trim());
+    const currentStudents = readJSON(DB_STUDENTS_FILE);
+    const recheck = validateStudentFields(selfFields, currentStudents, null);
+    if (!recheck.ok) {
+        return res.status(400).json({ error: recheck.error });
+    }
+
     const enrollmentRequest = {
         id: `enrollment_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
         courseId,
@@ -763,20 +807,21 @@ router.post('/api/student/register', (req, res) => {
         matricula: '',
         unidade: '',
         status: DEFAULT_STATUS,
-        password: db.hashPassword(String(password).trim()),
+        password: passwordHash,
         classes: [],
         studentClass: '',
         period: '',
         enrollmentRequests: [enrollmentRequest],
         loginTime: null,
         recoveryRequested: false,
+        passwordChangedAt: new Date().toISOString(),
         termsAcceptance: buildAcceptance(DEFAULT_TERMS_VERSION, req),
         privacyAcceptance: buildAcceptance(DEFAULT_PRIVACY_VERSION, req),
         createdAt: Date.now(),
         updatedAt: Date.now()
     };
-    students.push(studentObj);
-    writeJSON(DB_STUDENTS_FILE, students);
+    currentStudents.push(studentObj);
+    writeJSON(DB_STUDENTS_FILE, currentStudents);
 
     res.json({ success: true, enrollmentRequest });
 });
@@ -803,6 +848,13 @@ function enrollmentPayload(student) {
     }).sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
     return { classes, courses, requests };
 }
+
+// Dados da conta para Minha conta (H5b; SEG-16): a matrícula não vai no perfil do login
+// (utils/studentProfile.js), que fica guardado no navegador; a tela a lê aqui, na hora.
+router.get('/api/student/account', validateStudentSession, (req, res) => {
+    const student = req.studentAccount || {};
+    res.json({ success: true, matricula: typeof student.matricula === 'string' ? student.matricula : (student.matricula == null ? '' : String(student.matricula)) });
+});
 
 router.get('/api/student/enrollments', validateStudentSession, (req, res) => {
     res.json(enrollmentPayload(req.studentAccount));
@@ -967,25 +1019,15 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
 
 // Login do aluno
 router.post('/api/student/login', async (req, res) => {
-    const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-login:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 30, windowMs: 60000 });
-    if (!_rl.allowed) {
-        return res.status(429).json({ error: 'Muitas tentativas de login. Aguarde um instante e tente novamente.' });
-    }
-    const { email, password } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
-    }
-
-    const students = db.memory.students;
-    const normalizedEmail = email.trim().toLowerCase();
-    const student = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail && db.verifyPassword(s.password, password.trim()));
-
-    if (!student) {
-        recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'fail', reason: 'Credenciais inválidas', req });
-        await db.save({ only: ['loginLogs'] });
-        return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
-    }
+    // Senha conferida com o scrypt assíncrono (utils/passwordLogin.js, DES-07): a turma
+    // entrando junto não para o servidor. O hash antigo é regravado em scrypt$ lá.
+    // A senha errada não espera o banco (H5b): a falha fica em loginLogs na memória e a
+    // gravação é agrupada (no máximo uma a cada 60 s, utils/security.js). Antes cada
+    // senha errada fazia um db.save() inteiro.
+    const login = await attemptPasswordLogin({ kind: 'student', email: req.body.email, password: req.body.password, req });
+    if (!login.ok) return res.status(login.status).json(login.body);
+    const student = login.account;
+    const normalizedEmail = login.email;
 
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
@@ -994,7 +1036,14 @@ router.post('/api/student/login', async (req, res) => {
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa. Procure o instrutor.' });
     }
 
-    if (db.needsPasswordRehash(student.password)) student.password = db.hashPassword(password.trim());
+    // Senha fraca pela política de hoje (H5a, decisão P3 do Alan): a troca passa a ser
+    // pedida, menos durante uma prova em andamento (fica para o login seguinte) e com
+    // TEST_MODE (contas demo). Quem já tinha a troca pedida e está em prova segue sem
+    // ela nesta sessão (utils/passwordChange.js).
+    const inExam = passwordChangeRuleActive() && studentHasExamInProgress(db.memory, normalizedEmail, student);
+    if (passwordChangeRuleActive() && login.weakPassword && student.mustChangePassword !== true && !inExam) {
+        requirePasswordChange(student, 'weak');
+    }
 
     student.loginTime = new Date().toISOString();
     student.lastLoginAt = Date.now();
@@ -1010,13 +1059,19 @@ router.post('/api/student/login', async (req, res) => {
         ip: normalizeIp(req.ip || req.socket.remoteAddress),
         now: Date.now(),
     });
-    // Rota quente no começo da aula (H1-c, DES-01): a conta (hora do login, hash novo), o
-    // registro do login, a presença automática e a sessão gravada (contrato: rota anotada
-    // que cria sessão leva 'authSessions'; a que audita leva 'auditLogs').
+    const passwordChange = studentPasswordChangeState(db.memory, student, studentSessionByEmail(db.memory, normalizedEmail));
+    // Rota quente no começo da aula (H1-c, DES-01): a conta (hora do login, hash novo,
+    // troca obrigatória), o registro do login, a presença automática e a sessão gravada
+    // (contrato: rota anotada que cria sessão leva 'authSessions'; a que audita leva
+    // 'auditLogs').
     await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs'] });
 
     // Retorna dados do estudante sem expor o campo de senha
     const { password: _, ...safeStudent } = student;
+    // A tela segue o que vale para esta sessão (em prova, a troca fica para depois).
+    safeStudent.mustChangePassword = passwordChange.required === true;
+    if (passwordChange.required) safeStudent.passwordChangeReason = passwordChange.reason;
+    else delete safeStudent.passwordChangeReason;
     
     const allClasses = db.memory.classes;
     const allCourses = db.memory.courses;
@@ -1082,7 +1137,15 @@ router.post('/api/student/login', async (req, res) => {
         safeStudent.studentClass = '';
     }
 
-    res.json({ success: true, student: safeStudent, sessionToken });
+    res.json({
+        success: true,
+        // Só o que o portal usa (H5b): responsável, telefones e acessibilidade ficam no
+        // servidor (utils/studentProfile.js).
+        student: studentSessionProfile(safeStudent),
+        sessionToken,
+        mustChangePassword: passwordChange.required === true,
+        ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
+    });
 });
 
 // Solicitação de recuperação de senha pelo aluno
@@ -1092,8 +1155,9 @@ router.post('/api/student/recover', (req, res) => {
         return res.status(400).json({ error: 'E-mail é obrigatório.' });
     }
 
+    // 30 pedidos a cada 10 min por IP (H5b, DES-X2).
     const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-recover:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    const _rl = rateLimit(`student-recover:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 30, windowMs: 10 * 60 * 1000 });
     if (!_rl.allowed) {
         return res.status(429).json({ error: 'Muitas solicitações seguidas. Aguarde um instante e tente novamente.' });
     }
@@ -1109,6 +1173,56 @@ router.post('/api/student/recover', (req, res) => {
     }
 
     res.json({ success: true, message: 'Se o e-mail estiver cadastrado, o instrutor receberá a solicitação.' });
+});
+
+
+// Troca de senha pelo próprio aluno (H5a; UXA-13, SEG-10): na tela Minha conta e na
+// troca obrigatória (senha criada ou redefinida pelo professor, ou senha fraca). Antes o
+// aluno não tinha como sair de uma senha que o professor conhecia.
+// - Sempre pede a senha atual (na troca obrigatória, a temporária que o professor
+//   entregou), conferida pelo attemptPasswordLogin, o único caminho que confere senha:
+//   scrypt assíncrono, o teto por IP do login e o erro em loginLogs. Assim quem só tem a
+//   sessão aberta (um aparelho de antes do "Redefinir senha") não escolhe a senha nova.
+// - A senha nova passa pela política (utils/passwordPolicy.js) e não pode ser a atual: a
+//   temporária, que o professor conhece, não vira a senha definitiva.
+// - A sessão atual continua (o aluno tem uma sessão só).
+router.post('/api/student/change-password', validateStudentSession, async (req, res) => {
+    const student = req.studentAccount;
+    const { currentPassword, newPassword } = req.body;
+    if (typeof currentPassword !== 'string' || !currentPassword.trim()) {
+        return res.status(400).json({ success: false, error: 'Informe a senha atual.', field: 'currentPassword' });
+    }
+    if (typeof newPassword !== 'string' || !newPassword.trim()) {
+        return res.status(400).json({ success: false, error: 'Informe a nova senha.', field: 'newPassword' });
+    }
+    const policy = validateNewPassword(newPassword, {
+        kind: 'student', email: student.email, name: student.name, nomeSocial: student.nomeSocial, matricula: student.matricula,
+    });
+    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+    if (newPassword.trim() === currentPassword.trim()) {
+        return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
+    }
+    const changedMeanwhile = () => res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Entre de novo e tente outra vez.' });
+    const check = await attemptPasswordLogin({ kind: 'student', email: req.studentEmail, password: currentPassword, req, purpose: 'change_password' });
+    if (!check.ok && check.status === 429) return res.status(429).json(check.body);
+    if (!check.ok && check.passwordChanged) return changedMeanwhile();
+    if (!check.ok) {
+        // A tentativa errada fica em loginLogs e conta no atraso da conta (loginGuard),
+        // com a gravação agrupada (attemptPasswordLogin).
+        return res.status(400).json({ success: false, error: 'Senha atual incorreta.', field: 'currentPassword' });
+    }
+    if (check.account !== student || student.password !== check.password) return changedMeanwhile();
+    const storedBefore = check.password;
+    const passwordHash = await db.hashPasswordAsync(newPassword.trim());
+    // Outra troca (o professor redefiniu, outra aba) terminou durante a espera: não
+    // sobrescreve a senha que ela gravou.
+    if (student.password !== storedBefore || !(db.memory.students || []).includes(student)) return changedMeanwhile();
+    student.password = passwordHash;
+    passwordChanged(student);
+    student.recoveryRequested = false;
+    student.updatedAt = Date.now();
+    await db.save();
+    res.json({ success: true, message: 'Senha alterada.' });
 });
 
 
@@ -2077,10 +2191,11 @@ router.get('/api/student/annotations', validateStudentSession, (req, res) => {
 // ==========================================
 // FÓRUM / DÚVIDAS INTEGRADO
 // ==========================================
-// Quando a chamada vem do painel administrativo, aplica também o RBAC e o
-// escopo de conteúdo da conta. Chamadas do portal do aluno mantêm o fluxo atual.
+// Quando a chamada vem do painel administrativo (x-admin-session), aplica também o RBAC
+// e o escopo de conteúdo da conta. Chamadas do portal do aluno mantêm o fluxo atual. O
+// 'Authorization: email:senha' não identifica instrutor (SEG-03).
 router.use('/api/forum', (req, res, next) => {
-    const hasAdminCredentials = !!(req.headers['x-admin-session'] || req.headers.authorization);
+    const hasAdminCredentials = !!req.headers['x-admin-session'];
     if (!hasAdminCredentials) return validateStudentSession(req, res, next);
     return validateAdminPermission(req, res, 'page.forum', (config, matchedAdmin) => {
         let key = (req.body && req.body.key) || (req.query && req.query.key);

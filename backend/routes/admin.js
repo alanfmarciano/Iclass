@@ -48,7 +48,9 @@ const {
     studentInClass,
     normalizeClassEntriesForStorage,
 } = require('../utils/students.js');
-const { recordAudit } = require('../utils/audit.js');
+const { normalizeAuditEntry, recordAudit } = require('../utils/audit.js');
+const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -81,6 +83,7 @@ const {
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
+const loginGuard = require('../utils/loginGuard.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -319,26 +322,129 @@ router.post('/api/admin/enrollment-requests/:id/reject', (req, res) => {
 
 
 
-// Redefinir senha do aluno
+// Texto da resposta do "Redefinir senha" e da criação (a tela mostra o mesmo).
+function resetPasswordMessage(changeRequired, deferred) {
+    if (!changeRequired) return 'Senha redefinida.';
+    if (deferred) return 'Senha redefinida. O aluno está fazendo uma prova agora: ele vai escolher uma senha nova no primeiro acesso depois da prova.';
+    return 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.';
+}
+
+// Redefinir senha do aluno (H5a; UXA-13, SEG-06).
+// - newPassword vazio ou ausente: o servidor gera uma senha temporária (xxxxx-xxxxx) e a
+//   devolve só nesta resposta (temporaryPassword), para o professor entregar ao aluno;
+// - newPassword digitado: passa pela política de senha (a senha "a" era aceita);
+// - nos dois casos o aluno troca a senha no próximo acesso (mustChangePassword, decisão
+//   P3 do Alan), o pedido de "Esqueci a senha" é atendido e o reset fica na auditoria
+//   (student_password_reset, nunca com a senha). Antes não ficava registro nenhum;
+// - a resposta diz o que vale de fato: com TEST_MODE a troca não é pedida
+//   (mustChangePassword false) e, com o aluno em prova agora, ela fica para o primeiro
+//   acesso depois da prova (passwordChangeDeferred), em vez de prometer a troca já.
+// O escopo continua o de sempre: page.students e aluno visível ao professor (guarda).
 router.post('/api/admin/reset-password', (req, res) => {
-    validateAdmin(req, res, () => {
-        const { email, newPassword } = req.body;
-        if (!email || !newPassword || newPassword.trim() === '') {
-            return res.status(400).json({ error: 'E-mail ou nova senha inválidos.' });
+    validateAdmin(req, res, async (config, matchedAdmin) => {
+        const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        const typed = typeof req.body.newPassword === 'string' ? req.body.newPassword.trim() : '';
+        if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail do aluno.', field: 'email' });
+        if (req.body.newPassword !== undefined && req.body.newPassword !== null && typeof req.body.newPassword !== 'string') {
+            return res.status(400).json({ success: false, error: 'Nova senha inválida.', field: 'newPassword' });
+        }
+        const findStudent = () => (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+        const target = findStudent();
+        if (!target) return res.status(404).json({ error: 'Estudante não encontrado.' });
+
+        const mode = typed ? 'typed' : 'generated';
+        let temporaryPassword = null;
+        if (typed) {
+            const policy = validateNewPassword(typed, {
+                kind: 'student', email: target.email, name: target.name, nomeSocial: target.nomeSocial, matricula: target.matricula,
+            });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+        } else {
+            temporaryPassword = generateTemporaryPassword();
         }
 
-        const students = readJSON(DB_STUDENTS_FILE);
-        const student = students.find(s => s.email && s.email.toLowerCase() === email.trim().toLowerCase());
+        // Hash com o scrypt assíncrono (DES-07); a busca e a gravação acontecem depois da
+        // espera, sem nada mudar no meio.
+        const passwordHash = await db.hashPasswordAsync(typed || temporaryPassword);
+        const student = findStudent();
+        if (!student) return res.status(404).json({ error: 'Estudante não encontrado.' });
 
-        if (!student) {
-            return res.status(404).json({ error: 'Estudante não encontrado.' });
-        }
-
-        student.password = db.hashPassword(newPassword.trim());
+        const now = Date.now();
+        student.password = passwordHash;
         student.recoveryRequested = false; // Limpa a solicitação de redefinição
-        writeJSON(DB_STUDENTS_FILE, students);
+        student.passwordChangedAt = new Date(now).toISOString();
+        requirePasswordChange(student, 'reset');
+        student.updatedAt = now;
+        // Quem estava logado com a senha antiga sai (H5b, SEG-10): antes o aparelho onde o
+        // aluno estava (ou quem tinha a senha antiga) continuava entrando até 8 h. Com uma
+        // tentativa aberta agora, a sessão termina a prova e acaba no primeiro pedido
+        // depois dela (sessionsInvalidBefore, conferido em validateStudentSession). Só a
+        // tentativa aberta conta: a prova da turma que o aluno ainda não abriu não segura a
+        // sessão antiga (ele entra de novo com a senha nova, e a troca dela fica para
+        // depois da prova pela regra do H5a). O atraso de login por senhas erradas também
+        // é liberado: o aluno entra na hora com a senha nova.
+        student.sessionsInvalidBefore = now;
+        const attemptOpen = studentHasOpenAttempt(db.memory, student.email, now);
+        const inExamNow = studentHasExamInProgress(db.memory, student.email, student, now);
+        // O aparelho de antes recebe 401 { reason: 'password_reset' } no pedido seguinte
+        // (e não o "sessão expirada" genérico).
+        const sessionEnded = !attemptOpen && revokeStudentSession(db.memory, student.email, { reason: 'password_reset', now });
+        loginGuard.clear(loginGuard.accountKey('student', student.email));
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'student_password_reset',
+            category: 'security',
+            studentEmail: student.email,
+            details: { mode, mustChangePassword: true },
+        }, { timestamp: now });
+        await db.save();
 
-        res.json({ success: true, message: 'Senha redefinida com sucesso!' });
+        // Com TEST_MODE (demonstração) a troca não é pedida, e com o aluno em prova ela
+        // fica para depois: a resposta diz o que vale.
+        const changeRequired = passwordChangeRuleActive();
+        const deferred = changeRequired && inExamNow;
+        res.json({
+            success: true,
+            message: resetPasswordMessage(changeRequired, deferred),
+            mustChangePassword: changeRequired,
+            passwordChangeDeferred: deferred,
+            sessionEnded,
+            ...(temporaryPassword ? { temporaryPassword } : {}),
+        });
+    });
+});
+
+// Liberar login do aluno (H5b; SEG-06, decisão 6 do Alan): depois de muitas senhas
+// erradas a conta espera antes de tentar de novo (utils/loginGuard.js); o professor libera
+// na hora, sem mexer na senha. Mesmo escopo do "Redefinir senha": page.students e aluno
+// visível ao professor (validateProfessorRequestScope pelo e-mail do corpo). Fica na
+// auditoria (student_login_unlocked).
+router.post('/api/admin/student/unlock-login', (req, res) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
+        const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail do aluno.', field: 'email' });
+        const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === email);
+        if (!student) return res.status(404).json({ error: 'Estudante não encontrado.' });
+        const key = loginGuard.accountKey('student', email);
+        const before = loginGuard.protectionFor(key);
+        const released = loginGuard.clear(key);
+        if (released) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'student_login_unlocked',
+                category: 'account',
+                studentEmail: student.email,
+                details: before ? { failures: before.failures, retryAt: before.retryAt } : {},
+            });
+            await db.save();
+        }
+        res.json({
+            success: true,
+            unlocked: released,
+            message: released ? 'Login liberado. O aluno já pode entrar.' : 'Este aluno não estava com o login em espera.',
+        });
     });
 });
 
@@ -1243,8 +1349,12 @@ router.get('/api/admin/students', (req, res) => {
             const session = s.email ? studentSessionByEmail(db.memory, s.email) : null;
             const lastSeen = sessionLastSeen(session);
             const isOnline = isStudentSessionOnline(session, now);
-            const { password, ...safeStudent } = s;
-            return { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
+            const { password, sessionsInvalidBefore, ...safeStudent } = s;
+            const enriched = { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
+            // Atraso de login por senhas erradas (H5b): o selo e o "Liberar login" em Alunos.
+            const loginProtection = s.email ? loginGuard.protectionFor(loginGuard.accountKey('student', s.email), now) : null;
+            if (loginProtection) enriched.loginProtection = loginProtection;
+            return enriched;
         });
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
@@ -1256,18 +1366,37 @@ router.get('/api/admin/students', (req, res) => {
 
 // Criação manual de aluno pelo instrutor
 router.post('/api/admin/student/create', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const { studentPassword, studentClass, classes } = req.body;
-
         // Suporte retroativo ou novo array. Turmas em objeto viram { name, courseId, period }
         // e `studentClass` guarda só o nome (DES-03).
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
 
         const fields = extractStudentFields(req.body);
 
-        if (!fields.name || !fields.email || !studentPassword || studentClasses.length === 0) {
-            return res.status(400).json({ error: 'Dados incompletos. Informe nome, e-mail, senha e ao menos uma turma.' });
+        if (!fields.name || !fields.email || studentClasses.length === 0) {
+            const field = !fields.name ? 'name' : (!fields.email ? 'email' : 'classes');
+            return res.status(400).json({ success: false, error: 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.', field });
         }
+        // Senha inicial (H5a; UXA-13, SEG-06): em branco, o servidor gera uma temporária e a
+        // devolve só nesta resposta; digitada, passa pela política. A caixa "Pedir troca no
+        // primeiro acesso" (requirePasswordChange) vem marcada; sem o campo (tela antiga),
+        // vale marcada.
+        if (studentPassword !== undefined && studentPassword !== null && typeof studentPassword !== 'string') {
+            return res.status(400).json({ success: false, error: 'Senha inicial inválida.', field: 'studentPassword' });
+        }
+        const typedPassword = typeof studentPassword === 'string' ? studentPassword.trim() : '';
+        if (typedPassword) {
+            const policy = validateNewPassword(typedPassword, {
+                kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial, matricula: fields.matricula,
+            });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+        }
+        const temporaryPassword = typedPassword ? null : generateTemporaryPassword();
+        const askPasswordChange = req.body.requirePasswordChange !== false;
+        // Hash com o scrypt assíncrono (DES-07) antes da conferência de e-mail repetido e da
+        // gravação, que rodam depois da espera, de uma vez.
+        const passwordHash = await db.hashPasswordAsync(typedPassword || temporaryPassword);
 
         const allClasses = db.memory.classes;
         const requestedCourseId = String(req.body.courseId || '').trim();
@@ -1278,7 +1407,7 @@ router.post('/api/admin/student/create', (req, res) => {
             const classCourse = (c && typeof c === 'object' && c.courseId) || requestedCourseId;
             const matchedClass = allClasses.find(cls => cls.name === className && (!classCourse || String(cls.courseId) === String(classCourse)));
             if (!matchedClass) {
-                return res.status(400).json({ error: `A turma ${className} não está pré-cadastrada no sistema.` });
+                return res.status(400).json({ success: false, error: `A turma ${className} não está pré-cadastrada no sistema.`, field: 'classes' });
             }
         }
 
@@ -1287,7 +1416,7 @@ router.post('/api/admin/student/create', (req, res) => {
         // Validações de campos (e-mail válido/único, matrícula única, telefones, status)
         const validation = validateStudentFields(fields, students, null);
         if (!validation.ok) {
-            return res.status(400).json({ error: validation.error });
+            return res.status(400).json({ success: false, error: validation.error });
         }
 
         const newStudent = {
@@ -1302,15 +1431,17 @@ router.post('/api/admin/student/create', (req, res) => {
             guardian: fields.guardian || null,
             // Dados de acessibilidade/saúde: só o administrador grava (SEG-04).
             accessibility: isProfessorAccount(matchedAdmin) ? null : (fields.accessibility || null),
-            password: db.hashPassword(String(studentPassword).trim()),
+            password: passwordHash,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade com submissões legadas (sempre o nome)
             period: fields.period || 'Tarde',
             loginTime: null,
             recoveryRequested: false,
+            passwordChangedAt: new Date().toISOString(),
             createdAt: Date.now(),
             updatedAt: Date.now()
         };
+        if (askPasswordChange) requirePasswordChange(newStudent, 'created');
         students.push(newStudent);
 
         recordStudentAudit(db.memory, {
@@ -1321,15 +1452,32 @@ router.post('/api/admin/student/create', (req, res) => {
             req
         });
 
-        db.save();
-        res.json({ success: true });
+        await db.save();
+        // O que vale no primeiro acesso: a caixa desmarcada ou TEST_MODE (demonstração)
+        // não pedem a troca; a tela escolhe o texto do aviso por aqui.
+        // Aluno novo numa turma com prova agora: a troca fica para o primeiro acesso depois
+        // dela (passwordChangeDeferred), como no "Redefinir senha".
+        const mustChange = askPasswordChange && passwordChangeRuleActive();
+        res.json({
+            success: true,
+            mustChangePassword: mustChange,
+            passwordChangeDeferred: mustChange && studentHasExamInProgress(db.memory, newStudent.email, newStudent),
+            ...(temporaryPassword ? { temporaryPassword } : {}),
+        });
     });
 });
 
 // Atualização de cadastro de aluno pelo instrutor
 router.post('/api/admin/student/update', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const { originalEmail, password, studentClass, classes } = req.body;
+        // A senha nunca muda por aqui (H5a, SEG-06): antes esta rota gravava a senha
+        // digitada sem a política e até um hash vindo do navegador (isHashed). Trocar a
+        // senha é pelo "Redefinir senha" (reset-password), com auditoria e troca no
+        // próximo acesso. Campo vazio (telas antigas mandavam password: '') é ignorado.
+        if (password !== undefined && password !== null && password !== '') {
+            return res.status(400).json({ success: false, error: 'Para trocar a senha, use Redefinir senha.', field: 'password' });
+        }
 
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
         const fields = extractStudentFields(req.body);
@@ -1373,9 +1521,7 @@ router.post('/api/admin/student/update', (req, res) => {
             status: fields.status || before.status || DEFAULT_STATUS,
             guardian: fields.guardian !== undefined ? fields.guardian : (before.guardian || null),
             accessibility: fields.accessibility !== undefined ? fields.accessibility : (before.accessibility || null),
-            password: password
-                ? (db.isHashed(password) ? password : db.hashPassword(String(password).trim()))
-                : before.password,
+            password: before.password,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade (sempre o nome)
             period: fields.period || before.period,
@@ -1601,12 +1747,16 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
 });
 
 // Histórico de auditoria de um aluno (alterações no perfil) — somente admin.
+// As entradas saem no formato canônico (normalizeAuditEntry), com o rótulo da ação
+// (label): a que não é campo do cadastro, como o "Redefinir senha" (H5a), aparece na
+// ficha pelo rótulo, não como uma linha sem título.
 router.get('/api/admin/student/audit', (req, res) => {
     validateAdmin(req, res, () => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        const logs = (db.memory.auditLogs || [])
-            .filter(l => l.studentEmail === email)
+        const logs = (Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [])
+            .map(normalizeAuditEntry)
+            .filter(entry => entry && entry.studentEmail === email)
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         res.json(logs);
     });
@@ -4796,6 +4946,31 @@ function _storageQueueBlock(matchedAdmin) {
     return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
 }
 
+// Bloco de segurança da fila (H5b; SEG-06, decisão 6 do Alan), já no escopo de quem vê:
+// - alunos da lista (os do escopo) que pediram nova senha ou estão com o login em espera
+//   por senhas erradas (utils/loginGuard.js, só na memória);
+// - só para administrador (adminOnly): contas de instrutor em espera e os alertas de
+//   muitas senhas erradas vindas do mesmo IP nas últimas 24 h (loginLogs, status 'alert').
+const IP_ALERT_QUEUE_MS = 24 * 60 * 60 * 1000;
+
+function _securityQueueBlock(matchedAdmin, students, { adminOnly = true, now = Date.now() } = {}) {
+    const list = Array.isArray(students) ? students : [];
+    const block = {
+        recoveryEmails: list.filter(student => student && student.email && student.recoveryRequested === true).map(student => String(student.email).toLowerCase()),
+        delayedEmails: list.filter(student => student && student.email && loginGuard.protectionFor(loginGuard.accountKey('student', student.email), now)).map(student => String(student.email).toLowerCase()),
+    };
+    if (!adminOnly || !canAccessAdminPermission(matchedAdmin, 'page.accounts')) return block;
+    const instructorEmails = new Set((db.memory.admins || []).filter(item => item && item.email).map(item => String(item.email).toLowerCase()));
+    block.delayedAccounts = loginGuard.protectedEmails('admin', now).filter(email => instructorEmails.has(email));
+    const seen = new Set();
+    block.ipAlerts = (Array.isArray(db.memory.loginLogs) ? db.memory.loginLogs : [])
+        .filter(entry => entry && entry.status === 'alert' && entry.ip && now - (Number(entry.lastAt || entry.timestamp) || 0) <= IP_ALERT_QUEUE_MS)
+        .sort((a, b) => (Number(b.lastAt || b.timestamp) || 0) - (Number(a.lastAt || a.timestamp) || 0))
+        .filter(entry => (seen.has(entry.ip) ? false : (seen.add(entry.ip), true)))
+        .map(entry => ({ ip: entry.ip, count: Number(entry.count) || 0, at: Number(entry.lastAt || entry.timestamp) || null }));
+    return block;
+}
+
 // Fila "Precisa de você": pendências com destino clicável. Respeita o snooze de
 // 24h persistido em preferences (dashboard.snoozed) e esconde matrículas de professor.
 router.get('/api/admin/dashboard/queue', (req, res) => {
@@ -4808,7 +4983,7 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
-        }, { storage: _storageQueueBlock(matchedAdmin) });
+        }, { storage: _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
@@ -4878,10 +5053,11 @@ router.get('/api/admin/notifications', (req, res) => {
             const studentClass = String(scope.studentClass || (scope.cls && scope.cls.name) || '');
             // Matrículas pendentes são contadas pela turma pedida (o aluno pendente ainda
             // não está em `students` da turma).
+            // No sino, só o que é da turma (os alertas da escola ficam na fila do painel).
             const queue = computeQueue({
                 memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
                 today, now, canSeeMatriculas: false,
-            });
+            }, { security: _securityQueueBlock(matchedAdmin, scope.students, { adminOnly: false, now }) });
             if (canSeeMatriculas && scope.cls) {
                 const pending = _pendingEnrollmentsForClass(scope.cls);
                 if (pending.count) {

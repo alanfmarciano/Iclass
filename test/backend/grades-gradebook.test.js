@@ -1307,10 +1307,10 @@ test('[UC-NOTAS-004] excluir aluno cadastrado com o e-mail antigo de um aluno vi
     const update = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: OLD, email: ANA, name: 'Ana Teste', classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
     assert.equal(update.status, 200, update.body.error);
     await pause(5);
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Bia Nova', email: OLD, studentPassword: '123', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Bia Nova', email: OLD, studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     await pause(5);
-    assert.equal((await request(app).post('/api/student/login').send({ email: OLD, password: '123' })).status, 200);
+    assert.equal((await request(app).post('/api/student/login').send({ email: OLD, password: 'Caderno-Novo-9' })).status, 200);
     const later = Date.now();
     db.memory.examApplications[0].questionReports.push(
         { id: 'r_nova', applicationId: 'app_1', questionNumber: 2, studentEmail: OLD, studentName: 'Bia Nova', reason: 'outro', text: 'contestação da Bia Nova', status: 'open', createdAt: new Date(later).toISOString() },
@@ -1374,7 +1374,7 @@ test('[UC-NOTAS-004] excluir o aluno tira o e-mail dele também das chaves dos o
 
 test('[UC-NOTAS-004] conta de aluno com o e-mail de um professor: excluí-la não leva a autoria do professor', async () => {
     const PROF = 'prof@notas.local';
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Conta Teste', email: PROF, studentPassword: '123', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Conta Teste', email: PROF, studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     db.memory.auditLogs.push(
         { id: 'prof_prova', type: 'exam_application_finished', actor: PROF, applicationId: 'app_1', details: { summary: { finishedBy: PROF } }, timestamp: Date.now() },
@@ -1461,10 +1461,10 @@ test('[UC-NOTAS-004] e-mail antigo que hoje é o login de outro aluno: o que é 
     const update = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: 'ana@notas.local', email: 'ana.souza@notas.local', name: 'Ana', classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
     assert.equal(update.status, 200, update.body.error);
     await pause(5);
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carlos', email: 'ana@notas.local', studentPassword: '123', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carlos', email: 'ana@notas.local', studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     await pause(5);
-    assert.equal((await request(app).post('/api/student/login').send({ email: 'ana@notas.local', password: '123' })).status, 200);
+    assert.equal((await request(app).post('/api/student/login').send({ email: 'ana@notas.local', password: 'Caderno-Novo-9' })).status, 200);
     db.memory.examApplications[0].questionReports.push({ id: 'r_carlos', applicationId: 'app_1', questionNumber: 2, studentEmail: 'ana@notas.local', studentName: 'Carlos', reason: 'outro', text: 'texto do Carlos', status: 'open', createdAt: new Date().toISOString() });
     const carlosLogin = JSON.parse(JSON.stringify(db.memory.loginLogs[1]));
     const carlosReport = JSON.parse(JSON.stringify(db.memory.examApplications[0].questionReports[1]));
@@ -1562,7 +1562,7 @@ test('[UC-NOTAS-004] excluir a aluna que passou a usar o e-mail largado por outr
     }, joanaBefore);
 
     // Nova conta com o e-mail liberado não herda nada da Ana.
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carla Nova', email: 'aluno05@notas.local', studentPassword: '12345', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carla Nova', email: 'aluno05@notas.local', studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     const query = '?email=aluno05%40notas.local';
     assert.deepEqual((await admin(request(app).get(`/api/admin/student/observations${query}`))).body, []);

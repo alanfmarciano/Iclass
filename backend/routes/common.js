@@ -5,6 +5,7 @@ const path = require('path');
 const db = require('../database.js');
 const { SERVER_INSTANCE_ID } = require('../utils/sessionConfig.js');
 const settingsUtil = require('../utils/settings.js');
+const { connectionInfo } = require('../utils/networkPolicy.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -26,6 +27,8 @@ const {
     findClassByNameAndCourse,
     getReleasedItemsForClass
 } = require('../middlewares.js');
+const { logError, oneLine } = require('../utils/errorLog.js');
+const { rateLimit } = require('../utils/rateLimit.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
 // O cliente compara o instanceId; se mudou (servidor reiniciado), forca novo login.
@@ -43,6 +46,73 @@ router.get('/api/settings/public', (req, res) => {
 router.get('/api/session/status', (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ instanceId: SERVER_INSTANCE_ID, now: Date.now() });
+});
+
+// Como esta conexão é tratada (SEG-03), sem login: a tela de login e o painel do
+// professor mostram se o painel abre neste aparelho e o aviso de conexão sem proteção.
+// { secure, thisComputer, adminAccess: 'ok'|'local-only'|'https-required',
+//   adminAccessMode, insecureAdmin, tlsAvailable, studentsHttps, httpsUrl }.
+router.get('/api/connection', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(connectionInfo(req));
+});
+
+// Erro de tela do navegador (fase 2, H9c: ENG-05): a área de erro dos layouts e a tela
+// de erro da raiz (web/src/lib/clientErrors.js) avisam aqui, e o aviso vira uma linha
+// "erro de tela" no crash.log da pasta de dados, com quem estava na tela, a área, o
+// caminho da página e a versão do build. Não grava no banco. Pede sessão (aluno ou
+// instrutor) e aceita até 10 avisos por minuto por e-mail (acima disso, 429): com o
+// limite do arquivo (5 MB, utils/errorLog.js) e o tamanho dos campos, um aparelho não
+// enche o disco. Só o aviso aceito conta no limite: o recusado (400) não grava nada.
+// Cada campo vira uma linha só (quebras de linha e caracteres de controle saem), para
+// o texto mandado pelo navegador não forjar no arquivo um bloco com cabeçalho de outro
+// usuário. Fora de /api/admin: o aluno também avisa.
+// O schema fica aqui até o H9b trazer o utils/inputSchema.js (mesmas mensagens).
+const CLIENT_ERROR_AREAS = ['raiz', 'admin', 'aluno', 'prova'];
+const CLIENT_ERROR_FIELDS = [
+    { field: 'area', label: 'área', oneOf: CLIENT_ERROR_AREAS, required: true },
+    { field: 'message', label: 'mensagem', max: 300, required: true },
+    { field: 'path', label: 'caminho', max: 200 },
+    { field: 'build', label: 'versão', max: 64 },
+];
+const CLIENT_ERROR_RATE_LIMIT = { max: 10, windowMs: 60000 };
+
+// Devolve { error, field } do primeiro campo errado, ou null com o corpo certo.
+function clientErrorProblem(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Dados enviados em formato inválido.' };
+    for (const rule of CLIENT_ERROR_FIELDS) {
+        const raw = body[rule.field];
+        if (raw === undefined) {
+            if (rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
+            continue;
+        }
+        if (typeof raw !== 'string') return { field: rule.field, error: `O campo "${rule.label}" está em formato inválido.` };
+        const value = raw.trim();
+        if (!value && rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
+        if (rule.oneOf && !rule.oneOf.includes(value)) return { field: rule.field, error: `O campo "${rule.label}" tem um valor não permitido.` };
+        if (rule.max && value.length > rule.max) {
+            return { field: rule.field, error: `O campo "${rule.label}" aceita no máximo ${rule.max.toLocaleString('pt-BR')} caracteres.` };
+        }
+    }
+    return null;
+}
+
+router.post('/api/client-error', validateAnySession, (req, res) => {
+    const problem = clientErrorProblem(req.body);
+    if (problem) return res.status(400).json({ success: false, ...problem });
+    const email = String((req.requester && req.requester.email) || '').toLowerCase();
+    const limit = rateLimit(`client-error:${email}`, CLIENT_ERROR_RATE_LIMIT);
+    if (!limit.allowed) {
+        res.set('Retry-After', String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))));
+        return res.status(429).json({ success: false, error: 'Muitos avisos de erro seguidos. Aguarde um instante.' });
+    }
+    const text = (name) => (typeof req.body[name] === 'string' ? oneLine(req.body[name]) : '');
+    // Objeto sem stack: o stack do servidor não diz nada sobre o erro do navegador.
+    logError('erro de tela', { message: text('message') || '(sem mensagem)' }, {
+        req,
+        details: { 'área': text('area'), caminho: text('path'), build: text('build') },
+    });
+    return res.status(204).end();
 });
 
 
@@ -272,9 +342,10 @@ function isCourseDeleted(course) {
 
 // Lista completa de cursos (estrutura, chaves de unidades e avaliações, excluídos)
 // só para o instrutor. Sem sessão de instrutor, devolve apenas id e nome dos cursos
-// ativos com turma aberta para cadastro.
+// ativos com turma aberta para cadastro. Instrutor é só quem manda x-admin-session: o
+// 'Authorization: email:senha' não vale mais (SEG-03) e cai na lista pública.
 router.get('/api/courses', (req, res) => {
-    const hasAdminCredentials = !!(req.get('x-admin-session') || req.headers.authorization);
+    const hasAdminCredentials = !!req.get('x-admin-session');
     if (!hasAdminCredentials) {
         const openCourseIds = new Set((db.memory.classes || []).filter(cls => cls.registrationEnabled).map(cls => cls.courseId));
         return res.json((db.memory.courses || [])

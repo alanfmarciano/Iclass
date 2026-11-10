@@ -13,7 +13,7 @@ vi.mock('../../../lib/api', () => ({ api: apiMock, hasActiveSession: sessionMock
 vi.mock('../useStudent', () => ({ useStudent: () => ({ email: 'ana@escola.local', studentClass: '1DES', courseId: 'curso' }) }))
 vi.mock('../../../context/ToastProvider', () => ({ useToast: () => toast }))
 
-import ExamRunner from './ExamRunner'
+import ExamRunner, { KEYSTROKE_BATCH_MAX, KEYSTROKE_KEEPALIVE_MAX_BYTES, keepaliveKeystrokeBatch, keystrokeRetryDelay } from './ExamRunner'
 import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
 import { ExamErrorScreen } from './ExamErrorScreen'
 import { clearInterruptedExam, clearRenderError } from '../../../lib/renderErrors'
@@ -125,6 +125,7 @@ afterEach(() => {
   cleanup()
   delete document.fullscreenElement
   removeFullscreenApi()
+  if (vi.isMockFunction(Math.random)) Math.random.mockRestore()
 })
 
 describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', () => {
@@ -1151,4 +1152,438 @@ describe('[UC-TENTATIVA-002] ExamRunner: prova sem prazo não é enviada sozinha
     expect(await screen.findByText('Prova enviada!', {}, { timeout: 5000 })).toBeVisible()
     expect(autoSubmits()).toHaveLength(1)
   }, 10000)
+})
+
+// Fase 2, H2-C (DES-09) e decisões §5: a digitação sai em lotes de no máximo 500 teclas,
+// um envio por vez, e a sincronização da prova nunca tem duas em voo. Antes, o buffer
+// inteiro ia num envio só (depois de uma queda longa da rede, milhares de teclas, acima
+// do limite do corpo do aluno) e voltava ao buffer quando falhava; com o servidor lento,
+// o relógio de 4 s disparava sincronizações umas por cima das outras.
+function typeKeys(count) {
+  act(() => {
+    for (let index = 0; index < count; index += 1) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', bubbles: true }))
+    }
+  })
+}
+
+function keystrokeBatches() {
+  return postsTo('/api/student/log-keystrokes').map(([, body, options]) => ({ seqs: body.events.map((event) => event.seq), options }))
+}
+
+describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincronização por vez', () => {
+  it('digitação acumulada sai em lotes de até 500, um envio por vez e logo um depois do outro, sem perder nem repetir teclas', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    let inFlight = 0
+    let maxInFlight = 0
+    let releaseFirst
+    const first = new Promise((resolve) => { releaseFirst = resolve })
+    let calls = 0
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      calls += 1
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      try {
+        if (calls === 1) await first
+        else await new Promise((resolve) => setTimeout(resolve, 5))
+        return { success: true }
+      } finally {
+        inFlight -= 1
+      }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // o 20º evento dispara o envio, que fica pendurado
+    expect(keystrokeBatches()).toHaveLength(1)
+    typeKeys(1180) // servidor lento: nada de envio novo enquanto o primeiro não volta
+    expect(keystrokeBatches()).toHaveLength(1)
+    await act(async () => { releaseFirst() })
+    await waitFor(() => expect(keystrokeBatches().flatMap((batch) => batch.seqs)).toHaveLength(1200))
+    const batches = keystrokeBatches()
+    expect(batches.map((batch) => batch.seqs.length)).toEqual([20, 500, 500, 180])
+    expect(batches.flatMap((batch) => batch.seqs)).toEqual(Array.from({ length: 1200 }, (_, index) => index + 1))
+    expect(maxInFlight).toBe(1)
+    expect(KEYSTROKE_BATCH_MAX).toBe(500)
+    batches.forEach((batch) => expect(batch.options).toEqual({ timeoutMs: 10000 }))
+  }, 15000)
+
+  it('envio que falha pela rede volta para a frente do buffer e sai no fim do recuo; lote recusado pelo servidor (413) não é reenviado para sempre', async () => {
+    // Variação do recuo no mínimo (0,8): o primeiro recuo é de 1,6 s.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const outcomes = [
+      Object.assign(new Error('Sem conexão'), { status: 0, network: true }),
+      null,
+      Object.assign(new Error('Corpo grande demais'), { status: 413 }),
+      null,
+    ]
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      const outcome = outcomes.shift()
+      if (outcome) throw outcome
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // falha pela rede
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(1))
+    await act(async () => {})
+    // A tecla seguinte não reenvia na hora (antes saía um envio a cada tecla com a rede
+    // fora): espera o recuo e então leva as 20 que falharam, na ordem, e a nova.
+    typeKeys(1)
+    expect(keystrokeBatches()).toHaveLength(1)
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(2), { timeout: 4000 })
+    expect(keystrokeBatches()[1].seqs).toEqual(Array.from({ length: 21 }, (_, index) => index + 1))
+    await act(async () => {})
+    typeKeys(20) // 22 a 41: recusado com 413
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(3))
+    expect(keystrokeBatches()[2].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 22))
+    await act(async () => {})
+    typeKeys(20)
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(4))
+    expect(keystrokeBatches()[3].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 42))
+  }, 15000)
+
+  it('lote recusado pela turma (403) não é reenviado a cada recuo: espera uma sincronização aceita e então sai, sem perder teclas', async () => {
+    // Variação do recuo no mínimo (0,8): o primeiro recuo é de 1,6 s.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    let syncRefused = false
+    let refusedSyncs = 0
+    apiMock.get.mockImplementation(async (url) => {
+      if (String(url).startsWith('/api/student/sync') && syncRefused) {
+        refusedSyncs += 1
+        throw Object.assign(new Error('Turma não autorizada para este estudante.'), { status: 403 })
+      }
+      return syncResponse({ timerRemaining: 600 })
+    })
+    let keystrokeCalls = 0
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      keystrokeCalls += 1
+      if (keystrokeCalls === 1) throw Object.assign(new Error('Turma não autorizada para este estudante.'), { status: 403 })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // recusado com 403
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(1))
+    syncRefused = true
+    const refusedAt = Date.now()
+    // O recuo (1,6 s) passa e uma sincronização também é recusada: nenhum reenvio (antes
+    // saía um a cada recuo, até 30 s, enquanto a tela estivesse aberta).
+    await waitFor(() => {
+      expect(refusedSyncs).toBeGreaterThan(0)
+      expect(Date.now() - refusedAt).toBeGreaterThan(2500)
+    }, { timeout: 6000 })
+    expect(keystrokeBatches()).toHaveLength(1)
+    // A turma volta a valer: a sincronização seguinte é aceita e as 20 teclas saem.
+    syncRefused = false
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(2), { timeout: 6000 })
+    expect(keystrokeBatches()[1].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 1))
+    await act(async () => {})
+    expect(keystrokeBatches()).toHaveLength(2)
+  }, 20000)
+
+  it('lote de aplicação que não existe mais (404) é descartado; sessão recusada (401) não tenta de novo depois que a prova sai da tela', async () => {
+    let sessionGone = false
+    apiMock.get.mockImplementation(async (url) => {
+      if (String(url).startsWith('/api/student/sync') && sessionGone) {
+        throw Object.assign(new Error('Sessão encerrada.'), { status: 401, data: { sessionRevoked: true } })
+      }
+      return syncResponse({ timerRemaining: 600 })
+    })
+    let keystrokeCalls = 0
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      keystrokeCalls += 1
+      if (keystrokeCalls === 1) throw Object.assign(new Error('Aplicação de prova não encontrada.'), { status: 404 })
+      throw Object.assign(new Error('Sessão encerrada.'), { status: 401, data: { sessionRevoked: true } })
+    })
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // 1 a 20: 404, descartado
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(1))
+    await act(async () => {})
+    typeKeys(20) // 21 a 40: sai na hora, sem as 20 descartadas e sem esperar recuo
+    await waitFor(() => expect(keystrokeBatches()).toHaveLength(2))
+    expect(keystrokeBatches()[1].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 21))
+    sessionGone = true
+    await act(async () => {})
+    vi.useFakeTimers()
+    try {
+      // A prova sai da tela: o resto vai uma vez com a saída e, recusado pela sessão, é
+      // descartado (antes eram mais 5 tentativas com recuo).
+      act(() => { router.unmountView() })
+      expect(keystrokeBatches()).toHaveLength(3)
+      expect(keystrokeBatches()[2].seqs).toEqual(Array.from({ length: 20 }, (_, index) => index + 21))
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+      expect(keystrokeBatches()).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 15000)
+
+  it('recuo do envio da digitação: dobra a cada falha seguida, de 2 s até 30 s, com variação de 0,8 a 1,2', () => {
+    expect(keystrokeRetryDelay(1, () => 0.5)).toBe(2000)
+    expect(keystrokeRetryDelay(2, () => 0.5)).toBe(4000)
+    expect(keystrokeRetryDelay(3, () => 0.5)).toBe(8000)
+    expect(keystrokeRetryDelay(4, () => 0.5)).toBe(16000)
+    expect(keystrokeRetryDelay(5, () => 0.5)).toBe(30000)
+    expect(keystrokeRetryDelay(50, () => 0.5)).toBe(30000)
+    expect(keystrokeRetryDelay(1, () => 0)).toBe(1600)
+    expect(keystrokeRetryDelay(1, () => 0.999999)).toBe(2400)
+    expect(keystrokeRetryDelay(5, () => 0.999999)).toBe(36000)
+  })
+
+  it('com a rede caída, a digitação não vira um envio por tecla: o próximo envio espera o recuo e leva tudo, na ordem', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    let offline = true
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      if (offline) throw Object.assign(new Error('Sem conexão'), { status: 0, network: true })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    // Dez rajadas de 20 teclas, cada uma depois da falha da anterior: antes, cada rajada
+    // fazia um envio na hora (a falha devolvia os eventos e a tecla seguinte reenviava).
+    for (let round = 0; round < 10; round += 1) {
+      typeKeys(20)
+      await act(async () => {})
+    }
+    expect(keystrokeBatches()).toHaveLength(1)
+    offline = false
+    await waitFor(() => expect(keystrokeBatches().length).toBeGreaterThan(1), { timeout: 4000 })
+    await waitFor(() => expect(keystrokeBatches().slice(1).flatMap((batch) => batch.seqs)).toHaveLength(200))
+    expect(keystrokeBatches().slice(1).flatMap((batch) => batch.seqs)).toEqual(Array.from({ length: 200 }, (_, index) => index + 1))
+  }, 15000)
+
+  it('"Enviar prova" manda a digitação que está no buffer antes da entrega (H5b: depois dela a sessão pode acabar)', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const order = []
+    let releaseKeys
+    const keysHeld = new Promise((resolve) => { releaseKeys = resolve })
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/log-keystrokes') {
+        order.push('keys:start')
+        await keysHeld
+        order.push('keys:done')
+        return { success: true }
+      }
+      if (url === '/api/student/submit') {
+        order.push('submit')
+        return { success: true, gradePublished: false, answeredCount: 1 }
+      }
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5) // abaixo do lote de 20: ficaria no buffer até a limpeza do efeito
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    await waitFor(() => expect(order).toContain('keys:start'))
+    expect(order).not.toContain('submit')
+    await act(async () => { releaseKeys() })
+    await waitFor(() => expect(order).toContain('submit'))
+    expect(order.indexOf('keys:done')).toBeLessThan(order.indexOf('submit'))
+    expect(keystrokeBatches()[0].seqs).toEqual([1, 2, 3, 4, 5])
+  }, 15000)
+
+  it('"Enviar prova" não fica preso no envio da digitação: com a rede lenta, a entrega sai depois de no máximo 3 s', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+      apiMock.post.mockImplementation((url) => {
+        if (url === '/api/student/log-keystrokes') return new Promise(() => {})
+        if (url === '/api/student/submit') return Promise.resolve({ success: true, gradePublished: false, answeredCount: 1 })
+        return Promise.resolve({ success: true })
+      })
+      renderRunner()
+      enterFullscreen()
+      await screen.findByRole('button', { name: /Dois/ })
+      typeKeys(3)
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+      await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+      expect(postsTo('/api/student/submit')).toHaveLength(0)
+      await act(async () => { vi.advanceTimersByTime(3100) })
+      await waitFor(() => expect(postsTo('/api/student/submit')).toHaveLength(1))
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 15000)
+
+  it('Sair da prova com um envio da digitação em andamento: o resto sai na hora e nenhuma tecla se perde', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    let releaseFirst
+    const first = new Promise((resolve) => { releaseFirst = resolve })
+    let calls = 0
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/log-keystrokes') return { success: true }
+      calls += 1
+      if (calls === 1) await first
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // o primeiro lote fica pendurado
+    typeKeys(10)
+    expect(keystrokeBatches()).toHaveLength(1)
+    await user.click(screen.getByRole('button', { name: 'Sair', exact: true }))
+    await user.click(await screen.findByRole('button', { name: 'Salvar e sair' }))
+    expect(await screen.findByText('Lista de provas')).toBeVisible()
+    // Antes, o envio da saída voltava sem enviar (havia um em andamento) e a tela já
+    // tinha saído quando ele terminava: as 10 últimas teclas se perdiam.
+    expect(keystrokeBatches().flatMap((batch) => batch.seqs).sort((a, b) => a - b)).toEqual(Array.from({ length: 30 }, (_, index) => index + 1))
+    await act(async () => { releaseFirst() })
+    await act(async () => {})
+    expect(keystrokeBatches()).toHaveLength(2)
+  }, 15000)
+
+  it('a prova sai da tela com mais de um lote no buffer: os lotes seguintes continuam saindo depois da desmontagem', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const releases = []
+    apiMock.post.mockImplementation((url) => {
+      if (url !== '/api/student/log-keystrokes') return Promise.resolve({ success: true })
+      return new Promise((resolve) => { releases.push(() => resolve({ success: true })) })
+    })
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // pendurado
+    typeKeys(1180)
+    expect(keystrokeBatches()).toHaveLength(1)
+    // Desmontagem (fim da sessão no meio, navegação que o roteador não segurou): o que
+    // sobrou sai sem esperar o envio pendurado, 500 por vez.
+    act(() => { router.unmountView() })
+    expect(keystrokeBatches()).toHaveLength(2)
+    expect(keystrokeBatches()[1].seqs[0]).toBe(21)
+    expect(keystrokeBatches()[1].seqs).toHaveLength(500)
+    // Antes, o encadeamento exigia a tela montada e as 680 restantes ficavam no buffer.
+    for (let round = 0; round < 6 && releases.length; round += 1) {
+      await act(async () => { releases.splice(0).forEach((release) => release()) })
+      await act(async () => {})
+    }
+    const seqs = keystrokeBatches().flatMap((batch) => batch.seqs)
+    expect(seqs).toHaveLength(1200)
+    expect([...seqs].sort((a, b) => a - b)).toEqual(Array.from({ length: 1200 }, (_, index) => index + 1))
+    keystrokeBatches().forEach((batch) => expect(batch.seqs.length).toBeLessThanOrEqual(500))
+  }, 15000)
+
+  it('depois que a prova sai da tela, sem rede: o resto tenta de novo com recuo, no máximo 5 vezes, e sem sessão não envia', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/log-keystrokes') throw Object.assign(new Error('Sem conexão'), { status: 0, network: true })
+      return { success: true }
+    })
+    const router = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5)
+    expect(keystrokeBatches()).toHaveLength(0)
+    vi.useFakeTimers()
+    try {
+      act(() => { router.unmountView() })
+      expect(keystrokeBatches()).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+      // O envio da saída e mais 5 tentativas, cada uma com as mesmas 5 teclas; depois desiste.
+      expect(keystrokeBatches()).toHaveLength(6)
+      keystrokeBatches().forEach((batch) => expect(batch.seqs).toEqual([1, 2, 3, 4, 5]))
+    } finally {
+      vi.useRealTimers()
+    }
+
+    cleanup()
+    apiMock.post.mockClear()
+    const again = renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5)
+    sessionMock.mockReturnValue(false)
+    act(() => { again.unmountView() })
+    await act(async () => {})
+    expect(keystrokeBatches()).toHaveLength(0)
+  }, 15000)
+
+  it('lote do keepalive que falha com a página ainda aberta volta para o buffer e sai no envio seguinte', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url, body, options) => {
+      if (url === '/api/student/log-keystrokes' && options?.keepalive) throw Object.assign(new Error('Sem conexão'), { status: 0, network: true })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(5)
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    await act(async () => {})
+    // Página voltou do cache do navegador (voltar/avançar): as 5 teclas não se perderam.
+    act(() => { window.dispatchEvent(new Event('pageshow')) })
+    await waitFor(() => expect(keystrokeBatches().filter((batch) => !batch.options?.keepalive)).toHaveLength(1), { timeout: 4000 })
+    expect(keystrokeBatches().filter((batch) => !batch.options?.keepalive)[0].seqs).toEqual([1, 2, 3, 4, 5])
+  }, 15000)
+
+  it('na saída da página o lote com keepalive leva no máximo 500 teclas e cabe no limite do navegador', async () => {
+    const base = { email: 'ana@escola.local', studentClass: '1DES', courseId: 'curso', examKey: EXAM, applicationId: 'app-1', attemptId: 'att-1' }
+    const event = (seq, padding = '') => ({ seq, clientTs: 1_700_000_000_000 + seq, key: 'a', code: 'KeyA', mods: '', kind: 'char', question: null, blocked: false, suspicious: false, padding })
+    const small = Array.from({ length: 900 }, (_, index) => event(index + 1))
+    const smallBatch = keepaliveKeystrokeBatch(base, small)
+    expect(smallBatch.length).toBeLessThanOrEqual(500)
+    expect(new TextEncoder().encode(JSON.stringify({ ...base, events: smallBatch })).length).toBeLessThanOrEqual(KEYSTROKE_KEEPALIVE_MAX_BYTES)
+    expect(smallBatch[0].seq).toBe(1)
+    const large = Array.from({ length: 500 }, (_, index) => event(index + 1, 'x'.repeat(200)))
+    const largeBatch = keepaliveKeystrokeBatch(base, large)
+    expect(largeBatch.length).toBeGreaterThan(0)
+    expect(largeBatch.length).toBeLessThan(500)
+    expect(new TextEncoder().encode(JSON.stringify({ ...base, events: largeBatch })).length).toBeLessThanOrEqual(KEYSTROKE_KEEPALIVE_MAX_BYTES)
+    expect(KEYSTROKE_KEEPALIVE_MAX_BYTES).toBe(48 * 1024)
+
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation((url) => (url === '/api/student/log-keystrokes' ? new Promise(() => {}) : Promise.resolve({ success: true })))
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(20) // fica pendurado: o resto espera no buffer
+    typeKeys(880)
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    const keepalive = postsTo('/api/student/log-keystrokes').filter(([, , options]) => options?.keepalive === true)
+    expect(keepalive).toHaveLength(1)
+    expect(keepalive[0][1].events.length).toBeLessThanOrEqual(500)
+    expect(keepalive[0][1].events[0].seq).toBe(21)
+  }, 15000)
+
+  it('com o servidor lento, o relógio de 4 s não dispara uma sincronização por cima da outra', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = []
+      apiMock.get.mockImplementation((url) => {
+        if (!String(url).startsWith('/api/student/sync')) return Promise.resolve({})
+        return new Promise((resolve) => { pending.push(resolve) })
+      })
+      renderRunner()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      const syncCalls = () => apiMock.get.mock.calls.filter(([url]) => String(url).startsWith('/api/student/sync'))
+      expect(syncCalls()).toHaveLength(1)
+      expect(syncCalls()[0][1]).toEqual({ timeoutMs: 10000 })
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000 * 5) })
+      expect(syncCalls()).toHaveLength(1)
+      // Prova ainda não iniciada (sem a cópia cifrada, que depende do WebCrypto real).
+      await act(async () => { pending[0](syncResponse({ startedAt: null })) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
+      expect(syncCalls()).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

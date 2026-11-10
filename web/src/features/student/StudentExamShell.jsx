@@ -12,6 +12,7 @@ import { useStudentHeartbeat } from './useStudentHeartbeat'
 // pede confirmação (useBlocker no ExamRunner). Um erro de tela na prova mostra a tela de
 // erro com o botão de recarregar e não conta como saída da prova; sair dela pelo voltar
 // ou por um link pede a mesma confirmação e fica registrado (ExamErrorScreen).
+// O erro de tela da prova também vai para o registro do servidor (area="prova", H9c).
 // Invólucros em volta do Outlet na ordem dos layouts (fase 2): área de erro → Suspense
 // ("Carregando..." enquanto o arquivo da prova chega) → StudentCourseGate. A rota da
 // prova nunca passa pelos portões de troca de senha e de privacidade.
@@ -20,7 +21,7 @@ export function StudentExamShell() {
   return (
     <div className="app-canvas h-full flex flex-col text-text">
       <main className="flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6">
-        <AppErrorBoundary fallback={ExamErrorScreen}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></AppErrorBoundary>
+        <AppErrorBoundary area="prova" fallback={ExamErrorScreen}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></AppErrorBoundary>
       </main>
     </div>
   )

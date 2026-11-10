@@ -587,12 +587,20 @@ router.post('/api/student/message-history/delete', validateStudentSession, (req,
 
 // 6. Valida o token de acesso da prova NO SERVIDOR (o token nunca é enviado ao cliente).
 //    Em caso de sucesso marca a prova como liberada para este aluno (tokenValidated).
+//    Limite por aluno (H5b, DES-X2): contam só os códigos errados, pela conta da sessão
+//    (10 em 5 min → 429 só para esse aluno; o código certo zera). Antes o teto era de 30
+//    validações por minuto por IP, contando as certas: a turma inteira atrás do mesmo
+//    roteador (NAT) digitando o código ao mesmo tempo recebia "Muitas tentativas".
+const EXAM_TOKEN_FAILURE_LIMIT = Object.freeze({ max: 10, windowMs: 5 * 60 * 1000 });
+const EXAM_TOKEN_TOO_MANY = 'Muitas tentativas com o código da prova. Aguarde alguns minutos ou chame o professor.';
+
 router.post('/api/student/validate-exam-token', validateStudentSession, (req, res) => {
     try {
-        const { rateLimit } = require('../utils/rateLimit.js');
-        const _rl = rateLimit(`exam-token:${req.ip}`, { max: 30, windowMs: 60000 });
-        if (!_rl.allowed) {
-            return res.status(429).json({ error: 'Muitas tentativas. Aguarde um instante e tente novamente.' });
+        const rateLimiter = require('../utils/rateLimit.js');
+        const tokenFailureKey = `exam-token-fail:${req.studentEmail}`;
+        const tokenFailures = rateLimiter.peek(tokenFailureKey, EXAM_TOKEN_FAILURE_LIMIT);
+        if (!tokenFailures.allowed) {
+            return res.status(429).json({ error: EXAM_TOKEN_TOO_MANY, retryAfterSeconds: Math.max(1, Math.ceil(tokenFailures.retryAfterMs / 1000)) });
         }
         const { email, studentClass, courseId, examKey, applicationId, token } = req.body;
         if (!email || !examKey) {
@@ -622,8 +630,10 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
         const provided = normalizeExamToken(token);
         const validToken = requiredTokenHash ? verifyExamToken(provided, requiredTokenHash) : provided === requiredToken;
         if (!validToken) {
+            rateLimiter.hit(tokenFailureKey, EXAM_TOKEN_FAILURE_LIMIT);
             return res.json({ success: true, valid: false });
         }
+        rateLimiter.reset(tokenFailureKey);
 
         if (application) {
             // A tentativa aberta é sempre a que continua, qualquer que seja o identificador

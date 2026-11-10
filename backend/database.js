@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
+const os = require('os');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
 const { normalizeStoredStudentClasses } = require('./utils/students.js');
@@ -28,35 +29,203 @@ function legacyHashPassword(password) {
     return crypto.createHash('sha256').update(password + salt).digest('hex');
 }
 
+// Senhas: formato `scrypt$<sal base64>$<hash base64>` (64 bytes, parâmetros padrão do
+// Node). Os formatos antigos continuam conferindo: o hash SHA-256 legado (64 caracteres
+// hexadecimais), o texto puro e `scrypt-sha256$` (scrypt sobre o hash legado, gravado
+// pela proteção das senhas antigas do H5a). O login regrava em scrypt$ o que não está nele.
+//
+// As versões síncronas (hashPassword, verifyPassword) param a thread do servidor por
+// cerca de 50 ms a cada senha: ficam só no boot (migração de senhas em texto), nos
+// scripts e no modo de teste. As rotas usam hashPasswordAsync e verifyPasswordAsync, que
+// rodam o scrypt no pool de threads da libuv e deixam o servidor atender os outros
+// pedidos (DES-07: 40 logins juntos paravam o servidor por quase 2 s).
+const SCRYPT_KEY_LENGTH = 64;
+const SCRYPT_PREFIX = 'scrypt$';
+const SCRYPT_SHA256_PREFIX = 'scrypt-sha256$';
+
+// Fila do scrypt assíncrono (DES-07). O pool de threads da libuv atende os pedidos na
+// ordem em que chegam e é dividido com o sqlite3 (cada COMMIT), o fs (express.static,
+// sendFile) e o zlib (compressão das respostas). Sem fila, 40 logins juntos punham 40
+// scrypts na frente de tudo: o servidor não parava, mas qualquer pedido que precisasse
+// do pool (até GET /api/session/status, pelo fs.stat do express.static) esperava a
+// rajada inteira, cerca de 450 ms. Com no máximo SCRYPT_CONCURRENCY senhas ao mesmo
+// tempo, sobram threads (e núcleos) livres para o resto, e a rajada só demora um pouco
+// mais para o último aluno. O tamanho do pool vem de UV_THREADPOOL_SIZE (padrão 4); o
+// launcher do Windows passa a definir a variável na etapa do Windows.
+const THREADPOOL_SIZE = Math.min(1024, Math.max(1, Number.parseInt(process.env.UV_THREADPOOL_SIZE, 10) || 4));
+const CPU_COUNT = Math.max(1, typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length);
+const SCRYPT_CONCURRENCY = Math.max(1, Math.min(THREADPOOL_SIZE - 2, CPU_COUNT - 1));
+let scryptRunning = 0;
+const scryptWaiting = [];
+
+function startNextScrypt() {
+    const next = scryptWaiting.shift();
+    if (next) next();
+}
+
+function scryptAsync(secret, salt, keyLength) {
+    return new Promise((resolve, reject) => {
+        const run = () => {
+            scryptRunning += 1;
+            let settled = false;
+            const done = (err, derived) => {
+                if (settled) return;
+                settled = true;
+                scryptRunning -= 1;
+                startNextScrypt();
+                if (err) reject(err); else resolve(derived);
+            };
+            try {
+                crypto.scrypt(secret, salt, keyLength, done);
+            } catch (err) {
+                done(err);
+            }
+        };
+        if (scryptRunning < SCRYPT_CONCURRENCY) run(); else scryptWaiting.push(run);
+    });
+}
+
+// Estado da fila (testes e diagnóstico).
+function passwordHashQueueStatus() {
+    return { concurrency: SCRYPT_CONCURRENCY, running: scryptRunning, waiting: scryptWaiting.length };
+}
+
+function parseScryptValue(value, prefix) {
+    const parts = value.slice(prefix.length).split('$');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    const salt = Buffer.from(parts[0], 'base64');
+    const expected = Buffer.from(parts[1], 'base64');
+    if (!salt.length || !expected.length) return null;
+    return { salt, expected };
+}
+
+// Como conferir o valor guardado: { scrypt: true, secret, salt, expected } nos formatos
+// com scrypt (secret é o texto que entra no scrypt); { legacy: true } no hash SHA-256;
+// {} no texto puro; null quando o valor com prefixo scrypt está ilegível (nunca confere).
+function passwordCheckPlan(stored, password) {
+    const value = String(stored);
+    if (value.startsWith(SCRYPT_PREFIX)) {
+        const parsed = parseScryptValue(value, SCRYPT_PREFIX);
+        return parsed && { scrypt: true, secret: String(password), ...parsed };
+    }
+    if (value.startsWith(SCRYPT_SHA256_PREFIX)) {
+        const parsed = parseScryptValue(value, SCRYPT_SHA256_PREFIX);
+        return parsed && { scrypt: true, secret: legacyHashPassword(String(password)), ...parsed };
+    }
+    if (/^[0-9a-f]{64}$/i.test(value)) return { legacy: true };
+    return {};
+}
+
+function uncryptedPasswordMatches(plan, stored, password) {
+    if (plan.legacy) return String(stored) === legacyHashPassword(String(password));
+    return String(stored) === String(password);
+}
+
+function scryptMatches(plan, actual) {
+    return plan.expected.length === actual.length && crypto.timingSafeEqual(plan.expected, actual);
+}
+
+function encodeScrypt(salt, derived) {
+    return `${SCRYPT_PREFIX}${salt.toString('base64')}$${derived.toString('base64')}`;
+}
+
 function hashPassword(password) {
     if (!password) return '';
     const salt = crypto.randomBytes(16);
-    const derived = crypto.scryptSync(String(password), salt, 64);
-    return `scrypt$${salt.toString('base64')}$${derived.toString('base64')}`;
+    return encodeScrypt(salt, crypto.scryptSync(String(password), salt, SCRYPT_KEY_LENGTH));
 }
 
 function verifyPassword(stored, password) {
     if (!stored || password == null) return false;
-    const value = String(stored);
-    if (value.startsWith('scrypt$')) {
-        const parts = value.split('$');
-        if (parts.length !== 3) return false;
-        try {
-            const salt = Buffer.from(parts[1], 'base64');
-            const expected = Buffer.from(parts[2], 'base64');
-            const actual = crypto.scryptSync(String(password), salt, expected.length);
-            return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
-        } catch (e) { return false; }
-    }
-    if (/^[0-9a-f]{64}$/i.test(value)) return value === legacyHashPassword(String(password));
-    return value === String(password);
+    const plan = passwordCheckPlan(stored, password);
+    if (!plan) return false;
+    if (!plan.scrypt) return uncryptedPasswordMatches(plan, stored, password);
+    try {
+        return scryptMatches(plan, crypto.scryptSync(plan.secret, plan.salt, plan.expected.length));
+    } catch (e) { return false; }
+}
+
+// Mesmo formato de hashPassword, sem parar a thread do servidor.
+async function hashPasswordAsync(password) {
+    if (!password) return '';
+    const salt = crypto.randomBytes(16);
+    return encodeScrypt(salt, await scryptAsync(String(password), salt, SCRYPT_KEY_LENGTH));
+}
+
+// Mesmo resultado de verifyPassword, sem parar a thread do servidor. Valor ilegível ou
+// falha do scrypt contam como senha errada.
+async function verifyPasswordAsync(stored, password) {
+    if (!stored || password == null) return false;
+    const plan = passwordCheckPlan(stored, password);
+    if (!plan) return false;
+    if (!plan.scrypt) return uncryptedPasswordMatches(plan, stored, password);
+    try {
+        return scryptMatches(plan, await scryptAsync(plan.secret, plan.salt, plan.expected.length));
+    } catch (e) { return false; }
 }
 
 function isHashed(password) {
-    return typeof password === 'string' && (password.startsWith('scrypt$') || /^[0-9a-f]{64}$/i.test(password));
+    return typeof password === 'string'
+        && (password.startsWith(SCRYPT_PREFIX) || password.startsWith(SCRYPT_SHA256_PREFIX) || /^[0-9a-f]{64}$/i.test(password));
 }
 
 function needsPasswordRehash(password) { return typeof password === 'string' && !password.startsWith('scrypt$'); }
+
+// Proteção dos hashes antigos (H5a, SEG-X2). O hash legado é sha256(senha + sal fixo):
+// num backup vazado ele se quebra rápido, e as contas de quem não entra mais (ex-alunos)
+// nunca passavam pelo login, que é onde a senha era regravada. Sem precisar da senha,
+// o valor legado vira 'scrypt-sha256$<sal>$<scrypt(hash legado)>', que verifyPassword
+// confere pela senha digitada (scrypt do sha256 dela); no próximo login a conta passa
+// para scrypt$ (needsPasswordRehash).
+// Roda no boot, antes de o servidor atender, e depois de restaurar um backup. Só toca
+// valores de 64 caracteres hexadecimais: rodar de novo não muda nada (idempotente). O
+// texto puro continua com a migração do boot (hashPassword), como sempre.
+function isLegacyPasswordHash(value) {
+    return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+// Lugares que guardam senha: alunos, contas de instrutor e a senha antiga do config.
+function legacyPasswordHolders(memory) {
+    const holders = [];
+    (Array.isArray(memory && memory.students) ? memory.students : []).forEach(student => {
+        if (student && isLegacyPasswordHash(student.password)) holders.push({ target: student, key: 'password' });
+    });
+    (Array.isArray(memory && memory.admins) ? memory.admins : []).forEach(admin => {
+        if (admin && isLegacyPasswordHash(admin.password)) holders.push({ target: admin, key: 'password' });
+    });
+    const config = memory && memory.config;
+    if (config && typeof config === 'object' && isLegacyPasswordHash(config.adminPassword)) {
+        holders.push({ target: config, key: 'adminPassword' });
+    }
+    return holders;
+}
+
+function countLegacyPasswordHashes(memory = memoryDB) {
+    return legacyPasswordHolders(memory).length;
+}
+
+async function protectLegacyPasswordHash(legacyHex) {
+    const salt = crypto.randomBytes(16);
+    const derived = await scryptAsync(String(legacyHex).toLowerCase(), salt, SCRYPT_KEY_LENGTH);
+    return `${SCRYPT_SHA256_PREFIX}${salt.toString('base64')}$${derived.toString('base64')}`;
+}
+
+// Converte os hashes legados da memória e devolve quantos converteu. Não grava: quem
+// chama faz o db.save(). O scrypt roda no pool de threads, pela mesma fila das senhas
+// (no máximo SCRYPT_CONCURRENCY ao mesmo tempo). Um valor que mudou durante a espera
+// (login que já regravou em scrypt$, troca de senha) fica como está.
+async function upgradeLegacyPasswordHashes(memory = memoryDB) {
+    const holders = legacyPasswordHolders(memory);
+    if (!holders.length) return 0;
+    const results = await Promise.all(holders.map(async holder => {
+        const legacy = holder.target[holder.key];
+        const protectedValue = await protectLegacyPasswordHash(legacy);
+        if (holder.target[holder.key] !== legacy) return false;
+        holder.target[holder.key] = protectedValue;
+        return true;
+    }));
+    return results.filter(Boolean).length;
+}
 
 // Turmas atribuídas sem repetição e numa ordem fixa (curso, depois turma). A ordem
 // não depende mais da ordem em que as turmas foram lidas do banco: depois de restaurar
@@ -277,10 +446,13 @@ function resetAuthSessions(memory) {
 // applySnapshot) aplica as coleções pelo modo de cada uma no registro e, antes da
 // gravação, roda estes ganchos na ordem, com a memória já restaurada (runAfterRestore).
 // - 'authSessions' (H3): todos saem, e a gravação esvazia a tabela auth_sessions;
-// - a conversão dos hashes de senha legados (H5, upgradeLegacyPasswordHashes) entra aqui.
-// Cada item: { name, run(memory) }; run pode devolver promessa.
+// - 'legacyPasswordHashes' (H5a, SEG-X2): hashes SHA-256 antigos do backup viram
+//   scrypt-sha256$ antes da gravação, como no boot.
+// Cada item: { name, run(memory) }; run pode devolver promessa. Uma lista só: as trilhas
+// A e B tinham cada uma a sua declaração, juntadas aqui na J2.
 const AFTER_RESTORE_HOOKS = [
     { name: 'authSessions', run: resetAuthSessions },
+    { name: 'legacyPasswordHashes', run: memory => upgradeLegacyPasswordHashes(memory) },
 ];
 
 async function runAfterRestore(memory = memoryDB) {
@@ -1126,6 +1298,13 @@ async function init() {
         memoryDB.config.adminPassword = hashPassword(memoryDB.config.adminPassword);
         needsSave = true;
     }
+    // Hashes SHA-256 antigos viram scrypt-sha256$ antes de o servidor atender (SEG-X2).
+    // O aviso aparece só quando há o que converter (no primeiro boot depois de atualizar).
+    const legacyPasswordCount = countLegacyPasswordHashes(memoryDB);
+    if (legacyPasswordCount > 0) {
+        console.log(`Protegendo ${legacyPasswordCount} senha(s) no formato antigo...`);
+        if (await upgradeLegacyPasswordHashes(memoryDB)) needsSave = true;
+    }
     // Segredo dos identificadores opacos das alternativas da prova (AVA-05). Gerado uma
     // vez e gravado antes de servir: os identificadores não mudam ao reiniciar.
     if (memoryDB.config && typeof memoryDB.config === 'object'
@@ -1635,7 +1814,12 @@ module.exports = {
     DbWriteError,
     hashPassword,
     verifyPassword,
+    hashPasswordAsync,
+    verifyPasswordAsync,
+    passwordHashQueueStatus,
     needsPasswordRehash,
+    countLegacyPasswordHashes,
+    upgradeLegacyPasswordHashes,
     allClassAssignments,
     syncAdminClassAssignments,
     rebuildExamApplicationsFromClasses,

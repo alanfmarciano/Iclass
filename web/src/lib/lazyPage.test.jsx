@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CHUNK_RELOAD_KEY, CHUNK_RELOAD_WINDOW_MS, SERVER_WAIT_MS, lazyPage, loadPageModule, recoverFailedImport } from './lazyPage'
+import { CHUNK_RELOAD_KEY, CHUNK_RELOAD_WINDOW_MS, SERVER_PROBE_TIMEOUT_MS, SERVER_WAIT_MS, lazyPage, loadPageModule, recoverFailedImport } from './lazyPage'
 import { AppErrorBoundary } from '../components/ui/ErrorScreen'
 import { PageLoading } from '../components/ui/PageLoading'
 import appSource from '../App.jsx?raw'
@@ -177,6 +177,40 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     }
   })
 
+  it('com o servidor travado (aceita a conexão e não responde), cada conferência tem prazo e os 3 minutos de espera valem', async () => {
+    // Fase 2, H2-C: antes, o HEAD de conferência não tinha prazo; com o servidor travado
+    // o fetch ficava pendurado, a espera nunca chegava aos 3 minutos e a tela ficava no
+    // "Carregando..." para sempre, sem o botão de recarregar.
+    vi.useFakeTimers()
+    const options = env({
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    })
+    delete options.probe
+    const fetchMock = vi.fn((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('cancelado', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const loader = vi.fn(() => Promise.reject(chunkError()))
+      let result = null
+      recoverFailedImport(loader, 'default', chunkError(), options).then((value) => { result = value })
+      // Uma conferência pendurada desiste no prazo e a próxima sai depois da espera de 1 s.
+      await vi.advanceTimersByTimeAsync(SERVER_PROBE_TIMEOUT_MS)
+      expect(result).toBeNull()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(SERVER_WAIT_MS + SERVER_PROBE_TIMEOUT_MS)
+      expect(result).not.toBeNull()
+      expect(result.error).toBeTruthy()
+      expect(loader).not.toHaveBeenCalled()
+      expect(options.reload).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('arquivo carregado sem a tela pedida é erro, sem recarga', async () => {
     const options = env()
     const result = await settledWithin(loadPageModule(() => Promise.resolve({ Outra: () => null }), 'AppShell', options))
@@ -294,8 +328,9 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     const screens = staticImports.filter((specifier) => /^\.\/features\/|^\.\/components\/layout\//.test(specifier))
     expect(screens).toEqual(['./features/LoginPage'])
     const lazyScreens = [...appSource.matchAll(/lazyPage\(\(\) => import\('([^']+)'\)/g)].map((match) => match[1])
-    // 24 telas do instrutor, 8 do aluno, a prova e os 3 layouts.
-    expect(lazyScreens.length).toBe(36)
+    // 24 telas do instrutor, 9 do aluno (com Minha conta, H5a), a prova e os 3 layouts.
+    expect(lazyScreens.length).toBe(37)
+    expect(lazyScreens).toContain('./features/student/ContaPage')
     expect(lazyScreens).toContain('./features/student/exam/ExamRunner')
     expect(lazyScreens).toContain('./components/layout/AppShell')
     expect(appSource).toMatch(/<Suspense fallback=\{<SessionLoading \/>\}>/)
@@ -326,6 +361,24 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     }
     // AppShell, LumenAdminShell, StudentShell (clássico e lumen) e a prova.
     expect(outlets).toBe(5)
-    expect(studentExamShellSource).toMatch(/<AppErrorBoundary fallback=\{ExamErrorScreen\}><Suspense fallback=\{<PageLoading \/>\}><StudentCourseGate><Outlet \/><\/StudentCourseGate><\/Suspense><\/AppErrorBoundary>/)
+    // Fase 2, H5a: no portal do aluno, a troca de senha obrigatória fica entre o Suspense
+    // e o portão da turma (nos dois layouts); a prova não passa por ela.
+    for (const line of studentShellSource.split('\n').filter((text) => text.includes('<Outlet'))) {
+      expect(line).toContain('<Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense>')
+    }
+    expect(studentExamShellSource).not.toContain('StudentPasswordChangeGate')
+    expect(studentExamShellSource).toMatch(/<AppErrorBoundary area="prova" fallback=\{ExamErrorScreen\}><Suspense fallback=\{<PageLoading \/>\}><StudentCourseGate><Outlet \/><\/StudentCourseGate><\/Suspense><\/AppErrorBoundary>/)
+    // Fase 2, H9c (ENG-05): todo Outlet tem a área de erro, com a área certa para o
+    // registro no servidor e o texto do layout (o menu continua à vista).
+    for (const [name, source, area, description] of [
+      ['AppShell.jsx', appShellSource, 'admin', 'ADMIN_ERROR_DESCRIPTION'],
+      ['LumenAdminShell.jsx', lumenShellSource, 'admin', 'ADMIN_ERROR_DESCRIPTION'],
+      ['StudentShell.jsx', studentShellSource, 'aluno', 'STUDENT_ERROR_DESCRIPTION'],
+    ]) {
+      for (const line of source.split('\n').filter((text) => text.includes('<Outlet'))) {
+        expect(line, name).toContain(`<AppErrorBoundary area="${area}" description={${description}}><Suspense`)
+        expect(line, `${name}: área de erro dentro do div com key={pathname}`).toMatch(/key=\{pathname\}[^>]*>\s*<AppErrorBoundary|^\s*<AppErrorBoundary/)
+      }
+    }
   })
 })

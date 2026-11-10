@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { UserPlus } from 'lucide-react'
+import { LockOpen, UserPlus } from 'lucide-react'
 import { DataTable } from '../../components/ui/Table'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -9,6 +9,9 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { StatCard } from '../../components/ui/StatCard'
 import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../context/AuthProvider'
+import { useToast } from '../../context/ToastProvider'
+import { api } from '../../lib/api'
+import { LoginProtectionBadge, UNLOCK_LOGIN_HINT } from './loginProtection'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission, permissionLabel } from '../../lib/adminPermissions'
 
 const ROLE_LABEL = { admin: 'Administrador', professor: 'Professor' }
@@ -18,6 +21,19 @@ export default function AdminsPage() {
   const { auth } = useAuth()
   const { data: admins, loading, error, refetch } = useApi('/api/admin/accounts')
   const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.ACCOUNTS_MANAGE)
+  const toast = useToast()
+  const [unlocking, setUnlocking] = useState(null)
+
+  // "Liberar login" (H5b; SEG-06): a conta com atraso por senha errada volta a entrar na
+  // hora, sem trocar a senha. Só quem administra contas.
+  async function unlockLogin(row) {
+    setUnlocking(row.email)
+    try {
+      const r = await api.post('/api/admin/accounts/unlock-login', { email: row.email })
+      toast?.success(r?.message || 'Login liberado.')
+      refetch()
+    } catch (e) { toast?.error(e.message) } finally { setUnlocking(null) }
+  }
 
   const rows = admins || []
   const stats = useMemo(() => ({
@@ -38,6 +54,15 @@ export default function AdminsPage() {
     { key: 'additionalPermissions', label: 'Acessos extras', render: (r) => r.role === 'professor' && (r.additionalPermissions || []).length
       ? <span className="text-xs text-muted">{r.additionalPermissions.map(permissionLabel).join(', ')}</span>
       : '—' },
+    { key: 'loginProtection', label: 'Login', render: (r) => r.loginProtection ? (
+      <div className="flex flex-wrap items-center gap-2">
+        <LoginProtectionBadge protection={r.loginProtection} />
+        {canManage && (
+          <Button size="sm" variant="secondary" icon={LockOpen} title={UNLOCK_LOGIN_HINT} loading={unlocking === r.email}
+            onClick={(event) => { event.stopPropagation(); unlockLogin(r) }}>Liberar login</Button>
+        )}
+      </div>
+    ) : '—' },
   ]
 
   return (

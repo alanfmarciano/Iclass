@@ -13,6 +13,7 @@ const CASE_MS = 20000
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
+  downloadFile: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
   workspace: null,
   restart: { readServerHealth: vi.fn(), waitForServerRestart: vi.fn() },
@@ -27,7 +28,7 @@ const mocks = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
+vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post }, downloadFile: mocks.downloadFile }))
 vi.mock('../../hooks/useApi', () => ({ useApi: (path) => ({ data: (path && mocks.apiData[path]) || null, loading: false, error: null, refetch: vi.fn() }) }))
 vi.mock('./sistema/serverRestart', () => ({
   RESTART_WAIT_MS: 90000,
@@ -86,7 +87,7 @@ describe('SistemaPage · manutenção', () => {
     await user.type(screen.getByLabelText('Digite LIMPAR para confirmar'), 'LIMPAR')
     expect(confirmButton).toBeEnabled()
     await user.click(confirmButton)
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '1DES', courseId: 'DES', confirm: 'LIMPAR' })), SLOW)
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '1DES', courseId: 'DES', confirm: 'LIMPAR' }), { timeoutMs: 0 }), SLOW)
   }, CASE_MS)
 
   it('[UC-MANUT-001] limpeza fica travada com prova em andamento na turma', async () => {
@@ -187,7 +188,7 @@ describe('SistemaPage · manutenção', () => {
     expect(screen.getByText(/a restauração volta todas as turmas ao momento do reset/)).toBeVisible()
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }), SLOW)
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1DES', courseId: 'DES', confirm: 'RESETAR' }, { timeoutMs: 0 }), SLOW)
   }, CASE_MS)
 
   it('[UC-MANUT-001] no Ambiente da instituição (sem turma ativa) a turma é escolhida no próprio card de Manutenção (UXI-02, OPS-X3, CONF-X3)', async () => {
@@ -212,14 +213,14 @@ describe('SistemaPage · manutenção', () => {
     expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/studentClass=2DES&courseId=DES/))
     await user.type(screen.getByLabelText('Digite LIMPAR para confirmar'), 'LIMPAR')
     await user.click(screen.getByRole('button', { name: 'Limpar estado' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '2DES', courseId: 'DES', confirm: 'LIMPAR' })), SLOW)
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/flush-exam-state', expect.objectContaining({ studentClass: '2DES', courseId: 'DES', confirm: 'LIMPAR' }), { timeoutMs: 0 }), SLOW)
 
     await user.selectOptions(select, 'ADM::1ADM')
     await user.click(resetButton)
     await screen.findByText(/Prova W/, {}, SLOW)
     await user.type(screen.getByLabelText('Digite RESETAR para confirmar'), 'RESETAR')
     await user.click(screen.getByRole('button', { name: 'Confirmar reset' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1ADM', courseId: 'ADM', confirm: 'RESETAR' }), SLOW)
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/reset', { studentClass: '1ADM', courseId: 'ADM', confirm: 'RESETAR' }, { timeoutMs: 0 }), SLOW)
   }, CASE_MS)
 
   it('opções de turma: sem turmas excluídas, com o nome do curso e com a turma ativa mesmo antes da lista carregar', () => {
@@ -270,10 +271,13 @@ describe('Sistema · restaurar backup de versão anterior', () => {
 
   it('[UC-BACKUP-001] avisa antes que o backup é de versão anterior e o que acontece com as aplicações; só restaura depois de confirmar', async () => {
     const warning = 'Este backup é de uma versão anterior do IClass e não traz as aplicações de prova. Ao restaurar, as aplicações de prova atuais serão descartadas.'
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ error: warning, legacyBackup: true, exportedAt: '2026-10-18T20:08:31.000Z' }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, accountsNotRestored: 0, legacyApplications: true, applicationsDiscarded: 3, applicationsRebuilt: 1 }) })
-    vi.stubGlobal('fetch', fetchMock)
+    // O envio vai pelo cliente da API (lib/api.js), que devolve a recusa com status e corpo.
+    const restoreReplies = [
+      () => Promise.reject(Object.assign(new Error(warning), { status: 409, data: { error: warning, legacyBackup: true, exportedAt: '2026-10-18T20:08:31.000Z' } })),
+      () => Promise.resolve({ success: true, accountsNotRestored: 0, legacyApplications: true, applicationsDiscarded: 3, applicationsRebuilt: 1 }),
+    ]
+    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore' ? restoreReplies.shift()() : Promise.resolve({ success: true })))
+    const restoreCalls = () => mocks.post.mock.calls.filter(([url]) => url === '/api/admin/backup/restore')
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
@@ -285,23 +289,25 @@ describe('Sistema · restaurar backup de versão anterior', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Backup de uma versão anterior' })
     expect(dialog).toHaveTextContent('versão anterior do IClass')
     expect(dialog).toHaveTextContent('aplicações de prova atuais serão descartadas')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0][1].body.get('acceptLegacy')).toBeNull()
+    expect(restoreCalls()).toHaveLength(1)
+    expect(restoreCalls()[0][1]).toBeInstanceOf(FormData)
+    expect(restoreCalls()[0][1].get('acceptLegacy')).toBeNull()
+    expect(restoreCalls()[0][2]).toEqual({ timeoutMs: 0 })
     expect(mocks.toast.success).not.toHaveBeenCalled()
     expect(mocks.toast.error).not.toHaveBeenCalled()
 
     // Confirmado no aviso: manda de novo com a confirmação e informa o que foi feito.
     await user.click(within(dialog).getByRole('button', { name: 'Restaurar mesmo assim' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(fetchMock.mock.calls[1][1].body.get('acceptLegacy')).toBe('1')
+    await waitFor(() => expect(restoreCalls()).toHaveLength(2))
+    expect(restoreCalls()[1][1].get('acceptLegacy')).toBe('1')
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
     expect(mocks.toast.success.mock.calls[0][0]).toMatch(/aplicações de prova foram refeitas a partir das turmas do backup \(3 aplicações atuais descartadas, 1 refeita\)/)
     expect(window.confirm).toHaveBeenCalledTimes(1)
   })
 
   it('[UC-BACKUP-001] restaurar usa a confirmação digitada padrão: o botão só libera com o arquivo e RESTAURAR', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true, accountsNotRestored: 0 }) })
-    vi.stubGlobal('fetch', fetchMock)
+    mocks.post.mockResolvedValue({ success: true, accountsNotRestored: 0 })
+    const restoreCalls = () => mocks.post.mock.calls.filter(([url]) => url === '/api/admin/backup/restore')
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
@@ -316,14 +322,12 @@ describe('Sistema · restaurar backup de versão anterior', () => {
     await user.type(field, 'RESTAURA')
     expect(button).toBeDisabled()
     await user.type(field, 'R{Enter}')
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    expect(fetchMock.mock.calls[0][1].body.get('confirm')).toBe('RESTAURAR')
+    await waitFor(() => expect(restoreCalls()).toHaveLength(1))
+    expect(restoreCalls()[0][1].get('confirm')).toBe('RESTAURAR')
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
   })
 
   it('[UC-BACKUP-001] RESTAURAR digitado sem arquivo: Enter avisa que falta o arquivo e não envia nada', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
     render(<SistemaPage />)
     const field = screen.getByLabelText('Digite RESTAURAR para confirmar')
@@ -333,7 +337,30 @@ describe('Sistema · restaurar backup de versão anterior', () => {
     expect(screen.getByRole('button', { name: 'Restaurar' })).toBeDisabled()
     await user.type(field, '{Enter}')
     expect(mocks.toast.error).toHaveBeenCalledWith('Escolha o arquivo de backup')
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('[UC-BACKUP-001] baixar e restaurar vão pelo cliente da API: sem rede, a mensagem em português (antes "Failed to fetch")', async () => {
+    const offline = 'Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'
+    const networkError = () => Object.assign(new Error(offline), { status: 0, network: true })
+    mocks.downloadFile.mockResolvedValueOnce('iclass-backup.json').mockRejectedValueOnce(networkError())
+    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore' ? Promise.reject(networkError()) : Promise.resolve({ success: true })))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const user = userEvent.setup()
+    const { container } = render(<SistemaPage />)
+    await user.click(screen.getByRole('button', { name: 'Baixar dados (JSON)' }))
+    expect(mocks.downloadFile).toHaveBeenCalledWith('/api/admin/backup/data', 'iclass-backup.json')
+    expect(mocks.toast.error).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Baixar completo (ZIP)' }))
+    expect(mocks.downloadFile).toHaveBeenLastCalledWith('/api/admin/backup/full', 'iclass-backup.zip')
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith(offline))
+
+    await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup.json', { type: 'application/json' }))
+    await user.type(screen.getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
+    await user.click(screen.getByRole('button', { name: 'Restaurar' }))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledTimes(2))
+    expect(mocks.toast.error).toHaveBeenLastCalledWith(offline)
+    expect(screen.queryByRole('dialog', { name: 'Backup de uma versão anterior' })).not.toBeInTheDocument()
   })
 
   it('[UC-BACKUP-001] histórico anota a restauração de backup de versão anterior', () => {

@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, Clock3, FileQuestion, HardDrive, History, Inbox, Lock, UserPlus } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Clock3, FileQuestion, HardDrive, History, Inbox, KeyRound, Lock, ShieldAlert, UserPlus, Wifi } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { EmptyLine } from '../../../components/ui/EmptyLine'
 
@@ -6,6 +6,8 @@ const ICONE = {
   chamada_pendente: Clock3, duvidas_paradas: FileQuestion, sem_avaliacao: Inbox,
   matriculas: UserPlus, conteudo_bloqueado: Lock, provas_recuperadas: History,
   compactar_banco: HardDrive,
+  // Contas e acesso (H5b): pedidos de nova senha, login com atraso, alerta por endereço.
+  senhas_pedidas: KeyRound, login_tentativas: ShieldAlert, login_ip_alerta: Wifi,
 }
 const TONE_ICO = {
   danger: 'bg-danger-soft text-danger', warning: 'bg-warning-soft text-warning',

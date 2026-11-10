@@ -131,7 +131,7 @@ export default function TurmasPage() {
       } else if (form.mode === 'edit') {
         await api.put(`/api/courses/${encodeURIComponent(form.id)}`, { name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
       } else {
-        const result = await api.post(`/api/admin/courses/${encodeURIComponent(form.sourceId)}/clone`, { newId: form.id.trim().toUpperCase(), newName: form.name.trim(), schoolId: form.schoolId })
+        const result = await api.post(`/api/admin/courses/${encodeURIComponent(form.sourceId)}/clone`, { newId: form.id.trim().toUpperCase(), newName: form.name.trim(), schoolId: form.schoolId }, { timeoutMs: 0 })
         setSelectedCourseId(result.course.id)
       }
     }, form.mode === 'clone' ? 'Curso duplicado.' : form.mode === 'edit' ? 'Curso atualizado.' : 'Curso criado.')
@@ -198,9 +198,9 @@ export default function TurmasPage() {
     if (!current) return
     let ok = false
     if (current.type === 'class') ok = await run(() => api.post('/api/admin/class/delete', { name: current.target.name, courseId: selectedCourse.id }), 'Turma excluída.')
-    if (current.type === 'course') ok = await run(() => api.delete(`/api/courses/${encodeURIComponent(current.target.id)}`), 'Curso excluído e preservado para restauração.')
-    if (current.type === 'archive') ok = await run(() => api.post(`/api/admin/courses/${encodeURIComponent(current.target.id)}/purge`, {}), 'Curso arquivado com segurança.')
-    if (current.type === 'archive-delete') ok = await run(() => api.post('/api/admin/archived-courses/delete', { folder: current.target.folder }), 'Arquivo excluído definitivamente.')
+    if (current.type === 'course') ok = await run(() => api.delete(`/api/courses/${encodeURIComponent(current.target.id)}`, { timeoutMs: 0 }), 'Curso excluído e preservado para restauração.')
+    if (current.type === 'archive') ok = await run(() => api.post(`/api/admin/courses/${encodeURIComponent(current.target.id)}/purge`, {}, { timeoutMs: 0 }), 'Curso arquivado com segurança.')
+    if (current.type === 'archive-delete') ok = await run(() => api.post('/api/admin/archived-courses/delete', { folder: current.target.folder }, { timeoutMs: 0 }), 'Arquivo excluído definitivamente.')
     if (ok) setConfirm(null)
   }
 
@@ -270,7 +270,7 @@ export default function TurmasPage() {
           )}
         </div>
 
-        {isAdmin && (archivedApi.data || []).length > 0 && <Card><CardBody className="pt-5"><div className="mb-3 flex items-center gap-2"><Archive size={18} className="text-muted" /><h2 className="font-semibold text-text">Cursos arquivados</h2></div><div className="space-y-2">{archivedApi.data.map(item => <div key={item.folder} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3"><span><span className="block text-sm font-medium text-text">{item.name}</span><span className="text-xs text-subtle">{item.counts?.turmas || 0} turma(s) · arquivado em {new Date(item.archivedAt).toLocaleDateString('pt-BR')}</span></span><span className="flex gap-2"><Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => run(() => api.post('/api/admin/archived-courses/restore', { folder: item.folder }), 'Curso restaurado do arquivo.')}>Restaurar</Button><Button size="sm" variant="ghost" icon={Trash2} onClick={() => setConfirm({ type: 'archive-delete', target: item })}>Excluir arquivo</Button></span></div>)}</div></CardBody></Card>}
+        {isAdmin && (archivedApi.data || []).length > 0 && <Card><CardBody className="pt-5"><div className="mb-3 flex items-center gap-2"><Archive size={18} className="text-muted" /><h2 className="font-semibold text-text">Cursos arquivados</h2></div><div className="space-y-2">{archivedApi.data.map(item => <div key={item.folder} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3"><span><span className="block text-sm font-medium text-text">{item.name}</span><span className="text-xs text-subtle">{item.counts?.turmas || 0} turma(s) · arquivado em {new Date(item.archivedAt).toLocaleDateString('pt-BR')}</span></span><span className="flex gap-2"><Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => run(() => api.post('/api/admin/archived-courses/restore', { folder: item.folder }, { timeoutMs: 0 }), 'Curso restaurado do arquivo.')}>Restaurar</Button><Button size="sm" variant="ghost" icon={Trash2} onClick={() => setConfirm({ type: 'archive-delete', target: item })}>Excluir arquivo</Button></span></div>)}</div></CardBody></Card>}
       </PageState>
 
       <Modal open={!!courseForm} onClose={() => setCourseForm(null)} title={courseForm?.mode === 'edit' ? 'Editar curso' : courseForm?.mode === 'clone' ? 'Duplicar curso' : 'Novo curso'} description="Defina a escola responsável e os dados do curso." footer={<><Button variant="ghost" onClick={() => setCourseForm(null)}>Cancelar</Button><Button loading={saving} onClick={saveCourse}>Salvar</Button></>}>

@@ -15,7 +15,6 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 
 const ICON = { image: ImageIcon, pdf: FileText, video: Film, link: Globe, zip: FileArchive, doc: FileText, sheet: FileText, other: File }
 function human(b) { if (!b) return ''; const u = ['B', 'KB', 'MB', 'GB']; let i = 0, n = b; while (n >= 1024 && i < 3) { n /= 1024; i++ } return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}` }
-function authHeaders() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
 
 export default function BibliotecaPage() {
   const { courseId, courseName, className } = useAdminWorkspace()
@@ -72,9 +71,9 @@ export default function BibliotecaPage() {
         const fd = new FormData()
         fd.append('file', file); fd.append('courseId', courseId); fd.append('studentClass', className); fd.append('scope', scope); fd.append('moduleId', moduleId)
         if (name) fd.append('name', name); if (tags) fd.append('tags', tags); if (desc) fd.append('description', desc)
-        const res = await fetch('/api/admin/library/upload', { method: 'POST', headers: authHeaders(), body: fd })
-        const data = await res.json().catch(() => null)
-        if (!res.ok) throw new Error((data && data.error) || 'Falha no upload')
+        // Pelo cliente da API (sessão do instrutor, sem prazo e, sem rede, a mensagem em
+        // português; fase 2, H9c).
+        await api.post('/api/admin/library/upload', fd)
         toast.success('Material adicionado')
       } else {
         if (!name || !url) { toast.error('Informe título e URL'); setBusy(false); return }

@@ -106,9 +106,10 @@ test.before(async () => {
     const login = await request(app).post('/api/student/login').send(STUDENT);
     assert.equal(login.status, 200, JSON.stringify(login.body));
     studentToken = login.body.sessionToken;
-    const whoami = await request(app).get('/api/admin/whoami').set('Authorization', `${ADMIN.email}:${ADMIN.password}`);
-    assert.equal(whoami.status, 200, JSON.stringify(whoami.body));
-    adminToken = whoami.body.sessionToken;
+    // O instrutor entra pelo POST /api/session/admin-login (o Authorization saiu no H6b).
+    const adminLogin = await request(app).post('/api/session/admin-login').send({ email: ADMIN.email, password: ADMIN.password });
+    assert.equal(adminLogin.status, 200, JSON.stringify(adminLogin.body));
+    adminToken = adminLogin.body.sessionToken;
     assert.ok(studentToken && adminToken);
 });
 
@@ -249,9 +250,13 @@ test('[UC-GRAVACAO-001] kill -9 logo depois do 200 não perde o que foi confirma
 // propósito não vira 503 (antes o administrador lia "Não foi possível gravar" e o
 // servidor reiniciava assim mesmo).
 async function adminSessionToken(server, email, password) {
-    const whoami = await fetch(`${server.base}/api/admin/whoami`, { headers: { Authorization: `${email}:${password}` } });
-    assert.equal(whoami.status, 200);
-    return (await whoami.json()).sessionToken;
+    const login = await fetch(`${server.base}/api/session/admin-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+    });
+    assert.equal(login.status, 200);
+    return (await login.json()).sessionToken;
 }
 
 test('[UC-GRAVACAO-001] Reiniciar logo depois do 200 não perde o que foi confirmado', async () => {

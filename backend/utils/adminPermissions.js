@@ -107,7 +107,7 @@ function canAccessAdminPermission(account, permission) {
 const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET'], pattern: /^\/whoami$/, permission: 'page.dashboard' },
     { methods: ['GET'], pattern: /^\/accounts$/, permission: 'page.accounts' },
-    { methods: ['POST'], pattern: /^\/accounts\/(create|update|delete)$/, permission: 'accounts.manage' },
+    { methods: ['POST'], pattern: /^\/accounts\/(create|update|delete|unlock-login)$/, permission: 'accounts.manage' },
     { methods: ['POST'], pattern: /^\/teacher-assignments$/, permission: 'accounts.manage' },
     { methods: ['GET'], pattern: /^\/network-info$/, permission: 'page.system' },
     // Cartão "Saúde do servidor" da tela Sistema (H3c).
@@ -119,6 +119,8 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/(flush-exam-state|server\/restart|reset)$/, permission: 'system.manage' },
     { methods: ['GET'], pattern: /^\/maintenance\/preview$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/settings$/, permission: 'system.manage' },
+    // Rede (painel em outros aparelhos): system.manage, e a rota recusa o professor.
+    { methods: ['GET', 'POST'], pattern: /^\/network-settings$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/trash(?:\/.*)?$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/backup(?:\/.*)?$/, permission: 'system.manage' },
     { methods: ['POST'], pattern: /^\/config$/, permission: 'page.dashboard' },

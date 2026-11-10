@@ -1,22 +1,30 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
+import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, RefreshCw, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { useAuth } from '../context/AuthProvider'
 import { useToast } from '../context/ToastProvider'
 import { api } from '../lib/api'
+import { passwordHint } from '../lib/passwordPolicy'
 import { useBranding } from '../context/BrandingProvider'
+import { InsecureConnectionNotice } from '../components/ui/InsecureConnectionNotice'
+import { adminAccessRefusalText, LOCAL_ONLY_TEXT } from '../lib/adminAccess'
+import { useConnectionInfo } from '../hooks/useConnectionInfo'
 
 const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }
 const LOCAL_QUICK_KEY = 'iclass-local-quick-token'
+export const RECOVER_SENT_TEXT = 'Pedido enviado. Avise o professor: ele vai gerar uma senha temporária para você. No próximo acesso, entre com ela e escolha uma senha nova.'
 export default function LoginPage() {
   const [mode, setMode] = useState(() => {
     if (typeof window === 'undefined') return 'student'
     return new URLSearchParams(window.location.search).get('mode') === 'admin' ? 'admin' : 'student'
   }) // 'student' | 'admin'
-  const [studentAction, setStudentAction] = useState('login') // login | register | recover
+  const [studentAction, setStudentActionState] = useState('login') // login | register | recover
+  // Pedido de nova senha enviado (UXA-13): a tela diz o próximo passo no lugar do formulário.
+  const [recoverSent, setRecoverSent] = useState(false)
+  const setStudentAction = (action) => { setRecoverSent(false); setStudentActionState(action) }
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
@@ -29,8 +37,15 @@ export default function LoginPage() {
   const [classValue, setClassValue] = useState('')
   const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(false)
+  // Login com atraso por senha errada (H5b; SEG-06, 429 { loginDelayed }): o aviso fica na
+  // tela, e não só no toast, para quem chamar o professor saber o que dizer.
+  const [delayNotice, setDelayNotice] = useState(null)
   const [quickLoginBusy, setQuickLoginBusy] = useState(null)
   const [demoEnabled, setDemoEnabled] = useState(false)
+  // Como o servidor trata o painel do professor neste aparelho (GET /api/connection, SEG-03),
+  // relido quando a tela volta a ficar visível, ao abrir a aba do instrutor e no
+  // "Verificar de novo": o administrador pode liberar o aparelho com esta tela aberta.
+  const { connection, checking: checkingConnection, refresh: refreshConnection, override: overrideConnection } = useConnectionInfo()
   const [localQuickToken, setLocalQuickToken] = useState(() => {
     if (typeof sessionStorage === 'undefined') return ''
     try { return sessionStorage.getItem(LOCAL_QUICK_KEY) || '' } catch { return '' }
@@ -78,6 +93,21 @@ export default function LoginPage() {
       const r = sessionStorage.getItem('iclass-logout-reason')
       if (r) {
         sessionStorage.removeItem('iclass-logout-reason')
+        let serverMessage = ''
+        try { serverMessage = sessionStorage.getItem('iclass-logout-message') || ''; sessionStorage.removeItem('iclass-logout-message') } catch {}
+        if (r === 'admin-network') {
+          // Painel recusado neste aparelho com a sessão aberta: volta na aba do instrutor,
+          // com o aviso da tela e o motivo do servidor.
+          setMode('admin')
+          toast.error(serverMessage || LOCAL_ONLY_TEXT)
+          return
+        }
+        // Sessão encerrada por uma ação no servidor (lib/sessionRevoked.js): o texto vem dele.
+        if (r === 'logout') return
+        if (r === 'password_reset' || r === 'password_changed') {
+          toast.info(serverMessage || 'A senha desta conta foi alterada. Entre de novo com a senha nova.')
+          return
+        }
         const msg = r === 'idle' ? 'Sua sessão expirou por inatividade. Faça login novamente.' : r === 'restart' ? 'O servidor foi reiniciado. Faça login novamente.' : 'Sua sessão expirou. Faça login novamente.'
         toast.info(msg)
       }
@@ -93,11 +123,20 @@ export default function LoginPage() {
     api.get('/api/test-mode', { auth: false }).then((r) => setDemoEnabled(r?.enabled === true)).catch(() => setDemoEnabled(false))
   }, [])
 
+  // Recusa do painel vinda de um 403 (o administrador mudou a regra com a tela aberta):
+  // atualiza o aviso da aba do instrutor sem esperar outra consulta.
+  function noteRefusal(err) {
+    const adminAccess = err?.status === 403 && err?.data?.adminAccess
+    if (!adminAccess) return
+    overrideConnection((current) => ({ ...(current || {}), adminAccess, adminAccessError: err.data.error || '', insecureAdmin: false }))
+  }
+
   async function submit(e) {
-    e.preventDefault(); setLoading(true)
+    e.preventDefault(); setLoading(true); setDelayNotice(null)
     try {
       if (mode === 'admin') {
-        await loginAdmin(email, password); nav('/')
+        try { await loginAdmin(email, password) } catch (err) { noteRefusal(err); throw err }
+        nav('/')
       } else if (studentAction === 'register') {
         if (!acceptedTerms) { toast.error('Aceite os Termos de Uso e a Política de Privacidade'); setLoading(false); return }
         const courseId = courseValue
@@ -113,12 +152,17 @@ export default function LoginPage() {
         nav('/aluno')
       } else if (studentAction === 'recover') {
         await api.post('/api/student/recover', { email }, { auth: false })
-        toast.success('Solicitação enviada ao instrutor')
-        setStudentAction('login')
+        setRecoverSent(true)
       } else {
         await loginStudent(email, password); nav('/aluno')
       }
-    } catch (err) { toast.error(err.message || 'Falha no login') } finally { setLoading(false) }
+    } catch (err) {
+      // Login em espera: o aviso fixo acima do botão já mostra o texto; o toast repetido
+      // cobria o botão "Entrar" no celular.
+      const delayed = err?.status === 429 && err?.data?.loginDelayed
+      if (delayed) setDelayNotice({ mode, text: err.message })
+      if (!delayed || !(mode === 'admin' || studentAction === 'login')) toast.error(err.message || 'Falha no login')
+    } finally { setLoading(false) }
   }
 
   async function quickLogin(kind) {
@@ -135,7 +179,7 @@ export default function LoginPage() {
         nav('/aluno')
       } else {
         const account = kind === 'admin' ? accounts.admin : accounts.professor
-        await loginAdmin(account.email, account.password)
+        try { await loginAdmin(account.email, account.password) } catch (err) { noteRefusal(err); throw err }
         nav('/')
       }
     } catch (err) {
@@ -150,6 +194,10 @@ export default function LoginPage() {
   }
 
   const isRegister = mode === 'student' && studentAction === 'register'
+  // Painel do professor recusado neste aparelho ('local' ou 'rede' sem conexão segura).
+  const adminRefusal = connection && connection.adminAccess && connection.adminAccess !== 'ok'
+    ? adminAccessRefusalText(connection.adminAccess, connection.adminAccessError)
+    : ''
   const activeCourses = Array.from(new Map((classes || []).map((c) => [c.courseId, c.courseName])).entries()).map(([id, name]) => ({ id, name }))
   const courseClasses = (classes || []).filter((c) => c.courseId === courseValue)
   const setG = (patch) => setGuardian((g) => ({ ...g, ...patch }))
@@ -219,17 +267,20 @@ export default function LoginPage() {
             <div className="mb-4">
               <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{localQuickToken ? 'Acesso rápido local' : 'Acesso rápido de demonstração'}</p>
               <div className="grid grid-cols-3 gap-2">
-                <Button type="button" variant="secondary" icon={ShieldCheck} loading={quickLoginBusy === 'admin'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('admin')} className="px-2 text-xs">Administrador</Button>
-                <Button type="button" variant="secondary" icon={GraduationCap} loading={quickLoginBusy === 'professor'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('professor')} className="px-2 text-xs">Professor</Button>
+                <Button type="button" variant="secondary" icon={ShieldCheck} loading={quickLoginBusy === 'admin'} disabled={quickLoginBusy !== null || !!adminRefusal} onClick={() => quickLogin('admin')} className="px-2 text-xs">Administrador</Button>
+                <Button type="button" variant="secondary" icon={GraduationCap} loading={quickLoginBusy === 'professor'} disabled={quickLoginBusy !== null || !!adminRefusal} onClick={() => quickLogin('professor')} className="px-2 text-xs">Professor</Button>
                 <Button type="button" variant="secondary" icon={User} loading={quickLoginBusy === 'student'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('student')} className="px-2 text-xs">Aluno</Button>
               </div>
+              {adminRefusal && (
+                <p data-testid="quick-admin-refused" className="mt-2 text-xs text-muted">Administrador e Professor não entram neste aparelho: o painel do professor não abre aqui (veja a aba Instrutor).</p>
+              )}
             </div>
           )}
 
           <div className="glass-panel rounded-[24px] p-5 shadow-lg sm:p-7">
             <div className="flex rounded-xl border border-border bg-surface-2 p-1 text-sm">
               <button onClick={() => { setMode('student'); setStudentAction('login') }} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'student' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Aluno</button>
-              <button onClick={() => setMode('admin')} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'admin' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Instrutor</button>
+              <button onClick={() => { setMode('admin'); refreshConnection() }} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'admin' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Instrutor</button>
             </div>
             {mode === 'student' && (
               <div className="mt-3 flex rounded-xl bg-surface-2 p-1 text-xs">
@@ -238,7 +289,28 @@ export default function LoginPage() {
                 <button type="button" onClick={() => setStudentAction('recover')} className={`flex-1 rounded-lg py-2 font-semibold ${studentAction === 'recover' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Senha</button>
               </div>
             )}
-            <form onSubmit={submit} className="mt-5 max-h-[58vh] space-y-4 overflow-auto pr-1">
+            {mode === 'admin' && adminRefusal && (
+              <div role="alert" data-testid="admin-access-refused" className="mt-4 flex items-start gap-2.5 rounded-lg border border-danger bg-danger-soft px-4 py-3 text-sm text-text">
+                <MonitorX aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-danger" />
+                <div className="min-w-0 space-y-2">
+                  <p>{adminRefusal}</p>
+                  <Button type="button" variant="secondary" size="sm" icon={RefreshCw} loading={checkingConnection} onClick={() => refreshConnection({ force: true })}>Verificar de novo</Button>
+                </div>
+              </div>
+            )}
+            {mode === 'admin' && !adminRefusal && <InsecureConnectionNotice connection={connection} className="mt-4" />}
+            {mode === 'student' && studentAction === 'recover' && recoverSent ? (
+              <div role="status" data-testid="recover-sent" className="mt-5 space-y-4">
+                <div className="flex items-start gap-2.5 rounded-lg border border-border bg-surface-2 px-4 py-3 text-sm text-text">
+                  <KeyRound aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-primary" />
+                  <p>{RECOVER_SENT_TEXT}</p>
+                </div>
+                <Button type="button" size="lg" variant="secondary" icon={LogIn} className="w-full" onClick={() => setStudentAction('login')}>Voltar para o login</Button>
+              </div>
+            ) : (
+            // Sem altura máxima nem rolagem própria (UXA-13): o cadastro inteiro rola com a
+            // página, e o botão Criar conta não fica escondido numa caixa rolável no celular.
+            <form onSubmit={submit} className="mt-5 space-y-4">
             {isRegister && (
               <>
                 <Input id="ln" label="Nome completo" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -247,7 +319,8 @@ export default function LoginPage() {
             )}
             <Input id="le" label="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={mode === 'admin' ? 'admin@exemplo.com' : 'voce@exemplo.com'} required />
             {!(mode === 'student' && studentAction === 'recover') && (
-              <Input id="lp" label="Senha" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <Input id="lp" label="Senha" type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} value={password} onChange={(e) => setPassword(e.target.value)} required
+                helper={isRegister ? passwordHint('student') : undefined} />
             )}
             {isRegister && (
               <Input id="lph" label="Telefone (opcional)" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 90000-0000" />
@@ -293,11 +366,15 @@ export default function LoginPage() {
                 <span>Li e aceito os <span className="text-text font-medium">Termos de Uso</span> e a <span className="text-text font-medium">Política de Privacidade</span>.</span>
               </label>
             )}
-            <Button type="submit" size="lg" icon={mode === 'admin' || studentAction === 'login' ? LogIn : studentAction === 'register' ? UserPlus : KeyRound} loading={loading} className="w-full">
+            {delayNotice && delayNotice.mode === mode && (mode === 'admin' || studentAction === 'login') && (
+              <p role="status" data-testid="login-delayed" className="rounded-lg border border-warning bg-warning-soft px-4 py-3 text-sm text-text">{delayNotice.text}</p>
+            )}
+            <Button type="submit" size="lg" icon={mode === 'admin' || studentAction === 'login' ? LogIn : studentAction === 'register' ? UserPlus : KeyRound} loading={loading} disabled={mode === 'admin' && !!adminRefusal} className="w-full">
               {mode === 'admin' ? 'Entrar como instrutor' : studentAction === 'register' ? 'Criar conta' : studentAction === 'recover' ? 'Solicitar nova senha' : 'Entrar como aluno'}
               {!loading && <ArrowRight size={16} className="ml-auto" />}
             </Button>
           </form>
+            )}
         </div>
           <p className="mt-5 flex items-center justify-center gap-2 text-center text-xs text-subtle"><ShieldCheck size={13} /> Ambiente protegido · acesso pela rede da instituição</p>
         </section>

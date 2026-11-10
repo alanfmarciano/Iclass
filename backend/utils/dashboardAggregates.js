@@ -149,8 +149,12 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // PRECISA DE VOCÊ — cada item é uma pendência com destino clicável.
 // `canSeeMatriculas` vem da rota (admin pleno); snooze é aplicado na rota.
 // `extras` (contrato da fase 2): blocos montados pela rota, cada um já filtrado pelo
-// escopo de quem vê. storage (H1-c): { freeBytes, databaseBytes } quando o banco tem
+// escopo de quem vê. storage (H1-c): { freeBytes, allocatedBytes } quando o banco tem
 // espaço a recuperar e quem vê é administrador (db.storageStatus().compactSuggested).
+// security (H5b, SEG-06): { recoveryEmails, delayedEmails, delayedAccounts, ipAlerts } —
+// alunos do escopo que pediram nova senha e alunos com o login em espera por senhas
+// erradas; contas de instrutor em espera e alertas de muitas senhas erradas vindas do
+// mesmo IP, esses dois só para administrador.
 // ---------------------------------------------------------------------------
 function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }, extras = {}) {
     const emails = emailSet(students);
@@ -283,6 +287,60 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
         });
     }
 
+    // 8. Segurança das contas (H5b): pedidos de nova senha, logins em espera por senhas
+    // erradas e alertas por IP.
+    securityQueueItems(extras && extras.security).forEach(item => items.push(item));
+
+    return items;
+}
+
+function countOf(list) {
+    return Array.isArray(list) ? list.length : 0;
+}
+
+function securityQueueItems(security) {
+    if (!security || typeof security !== 'object') return [];
+    const items = [];
+    const recovery = countOf(security.recoveryEmails);
+    if (recovery) {
+        items.push({
+            id: 'senhas_pedidas', tipo: 'senhas_pedidas',
+            titulo: 'Alunos pediram nova senha',
+            detalhe: 'gere uma senha temporária em Redefinir senha · Alunos',
+            count: recovery, tone: 'warning', href: '/alunos', permissao: 'page.students',
+        });
+    }
+    const delayed = countOf(security.delayedEmails);
+    if (delayed) {
+        items.push({
+            id: 'login_tentativas', tipo: 'login_tentativas',
+            titulo: 'Alunos com muitas senhas erradas',
+            detalhe: 'o login espera antes de tentar de novo; libere em Alunos → Liberar login',
+            count: delayed, tone: 'danger', href: '/alunos', permissao: 'page.students',
+        });
+    }
+    const delayedAccounts = countOf(security.delayedAccounts);
+    if (delayedAccounts) {
+        items.push({
+            id: 'login_tentativas_contas', tipo: 'login_tentativas',
+            titulo: 'Contas de instrutor com muitas senhas erradas',
+            detalhe: 'o login espera antes de tentar de novo; libere em Contas → Liberar login',
+            count: delayedAccounts, tone: 'danger', href: '/admins', permissao: 'page.accounts',
+        });
+    }
+    const alerts = Array.isArray(security.ipAlerts) ? security.ipAlerts.filter(alert => alert && alert.ip) : [];
+    if (alerts.length) {
+        const first = alerts[0];
+        items.push({
+            id: 'login_ip_alerta', tipo: 'login_ip_alerta',
+            titulo: 'Muitas senhas erradas vindas do mesmo endereço',
+            detalhe: alerts.length === 1
+                ? `${first.count || 50} tentativas em 10 min do IP ${first.ip} · confira os selos em Alunos`
+                : `${alerts.length} endereços nas últimas 24 h (o último: ${first.ip}) · confira os selos em Alunos`,
+            count: alerts.length, tone: 'danger', href: '/alunos', permissao: 'page.accounts',
+            at: Number(first.at) || null,
+        });
+    }
     return items;
 }
 
