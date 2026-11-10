@@ -132,11 +132,13 @@ const scenarios = {
         return { logs };
     },
 
-    // Prova em andamento cujo prazo base venceu há overdueSec segundos; o servidor
-    // "parou" há downSec segundos (heartbeat sem desligamento limpo). Sem prepareServer:
-    // o heartbeat é escrito aqui, como a execução anterior teria deixado.
+    // Prova em andamento cujo prazo base venceu há overdueSec segundos (negativo: ainda
+    // falta); o servidor "parou" há downSec segundos (heartbeat sem desligamento limpo,
+    // com o pid dado, ou 1). Sem prepareServer: o heartbeat é escrito aqui, como a
+    // execução anterior teria deixado.
     async outageSeed(argument) {
-        const [downSec, overdueSec, clean] = String(argument || '90,45,0').split(',').map(Number);
+        const [downSec, overdueSec, clean, pidArgument] = String(argument || '90,45,0').split(',').map(Number);
+        const pid = pidArgument > 0 ? pidArgument : 1;
         await db.init();
         const now = Date.now();
         const durationMinutes = 30;
@@ -154,7 +156,7 @@ const scenarios = {
         db.memory.studentExamState[examStateKey({ applicationId: application.id, studentEmail: 'ana@boot.local', attemptNumber: 1 })] = state;
         await db.save();
         fs.mkdirSync(path.dirname(serverLifecycle.heartbeatFile()), { recursive: true });
-        fs.writeFileSync(serverLifecycle.heartbeatFile(), JSON.stringify({ at: now - downSec * 1000, clean: clean === 1, reason: clean === 1 ? 'stop' : null, instanceId: 'anterior', pid: 1 }));
+        fs.writeFileSync(serverLifecycle.heartbeatFile(), JSON.stringify({ at: now - downSec * 1000, clean: clean === 1, reason: clean === 1 ? 'stop' : null, instanceId: 'anterior', pid }));
         return { applicationId: application.id, attemptId: state.attemptId, baseDeadline: state.startedAt + durationMinutes * MIN, downSince: now - downSec * 1000 };
     },
 
@@ -181,6 +183,30 @@ const scenarios = {
         serverLifecycle.markCleanShutdown('stop');
         result.heartbeatAfterStop = heartbeat();
         return result;
+    },
+
+    // Servidor de verdade parando: o boot, o db.close e a saída com o código dado, sem
+    // chamar markCleanShutdown (como o Ctrl+C/SIGTERM e o Reiniciar até o H3c). O resultado
+    // sai antes, porque o processo termina aqui.
+    async exitAfterBoot(argument) {
+        await prepareServer();
+        const started = heartbeat();
+        await db.close();
+        process.stdout.write(`@@${JSON.stringify({ started, logs, uncaught })}`);
+        process.exit(Number(argument) || 0);
+    },
+
+    // db.ping com o banco fechado: devolve ok false (não rejeita) e conta as falhas
+    // seguidas; dentro de 5 s vale o resultado guardado.
+    async pingFailure() {
+        await db.init();
+        const ok = await db.ping();
+        await db.close();
+        const base = Date.now();
+        const failed = await db.ping({ now: base + 6000 });
+        const cached = await db.ping({ now: Date.parse(failed.at) + 1000 });
+        const again = await db.ping({ now: Date.parse(failed.at) + 6000 });
+        return { ok, failed, cached, again };
     },
 
     // Boot seguinte: a pausa e o registro da queda continuam gravados e não se repetem.

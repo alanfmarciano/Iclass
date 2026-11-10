@@ -1222,8 +1222,11 @@ function storageStatus() {
         pendingRetry: status.pendingRetry,
         nextRetryAt: status.nextRetryAt,
         lastCycle: status.lastCycle,
-        lastCycleStartedAt: status.lastCycleStartedAt,
-        consecutiveFailures: status.consecutiveFailures,
+        // Falhas seguidas da gravação, tiradas de lastWriteError e da nova tentativa
+        // pendente (H3b, sem contador próprio): 0 depois de um COMMIT; com a falha ainda
+        // pendente, as rodadas de nova tentativa do motor (a primeira falha conta 1). Uma
+        // rajada de pedidos que falha junto conta uma rodada só.
+        consecutiveFailures: status.lastWriteError && status.pendingRetry ? Math.max(1, status.retryAttempt || 0) : 0,
         saving: status.running,
         savesSinceBoot: status.cycles,
     };
@@ -1232,15 +1235,13 @@ function storageStatus() {
 // Saúde da gravação (H3b, DES-08, CONF-12), para o /api/health e o cartão Saúde do H3c:
 // um recorte de storageStatus(), que continua a fonte única (sem contadores próprios).
 // - lastOkAt/lastDurationMs: o último ciclo que gravou (COMMIT ou nada a gravar);
-// - lastStartedAt: o início do ciclo em andamento ou do último;
-// - lastErrorCode/consecutiveFailures: a falha mais recente e quantos ciclos seguidos
-//   falharam (zera no primeiro que grava);
+// - lastErrorCode/consecutiveFailures: a falha mais recente e as falhas seguidas, de
+//   lastWriteError e pendingRetry (zera no primeiro ciclo que grava);
 // - saving: um ciclo ou tarefa exclusiva rodando agora.
 function health() {
     const status = storageStatus();
     return {
         lastOkAt: status.lastCycle ? status.lastCycle.at : null,
-        lastStartedAt: status.lastCycleStartedAt,
         lastDurationMs: status.lastCycle ? status.lastCycle.ms : null,
         lastFullSaveAt: status.lastFullSaveAt,
         lastErrorCode: status.lastWriteError ? status.lastWriteError.code : null,
@@ -1275,7 +1276,7 @@ function ping({ now = Date.now() } = {}) {
     if (writer.status().running) return Promise.resolve(pingResult({ cached: true, saving: true }));
     if (pingInFlight) return pingInFlight;
     const started = Date.now();
-    pingInFlight = new Promise(resolve => {
+    const pending = new Promise(resolve => {
         let settled = false;
         const finish = (ok, error) => {
             if (settled) return;
@@ -1283,7 +1284,6 @@ function ping({ now = Date.now() } = {}) {
             clearTimeout(timer);
             pingFailures = ok ? 0 : pingFailures + 1;
             lastPing = { ok, at: new Date().toISOString(), ms: Date.now() - started, error: error ? String(error) : null };
-            pingInFlight = null;
             resolve(pingResult({ cached: false }));
         };
         const timer = setTimeout(() => finish(false, `sem resposta do banco em ${PING_TIMEOUT_MS / 1000} s`), PING_TIMEOUT_MS);
@@ -1297,7 +1297,12 @@ function ping({ now = Date.now() } = {}) {
             finish(false, (err && (err.code || err.message)) || err);
         }
     });
-    return pingInFlight;
+    // A consulta em andamento é liberada depois de responder. Não dentro do finish: com o
+    // banco fechado ou quebrado o sqlite3 pode responder na hora, antes desta atribuição,
+    // e a primeira falha ficaria guardada para sempre (sem contar as seguintes).
+    pingInFlight = pending;
+    pending.then(() => { if (pingInFlight === pending) pingInFlight = null; });
+    return pending;
 }
 
 function defaultAdminEmail() {

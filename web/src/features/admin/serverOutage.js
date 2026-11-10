@@ -1,8 +1,8 @@
 // Servidor fora do ar durante a prova (H3b, CONF-03). O servidor grava em
-// application.outages cada período em que ficou fora do ar com a prova correndo
-// ({ from, to, durationMs, reason, compensated }) e devolve o tempo parado como uma
-// pausa fechada { pausedAt, resumedAt, reason: 'server_outage' } (até 15 min). Acima
-// disso só fica o registro, e o professor decide se dá mais tempo.
+// application.outages cada período em que ficou fora do ar com a prova correndo e
+// alguém ainda com tempo ({ from, to, durationMs, reason, compensated }) e devolve o
+// tempo parado como uma pausa fechada { pausedAt, resumedAt, reason: 'server_outage' }
+// (até 15 min). Acima disso só fica o registro, e o professor decide se dá mais tempo.
 export const SERVER_OUTAGE_REASON = 'server_outage'
 export const SERVER_OUTAGE_MAX_MINUTES = 15
 
@@ -48,26 +48,49 @@ function clockLabel(ms) {
   return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-// Aviso do Monitor sobre a última queda da aplicação, ou null quando não houve nenhuma.
-// { compensated, title, text, count }.
-export function serverOutageNotice(application, { formatClock = clockLabel } = {}) {
+// Quantas quedas aparecem abertas no aviso do Monitor (as mais recentes). As sem
+// devolução aparecem sempre; as outras ficam em "Ver as outras".
+export const SERVER_OUTAGE_VISIBLE_COUNT = 3
+
+function outageText(outage, formatClock) {
+  const compensated = outage.compensated !== false
+  const reason = OUTAGE_REASON_LABELS[outage.reason]
+  const from = Number(outage.from) > 0 ? formatClock(Number(outage.from)) : ''
+  const to = formatClock(Number(outage.to))
+  const period = from && to ? `das ${from} às ${to}` : ''
+  const duration = outageDurationLabel(outage.durationMs)
+  if (compensated) {
+    const details = [duration, reason].filter(Boolean).join(', ')
+    return `O servidor ficou fora do ar ${period ? `${period} ` : ''}(${details}). O tempo parado foi devolvido a todos.`
+  }
+  const details = [period, reason].filter(Boolean).join(', ')
+  return `O servidor ficou fora do ar por ${duration}${details ? ` (${details})` : ''}. O tempo não foi devolvido automaticamente (mais de ${SERVER_OUTAGE_MAX_MINUTES} min); se precisar, dê mais tempo à turma.`
+}
+
+// Aviso do Monitor com uma linha para cada queda registrada na aplicação (até as 20
+// que o servidor guarda), da mais recente para a mais antiga, ou null quando não houve
+// nenhuma. { title, compensated, count, items, visible, hidden }, cada item
+// { key, compensated, text }. compensated: todas tiveram o tempo devolvido. visible: as
+// SERVER_OUTAGE_VISIBLE_COUNT mais recentes e toda queda sem devolução (uma antiga de
+// mais de 15 min não some atrás de uma curta depois dela); hidden: o resto.
+export function serverOutageNotices(application, { formatClock = clockLabel, visibleCount = SERVER_OUTAGE_VISIBLE_COUNT } = {}) {
   const outages = (Array.isArray(application?.outages) ? application.outages : [])
     .filter((outage) => outage && Number(outage.to) > 0 && Number(outage.durationMs) > 0)
+    .sort((a, b) => Number(b.to) - Number(a.to))
   if (!outages.length) return null
-  const last = outages.reduce((latest, outage) => (Number(outage.to) >= Number(latest.to) ? outage : latest))
-  const compensated = last.compensated !== false
-  const reason = OUTAGE_REASON_LABELS[last.reason]
-  const from = Number(last.from) > 0 ? formatClock(Number(last.from)) : ''
-  const to = formatClock(Number(last.to))
-  const period = from && to ? `das ${from} às ${to} ` : ''
-  const duration = `${outageDurationLabel(last.durationMs)}${reason ? `, ${reason}` : ''}`
-  const others = outages.length > 1 ? ` Esta aplicação teve ${outages.length} quedas.` : ''
+  const items = outages.map((outage, index) => ({
+    key: `${Number(outage.from) || 0}-${Number(outage.to)}-${index}`,
+    compensated: outage.compensated !== false,
+    text: outageText(outage, formatClock),
+  }))
+  const visible = items.filter((item, index) => index < visibleCount || !item.compensated)
+  const hidden = items.filter((item) => !visible.includes(item))
   return {
-    compensated,
-    count: outages.length,
     title: 'Servidor fora do ar durante a prova.',
-    text: compensated
-      ? `Ficou fora do ar ${period}(${duration}). O tempo parado foi devolvido a todos.${others}`
-      : `Ficou fora do ar ${period}(${duration}). O tempo não foi devolvido automaticamente (mais de ${SERVER_OUTAGE_MAX_MINUTES} min); se precisar, dê mais tempo à turma.${others}`,
+    compensated: items.every((item) => item.compensated),
+    count: items.length,
+    items,
+    visible,
+    hidden,
   }
 }

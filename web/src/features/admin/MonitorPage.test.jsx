@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MonitorPage from './MonitorPage'
@@ -128,7 +128,7 @@ describe('MonitorPage · servidor fora do ar durante a prova (H3b, CONF-03)', ()
     renderMonitor()
     const notice = await screen.findByText('Servidor fora do ar durante a prova.')
     const text = notice.closest('[role="status"]').textContent
-    expect(text).toMatch(/Ficou fora do ar das .+ às .+ \(36 s, queda do servidor\)\. O tempo parado foi devolvido a todos\./)
+    expect(text).toMatch(/O servidor ficou fora do ar das .+ às .+ \(36 s, queda do servidor\)\. O tempo parado foi devolvido a todos\./)
     expect(text).not.toContain('não foi devolvido')
   })
 
@@ -137,8 +137,26 @@ describe('MonitorPage · servidor fora do ar durante a prova (H3b, CONF-03)', ()
     renderMonitor()
     const notice = await screen.findByText('Servidor fora do ar durante a prova.')
     const text = notice.closest('[role="status"]').textContent
-    expect(text).toContain('(22 min, reinício)')
+    expect(text).toMatch(/O servidor ficou fora do ar por 22 min \(das .+ às .+, reinício\)\./)
     expect(text).toContain('O tempo não foi devolvido automaticamente (mais de 15 min); se precisar, dê mais tempo à turma.')
+  })
+
+  it('[UC-TENTATIVA-001] várias quedas: um aviso para cada uma, e a antiga sem devolução não some atrás das curtas', async () => {
+    const longOutage = { from: startsAt + 60000, to: startsAt + 60000 + 20 * 60000, durationMs: 20 * 60000, reason: 'crash', compensated: false }
+    const short = [1, 2, 3, 4].map((index) => ({ from: startsAt + (20 + index * 5) * 60000, to: startsAt + (20 + index * 5) * 60000 + 4000, durationMs: 4000, reason: 'restart', compensated: true }))
+    mocks.liveApplications = withOutage(longOutage).map((item) => (item.id !== 'app-antiga' ? item : {
+      ...item,
+      pauses: short.map((outage) => ({ pausedAt: outage.from, resumedAt: outage.to, reason: 'server_outage' })),
+      outages: [longOutage, ...short],
+    }))
+    renderMonitor()
+    const notice = (await screen.findByText('Servidor fora do ar durante a prova.')).closest('[role="status"]')
+    const visible = [...notice.querySelectorAll(':scope > div > ul > li')].map((item) => item.textContent)
+    expect(visible).toHaveLength(4)
+    expect(visible.slice(0, 3).every((text) => text.includes('(4 s, reinício). O tempo parado foi devolvido a todos.'))).toBe(true)
+    expect(visible[3]).toMatch(/^O servidor ficou fora do ar por 20 min \(das .+, queda do servidor\)\. O tempo não foi devolvido automaticamente/)
+    expect(within(notice).getByText('Ver a outra queda')).toBeInTheDocument()
+    expect(notice.querySelectorAll('details li')).toHaveLength(1)
   })
 
   it('[UC-TENTATIVA-001] sem queda registrada, nenhum aviso', async () => {

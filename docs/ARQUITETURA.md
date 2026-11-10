@@ -41,14 +41,14 @@ backend/
 `startServer` confere o build e chama `prepareServer()` antes de abrir a porta (os testes usam o mesmo `prepareServer`, sem o build e sem `listen`):
 
 1. `db.init()`: carga, migrações e a sincronização das turmas com as aplicações, que só grava quando alguma turma mudou de fato (o boot não regrava turmas, alunos nem presenças nem diz "Provas online resetadas" sem motivo).
-2. `serverLifecycle.loadPreviousRun()`: lê `DATA_DIR/runtime/heartbeat.json` da execução anterior (quando parou, se foi parada limpa). A retomada das sessões do H3a-2 usa o mesmo dado (`previousRun().downtimeMs`).
+2. `serverLifecycle.loadPreviousRun()`: lê `DATA_DIR/runtime/heartbeat.json` da execução anterior (quando parou, se foi parada limpa). A retomada das sessões do H3a-2 usa o mesmo dado (`previousRun().downtimeMs`). Heartbeat de menos de 15 s de outro processo ainda vivo (um segundo servidor aberto na mesma pasta, com o primeiro no ar) não é queda: este processo não devolve tempo nem grava o seu heartbeat.
 3. Sessões zeradas (`clearSessions`), migração do fórum e varredura da lixeira.
-4. `compensateBootOutage`: o tempo do último heartbeat até agora volta para as provas em andamento como pausa `server_outage` (até 15 min; acima disso só o registro em `application.outages` e na auditoria da prova) e é gravado.
+4. `compensateBootOutage`: o tempo do último heartbeat até agora volta para as provas em andamento como pausa `server_outage` (até 15 min; acima disso só o registro em `application.outages` e na auditoria da prova) e é gravado. Aplicação em que ninguém tinha mais tempo quando o servidor parou (todos entregaram, cronômetro por tentativa sem ninguém fazendo, prazo coletivo já vencido) fica sem pausa, sem registro e sem auditoria.
 5. Primeira varredura do fim do tempo (`settleExpiredAttempts`), depois da devolução: quem teve o prazo vencido com o servidor fora não é entregue no boot. Repete a cada 10 s.
 6. `startHeartbeat`: grava o heartbeat a cada 5 s e liga a verificação de tempo parado (`detectGap`: mais de 30 s sem verificação com o processo vivo, como notebook suspenso, vira queda `suspended`), que roda também antes de toda conta de prazo (`computeAttemptDeadline`).
 7. Backup automático (fora do `TEST_MODE`), `createApp()` e `listen`.
 
-O desligamento (Ctrl+C, SIGTERM) e o botão Reiniciar gravam o heartbeat com `clean: true` (`markCleanShutdown`): o próximo boot registra reinício, não queda. Os sinais, o desligamento ordenado e o `/api/health` ficam com o H3c; `db.health()` e `db.ping()` (`database.js`) já dão o estado da gravação e do banco para ele.
+A saída normal do processo (código 0: o fim do Ctrl+C e do SIGTERM, depois do `db.close`, e o botão Reiniciar) grava o heartbeat com `clean: true` por um ouvinte de `exit` do `serverLifecycle` (`markCleanShutdown`): o próximo boot registra reinício, não queda. Processo morto à força (kill -9, `taskkill /f`, falta de energia) conta como queda. Os sinais, o desligamento ordenado (`requestShutdown`, que passa a chamar `markCleanShutdown` com o motivo) e o `/api/health` ficam com o H3c; `db.health()` e `db.ping()` (`database.js`) já dão o estado da gravação e do banco para ele.
 
 ### Entrega do app na rede da sala (cache e compressão)
 

@@ -7,7 +7,11 @@
 // devolução recebe 409 com reason 'server_outage'; a janela de 60 s da volta à página
 // não conta o tempo fora do ar. Também: prova só em .md (sem entrada em evaluations)
 // voltou a ser entregue (antes o leitor do .md não estava importado e dava 500), e
-// db.health()/db.ping() para a saúde do servidor.
+// db.health()/db.ping() para a saúde do servidor. Ajuste 1: aplicação em que ninguém
+// tinha mais tempo não ganha queda a cada reinício; um segundo servidor aberto na mesma
+// pasta (com o primeiro no ar) não grava queda; a saída normal do processo marca a
+// parada limpa sem mexer nos sinais; a varredura do fim do tempo depois de uma suspensão
+// devolve o tempo antes de finalizar; o ping com o banco fora conta as falhas sem lançar.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -25,7 +29,8 @@ process.env.TEST_MODE = '1';
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const serverLifecycle = require('../../backend/utils/serverLifecycle.js');
-const { computeAttemptDeadline, extendedByServerOutage } = require('../../backend/utils/examDeadline.js');
+const sqlite3 = require('sqlite3');
+const { computeAttemptDeadline, extendedByServerOutage, settleExpiredAttempts } = require('../../backend/utils/examDeadline.js');
 const { createExamApplication } = require('../../backend/utils/examApplications.js');
 const { PAGE_EXIT_RETURN_WINDOW_MS, outageOverlapMs, pageExitReturnDecision, sessionFingerprint } = require('../../backend/utils/examFocusRules.js');
 const { describeExamAudit } = require('../../backend/utils/gradebook.js');
@@ -43,6 +48,7 @@ const mdExamKey = 'Avaliacao_So_Md';
 const students = {
     ana: { email: 'ana@outage.local', token: 'token-ana-queda' },
     bruno: { email: 'bruno@outage.local', token: 'token-bruno-queda' },
+    carla: { email: 'carla@outage.local', token: 'token-carla-queda' },
 };
 
 let app;
@@ -256,6 +262,88 @@ test('[UC-TENTATIVA-001] o início da queda respeita o fim da última pausa e o 
     assert.equal(serverLifecycle.compensateServerOutage(memory, { from: now, to: now - 60000 }).changed, false);
 });
 
+test('[UC-TENTATIVA-001] ninguém com tempo de prova quando o servidor parou: sem pausa, sem registro e sem auditoria (ajuste 1)', () => {
+    const now = Date.now();
+    const from = now - 60000;
+    const application = (timerMode, startsAtAgoMin, extra = {}) => ({
+        ...createExamApplication({ examKey: 'Avaliacao_Unidade', courseId: 'c', studentClass: `T-${timerMode}-${startsAtAgoMin}`, config: { durationMinutes: DURATION_MIN, timerMode }, status: 'running', now: now - startsAtAgoMin * MIN }),
+        ...extra,
+    });
+    const attempt = (app, startedAgoMs, extra = {}) => ({ applicationId: app.id, status: 'active', startedAt: now - startedAgoMs, ...extra });
+    const outcomeFor = (memory) => serverLifecycle.compensateServerOutage(memory, { from, to: now, reason: 'restart' });
+    const memoryWith = (applications, studentExamState = {}, extra = {}) => ({ examApplications: applications, studentExamState, auditLogs: [], ...extra });
+
+    // Por tentativa, sem ninguém fazendo (todos entregaram ou ninguém começou): quem
+    // começar depois tem o tempo contado a partir dali.
+    const empty = application('per_attempt', 60);
+    const instructions = memoryWith([empty], { a: { applicationId: empty.id, status: 'instructions', startedAt: null } });
+    assert.equal(outcomeFor(instructions).changed, false);
+    assert.equal(instructions.auditLogs.length, 0);
+    assert.equal(empty.outages, undefined);
+    assert.deepEqual(empty.pauses || [], []);
+
+    // Por tentativa, a única aberta já tinha passado do prazo antes da queda (espera a
+    // varredura): nada a devolver. Entregue não conta.
+    const late = application('per_attempt', 60);
+    const lateMemory = memoryWith([late], {
+        a: attempt(late, (DURATION_MIN + 2) * MIN),
+        b: attempt(late, 5 * MIN, { status: 'submitted' }),
+    });
+    assert.equal(outcomeFor(lateMemory).changed, false);
+    // Com o "+5 min" do aluno, ainda tinha tempo: devolve.
+    lateMemory.studentExamState.a.individualTimeAdjustment = 5;
+    assert.equal(outcomeFor(lateMemory).changed, true);
+    assert.equal(late.outages.length, 1);
+
+    // Coletiva esquecida aberta (o prazo coletivo acabou há mais de uma hora).
+    const forgotten = application('collective', 120);
+    const forgottenMemory = memoryWith([forgotten]);
+    assert.equal(outcomeFor(forgottenMemory).changed, false);
+    assert.equal(forgottenMemory.auditLogs.length, 0);
+
+    // Coletiva com o prazo base vencido, mas com um aluno de tempo adicional (50%) ou um
+    // "+N min" guardado para a próxima tentativa: alguém ainda podia fazer a prova.
+    const accessible = application('collective', DURATION_MIN + 5);
+    const accessibleMemory = memoryWith([accessible], {}, {
+        students: [{ email: 'x@outage.local', accessibility: { tempoAdicional: true, tempoAdicionalPercent: 50 } }],
+    });
+    assert.equal(outcomeFor(accessibleMemory).changed, true);
+    const adjusted = application('collective', DURATION_MIN + 5, { studentAdjustments: { 'y@outage.local': 10 } });
+    assert.equal(outcomeFor(memoryWith([adjusted])).changed, true);
+    const withoutExtra = application('collective', DURATION_MIN + 5);
+    assert.equal(outcomeFor(memoryWith([withoutExtra])).changed, false);
+
+    // Coletiva no meio do tempo, sem ninguém ainda: quem entrar depois recebe o tempo.
+    const midway = application('collective', 10);
+    const midwayMemory = memoryWith([midway]);
+    assert.equal(outcomeFor(midwayMemory).changed, true);
+    assert.deepEqual(midway.pauses, [{ pausedAt: from, resumedAt: now, reason: 'server_outage' }]);
+    assert.equal(midwayMemory.auditLogs.length, 1);
+});
+
+test('[UC-TENTATIVA-001] heartbeat de outro servidor ainda no ar nesta pasta: não é queda (ajuste 1)', () => {
+    const run = { found: true, clean: false, pid: 4321, downtimeMs: 3000 };
+    const alive = () => true;
+    const dead = () => false;
+    assert.equal(serverLifecycle.heartbeatFromLiveInstance(run, { pid: 1234, isAlive: alive }), true);
+    // Processo antigo morto (kill -9, queda, supervisor ou launcher já religando): queda.
+    assert.equal(serverLifecycle.heartbeatFromLiveInstance(run, { pid: 1234, isAlive: dead }), false);
+    // Heartbeat de mais de três batidas: o pid pode ser de outro programa.
+    assert.equal(serverLifecycle.heartbeatFromLiveInstance({ ...run, downtimeMs: serverLifecycle.LIVE_HEARTBEAT_MAX_AGE_MS + 1 }, { pid: 1234, isAlive: alive }), false);
+    // Parada limpa, o próprio processo ou sem pid: queda/reinício normal.
+    assert.equal(serverLifecycle.heartbeatFromLiveInstance({ ...run, clean: true }, { pid: 1234, isAlive: alive }), false);
+    assert.equal(serverLifecycle.heartbeatFromLiveInstance(run, { pid: 4321, isAlive: alive }), false);
+    assert.equal(serverLifecycle.heartbeatFromLiveInstance({ ...run, pid: null }, { pid: 1234, isAlive: alive }), false);
+    assert.equal(serverLifecycle.heartbeatFromLiveInstance({ found: false }, { pid: 1234, isAlive: alive }), false);
+
+    const { now, memory } = outageMemory();
+    const outcome = serverLifecycle.compensateBootOutage(memory, { ...run, at: now - 3000, otherInstanceAlive: true }, { now });
+    assert.equal(outcome.changed, false);
+    assert.equal(outcome.otherInstanceAlive, true);
+    assert.equal(memory.auditLogs.length, 0);
+    assert.equal(memory.examApplications[0].outages, undefined);
+});
+
 test('[UC-TENTATIVA-001] heartbeat ilegível, ausente ou no futuro: tempo fora do ar desconhecido ou zero', () => {
     const file = path.join(tempRoot, 'heartbeat-teste.json');
     const now = Date.now();
@@ -348,6 +436,72 @@ test('[UC-TENTATIVA-001] boot depois de 90 s fora do ar devolve o tempo antes da
     }
 });
 
+test('[UC-TENTATIVA-001] segundo servidor aberto na mesma pasta com o primeiro no ar: não grava queda nem heartbeat (ajuste 1)', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-server-outage-second-'));
+    try {
+        // O "primeiro servidor" é este processo de teste (vivo): heartbeat de 2 s atrás,
+        // sem parada limpa. A prova ainda tem 10 min.
+        await runChild(dataDir, 'outageSeed', `2,-600,0,${process.pid}`);
+        const before = fs.readFileSync(path.join(dataDir, 'runtime', 'heartbeat.json'), 'utf8');
+        const booted = await runChild(dataDir, 'outageBoot');
+        assert.deepEqual(booted.uncaught, []);
+        assert.equal(booted.previousRun.otherInstanceAlive, true);
+        assert.deepEqual(booted.outages, [], 'antes: queda de 2 s gravada pelo segundo processo');
+        assert.deepEqual(booted.audit, []);
+        assert.equal(booted.pauses.filter(pause => pause.reason === 'server_outage').length, 0);
+        assert.equal(booted.attempt.status, 'active');
+        assert.ok(booted.logs.some(line => line.includes(`Outro servidor do IClass (processo ${process.pid})`)), booted.logs.join('\n'));
+        assert.ok(!booted.logs.some(line => line.includes('Servidor fora do ar')), booted.logs.join('\n'));
+        // O heartbeat continua o do primeiro servidor, também depois da "parada" do segundo.
+        assert.equal(JSON.stringify(booted.heartbeat), JSON.stringify(JSON.parse(before)));
+        assert.equal(JSON.stringify(booted.heartbeatAfterStop), JSON.stringify(JSON.parse(before)));
+        assert.equal(fs.readFileSync(path.join(dataDir, 'runtime', 'heartbeat.json'), 'utf8'), before);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
+test('[UC-TENTATIVA-001] saída normal do processo (código 0) marca parada limpa; erro (código 1) fica como queda (ajuste 1)', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-server-outage-exit-'));
+    const file = path.join(dataDir, 'runtime', 'heartbeat.json');
+    try {
+        const stopped = await runChild(dataDir, 'exitAfterBoot', 0);
+        assert.equal(stopped.started.clean, false, 'no ar: o heartbeat não é de parada limpa');
+        const afterStop = JSON.parse(fs.readFileSync(file, 'utf8'));
+        assert.equal(afterStop.clean, true);
+        assert.equal(afterStop.reason, 'stop');
+        assert.equal(afterStop.instanceId, stopped.started.instanceId);
+
+        const failed = await runChild(dataDir, 'exitAfterBoot', 1).catch(err => err);
+        assert.ok(!(failed instanceof Error), String(failed));
+        const afterFailure = JSON.parse(fs.readFileSync(file, 'utf8'));
+        assert.equal(afterFailure.clean, false);
+        assert.equal(afterFailure.instanceId, failed.started.instanceId);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
+test('[UC-GRAVACAO-001] db.ping com o banco fora: ok false sem lançar, falhas seguidas contadas e cache de 5 s (ajuste 1)', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-server-outage-ping-'));
+    try {
+        const result = await runChild(dataDir, 'pingFailure');
+        assert.deepEqual(result.uncaught, []);
+        assert.equal(result.ok.ok, true);
+        assert.equal(result.failed.ok, false);
+        assert.equal(result.failed.cached, false);
+        assert.equal(result.failed.consecutiveFailures, 1);
+        assert.ok(result.failed.error, 'o código do erro do SQLite');
+        assert.equal(result.cached.cached, true);
+        assert.equal(result.cached.ok, false);
+        assert.equal(result.cached.consecutiveFailures, 1, 'o resultado guardado não conta de novo');
+        assert.equal(result.again.ok, false);
+        assert.equal(result.again.consecutiveFailures, 2);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
 test('[UC-TENTATIVA-001] computador suspenso por 40 s: o tempo volta antes do envio e o automático antecipado recebe 409 server_outage (CONF-03)', async () => {
     const { ana } = students;
     const application = await createApplication();
@@ -389,6 +543,36 @@ test('[UC-TENTATIVA-001] computador suspenso por 40 s: o tempo volta antes do en
         const listed = list.body.applications.find(item => item.id === application.id);
         assert.equal(listed.outages.length, 1);
         assert.equal(listed.pauses.filter(pause => pause.reason === 'server_outage').length, 1);
+    } finally {
+        serverLifecycle.stopHeartbeat();
+        await control(application.id, 'finish', { inProgressPolicy: 'discard' });
+    }
+});
+
+test('[UC-TENTATIVA-001] varredura do fim do tempo logo depois de uma suspensão de 40 s: devolve o tempo antes de finalizar (ajuste 1)', async () => {
+    const { carla } = students;
+    const application = await createApplication();
+    const started = await startAttempt(carla, application.id);
+    const now = Date.now();
+    applicationOf(application.id).startsAt = now - 40 * MIN;
+    const state = stateOf(started.attemptId);
+    // O prazo base venceu há 35 s: além da folga de 30 s, a varredura entregaria.
+    state.startedAt = now - DURATION_MIN * MIN - 35000;
+    state.savedAt = new Date(now - 45000).toISOString();
+    try {
+        serverLifecycle.startHeartbeat({ getMemory: () => db.memory, save: () => db.save({ detached: true }), now: now - 40000 });
+        const { finalized } = settleExpiredAttempts(db.memory);
+        assert.deepEqual(finalized.filter(item => item.applicationId === application.id), [], 'antes: a tentativa era entregue pelo tempo em que o computador ficou parado');
+        assert.equal(stateOf(started.attemptId).status, 'active');
+        const outages = applicationOf(application.id).outages;
+        assert.equal(outages.length, 1);
+        assert.equal(outages[0].reason, 'suspended');
+        assert.equal(outages[0].compensated, true);
+        assert.ok(outages[0].durationMs >= 40000 && outages[0].durationMs < 45000, JSON.stringify(outages[0]));
+        // Sem nova suspensão, a varredura seguinte também não entrega (o prazo andou 40 s).
+        serverLifecycle.stopHeartbeat();
+        settleExpiredAttempts(db.memory);
+        assert.equal(stateOf(started.attemptId).status, 'active');
     } finally {
         serverLifecycle.stopHeartbeat();
         await control(application.id, 'finish', { inProgressPolicy: 'discard' });
@@ -482,4 +666,33 @@ test('[UC-GRAVACAO-001] db.health resume a gravação e db.ping confere o banco 
     const later = await db.ping({ now: Date.now() + 6000 });
     assert.equal(later.ok, true);
     assert.equal(later.cached, false);
+});
+
+test('[UC-GRAVACAO-001] db.health conta as falhas seguidas pelo estado da nova tentativa do motor, sem contador próprio (ajuste 1)', async () => {
+    await db.save();
+    const external = new sqlite3.Database(path.join(tempRoot, 'database.db'));
+    const run = sql => new Promise((resolve, reject) => external.exec(sql, err => (err ? reject(err) : resolve())));
+    await run(`CREATE TRIGGER falha_saude BEFORE INSERT ON notes WHEN NEW.key = 'falha@outage.local'
+        BEGIN SELECT RAISE(ABORT, 'falha simulada'); END;`);
+    try {
+        db.memory.notes['falha@outage.local'] = { modulo: 'não grava' };
+        await assert.rejects(db.save(), err => err.code === 'ICLASS_DB_WRITE');
+        const failed = db.health();
+        const status = db.storageStatus();
+        assert.ok(failed.consecutiveFailures >= 1);
+        assert.equal(failed.consecutiveFailures, status.consecutiveFailures);
+        assert.equal(failed.lastErrorCode, 'SQLITE_CONSTRAINT');
+        assert.equal(failed.pendingRetry, true);
+        assert.equal(status.lastWriteError.code, 'SQLITE_CONSTRAINT');
+    } finally {
+        await run('DROP TRIGGER falha_saude');
+        await new Promise(resolve => external.close(() => resolve()));
+    }
+    await db.save();
+    const recovered = db.health();
+    assert.equal(recovered.consecutiveFailures, 0);
+    assert.equal(recovered.lastErrorCode, null);
+    assert.equal(recovered.pendingRetry, false);
+    delete db.memory.notes['falha@outage.local'];
+    await db.save();
 });

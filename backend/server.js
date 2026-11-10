@@ -483,9 +483,6 @@ async function startServer() {
         await serverClosed;
         clearTimeout(forceCloseTimer);
         await db.close();
-        // O próximo boot sabe que foi parada pedida, não queda (o tempo fora do ar das
-        // provas é devolvido do mesmo jeito; muda o motivo no registro).
-        serverLifecycle.markCleanShutdown('stop');
     };
     process.once('SIGINT', () => shutdown().finally(() => process.exit(0)));
     process.once('SIGTERM', () => shutdown().finally(() => process.exit(0)));

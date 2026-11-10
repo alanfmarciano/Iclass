@@ -18,7 +18,6 @@ const { saveServerBackup } = require('../utils/backup.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
 const { finishApplication } = require('../utils/examFinish.js');
-const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
     applicationBelongsToClass,
     applicationSummary,
@@ -259,9 +258,6 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                     shell: true,
                 });
                 child.unref();
-                // O próximo boot registra a parada como reinício, não como queda (H3b). O
-                // desligamento ordenado do Reiniciar fica com o requestShutdown do H3c.
-                serverLifecycle.markCleanShutdown('admin_restart');
                 process.exit(0);
             };
 
