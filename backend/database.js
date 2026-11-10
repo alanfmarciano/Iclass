@@ -1559,6 +1559,18 @@ function refreshStorageStats() {
     return pending;
 }
 
+// Estado do armazenamento com o espaço livre renovado antes quando o último valor passou
+// de maxAgeMs (padrão 1 min; as três PRAGMAs levam milissegundos). Para quem decide pelo
+// freeBytes na hora (o item "Compactar o banco" do "Precisa de você"): storageStatus()
+// sozinho devolve o valor guardado e só renova em segundo plano, e o item dependia de
+// alguém abrir o cartão Armazenamento (H1-c, sobra da J2). O limite de idade é o limite
+// de frequência: a fila consultada a cada 30 s renova no máximo uma vez por minuto.
+async function freshStorageStatus({ maxAgeMs = STORAGE_STATS_MAX_AGE_MS } = {}) {
+    const statsAge = fileStats.at ? Date.now() - Date.parse(fileStats.at) : Infinity;
+    if (statsAge > maxAgeMs && !writer.isClosed()) await refreshStorageStats();
+    return storageStatus();
+}
+
 // Pasta de dados dentro do OneDrive (CONF-05): conferida uma vez, no carregamento.
 const SYNCED_FOLDER = syncedFolderInfo(DATA_DIR);
 
@@ -1628,11 +1640,17 @@ function storageStatus() {
 // database.db e zera o -wal. As gravações pedidas antes passam primeiro; as pedidas
 // durante esperam. Quem chama confere antes que não há prova em andamento e que há espaço
 // em disco (rota POST /api/admin/storage/compact). Devolve o estado antes e depois.
-async function compactDatabase() {
+// beforeVacuum (opcional): conferência feita dentro do runExclusive, logo antes do
+// VACUUM, quando nenhuma gravação roda e a memória não muda no meio. Devolvendo um erro,
+// a compactação não acontece e a promessa rejeita com ele: a rota confere de novo se uma
+// prova começou enquanto esperava o disco e a fila (sobra do H1-c na J2).
+async function compactDatabase({ beforeVacuum = null } = {}) {
     await refreshStorageStats();
     const before = storageStatus();
     const started = Date.now();
     await writer.runExclusive(connection => new Promise((resolve, reject) => {
+        const refusal = typeof beforeVacuum === 'function' ? beforeVacuum() : null;
+        if (refusal) return reject(refusal);
         connection.exec('VACUUM', vacuumError => {
             if (vacuumError) return reject(vacuumError);
             connection.exec('PRAGMA wal_checkpoint(TRUNCATE)', checkpointError => (checkpointError ? reject(checkpointError) : resolve()));
@@ -1834,6 +1852,7 @@ module.exports = {
     close,
     storageStatus,
     refreshStorageStats,
+    freshStorageStatus,
     compactDatabase,
     runSafetyNetSave,
     SAFETY_NET_INTERVAL_MS,

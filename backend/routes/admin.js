@@ -5260,9 +5260,12 @@ router.get('/api/admin/dashboard/now', (req, res) => {
 // "Compactar o banco" no "Precisa de você" (H1-c; decisões da fase 2, §3): só para
 // administrador (compactar é só dele) e quando o espaço livre dentro do arquivo passa de
 // 25% (db.storageStatus().compactSuggested). Vale para a escola toda, não para a turma.
-function _storageQueueBlock(matchedAdmin) {
+// O espaço livre é renovado aqui quando tem mais de 1 min (db.freshStorageStatus, limite
+// de frequência): antes a fila usava o valor guardado, e o item só aparecia depois de
+// alguém abrir o cartão Armazenamento (sobra do H1-c na J2).
+async function _storageQueueBlock(matchedAdmin) {
     if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
-    const status = db.storageStatus();
+    const status = await db.freshStorageStatus();
     if (!status.compactSuggested) return null;
     return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
 }
@@ -5295,7 +5298,7 @@ function _securityQueueBlock(matchedAdmin, students, { adminOnly = true, now = D
 // Fila "Precisa de você": pendências com destino clicável. Respeita o snooze de
 // 24h persistido em preferences (dashboard.snoozed) e esconde matrículas de professor.
 router.get('/api/admin/dashboard/queue', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const scope = _dashboardScope(req, matchedAdmin);
         const now = Date.now();
         // 'page.accounts' é permissão exclusiva de administrador pleno — é o
@@ -5304,7 +5307,7 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
-        }, { storage: _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }) });
+        }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};

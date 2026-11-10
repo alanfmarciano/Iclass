@@ -367,6 +367,33 @@ test('[UC-ARMAZENAMENTO-001] Compactar: só administrador, com COMPACTAR, nunca 
     assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'storage_compacted').length, 0, 'recusa não registra compactação');
 });
 
+test('[UC-ARMAZENAMENTO-001] Compactar confere de novo a prova em andamento logo antes do VACUUM (sobra do H1-c, J2)', async () => {
+    await db.flush();
+    await db.refreshStorageStats();
+    const freeBefore = db.storageStatus().freeBytes;
+    assert.ok(freeBefore > 3 * 1024 * 1024, 'pré-condição: espaço livre dos testes anteriores');
+    // A prova começa enquanto a rota espera as PRAGMAs e o disco (depois da 1ª conferência).
+    const originalRefresh = db.refreshStorageStats;
+    db.refreshStorageStats = async () => {
+        if (!db.memory.examApplications.some(item => item.id === 'app-durante-a-espera')) {
+            db.memory.examApplications.push({ id: 'app-durante-a-espera', classId: 'TI::1DES', examKey: 'P1', status: 'running' });
+        }
+        return originalRefresh();
+    };
+    try {
+        const late = await asAdmin(request(app).post('/api/admin/storage/compact')).send({ confirm: 'COMPACTAR' });
+        assert.equal(late.status, 409, `antes, ${late.status}: o VACUUM rodava com a prova aberta`);
+        assert.equal(late.body.error, 'Há prova em andamento. Compacte o banco depois que as provas terminarem.');
+        assert.equal(late.body.activeApplications, 1);
+    } finally {
+        db.refreshStorageStats = originalRefresh;
+        db.memory.examApplications = db.memory.examApplications.filter(item => item.id !== 'app-durante-a-espera');
+    }
+    await db.refreshStorageStats();
+    assert.ok(db.storageStatus().freeBytes >= freeBefore, 'o VACUUM não rodou');
+    assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'storage_compacted').length, 0, 'recusa não registra compactação');
+});
+
 test('[UC-ARMAZENAMENTO-001] Compactar devolve o espaço ao disco, registra na auditoria e não perde dados', async () => {
     await db.flush();
     await db.refreshStorageStats();
@@ -400,6 +427,32 @@ test('[UC-ARMAZENAMENTO-001] Compactar devolve o espaço ao disco, registra na a
     // Sem o item na fila depois de compactar.
     const queue = await asAdmin(request(app).get(QUEUE_URL));
     assert.ok(!queue.body.some(entry => entry.id === 'compactar_banco'));
+});
+
+test('[UC-ARMAZENAMENTO-001] a fila renova o espaço livre sozinha, no máximo uma vez por minuto (sobra do H1-c, J2)', async () => {
+    // Espaço livre novo sem ninguém reler as PRAGMAs (nem o cartão Armazenamento).
+    const filler = 'x'.repeat(64 * 1024);
+    for (let index = 0; index < 4 * 16; index += 1) db.memory.notes[`fila-${index}@teste.local`] = { modulo: filler };
+    await db.save({ only: ['notes'] });
+    Object.keys(db.memory.notes).filter(key => key.startsWith('fila-')).forEach(key => delete db.memory.notes[key]);
+    await db.save({ only: ['notes'] });
+    // Valor guardado há menos de 1 min: a fila usa o guardado (limite de frequência).
+    const recent = await asAdmin(request(app).get(QUEUE_URL));
+    assert.equal(recent.status, 200);
+    assert.ok(!recent.body.some(entry => entry.id === 'compactar_banco'));
+    // Passado 1 min, o mesmo pedido da fila relê as PRAGMAs antes de montar o item. Antes,
+    // a primeira consulta respondia com o valor velho e só pedia a leitura em segundo plano.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 61000;
+    try {
+        const later = await asAdmin(request(app).get(QUEUE_URL));
+        assert.equal(later.status, 200);
+        assert.ok(later.body.some(entry => entry.id === 'compactar_banco'), 'o item aparece sem abrir o cartão Armazenamento');
+    } finally {
+        Date.now = realNow;
+    }
+    const professor = await asProfessor(request(app).get(QUEUE_URL));
+    assert.ok(!professor.body.some(entry => entry.id === 'compactar_banco'));
 });
 
 test('[UC-ARMAZENAMENTO-001] pasta do OneDrive: regras do caminho (Windows e variáveis do sistema)', () => {

@@ -217,8 +217,23 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             }
             let result;
             try {
-                result = await db.compactDatabase();
+                // A conferência de prova em andamento de cima vem antes das esperas (PRAGMAs,
+                // espaço em disco, fila de gravação): uma prova iniciada nesse meio-tempo
+                // pararia no VACUUM. Por isso ela é refeita dentro do runExclusive, logo antes
+                // dele (sobra do H1-c na J2).
+                result = await db.compactDatabase({
+                    beforeVacuum: () => {
+                        const activeNow = activeApplicationCount();
+                        return activeNow ? Object.assign(new Error('active_application'), { code: 'ACTIVE_APPLICATION', activeApplications: activeNow }) : null;
+                    },
+                });
             } catch (error) {
+                if (error && error.code === 'ACTIVE_APPLICATION') {
+                    return res.status(409).json({
+                        error: 'Há prova em andamento. Compacte o banco depois que as provas terminarem.',
+                        activeApplications: error.activeApplications,
+                    });
+                }
                 if (error && (error.code === 'SQLITE_BUSY' || error.code === 'SQLITE_LOCKED')) {
                     return res.status(409).json({ error: 'O banco está em uso por outro programa agora. Feche o programa que abriu o banco e tente de novo.' });
                 }
