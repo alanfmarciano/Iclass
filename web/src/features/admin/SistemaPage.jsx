@@ -19,8 +19,10 @@ import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { RedeCard } from './sistema/RedeCard'
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
-// Texto do diálogo Reiniciar (H3c). Sem "Ninguém precisa entrar de novo" até a frente do H3.
-export const RESTART_DESCRIPTION = 'O IClass fica fora do ar por alguns segundos e volta sozinho. Quem estiver usando pode precisar entrar de novo.'
+// Texto do diálogo Reiniciar (H3c). "Ninguém precisa entrar de novo" voltou com a frente
+// do H3 (decisões §9): o servidor retoma as sessões gravadas e o navegador, ao ver o
+// servidor novo, confere a sessão (AuthProvider) em vez de mandar todos para o login.
+export const RESTART_DESCRIPTION = 'O IClass fica fora do ar por alguns segundos e volta sozinho. Ninguém precisa entrar de novo.'
 
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
 const UPLOAD_TYPES = [['pdf', 'PDF'], ['image', 'Imagem'], ['video', 'Vídeo'], ['doc', 'Documento'], ['sheet', 'Planilha'], ['zip', 'Compactado'], ['other', 'Outros']]

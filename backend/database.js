@@ -22,7 +22,7 @@ const { createKeystrokeStore, KEYSTROKE_COLLECTION, KEYSTROKE_SCHEMA, KEYSTROKE_
 const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('./utils/persistenceContext.js');
 const { logError } = require('./utils/errorLog.js');
 const { syncedFolderInfo } = require('./utils/syncedFolder.js');
-const { clearSessions, persistedSessionRows, revokeAdminSessions, revokeStudentSession, sessionRowBelongsTo } = require('./utils/authSessions.js');
+const { clearRevokedSessionReasons, clearSessions, persistedRevocationRows, persistedSessionRows, revokeAdminSessions, revokeStudentSession, sessionRowBelongsTo } = require('./utils/authSessions.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
@@ -408,7 +408,8 @@ const COLLECTION_TABLES = Object.freeze([
     // mas não o status das aplicações.
     tableEntry('examApplications', 'exam_applications', 'array', 'id'),
     // Sessões de aluno e de instrutor (H3a-2: CONF-03, UXA-06, DES-08): uma linha por
-    // sessão, chave = sha256 do token e valor { kind, email, createdAt, ip?, origin? },
+    // sessão, chave = sha256 do token e valor { kind, email, createdAt, ip?, origin? }, mais
+    // uma por sessão encerrada há pouco { kind: 'revoked', reason, at } (frente do H3),
     // calculadas de db.memory.sessions e adminSessions por persistedSessionRows
     // (utils/authSessions.js). Nunca o token cru, nem lastSeen (a tabela não muda a cada
     // ping). No boot as linhas lidas ficam como estão até a retomada (server.js
@@ -434,17 +435,23 @@ const TABLE_BY_COLLECTION = new Map(COLLECTION_TABLES.map(entry => [entry.collec
 // próprio init (migração, provas resetadas) não apaga as sessões antes da retomada.
 const pendingBootRows = new Map();
 
-// Linhas de auth_sessions: as do boot ainda não retomadas e as sessões da memória.
+// Linhas de auth_sessions: as do boot ainda não retomadas, os motivos das sessões
+// encerradas há pouco (kind 'revoked', para o token antigo ouvir o motivo também depois de
+// um reinício) e as sessões da memória.
 function authSessionTableRows(memory) {
     const rows = new Map(pendingBootRows.get('authSessions') || []);
+    persistedRevocationRows().forEach(row => rows.set(row.key, JSON.stringify(row.value)));
     persistedSessionRows(memory).forEach(row => rows.set(row.key, JSON.stringify(row.value)));
     return rows;
 }
 
-// Restauração de backup: todos saem, inclusive as sessões do boot ainda não retomadas.
+// Restauração de backup: todos saem, inclusive as sessões do boot ainda não retomadas, e os
+// motivos das sessões encerradas antes saem junto (a tabela fica vazia; o token antigo
+// responde como sessão vencida, que é o que vale depois da restauração).
 function resetAuthSessions(memory) {
     pendingBootRows.delete('authSessions');
     clearSessions(memory);
+    clearRevokedSessionReasons();
 }
 
 // Ganchos depois da restauração de um backup (contrato H3 x H4 x H5: "os ganchos

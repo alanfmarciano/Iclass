@@ -18,6 +18,7 @@ import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
 import { ExamErrorScreen } from './ExamErrorScreen'
 import { clearInterruptedExam, clearRenderError } from '../../../lib/renderErrors'
 import { noteServerBuild, resetUpdateReloadForTests, UPDATE_RELOAD_MESSAGE } from '../../../lib/buildVersion'
+import { reportFailure, reportSuccess, resetConnectionForTests } from '../../../lib/connection'
 
 const EXAM = 'Avaliacao_Ciclo'
 // Chave da cópia local que o servidor entrega ao dono da tentativa (32 bytes em base64).
@@ -1629,4 +1630,124 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
       vi.useRealTimers()
     }
   })
+})
+
+// Frente do H3 (CONF-03): queda ou reinício do servidor no meio da prova. Antes, marcar uma
+// alternativa só mudava a tela até a sincronização de 4 s (até 4 s de respostas perdidas
+// numa queda), uma falha de rede mostrava "Falha no último salvamento" como se fosse culpa
+// do aluno, e o envio automático recusado por tempo devolvido de uma queda dizia "O
+// professor deu mais tempo".
+describe('[UC-TENTATIVA-001] ExamRunner: servidor fora do ar durante a prova', () => {
+  afterEach(() => { resetConnectionForTests() })
+
+  it('salva 1,5 s depois de marcar a alternativa, sem esperar a sincronização de 4 s', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const option = await screen.findByRole('button', { name: /Três/ })
+    const clickedAt = Date.now()
+    await user.click(option)
+    await waitFor(() => expect(postsTo('/api/student/autosave-progress').length).toBeGreaterThan(0), { timeout: 1700, interval: 20 })
+    expect(Date.now() - clickedAt).toBeLessThan(1700)
+    expect(postsTo('/api/student/autosave-progress')[0][1]).toMatchObject({ attemptId: 'att-1', answers: { 1: 'B' } })
+  }, 15000)
+
+  it('sem conexão mostra "Sem conexão: as respostas serão enviadas…" (não "Falha no último salvamento") e salva quando a conexão volta', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    let online = false
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/autosave-progress' && !online) throw Object.assign(new Error('Sem conexão com o servidor do IClass.'), { status: 0, network: true })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Onze/ }))
+    expect(await screen.findByText('Sem conexão: as respostas serão enviadas quando a conexão voltar.', {}, { timeout: 3000 })).toBeVisible()
+    expect(screen.queryByText('Falha no último salvamento')).not.toBeInTheDocument()
+    // A resposta continua marcada na tela.
+    expect(screen.getByText('1/1 respondidas')).toBeVisible()
+
+    // A conexão volta (lib/connection.js de 'offline' para 'online'): salva na hora.
+    act(() => { reportFailure({ network: true }); reportFailure({ network: true }) })
+    online = true
+    const before = postsTo('/api/student/autosave-progress').length
+    act(() => { reportSuccess() })
+    await waitFor(() => expect(postsTo('/api/student/autosave-progress').length).toBeGreaterThan(before), { timeout: 1000, interval: 20 })
+    expect(postsTo('/api/student/autosave-progress').at(-1)[1]).toMatchObject({ answers: { 1: 'C' } })
+    expect(await screen.findByText(/Salvo às/)).toBeVisible()
+  }, 15000)
+
+  it('servidor iniciando (503 starting) também é "Sem conexão"; gravação que falhou (503 retryable) mostra o erro e tenta de novo na sincronização', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    const failures = [
+      Object.assign(new Error('O IClass está iniciando. Aguarde alguns segundos.'), { status: 503, starting: true, data: { starting: true } }),
+      Object.assign(new Error('Não foi possível gravar agora. Tente de novo em instantes.'), { status: 503, retryable: true, data: { retryable: true } }),
+    ]
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/autosave-progress' && failures.length) throw failures.shift()
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Onze/ }))
+    expect(await screen.findByText('Sem conexão: as respostas serão enviadas quando a conexão voltar.', {}, { timeout: 3000 })).toBeVisible()
+    // A sincronização seguinte (4 s) tenta de novo: o servidor responde que não gravou.
+    expect(await screen.findByText(/O servidor não conseguiu gravar agora: as respostas continuam na tela/, {}, { timeout: 6000 })).toBeVisible()
+    expect(screen.queryByText('Falha no último salvamento')).not.toBeInTheDocument()
+    // E a outra sincronização grava.
+    expect(await screen.findByText(/Salvo às/, {}, { timeout: 6000 })).toBeVisible()
+    expect(postsTo('/api/student/autosave-progress').at(-1)[1]).toMatchObject({ answers: { 1: 'C' } })
+  }, 20000)
+
+  it('erro de verdade (4xx) continua "Falha no último salvamento"', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/autosave-progress') throw Object.assign(new Error('Pedido inválido.'), { status: 400, data: { error: 'Pedido inválido.' } })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Onze/ }))
+    expect(await screen.findByText('Falha no último salvamento', {}, { timeout: 3000 })).toBeVisible()
+  }, 15000)
+
+  it('envio automático recusado com o tempo devolvido de uma queda (409 reason server_outage) mostra o texto do servidor fora do ar', async () => {
+    const user = userEvent.setup()
+    let extended = false
+    apiMock.get.mockImplementation(async () => syncResponse({ timerRemaining: extended ? 300 : 2, answers: extended ? { 1: 'A' } : {} }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/submit') return { success: true }
+      extended = true
+      throw Object.assign(new Error('O prazo desta tentativa foi estendido.'), { status: 409, data: { deadlineExtended: true, timerRemaining: 300, reason: 'server_outage' } })
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    await waitFor(() => expect(postsTo('/api/student/submit')).toHaveLength(1), { timeout: 4000 })
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'))
+    expect(toast.info).not.toHaveBeenCalledWith('O professor deu mais tempo. A prova continua.')
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 4000 })).toBeVisible()
+  }, 15000)
+
+  it('"Enviar prova" sem conexão mantém a prova aberta com as respostas e diz para tentar de novo', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url === '/api/student/submit') throw Object.assign(new Error('Sem conexão com o servidor do IClass.'), { status: 0, network: true })
+      return { success: true }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Onze/ }))
+    await user.click(screen.getByRole('button', { name: 'Enviar' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /Enviar/ }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Não foi possível enviar a prova agora. Suas respostas continuam na tela: tente enviar de novo em instantes.'))
+    expect(screen.getByText('1/1 respondidas')).toBeVisible()
+    expect(screen.getByRole('button', { name: /Onze/ })).toBeVisible()
+  }, 15000)
 })

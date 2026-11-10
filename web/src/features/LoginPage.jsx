@@ -108,6 +108,10 @@ export default function LoginPage() {
           toast.info(serverMessage || 'A senha desta conta foi alterada. Entre de novo com a senha nova.')
           return
         }
+        if (r === 'replaced') {
+          toast.info(serverMessage || 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.')
+          return
+        }
         const msg = r === 'idle' ? 'Sua sessão expirou por inatividade. Faça login novamente.' : r === 'restart' ? 'O servidor foi reiniciado. Faça login novamente.' : 'Sua sessão expirou. Faça login novamente.'
         toast.info(msg)
       }

@@ -187,6 +187,11 @@ function createStudentSession(memory, email, { ip = '', now = Date.now(), origin
     if (!memory.sessions || typeof memory.sessions !== 'object') memory.sessions = {};
     const session = { tokenHash: hashSessionToken(token), createdAt: now, lastSeen: now, lastActivityAt: now, ip: String(ip || '') };
     if (origin && origin !== DEFAULT_ORIGIN) session.origin = String(origin);
+    // O token do outro aparelho fica com o motivo 'replaced': o pedido seguinte dele recebe
+    // o 401 'replaced' também nas rotas sem e-mail (antes, 400 "E-mail do estudante é
+    // obrigatório.") e também depois de um reinício.
+    const previous = ownValue(memory.sessions, normalizedEmail);
+    if (hasSessionCredential(previous)) rememberRevocation(studentSessionHash(previous), 'replaced', now);
     memory.sessions[normalizedEmail] = session;
     return token;
 }
@@ -195,10 +200,17 @@ function createStudentSession(memory, email, { ip = '', now = Date.now(), origin
 // { sessionRevoked: true, reason }). A sessão revogada sai da memória e da tabela, e o
 // pedido seguinte do token antigo cairia no "sessão expirada" genérico: o aluno cuja senha
 // o professor redefiniu lia "Sessão expirada" em vez do motivo. Aqui fica só o sha256 do
-// token e o motivo ('logout', 'password_reset', 'password_changed'), por no máximo o prazo
-// absoluto da sessão e até 5.000 entradas (a mais antiga sai primeiro). Só na memória: um
-// reinício volta ao genérico, sem prejuízo (a sessão já não vale de qualquer jeito).
+// token e o motivo ('logout', 'password_reset', 'password_changed' ou 'replaced', quando um
+// login novo da mesma conta substituiu a sessão), por no máximo o prazo absoluto da sessão
+// e até 5.000 entradas (a mais antiga sai primeiro).
+// Gravado junto com as sessões (frente do H3, sobra da J2): cada motivo vira uma linha de
+// auth_sessions { kind: 'revoked', reason, at } com o mesmo sha256 como chave
+// (persistedRevocationRows) e volta no boot pela restoreSessions, mesmo quando as sessões
+// não voltam (o motivo continua verdadeiro). Antes ficava só na memória e, depois de um
+// reinício, o aluno da senha redefinida lia "Sessão expirada". A versão anterior lê essa
+// linha como ilegível e a descarta (sem erro).
 const RECENT_REVOCATIONS_MAX = 5000;
+const REVOCATION_REASONS = Object.freeze(['logout', 'password_reset', 'password_changed', 'replaced']);
 const recentRevocations = new Map(); // sha256 do token → { reason, at }
 
 function rememberRevocation(hash, reason, now = Date.now()) {
@@ -220,6 +232,50 @@ function revokedSessionReason(raw, now = Date.now()) {
         return null;
     }
     return entry.reason;
+}
+
+// Linhas dos motivos para a tabela auth_sessions: [{ key: sha256, value: { kind: 'revoked',
+// reason, at } }], só os que ainda estão no prazo. Sem e-mail nem IP: o motivo só serve
+// para o pedido seguinte do token antigo.
+function persistedRevocationRows({ now = Date.now(), absoluteTtlMs = sessionAbsoluteTtlMs() } = {}) {
+    const rows = [];
+    recentRevocations.forEach((entry, hash) => {
+        if (!entry || !REVOCATION_REASONS.includes(entry.reason)) return;
+        if (now - entry.at > absoluteTtlMs) return;
+        rows.push({ key: hash, value: { kind: 'revoked', reason: entry.reason, at: entry.at } });
+    });
+    return rows;
+}
+
+// Linha de motivo gravada ({ key, value }, value em texto JSON ou objeto) → { hash, reason,
+// at }, ou null se não for uma linha de motivo legível.
+function parseRevocationRow(row) {
+    if (!row || typeof row !== 'object') return null;
+    const hash = String(row.key || '');
+    let value = row.value;
+    if (typeof value === 'string') {
+        try { value = JSON.parse(value); } catch (error) { return null; }
+    }
+    if (!HASH_PATTERN.test(hash) || !value || typeof value !== 'object' || value.kind !== 'revoked') return null;
+    const at = validTimestamp(value.at);
+    if (!at || !REVOCATION_REASONS.includes(value.reason)) return null;
+    return { hash, reason: value.reason, at };
+}
+
+function isRevocationRow(row) {
+    if (!row || typeof row !== 'object') return false;
+    let value = row.value;
+    if (typeof value === 'string') {
+        if (!value.includes('"revoked"')) return false;
+        try { value = JSON.parse(value); } catch (error) { return false; }
+    }
+    return !!(value && typeof value === 'object' && value.kind === 'revoked');
+}
+
+// Esquece todos os motivos (restauração de backup: todos entram de novo, e o token antigo
+// responde como sessão vencida; o motivo de antes da restauração não é mais o que importa).
+function clearRevokedSessionReasons() {
+    recentRevocations.clear();
 }
 
 function clearRecentRevocationsForTests() {
@@ -499,7 +555,9 @@ function sessionAccountEmails(memory) {
 //   de novo, agora também depois de um reinício.
 // Relógio que voltou (downtime negativo) conta como 0. E-mail de aluno repetido: fica
 // a sessão mais nova. lastSeen volta null (o aluno aparece offline até o próximo ping)
-// e lastActivityAt = now. Devolve { students, admins, dropped, reason, clockWentBack }.
+// e lastActivityAt = now. As linhas de motivo (kind 'revoked') voltam para a lista de
+// motivos recentes, à parte. Devolve { students, admins, dropped, revocations, reason,
+// clockWentBack }.
 function restoreSessions(memory, rows, options = {}) {
     const {
         now = Date.now(),
@@ -513,7 +571,19 @@ function restoreSessions(memory, rows, options = {}) {
     if (Array.isArray(rows)) list = rows;
     else if (rows instanceof Map) list = [...rows].map(([key, value]) => ({ key, value }));
     else if (rows && typeof rows === 'object') list = Object.keys(rows).map(key => ({ key, value: rows[key] }));
-    const result = { students: 0, admins: 0, dropped: 0, reason: null, clockWentBack: false };
+    const result = { students: 0, admins: 0, dropped: 0, revocations: 0, reason: null, clockWentBack: false };
+    // Motivos de sessões encerradas (persistedRevocationRows): voltam sempre que estão no
+    // prazo absoluto, mesmo quando as sessões não voltam (tempo fora do ar desconhecido ou
+    // longo demais): o motivo continua verdadeiro. Não contam como sessão descartada.
+    list = list.filter(row => {
+        if (!isRevocationRow(row)) return true;
+        const parsed = parseRevocationRow(row);
+        if (parsed && now - Math.min(parsed.at, now) <= absoluteTtlMs && !recentRevocations.has(parsed.hash)) {
+            rememberRevocation(parsed.hash, parsed.reason, Math.min(parsed.at, now));
+            result.revocations += 1;
+        }
+        return false;
+    });
 
     let downtime = downtimeMs === null || downtimeMs === undefined ? NaN : Number(downtimeMs);
     if (!Number.isFinite(downtime)) {
@@ -576,6 +646,8 @@ module.exports = {
     createStudentSession,
     revokeStudentSession,
     revokedSessionReason,
+    persistedRevocationRows,
+    clearRevokedSessionReasons,
     clearRecentRevocationsForTests,
     sessionPredatesRevocation,
     checkStudentSessionToken,

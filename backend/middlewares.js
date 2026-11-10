@@ -106,6 +106,7 @@ const REVOKED_SESSION_MESSAGES = Object.freeze({
     logout: 'Esta sessão foi encerrada pelo botão Sair. Faça login novamente.',
     password_reset: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
     password_changed: 'A senha desta conta foi trocada em outro aparelho. Entre de novo com a senha nova.',
+    replaced: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
 });
 
 function revokedSessionBody(token) {
@@ -144,6 +145,14 @@ function validateStudentSession(req, res, next) {
         normalizedEmail = tokenMatch.email;
     }
     if (!normalizedEmail) {
+        // Token que o servidor não conhece (sessão vencida ou que não voltou depois de um
+        // reinício) numa rota sem e-mail na query nem no corpo (GET /api/student/enrollments):
+        // é sessão encerrada, não pedido malformado. Antes respondia 400 "E-mail do estudante
+        // é obrigatório." e o portal não levava o aluno ao login. O token substituído por um
+        // login novo já saiu acima, com 'replaced' (revokedSessionBody).
+        if (typeof providedToken === 'string' && providedToken) {
+            return sendSessionRevoked(res, 401, 'Sessão expirada ou não autenticada. Por favor, faça login novamente.', 'expired');
+        }
         return res.status(400).json({ error: 'E-mail do estudante é obrigatório.' });
     }
     // Só a sessão gravada com esse e-mail (chave própria): '__proto__' ou 'constructor'

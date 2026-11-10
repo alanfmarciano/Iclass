@@ -3,6 +3,7 @@
 // As REGRAS DE NEGÓCIO permanecem no backend Express (server-authoritative).
 import { BUILD_HEADER, noteServerBuild } from './buildVersion'
 import { AUTOSAVE_TIMEOUT_MS, INSTRUCTOR_TIMEOUT_MS, KEYSTROKE_TIMEOUT_MS, POLL_TIMEOUT_MS } from './requestTimeouts'
+import { reportFailure, reportResponse, setConnectionProbe } from './connection'
 let authProvider = () => ({})
 export function setAuthProvider(fn) { authProvider = fn } // injetado pelo AuthProvider
 // Há sessão aberta neste navegador? O logout limpa o provedor na hora (antes de o portal
@@ -81,6 +82,10 @@ function noteBuildFrom(res, path, headers) {
 export { INSTRUCTOR_TIMEOUT_MS, POLL_TIMEOUT_MS, KEYSTROKE_TIMEOUT_MS, AUTOSAVE_TIMEOUT_MS }
 export const TIMEOUT_MESSAGE = 'O servidor do IClass demorou demais para responder. Confira se ele está ligado e tente de novo.'
 export const NETWORK_MESSAGE = 'Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'
+// Gravação que falhou no servidor (contrato das respostas de estado: 503 { retryable: true },
+// decisões §3): passageiro, a sessão continua. As telas mostram este texto (err.message) e
+// err.retryable = true; a prova online trata à parte (mantém as respostas e tenta de novo).
+export const RETRYABLE_MESSAGE = 'Não foi possível gravar agora. Tente de novo em instantes.'
 // Consulta automática, que a pessoa não pediu (usePolling, conferências de fundo): o
 // servidor não conta como uso da sessão.
 export const BACKGROUND_HEADER = 'X-IClass-Background'
@@ -179,7 +184,7 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
     })
   } catch (error) {
     finish()
-    throw failure(error)
+    throw noteFailure(failure(error))
   }
   let data = null
   try {
@@ -189,21 +194,44 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
     else if (raw) data = await res.text()
   } catch (error) {
     finish()
-    throw failure(error)
+    throw noteFailure(failure(error))
   }
   finish()
   // O prazo estourou enquanto o corpo chegava (o json() acima engole a falha).
-  if (timedOut) throw connectionError('timeout')
+  if (timedOut) throw noteFailure(connectionError('timeout'))
   if (signal && signal.aborted) throw abortError(signal)
+  reportResponse(res.status, data)
   if (!res.ok) {
     noteAdminAccessDenied(res.status, data)
     notePasswordChangeRequired(res.status, data)
-    const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)
-    err.status = res.status; err.data = data
-    throw err
+    throw responseError(res.status, data)
   }
   return data
 }
+
+// Falha sem resposta (rede ou tempo-limite) conta para o estado da conexão (lib/connection.js);
+// o cancelamento de quem chamou não conta.
+function noteFailure(err) {
+  if (err && (err.timeout || err.network)) reportFailure(err)
+  return err
+}
+
+// Erro de uma resposta HTTP que não é 2xx: mensagem do servidor, status e corpo. 503 de
+// gravação (retryable) e de início (starting) ganham marcas próprias; o retryable sai com
+// o texto fixo das telas (decisões §3).
+function responseError(status, data) {
+  const retryable = status === 503 && !!data && data.retryable === true
+  const message = retryable ? RETRYABLE_MESSAGE : ((data && (data.error || data.message)) || `Erro ${status}`)
+  const err = new Error(message)
+  err.status = status; err.data = data
+  if (retryable) err.retryable = true
+  if (status === 503 && data && data.starting === true) err.starting = true
+  return err
+}
+
+// Conferência do servidor enquanto a conexão não está 'online' (lib/connection.js): o
+// próprio request() leva o resultado ao estado.
+setConnectionProbe(() => request('/api/session/status', { auth: false, background: true, timeoutMs: POLL_TIMEOUT_MS }))
 // Baixa um arquivo de rota autenticada (CSV, etc.). window.open não manda o
 // cabeçalho de sessão e abria "Acesso não autorizado." (UXI-01). O Blob preserva
 // os bytes (inclusive o BOM UTF-8 que o Excel usa para os acentos).
@@ -215,17 +243,17 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
   try {
     res = await fetch(path, { headers })
   } catch {
-    throw connectionError('network')
+    throw noteFailure(connectionError('network'))
   }
   noteBuildFrom(res, path, headers)
   if (!res.ok) {
     const data = await res.json().catch(() => null)
+    reportResponse(res.status, data)
     noteAdminAccessDenied(res.status, data)
     notePasswordChangeRequired(res.status, data)
-    const err = new Error((data && (data.error || data.message)) || `Erro ${res.status}`)
-    err.status = res.status; err.data = data
-    throw err
+    throw responseError(res.status, data)
   }
+  reportResponse(res.status, null)
   const blob = await res.blob()
   const disposition = res.headers.get('content-disposition') || ''
   const match = disposition.match(/filename="?([^";]+)"?/i)

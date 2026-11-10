@@ -317,7 +317,7 @@ return app;
 // execução anterior. Sem heartbeat (primeiro boot desta versão, pasta runtime apagada) o
 // tempo é desconhecido e nenhuma volta. Outro servidor ainda no ar nesta pasta: o tempo é
 // o do heartbeat dele (segundos), e este processo não grava nada por causa da retomada.
-// Devolve { students, admins, dropped, reason, clockWentBack, otherInstanceAlive }.
+// Devolve { students, admins, dropped, revocations, reason, clockWentBack, otherInstanceAlive }.
 function resumeSessions(run) {
     const rows = db.takeBootAuthSessionRows();
     const downtimeMs = run && run.found ? run.downtimeMs : null;
@@ -327,7 +327,8 @@ function resumeSessions(run) {
         setupMode: process.env.ICLASS_ADMIN_SETUP_MODE === '1',
     });
     result.otherInstanceAlive = !!(run && run.otherInstanceAlive);
-    if (!rows.length) return result;
+    // Só linhas de motivo de sessão encerrada (kind 'revoked'): não havia sessão a retomar.
+    if (!rows.length || !(result.students + result.admins + result.dropped)) return result;
     const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     if (result.reason === 'downtime_unknown') {
         console.log(`🔑 Sessões não retomadas: não há registro de quando o servidor parou (runtime/heartbeat.json). Alunos e professores entram de novo (${plural(result.dropped, 'sessão descartada', 'sessões descartadas')}).`);

@@ -15,7 +15,7 @@ import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '..
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
-import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds, wait } from './examAutoSubmit'
+import { autoSubmitExtendedMessage, autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds, wait } from './examAutoSubmit'
 import {
   clearExamDraft,
   clearExamDraftsForApplication,
@@ -27,6 +27,7 @@ import {
   writeExamDraft,
 } from '../../../lib/examDrafts'
 import { fmtGrade } from '../../../lib/grades'
+import { useOnReconnect } from '../../../hooks/useServerConnection'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
@@ -35,6 +36,26 @@ import { fmtGrade } from '../../../lib/grades'
 // pedido explícito (token aceito, volta da tela cheia, fim da espera) fica na fila e
 // roda logo depois dela.
 const SYNC_MS = 4000
+// Salvamento logo depois de cada resposta (frente do H3, CONF-03): 1,5 s depois da última
+// mudança, as respostas vão ao servidor sem esperar a sincronização de 4 s, que continua.
+// Antes, até 4 s de respostas ficavam só na tela e se perdiam numa queda do servidor.
+export const ANSWER_SAVE_DEBOUNCE_MS = 1500
+// Estado do salvamento que cada falha mostra no cabeçalho da prova (frente do H3):
+// - sem rede, tempo-limite ou servidor iniciando (503 starting): 'offline', sem culpar o
+//   aluno. As respostas ficam na tela e vão quando a conexão voltar (na hora da volta e
+//   em cada sincronização);
+// - gravação que falhou no servidor (503 retryable, decisões §3): 'retrying', com o erro,
+//   as respostas na tela e nova tentativa na sincronização seguinte;
+// - o resto (4xx/5xx de verdade): 'error', "Falha no último salvamento".
+export const SAVE_OFFLINE_TEXT = 'Sem conexão: as respostas serão enviadas quando a conexão voltar.'
+export const SAVE_RETRYING_TEXT = 'O servidor não conseguiu gravar agora: as respostas continuam na tela e serão enviadas de novo em instantes.'
+export const SUBMIT_RETRY_TEXT = 'Não foi possível enviar a prova agora. Suas respostas continuam na tela: tente enviar de novo em instantes.'
+export function saveFailureStatus(error) {
+  if (!error) return 'error'
+  if (error.network || error.timeout || error.status === 0 || error.starting || (error.status === 503 && error.data?.starting === true)) return 'offline'
+  if (error.retryable || (error.status === 503 && error.data?.retryable === true)) return 'retrying'
+  return 'error'
+}
 const KEYSTROKE_FLUSH_MS = 2000
 const KEYSTROKE_FLUSH_SIZE = 20
 // Envio da digitação (fase 2, H2-C e H9c): um envio por vez, com no máximo 500 eventos
@@ -213,6 +234,7 @@ export default function ExamRunner() {
   const examConfigVersionRef = useRef(examConfigVersion)
   const lastSavedRef = useRef(null) // respostas que o servidor já confirmou
   const savingRef = useRef(false)
+  const saveQueuedRef = useRef(false) // resposta mudou enquanto um salvamento estava em andamento
   const loadedAttemptRef = useRef(null)
   const timeupRef = useRef(null) // respostas congeladas no fim do tempo, até a entrega
   const deliveredAttemptRef = useRef(null) // tentativa que esta tela mostrou como entregue
@@ -373,6 +395,10 @@ export default function ExamRunner() {
         setPhase('exhausted')
       } else if (e.status === 408 && e.data?.finalizedByServer) {
         finishDelivered({ finalizedByServer: true, answeredCount: e.data.answeredCount, gradePublished: false })
+      } else if (saveFailureStatus(e) !== 'error') {
+        // Sem conexão, servidor iniciando ou gravação que falhou: a prova continua aberta,
+        // com as respostas na tela (o salvamento automático segue tentando).
+        toast.error(SUBMIT_RETRY_TEXT)
       } else {
         toast.error(e.message || 'Falha ao enviar a prova')
       }
@@ -390,20 +416,30 @@ export default function ExamRunner() {
     if (!['active', 'paused', 'server_paused'].includes(phaseRef.current)) return
     const snapshot = answersRef.current
     if (lastSavedRef.current ? sameExamAnswers(lastSavedRef.current, snapshot) : countAnswered(snapshot) === 0) return
-    if (savingRef.current && !keepalive) return
+    // Um salvamento por vez; o pedido que chega no meio (resposta marcada durante o
+    // salvamento) sai logo depois dele, com as respostas de então.
+    if (savingRef.current && !keepalive) { saveQueuedRef.current = true; return }
     savingRef.current = true
+    let saved = false
     if (!keepalive) setSaveState((current) => ({ ...current, status: 'saving' }))
     try {
       await api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }, keepalive ? { keepalive: true } : { timeoutMs: AUTOSAVE_TIMEOUT_MS })
       lastSavedRef.current = snapshot
+      saved = true
       saveLocalCopy(currentAttemptId, answersRef.current, sameExamAnswers(snapshot, answersRef.current))
       if (!keepalive) setSaveState({ status: 'saved', at: new Date() })
     } catch (e) {
-      if (!keepalive) setSaveState((current) => ({ ...current, status: 'error' }))
+      if (!keepalive) setSaveState((current) => ({ ...current, status: saveFailureStatus(e) }))
       // O servidor já considera o tempo esgotado: entrega o que está na tela agora.
       if (e.status === 408 && phaseRef.current === 'active') startTimeUpRef.current?.()
     } finally {
       savingRef.current = false
+    }
+    // Só depois de um salvamento aceito: na falha, a próxima tentativa é a da sincronização
+    // (ou a da volta da conexão), sem insistir em seguida.
+    if (saveQueuedRef.current && !keepalive) {
+      saveQueuedRef.current = false
+      if (saved && mountedRef.current) setTimeout(() => { if (mountedRef.current) saveRef.current?.() }, 0)
     }
   }, [email, studentClass, courseId, examKey, applicationId, saveLocalCopy])
   saveRef.current = saveAnswersIfDirty
@@ -445,7 +481,9 @@ export default function ExamRunner() {
         }
         if (kind === 'extended') {
           if (timeupRef.current === frozen) {
-            resumeExtendedAttempt('O professor deu mais tempo. A prova continua.')
+            // Texto do servidor: tempo devolvido por uma queda do servidor (reason
+            // 'server_outage') ou mais tempo dado pelo professor.
+            resumeExtendedAttempt(autoSubmitExtendedMessage(e))
             syncRef.current?.()
           }
           return
@@ -774,6 +812,20 @@ export default function ExamRunner() {
     if (phase !== 'active' || !attemptId || timeupRef.current) return
     saveLocalCopy(attemptId, answers, !!lastSavedRef.current && sameExamAnswers(lastSavedRef.current, answers))
   }, [answers, attemptId, phase, saveLocalCopy])
+
+  // Salvamento 1,5 s depois da última resposta marcada (ANSWER_SAVE_DEBOUNCE_MS). Nada a
+  // salvar (respostas iguais às confirmadas): saveAnswersIfDirty não manda pedido.
+  useEffect(() => {
+    if (phase !== 'active' || !attemptId || timeupRef.current) return undefined
+    const timer = setTimeout(() => saveRef.current?.(), ANSWER_SAVE_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [answers, attemptId, phase])
+
+  // A conexão voltou (lib/connection.js): salva e sincroniza na hora, sem esperar o tique.
+  useOnReconnect(() => {
+    if (!mountedRef.current) return
+    syncRef.current?.()
+  })
 
   useEffect(() => {
     if (phase !== 'active' || remaining == null) return
@@ -1523,9 +1575,11 @@ export default function ExamRunner() {
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:contents">
             <div className="min-w-0 flex-1 basis-24 sm:col-start-1 sm:row-start-2 flex flex-wrap items-baseline gap-x-2">
               <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
-              <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
+              <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : saveState.status === 'offline' || saveState.status === 'retrying' ? 'text-warning' : 'text-subtle'}`} aria-live="polite">
                 {saveState.status === 'saving' && 'Salvando respostas...'}
                 {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
+                {saveState.status === 'offline' && SAVE_OFFLINE_TEXT}
+                {saveState.status === 'retrying' && SAVE_RETRYING_TEXT}
                 {saveState.status === 'error' && 'Falha no último salvamento'}
               </p>
             </div>
