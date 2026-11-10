@@ -206,10 +206,17 @@ function attemptStatesForApplication(studentExamState, { applicationId, studentE
 // servidor finalizá-la: ela nunca é recriada nem sobrescrita por uma nova.
 const CLOSED_ATTEMPT_STATUSES = new Set(['submitted', 'invalidated']);
 
-function findOpenAttemptState(studentExamState, scope = {}) {
-    const match = attemptStatesForApplication(studentExamState, scope)
-        .find(([, state]) => !CLOSED_ATTEMPT_STATUSES.has(state.status));
+// Primeira tentativa em aberto de uma lista [chave, estado][] já ordenada por
+// attemptNumber decrescente (attemptStatesForApplication, ou o agrupamento do Monitor em
+// uma passada, utils/monitorActivity.js): { key, state } ou null.
+function openAttemptFromEntries(entries) {
+    const match = (Array.isArray(entries) ? entries : [])
+        .find(([, state]) => state && !CLOSED_ATTEMPT_STATUSES.has(state.status));
     return match ? { key: match[0], state: match[1] } : null;
+}
+
+function findOpenAttemptState(studentExamState, scope = {}) {
+    return openAttemptFromEntries(attemptStatesForApplication(studentExamState, scope));
 }
 
 // Pausa fechada que o próprio servidor grava pelo tempo em que ficou fora do ar durante
@@ -438,6 +445,7 @@ module.exports = {
     normalizeLegacyStudentAdjustments,
     normalizeTimerMode,
     openApplicationPause,
+    openAttemptFromEntries,
     resolveExamApplication,
     transitionExamApplication,
 };
