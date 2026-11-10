@@ -135,6 +135,7 @@ const ACTION_LABELS = Object.freeze({
     // Privacidade (LGPD)
     privacy_accept: 'Termos e Política de Privacidade aceitos',
     legal_publish: 'Documento legal publicado',
+    dpo_changed: 'Encarregado de dados (LGPD) alterado',
     retention_purge: 'Registros antigos apagados pelo prazo de guarda',
     lgpd_export: 'Dados pessoais exportados',
     // Provas (formato próprio, gravado fora de recordAudit)
@@ -179,6 +180,7 @@ const ACTION_CATEGORIES = Object.freeze({
     network_settings_changed: 'system',
     class_reset: 'system',
     exam_state_flushed: 'system',
+    dpo_changed: 'privacy',
 });
 
 const CATEGORY_PREFIXES = [

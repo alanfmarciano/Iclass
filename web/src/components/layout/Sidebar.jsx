@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText } from 'lucide-react'
+import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
 import { canAccessAdminPath } from '../../lib/adminPermissions'
@@ -42,6 +42,7 @@ const INSTITUTION_GROUPS = [
     { to: '/admins', icon: KeyRound, text: 'Administradores' },
     { to: '/sistema', icon: Settings, text: 'Sistema' },
     { to: '/auditoria', icon: ScrollText, text: 'Auditoria', adminOnly: true },
+    { to: '/lgpd', icon: ShieldCheck, text: 'Privacidade (LGPD)', adminOnly: true },
   ] },
 ]
 

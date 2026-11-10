@@ -56,6 +56,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `loginLogs` | array | logs de login (segurança/LGPD) |
 | `pedagogicalObservations` | array | observações pedagógicas controladas |
 | `library` | array | biblioteca de materiais reutilizáveis |
+| `legalDocuments` | array | Termos de Uso e Política de Privacidade (tabela `legal_documents`, H8a-1): `{ id, kind: 'termos'\|'privacidade', status: 'rascunho'\|'publicado', version, title, markdown, changeSummary, createdAt, updatedAt, updatedBy, publishedAt, publishedBy, modelId? }`. Rascunho com id fixo `rascunho_<kind>`; cada publicação é `<kind>_v<N>` e não muda mais. Na restauração, junta por id (`restore: 'merge'`). O encarregado (DPO) fica em `schools[].info.dpoName`, `dpoEmail` e `dpoPhone`, gravados só pela rota de LGPD |
 
 > A lista usada por backup/restore (`COLLECTIONS` em `backend/utils/backup.js`) é derivada do registro `COLLECTION_TABLES` (`backend/database.js`): toda entrada com `backup` diferente de `false`, na ordem do registro. Ao criar uma coleção nova, acrescente-a ao registro; ela entra no backup sozinha (`examKeystrokes` fica de fora, como antes).
 

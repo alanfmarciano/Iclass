@@ -138,6 +138,9 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET'], pattern: /^\/student\/audit$/, permission: 'audit.view' },
     // Tela Auditoria e exportação em CSV (SEG-07, FUN-04).
     { methods: ['GET'], pattern: /^\/audit(?:\/export)?$/, permission: 'audit.view' },
+    // Privacidade (LGPD): Termos, Política e encarregado (H8a-1). Só o administrador
+    // (students.security é exclusiva dele); fica antes das regras genéricas de aluno.
+    { methods: ['GET', 'POST'], pattern: /^\/lgpd(?:\/.*)?$/, permission: 'students.security' },
     { methods: ['GET', 'POST'], pattern: /^\/(students|student(?:\/.*)?|reset-password|delete-student)$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/enrollment-requests(?:\/.*)?$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/attendance(?:\/.*)?$/, permission: 'page.students' },

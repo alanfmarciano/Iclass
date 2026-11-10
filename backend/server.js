@@ -279,6 +279,8 @@ app.use(testRoutes);
 const setupModeRoutes = require('./routes/setupMode.js');
 app.use(setupModeRoutes);
 app.use(commonRoutes);
+// Termos e Privacidade (H8a-1): rotas públicas e, no H8a-2, as do aluno; antes das do aluno.
+app.use(require('./routes/privacy.js'));
 app.use(studentRoutes);
 app.use(adminRoutes);
 

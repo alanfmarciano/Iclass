@@ -212,6 +212,11 @@ const COLLECTION_TABLES = Object.freeze([
     // Aplicações de prova: sem elas, restaurar um backup voltava as entregas e a turma,
     // mas não o status das aplicações.
     tableEntry('examApplications', 'exam_applications', 'array', 'id'),
+    // Termos de Uso e Política de Privacidade (H8a-1; utils/legalDocuments.js): rascunho
+    // e versões publicadas, que não mudam mais. Fora de config e branding, que são
+    // regravados a cada save. Na restauração, junta por id: restaurar um backup anterior
+    // (ou de versão antiga, sem a coleção) não apaga o texto que os alunos aceitaram.
+    tableEntry('legalDocuments', 'legal_documents', 'array', 'id', { restore: 'merge' }),
 ]);
 
 const TABLE_BY_COLLECTION = new Map(COLLECTION_TABLES.map(entry => [entry.collection, entry]));

@@ -41,6 +41,11 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 
 ## Histórico de correções
 
+### 2026-11-10 — Termos e Privacidade (fase 2, H8a-1)
+
+- O aluno passa a poder ler o que aceita: `/termos` e `/privacidade` são públicas, com o texto atual e os dados da escola, inclusive o encarregado (DPO). Sem publicação, mostram o modelo do IClass como não revisado, e ninguém precisa aceitar nada. (SEG-08, OPS-12)
+- Só o administrador revisa e publica (`students.security`); a versão publicada não muda mais e cada publicação vai para a auditoria (`legal_publish`). O encarregado só muda pela página Privacidade (LGPD), com `dpo_changed`. O texto passa pelo DOMPurify no navegador, e os dados da escola entram nele sem virar formatação. (SEG-08, OPS-12)
+
 ### 2026-11-10 — escopo do professor (fase 2, H5c)
 
 - O professor só vê e só apaga as mensagens do Monitor das turmas dele; apagar do histórico exige a mensagem ou a turma de todos, inclusive do administrador (antes o corpo vazio apagava as mensagens de todas as turmas). (SEG-11)

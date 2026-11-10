@@ -20,6 +20,9 @@ export const ADMIN_PERMISSIONS = Object.freeze({
   // Tela Auditoria e aba Auditoria da ficha do aluno: só o administrador (decisão P5);
   // não é concedível ao professor (o servidor responde 403).
   AUDIT_VIEW: 'audit.view',
+  // Página Privacidade (LGPD): Termos, Política e encarregado (H8a-1). Só o
+  // administrador; não é concedível ao professor (o servidor responde 403).
+  STUDENTS_SECURITY: 'students.security',
 })
 
 export const ADMIN_PATH_PERMISSIONS = Object.freeze({
@@ -43,6 +46,7 @@ export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/identidade': ADMIN_PERMISSIONS.SCHOOLS_SCOPE,
   '/sistema': ADMIN_PERMISSIONS.PAGE_SYSTEM,
   '/auditoria': ADMIN_PERMISSIONS.AUDIT_VIEW,
+  '/lgpd': ADMIN_PERMISSIONS.STUDENTS_SECURITY,
 })
 
 const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([

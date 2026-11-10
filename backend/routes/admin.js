@@ -136,6 +136,7 @@ const { createAdminSystemRouter } = require('./adminSystem.js');
 const { createAdminAccountsRouter } = require('./adminAccounts.js');
 const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
 const { createAdminAuditRouter } = require('./adminAudit.js');
+const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
 const {
     addExtraUnit,
@@ -3343,6 +3344,7 @@ router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
 router.use(createAdminExamConfigRouter());
 router.use(createAdminAuditRouter());
+router.use(createAdminPrivacyRouter());
 router.use(createAdminCoursesRouter());
 
 
