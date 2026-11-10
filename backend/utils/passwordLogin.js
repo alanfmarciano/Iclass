@@ -210,9 +210,12 @@ function refusal(status, error, extra = {}) {
 // login fazia a turma atrás do mesmo IP (Wi-Fi da sala) gastar duas tentativas por aluno
 // na primeira aula depois da atualização (login com a senha fraca e a troca
 // obrigatória). A falha do aluno vai para loginLogs com o motivo change_password.
+// throttledReason: o motivo do registro 'throttled' (a senha não foi conferida durante a
+// espera; antes ia o motivo da falha, "Credenciais inválidas", que enganava quem lia o
+// registro ou a exportação da LGPD).
 const PASSWORD_CHECK_PURPOSES = Object.freeze({
-    login: { rateKey: settings => settings.rateKey, failReason: 'Credenciais inválidas' },
-    change_password: { rateKey: settings => settings.changeRateKey, failReason: 'change_password' },
+    login: { rateKey: settings => settings.rateKey, failReason: 'Credenciais inválidas', throttledReason: 'Login em espera por senhas erradas (senha não conferida)' },
+    change_password: { rateKey: settings => settings.changeRateKey, failReason: 'change_password', throttledReason: 'change_password em espera (senha não conferida)' },
 });
 
 async function attemptPasswordLogin({ kind, email, password, req, purpose = 'login' }) {
@@ -237,7 +240,7 @@ async function checkPassword({ kind, settings, check, normalizedEmail, secret, r
     const guard = loginGuard.check(guardKey);
     if (guard.delayed) {
         // Conta esperando o atraso: não confere a senha e não conta outra falha.
-        recordLoginLog(db.memory, { email: normalizedEmail, role: logRole(kind, knownAccount()), status: 'throttled', reason: check.failReason, req, aggregate: true });
+        recordLoginLog(db.memory, { email: normalizedEmail, role: logRole(kind, knownAccount()), status: 'throttled', reason: check.throttledReason, req, aggregate: true });
         scheduleLoginLogSave();
         return delayedRefusal(settings, guard);
     }

@@ -107,6 +107,36 @@ function classExamWindowEnd(application, now = Date.now()) {
     return start + length + pausedMilliseconds(application, now);
 }
 
+// Tentativas do aluno no estado das provas: { openAttempt, attemptedApplications }.
+// openAttempt: alguma tentativa ainda não entregue numa aplicação aguardando, em
+// andamento ou pausada.
+function scanStudentAttempts(memory, target) {
+    const states = memory.studentExamState && typeof memory.studentExamState === 'object' ? memory.studentExamState : {};
+    const attemptedApplications = new Set();
+    let openAttempt = false;
+    Object.keys(states).forEach(key => {
+        const state = states[key];
+        if (!state || typeof state !== 'object' || !state.applicationId) return;
+        if (normalizeEmail(state.studentEmail) !== target) return;
+        attemptedApplications.add(state.applicationId);
+        if (openAttempt || CLOSED_ATTEMPT_STATUSES.has(state.status)) return;
+        const application = findExamApplication(memory.examApplications, state.applicationId);
+        if (application && ACTIVE_APPLICATION_STATUSES.has(application.status)) openAttempt = true;
+    });
+    return { openAttempt, attemptedApplications };
+}
+
+// O aluno tem uma tentativa aberta agora (H5b, SEG-10)? Só a tentativa já aberta e ainda
+// não entregue numa aplicação ativa; a aplicação da turma que ele ainda não abriu não
+// conta. É o que decide se o "Redefinir senha" deixa a sessão de antes terminar a prova:
+// com a regra da turma (studentHasExamInProgress), quem tinha a senha antiga continuava
+// entrando por até 4 h só porque a turma estava em prova.
+function studentHasOpenAttempt(memory, email) {
+    const target = normalizeEmail(email);
+    if (!target || !memory) return false;
+    return scanStudentAttempts(memory, target).openAttempt;
+}
+
 // O aluno está fazendo uma prova agora? Duas situações contam:
 // - tentativa ainda não entregue numa aplicação aguardando, em andamento ou pausada;
 // - aplicação aguardando, em andamento ou pausada na turma dele, antes de ele abrir a
@@ -120,18 +150,7 @@ function classExamWindowEnd(application, now = Date.now()) {
 function studentHasExamInProgress(memory, email, student, now = Date.now()) {
     const target = normalizeEmail(email || (student && student.email));
     if (!target || !memory) return false;
-    const states = memory.studentExamState && typeof memory.studentExamState === 'object' ? memory.studentExamState : {};
-    const attemptedApplications = new Set();
-    let openAttempt = false;
-    Object.keys(states).forEach(key => {
-        const state = states[key];
-        if (!state || typeof state !== 'object' || !state.applicationId) return;
-        if (normalizeEmail(state.studentEmail) !== target) return;
-        attemptedApplications.add(state.applicationId);
-        if (openAttempt || CLOSED_ATTEMPT_STATUSES.has(state.status)) return;
-        const application = findExamApplication(memory.examApplications, state.applicationId);
-        if (application && ACTIVE_APPLICATION_STATUSES.has(application.status)) openAttempt = true;
-    });
+    const { openAttempt, attemptedApplications } = scanStudentAttempts(memory, target);
     if (openAttempt) return true;
     const record = student || (Array.isArray(memory.students) ? memory.students.find(item => item && normalizeEmail(item.email) === target) : null);
     if (!record) return false;
@@ -216,5 +235,6 @@ module.exports = {
     passwordChanged,
     requirePasswordChange,
     studentHasExamInProgress,
+    studentHasOpenAttempt,
     studentPasswordChangeState,
 };

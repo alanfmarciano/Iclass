@@ -37,7 +37,7 @@ const {
     STUDENT_PASSWORD_CHANGE_PATHS,
     adminPasswordChangeState,
     passwordChangeRequiredBody,
-    studentHasExamInProgress,
+    studentHasOpenAttempt,
     studentPasswordChangeState,
 } = require('./utils/passwordChange.js');
 
@@ -164,9 +164,10 @@ function validateStudentSession(req, res, next) {
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa.', sessionRevoked: true });
     }
     // Senha redefinida pelo professor depois deste login (H5b, SEG-10): a sessão de antes
-    // do "Redefinir senha" acaba. Quem está em prova agora termina a prova com ela; a
-    // sessão acaba no primeiro pedido depois da prova (studentHasExamInProgress).
-    if (sessionPredatesRevocation(student, session) && !studentHasExamInProgress(db.memory, normalizedEmail, student, nowTs)) {
+    // do "Redefinir senha" acaba. Quem tem uma tentativa aberta agora termina a prova com
+    // ela; a sessão acaba no primeiro pedido depois da entrega (studentHasOpenAttempt).
+    // A prova da turma que o aluno ainda não abriu não segura a sessão antiga.
+    if (sessionPredatesRevocation(student, session) && !studentHasOpenAttempt(db.memory, normalizedEmail)) {
         revokeStudentSession(db.memory, normalizedEmail);
         return res.status(401).json({
             error: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',

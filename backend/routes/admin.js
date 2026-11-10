@@ -50,7 +50,7 @@ const {
 } = require('../utils/students.js');
 const { normalizeAuditEntry, recordAudit } = require('../utils/audit.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
-const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress } = require('../utils/passwordChange.js');
+const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -375,13 +375,17 @@ router.post('/api/admin/reset-password', (req, res) => {
         requirePasswordChange(student, 'reset');
         student.updatedAt = now;
         // Quem estava logado com a senha antiga sai (H5b, SEG-10): antes o aparelho onde o
-        // aluno estava (ou quem tinha a senha antiga) continuava entrando até 8 h. Em prova
-        // agora, a sessão termina a prova e acaba no primeiro pedido depois dela
-        // (sessionsInvalidBefore, conferido em validateStudentSession). O atraso de login
-        // por senhas erradas também é liberado: o aluno entra na hora com a senha nova.
+        // aluno estava (ou quem tinha a senha antiga) continuava entrando até 8 h. Com uma
+        // tentativa aberta agora, a sessão termina a prova e acaba no primeiro pedido
+        // depois dela (sessionsInvalidBefore, conferido em validateStudentSession). Só a
+        // tentativa aberta conta: a prova da turma que o aluno ainda não abriu não segura a
+        // sessão antiga (ele entra de novo com a senha nova, e a troca dela fica para
+        // depois da prova pela regra do H5a). O atraso de login por senhas erradas também
+        // é liberado: o aluno entra na hora com a senha nova.
         student.sessionsInvalidBefore = now;
+        const attemptOpen = studentHasOpenAttempt(db.memory, student.email);
         const inExamNow = studentHasExamInProgress(db.memory, student.email, student, now);
-        const sessionEnded = !inExamNow && revokeStudentSession(db.memory, student.email);
+        const sessionEnded = !attemptOpen && revokeStudentSession(db.memory, student.email);
         loginGuard.clear(loginGuard.accountKey('student', student.email));
         recordAudit(db.memory, {
             req,

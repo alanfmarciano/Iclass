@@ -152,6 +152,44 @@ test('[UC-AUTH-003] "Redefinir senha" com o aluno em prova: a sessão termina a 
     await ping(fresh).expect(200);
 });
 
+test('[UC-AUTH-003] "Redefinir senha" com prova na turma que o aluno ainda não abriu: a sessão antiga acaba na hora', async () => {
+    // Antes: a regra da troca adiada (aplicação ativa na turma, dentro da janela) também
+    // segurava a sessão. Quem tinha a senha antiga continuava entrando por até 4 h só
+    // porque a turma estava em prova, sem o aluno ter aberto a tentativa.
+    const token = await studentToken();
+    db.memory.examApplications = [{ id: 'app-1', status: 'waiting', studentClass: '1DES', courseId: 'DES', examKey: 'p1', startsAt: new Date().toISOString(), durationMinutes: 60 }];
+    db.memory.studentExamState = {};
+    const prof = await adminToken(PROF);
+    const res = await request(app).post('/api/admin/reset-password').set('x-admin-session', prof).send({ email: ANA, newPassword: 'nova-senha-ana-7' }).expect(200);
+    assert.equal(res.body.sessionEnded, true);
+    await ping(token).expect(401);
+    await request(app).get('/api/student/enrollments').set('x-session-token', token).query({ email: ANA }).expect(401);
+    // O aluno entra de novo com a senha nova e faz a prova.
+    const fresh = (await studentLogin('nova-senha-ana-7').expect(200)).body.sessionToken;
+    await ping(fresh).expect(200);
+});
+
+test('[UC-AUTH-003] "Redefinir senha" em prova: depois da entrega o token antigo também não abre arquivo de /imagens', async () => {
+    const imagesDir = path.join(process.env.ICLASS_CONTENT_DIR, 'imagens', 'sessao');
+    fs.mkdirSync(imagesDir, { recursive: true });
+    fs.writeFileSync(path.join(imagesDir, 'figura.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+    const token = await studentToken();
+    const image = () => request(app).get('/imagens/sessao/figura.png').set('x-session-token', token);
+    await image().expect(200);
+    db.memory.examApplications = [{ id: 'app-1', status: 'running', studentClass: '1DES', courseId: 'DES', examKey: 'p1' }];
+    db.memory.studentExamState = { 'app-1|ana': { applicationId: 'app-1', studentEmail: ANA, status: 'in_progress', attemptId: 'at-1' } };
+    const prof = await adminToken(PROF);
+    const res = await request(app).post('/api/admin/reset-password').set('x-admin-session', prof).send({ email: ANA, newPassword: 'nova-senha-ana-7' }).expect(200);
+    assert.equal(res.body.sessionEnded, false);
+    // Na prova, a imagem da questão continua abrindo.
+    await image().expect(200);
+    // Entregou: antes, o token antigo seguia abrindo /uploads e /imagens até passar por
+    // validateStudentSession.
+    db.memory.studentExamState['app-1|ana'].status = 'submitted';
+    await image().expect(401);
+    await ping(token).expect(401);
+});
+
 test('[UC-AUTH-003] troca de senha do instrutor encerra as outras sessões dele e mantém a deste aparelho', async () => {
     const here = await adminToken(PROF);
     const elsewhere = await adminToken(PROF);

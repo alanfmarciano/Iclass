@@ -211,6 +211,9 @@ test('[UC-AUTH-002] instrutor: senha errada fica em loginLogs com o papel, e a 6
     assert.match(blocked.body.error, /peça a um administrador para liberar\.$/);
     const throttled = db.memory.loginLogs.find(entry => entry.email === PROF.email && entry.status === 'throttled');
     assert.ok(throttled, 'a tentativa durante a espera fica registrada como em espera');
+    // A senha não foi conferida na espera: o motivo não diz "Credenciais inválidas".
+    assert.notEqual(throttled.reason, 'Credenciais inválidas');
+    assert.match(throttled.reason, /senha não conferida/);
     // O sucesso também fica registrado, com o papel.
     await adminLogin(ADMIN.email, ADMIN.password).expect(200);
     assert.ok(db.memory.loginLogs.some(entry => entry.email === ADMIN.email && entry.status === 'success' && entry.role === 'admin'));

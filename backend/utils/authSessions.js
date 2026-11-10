@@ -191,7 +191,10 @@ function sessionPredatesRevocation(account, session) {
 
 // Consulta, sem efeito colateral: { ok: true, email, session, account } ou
 // { ok: false, reason } com reason 'missing' (token desconhecido), 'expired' (prazo
-// absoluto), 'idle' (só com options.idleMs), 'account_missing' ou 'account_inactive'.
+// absoluto), 'idle' (só com options.idleMs), 'account_missing', 'account_inactive' ou
+// 'password_reset' (sessão de antes do "Redefinir senha", fora de uma tentativa aberta:
+// a mesma regra de validateStudentSession, para o token antigo não continuar abrindo
+// arquivo em /uploads e /imagens depois da prova).
 function checkStudentSessionToken(raw, now = Date.now(), options = {}) {
     const memory = options.memory || currentMemory();
     const found = findStudentSession(memory, raw);
@@ -204,6 +207,10 @@ function checkStudentSessionToken(raw, now = Date.now(), options = {}) {
     if (!account) return { ok: false, reason: 'account_missing', email, session };
     const status = String(account.status || '').trim().toLowerCase();
     if (!ACTIVE_STUDENT_STATUSES.includes(status)) return { ok: false, reason: 'account_inactive', email, session, account };
+    // Carregado aqui: passwordChange.js lê o estado das provas (sem dependência circular).
+    if (sessionPredatesRevocation(account, session) && !require('./passwordChange.js').studentHasOpenAttempt(memory, email)) {
+        return { ok: false, reason: 'password_reset', email, session, account };
+    }
     return { ok: true, email, session, account };
 }
 
