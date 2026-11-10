@@ -265,8 +265,10 @@ function createAdminAccountsRouter() {
     });
 
     router.post('/api/session/logout', (req, res) => {
-        validateAdmin(req, res, () => {
+        validateAdmin(req, res, async () => {
             revokeAdminSession(db.memory, req.adminSessionToken);
+            // Também sai da tabela auth_sessions (H3a-2): não volta depois de um reinício.
+            await db.save();
             res.json({ success: true });
         });
     });

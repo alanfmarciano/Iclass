@@ -5,6 +5,7 @@
 // são tocadas aqui.
 const { ACTIVE_APPLICATION_STATUSES, CLOSED_ATTEMPT_STATUSES } = require('./examApplications.js');
 const { finishSummary } = require('./examFinish.js');
+const { studentSessionEmails } = require('./authSessions.js');
 
 function normalized(value) {
     return String(value || '').trim();
@@ -156,7 +157,7 @@ function classSessionsToDrop(memory, cls, isClassStudent) {
             busyElsewhere.add(normalizedEmail(state.studentEmail));
         }
     });
-    const classEmails = Object.keys(memory?.sessions || {}).filter(email => isClassStudent && isClassStudent(email));
+    const classEmails = studentSessionEmails(memory).filter(email => isClassStudent && isClassStudent(email));
     return {
         drop: classEmails.filter(email => !busyElsewhere.has(normalizedEmail(email))),
         keptInOtherExam: classEmails.filter(email => busyElsewhere.has(normalizedEmail(email))),

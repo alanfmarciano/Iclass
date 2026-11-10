@@ -43,8 +43,8 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `uploads` | objeto | metadados de arquivos enviados |
 | `config` | objeto | configuração global; `releasedItems` |
 | `admins` | array | administradores/professores (RBAC) |
-| `sessions` | objeto | sessões de aluno (só na memória): `email` → `{ tokenHash, createdAt, lastSeen, lastActivityAt, ip, origin? }`; `tokenHash` = sha256 do token, que fica só no navegador (`utils/authSessions.js`). `lastSeen` é a presença ("online"). |
-| `adminSessions` | objeto | sessões de instrutor (só na memória): `'h:' + sha256(token)` → `{ email, createdAt, lastSeen, lastActivityAt, origin? }`. `origin` só aparece quando não é `login` (`setup` no acesso rápido local). |
+| `sessions` | objeto | sessões de aluno: `email` → `{ tokenHash, createdAt, lastSeen, lastActivityAt, ip, origin? }`; `tokenHash` = sha256 do token, que fica só no navegador (`utils/authSessions.js`). `lastSeen` é a presença ("online"). Gravadas na tabela `auth_sessions` ([abaixo](#sessões-gravadas-auth_sessions)). `{ lastSeen }` sozinho (semente de demonstração do `TEST_MODE`) é só presença: não autentica e não é gravado. |
+| `adminSessions` | objeto | sessões de instrutor: `'h:' + sha256(token)` → `{ email, createdAt, lastSeen, lastActivityAt, origin? }`. `origin` só aparece quando não é `login` (`setup` no acesso rápido local). Gravadas na tabela `auth_sessions`. |
 | `studentExamState` | objeto | estado da prova por `studentEmail_examKey` |
 | `proctoringLogs` | array | eventos de antifraude |
 | `broadcastMessages` | array | mensagens do professor no monitor |
@@ -58,6 +58,25 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `library` | array | biblioteca de materiais reutilizáveis |
 
 > A lista usada por backup/restore (`COLLECTIONS` em `backend/utils/backup.js`) é derivada do registro `COLLECTION_TABLES` (`backend/database.js`): toda entrada com `backup` diferente de `false` e que não é `derived`, na ordem do registro. Ao criar uma coleção nova, acrescente-a ao registro; ela entra no backup sozinha. As tabelas próprias (`kind: 'store'`, hoje só `examKeystrokes`) estão na lista, mas o JSON do backup e a restauração ainda não as levam: entram pelo `exportRows`/`importRows` do H4a; até lá o backup continua sem as teclas, como sempre foi, e restaurar não mexe nelas.
+
+## Sessões gravadas (`auth_sessions`)
+
+Fase 2, H3a-2 (CONF-03, UXA-06, DES-08). Antes, as sessões de aluno e de instrutor ficavam só na memória e qualquer reinício do servidor (queda, Reiniciar, launcher reaberto) desconectava todos, inclusive quem estava no meio da prova. Agora a entrada `authSessions` do registro (`kind: 'derived'`, `backup: false`, `restore: 'reset'`) grava a tabela `auth_sessions (key TEXT PRIMARY KEY, value TEXT)`, uma linha por sessão, calculada de `sessions` e `adminSessions` por `persistedSessionRows` (`utils/authSessions.js`) a cada gravação:
+
+| Campo | Conteúdo |
+|-------|----------|
+| `key` | sha256 (hex, 64 caracteres) do token; o token cru nunca vai para o disco |
+| `value.kind` | `student` ou `admin` |
+| `value.email` | e-mail da conta, em minúsculas |
+| `value.createdAt` | início da sessão (ms): o prazo absoluto de 8 h conta daqui |
+| `value.ip` | só aluno: o IP do último acesso |
+| `value.origin` | só quando não é `login` (`setup` no acesso rápido local) |
+
+- **Sem presença**: `lastSeen` e `lastActivityAt` não entram, para a linha não mudar a cada ping. Na retomada `lastSeen` volta `null` (o aluno aparece offline no Monitor até o próximo ping) e `lastActivityAt` começa no boot.
+- **Quando grava**: login (aluno, instrutor, acesso rápido), Sair, `/api/student/leave`, exclusão e troca de e-mail do aluno e Resetar sala gravam antes da resposta; a limpeza das vencidas (a cada 15 min) grava em segundo plano. A sessão derrubada por um 401 (vencida, conta apagada ou bloqueada) sai da tabela na próxima gravação; se o servidor cair antes, a retomada a descarta pelas mesmas regras.
+- **Boot** (`prepareServer`, passo 3): o `db.init()` lê a tabela e guarda as linhas até a retomada (as gravações do próprio boot, como migrações, não as apagam). `restoreSessions` devolve à memória as sessões com menos de 8 h quando o servidor ficou até 60 min fora do ar (`runtime/heartbeat.json`, H3b); com mais de 60 min, ou sem heartbeat (o tempo fora do ar é desconhecido), ninguém volta e todos entram de novo, como antes. `origin: 'setup'` só volta com o modo setup ligado; e-mail de aluno repetido fica com a sessão mais nova. As que não voltaram saem da tabela no mesmo boot. O console diz o que aconteceu (`Sessões retomadas: N alunos e M professores (K descartadas)` ou `Sessões não retomadas: ...`).
+- **Backup**: as sessões não vão no backup, e restaurar um backup desconecta todos e esvazia a tabela.
+- **Primeiro boot desta versão**: a tabela ainda não existe; todos entram de novo uma vez, como antes.
 
 ## Histórico de digitação da prova (`exam_keystroke_events`)
 

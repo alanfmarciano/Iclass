@@ -41,8 +41,8 @@ backend/
 `startServer` confere o build e chama `prepareServer()` antes de abrir a porta (os testes usam o mesmo `prepareServer`, sem o build e sem `listen`):
 
 1. `db.init()`: carga, migrações e a sincronização das turmas com as aplicações, que só grava quando alguma turma mudou de fato (o boot não regrava turmas, alunos nem presenças nem diz "Provas online resetadas" sem motivo).
-2. `serverLifecycle.loadPreviousRun()`: lê `DATA_DIR/runtime/heartbeat.json` da execução anterior (quando parou, se foi parada limpa). A retomada das sessões do H3a-2 usa o mesmo dado (`previousRun().downtimeMs`). Heartbeat de menos de 15 s de outro processo ainda vivo (um segundo servidor aberto na mesma pasta, com o primeiro no ar) não é queda: este processo não devolve tempo nem grava o seu heartbeat.
-3. Sessões zeradas (`clearSessions`), migração do fórum e varredura da lixeira.
+2. `serverLifecycle.loadPreviousRun()`: lê `DATA_DIR/runtime/heartbeat.json` da execução anterior (quando parou, se foi parada limpa). A retomada das sessões (passo 3) usa o mesmo dado (`previousRun().downtimeMs`). Heartbeat de menos de 15 s de outro processo ainda vivo (um segundo servidor aberto na mesma pasta, com o primeiro no ar) não é queda: este processo não devolve tempo nem grava o seu heartbeat.
+3. Retomada das sessões (H3a-2, `restoreSessions` de `utils/authSessions.js` com as linhas de `auth_sessions` que o `db.init()` leu): com até 60 min fora do ar, aluno e professor seguem com o mesmo token; com mais, ou sem heartbeat, todos entram de novo. As que não voltaram saem da tabela já aqui (uma gravação), menos num segundo servidor com o primeiro ainda no ar. Depois, migração do fórum e varredura da lixeira. `prepareServer()` devolve `{ outage, sessions }` (o resumo da retomada).
 4. `compensateBootOutage`: o tempo do último heartbeat até agora volta para as provas em andamento como pausa `server_outage` (até 15 min; acima disso só o registro em `application.outages` e na auditoria da prova) e é gravado. Aplicação em que ninguém tinha mais tempo quando o servidor parou (todos entregaram, cronômetro por tentativa sem ninguém fazendo, prazo coletivo já vencido) fica sem pausa, sem registro e sem auditoria.
 5. Primeira varredura do fim do tempo (`settleExpiredAttempts`), depois da devolução: quem teve o prazo vencido com o servidor fora não é entregue no boot. Repete a cada 10 s.
 6. `startHeartbeat`: grava o heartbeat a cada 5 s e liga a verificação de tempo parado (`detectGap`: mais de 30 s sem verificação com o processo vivo, como notebook suspenso, vira queda `suspended`), que roda também antes de toda conta de prazo (`computeAttemptDeadline`).
@@ -75,7 +75,7 @@ A saída normal do processo (código 0: o fim do Ctrl+C e do SIGTERM, depois do 
 
 ### utils/ — regras isoladas
 
-Cada arquivo encapsula uma responsabilidade testável: `backup.js`, `examApplications.js`, `examAttempts.js`, `examGrading.js`, `examToken.js`, `security.js`, `safePath.js`, `rateLimit.js`, `uploadSecurity.js`, `authSessions.js` (único módulo de sessão: cria, procura pelo hash do token, confere e revoga), `studentSessions.js`, `students.js`, `branding.js`, `buildIntegrity.js`, `parser.js`, entre outros. Novas regras de negócio devem nascer aqui, não dentro do handler da rota.
+Cada arquivo encapsula uma responsabilidade testável: `backup.js`, `examApplications.js`, `examAttempts.js`, `examGrading.js`, `examToken.js`, `security.js`, `safePath.js`, `rateLimit.js`, `uploadSecurity.js`, `authSessions.js` (único módulo de sessão: cria, procura pelo hash do token, confere, revoga, limpa as vencidas, marca a presença e calcula as linhas da tabela `auth_sessions`; fora dele ninguém lê nem grava `db.memory.sessions` ou `adminSessions`), `studentSessions.js`, `students.js`, `branding.js`, `buildIntegrity.js`, `parser.js`, entre outros. Novas regras de negócio devem nascer aqui, não dentro do handler da rota.
 
 ## 3. Persistência — o padrão `db.memory` + `db.save()`
 

@@ -9,6 +9,7 @@
 
 const attendanceUtil = require('./attendance.js');
 const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js');
+const { studentSessionByEmail } = require('./authSessions.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -128,11 +129,13 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
         ? { id: futuras[0].id, titulo: evalTitle(memory, futuras[0].examKey), startsAt: Number(futuras[0].startsAt) }
         : null;
 
-    // "0 conectados" precisa de janela e da última leitura — sessions não é
-    // persistido, então zero sem contexto é indistinguível de reboot do servidor.
+    // "0 conectados" precisa de janela e da última leitura: a presença (lastSeen) não é
+    // gravada, e depois de um reinício a sessão retomada aparece offline até o próximo
+    // ping, então zero sem contexto é indistinguível de reboot do servidor. A sessão é
+    // lida pelo authSessions (chave própria, e-mail em minúsculas).
     let count = 0, ultimoAcessoAt = null;
     students.forEach(s => {
-        const sess = (memory.sessions || {})[s.email] || (memory.sessions || {})[lower(s.email)];
+        const sess = studentSessionByEmail(memory, s.email);
         const ts = typeof sess === 'number' ? sess : (sess && (sess.lastSeen || sess.lastPing)) || null;
         if (ts == null) return;
         if (now - ts <= ONLINE_JANELA_MIN * 60000) count++;

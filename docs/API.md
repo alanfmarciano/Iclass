@@ -21,6 +21,7 @@ O cliente (`web/src/lib/api.js`) envia credenciais por header conforme o perfil:
 - **Preferir sempre o token de sessão** (não expõe senha). O `Authorization: email:senha` existe só por compatibilidade.
 - Sessão de aluno tem **token único + trava por IP** (anti-sequestro). Ver [SEGURANCA.md](./SEGURANCA.md).
 - O token de sessão (aluno e instrutor) é opaco: 32 bytes aleatórios em base64url, devolvido só na resposta do login. O servidor guarda apenas o sha256 (`utils/authSessions.js`); token vencido (prazo absoluto) ou de conta apagada responde 401 também em `/uploads`, `/imagens` (`?access=`) e nas rotas de conteúdo de prova.
+- A sessão sobrevive ao reinício do servidor (H3a-2): com até 60 min fora do ar o mesmo token continua valendo (`/api/ping`, `whoami` e as demais rotas respondem como antes da queda), dentro do prazo absoluto de 8 h do login. Com mais de 60 min fora do ar, sem o registro de quando o servidor parou ou depois de restaurar um backup, o token antigo responde 401 `{ sessionRevoked:true }` e é preciso entrar de novo. O `instanceId` da resposta do login continua mudando a cada boot.
 
 ### Validação nos handlers
 

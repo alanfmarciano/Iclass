@@ -29,6 +29,8 @@
 //   fora da memória e do diff. O módulo dela tem a fila das operações pedidas e entrega
 //   ao ciclo um plano (plan()) com run(), feito dentro da mesma transação, e apply(),
 //   depois do COMMIT. Entra no ciclo quando listada em only e na gravação completa.
+// - Tabela derivada (kind 'derived', como as sessões em auth_sessions): as linhas saem de
+//   entry.rows(memory), pares [chave, texto JSON], e passam pelo mesmo diff das coleções.
 const { performance } = require('node:perf_hooks');
 
 const DB_WRITE_CODE = 'ICLASS_DB_WRITE';
@@ -147,7 +149,9 @@ function collectionRows(entry, memory, options) {
     } else if (entry.kind === 'singleton') {
         rows.set(String(entry.key), stringifyValue(value));
     } else if (entry.kind === 'derived' && typeof entry.rows === 'function') {
-        for (const [key, row] of entry.rows(memory) || []) rows.set(String(key), stringifyValue(row));
+        // Linha derivada em texto já é o JSON gravado (as sessões do boot ainda não
+        // retomadas voltam exatamente como estavam no disco); outro valor vira JSON.
+        for (const [key, row] of entry.rows(memory) || []) rows.set(String(key), typeof row === 'string' ? row : stringifyValue(row));
     }
     return rows;
 }

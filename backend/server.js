@@ -14,7 +14,8 @@ const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedCo
 const { fileLooksLikeBackup } = require('./utils/backup.js');
 const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
 const { createPersistenceContext } = require('./utils/persistenceContext.js');
-const { checkAdminSessionToken, checkStudentSessionToken, clearSessions } = require('./utils/authSessions.js');
+const { checkAdminSessionToken, checkStudentSessionToken, restoreSessions } = require('./utils/authSessions.js');
+const { SESSION_RESUME_MAX_DOWNTIME_MS } = require('./utils/sessionConfig.js');
 const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
 const serverLifecycle = require('./utils/serverLifecycle.js');
@@ -312,6 +313,32 @@ return app;
 
 let serverInstance;
 
+// Retomada das sessões gravadas (passo 3 do boot), com o tempo fora do ar do heartbeat da
+// execução anterior. Sem heartbeat (primeiro boot desta versão, pasta runtime apagada) o
+// tempo é desconhecido e nenhuma volta. Outro servidor ainda no ar nesta pasta: o tempo é
+// o do heartbeat dele (segundos), e este processo não grava nada por causa da retomada.
+// Devolve { students, admins, dropped, reason, clockWentBack, otherInstanceAlive }.
+function resumeSessions(run) {
+    const rows = db.takeBootAuthSessionRows();
+    const downtimeMs = run && run.found ? run.downtimeMs : null;
+    const result = restoreSessions(db.memory, rows, {
+        now: Date.now(),
+        downtimeMs,
+        setupMode: process.env.ICLASS_ADMIN_SETUP_MODE === '1',
+    });
+    result.otherInstanceAlive = !!(run && run.otherInstanceAlive);
+    if (!rows.length) return result;
+    const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+    if (result.reason === 'downtime_unknown') {
+        console.log(`🔑 Sessões não retomadas: não há registro de quando o servidor parou (runtime/heartbeat.json). Alunos e professores entram de novo (${plural(result.dropped, 'sessão descartada', 'sessões descartadas')}).`);
+    } else if (result.reason === 'downtime_too_long') {
+        console.log(`🔑 Sessões não retomadas: o servidor ficou mais de ${Math.round(SESSION_RESUME_MAX_DOWNTIME_MS / 60000)} min fora do ar. Alunos e professores entram de novo (${plural(result.dropped, 'sessão descartada', 'sessões descartadas')}).`);
+    } else {
+        console.log(`🔑 Sessões retomadas: ${plural(result.students, 'aluno', 'alunos')} e ${plural(result.admins, 'professor', 'professores')} (${plural(result.dropped, 'descartada', 'descartadas')}).`);
+    }
+    return result;
+}
+
 // Estado do servidor antes de atender (H3b, ordem do boot): banco, tempo fora do ar,
 // sessões, migração do fórum, lixeira, devolução do tempo das provas em andamento,
 // gravação, primeira varredura do fim do tempo e heartbeat, nesta ordem. A devolução vem
@@ -323,10 +350,19 @@ async function prepareServer() {
     await db.init();
     // 2) Quanto tempo o servidor ficou fora do ar: o heartbeat da execução anterior.
     serverLifecycle.loadPreviousRun();
-    // 3) Sessões de aluno e de instrutor só na memória, zeradas a cada boot. A retomada
-    // depois de um reinício (restoreSessions, utils/authSessions.js) entra com a tabela
-    // auth_sessions (H3a-2), com o tempo fora do ar de serverLifecycle.previousRun().
-    clearSessions(db.memory);
+    // 3) Sessões de aluno e de instrutor gravadas em auth_sessions (H3a-2): voltam depois
+    // de um reinício rápido, e ninguém precisa entrar de novo. Ficam de fora (como antes
+    // desta versão, todos entram de novo) quando o servidor ficou mais de 60 min fora do ar
+    // (desligado entre turnos) ou não se sabe quanto tempo ficou (sem heartbeat), e a
+    // sessão com mais que o prazo absoluto (8 h) ou do acesso rápido local sem o modo
+    // setup (utils/authSessions.js restoreSessions).
+    const sessions = resumeSessions(serverLifecycle.previousRun());
+    if (sessions.dropped && !sessions.otherInstanceAlive) {
+        // As que não voltaram saem da tabela já no boot: senão um reinício rápido logo
+        // depois (sem nenhuma gravação no meio) as traria de volta. Falha de gravação não
+        // impede o boot: o motor regrava sozinho.
+        try { await db.save(); } catch (e) { if (!e || e.code !== 'ICLASS_DB_WRITE') logCrash('retomada das sessões', e); }
+    }
 
     // 4) Garante IDs e e-mails de autor consistentes no fórum (migração automática)
     if (db.memory && db.memory.forum) {
@@ -422,7 +458,7 @@ async function prepareServer() {
         const backupInterval = setInterval(backupIfDue, 3600000);
         backupInterval.unref();
     }
-    return { outage };
+    return { outage, sessions };
 }
 
 async function startServer() {

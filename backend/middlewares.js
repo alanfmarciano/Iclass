@@ -576,8 +576,13 @@ function validateAdmin(req, res, callback) {
 
 // Sessão nova de instrutor (utils/authSessions.js): devolve o token cru, que só vai na
 // resposta; a memória guarda o hash. origin 'setup' no acesso rápido local.
+// A sessão vai para a tabela auth_sessions (H3a-2) na gravação completa pedida aqui:
+// dentro de um pedido, a resposta com o token só sai depois do COMMIT
+// (utils/persistenceContext.js), e um reinício logo depois não derruba o professor.
 function issueAdminSession(email, { origin } = {}) {
-    return createAdminSession(db.memory, email, { now: Date.now(), origin });
+    const token = createAdminSession(db.memory, email, { now: Date.now(), origin });
+    db.save();
+    return token;
 }
 
 function validateAdminPermission(req, res, permission, callback) {

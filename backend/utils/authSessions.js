@@ -151,9 +151,31 @@ function findStudentSession(memory, raw) {
     return null;
 }
 
-// Sessão gravada para o e-mail (só chave própria), em qualquer formato.
+// Sessão gravada para o e-mail (só chave própria), em qualquer formato. Também é por
+// aqui que o painel lê a presença (lastSeen) do aluno.
 function studentSessionByEmail(memory, email) {
     return ownValue(memory && memory.sessions, normalizeEmail(email));
+}
+
+// E-mails com sessão (ou presença) de aluno na memória, só chaves próprias.
+function studentSessionEmails(memory) {
+    const sessions = memory && memory.sessions;
+    if (!sessions || typeof sessions !== 'object') return [];
+    return Object.keys(sessions).filter(email => email && !isInheritedKey(email));
+}
+
+// Presença sem login (semente de demonstração do TEST_MODE): o aluno aparece "online"
+// no painel. Com sessão de verdade, só a presença muda; sem ela, fica só { lastSeen },
+// que não autentica (sem credencial) e não vai para a tabela auth_sessions. Antes a
+// semente gravava um número cru em sessions[email], por cima da sessão que houvesse.
+function markStudentPresence(memory, email, lastSeen = Date.now()) {
+    const normalizedEmail = normalizeEmail(email);
+    assertStorableEmail(normalizedEmail);
+    if (!memory.sessions || typeof memory.sessions !== 'object') memory.sessions = {};
+    const seen = validTimestamp(lastSeen) || Date.now();
+    const current = ownValue(memory.sessions, normalizedEmail);
+    if (hasSessionCredential(current)) current.lastSeen = seen;
+    else memory.sessions[normalizedEmail] = { lastSeen: seen };
 }
 
 // Sessão única: um login novo substitui a sessão anterior do mesmo e-mail (o token do
@@ -280,10 +302,43 @@ function checkAdminSessionToken(raw, now = Date.now(), options = {}) {
     return { ok: true, key, email, session, account };
 }
 
-// Todas as sessões saem (boot sem retomada, restauração de backup).
+// Todas as sessões saem (memória nova, restauração de backup).
 function clearSessions(memory) {
     memory.sessions = {};
     memory.adminSessions = {};
+}
+
+// Limpeza periódica: remove as sessões que passaram do prazo absoluto (aluno e
+// instrutor), para elas saírem também da tabela auth_sessions na gravação seguinte.
+// Ausência de ping não revoga: navegadores congelam os timers de abas em segundo plano,
+// e o aluno só aparece offline no Monitor. Sessão de aluno sem createdAt (formato antigo
+// ou só presença) conta pelo lastSeen; sem nenhum dos dois, sai. Valor de instrutor que
+// não é sessão também sai. Devolve quantas saíram.
+function pruneExpiredSessions(memory, { now = Date.now(), absoluteTtlMs = sessionAbsoluteTtlMs() } = {}) {
+    const ttl = Number(absoluteTtlMs);
+    if (!memory || typeof memory !== 'object' || !Number.isFinite(ttl) || ttl <= 0) return 0;
+    let removed = 0;
+    const sessions = memory.sessions && typeof memory.sessions === 'object' ? memory.sessions : {};
+    studentSessionEmails(memory).forEach(email => {
+        const session = sessions[email];
+        const reference = session && typeof session === 'object'
+            ? (validTimestamp(session.createdAt) || validTimestamp(session.lastSeen))
+            : validTimestamp(session);
+        if (!reference || now - reference > ttl) {
+            delete sessions[email];
+            removed += 1;
+        }
+    });
+    const admins = memory.adminSessions && typeof memory.adminSessions === 'object' ? memory.adminSessions : {};
+    Object.keys(admins).forEach(key => {
+        const session = admins[key];
+        const reference = isAdminSessionValue(session) ? (validTimestamp(session.createdAt) || validTimestamp(session.lastSeen)) : null;
+        if (!reference || now - reference > ttl) {
+            delete admins[key];
+            removed += 1;
+        }
+    });
+    return removed;
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +473,8 @@ module.exports = {
     isSessionIdle,
     findStudentSession,
     studentSessionByEmail,
+    studentSessionEmails,
+    markStudentPresence,
     createStudentSession,
     revokeStudentSession,
     checkStudentSessionToken,
@@ -427,6 +484,7 @@ module.exports = {
     revokeAdminSessions,
     checkAdminSessionToken,
     clearSessions,
+    pruneExpiredSessions,
     persistedSessionRows,
     restoreSessions,
 };

@@ -58,8 +58,7 @@ const {
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
-const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
-const { createStudentSession, revokeStudentSession } = require('../utils/authSessions.js');
+const { createStudentSession, revokeStudentSession, pruneExpiredSessions } = require('../utils/authSessions.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     createSubmissionFromAttempt,
@@ -250,17 +249,23 @@ router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, re
         req.body = parsed && typeof parsed === 'object' ? parsed : { email: req.body.trim() };
     }
     next();
-}, validateStudentSession, (req, res) => {
+}, validateStudentSession, async (req, res) => {
     revokeStudentSession(db.memory, req.studentEmail);
+    // A sessão sai também da tabela auth_sessions (H3a-2): sem a gravação ela voltaria
+    // depois de um reinício do servidor.
+    await db.save();
     res.json({ success: true });
 });
 
 // Remove apenas sessões que atingiram o prazo absoluto. O heartbeat controla
 // a presença exibida no monitor, mas uma aba em segundo plano pode ter seus
 // timers suspensos pelo navegador e não pode perder a autenticação por isso.
+// Tarefa de fundo: gravação { detached: true } (a falha vai para o crash.log pelo
+// motor de gravação, que regrava sozinho).
 const sessionCleanupInterval = setInterval(() => {
     const absoluteHours = Number(settingsUtil.getSettings().session.absoluteHours) || 8;
-    pruneExpiredStudentSessions(db.memory.sessions, { absoluteTtlMs: absoluteHours * 3600000 });
+    const removed = pruneExpiredSessions(db.memory, { absoluteTtlMs: absoluteHours * 3600000 });
+    if (removed) db.save({ detached: true }).catch(() => {});
 }, 15 * 60 * 1000);
 sessionCleanupInterval.unref();
 

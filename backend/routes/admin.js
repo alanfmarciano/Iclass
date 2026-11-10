@@ -80,7 +80,7 @@ const {
     studentEmailOwnership,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
-const { revokeStudentSession } = require('../utils/authSessions.js');
+const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -379,9 +379,11 @@ router.post('/api/admin/delete-student', (req, res) => {
 
         emails.forEach(known => {
             if (!owns(known, null, 'renamed')) return;
-            ['progress', 'notes', 'annotations', 'sessions'].forEach(collection => {
+            ['progress', 'notes', 'annotations'].forEach(collection => {
                 if (db.memory[collection]) delete db.memory[collection][known];
             });
+            // A sessão sai pelo authSessions (e da tabela auth_sessions na gravação).
+            revokeStudentSession(db.memory, known);
         });
         // O log de auditoria é mantido como histórico, mas sem ligação com o aluno: as
         // entradas perdem o e-mail, o nome e a matrícula e as cópias das notas na lixeira
@@ -1233,10 +1235,11 @@ router.get('/api/admin/students', (req, res) => {
         const now = Date.now();
         const enrichedStudents = students.map(s => {
             // Só a presença (lastSeen): a sessão é { tokenHash, createdAt, lastSeen,
-            // lastActivityAt, ip } (utils/authSessions.js, sem o token cru). Também valem os
-            // formatos legados { token, lastSeen } e timestamp puro (este, só no seed do
-            // TEST_MODE). A chave é sempre o e-mail em minúsculas.
-            const session = s.email ? db.memory.sessions[s.email.toLowerCase()] : null;
+            // lastActivityAt, ip } (utils/authSessions.js, sem o token cru), ou só
+            // { lastSeen } na semente do TEST_MODE. Também valem os formatos legados
+            // { token, lastSeen } e timestamp puro. Lida pelo authSessions (chave própria,
+            // e-mail em minúsculas).
+            const session = s.email ? studentSessionByEmail(db.memory, s.email) : null;
             const lastSeen = sessionLastSeen(session);
             const isOnline = isStudentSessionOnline(session, now);
             const { password, ...safeStudent } = s;
@@ -4040,7 +4043,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 individualTimeAdjustment: 0
             };
 
-            const session = db.memory.sessions[email];
+            const session = studentSessionByEmail(db.memory, email);
             const isOnline = isStudentSessionOnline(session);
             
             // Entregas do aluno nesta aplicação; a mais recente é a que o professor vê

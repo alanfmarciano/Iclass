@@ -8,7 +8,6 @@ const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
 const { normalizeStoredStudentClasses } = require('./students.js');
 const zipInspect = require('./zipInspect.js');
-const { clearSessions } = require('./authSessions.js');
 
 const CONTENT_DIR = runtimePaths.CONTENT_DIR;
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -253,6 +252,11 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
     db.COLLECTION_TABLES.forEach(entry => {
         if (entry.restore === 'reset') {
+            // Tabela derivada (sessões): esvazia o que gera as linhas na memória (reset).
+            if (entry.kind === 'derived') {
+                if (typeof entry.reset === 'function') entry.reset(db.memory);
+                return;
+            }
             db.memory[entry.collection] = restoredCollectionValue(entry);
             return;
         }
@@ -269,8 +273,9 @@ async function applySnapshot(snapshot, { replaceAccounts = false } = {}) {
     // A prova pausada no backup fica pausada desde o momento dele (exportedAt).
     const backupAt = Date.parse(String(snapshot.exportedAt || '')) || null;
     const applications = hasLegacyApplications(snapshot) ? db.rebuildExamApplicationsFromClasses({ backupAt }) : null;
-    // Restaurar desconecta todos (sessões não vão no backup).
-    clearSessions(db.memory);
+    // Restaurar desconecta todos (sessões não vão no backup): a entrada authSessions do
+    // registro ('reset') zerou as sessões no laço acima, e a gravação esvazia a tabela
+    // auth_sessions.
     await db.save();
     return applications;
 }

@@ -20,6 +20,7 @@ const { createDbWriter, DbWriteError, MEMORY_KINDS } = require('./utils/dbWriter
 const { createKeystrokeStore, KEYSTROKE_COLLECTION, KEYSTROKE_SCHEMA, KEYSTROKE_TABLE, LEGACY_KEYSTROKE_TABLE } = require('./utils/keystrokeStore.js');
 const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('./utils/persistenceContext.js');
 const { logError } = require('./utils/errorLog.js');
+const { clearSessions, persistedSessionRows } = require('./utils/authSessions.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
@@ -169,7 +170,9 @@ function classStorageKey(cls) {
 // - restore: 'replace' (o backup substitui), 'merge' (junta com a atual), 'keep' (fica
 //   a atual quando falta no backup) ou 'reset' (volta vazia); padrão 'replace';
 // - legacyTable (só 'store'): a tabela antiga que a migração do boot esvazia; continua
-//   sendo criada (schema) e é desta entrada.
+//   sendo criada (schema) e é desta entrada;
+// - rows (só 'derived'): rows(memory) devolve as linhas [chave, texto JSON]; reset (só
+//   'derived'): reset(memory) esvazia na memória o que gera as linhas (restauração 'reset').
 function tableEntry(collection, table, kind, key, extra = {}) {
     return Object.freeze({ collection, table, kind, key, append: false, backup: true, restore: 'replace', ...extra });
 }
@@ -218,9 +221,49 @@ const COLLECTION_TABLES = Object.freeze([
     // Aplicações de prova: sem elas, restaurar um backup voltava as entregas e a turma,
     // mas não o status das aplicações.
     tableEntry('examApplications', 'exam_applications', 'array', 'id'),
+    // Sessões de aluno e de instrutor (H3a-2: CONF-03, UXA-06, DES-08): uma linha por
+    // sessão, chave = sha256 do token e valor { kind, email, createdAt, ip?, origin? },
+    // calculadas de db.memory.sessions e adminSessions por persistedSessionRows
+    // (utils/authSessions.js). Nunca o token cru, nem lastSeen (a tabela não muda a cada
+    // ping). No boot as linhas lidas ficam como estão até a retomada (server.js
+    // prepareServer: restoreSessions com db.takeBootAuthSessionRows()). Fora do backup; a
+    // restauração de um backup zera todas (todos entram de novo).
+    tableEntry('authSessions', 'auth_sessions', 'derived', 'hash', {
+        backup: false,
+        restore: 'reset',
+        rows: authSessionTableRows,
+        reset: resetAuthSessions,
+    }),
 ]);
 
 const TABLE_BY_COLLECTION = new Map(COLLECTION_TABLES.map(entry => [entry.collection, entry]));
+
+// Linhas das tabelas derivadas lidas no boot (coleção -> Map(chave -> texto JSON)), até
+// quem as calcula retomá-las: até lá elas são gravadas como estão, e uma gravação do
+// próprio init (migração, provas resetadas) não apaga as sessões antes da retomada.
+const pendingBootRows = new Map();
+
+// Linhas de auth_sessions: as do boot ainda não retomadas e as sessões da memória.
+function authSessionTableRows(memory) {
+    const rows = new Map(pendingBootRows.get('authSessions') || []);
+    persistedSessionRows(memory).forEach(row => rows.set(row.key, JSON.stringify(row.value)));
+    return rows;
+}
+
+// Restauração de backup: todos saem, inclusive as sessões do boot ainda não retomadas.
+function resetAuthSessions(memory) {
+    pendingBootRows.delete('authSessions');
+    clearSessions(memory);
+}
+
+// As sessões gravadas lidas no boot ([{ key, value }], value em texto JSON), uma vez:
+// devolve e esvazia. Depois disso a tabela segue só a memória (as que não voltaram saem
+// na gravação seguinte).
+function takeBootAuthSessionRows() {
+    const rows = pendingBootRows.get('authSessions');
+    pendingBootRows.delete('authSessions');
+    return rows ? [...rows].map(([key, value]) => ({ key, value })) : [];
+}
 
 // Valor vazio de uma coleção da memória (boot, restauração 'reset').
 function emptyCollectionValue(entry) {
@@ -236,7 +279,9 @@ function createEmptyMemory() {
     COLLECTION_TABLES.forEach(entry => {
         if (MEMORY_KINDS.has(entry.kind)) memory[entry.collection] = emptyCollectionValue(entry);
     });
-    memory.sessions = {}; // Alunos online { "email": sessão } (memória; zeradas a cada boot)
+    // Sessões de aluno e de instrutor (utils/authSessions.js): na memória, gravadas na
+    // tabela auth_sessions (entrada 'derived' acima) e retomadas no boot.
+    clearSessions(memory);
     return memory;
 }
 
@@ -413,6 +458,21 @@ async function loadRegisteredCollections() {
             const found = parsed.find(([key]) => key === entry.key);
             memoryDB[entry.collection] = (found && found[1]) || emptyCollectionValue(entry);
         }
+    }
+}
+
+// Tabelas derivadas (auth_sessions): as linhas como estão no disco semeiam o motor de
+// gravação (a primeira gravação só escreve o que mudou) e ficam guardadas para a retomada
+// (takeBootAuthSessionRows). Linha ilegível também: depois da retomada ela não volta e
+// sai na gravação seguinte (não é dado do usuário).
+async function loadDerivedTables() {
+    for (const entry of COLLECTION_TABLES) {
+        if (entry.kind !== 'derived') continue;
+        const rows = await allSql(`SELECT key, value FROM ${entry.table}`);
+        const seed = new Map(rows.map(row => [String(row.key), row.value]));
+        writer.seed(entry.table, seed);
+        if (seed.size) pendingBootRows.set(entry.collection, new Map(seed));
+        else pendingBootRows.delete(entry.collection);
     }
 }
 
@@ -892,6 +952,7 @@ async function init() {
 
     // 2. Carrega todas as coleções do registro (e semeia o motor de gravação).
     await loadRegisteredCollections();
+    await loadDerivedTables();
 
     // Migração de studentClass para classes array
     memoryDB.students.forEach(student => {
@@ -1324,6 +1385,8 @@ module.exports = {
     get memory() { return memoryDB; },
     // Histórico de digitação da prova (tabela própria; utils/keystrokeStore.js).
     keystrokes: keystrokeStore.api,
+    // Sessões gravadas lidas no boot, para a retomada (server.js prepareServer).
+    takeBootAuthSessionRows,
     COLLECTION_TABLES,
     emptyCollectionValue,
     save: saveToDisk,

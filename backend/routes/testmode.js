@@ -9,6 +9,7 @@ const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const attendanceUtil = require('../utils/attendance.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { applicationToOnlineConfig, createExamApplication } = require('../utils/examApplications.js');
+const { markStudentPresence } = require('../utils/authSessions.js');
 
 const TEST = process.env.TEST_MODE === '1';
 const TEST_ADMIN = DEMO_ACCOUNTS.admin;
@@ -242,7 +243,6 @@ function seedAcademicData() {
   const completionCounts = [9, 12, 6, 15, 8, 10, 4, 13, 7, 11, 5, 14];
   db.memory.progress = db.memory.progress || {};
   db.memory.notes = db.memory.notes || {};
-  db.memory.sessions = db.memory.sessions || {};
 
   const submissions = [];
   const attendance = [];
@@ -263,7 +263,9 @@ function seedAcademicData() {
       FECOP: 'Conferir grupos do Active Directory e políticas de acesso antes da próxima aula.',
       IRCOM: 'Resumo dos protocolos industriais e pontos importantes do laboratório.'
     };
-    if (studentIndex < 4) db.memory.sessions[email] = now - studentIndex * 60000;
+    // Quatro alunos aparecem "online" no painel (só presença, sem login: pelo
+    // authSessions, que não grava isso como sessão nem na tabela auth_sessions).
+    if (studentIndex < 4) markStudentPresence(db.memory, email, now - studentIndex * 60000);
 
     RESULT_EXAMS.forEach((examKey, examIndex) => {
       const score = 60 + ((studentIndex * 7 + examIndex * 8) % 39);

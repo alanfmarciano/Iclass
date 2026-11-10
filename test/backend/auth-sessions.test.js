@@ -1,9 +1,13 @@
 // Sessões guardadas só como hash (H3a-1, utils/authSessions.js). Antes, o servidor
 // guardava o token cru: sessions[email].token e adminSessions[tokenCru]. Agora o token
-// cru fica só no navegador; a memória (e, no H3a-2, a tabela auth_sessions) guarda o
+// cru fica só no navegador; a memória e a tabela auth_sessions (H3a-2) guardam o
 // sha256. Os testes de formato e de retomada falham no código antigo; os do caminho
 // legado (fixtures com { token } e adminSessions[tokenCru]) ficam de guarda para nenhum
-// aluno ou professor cair por causa da troca de formato.
+// aluno ou professor cair por causa da troca de formato. Os do H3a-2 (no fim) conferem a
+// tabela auth_sessions lida por outra conexão: login, Sair e saída do aluno gravam sem
+// db.save() do teste, o ping não muda a linha, a restauração de backup esvazia a tabela e
+// nenhum código fora do authSessions.js mexe nas sessões da memória. O reinício de
+// verdade (kill -9) está em server-restart.test.js.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -11,6 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const request = require('supertest');
+const sqlite3 = require('sqlite3');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-auth-sessions-test-'));
 process.env.ICLASS_DATA_DIR = tempRoot;
@@ -40,6 +45,10 @@ const {
     persistedSessionRows,
     restoreSessions,
     clearSessions,
+    studentSessionByEmail,
+    studentSessionEmails,
+    markStudentPresence,
+    pruneExpiredSessions,
 } = authSessions;
 
 const ADMIN = { email: 'adm@sessoes.local', password: 'senha-adm' };
@@ -436,6 +445,171 @@ test('[UC-AUTH-001] só utils/authSessions.js lê e grava sessão pelo token', (
         if (/adminSessions\s*\[/.test(text)) offenders.push(`${rel}: adminSessions[`);
         if (/\.token\s*[!=]==?/.test(text)) offenders.push(`${rel}: .token ===`);
         if (/sessions\s*\[[^\]]+\]\s*=\s*\{[^}]*\btoken\s*:/s.test(text)) offenders.push(`${rel}: sessão gravada com token cru`);
+    });
+    assert.deepEqual(offenders, []);
+});
+
+// ---------------------------------------------------------------------------
+// H3a-2: a tabela auth_sessions (CONF-03, UXA-06, DES-08)
+// ---------------------------------------------------------------------------
+
+// Linhas de auth_sessions lidas do arquivo por outra conexão (o que sobrevive a um kill -9).
+async function storedSessionRows() {
+    const connection = new sqlite3.Database(path.join(tempRoot, 'database.db'), sqlite3.OPEN_READONLY);
+    try {
+        const rows = await new Promise((resolve, reject) => connection.all('SELECT key, value FROM auth_sessions ORDER BY key', (err, list) => (err ? reject(err) : resolve(list))));
+        return Object.fromEntries(rows.map(row => [row.key, row.value]));
+    } finally {
+        await new Promise(resolve => connection.close(() => resolve()));
+    }
+}
+
+test('[UC-AUTH-001] login, Sair e saída do aluno gravam a tabela auth_sessions antes da resposta (antes: sessões só na memória)', async () => {
+    await db.save();
+    assert.deepEqual(await storedSessionRows(), {}, 'memória sem sessões: tabela vazia');
+
+    const studentToken = await studentLogin();
+    let stored = await storedSessionRows();
+    assert.deepEqual(Object.keys(stored), [sha256(studentToken)]);
+    const studentRow = JSON.parse(stored[sha256(studentToken)]);
+    assert.equal(studentRow.kind, 'student');
+    assert.equal(studentRow.email, ANA.email);
+    assert.equal(studentRow.createdAt, db.memory.sessions[ANA.email].createdAt);
+
+    const adminToken = await adminLogin();
+    stored = await storedSessionRows();
+    assert.deepEqual(Object.keys(stored).sort(), [sha256(studentToken), sha256(adminToken)].sort());
+    assert.deepEqual(JSON.parse(stored[sha256(adminToken)]), { kind: 'admin', email: ADMIN.email, createdAt: db.memory.adminSessions[adminSessionKey(adminToken)].createdAt });
+    const text = JSON.stringify(stored);
+    assert.equal(text.includes(studentToken) || text.includes(adminToken), false, 'nada de token cru no arquivo');
+
+    // O ping muda só a presença (lastSeen), que não vai para a tabela: a linha fica igual
+    // mesmo depois de uma gravação completa.
+    const before = stored[sha256(studentToken)];
+    const seenBefore = db.memory.sessions[ANA.email].lastSeen;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await ping(studentToken).expect(200);
+    assert.ok(db.memory.sessions[ANA.email].lastSeen > seenBefore);
+    await db.save();
+    stored = await storedSessionRows();
+    assert.equal(stored[sha256(studentToken)], before);
+
+    // Sair e /api/student/leave tiram a linha (sem db.save() do teste).
+    await request(app).post('/api/session/logout').set('x-admin-session', adminToken).expect(200);
+    assert.deepEqual(Object.keys(await storedSessionRows()), [sha256(studentToken)]);
+    await request(app).post('/api/student/leave').set('x-session-token', studentToken).send({ email: ANA.email }).expect(200);
+    assert.deepEqual(await storedSessionRows(), {});
+
+    // Login novo do mesmo aluno (outro aparelho): a linha antiga sai junto.
+    const first = await studentLogin();
+    const second = await studentLogin();
+    assert.deepEqual(Object.keys(await storedSessionRows()), [sha256(second)]);
+    assert.notEqual(first, second);
+});
+
+test('[UC-AUTH-001] backup não leva sessões, e restaurar desconecta todos e esvazia auth_sessions', async () => {
+    const backup = require('../../backend/utils/backup.js');
+    const studentToken = await studentLogin();
+    const adminToken = await adminLogin();
+    assert.equal(Object.keys(await storedSessionRows()).length, 2);
+
+    const snapshot = structuredClone(backup.buildDataSnapshot());
+    ['sessions', 'adminSessions', 'authSessions', 'auth_sessions'].forEach(key => assert.equal(Object.hasOwn(snapshot.data, key), false, key));
+    const text = JSON.stringify(snapshot);
+    for (const secret of [studentToken, adminToken, sha256(studentToken), sha256(adminToken)]) assert.equal(text.includes(secret), false);
+
+    await backup.restoreDataSnapshot(snapshot);
+    assert.deepEqual(await storedSessionRows(), {});
+    assert.deepEqual(persistedSessionRows(db.memory), []);
+    await ping(studentToken).expect(401);
+    await whoami(adminToken).expect(401);
+    // Depois de restaurar, entrar de novo funciona e volta a gravar.
+    const again = await studentLogin();
+    assert.deepEqual(Object.keys(await storedSessionRows()), [sha256(again)]);
+});
+
+test('[UC-AUTH-001] markStudentPresence: presença sem login não autentica nem vai para a tabela', () => {
+    const memory = { students: [{ email: 'ana@x.local', status: 'Ativo' }], sessions: {}, adminSessions: {} };
+    const now = 1_500_000_000_000;
+    const token = createStudentSession(memory, 'ana@x.local', { ip: '10.0.0.2', now });
+    const hash = memory.sessions['ana@x.local'].tokenHash;
+
+    // Sessão de verdade: só a presença muda (antes a semente gravava um número por cima).
+    markStudentPresence(memory, 'ANA@x.local', now + 5000);
+    assert.equal(memory.sessions['ana@x.local'].tokenHash, hash);
+    assert.equal(memory.sessions['ana@x.local'].lastSeen, now + 5000);
+    assert.equal(findStudentSession(memory, token).email, 'ana@x.local');
+
+    // Sem sessão: só { lastSeen }, sem credencial.
+    markStudentPresence(memory, 'bia@x.local', now);
+    assert.deepEqual(memory.sessions['bia@x.local'], { lastSeen: now });
+    assert.equal(studentSessionByEmail(memory, 'BIA@x.local').lastSeen, now);
+    assert.deepEqual(studentSessionEmails(memory).sort(), ['ana@x.local', 'bia@x.local']);
+    assert.deepEqual(persistedSessionRows(memory).map(row => row.value.email), ['ana@x.local']);
+    assert.throws(() => markStudentPresence(memory, '__proto__', now), TypeError);
+    assert.equal(Object.prototype.lastSeen, undefined);
+    assert.equal(studentSessionByEmail(memory, 'constructor'), undefined);
+});
+
+test('[UC-AUTH-001] pruneExpiredSessions tira aluno e instrutor vencidos, formatos antigos e valores que não são sessão', () => {
+    const now = 1_700_000_000_000;
+    const ttl = 8 * HOUR;
+    const memory = { sessions: {}, adminSessions: {} };
+    const fresh = createStudentSession(memory, 'novo@x.local', { now: now - HOUR });
+    createStudentSession(memory, 'velho@x.local', { now: now - 9 * HOUR });
+    memory.sessions['numero-recente@x.local'] = now - HOUR; // presença antiga (número)
+    memory.sessions['numero-velho@x.local'] = now - 9 * HOUR;
+    memory.sessions['presenca@x.local'] = { lastSeen: now - 2 * HOUR };
+    memory.sessions['presenca-velha@x.local'] = { lastSeen: now - 10 * HOUR };
+    memory.sessions['vazio@x.local'] = {};
+    const adminFresh = createAdminSession(memory, 'adm@x.local', { now: now - HOUR });
+    const adminOld = createAdminSession(memory, 'adm@x.local', { now: now - 9 * HOUR });
+    memory.adminSessions['legado-velho'] = { email: 'adm@x.local', createdAt: now - 9 * HOUR };
+    memory.adminSessions['legado-novo'] = { email: 'adm@x.local', lastSeen: now - HOUR };
+    memory.adminSessions['estragada'] = 7;
+
+    assert.equal(pruneExpiredSessions(memory, { now, absoluteTtlMs: ttl }), 7);
+    assert.deepEqual(Object.keys(memory.sessions).sort(), ['novo@x.local', 'numero-recente@x.local', 'presenca@x.local']);
+    assert.equal(findStudentSession(memory, fresh).email, 'novo@x.local');
+    assert.ok(findAdminSession(memory, adminFresh));
+    assert.equal(findAdminSession(memory, adminOld), null);
+    assert.deepEqual(Object.keys(memory.adminSessions).sort(), [adminSessionKey(adminFresh), 'legado-novo'].sort());
+    // Prazo inválido não apaga nada.
+    assert.equal(pruneExpiredSessions(memory, { now, absoluteTtlMs: 0 }), 0);
+    assert.equal(pruneExpiredSessions(memory, { now: now + 100 * HOUR, absoluteTtlMs: NaN }), 0);
+    assert.equal(pruneExpiredSessions(null), 0);
+});
+
+// Contrato do H3a-2: as sessões da memória (db.memory.sessions e adminSessions) só são
+// lidas e gravadas pelo utils/authSessions.js, para nada escapar da tabela auth_sessions
+// (a semente do TEST_MODE gravava um número em sessions[email]; a limpeza periódica e o
+// painel liam o objeto direto). Linhas de comentário ficam de fora.
+test('[UC-AUTH-001] fora de utils/authSessions.js ninguém mexe em sessions nem em adminSessions da memória', () => {
+    const backendDir = path.join(__dirname, '..', '..', 'backend');
+    const files = [];
+    const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).forEach(entry => {
+        if (entry.name === 'node_modules') return;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(c|m)?js$/.test(entry.name)) files.push(full);
+    });
+    walk(backendDir);
+    const patterns = [
+        [/\.sessions\b/, '.sessions'],
+        [/\bsessions\s*\[/, 'sessions['],
+        [/\badminSessions\b/, 'adminSessions'],
+        [/['"`](sessions|adminSessions)['"`]/, "'sessions'"],
+    ];
+    const offenders = [];
+    files.filter(file => path.basename(file) !== 'authSessions.js').forEach(file => {
+        const rel = path.relative(backendDir, file);
+        fs.readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+            patterns.forEach(([pattern, label]) => {
+                if (pattern.test(line)) offenders.push(`${rel}:${index + 1}: ${label}`);
+            });
+        });
     });
     assert.deepEqual(offenders, []);
 });
