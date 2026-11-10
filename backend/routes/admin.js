@@ -16,7 +16,7 @@ const {
     getCourseItemKeys,
     isProfessorAccount,
     adminAllowedCourseIds,
-    adminAllowedSchoolIds,
+    adminAssignedSchoolIds,
     adminCanAccessCourse,
     adminCanAccessClass,
     adminCanAccessItem,
@@ -5127,7 +5127,9 @@ router.get('/api/admin/dashboard/trends', (req, res) => {
 
 // Duplicar (clonar) curso para outra escola: copia independente de estrutura e conteudo.
 // Professor (SEG-12): a origem precisa estar no escopo dele (o caminho também é conferido
-// em validateProfessorRequestScope) e a escola de destino, entre as escolas dele.
+// em validateProfessorRequestScope) e a escola de destino precisa estar atribuída a ele,
+// como ao criar curso: a cópia (com as turmas copiadas) nasce fora do escopo de quem só
+// tem turma ou curso atribuído, e ele não veria nem cuidaria do que acabou de criar.
 router.post('/api/admin/courses/:id/clone', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         if (!canAccessAdminPermission(matchedAdmin, 'course.manage')) {
@@ -5139,8 +5141,11 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
             return res.status(403).json({ error: 'O curso solicitado não pertence às turmas atribuídas a esta conta.' });
         }
         const body = req.body || {};
-        if (typeof body.newId !== 'string' || !body.newId.trim() || typeof body.newName !== 'string' || !body.newName.trim()) {
-            return res.status(400).json({ error: 'Informe ID e nome do novo curso.' });
+        if (typeof body.newId !== 'string' || !body.newId.trim()) {
+            return res.status(400).json({ success: false, error: 'Informe o código e o nome do novo curso.', field: 'newId' });
+        }
+        if (typeof body.newName !== 'string' || !body.newName.trim()) {
+            return res.status(400).json({ success: false, error: 'Informe o código e o nome do novo curso.', field: 'newName' });
         }
         const newId = body.newId.trim().toUpperCase();
         // O código entra no nome dos arquivos copiados (<chave>_<código>.md): só letras,
@@ -5155,13 +5160,15 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
         }
         const requestedSchoolId = typeof body.schoolId === 'string' ? body.schoolId.trim() : '';
         const schoolId = requestedSchoolId || src.schoolId || 'escola_default';
-        if (isProfessorAccount(matchedAdmin) && !adminAllowedSchoolIds(matchedAdmin).has(String(schoolId))) {
-            return res.status(403).json({ success: false, error: 'A escola de destino não está no seu escopo.', field: 'schoolId' });
+        if (isProfessorAccount(matchedAdmin) && !adminAssignedSchoolIds(matchedAdmin).includes(String(schoolId))) {
+            return res.status(403).json({ success: false, error: 'Você só pode duplicar curso para uma escola atribuída à sua conta.', field: 'schoolId' });
         }
         if (requestedSchoolId && requestedSchoolId !== String(src.schoolId || '') && !schoolExists(requestedSchoolId)) {
             return res.status(400).json({ success: false, error: 'Escola não encontrada.', field: 'schoolId' });
         }
-        if ((db.memory.courses || []).some(c => c && c.id === newId)) return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
+        if ((db.memory.courses || []).some(c => c && c.id === newId)) {
+            return res.status(400).json({ success: false, error: 'Já existe um curso com esse código.', field: 'newId' });
+        }
 
         function copyContentFile(oldKey, newKey) {
             const oldP = path.join(runtimePaths.CONTENT_DIR, `${oldKey}.md`);

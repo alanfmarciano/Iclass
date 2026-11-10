@@ -33,7 +33,7 @@ Um professor atribuído só à turma 1DES de um curso com duas turmas (1DES e 2D
 - Apagar do histórico exige a mensagem ou a turma (400 "Informe a mensagem ou a turma.", também para o administrador); mensagem de outra turma dá 403 "Você não tem acesso a esta mensagem." e nada é apagado.
 - O fórum do painel traz só as dúvidas das turmas do professor, dúvida por dúvida; dúvida antiga sem turma que se possa inferir fica só com o administrador.
 - O aluno lista as dúvidas só informando curso e turma da matrícula dele (400 "Informe o curso e a turma." sem eles).
-- O professor não altera, não exclui, não duplica nem recebe na lista um curso fora do escopo dele (403).
+- O professor não altera, não exclui, não duplica nem recebe na lista um curso fora do escopo dele (403), e só duplica curso para uma escola atribuída a ele: com só a turma atribuída, duplicar para a escola do próprio curso dá 403, porque a cópia nasceria fora do escopo dele.
 
 ### Segurança e bordas
 Antes, o professor da 1DES lia a mensagem privada enviada a um aluno da 2DES, apagava as mensagens de todas as turmas com um corpo vazio, via as dúvidas (com e-mail) da 2DES e alterava ou excluía curso de outra coordenação.

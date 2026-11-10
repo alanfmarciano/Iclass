@@ -490,15 +490,56 @@ test('[UC-CURSO-001] duplicar curso: código seguro e escola de destino dentro d
     const traversal = await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: '../../fora', newName: 'Cópia' });
     assert.equal(traversal.status, 400);
     assert.equal(traversal.body.field, 'newId');
-    await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: { x: 1 }, newName: 'Cópia' }).expect(400);
+    // Toda recusa de campo sai no formato { success: false, error, field }.
+    db.memory.courses.push({ id: 'EXISTENTE', name: 'Já existe', schoolId: 'escola-b', structure: [], status: 'active' });
+    for (const [body, field] of [
+        [{ newId: { x: 1 }, newName: 'Cópia' }, 'newId'],
+        [{ newName: 'Cópia' }, 'newId'],
+        [{ newId: '   ', newName: 'Cópia' }, 'newId'],
+        [{ newId: 'COPIA_X' }, 'newName'],
+        [{ newId: 'COPIA_X', newName: ['Cópia'] }, 'newName'],
+        [{ newId: 'existente', newName: 'Código repetido' }, 'newId'],
+    ]) {
+        const res = await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send(body);
+        assert.equal(res.status, 400, JSON.stringify(body));
+        assert.deepEqual([res.body.success, res.body.field, typeof res.body.error], [false, field, 'string'], JSON.stringify(body));
+    }
+    assert.equal(courseById('COPIA_X'), undefined);
+    assert.equal(courseAudit('course_cloned').length, 0);
 
+    // Professor só com a turma 1DES: duplicar para a escola do próprio curso criava um
+    // curso (com a 2DES copiada) fora do escopo dele, que ele nem via na lista.
+    for (const body of [
+        { newId: 'COPIA_A', newName: 'Cópia', schoolId: 'escola-a' },
+        { newId: 'COPIA_A', newName: 'Cópia' },
+        { newId: 'COPIA_B', newName: 'Cópia', schoolId: 'escola-b' },
+    ]) {
+        const res = await asProfessor(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send(body);
+        assert.equal(res.status, 403, `${JSON.stringify(body)}: antes 200 na escola do curso`);
+        assert.deepEqual([res.body.success, res.body.field], [false, 'schoolId']);
+        assert.equal(res.body.error, 'Você só pode duplicar curso para uma escola atribuída à sua conta.');
+    }
+    assert.equal(courseById('COPIA_A'), undefined);
+    assert.equal(courseById('COPIA_B'), undefined);
+    assert.equal(db.memory.classes.filter(cls => cls.courseId !== COURSE).length, 0, 'nenhuma turma copiada');
+    assert.equal(courseAudit('course_cloned').length, 0);
+
+    // Com a escola atribuída: duplica só para ela, e a cópia fica no escopo dele.
+    db.memory.admins.find(account => account.role === 'professor').assignedSchoolIds = ['escola-a'];
     await asProfessor(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: 'COPIA_B', newName: 'Cópia', schoolId: 'escola-b' }).expect(403);
     assert.equal(courseById('COPIA_B'), undefined);
     const ok = await asProfessor(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: 'copia_a', newName: 'Cópia', schoolId: 'escola-a' });
     assert.equal(ok.status, 200, ok.body.error);
     assert.equal(courseById('COPIA_A').schoolId, 'escola-a');
+    assert.deepEqual(ok.body.classes.map(cls => cls.name).sort(), ['1DES', '2DES']);
     const [cloned] = courseAudit('course_cloned');
     assert.deepEqual([cloned.courseId, cloned.after.newCourseId, cloned.after.schoolId], [COURSE, 'COPIA_A', 'escola-a']);
+    const list = await asProfessor(request(app).get('/api/courses')).expect(200);
+    assert.ok(list.body.some(course => course.id === 'COPIA_A'), 'a cópia aparece na lista do professor');
+
+    // O administrador duplica para qualquer escola.
+    await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/clone`)).send({ newId: 'COPIA_ADMIN', newName: 'Cópia', schoolId: 'escola-b' }).expect(200);
+    assert.equal(courseById('COPIA_ADMIN').schoolId, 'escola-b');
 });
 
 test('[UC-CURSO-001] as telas não chamam mais as rotas antigas de escrita de curso (SEG-12)', () => {
