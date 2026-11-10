@@ -1,7 +1,7 @@
 // Fase 1 — Utilitários de cadastro de aluno: campos, validações e auditoria.
 // Mantém o padrão do projeto (objetos JSON em memoryDB, sem ORM/migrations).
 
-const crypto = require('crypto');
+const { recordAudit, getClientIp } = require('./audit.js');
 
 // Status permitidos para o aluno. "Ativo" é o padrão ao cadastrar.
 const STUDENT_STATUSES = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido'];
@@ -223,12 +223,6 @@ function normalizeStoredStudentClasses(student) {
     return changed;
 }
 
-function getClientIp(req) {
-    try {
-        const raw = (req && (req.ip || (req.socket && req.socket.remoteAddress))) || '';
-        return raw.startsWith('::ffff:') ? raw.substring(7) : (raw === '::1' ? '127.0.0.1' : raw);
-    } catch (e) { return ''; }
-}
 
 // Gera as entradas de auditoria comparando o aluno antigo com os novos campos.
 // Registra apenas os campos escalares auditáveis que mudaram, mais 'classes' (turmas).
@@ -253,26 +247,24 @@ function diffStudentForAudit(oldStudent, newFields) {
     return changes;
 }
 
-// Cria e anexa entradas de auditoria na coleção em memória. Não persiste (chame db.save() depois).
+// Cria e anexa entradas de auditoria na coleção em memória, uma por campo alterado,
+// todas com a mesma hora. Atalho para recordAudit (utils/audit.js), na categoria
+// 'student', com os mesmos campos de antes (field/oldValue/newValue), que o painel
+// Auditoria da ficha do aluno lê. Não persiste (chame db.save() depois).
 function recordStudentAudit(memory, { actor, studentEmail, changes, req, action }) {
-    if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
-    const ts = Date.now();
-    const ip = getClientIp(req);
-    const device = (req && req.headers && req.headers['user-agent']) || '';
+    const timestamp = Date.now();
     const entries = (changes && changes.length ? changes : [{ field: action || 'Registro', oldValue: '', newValue: '' }]);
-    entries.forEach((c, idx) => {
-        memory.auditLogs.push({
-            id: `audit_${ts}_${idx}_${crypto.randomBytes(3).toString('hex')}`,
+    entries.forEach(c => {
+        recordAudit(memory, {
+            req,
             actor: actor || 'desconhecido',
-            studentEmail: normalizeEmail(studentEmail),
             action: action || 'update',
+            category: 'student',
+            studentEmail: normalizeEmail(studentEmail),
             field: c.field,
             oldValue: c.oldValue,
             newValue: c.newValue,
-            timestamp: ts,
-            ip,
-            device,
-        });
+        }, { timestamp });
     });
 }
 

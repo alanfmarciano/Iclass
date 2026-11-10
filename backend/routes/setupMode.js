@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const db = require('../database.js');
+const { recordAudit } = require('../utils/audit.js');
 const { issueAdminSession, normalizeIp, SERVER_INSTANCE_ID } = require('../middlewares.js');
 const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const { createStudentSession } = require('../utils/authSessions.js');
@@ -131,10 +132,11 @@ function createSetupModeRouter(options = {}) {
             };
         }
 
-        if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-        db.memory.auditLogs.push({
-            id: `audit_quick_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-            type: 'local_quick_login', profile, actorEmail, at: new Date().toISOString(), ip: remoteAddress,
+        // Mesmo registro de antes (type/profile/actorEmail/at em ISO), pelo recordAudit.
+        const quickAt = Date.now();
+        recordAudit(db.memory, { req, actor: actorEmail, action: 'local_quick_login', category: 'security' }, {
+            timestamp: quickAt,
+            legacy: { type: 'local_quick_login', profile, actorEmail, at: new Date(quickAt).toISOString() },
         });
         await db.save();
         res.json(response);
@@ -156,14 +158,10 @@ function createSetupModeRouter(options = {}) {
 
         consumed = true;
         const sessionToken = issueAdminSession(admin.email, { origin: 'setup' });
-        if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-        db.memory.auditLogs.push({
-            id: `audit_setup_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-            type: 'admin_local_setup_login',
-            actorEmail: admin.email,
-            targetEmail: admin.email,
-            at: new Date().toISOString(),
-            ip: remoteAddress,
+        const setupAt = Date.now();
+        recordAudit(db.memory, { req, actor: admin, action: 'admin_local_setup_login', category: 'security', targetEmail: admin.email }, {
+            timestamp: setupAt,
+            legacy: { type: 'admin_local_setup_login', actorEmail: admin.email, at: new Date(setupAt).toISOString() },
         });
         await db.save();
 

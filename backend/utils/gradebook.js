@@ -4,7 +4,6 @@
 //
 // Escala: o banco guarda `score` de 0 a 100 (como a correção online); as telas,
 // o boletim e as planilhas mostram 0 a 10 com uma casa decimal.
-const crypto = require('crypto');
 const {
     SCORE_MAX,
     attemptGroupKey,
@@ -12,7 +11,7 @@ const {
     normalizeScore,
     roundGrade,
 } = require('./submissionAttempts.js');
-const { getClientIp } = require('./students.js');
+const { recordAudit } = require('./audit.js');
 
 const GRADE_MAX = SCORE_MAX / 10;
 const MANUAL_TYPES = ['impressa', 'manual', 'online'];
@@ -543,32 +542,27 @@ function gradebookCsv(gradebook) {
 
 // ---------------------------------------------------------- auditoria
 // Registro compatível com o painel "Auditoria" da ficha do aluno (field/oldValue/newValue),
-// mais os identificadores da entrega para o histórico da nota em Resultados.
+// mais os identificadores da entrega para o histórico da nota em Resultados. Atalho para
+// recordAudit (utils/audit.js), na categoria 'grade', com os mesmos campos de antes (a
+// lixeira de notas lê details.deletedSubmission e submissionId).
 function recordGradeAudit(memory, { req, actor, submission, action, field = 'Nota', oldValue = '', newValue = '', details = null }) {
     if (!memory) return null;
-    if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
-    const now = Date.now();
-    const entry = {
-        id: `audit_grade_${now}_${crypto.randomBytes(4).toString('hex')}`,
+    return recordAudit(memory, {
+        req,
         actor: (actor && (actor.email || actor)) || 'desconhecido',
-        studentEmail: String(submission?.student?.email || submission?.studentEmail || '').trim().toLowerCase(),
         action,
+        category: 'grade',
+        studentEmail: String(submission?.student?.email || submission?.studentEmail || '').trim().toLowerCase(),
         field,
         oldValue: String(oldValue ?? ''),
         newValue: String(newValue ?? ''),
-        timestamp: now,
-        ip: getClientIp(req),
-        device: (req && req.headers && req.headers['user-agent']) || '',
         submissionId: submission?.id != null ? String(submission.id) : null,
         examKey: submission?.examKey || null,
         applicationId: submission?.applicationId || null,
         courseId: submission?.student?.courseId || submission?.courseId || null,
         studentClass: submission?.student?.studentClass || submission?.studentClass || null,
-        category: 'grade',
-    };
-    if (details) entry.details = details;
-    memory.auditLogs.push(entry);
-    return entry;
+        details: details || undefined,
+    });
 }
 
 // Aluno excluído (delete-student): o registro de auditoria fica como histórico,

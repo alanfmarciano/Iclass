@@ -7,6 +7,7 @@
 // do servidor consegue usar.
 const crypto = require('crypto');
 const db = require('../database.js');
+const { recordAudit } = require('../utils/audit.js');
 
 async function resetAdminPassword(requestedEmail) {
     const email = String(requestedEmail || '').trim().toLowerCase();
@@ -20,13 +21,12 @@ async function resetAdminPassword(requestedEmail) {
     const temporaryPassword = crypto.randomBytes(9).toString('base64url');
     account.password = db.hashPassword(temporaryPassword);
     account.mustChangePassword = true;
-    if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-    db.memory.auditLogs.push({
-        id: `audit_pwreset_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
-        type: 'admin_password_reset_local',
-        actorEmail: 'launcher-local',
-        targetEmail: account.email,
-        at: Date.now(),
+    // Mesmo registro de antes (type/actorEmail/at), pelo recordAudit; quem fez é o
+    // computador do servidor (launcher), não uma conta.
+    const at = Date.now();
+    recordAudit(db.memory, { actor: 'launcher-local', action: 'admin_password_reset_local', category: 'security', targetEmail: account.email }, {
+        timestamp: at,
+        legacy: { type: 'admin_password_reset_local', actorEmail: 'launcher-local', at },
     });
     await db.save();
     return { email: account.email, temporaryPassword };

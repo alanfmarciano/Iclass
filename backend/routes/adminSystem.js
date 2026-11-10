@@ -1,7 +1,7 @@
 const express = require('express');
-const crypto = require('crypto');
 const path = require('path');
 const db = require('../database.js');
+const { recordAudit } = require('../utils/audit.js');
 const {
     DB_CLASSES_FILE,
     readJSON,
@@ -91,18 +91,19 @@ function safetyBackup(prefix) {
     }
 }
 
+// Manutenção (limpar estado de prova, resetar sala, reiniciar): atalho para recordAudit,
+// na categoria 'system', gravando também type/actorEmail/at como as entradas antigas.
 function recordMaintenanceAudit(req, account, type, cls, details) {
-    if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-    db.memory.auditLogs.push({
-        id: `audit_maintenance_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-        type,
-        actorEmail: account && account.email,
+    const timestamp = Date.now();
+    recordAudit(db.memory, {
+        req,
+        actor: account,
+        action: type,
+        category: 'system',
         studentClass: cls ? cls.name : null,
         courseId: cls ? cls.courseId || null : null,
         details,
-        at: Date.now(),
-        ip: req.ip || (req.socket && req.socket.remoteAddress) || '',
-    });
+    }, { timestamp, legacy: { type, actorEmail: account && account.email, at: timestamp } });
 }
 
 function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
