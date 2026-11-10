@@ -1225,8 +1225,10 @@ router.get('/api/admin/students', (req, res) => {
         const students = readJSON(DB_STUDENTS_FILE);
         const now = Date.now();
         const enrichedStudents = students.map(s => {
-            // As sessões são objetos { lastSeen, ip, token }. Também damos suporte ao
-            // formato legado (timestamp puro). A chave é sempre o e-mail em minúsculas.
+            // Só a presença (lastSeen): a sessão é { tokenHash, createdAt, lastSeen,
+            // lastActivityAt, ip } (utils/authSessions.js, sem o token cru). Também valem os
+            // formatos legados { token, lastSeen } e timestamp puro (este, só no seed do
+            // TEST_MODE). A chave é sempre o e-mail em minúsculas.
             const session = s.email ? db.memory.sessions[s.email.toLowerCase()] : null;
             const lastSeen = sessionLastSeen(session);
             const isOnline = isStudentSessionOnline(session, now);

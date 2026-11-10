@@ -3,6 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const runtimePaths = require('../runtimePaths.js');
 
+// Arquivos do backend que o web/vite.config.js usa para montar o build: mudam o que o
+// build grava, então entram no hash como as fontes da interface. Os nomes de /assets saem
+// de toServableAssetName (utils/staticAssets.js), a mesma regra com que o servidor entrega;
+// com a regra trocada e o build antigo, um arquivo do build poderia dar 404. O próprio
+// buildIntegrity.js fica de fora: mudar o cálculo já muda o hash.
+const BACKEND_BUILD_FILES = ['backend/utils/staticAssets.js'];
+
 function sourceFiles() {
     const webRoot = path.join(runtimePaths.PROJECT_ROOT, 'web');
     const files = [];
@@ -16,6 +23,10 @@ function sourceFiles() {
     walk(path.join(webRoot, 'src'));
     ['package.json', 'package-lock.json', 'vite.config.js'].forEach(name => {
         const full = path.join(webRoot, name);
+        if (fs.existsSync(full)) files.push(full);
+    });
+    BACKEND_BUILD_FILES.forEach(name => {
+        const full = path.join(runtimePaths.PROJECT_ROOT, ...name.split('/'));
         if (fs.existsSync(full)) files.push(full);
     });
     return files.sort();
@@ -74,4 +85,4 @@ function resetBuildIdCache() {
     buildIdCache = { checkedAt: 0, mtimeMs: null, id: null };
 }
 
-module.exports = { BUILD_ID_HEADER, computeSourceHash, currentBuildId, resetBuildIdCache, verifyBuild };
+module.exports = { BACKEND_BUILD_FILES, BUILD_ID_HEADER, computeSourceHash, currentBuildId, resetBuildIdCache, verifyBuild };

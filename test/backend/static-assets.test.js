@@ -358,3 +358,64 @@ test('[UC-DESEMPENHO-001] index.html ausente (build sendo refeito): 503 em portu
         fs.renameSync(`${indexPath}.tmp`, indexPath);
     }
 });
+
+// Revisão da J1: o vite.config.js monta os nomes do build com toServableAssetName
+// (backend/utils/staticAssets.js), a regra com que o servidor entrega /assets. Antes o
+// hash do build (buildIntegrity) só via web/src, os package*.json e o vite.config.js:
+// com a regra de nomes trocada, o build antigo continuava valendo e um arquivo dele
+// poderia dar 404. Agora todo arquivo do backend que o vite.config.js carrega entra no
+// hash (menos o próprio buildIntegrity.js), e o servidor pede o build novo.
+test('[UC-DESEMPENHO-001] mudar um arquivo do backend que o build usa (regra de nomes de /assets) deixa o build desatualizado', () => {
+    const buildIntegrity = require('../../backend/utils/buildIntegrity.js');
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    const viteConfig = fs.readFileSync(path.join(repoRoot, 'web', 'vite.config.js'), 'utf8');
+    const backendFiles = [...viteConfig.matchAll(/require\(\s*['"]\.\.\/(backend\/[^'"]+)['"]\s*\)/g)]
+        .map(match => match[1])
+        .filter(file => file !== 'backend/utils/buildIntegrity.js');
+    assert.ok(backendFiles.includes('backend/utils/staticAssets.js'), `o vite.config.js carrega: ${backendFiles.join(', ')}`);
+
+    // Cópia mínima do projeto: as fontes que o hash lê e um arquivo do backend que o build não usa.
+    const projectRoot = path.join(tempRoot, 'projeto-build');
+    const copy = (relative, content) => {
+        const target = path.join(projectRoot, ...relative.split('/'));
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, content === undefined ? fs.readFileSync(path.join(repoRoot, ...relative.split('/'))) : content);
+        return target;
+    };
+    copy('web/src/main.jsx', 'export default 1;\n');
+    copy('web/package.json');
+    copy('web/vite.config.js');
+    backendFiles.forEach(file => copy(file));
+    const unrelated = copy('backend/server.js', '// fora do build\n');
+    const fakeDist = path.join(projectRoot, 'web', 'dist');
+    copy('web/dist/index.html', INDEX_HTML);
+
+    const originalRoot = runtimePaths.PROJECT_ROOT;
+    const originalDist = runtimePaths.WEB_DIST_DIR;
+    runtimePaths.PROJECT_ROOT = projectRoot;
+    runtimePaths.WEB_DIST_DIR = fakeDist;
+    try {
+        const writeMeta = () => fs.writeFileSync(path.join(fakeDist, 'build-meta.json'),
+            JSON.stringify({ sourceHash: buildIntegrity.computeSourceHash() }) + '\n');
+        writeMeta();
+        assert.ok(buildIntegrity.verifyBuild().sourceHash);
+
+        // Arquivo do backend fora do build: o build continua valendo.
+        fs.appendFileSync(unrelated, '// outra mudança\n');
+        assert.ok(buildIntegrity.verifyBuild().sourceHash);
+
+        for (const file of backendFiles) {
+            const target = path.join(projectRoot, ...file.split('/'));
+            const before = buildIntegrity.computeSourceHash();
+            fs.appendFileSync(target, '\n// regra trocada\n');
+            assert.notEqual(buildIntegrity.computeSourceHash(), before, `${file} não entra no hash do build`);
+            assert.throws(() => buildIntegrity.verifyBuild(), /Build do frontend desatualizado\. Execute npm run build novamente\./);
+            writeMeta();
+            assert.ok(buildIntegrity.verifyBuild().sourceHash, 'build refeito volta a valer');
+        }
+    } finally {
+        runtimePaths.PROJECT_ROOT = originalRoot;
+        runtimePaths.WEB_DIST_DIR = originalDist;
+        resetBuildIdCache();
+    }
+});
