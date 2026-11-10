@@ -89,11 +89,21 @@ describe('[UC-ENCERRADOS-003] Cadastros encerrados (/encerrados)', () => {
     expect(within(cards()[0]).getByText(/Anonimizado em/)).toBeTruthy()
   })
 
-  it('anonimizar só com ANONIMIZAR e motivo; lembra do backup', async () => {
+  it('situação sem acento de banco antigo ("Concluido") entra no filtro Concluído', async () => {
+    mocks.data.items.push(row({ email: 'antiga@x.local', name: 'Clara Antiga', status: 'Concluido', since: Date.now() - YEAR }))
+    renderPage()
+    await userEvent.selectOptions(screen.getByLabelText('Situação'), 'Concluído')
+    expect(cards()).toHaveLength(1)
+    expect(within(cards()[0]).getByText('Clara Antiga')).toBeTruthy()
+  })
+
+  it('anonimizar só com ANONIMIZAR e motivo; lembra do backup, da lixeira de arquivos e da compactação', async () => {
     renderPage()
     await userEvent.click(within(cards()[0]).getByRole('button', { name: 'Anonimizar' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText(/ainda têm os dados deste aluno/)).toBeTruthy()
+    expect(within(dialog).getByText(/documentos e atestados enviados vão para a lixeira de arquivos com o código no lugar do nome/)).toBeTruthy()
+    expect(within(dialog).getByText(/até ser compactado/)).toBeTruthy()
     const confirm = within(dialog).getByRole('button', { name: 'Anonimizar' })
     expect(confirm).toBeDisabled()
     await userEvent.type(within(dialog).getByLabelText('Motivo'), 'Pedido do responsável')

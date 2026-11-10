@@ -18,6 +18,7 @@ process.env.TEST_MODE = '1';
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { scrubReason } = require('../../backend/utils/studentLifecycle.js');
+const fileStore = require('../../backend/utils/storage.js');
 
 let app;
 const adminToken = 'admin-token-lifecycle';
@@ -329,6 +330,85 @@ test('[UC-ENCERRADOS-002] cadastro anonimizado não é editado, reativado, nem a
     assert.ok(entry);
     assert.equal(entry.details.wasAnonymized, true);
     assert.ok(!JSON.stringify(entry).includes(pseudo));
+});
+
+// Pasta de documentos do aluno (alunos/<matrícula> - <nome>), como o upload de atestado grava.
+function plantStudentFolder(student, file = 'atestado-medico.pdf') {
+    const dir = path.join(fileStore.ALUNOS_DIR, fileStore.studentFolderName(student), 'atestados');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `2026-03-03_${file}`), `PDF do atestado de ${student.name}`);
+    return `alunos/${fileStore.studentFolderName(student)}/atestados/2026-03-03_${file}`;
+}
+function clearFiles() {
+    fs.rmSync(fileStore.ALUNOS_DIR, { recursive: true, force: true });
+    fs.rmSync(fileStore.LIXEIRA_DIR, { recursive: true, force: true });
+}
+function trashDiskText() {
+    const index = fs.existsSync(path.join(fileStore.LIXEIRA_DIR, '_index.json')) ? fs.readFileSync(path.join(fileStore.LIXEIRA_DIR, '_index.json'), 'utf8') : '';
+    const names = fs.existsSync(fileStore.LIXEIRA_DIR) ? fs.readdirSync(fileStore.LIXEIRA_DIR).join('\n') : '';
+    return `${index}\n${names}`;
+}
+
+test('[UC-ENCERRADOS-002] anonimizar manda a pasta de documentos para a lixeira só com o pseudônimo', async () => {
+    clearFiles();
+    const rel = plantStudentFolder(findStudent(ANA.email));
+    assert.match(rel, /MAT-77881 - Aninha/);
+    db.memory.attendance.find(item => item.id === 'att-ana-2').justificativa.arquivo = rel;
+    await desligar({ emails: [ANA.email], status: 'Transferido' }).expect(200);
+    const res = await anonymize({ email: ANA.email, confirm: 'ANONIMIZAR', reason: 'Pedido da família' }).expect(200);
+
+    // A pasta com a matrícula e o nome saiu de alunos/.
+    assert.ok(!fs.existsSync(path.join(fileStore.ALUNOS_DIR, 'MAT-77881 - Aninha')));
+    // A lixeira (tela, manifesto e nomes em disco) só tem o pseudônimo.
+    const trash = await admin(request(app).get('/api/admin/trash')).expect(200);
+    assert.equal(trash.body.length, 1);
+    assert.equal(trash.body[0].name, res.body.name);
+    assert.equal(trash.body[0].originalRel, `alunos/${res.body.name}`);
+    const visible = `${JSON.stringify(trash.body)}\n${trashDiskText()}`;
+    [ANA.matricula, 'Aninha', ANA.name, 'Ana Souza', ANA.email].forEach(value => assert.ok(!visible.includes(value), `sobrou "${value}" na lixeira`));
+
+    // Restaurar devolve a pasta com o pseudônimo, sem ligação com a Ana.
+    const restored = await admin(request(app).post('/api/admin/trash/restore')).send({ id: trash.body[0].id }).expect(200);
+    assert.equal(restored.body.restoredTo, `alunos/${res.body.name}`);
+    assert.ok(fs.existsSync(path.join(fileStore.ALUNOS_DIR, res.body.name, 'atestados', '2026-03-03_atestado-medico.pdf')));
+    assert.ok(!fs.existsSync(path.join(fileStore.ALUNOS_DIR, 'MAT-77881 - Aninha')));
+    clearFiles();
+});
+
+test('[UC-ENCERRADOS-002] anonimizar homônimo sem matrícula leva só os arquivos dele, com o pseudônimo', async () => {
+    clearFiles();
+    const ana = findStudent(ANA.email);
+    delete ana.matricula;
+    delete ana.nomeSocial;
+    // Outra Ana, sem matrícula: as duas usam a pasta alunos/Ana Souza Lima.
+    db.memory.students.push({ name: ANA.name, email: 'outra.ana@vida.local', status: 'Ativo', classes: [{ name: CLASS, courseId: COURSE }] });
+    const mine = plantStudentFolder(ana, 'da-ana.pdf');
+    const other = plantStudentFolder(ana, 'da-outra.pdf');
+    db.memory.attendance.find(item => item.id === 'att-ana-2').justificativa.arquivo = mine;
+    await desligar({ emails: [ANA.email], status: 'Inativo' }).expect(200);
+    const res = await anonymize({ email: ANA.email, confirm: 'ANONIMIZAR', reason: 'Pedido da família' }).expect(200);
+
+    assert.ok(fs.existsSync(fileStore.absFromData(other)), 'o arquivo da outra Ana fica');
+    assert.ok(!fs.existsSync(fileStore.absFromData(mine)));
+    const trash = await admin(request(app).get('/api/admin/trash')).expect(200);
+    assert.equal(trash.body.length, 1);
+    assert.equal(trash.body[0].name, res.body.name);
+    assert.equal(trash.body[0].isDir, true);
+    const visible = `${JSON.stringify(trash.body)}\n${trashDiskText()}`;
+    assert.ok(!visible.includes(ANA.name), 'sem o nome na lixeira');
+    assert.ok(fs.existsSync(path.join(fileStore.LIXEIRA_DIR, trash.body[0].id, 'atestados', '2026-03-03_da-ana.pdf')));
+    clearFiles();
+});
+
+test('[UC-ENCERRADOS-002] apagar de vez manda a pasta de documentos para a lixeira, como a tela avisa', async () => {
+    clearFiles();
+    plantStudentFolder(findStudent(ANA.email));
+    await desligar({ emails: [ANA.email], status: 'Concluído' }).expect(200);
+    await purge({ email: ANA.email, confirm: 'APAGAR', reason: 'Matrícula feita por engano' }).expect(200);
+    const trash = await admin(request(app).get('/api/admin/trash')).expect(200);
+    assert.equal(trash.body.length, 1);
+    assert.equal(trash.body[0].originalRel, 'alunos/MAT-77881 - Aninha');
+    clearFiles();
 });
 
 test('[UC-ENCERRADOS-002] apagar de vez remove o cadastro e deixa a auditoria sem dado pessoal', async () => {

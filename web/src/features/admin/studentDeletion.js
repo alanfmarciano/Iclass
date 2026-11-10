@@ -16,11 +16,15 @@ export const LIFECYCLE_REASON_MIN = 3
 export const STUDENT_CLOSE_WARNING = 'O aluno não consegue mais entrar. Notas, presença e certificados ficam guardados. Para anonimizar ou apagar, use Cadastros encerrados.'
 
 export const STUDENT_ANONYMIZE_KEEPS = 'Ficam, com um código no lugar do nome e do e-mail: as notas, a presença (sem o texto e o arquivo das justificativas) e os certificados. A auditoria continua, sem nome, e-mail nem matrícula.'
-export const STUDENT_ANONYMIZE_REMOVES = 'Saem: nome, nome social, e-mail, matrícula, telefones, responsável, acessibilidade, senha, progresso e caderno, observações, registros de prova e de login, mensagens só para ele e as dúvidas dele no fórum. O e-mail fica livre para um cadastro novo. Não dá para desfazer.'
+export const STUDENT_ANONYMIZE_REMOVES = 'Saem: nome, nome social, e-mail, matrícula, telefones, responsável, acessibilidade, senha, progresso e caderno, observações, registros de prova e de login, mensagens só para ele e as dúvidas dele no fórum. Os documentos e atestados enviados vão para a lixeira de arquivos com o código no lugar do nome; para tirá-los de vez, apague o item no cartão Lixeira, em Sistema. O e-mail fica livre para um cadastro novo. Não dá para desfazer.'
 
 export const STUDENT_DELETE_REMOVES = 'Sai de vez: o cadastro e o acesso, as entregas e as notas (das provas online e as lançadas), a presença, as observações, os certificados, o progresso e o caderno, os registros de prova e de login, as mensagens e avisos só para ele e as dúvidas e respostas dele no fórum.'
 export const STUDENT_DELETE_KEEPS = 'Fica, sem nome, e-mail nem matrícula: o histórico da auditoria, as notas que já estavam na lixeira (só prova e nota), as contestações de questão e a dúvida do fórum que outra pessoa respondeu. A pasta de documentos dele vai para a lixeira de arquivos.'
 export const STUDENT_DELETE_WARNING = `${STUDENT_DELETE_REMOVES} ${STUDENT_DELETE_KEEPS}`
+
+// O SQLite deixa o que foi apagado em páginas livres do arquivo do banco até a compactação
+// (VACUUM, o Compactar banco do cartão Armazenamento em Sistema).
+export const STUDENT_DB_LEFTOVER_NOTE = 'O arquivo do banco ainda guarda restos do que saiu até ser compactado (Sistema, cartão Armazenamento, Compactar banco).'
 
 // Lembrete do backup: anonimizar e apagar não mexem nos backups que já existem.
 export function backupReminder(lastBackupAt) {
@@ -39,6 +43,10 @@ function foldStatus(value) {
 }
 export function isClosedStatus(status) {
   return CLOSED_KEYS.has(foldStatus(status))
+}
+// Mesma situação sem diferenciar acento nem maiúscula ("Concluido" de banco antigo é Concluído).
+export function sameStatus(a, b) {
+  return foldStatus(a) === foldStatus(b)
 }
 export function isAnonymizedStatus(status) {
   return foldStatus(status) === foldStatus(ANONYMIZED_STATUS)

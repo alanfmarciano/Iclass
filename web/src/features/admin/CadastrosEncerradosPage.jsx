@@ -16,7 +16,8 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import {
   ANONYMIZED_STATUS, CLOSE_STATUS_OPTIONS, LIFECYCLE_REASON_MIN, STATUS_REASON_MAX,
-  STUDENT_ANONYMIZE_KEEPS, STUDENT_ANONYMIZE_REMOVES, STUDENT_DELETE_KEEPS, STUDENT_DELETE_REMOVES, backupReminder,
+  STUDENT_ANONYMIZE_KEEPS, STUDENT_ANONYMIZE_REMOVES, STUDENT_DB_LEFTOVER_NOTE, STUDENT_DELETE_KEEPS, STUDENT_DELETE_REMOVES,
+  backupReminder, sameStatus,
 } from './studentDeletion'
 
 // Cadastros encerrados (H7c; FUN-03, decisão 4 do Alan), só do administrador. Lista quem
@@ -28,6 +29,8 @@ import {
 // auditoria aparece como "data não registrada".
 const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000
 const STATUS_TONE = { Inativo: 'neutral', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
+// Tom pela situação sem acento nem maiúscula (situação antiga "Concluido" ou "inativo").
+const toneOf = (status) => STATUS_TONE[Object.keys(STATUS_TONE).find((key) => sameStatus(key, status))] || 'neutral'
 const ACTIONS = {
   reactivate: { title: 'Reativar', confirm: 'Reativar', word: null, reasonRequired: false },
   anonymize: { title: 'Anonimizar', confirm: 'Anonimizar', word: 'ANONIMIZAR', reasonRequired: true },
@@ -72,7 +75,7 @@ export default function CadastrosEncerradosPage() {
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase()
     return items.filter((row) => {
-      if (status && row.status !== status) return false
+      if (status && !sameStatus(row.status, status)) return false
       if (years !== null) {
         const age = yearsSince(row.since, now)
         if (age === null || age < years) return false
@@ -81,7 +84,7 @@ export default function CadastrosEncerradosPage() {
       return true
     })
   }, [items, status, years, query, now])
-  const undatedOut = years !== null ? items.filter((row) => !row.since && (!status || row.status === status)).length : 0
+  const undatedOut = years !== null ? items.filter((row) => !row.since && (!status || sameStatus(row.status, status))).length : 0
 
   function open(mode, row) {
     setAction({ mode, row })
@@ -150,7 +153,7 @@ export default function CadastrosEncerradosPage() {
                       <p className="font-semibold text-text break-words">{row.nomeSocial || row.name}</p>
                       <p className="text-sm text-muted break-all">{row.email}{row.matricula ? ` · matrícula ${row.matricula}` : ''}</p>
                     </div>
-                    <Badge tone={STATUS_TONE[row.status] || 'neutral'}>{row.status}</Badge>
+                    <Badge tone={toneOf(row.status)}>{row.status}</Badge>
                   </div>
                   <div className="text-sm text-text space-y-1">
                     <p>{row.since ? `Encerrado em ${fmtDate(row.since)} (${ageText(age)})` : 'Encerrado em data não registrada'}{row.by ? ` por ${row.by}` : ''}.</p>
@@ -181,7 +184,7 @@ export default function CadastrosEncerradosPage() {
             {action.mode === 'reactivate' && <p className="text-sm text-text">O aluno volta a Ativo e consegue entrar de novo, com as notas e a presença de antes.</p>}
             {action.mode === 'anonymize' && <><p className="text-sm text-text">{STUDENT_ANONYMIZE_KEEPS}</p><p className="text-sm text-text">{STUDENT_ANONYMIZE_REMOVES}</p></>}
             {action.mode === 'purge' && <><p className="text-sm text-text">{STUDENT_DELETE_REMOVES}</p><p className="text-sm text-text">{STUDENT_DELETE_KEEPS}</p></>}
-            {action.mode !== 'reactivate' && <p className="text-sm text-muted">{backupReminder(closed.data?.lastBackupAt)}</p>}
+            {action.mode !== 'reactivate' && <p className="text-sm text-muted">{backupReminder(closed.data?.lastBackupAt)} {STUDENT_DB_LEFTOVER_NOTE}</p>}
             <Textarea label={spec.reasonRequired ? 'Motivo' : 'Motivo (opcional)'} value={reason} onChange={(event) => setReason(event.target.value)} className="min-h-[72px]"
               error={trimmed.length > STATUS_REASON_MAX ? `No máximo ${STATUS_REASON_MAX} caracteres.` : undefined}
               placeholder={action.mode === 'reactivate' ? 'Ex.: voltou a estudar' : 'Ex.: pedido do responsável'} />

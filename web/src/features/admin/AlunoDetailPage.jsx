@@ -18,8 +18,9 @@ import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf } from '../../lib/grades'
+import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 
-const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
+const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
 const initials = (n) => (n || '?').split(' ').map((x) => x[0]).slice(0, 2).join('')
 const moduleOf = (examKey) => String(examKey || '').split('_')[1] || '—'
@@ -155,7 +156,8 @@ export default function AlunoDetailPage() {
                 <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {student.email}</p>
               </div>
               <Button variant="secondary" icon={FileText} onClick={() => openBoletim()}>Boletim (PDF)</Button>
-              <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>
+              {/* Cadastro anonimizado não se edita (o servidor responde 409): sem Editar. */}
+              {!(isAnonymizedStatus(student.status) || student.anonymizedAt) && <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>}
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

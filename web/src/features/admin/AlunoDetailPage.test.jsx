@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn() },
   printBoletim: vi.fn(() => true),
   auth: { accountRole: 'admin' },
+  students: null,
 }))
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: vi.fn() } }))
@@ -21,7 +22,7 @@ vi.mock('./boletimPrint', () => ({ printBoletim: mocks.printBoletim }))
 vi.mock('../../components/ui/MonthCalendar', () => ({ MonthCalendar: () => null }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: () => ({
-    data: [{ name: 'Bia', email: 'bia@x.local', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }, { name: '2RED', courseId: 'RED' }] }],
+    data: mocks.students || [{ name: 'Bia', email: 'bia@x.local', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }, { name: '2RED', courseId: 'RED' }] }],
     loading: false,
     error: null,
     refetch: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('../../hooks/useApi', () => ({
 
 beforeEach(() => {
   mocks.auth = { accountRole: 'admin' }
+  mocks.students = null
   mocks.get.mockImplementation(async (path) => {
     if (path.startsWith('/api/admin/course-summaries')) return [{ id: 'DES', name: 'Técnico em Desenvolvimento' }, { id: 'RED', name: 'Técnico em Redes' }]
     if (path.startsWith('/api/admin/student/report')) return { student: { name: 'Bia' }, modules: [] }
@@ -230,5 +232,26 @@ describe('Ficha do aluno · aba Auditoria', () => {
     expect(screen.getAllByText('Certificado emitido')).toHaveLength(2)
     expect(screen.getByRole('option', { name: 'Certificado emitido' })).toBeInTheDocument()
     expect(screen.queryByText('(vazio)')).not.toBeInTheDocument()
+  })
+})
+
+describe('[UC-ENCERRADOS-002] Ficha do aluno anonimizado', () => {
+  it('não oferece Editar (o cadastro anonimizado não se edita); o aluno comum oferece', async () => {
+    mocks.students = [{ name: 'Aluno anonimizado AAAAAA', email: 'anonimizado-aaa@anonimizado.invalid', status: 'Anonimizado', anonymizedAt: 1794341832487, classes: [{ name: '1DES', courseId: 'DES' }] }]
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/alunos/anonimizado-aaa%40anonimizado.invalid']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('button', { name: 'Boletim (PDF)' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument()
+    unmount()
+    mocks.students = null
+    render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('button', { name: 'Editar' })).toBeInTheDocument()
   })
 })

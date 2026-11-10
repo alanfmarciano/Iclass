@@ -182,24 +182,52 @@ function anonymizedStudentRecord(student, pseudonym, { actor, at, closedSince })
     };
 }
 
-// Arquivos de justificativa de presença do aluno, para a lixeira quando a pasta dele é
-// dividida com um homônimo sem matrícula.
-function moveStudentFolderToTrash(memory, student, files, { deletedBy }) {
+// Pasta de documentos do aluno (alunos/<matrícula> - <nome>: atestados e documentos) para a
+// lixeira de arquivos. Quando a pasta é dividida com um homônimo sem matrícula, só vão os
+// arquivos ligados à presença deste aluno (files).
+// asName (anonimizar): a lixeira mostra e guarda o item com o nome da pasta do pseudônimo,
+// nunca com a matrícula e o nome de antes. Antes de ir para a lixeira, a pasta (ou os
+// arquivos dele, na pasta dividida) passa para alunos/<pseudônimo>, e a entrada da lixeira
+// (nome, origem e o nome guardado em disco) só tem o pseudônimo. Restaurar devolve a
+// pasta com esse nome, sem ligação com a pessoa. No apagar de vez fica como sempre foi
+// (a tela avisa que a pasta vai para a lixeira).
+function moveStudentFolderToTrash(memory, student, files, { deletedBy, asName } = {}) {
     try {
         const folder = fileStore.studentFolderName(student);
         const dir = path.join(fileStore.ALUNOS_DIR, folder);
         const shared = (memory.students || []).some(other => other !== student && fileStore.studentFolderName(other).toLowerCase() === folder.toLowerCase());
-        if (!shared) {
-            if (fs.existsSync(dir)) fileStore.moveDirToTrash(dir, { deletedBy });
+        const base = path.resolve(dir);
+        const targets = shared
+            ? [...new Set(files)].filter(rel => fileStore.isInsideStudents(rel)).map(rel => path.resolve(fileStore.absFromData(rel)))
+                .filter(target => target.startsWith(base + path.sep) && fs.existsSync(target))
+            : [];
+        if (!asName) {
+            if (!shared) { if (fs.existsSync(dir)) fileStore.moveDirToTrash(dir, { deletedBy }); return; }
+            targets.forEach(target => fileStore.moveToTrash(target, { deletedBy }));
             return;
         }
-        const base = path.resolve(dir);
-        [...new Set(files)].forEach(rel => {
-            if (!fileStore.isInsideStudents(rel)) return;
-            const target = path.resolve(fileStore.absFromData(rel));
-            if (target.startsWith(base + path.sep) && fs.existsSync(target)) fileStore.moveToTrash(target, { deletedBy });
-        });
+        if (shared ? !targets.length : !fs.existsSync(dir)) return;
+        const neutral = freeStudentDir(asName);
+        if (!shared) fs.renameSync(dir, neutral);
+        else {
+            targets.forEach(target => {
+                const dest = path.join(neutral, path.relative(base, target));
+                try {
+                    fs.mkdirSync(path.dirname(dest), { recursive: true });
+                    fs.renameSync(target, dest);
+                } catch (e) { /* segue com os outros: o que não mudou de pasta fica onde estava */ }
+            });
+        }
+        if (fs.existsSync(neutral)) fileStore.moveDirToTrash(neutral, { deletedBy });
     } catch (e) { /* a pasta é só cópia de documento: falha aqui não desfaz o resto */ }
+}
+
+// alunos/<nome> que ainda não existe (o pseudônimo é único; o sufixo é só uma garantia).
+function freeStudentDir(name) {
+    const clean = fileStore.safeName(name) || 'aluno anonimizado';
+    let target = path.join(fileStore.ALUNOS_DIR, clean);
+    for (let i = 2; fs.existsSync(target); i++) target = path.join(fileStore.ALUNOS_DIR, `${clean} (${i})`);
+    return target;
 }
 
 // Presença guardada do aluno anonimizado: as aulas, a origem, a data e a justificativa
@@ -386,9 +414,13 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         });
     });
 
-    // Pasta do aluno vai para a lixeira de arquivos. Homônimo sem matrícula usa a mesma
-    // pasta (matrícula + nome): aí só os arquivos ligados à presença deste aluno vão.
-    moveStudentFolderToTrash(memory, student, studentFiles, { deletedBy: actor });
+    // Pasta do aluno vai para a lixeira de arquivos (no anonimizar, com o nome do
+    // pseudônimo). Homônimo sem matrícula usa a mesma pasta (matrícula + nome): aí só os
+    // arquivos ligados à presença deste aluno vão.
+    moveStudentFolderToTrash(memory, student, studentFiles, {
+        deletedBy: actor,
+        asName: anonymize ? fileStore.studentFolderName(memory.students[index]) : undefined,
+    });
 
     // Entrada da auditoria sem dado pessoal: no anonimizar, só o pseudônimo; no apagar,
     // nem isso (só as contagens e o motivo).
