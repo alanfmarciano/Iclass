@@ -365,12 +365,22 @@ function createAdminAccountsRouter() {
             }
             // Fora da troca obrigatória inicial (mustChangePassword), exige a senha
             // atual — impede que uma sessão sequestrada troque a senha sem conhecê-la.
-            // Conferência e hash com o scrypt assíncrono (DES-07).
-            const storedBefore = matchedAdmin.password;
+            // A senha atual é conferida pelo attemptPasswordLogin, o único caminho que
+            // confere senha: scrypt assíncrono (DES-07) e o mesmo teto por IP do login do
+            // instrutor, para a sessão roubada não testar senhas sem limite (429).
+            let storedBefore = matchedAdmin.password;
             if (matchedAdmin.mustChangePassword !== true) {
-                if (!currentPassword || !(await db.verifyPasswordAsync(storedBefore, String(currentPassword).trim()))) {
+                const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password: currentPassword, req });
+                if (!check.ok && check.status === 429) return res.status(429).json(check.body);
+                if (!check.ok || check.account !== matchedAdmin) {
                     return res.status(400).json({ error: 'Senha atual incorreta.' });
                 }
+                // O valor que a conferência confirmou (o hash novo, se o antigo foi
+                // regravado): outra troca no meio da espera ainda dá o 409 abaixo.
+                if (matchedAdmin.password !== check.password) {
+                    return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
+                }
+                storedBefore = check.password;
             }
             const passwordHash = await db.hashPasswordAsync(newPassword.trim());
             // Outra troca terminou durante a espera: não sobrescreve a senha que ela gravou.

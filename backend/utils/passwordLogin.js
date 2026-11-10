@@ -1,6 +1,8 @@
 // ---------------------------------------------------------------------------
-// Login com senha (H2-B, H6b): o único caminho que confere a senha de quem entra,
-// aluno (POST /api/student/login) ou instrutor (POST /api/session/admin-login).
+// Login com senha (H2-B, H6b): o único caminho que confere senha, a de quem entra,
+// aluno (POST /api/student/login) ou instrutor (POST /api/session/admin-login), e a senha
+// atual pedida na troca de senha do instrutor (POST /api/admin/change-password), que
+// assim também fica sob o teto por IP: uma sessão roubada não testa senhas à vontade.
 //
 // - Só texto vale como credencial: e-mail ou senha ausentes, vazios ou de outro tipo
 //   respondem 400 sem gastar tentativa nem calcular scrypt.
@@ -14,8 +16,12 @@
 // - Falha do aluno vai para loginLogs, como antes (a rota grava). O registro das
 //   tentativas do instrutor entra com o H5b.
 //
-// Quem chama monta a resposta: { ok: true, account, email, rehashed } ou
-// { ok: false, status, body } (400, 401 ou 429), já com a mensagem em português.
+// Quem chama monta a resposta: { ok: true, account, email, rehashed, password } ou
+// { ok: false, status, body } (400, 401 ou 429), já com a mensagem em português. O 429
+// segue o formato combinado entre os grupos: { error, loginDelayed: true,
+// retryAfterSeconds }. `password` é o valor guardado na conta logo depois da conferência
+// (o hash novo, se foi regravado): quem ainda vai mudar a senha compara com ele para não
+// sobrescrever uma troca feita por outro pedido durante a espera.
 // ---------------------------------------------------------------------------
 const db = require('../database.js');
 const { rateLimit } = require('./rateLimit.js');
@@ -56,7 +62,7 @@ async function attemptPasswordLogin({ kind, email, password, req }) {
 
     const limit = rateLimit(`${settings.rateKey}:${getClientIp(req)}`, LOGIN_RATE_LIMIT);
     if (!limit.allowed) {
-        return refusal(429, settings.tooMany, { retryAfterSeconds: Math.max(1, Math.ceil(limit.retryAfterMs / 1000)) });
+        return refusal(429, settings.tooMany, { loginDelayed: true, retryAfterSeconds: Math.max(1, Math.ceil(limit.retryAfterMs / 1000)) });
     }
 
     // Contas com o e-mail, na ordem em que estão guardadas; vale a primeira cuja senha
@@ -77,14 +83,16 @@ async function attemptPasswordLogin({ kind, email, password, req }) {
     }
 
     let rehashed = false;
+    let confirmed = matched.stored;
     if (db.needsPasswordRehash(matched.stored)) {
         const upgraded = await db.hashPasswordAsync(secret);
         if (matched.account.password === matched.stored) {
             matched.account.password = upgraded;
+            confirmed = upgraded;
             rehashed = true;
         }
     }
-    return { ok: true, account: matched.account, email: normalizedEmail, rehashed };
+    return { ok: true, account: matched.account, email: normalizedEmail, rehashed, password: confirmed };
 }
 
 module.exports = { attemptPasswordLogin, LOGIN_RATE_LIMIT };

@@ -19,6 +19,7 @@ const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const settingsUtil = require('../../backend/utils/settings.js');
 const { createAdminSession } = require('../../backend/utils/authSessions.js');
+const backupUtil = require('../../backend/utils/backup.js');
 
 const ADMIN = { email: 'adm@rede-config.local' };
 const PROF = { email: 'prof@rede-config.local' };
@@ -147,4 +148,40 @@ const settingsUtil = require(${JSON.stringify(require.resolve('../../backend/uti
 db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(settingsUtil.networkSettings())); await db.close(); });`;
     const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
     assert.deepEqual(JSON.parse(output.slice(output.indexOf('@@') + 2)), { adminAccess: 'local' });
+});
+
+// Restaurar um backup volta a regra do painel ao que o backup trouxer, ou ao padrão
+// (contrato das configurações protegidas): a escolha atual não sobrevive à restauração,
+// e um backup de antes do H6b (sem o bloco) deixa o painel abrindo como antes.
+test('[UC-REDE-001] restaurar backup volta settings.network ao valor do backup ou ao padrão', async () => {
+    const backupWith = network => {
+        const snapshot = backupUtil.buildDataSnapshot();
+        const settings = { ...((snapshot.data.config && snapshot.data.config.settings) || {}), timezone: 'America/Recife' };
+        if (network === undefined) delete settings.network; else settings.network = network;
+        snapshot.data.config = { ...(snapshot.data.config || {}), settings };
+        return Buffer.from(JSON.stringify(snapshot));
+    };
+    const restore = file => asAdmin(request(app).post('/api/admin/backup/restore'))
+        .field('confirm', 'RESTAURAR')
+        .attach('file', file, 'backup-rede.json');
+    const cases = [
+        ['backup com "Só o computador do IClass"', { network: { adminAccess: 'rede-sem-https' } }, { adminAccess: 'local' }, 'local'],
+        ['backup com "Todos os aparelhos da rede"', { network: { adminAccess: 'local' } }, { adminAccess: 'rede-sem-https' }, 'rede-sem-https'],
+        ['backup de antes do H6b, sem o bloco', { network: { adminAccess: 'local' } }, undefined, 'rede-sem-https'],
+        ['backup com valor desconhecido', { network: { adminAccess: 'local' } }, { adminAccess: 'so-hoje' }, 'rede-sem-https'],
+        // Vindo de um backup, 'rede' vale como está: sem https, o painel fica só neste
+        // computador (403 https-required para os outros aparelhos).
+        ['backup com "Outros aparelhos só com conexão segura"', { network: { adminAccess: 'local' } }, { adminAccess: 'rede' }, 'rede'],
+    ];
+    for (const [label, current, fromBackup, expected] of cases) {
+        seed(current);
+        const file = backupWith(fromBackup);
+        const res = await restore(file);
+        assert.equal(res.status, 200, `${label}: ${res.status} ${res.body && res.body.error}`);
+        assert.equal(settingsUtil.networkSettings().adminAccess, expected, label);
+        assert.equal(settingsUtil.getSettings().network.adminAccess, expected, `${label} (getSettings)`);
+        assert.equal(db.memory.config.settings.timezone, 'America/Recife', `${label}: o resto das configurações vem do backup`);
+        // A restauração não grava auditoria de troca de rede (não é a rota própria).
+        assert.equal(networkAudits().length, 0, label);
+    }
 });

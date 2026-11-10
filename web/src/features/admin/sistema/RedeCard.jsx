@@ -51,7 +51,8 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
 
   return (
     <Card>
-      <CardHeader title="Rede local" subtitle="Endereços para os alunos acessarem e onde o painel do professor abre" />
+      {/* "Rede": o nome que as mensagens de recusa e de ajuda citam (Sistema → Rede). */}
+      <CardHeader title="Rede" subtitle="Endereços da rede local para os alunos acessarem e onde o painel do professor abre" />
       <CardBody className="space-y-5">
         <div className="space-y-2">
           {list.length === 0 && <p className="text-sm text-muted flex items-center gap-2"><Wifi size={16} /> Endereços aparecem quando o servidor estiver rodando.</p>}

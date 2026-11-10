@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
-const { promisify } = require('util');
+const os = require('os');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
 const { normalizeStoredStudentClasses } = require('./utils/students.js');
@@ -39,7 +39,53 @@ function legacyHashPassword(password) {
 const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_PREFIX = 'scrypt$';
 const SCRYPT_SHA256_PREFIX = 'scrypt-sha256$';
-const scryptAsync = promisify(crypto.scrypt);
+
+// Fila do scrypt assíncrono (DES-07). O pool de threads da libuv atende os pedidos na
+// ordem em que chegam e é dividido com o sqlite3 (cada COMMIT), o fs (express.static,
+// sendFile) e o zlib (compressão das respostas). Sem fila, 40 logins juntos punham 40
+// scrypts na frente de tudo: o servidor não parava, mas qualquer pedido que precisasse
+// do pool (até GET /api/session/status, pelo fs.stat do express.static) esperava a
+// rajada inteira, cerca de 450 ms. Com no máximo SCRYPT_CONCURRENCY senhas ao mesmo
+// tempo, sobram threads (e núcleos) livres para o resto, e a rajada só demora um pouco
+// mais para o último aluno. O tamanho do pool vem de UV_THREADPOOL_SIZE (padrão 4); o
+// launcher do Windows passa a definir a variável na etapa do Windows.
+const THREADPOOL_SIZE = Math.min(1024, Math.max(1, Number.parseInt(process.env.UV_THREADPOOL_SIZE, 10) || 4));
+const CPU_COUNT = Math.max(1, typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length);
+const SCRYPT_CONCURRENCY = Math.max(1, Math.min(THREADPOOL_SIZE - 2, CPU_COUNT - 1));
+let scryptRunning = 0;
+const scryptWaiting = [];
+
+function startNextScrypt() {
+    const next = scryptWaiting.shift();
+    if (next) next();
+}
+
+function scryptAsync(secret, salt, keyLength) {
+    return new Promise((resolve, reject) => {
+        const run = () => {
+            scryptRunning += 1;
+            let settled = false;
+            const done = (err, derived) => {
+                if (settled) return;
+                settled = true;
+                scryptRunning -= 1;
+                startNextScrypt();
+                if (err) reject(err); else resolve(derived);
+            };
+            try {
+                crypto.scrypt(secret, salt, keyLength, done);
+            } catch (err) {
+                done(err);
+            }
+        };
+        if (scryptRunning < SCRYPT_CONCURRENCY) run(); else scryptWaiting.push(run);
+    });
+}
+
+// Estado da fila (testes e diagnóstico).
+function passwordHashQueueStatus() {
+    return { concurrency: SCRYPT_CONCURRENCY, running: scryptRunning, waiting: scryptWaiting.length };
+}
 
 function parseScryptValue(value, prefix) {
     const parts = value.slice(prefix.length).split('$');
@@ -1266,6 +1312,7 @@ module.exports = {
     verifyPassword,
     hashPasswordAsync,
     verifyPasswordAsync,
+    passwordHashQueueStatus,
     needsPasswordRehash,
     allClassAssignments,
     syncAdminClassAssignments,

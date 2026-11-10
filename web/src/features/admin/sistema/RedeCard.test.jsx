@@ -33,6 +33,8 @@ afterEach(cleanup)
 describe('[UC-REDE-001] Sistema → Rede: onde o painel do professor abre', () => {
   it('administrador vê as três opções; a da conexão segura fica desligada e explica por quê', () => {
     render(<RedeCard canManage isAdmin />)
+    // O título é o nome que a recusa do painel cita ("Sistema → Rede").
+    expect(screen.getByRole('heading', { level: 2, name: 'Rede' })).toBeInTheDocument()
     expect(screen.getByText('192.168.0.10')).toBeInTheDocument()
     const open = screen.getByRole('radio', { name: /Todos os aparelhos da rede/ })
     expect(open).toBeChecked()

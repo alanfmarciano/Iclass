@@ -104,6 +104,7 @@ test('[UC-AUTH-001] teto de 30 tentativas por minuto no login do instrutor, com 
     for (let i = 0; i < 31; i += 1) last = await login({ email: ADMIN.email, password: 'errada-' + i });
     assert.equal(last.status, 429);
     assert.equal(last.body.error, 'Muitas tentativas de acesso. Aguarde um instante e tente novamente.');
+    assert.equal(last.body.loginDelayed, true, 'formato combinado do 429 de login');
     assert.ok(Number.isInteger(last.body.retryAfterSeconds) && last.body.retryAfterSeconds >= 1 && last.body.retryAfterSeconds <= 60);
     // Nem a senha certa passa enquanto o teto vale.
     assert.equal((await login(ADMIN)).status, 429);
@@ -130,6 +131,23 @@ test('[UC-AUTH-001] código sem Authorization: nem o servidor lê, nem o app do 
     };
     roots.forEach(walk);
     assert.deepEqual(offenders, []);
+    // Só o attemptPasswordLogin (utils/passwordLogin.js) confere senha: as rotas não
+    // chamam verifyPassword nem verifyPasswordAsync (com isso a senha atual da troca de
+    // senha também fica sob o teto por IP).
+    const verifiers = [];
+    const walkVerify = dir => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (entry.name === 'node_modules') continue;
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) { walkVerify(full); continue; }
+            if (!entry.name.endsWith('.js')) continue;
+            const rel = path.relative(REPO, full).split(path.sep).join('/');
+            if (rel === 'backend/database.js' || rel === 'backend/utils/passwordLogin.js') continue;
+            if (/verifyPassword(Async)?\s*\(/.test(fs.readFileSync(full, 'utf8'))) verifiers.push(rel);
+        }
+    };
+    walkVerify(path.join(REPO, 'backend'));
+    assert.deepEqual(verifiers, [], 'senha conferida fora do attemptPasswordLogin');
     // O validateAdmin não lê senha do corpo; só o login com senha lê req.body.password.
     const middlewares = fs.readFileSync(path.join(REPO, 'backend', 'middlewares.js'), 'utf8');
     assert.equal(/body\??\.password|body\[['"]password['"]\]/.test(middlewares), false);
