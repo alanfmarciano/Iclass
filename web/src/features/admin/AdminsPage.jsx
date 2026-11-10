@@ -45,7 +45,22 @@ export default function AdminsPage() {
   const open = (emailAddr) => nav('/admins/' + encodeURIComponent(emailAddr))
 
   const columns = [
-    { key: 'name', label: 'Nome', render: (r) => <span className="font-medium text-text">{r.name || '—'}</span> },
+    // Selo do atraso e "Liberar login" sob o nome, na primeira coluna (H5b): a 375 px a
+    // tabela rola para o lado e a coluna própria do fim ficava fora da tela (sobra do H5b, J2).
+    { key: 'name', label: 'Nome', render: (r) => (
+      <div className="flex flex-col items-start gap-1.5">
+        <span className="font-medium text-text">{r.name || '—'}</span>
+        {r.loginProtection && (
+          <div className="flex flex-wrap items-center gap-2">
+            <LoginProtectionBadge protection={r.loginProtection} />
+            {canManage && (
+              <Button size="sm" variant="secondary" icon={LockOpen} title={UNLOCK_LOGIN_HINT} loading={unlocking === r.email}
+                onClick={(event) => { event.stopPropagation(); unlockLogin(r) }}>Liberar login</Button>
+            )}
+          </div>
+        )}
+      </div>
+    ) },
     { key: 'email', label: 'E-mail', render: (r) => <span className="text-muted">{r.email}</span> },
     { key: 'role', label: 'Papel', render: (r) => <Badge tone={r.role === 'professor' ? 'info' : 'neutral'}>{ROLE_LABEL[r.role] || 'Administrador'}</Badge> },
     { key: 'assignedClasses', label: 'Turmas', render: (r) => r.role === 'professor'
@@ -54,15 +69,6 @@ export default function AdminsPage() {
     { key: 'additionalPermissions', label: 'Acessos extras', render: (r) => r.role === 'professor' && (r.additionalPermissions || []).length
       ? <span className="text-xs text-muted">{r.additionalPermissions.map(permissionLabel).join(', ')}</span>
       : '—' },
-    { key: 'loginProtection', label: 'Login', render: (r) => r.loginProtection ? (
-      <div className="flex flex-wrap items-center gap-2">
-        <LoginProtectionBadge protection={r.loginProtection} />
-        {canManage && (
-          <Button size="sm" variant="secondary" icon={LockOpen} title={UNLOCK_LOGIN_HINT} loading={unlocking === r.email}
-            onClick={(event) => { event.stopPropagation(); unlockLogin(r) }}>Liberar login</Button>
-        )}
-      </div>
-    ) : '—' },
   ]
 
   return (

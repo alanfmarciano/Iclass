@@ -89,6 +89,14 @@ describe('[UC-AUTH-002] selo de login com atraso e "Liberar login"', () => {
     ]
     const { unmount } = render(<MemoryRouter><AdminsPage /></MemoryRouter>)
     expect(screen.getByText(/^Login em espera até /)).toBeInTheDocument()
+    // A 375 px a tabela rola para o lado: o selo e o botão ficam sob o nome, na primeira
+    // coluna, e não numa coluna "Login" no fim (sobra do H5b, J2).
+    const nameCell = screen.getByText('Prof').closest('td')
+    const firstCell = nameCell.parentElement.querySelector('td')
+    expect(nameCell).toBe(firstCell)
+    expect(within(nameCell).getByText(/^Login em espera até /)).toBeInTheDocument()
+    expect(within(nameCell).getByRole('button', { name: /Liberar login/ })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Login' })).toBeNull()
     await user.click(screen.getByRole('button', { name: /Liberar login/ }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/accounts/unlock-login', { email: 'prof@escola.local' }))
     expect(mocks.refetch).toHaveBeenCalled()
