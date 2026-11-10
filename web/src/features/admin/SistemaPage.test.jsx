@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import SistemaPage, { BackupHistory, maintenanceClassOptions } from './SistemaPage'
+import SistemaPage, { BackupHistory, NETWORK_KEPT_NOTE, maintenanceClassOptions } from './SistemaPage'
 
 const IN_CLASS = { courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }
 const INSTITUTION = { courseId: '', courseName: '', className: '' }
@@ -321,6 +321,20 @@ describe('Sistema · restaurar backup de versão anterior', () => {
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
     expect(mocks.toast.success.mock.calls[0][0]).toMatch(/aplicações de prova foram refeitas a partir das turmas do backup \(3 aplicações atuais descartadas, 1 refeita\)/)
     expect(window.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('[UC-BACKUP-001] a restauração diz em uma linha que a configuração de rede foi mantida (decisões §7)', async () => {
+    mocks.post.mockResolvedValue({ success: true, accountsNotRestored: 0, networkKept: true })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const user = userEvent.setup()
+    const { container } = render(<SistemaPage />)
+    // Antes de restaurar: a linha fica junto do aviso do que a restauração substitui.
+    expect(screen.getByText(NETWORK_KEPT_NOTE)).toBeInTheDocument()
+    await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup.json', { type: 'application/json' }))
+    await user.type(screen.getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
+    await user.click(screen.getByRole('button', { name: 'Restaurar' }))
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
+    expect(mocks.toast.success.mock.calls[0][0]).toBe(`Backup restaurado. Recarregue a página para ver os dados. ${NETWORK_KEPT_NOTE}`)
   })
 
   it('[UC-BACKUP-001] restaurar usa a confirmação digitada padrão: o botão só libera com o arquivo e RESTAURAR', async () => {

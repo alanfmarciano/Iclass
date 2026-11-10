@@ -280,6 +280,9 @@ function restoredCollectionValue(entry, restored, { exact = false } = {}) {
 
 async function applySnapshot(snapshot, { replaceAccounts = false, exact = false } = {}) {
     validateDataSnapshot(snapshot);
+    // A regra de rede de agora, lida antes do laço: o gancho 'networkSettings' a põe de
+    // volta depois (decisões §7). Na volta exata (exact) a cópia de antes já a traz.
+    const restoreContext = { keepNetwork: !exact, previousNetwork: db.currentNetworkSettings(db.memory) };
     db.COLLECTION_TABLES.forEach(entry => {
         // Tabela derivada (auth_sessions) não tem valor próprio na memória nem no backup:
         // ela sai do que outras coleções guardam, e quem zera esse conteúdo é o gancho dela
@@ -307,8 +310,9 @@ async function applySnapshot(snapshot, { replaceAccounts = false, exact = false 
     // restaurada. Restaurar desconecta todos (sessões não vão no backup): o gancho
     // 'authSessions' zera as sessões, e a gravação esvazia a tabela auth_sessions; o
     // 'legacyPasswordHashes' troca os hashes SHA-256 antigos do backup por
-    // scrypt-sha256$ antes da gravação (H5a, SEG-X2), como no boot.
-    await db.runAfterRestore(db.memory);
+    // scrypt-sha256$ antes da gravação (H5a, SEG-X2), como no boot; o 'networkSettings'
+    // mantém a regra de rede de agora (settings.network, decisões §7).
+    await db.runAfterRestore(db.memory, restoreContext);
     await db.save();
     return applications;
 }

@@ -308,7 +308,9 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                         ...legacyInfo,
                     });
                     await db.save();
-                    res.json({ success: true, replaceAccounts, accountsNotRestored, ...legacyInfo });
+                    // networkKept: a regra de rede (quem abre o painel em outros aparelhos) continua
+                    // a de hoje, não a do backup (decisões §7); a tela diz isso em uma linha.
+                    res.json({ success: true, replaceAccounts, accountsNotRestored, networkKept: true, ...legacyInfo });
                 } catch (restoreError) {
                     discardUpload(temporaryFile);
                     if (restoreError.legacyBackup) {

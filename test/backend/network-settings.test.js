@@ -150,10 +150,10 @@ db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(settings
     assert.deepEqual(JSON.parse(output.slice(output.indexOf('@@') + 2)), { adminAccess: 'local' });
 });
 
-// Restaurar um backup volta a regra do painel ao que o backup trouxer, ou ao padrão
-// (contrato das configurações protegidas): a escolha atual não sobrevive à restauração,
-// e um backup de antes do H6b (sem o bloco) deixa o painel abrindo como antes.
-test('[UC-REDE-001] restaurar backup volta settings.network ao valor do backup ou ao padrão', async () => {
+// Restaurar um backup não afrouxa o acesso do painel (decisões do coordenador §7, J2):
+// a regra que vale agora fica, seja qual for a do backup. Antes, um backup de antes do
+// H6b (sem o bloco) abria o painel para a rede sem HTTPS em silêncio.
+test('[UC-REDE-001] restaurar backup mantém o settings.network de agora', async () => {
     const backupWith = network => {
         const snapshot = backupUtil.buildDataSnapshot();
         const settings = { ...((snapshot.data.config && snapshot.data.config.settings) || {}), timezone: 'America/Recife' };
@@ -165,13 +165,13 @@ test('[UC-REDE-001] restaurar backup volta settings.network ao valor do backup o
         .field('confirm', 'RESTAURAR')
         .attach('file', file, 'backup-rede.json');
     const cases = [
-        ['backup com "Só o computador do IClass"', { network: { adminAccess: 'rede-sem-https' } }, { adminAccess: 'local' }, 'local'],
-        ['backup com "Todos os aparelhos da rede"', { network: { adminAccess: 'local' } }, { adminAccess: 'rede-sem-https' }, 'rede-sem-https'],
-        ['backup de antes do H6b, sem o bloco', { network: { adminAccess: 'local' } }, undefined, 'rede-sem-https'],
-        ['backup com valor desconhecido', { network: { adminAccess: 'local' } }, { adminAccess: 'so-hoje' }, 'rede-sem-https'],
-        // Vindo de um backup, 'rede' vale como está: sem https, o painel fica só neste
-        // computador (403 https-required para os outros aparelhos).
-        ['backup com "Outros aparelhos só com conexão segura"', { network: { adminAccess: 'local' } }, { adminAccess: 'rede' }, 'rede'],
+        ['backup com "Todos os aparelhos da rede" e agora "Só o computador"', { network: { adminAccess: 'local' } }, { adminAccess: 'rede-sem-https' }, 'local'],
+        ['backup de antes do H6b, sem o bloco, e agora "Só o computador"', { network: { adminAccess: 'local' } }, undefined, 'local'],
+        ['backup com valor desconhecido e agora "Só o computador"', { network: { adminAccess: 'local' } }, { adminAccess: 'so-hoje' }, 'local'],
+        ['backup com "Só o computador" e agora "Todos os aparelhos"', { network: { adminAccess: 'rede-sem-https' } }, { adminAccess: 'local' }, 'rede-sem-https'],
+        ['backup com "Outros aparelhos só com conexão segura" e agora "Só o computador"', { network: { adminAccess: 'local' } }, { adminAccess: 'rede' }, 'local'],
+        // Banco de antes do H6b (sem o bloco): continua sem ele (padrão), mesmo que o backup traga um.
+        ['agora sem o bloco e backup com "Só o computador"', {}, { adminAccess: 'local' }, 'rede-sem-https'],
     ];
     for (const [label, current, fromBackup, expected] of cases) {
         seed(current);
@@ -181,7 +181,19 @@ test('[UC-REDE-001] restaurar backup volta settings.network ao valor do backup o
         assert.equal(settingsUtil.networkSettings().adminAccess, expected, label);
         assert.equal(settingsUtil.getSettings().network.adminAccess, expected, `${label} (getSettings)`);
         assert.equal(db.memory.config.settings.timezone, 'America/Recife', `${label}: o resto das configurações vem do backup`);
+        assert.equal(res.body.networkKept, true, `${label}: a tela diz que a rede foi mantida`);
         // A restauração não grava auditoria de troca de rede (não é a rota própria).
         assert.equal(networkAudits().length, 0, label);
     }
+    // É um gancho de db.afterRestore (uma declaração só com sessões e senhas antigas) e
+    // a regra mantida vai para o banco: o próximo boot lê a mesma.
+    assert.deepEqual(db.afterRestore.map(hook => hook.name), ['authSessions', 'legacyPasswordHashes', 'networkSettings']);
+    seed({ network: { adminAccess: 'local' } });
+    await db.save();
+    assert.equal((await restore(backupWith(undefined))).status, 200);
+    const script = `const db = require(${JSON.stringify(require.resolve('../../backend/database.js'))});
+const settingsUtil = require(${JSON.stringify(require.resolve('../../backend/utils/settings.js'))});
+db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(settingsUtil.networkSettings())); await db.close(); });`;
+    const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(output.slice(output.indexOf('@@') + 2)), { adminAccess: 'local' });
 });

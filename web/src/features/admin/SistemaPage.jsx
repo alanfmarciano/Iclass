@@ -160,6 +160,10 @@ export function legacyRestoreNote({ applicationsDiscarded = 0, applicationsRebui
   return `Backup de versão anterior: as aplicações de prova foram refeitas a partir das turmas do backup (${discarded === 1 ? '1 aplicação atual descartada' : `${discarded} aplicações atuais descartadas`}, ${rebuilt === 1 ? '1 refeita' : `${rebuilt} refeitas`}).`
 }
 
+// Restaurar não muda quem abre o painel em outros aparelhos (settings.network fica o de
+// hoje; decisões do coordenador §7, J2): a tela diz isso em uma linha, antes e depois.
+export const NETWORK_KEPT_NOTE = 'A configuração de rede (quem abre o painel em outros aparelhos) continua a de hoje.'
+
 // Histórico de backup (só o administrador vê): restaurações, falhas, cópias e downloads.
 export function BackupHistory({ entries }) {
   if (!entries) return null
@@ -233,9 +237,10 @@ function BackupCard({ isAdmin }) {
       const d = await api.post('/api/admin/backup/restore', fd, { timeoutMs: 0 })
       const skipped = Number(d && d.accountsNotRestored) || 0
       const legacy = d?.legacyApplications ? ` ${legacyRestoreNote(d)}` : ''
+      const network = d?.networkKept ? ` ${NETWORK_KEPT_NOTE}` : ''
       toast.success(skipped > 0
-        ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".${legacy}`
-        : `Backup restaurado. Recarregue a página para ver os dados.${legacy}`)
+        ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".${legacy}${network}`
+        : `Backup restaurado. Recarregue a página para ver os dados.${legacy}${network}`)
       setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
     } catch (e) {
       if (e.status === 409 && e.data?.legacyBackup) {
@@ -260,6 +265,7 @@ function BackupCard({ isAdmin }) {
         {isAdmin && <div className="p-4 rounded-lg border border-danger/40 bg-danger-soft space-y-3">
           <p className="text-sm font-semibold text-text">Restaurar de um arquivo</p>
           <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo. Numa instalação nova (troca de computador), marque a opção para trazer os professores do backup.</p>
+          <p className="text-xs text-muted">{NETWORK_KEPT_NOTE}</p>
           <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
           <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
           <div className="max-w-sm">

@@ -456,13 +456,38 @@ function resetAuthSessions(memory) {
 //   scrypt-sha256$ antes da gravação, como no boot.
 // Cada item: { name, run(memory) }; run pode devolver promessa. Uma lista só: as trilhas
 // A e B tinham cada uma a sua declaração, juntadas aqui na J2.
+// Restaurar backup não afrouxa o acesso do painel (decisões do coordenador §7, J2): a
+// regra de rede que vale agora (settings.network: adminAccess e, depois do H6c,
+// studentsHttps e o certificado) fica, em vez de voltar ao valor do backup ou ao padrão.
+// Um backup antigo sem o bloco abriria o painel para a rede sem HTTPS em silêncio.
+// context.previousNetwork é o bloco lido antes da restauração (undefined: não havia,
+// vale o padrão); keepNetwork false (a volta exata ao estado de antes, quando a
+// restauração falha no meio) deixa o bloco da cópia de antes como veio.
+function keepCurrentNetworkSettings(memory, context = {}) {
+    if (!context.keepNetwork) return;
+    const config = memory.config && typeof memory.config === 'object' ? memory.config : (memory.config = {});
+    const settings = config.settings && typeof config.settings === 'object' ? config.settings : (config.settings = {});
+    if (context.previousNetwork === undefined) delete settings.network;
+    else settings.network = structuredClone(context.previousNetwork);
+}
+
+function currentNetworkSettings(memory = memoryDB) {
+    const settings = memory.config && memory.config.settings;
+    if (!settings || typeof settings !== 'object' || settings.network === undefined) return undefined;
+    return structuredClone(settings.network);
+}
+
+// Ganchos pós-restauração, numa declaração só (trilhas A e B da J2): sessões, senhas
+// antigas e rede. Cada gancho recebe a memória já restaurada e o contexto da
+// restauração (utils/backup.js applySnapshot).
 const AFTER_RESTORE_HOOKS = [
     { name: 'authSessions', run: resetAuthSessions },
     { name: 'legacyPasswordHashes', run: memory => upgradeLegacyPasswordHashes(memory) },
+    { name: 'networkSettings', run: keepCurrentNetworkSettings },
 ];
 
-async function runAfterRestore(memory = memoryDB) {
-    for (const hook of AFTER_RESTORE_HOOKS) await hook.run(memory);
+async function runAfterRestore(memory = memoryDB, context = {}) {
+    for (const hook of AFTER_RESTORE_HOOKS) await hook.run(memory, context);
 }
 
 // Encerra de vez as sessões de uma conta (kind 'admin' = instrutor, ou 'student'): as da
@@ -1798,6 +1823,7 @@ module.exports = {
     // Ganchos pós-restauração ({ name, run }) e quem os roda (utils/backup.js).
     afterRestore: AFTER_RESTORE_HOOKS,
     runAfterRestore,
+    currentNetworkSettings,
     COLLECTION_TABLES,
     emptyCollectionValue,
     save: saveToDisk,
