@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { AdminCourseGate } from '../../features/admin/AdminCourseGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenAdminShell } from './LumenAdminShell'
+import { PageLoading } from '../ui/PageLoading'
 const CRUMBS = {
   '/calendario': ['Gestão', 'Calendário'], '/avisos': ['Gestão', 'Avisos'],
   '/': ['Visão geral', 'Dashboard'], '/provas': ['Avaliações', 'Provas'],
@@ -36,7 +37,8 @@ export function AppShell() {
         <Topbar onMenu={() => setOpen((o) => !o)} breadcrumb={breadcrumb} />
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
           <div key={pathname} className="app-enter">
-            <AdminCourseGate><Outlet /></AdminCourseGate>
+            {/* Tela sob demanda (lib/lazyPage.js): "Carregando..." com o menu à vista. */}
+            <Suspense fallback={<PageLoading />}><AdminCourseGate><Outlet /></AdminCourseGate></Suspense>
           </div>
         </main>
       </div>

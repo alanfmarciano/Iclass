@@ -19,6 +19,7 @@
     "test:full": "node test/run-module.js full",
     "test:report": "node test/run-module.js report",
     "test:docs": "node test/validate-traceability.js",
+    "check:bundle": "node web/scripts/check-bundle-size.mjs",
     "test:coverage:backend": "node --experimental-test-coverage --test test/backend/*.test.js",
     "test:backend": "node --test test/backend/*.test.js",
     "test:web": "npm --prefix web run test",

@@ -15,6 +15,18 @@ export default defineConfig(({ command }) => ({
   define: {
     __ICLASS_BUILD__: JSON.stringify(command === 'build' ? computeSourceHash() : ''),
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Ícones num arquivo só (lucide-react), em vez de um pedaço em cada tela: menos
+        // arquivos para o celular buscar e cache que não muda quando uma tela muda.
+        manualChunks(id) {
+          if (id.replace(/\\/g, '/').includes('/node_modules/lucide-react/')) return 'icons'
+          return undefined
+        },
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     setupFiles: './src/test/setup.js',

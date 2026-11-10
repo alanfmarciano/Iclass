@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
@@ -11,6 +11,7 @@ import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
 import { NotificationBell } from '../../components/ui/NotificationBell'
 import { useStudentHeartbeat } from './useStudentHeartbeat'
+import { PageLoading } from '../../components/ui/PageLoading'
 const NAV = [
   { to: '/aluno', icon: Home, text: 'Início', end: true },
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
@@ -21,6 +22,26 @@ const NAV = [
   { to: '/aluno/avisos', icon: Megaphone, text: 'Avisos' },
   { to: '/aluno/calendario', icon: CalendarDays, text: 'Calendário' },
 ]
+// A tela da prova chega sob demanda (lib/lazyPage.js). Dois segundos depois de o portal
+// abrir, o navegador já busca o arquivo dela, uma vez: quando o professor libera a
+// prova, a turma inteira não baixa o mesmo arquivo no mesmo instante, e quem perder a
+// rede no caminho já tem a prova no aparelho. Falha aqui não importa (a rota tenta de
+// novo ao abrir a prova).
+export const EXAM_PREFETCH_DELAY_MS = 2000
+let examScreenPrefetched = false
+export function prefetchExamScreen() {
+  if (examScreenPrefetched) return
+  examScreenPrefetched = true
+  import('./exam/ExamRunner').catch(() => { examScreenPrefetched = false })
+  import('./StudentExamShell').catch(() => { examScreenPrefetched = false })
+}
+function usePrefetchExamScreen() {
+  useEffect(() => {
+    const timer = setTimeout(prefetchExamScreen, EXAM_PREFETCH_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [])
+}
+
 export function StudentShell() {
   const [open, setOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches)
   const { auth, logout, setActiveClass } = useAuth()
@@ -50,6 +71,7 @@ export function StudentShell() {
   }
   const notifications = <NotificationBell endpoint={notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} />
   useStudentHeartbeat()
+  usePrefetchExamScreen()
 
   if (interfacePreset === 'lumen') {
     const studentName = ((s.nomeSocial && s.nomeSocial.trim()) || s.name) || auth.email || 'Aluno'
@@ -73,7 +95,7 @@ export function StudentShell() {
           onLogout={() => { logout(); nav('/login') }}
           notifications={notifications}
         >
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><StudentCourseGate><Outlet /></StudentCourseGate></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></div>
         </LumenShell>
         <StudentExamAvailability />
       </>
@@ -133,7 +155,7 @@ export function StudentShell() {
           {notifications}
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><StudentCourseGate><Outlet /></StudentCourseGate></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><Suspense fallback={<PageLoading />}><StudentCourseGate><Outlet /></StudentCourseGate></Suspense></div>
         </main>
       </div>
       <StudentExamAvailability />

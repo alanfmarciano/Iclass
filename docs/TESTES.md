@@ -16,9 +16,12 @@ Como o projeto é testado e o que se espera ao contribuir. Fonte: `package.json`
 npm run test:backend   # node --test test/backend/*.test.js
 npm run test:web       # vitest run (dentro de web/)
 npm run test:e2e       # playwright test
-npm run build          # gera web/dist (obrigatório antes do e2e/start)
-npm run check          # test:backend + test:web + build + test:e2e (verificação completa)
+npm run build          # gera web/dist com as versões .gz/.br (obrigatório antes do e2e/start)
+npm run check:bundle   # orçamento do pacote da interface (não roda no build)
+npm run check          # test:docs + test:backend + test:web + build + check:bundle + test:e2e (verificação completa)
 ```
+
+O `check:bundle` (`web/scripts/check-bundle-size.mjs`) falha com o JavaScript da primeira abertura (script de entrada mais os `modulepreload` do `index.html`) acima de 130 KB em gzip, com qualquer `.js` do build acima de 350 KB ou com `import * as` de `lucide-react` em `web/src`. Sem `web/dist`, confere só o código-fonte e avisa "Sem build da interface: orçamento não conferido.". Ele fica de fora do `npm run build` de propósito: o orçamento é para quem desenvolve e nunca impede compilar e ligar o sistema.
 
 ### Execução modular
 
@@ -26,7 +29,7 @@ Os mesmos testes podem ser acionados sem IA pela opção **Central de Testes e Q
 
 ```bash
 npm run test:setup              # prepara dependências e Chromium (uma vez)
-npm run test:quick              # backend + frontend, sem navegador
+npm run test:quick              # documentação, backend, frontend e orçamento do pacote, sem navegador
 npm run test:module -- provas   # somente provas
 npm run test:module -- admins   # administradores e permissões
 npm run test:module -- alunos   # alunos, sessões e matrículas
@@ -62,6 +65,8 @@ Backend: `admin-rbac-catalog`, `branding-interface-preset`, `class-content`, `da
 Frontend: `Modal.test.jsx`, `AdminCourseGate.test.jsx`, `FinishApplicationModal.test.jsx`, `StudentExamAvailability.test.jsx`, `monitorTimer.test.js`, `contentMarkdown.test.js`, `sessionActivity.test.js`.
 
 E2E: `course-management.spec.js`, `exam-flow.spec.js`, `student-login.spec.js`.
+
+Entrega do app (fase 2, H2-A, `[UC-DESEMPENHO-001]`): `static-assets.test.js` (cache imutável e `.gz`/`.br` em `/assets`, 404 sem `index.html`, no-store na API e no `index.html`), `http-compression.test.js` (gzip das respostas de texto, composição com o redator de privacidade e com a resposta que espera o COMMIT), `bundle-budget.test.js` (pré-compressão do build e `check:bundle`), `StatCard.test.jsx` (ícones nomeados), `lazyPage.test.jsx` (telas sob demanda e recarga depois de uma atualização), `AuthProvider.test.jsx` (a sessão do instrutor fica gravada no navegador no instante do login, sem esperar o arquivo do painel) e os testes de layout (`AppShell.test.jsx`, `StudentShell.test.jsx`, `StudentExamShell.test.jsx`) com o "Carregando..." dentro do layout.
 
 ## Notas de ambiente
 

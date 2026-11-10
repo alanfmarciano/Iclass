@@ -1,4 +1,5 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { lazy } from 'react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -69,6 +70,32 @@ describe('[UC-PROVA-003] layout da prova online (AVA-12, UXA-X1)', () => {
       expect(screen.getByRole('button', { name: 'Recarregar a página' })).toBeVisible()
       expect(screen.queryByText(/Unexpected Application Error/)).not.toBeInTheDocument()
       expect(screen.getByText('Detalhes técnicos')).toBeInTheDocument()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
+
+describe('[UC-DESEMPENHO-001] layout da prova · tela da prova sob demanda', () => {
+  it('enquanto o arquivo da prova chega, mostra "Carregando..." dentro do layout da prova', async () => {
+    let resolveModule
+    const pending = new Promise((resolve) => { resolveModule = resolve })
+    const ProvaSobDemanda = lazy(() => pending)
+    renderShell(<ProvaSobDemanda />)
+    const main = screen.getByRole('main')
+    expect(main).toHaveTextContent('Carregando...')
+    await act(async () => { resolveModule({ default: () => <p>Questão 1</p> }) })
+    expect(await screen.findByText('Questão 1')).toBeInTheDocument()
+    expect(screen.getByRole('main')).not.toHaveTextContent('Carregando...')
+  })
+
+  it('arquivo da prova que não chega (rede caiu) mostra a tela de erro da prova, sem sair do layout', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const ProvaQuebrada = lazy(() => Promise.reject(new TypeError('Failed to fetch dynamically imported module')))
+      renderShell(<ProvaQuebrada />)
+      expect(await screen.findByText('Algo deu errado nesta tela')).toBeInTheDocument()
+      expect(screen.getByRole('main')).toHaveTextContent('Algo deu errado nesta tela')
     } finally {
       consoleError.mockRestore()
     }

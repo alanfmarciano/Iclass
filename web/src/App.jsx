@@ -1,49 +1,54 @@
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthProvider'
 import { canAccessAdminPath } from './lib/adminPermissions'
-import { AppShell } from './components/layout/AppShell'
-import { StudentShell } from './features/student/StudentShell'
-import { StudentExamShell } from './features/student/StudentExamShell'
+import { lazyPage } from './lib/lazyPage'
 import { Input } from './components/ui/Input'
 import { Button } from './components/ui/Button'
 import { api } from './lib/api'
 import LoginPage from './features/LoginPage'
+
+// Telas e layouts sob demanda (H2-A, DES-06): cada um é um arquivo próprio do build, e o
+// navegador só baixa o que abre. O login continua no pacote inicial (é a primeira tela).
+// Tela nova entra aqui com lazyPage(() => import(...)).
+const AppShell = lazyPage(() => import('./components/layout/AppShell'), 'AppShell')
+const StudentShell = lazyPage(() => import('./features/student/StudentShell'), 'StudentShell')
+const StudentExamShell = lazyPage(() => import('./features/student/StudentExamShell'), 'StudentExamShell')
 // Instrutor
-import DashboardPage from './features/admin/DashboardPage'
-import ProvasPage from './features/admin/ProvasPage'
-import MonitorPage from './features/admin/MonitorPage'
-import ResultadosPage from './features/admin/ResultadosPage'
-import MateriaisPage from './features/admin/MateriaisPage'
-import ChamadaPage from './features/admin/ChamadaPage'
-import AvisosPage from './features/admin/AvisosPage'
-import CalendarioPage from './features/admin/CalendarioPage'
-import BibliotecaPage from './features/admin/BibliotecaPage'
-import EditorPage from './features/admin/EditorPage'
-import TurmasPage from './features/admin/TurmasPage'
-import AssistenteHorariosPage from './features/admin/AssistenteHorariosPage'
-import AlunosPage from './features/admin/AlunosPage'
-import MatriculasPage from './features/admin/MatriculasPage'
-import AlunosGlobalPage from './features/admin/AlunosGlobalPage'
-import AlunoGlobalEditPage from './features/admin/AlunoGlobalEditPage'
-import AlunoDetailPage from './features/admin/AlunoDetailPage'
-import AdminsPage from './features/admin/AdminsPage'
-import AdminEditPage from './features/admin/AdminEditPage'
-import ForumPage from './features/admin/ForumPage'
-import IdentidadePage from './features/admin/IdentidadePage'
-import EscolasPage from './features/admin/EscolasPage'
-import EscolaEditPage from './features/admin/EscolaEditPage'
-import SistemaPage from './features/admin/SistemaPage'
+const DashboardPage = lazyPage(() => import('./features/admin/DashboardPage'))
+const ProvasPage = lazyPage(() => import('./features/admin/ProvasPage'))
+const MonitorPage = lazyPage(() => import('./features/admin/MonitorPage'))
+const ResultadosPage = lazyPage(() => import('./features/admin/ResultadosPage'))
+const MateriaisPage = lazyPage(() => import('./features/admin/MateriaisPage'))
+const ChamadaPage = lazyPage(() => import('./features/admin/ChamadaPage'))
+const AvisosPage = lazyPage(() => import('./features/admin/AvisosPage'))
+const CalendarioPage = lazyPage(() => import('./features/admin/CalendarioPage'))
+const BibliotecaPage = lazyPage(() => import('./features/admin/BibliotecaPage'))
+const EditorPage = lazyPage(() => import('./features/admin/EditorPage'))
+const TurmasPage = lazyPage(() => import('./features/admin/TurmasPage'))
+const AssistenteHorariosPage = lazyPage(() => import('./features/admin/AssistenteHorariosPage'))
+const AlunosPage = lazyPage(() => import('./features/admin/AlunosPage'))
+const MatriculasPage = lazyPage(() => import('./features/admin/MatriculasPage'))
+const AlunosGlobalPage = lazyPage(() => import('./features/admin/AlunosGlobalPage'))
+const AlunoGlobalEditPage = lazyPage(() => import('./features/admin/AlunoGlobalEditPage'))
+const AlunoDetailPage = lazyPage(() => import('./features/admin/AlunoDetailPage'))
+const AdminsPage = lazyPage(() => import('./features/admin/AdminsPage'))
+const AdminEditPage = lazyPage(() => import('./features/admin/AdminEditPage'))
+const ForumPage = lazyPage(() => import('./features/admin/ForumPage'))
+const IdentidadePage = lazyPage(() => import('./features/admin/IdentidadePage'))
+const EscolasPage = lazyPage(() => import('./features/admin/EscolasPage'))
+const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
+const SistemaPage = lazyPage(() => import('./features/admin/SistemaPage'))
 // Aluno
-import InicioPage from './features/student/InicioPage'
-import ModulosPage from './features/student/ModulosPage'
-import ProvasStudentPage from './features/student/ProvasPage'
-import ExamRunner from './features/student/exam/ExamRunner'
-import CadernoPage from './features/student/CadernoPage'
-import DuvidasPage from './features/student/DuvidasPage'
-import AvisosStudentPage from './features/student/AvisosPage'
-import CalendarioStudentPage from './features/student/CalendarioPage'
-import BibliotecaStudentPage from './features/student/BibliotecaPage'
+const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
+const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
+const ProvasStudentPage = lazyPage(() => import('./features/student/ProvasPage'))
+const ExamRunner = lazyPage(() => import('./features/student/exam/ExamRunner'))
+const CadernoPage = lazyPage(() => import('./features/student/CadernoPage'))
+const DuvidasPage = lazyPage(() => import('./features/student/DuvidasPage'))
+const AvisosStudentPage = lazyPage(() => import('./features/student/AvisosPage'))
+const CalendarioStudentPage = lazyPage(() => import('./features/student/CalendarioPage'))
+const BibliotecaStudentPage = lazyPage(() => import('./features/student/BibliotecaPage'))
 
 function RequireRole({ role, children }) {
   const { auth, authReady } = useAuth()
@@ -80,8 +85,11 @@ export default function App() {
   if (!authReady) return <SessionLoading />
   if (auth.role === 'student' && maintenance?.enabled) return <MaintenanceScreen message={maintenance.message} />
   if (auth.role === 'admin' && auth.mustChangePassword) return <PasswordChangeScreen onChanged={() => setAuth((current) => ({ ...current, mustChangePassword: false }))} />
+  // O layout (painel do instrutor, portal do aluno ou prova) chega sob demanda: até lá,
+  // a mesma tela de "Validando sessão...". As telas dentro do layout têm o próprio
+  // "Carregando..." (PageLoading), com o menu à vista.
   return (
-    <>
+    <Suspense fallback={<SessionLoading />}>
       <Routes>
       <Route path="/login" element={auth.role ? <Navigate to={auth.role === 'admin' ? '/' : '/aluno'} replace /> : <LoginPage />} />
 
@@ -133,7 +141,7 @@ export default function App() {
 
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
-    </>
+    </Suspense>
   )
 }
 

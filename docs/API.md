@@ -64,6 +64,8 @@ Campos extras podem acompanhar o erro para o cliente reagir (ex.: `{ error: 'Lim
 
 O cliente (`lib/api.js`) transforma respostas não-OK em `Error` com `.status` e `.data`, exibido via `toast.error(e.message)`.
 
+**Cache e compressão** (fase 2, H2-A): toda resposta de `/api` sai com `Cache-Control: no-store` (a rota que define o próprio `Cache-Control` continua valendo). Respostas de texto (`application/json`, `application/javascript`, `text/*`) entre 1 KB e 32 MB saem em gzip quando o pedido traz `Accept-Encoding: gzip`, com `Vary: Accept-Encoding` (`utils/httpCompression.js`); vale também para `/data.js`, apostilas `.md` e CSV. A rota não faz nada para isso: basta `res.json`/`res.send`. Para não comprimir uma resposta, a rota define `Cache-Control: no-transform`. Arquivos enviados com `res.sendFile`/`res.download`, streams e ZIP não passam pela compressão. Um segundo `res.send` enquanto a primeira resposta ainda está no gzip é ignorado com aviso no console.
+
 ## Persistência dentro do handler
 
 Mutação em `db.memory` e depois `await db.save()` (ver [MODELO_DADOS.md](./MODELO_DADOS.md)):
@@ -97,6 +99,8 @@ res.json(questao);
 ## Arquivos controlados
 
 `/uploads/:filename` e `/imagens/:filename` passam por `sendControlledFile` com resolução segura de caminho (`utils/safePath.js`) — nunca sirva arquivo por concatenação direta de path.
+
+Arquivos do app em `/assets/<nome>` (`utils/staticAssets.js`): só GET e HEAD (outro método é 405); nome simples como os do Vite (`[A-Za-z0-9._-]`, sem começar com ponto, sem `.gz`/`.br` no fim). Responde com `Cache-Control: public, max-age=31536000, immutable`, `Vary: Accept-Encoding`, `X-Content-Type-Options: nosniff` e `Content-Encoding: br` ou `gzip` quando a versão comprimida do build existe e o navegador aceita. Nome que não existe: 404 `Arquivo não encontrado.` com no-store, nunca o `index.html`. Qualquer outro caminho fora de `/api`, `/uploads` e `/imagens` recebe o `index.html` com no-store (503 `O IClass está sendo atualizado...` com `Retry-After: 3` enquanto o build é refeito).
 
 ## Modo de teste
 

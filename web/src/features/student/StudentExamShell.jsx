@@ -1,5 +1,7 @@
+import { Suspense } from 'react'
 import { Outlet } from 'react-router-dom'
 import { AppErrorBoundary } from '../../components/ui/ErrorScreen'
+import { PageLoading } from '../../components/ui/PageLoading'
 import { ExamErrorScreen } from './exam/ExamErrorScreen'
 import { StudentCourseGate } from './StudentCourseGate'
 import { useStudentHeartbeat } from './useStudentHeartbeat'
@@ -15,7 +17,7 @@ export function StudentExamShell() {
   return (
     <div className="app-canvas h-full flex flex-col text-text">
       <main className="flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6">
-        <StudentCourseGate><AppErrorBoundary fallback={ExamErrorScreen}><Outlet /></AppErrorBoundary></StudentCourseGate>
+        <StudentCourseGate><AppErrorBoundary fallback={ExamErrorScreen}><Suspense fallback={<PageLoading />}><Outlet /></Suspense></AppErrorBoundary></StudentCourseGate>
       </main>
     </div>
   )
