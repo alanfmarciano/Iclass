@@ -15,6 +15,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
 import { SaudeCard } from './sistema/SaudeCard'
+import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
@@ -424,6 +425,8 @@ export default function SistemaPage() {
       {canManage && <TrashCard />}
 
       {canManage && <BackupCard isAdmin={auth?.accountRole !== 'professor'} />}
+
+      {canManage && <ArmazenamentoCard />}
 
       {canManage && <Card>
         <CardHeader title="Manutenção" subtitle="Limpar o estado de prova e resetar a sala valem só para a turma escolhida aqui." />

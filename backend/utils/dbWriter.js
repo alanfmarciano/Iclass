@@ -204,6 +204,9 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
     let lastFullSaveMs = null;
     let lastCycle = null;
     let cycles = 0;
+    // Houve gravação parcial desde a última completa (rede de segurança do H1-c: a
+    // gravação completa periódica só roda quando isto é verdade).
+    let partialSinceFullSave = false;
 
     function exec(sql) {
         return new Promise((resolve, reject) => connection.exec(sql, err => (err ? reject(err) : resolve())));
@@ -343,14 +346,15 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         return item.upserts.filter(([key]) => keys.has(key)).map(([key]) => [unreadableCopyKey(key, stamp), key]);
     }
 
-    // Uma tentativa do ciclo. Devolve null (COMMIT feito) ou o erro (ROLLBACK feito).
+    // Uma tentativa do ciclo. Devolve { error } (ROLLBACK feito) ou { report } (COMMIT
+    // feito): o que o ciclo gravou, { full, rows, collections: { coleção: linhas } }.
     async function attemptCycle(scope, waitingSince = Infinity) {
         let plan;
         try {
             if (beforeCycle() && !scope.full) scope.only.add('admins');
             plan = buildPlan(scope);
         } catch (err) {
-            return err;
+            return { error: err };
         }
         const tablesWithRows = plan.filter(item => planRows(item) > 0);
         const rows = tablesWithRows.reduce((total, item) => total + planRows(item), 0);
@@ -362,7 +366,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
                 await beginImmediate(waitingSince);
             } catch (err) {
                 await rollbackQuietly();
-                return err;
+                return { error: err };
             }
             let failure = null;
             for (const item of tablesWithRows) {
@@ -390,7 +394,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             }
             if (failure) {
                 await rollbackQuietly();
-                return failure;
+                return { error: failure };
             }
         }
         plan.forEach(item => (item.store ? item.store.apply() : item.apply()));
@@ -401,7 +405,10 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         });
         const elapsed = performance.now() - started;
         cycles += 1;
-        lastCycle = { at: new Date().toISOString(), full: scope.full, rows, ms: Math.round(elapsed * 10) / 10 };
+        // Linhas gravadas por coleção (só as que gravaram algo).
+        const collections = {};
+        tablesWithRows.forEach(item => { collections[item.entry.collection] = (collections[item.entry.collection] || 0) + planRows(item); });
+        lastCycle = { at: new Date().toISOString(), full: scope.full, rows, ms: Math.round(elapsed * 10) / 10, collections };
         if (tablesWithRows.length) {
             commitSamples.push(elapsed);
             if (commitSamples.length > COMMIT_SAMPLES) commitSamples.shift();
@@ -409,8 +416,11 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         if (scope.full) {
             lastFullSaveAt = lastCycle.at;
             lastFullSaveMs = lastCycle.ms;
+            partialSinceFullSave = false;
+        } else {
+            partialSinceFullSave = true;
         }
-        return null;
+        return { report: { full: scope.full, rows, collections: { ...collections } } };
     }
 
     function scheduleRetry() {
@@ -461,18 +471,19 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         // quem espere: usa o busy_timeout inteiro).
         const waitingSince = waiters.reduce((oldest, waiter) => Math.min(oldest, waiter.requestedAt), Infinity);
         let error = null;
+        let report = null;
         try {
             await ready();
         } catch (err) {
             error = err;
         }
         if (!error) {
-            error = await attemptCycle(scope, waitingSince);
+            ({ error = null, report = null } = await attemptCycle(scope, waitingSince));
             // Trava (SQLITE_BUSY/LOCKED): o SQLite já esperou o busy_timeout, desiste agora.
             // Outro erro: uma nova tentativa depois de 500 ms.
             if (error && !isBusyError(error)) {
                 await new Promise(resolve => setTimeout(resolve, IMMEDIATE_RETRY_MS));
-                error = await attemptCycle(scope, waitingSince);
+                ({ error = null, report = null } = await attemptCycle(scope, waitingSince));
             }
         }
         processedSeq = throughSeq;
@@ -483,7 +494,11 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         } else {
             lastWriteError = null;
             clearRetry();
-            waiters.forEach(waiter => waiter.resolve());
+            // A promessa de cada pedido resolve com o que o ciclo gravou; requests diz
+            // quantos pedidos foram juntos nele (a rede de segurança só acusa o que a
+            // gravação completa dela encontrou sozinha).
+            const result = Object.freeze({ ...report, requests: waiters.length });
+            waiters.forEach(waiter => waiter.resolve(result));
         }
         running = false;
         settleFlushWaiters();
@@ -605,12 +620,32 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         });
     }
 
+    function isIdle() {
+        return !running && !pendingScope && !exclusiveQueue.length;
+    }
+
     function idle() {
-        if (!running && !pendingScope && !exclusiveQueue.length) return Promise.resolve();
+        if (isIdle()) return Promise.resolve();
         return new Promise(resolve => {
             const check = () => {
-                if (!running && !pendingScope && !exclusiveQueue.length) return resolve();
+                if (isIdle()) return resolve();
                 setTimeout(check, 10);
+            };
+            check();
+        });
+    }
+
+    // Espera a fila esvaziar (nenhum ciclo rodando nem pedido esperando) por até
+    // timeoutMs. Resolve true quando esvaziou e false quando o tempo acabou antes.
+    function waitIdle(timeoutMs = 30000) {
+        if (isIdle()) return Promise.resolve(true);
+        const limit = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+        return new Promise(resolve => {
+            const check = () => {
+                if (isIdle()) return resolve(true);
+                if (Date.now() >= limit) return resolve(false);
+                const timer = setTimeout(check, 50);
+                if (typeof timer.unref === 'function') timer.unref();
             };
             check();
         });
@@ -696,7 +731,8 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             retryAttempt,
             nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null,
             cycles,
-            lastCycle: lastCycle ? { ...lastCycle } : null,
+            lastCycle: lastCycle ? { ...lastCycle, collections: { ...lastCycle.collections } } : null,
+            partialSinceFullSave,
             // Um ciclo de gravação ou uma tarefa exclusiva (VACUUM) rodando agora.
             running,
             queued: !!pendingScope,
@@ -709,6 +745,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         scopeFromOptions,
         flush,
         runExclusive,
+        waitIdle,
         close,
         seed,
         snapshotRows,

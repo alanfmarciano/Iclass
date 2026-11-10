@@ -234,8 +234,10 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
     if (req.query.email) {
         // Presença automática também no heartbeat: cobre alunos com sessão já ativa
         // (retomada do navegador), que não passam de novo pelo POST /api/student/login.
+        // Rota quente (H1-c, DES-01): só a presença nova, sem segurar a resposta do
+        // heartbeat (detached); a falha fica com a regravação de fundo do motor.
         if (ensureDailyLoginAttendance(req.studentEmail, { req, source: 'heartbeat' })) {
-            db.save().catch(() => {});
+            db.save({ only: ['attendance', 'authSessions'], detached: true }).catch(() => {});
         }
     }
     res.json({ success: true });
@@ -451,6 +453,16 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
 // Sincronização unificada durante a prova: estado, mensagens pop-up, configuração da
 // prova e itens liberados em UMA única requisição (reduz a carga de polling na rede
 // local quando há muitos alunos simultâneos).
+// Gravação parcial nas rotas quentes do aluno (H1-c, DES-01): db.save({ only }) com as
+// coleções que a rota muda. Toda lista leva 'authSessions': a validação da sessão
+// (validateStudentSession) registra o IP novo do aparelho (celular que troca de Wi-Fi) e
+// completa a sessão de formato antigo, e isso vai para a tabela auth_sessions.
+// Gravação parcial do sync: o estado da tentativa (sorteio,
+// volta à página, chave da cópia local), o log da volta à página e a aplicação (a
+// tentativa nova consome o "+N min" guardado para o aluno). A entrega de uma tentativa
+// vencida (settleStudentAttempt) continua com a gravação completa.
+const SYNC_SAVE_COLLECTIONS = ['studentExamState', 'proctoringLogs', 'examApplications', 'authSessions'];
+
 router.get('/api/student/sync', validateStudentSession, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     try {
@@ -563,12 +575,12 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 rawState.courseId = cls.courseId || null;
                 if (application) rawState.applicationId = application.id;
                 db.memory.studentExamState[stateKey] = rawState;
-                db.save();
+                db.save({ only: SYNC_SAVE_COLLECTIONS });
             }
-            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save();
+            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save({ only: SYNC_SAVE_COLLECTIONS });
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
-            if (application && context.state && ensureLocalCopyKey(rawState)) db.save();
+            if (application && context.state && ensureLocalCopyKey(rawState)) db.save({ only: SYNC_SAVE_COLLECTIONS });
             localCopyKey = application && context.state ? localCopyKeyFor(rawState) : null;
 
             // Não expõe a flag interna de validação de token nem a chave dentro do estado.
@@ -913,7 +925,7 @@ router.post('/api/student/announcements/read', validateStudentSession, (req, res
     const id = String(req.body.id || '');
     const ann = (db.memory.announcements || []).find(a => a.id === id);
     if (!ann || !studentCanSeeAnnouncement(req.studentAccount, email, ann)) return res.status(404).json({ error: 'Aviso não encontrado.' });
-    if (markAnnouncementRead(ann, email)) db.save();
+    if (markAnnouncementRead(ann, email)) db.save({ only: ['announcements', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -969,14 +981,14 @@ router.post('/api/student/login', async (req, res) => {
 
     if (!student) {
         recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'fail', reason: 'Credenciais inválidas', req });
-        await db.save();
+        await db.save({ only: ['loginLogs'] });
         return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
     }
 
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
         recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'blocked', reason: `Status: ${student.status || 'não informado'}`, req });
-        await db.save();
+        await db.save({ only: ['loginLogs'] });
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa. Procure o instrutor.' });
     }
 
@@ -996,7 +1008,10 @@ router.post('/api/student/login', async (req, res) => {
         ip: normalizeIp(req.ip || req.socket.remoteAddress),
         now: Date.now(),
     });
-    await db.save();
+    // Rota quente no começo da aula (H1-c, DES-01): a conta (hora do login, hash novo), o
+    // registro do login, a presença automática e a sessão gravada (contrato: rota anotada
+    // que cria sessão leva 'authSessions'; a que audita leva 'auditLogs').
+    await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs'] });
 
     // Retorna dados do estudante sem expor o campo de senha
     const { password: _, ...safeStudent } = student;
@@ -1195,7 +1210,9 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     initializeExamState(state, config);
     ensureLocalCopyKey(state);
     db.memory.studentExamState[context.key] = state;
-    await db.save();
+    // Rota quente (H1-c, DES-01): a tentativa e a aplicação (o "+N min" guardado para o
+    // aluno passa para a tentativa nova).
+    await db.save({ only: ['studentExamState', 'examApplications', 'authSessions'] });
     // A tentativa acabou de começar: as questões da versão do aluno já vão na resposta,
     // com os identificadores opacos das alternativas (AVA-05).
     const delivered = attemptQuestionsAvailable({ application, onlineConfig: config, state })
@@ -1307,7 +1324,7 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
         details: { reportId: report.id, questionNumber: number, reason },
         timestamp: now,
     });
-    await db.save();
+    await db.save({ only: ['examApplications', 'auditLogs', 'authSessions'] });
     res.status(201).json({ success: true, report });
 });
 
@@ -1606,16 +1623,18 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         if (reopenable) submissionObj.reopenableState = reopenable;
     }
     
-    const submissions = db.memory.submissions;
-    submissions.push(submissionObj);
-    writeJSON(DB_SUBMISSIONS_FILE, submissions);
+    // A entrega nova entra na lista (submissions é só acréscimo) e a tentativa sai dos
+    // estados. Rota quente (H1-c, DES-01): uma gravação parcial só, em vez do writeJSON
+    // (gravação completa) seguido de outra; os caminhos raros acima (entrega pelo
+    // servidor fora do prazo, troca da entrega automática) continuam completos.
+    db.memory.submissions.push(submissionObj);
 
     lockedState.status = 'submitted';
     lockedState.submittedAt = submissionObj.timestamp;
     if (stateKey && db.memory.studentExamState[stateKey]) {
         delete db.memory.studentExamState[stateKey];
     }
-    await db.save();
+    await db.save({ only: ['submissions', 'studentExamState', 'auditLogs', 'examApplications', 'authSessions'] });
 
     res.json({
         success: true,
@@ -1938,7 +1957,7 @@ router.post('/api/student/progress', validateStudentSession, (req, res) => {
     }
 
     db.memory.progress[email.toLowerCase()] = completedUnits;
-    db.save();
+    db.save({ only: ['progress', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -1956,7 +1975,8 @@ router.post('/api/student/track-access', validateStudentSession, (req, res) => {
         timestamp: Date.now(),
     });
     if (db.memory.moduleAccess.length > 10000) db.memory.moduleAccess.splice(0, db.memory.moduleAccess.length - 10000);
-    db.save();
+    // Só acréscimo (e a poda das mais antigas, que a gravação parcial apaga).
+    db.save({ only: ['moduleAccess', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -1972,7 +1992,7 @@ router.post('/api/student/notes/save', validateStudentSession, (req, res) => {
         db.memory.notes[email] = {};
     }
     db.memory.notes[email][moduleKey] = note;
-    db.save();
+    db.save({ only: ['notes', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -2021,7 +2041,7 @@ router.post('/api/student/annotation', validateStudentSession, (req, res) => {
         };
     }
     
-    db.save();
+    db.save({ only: ['annotations', 'authSessions'] });
     res.json({ success: true });
 });
 

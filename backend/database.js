@@ -20,6 +20,7 @@ const { createDbWriter, DbWriteError, MEMORY_KINDS } = require('./utils/dbWriter
 const { createKeystrokeStore, KEYSTROKE_COLLECTION, KEYSTROKE_SCHEMA, KEYSTROKE_TABLE, LEGACY_KEYSTROKE_TABLE } = require('./utils/keystrokeStore.js');
 const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('./utils/persistenceContext.js');
 const { logError } = require('./utils/errorLog.js');
+const { syncedFolderInfo } = require('./utils/syncedFolder.js');
 const { clearSessions, persistedSessionRows, revokeAdminSessions, revokeStudentSession, sessionRowBelongsTo } = require('./utils/authSessions.js');
 
 function legacyHashPassword(password) {
@@ -1172,6 +1173,9 @@ async function init() {
         await saveToDisk();
     }
 
+    // Espaço livre do arquivo para o cartão Armazenamento e o "Precisa de você" (H1-c).
+    await refreshStorageStats();
+
     console.log("💾 Banco de dados SQLite inicializado e carregado na memória.");
 }
 
@@ -1309,6 +1313,45 @@ function refreshSaveSnapshot(context, scope) {
     writer.snapshotRows(covered).forEach((rows, collection) => context.snapshot.rows.set(collection, rows));
 }
 
+// Espaço do arquivo (H1-c, DES-11, CONF-06): páginas livres (freelist_count × page_size),
+// que ficam no arquivo depois de apagar dados e só voltam ao disco com o VACUUM (botão
+// Compactar do cartão Armazenamento). As PRAGMAs são assíncronas: o valor fica guardado
+// aqui e é renovado no boot, na tela (GET /api/admin/storage), depois da gravação
+// completa da rede de segurança e da compactação. storageStatus() (síncrono) lê o último
+// valor e, com ele mais velho que 1 min, pede uma renovação em segundo plano.
+const STORAGE_STATS_MAX_AGE_MS = 60000;
+// Sugestão de compactar no "Precisa de você" (decisões da fase 2, §3): espaço livre acima
+// de 25% do arquivo. Abaixo de 1 MB livre não vale a pena (banco novo ou pequeno).
+const COMPACT_SUGGEST_RATIO = 0.25;
+const COMPACT_SUGGEST_MIN_FREE_BYTES = 1024 * 1024;
+const fileStats = { pageSize: null, pageCount: null, freelistCount: null, at: null };
+let fileStatsRefresh = null;
+
+function refreshStorageStats() {
+    if (fileStatsRefresh) return fileStatsRefresh;
+    const pending = (async () => {
+        try {
+            await ensureConnection();
+            const number = row => {
+                const value = row ? Number(Object.values(row)[0]) : NaN;
+                return Number.isFinite(value) ? value : null;
+            };
+            const pageSize = number(await getSql('PRAGMA page_size'));
+            const pageCount = number(await getSql('PRAGMA page_count'));
+            const freelistCount = number(await getSql('PRAGMA freelist_count'));
+            Object.assign(fileStats, { pageSize, pageCount, freelistCount, at: new Date().toISOString() });
+        } catch (e) {
+            // Banco fechado ou ocupado: fica o último valor.
+        }
+    })();
+    fileStatsRefresh = pending;
+    pending.then(() => { if (fileStatsRefresh === pending) fileStatsRefresh = null; });
+    return pending;
+}
+
+// Pasta de dados dentro do OneDrive (CONF-05): conferida uma vez, no carregamento.
+const SYNCED_FOLDER = syncedFolderInfo(DATA_DIR);
+
 // Estado do armazenamento (fonte única: cartão Armazenamento do H1-c e /api/health do H3).
 function storageStatus() {
     const fileSize = file => { try { return fs.statSync(file).size; } catch (e) { return 0; } };
@@ -1320,14 +1363,32 @@ function storageStatus() {
         else if (entry.kind === 'singleton') rows[entry.collection] = value === undefined ? 0 : 1;
     });
     const status = writer.status();
+    const statsAge = fileStats.at ? Date.now() - Date.parse(fileStats.at) : Infinity;
+    if (statsAge > STORAGE_STATS_MAX_AGE_MS && !writer.isClosed()) refreshStorageStats();
+    const databaseBytes = fileSize(dbPath);
+    const walBytes = fileSize(`${dbPath}-wal`);
+    const freeBytes = fileStats.pageSize !== null && fileStats.freelistCount !== null ? fileStats.pageSize * fileStats.freelistCount : null;
+    // Tamanho do banco para a proporção: o maior entre o arquivo e as páginas que o
+    // SQLite conta (em WAL, o arquivo só cresce depois do checkpoint).
+    const logicalBytes = fileStats.pageSize !== null && fileStats.pageCount !== null ? fileStats.pageSize * fileStats.pageCount : 0;
+    const baseBytes = Math.max(databaseBytes, logicalBytes);
     return {
         // Teclas da prova gravadas (tabela própria, pelos contadores).
         keystrokes: keystrokeStore.api.total(),
         journalMode: connectionInfo.journalMode,
         synchronous: connectionInfo.synchronous,
         busyTimeoutMs: connectionInfo.busyTimeoutMs,
-        databaseBytes: fileSize(dbPath),
-        walBytes: fileSize(`${dbPath}-wal`),
+        databaseBytes,
+        walBytes,
+        // Espaço recuperável pelo Compactar (null até a primeira leitura das PRAGMAs).
+        freeBytes,
+        freeBytesAt: fileStats.at,
+        compactSuggested: freeBytes !== null && baseBytes > 0
+            && freeBytes >= COMPACT_SUGGEST_MIN_FREE_BYTES
+            && freeBytes > baseBytes * COMPACT_SUGGEST_RATIO,
+        // Pasta de dados dentro do OneDrive: aviso no console e no cartão (CONF-05).
+        inSyncedFolder: SYNCED_FOLDER.inSyncedFolder,
+        syncedFolderProvider: SYNCED_FOLDER.provider,
         rows,
         lastFullSaveAt: status.lastFullSaveAt,
         lastFullSaveMs: status.lastFullSaveMs,
@@ -1343,7 +1404,69 @@ function storageStatus() {
         consecutiveFailures: status.lastWriteError && status.pendingRetry ? Math.max(1, status.retryAttempt || 0) : 0,
         saving: status.running,
         savesSinceBoot: status.cycles,
+        // Houve gravação parcial desde a última completa (a rede de segurança a cobre).
+        partialSinceFullSave: status.partialSinceFullSave,
     };
+}
+
+// Compactar o banco (H1-c, DES-11): VACUUM pela fila (db.runExclusive, nenhuma gravação
+// no meio) e, como o banco está em WAL, o checkpoint com TRUNCATE leva o resultado para o
+// database.db e zera o -wal. As gravações pedidas antes passam primeiro; as pedidas
+// durante esperam. Quem chama confere antes que não há prova em andamento e que há espaço
+// em disco (rota POST /api/admin/storage/compact). Devolve o estado antes e depois.
+async function compactDatabase() {
+    await refreshStorageStats();
+    const before = storageStatus();
+    const started = Date.now();
+    await writer.runExclusive(connection => new Promise((resolve, reject) => {
+        connection.exec('VACUUM', vacuumError => {
+            if (vacuumError) return reject(vacuumError);
+            connection.exec('PRAGMA wal_checkpoint(TRUNCATE)', checkpointError => (checkpointError ? reject(checkpointError) : resolve()));
+        });
+    }));
+    const ms = Date.now() - started;
+    await refreshStorageStats();
+    return { before, after: storageStatus(), ms };
+}
+
+// Rede de segurança da gravação parcial (H1-c, DES-01): de 10 em 10 min (timer registrado
+// no server.js), se houve gravação parcial desde a última completa, uma gravação completa
+// assim que a fila esvaziar (ou depois de 30 s, na fila mesmo assim). Ela leva ao disco o
+// que uma rota anotada tenha esquecido no only; se encontrar alguma linha para gravar
+// sozinha (sem outro pedido junto no mesmo ciclo), o crash.log diz quais coleções, para
+// corrigir a anotação. Nunca rejeita (a falha de gravação já vai para o crash.log pelo
+// motor, que regrava sozinho).
+const SAFETY_NET_INTERVAL_MS = 10 * 60 * 1000;
+const SAFETY_NET_IDLE_WAIT_MS = 30000;
+let safetyNetRun = null;
+
+function runSafetyNetSave({ idleWaitMs = SAFETY_NET_IDLE_WAIT_MS } = {}) {
+    if (safetyNetRun) return safetyNetRun;
+    if (writer.isClosed() || !writer.status().partialSinceFullSave) return Promise.resolve({ ran: false, rows: 0, found: 0 });
+    const pending = (async () => {
+        try {
+            await writer.waitIdle(idleWaitMs);
+            if (writer.isClosed()) return { ran: false, rows: 0, found: 0 };
+            const report = await saveToDisk({ detached: true });
+            const rows = Number(report && report.rows) || 0;
+            const found = report && report.requests === 1 ? rows : 0;
+            if (found > 0) {
+                const collections = Object.entries(report.collections || {})
+                    .map(([collection, count]) => `${collection} (${count})`)
+                    .join(', ');
+                const message = `A gravação completa encontrou ${found} alteração(ões) sem gravação parcial: ${collections}`;
+                // logError já põe a linha-resumo no console.
+                logError('[GRAVAÇÃO] Rede de segurança', { message });
+            }
+            refreshStorageStats();
+            return { ran: true, rows, found, collections: { ...(report && report.collections) } };
+        } catch (err) {
+            return { ran: true, rows: 0, found: 0, error: (err && (err.sqliteCode || err.code)) || 'ERRO' };
+        }
+    })();
+    safetyNetRun = pending;
+    pending.then(() => { if (safetyNetRun === pending) safetyNetRun = null; });
+    return pending;
 }
 
 // Saúde da gravação (H3b, DES-08, CONF-12), para o /api/health e o cartão Saúde do H3c:
@@ -1454,6 +1577,10 @@ module.exports = {
     runExclusive: fn => writer.runExclusive(fn),
     close,
     storageStatus,
+    refreshStorageStats,
+    compactDatabase,
+    runSafetyNetSave,
+    SAFETY_NET_INTERVAL_MS,
     health,
     ping,
     captureSaveSnapshot,

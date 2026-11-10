@@ -21,6 +21,7 @@ const { SERVER_INSTANCE_ID, SESSION_RESUME_MAX_DOWNTIME_MS } = require('./utils/
 const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
 const serverLifecycle = require('./utils/serverLifecycle.js');
+const { SYNCED_FOLDER_WARNING } = require('./utils/syncedFolder.js');
 
 // Registro de falhas do servidor: o único é utils/errorLog.js (data/crash.log, 5 MB), e o
 // stack inteiro também vai para o console (janela do launcher). Os tratadores de exceção
@@ -350,6 +351,9 @@ async function prepareServer() {
         throw err;
     }
     serverLifecycle.setBootPhase('restoring');
+    // Pasta de dados dentro do OneDrive (H1-c, CONF-05): aviso no console (e no cartão
+    // Armazenamento da tela Sistema).
+    if (db.storageStatus().inSyncedFolder) console.warn(`⚠️ ${SYNCED_FOLDER_WARNING}`);
     // 2) Quanto tempo o servidor ficou fora do ar: o heartbeat da execução anterior.
     serverLifecycle.loadPreviousRun();
     // 3) Sessões de aluno e de instrutor gravadas em auth_sessions (H3a-2): voltam depois
@@ -440,6 +444,12 @@ async function prepareServer() {
         getMemory: () => db.memory,
         save: () => db.save({ detached: true }),
     });
+
+    // Rede de segurança da gravação parcial (H1-c, DES-01): de 10 em 10 min, uma gravação
+    // completa quando houve gravação parcial desde a última (database.js runSafetyNetSave).
+    serverLifecycle.registerTimer('save-safety-net', setInterval(() => {
+        db.runSafetyNetSave().catch(err => logCrash('rede de segurança da gravação', err));
+    }, db.SAFETY_NET_INTERVAL_MS));
 
     // Backup automático diário dos dados em data/backups (guarda os 14 mais recentes).
     // Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios do servidor.

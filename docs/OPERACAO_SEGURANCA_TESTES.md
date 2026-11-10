@@ -4,6 +4,19 @@
 
 Por padrão, o sistema mantém `data/`, `content/` e `cursos_arquivados/`. Testes e instalações isoladas podem definir `ICLASS_DATA_DIR`, `ICLASS_CONTENT_DIR` e `ICLASS_ARCHIVE_DIR`. Testes automatizados devem sempre usar diretórios temporários.
 
+### Onde guardar a pasta do IClass (fase 2, H1-c, CONF-05)
+
+- **Fora do OneDrive** (e de qualquer pasta sincronizada: Google Drive, Dropbox, pasta de rede). Use algo como `C:\IClass`. O OneDrive abre o `database.db` e os arquivos `-wal`/`-shm` enquanto o IClass grava: travas, gravações que falham (503 "Não foi possível gravar os dados agora") e cópias do banco pela metade na nuvem. Com a pasta de dados dentro do OneDrive o servidor avisa no console ao ligar ("A pasta de dados está dentro do OneDrive...") e o cartão **Armazenamento** da tela Sistema mostra o mesmo aviso. A conferência olha o caminho: a pasta do OneDrive informada pelo Windows (variáveis `OneDrive`, `OneDriveCommercial`, `OneDriveConsumer`) ou qualquer parte do caminho que comece com "OneDrive".
+- **Exclusão no antivírus**: inclua a pasta `data\` do IClass nas exclusões do Windows Defender (ou do antivírus da escola). O antivírus que examina o banco a cada gravação causa as mesmas travas.
+- **Cópia manual do banco**: o certo é o backup do sistema (tela Sistema → Backup geral). Para copiar à mão, pare o servidor antes (Ctrl+C ou a opção do launcher) e copie juntos `database.db`, `database.db-wal` e `database.db-shm` (os dois últimos podem não existir depois de um desligamento limpo). Copiar só o `database.db` com o servidor ligado pode levar um banco sem as gravações mais recentes.
+
+### Armazenamento e compactação (fase 2, H1-c, CONF-06, DES-11)
+
+- **Cartão "Armazenamento"** (tela Sistema, quem tem `system.manage`): tamanho do banco e do `-wal`, espaço recuperável (páginas livres dentro do arquivo, que sobram depois de apagar dados), as 5 coleções com mais linhas, teclas da prova gravadas, última gravação completa e quanto levou, p95 do tempo de gravação, última falha de gravação (em vermelho) e o aviso do OneDrive.
+- **Compactar banco** (só administrador; o professor vê o cartão sem o botão): pede `COMPACTAR`, roda o `VACUUM` pela fila de gravação (nenhuma gravação no meio) e o checkpoint do `-wal`, e mostra o tamanho antes e depois. É recusado com prova em andamento (aplicação em sala de espera, em andamento ou pausada) e quando o disco não tem espaço para o arquivo novo (o tamanho do banco mais 10%). Fica na Auditoria como "Banco de dados compactado". As gravações ficam paradas enquanto ele roda (segundos num banco de um ano): faça fora do horário de prova.
+- **"Compactar o banco" no Precisa de você**: aparece só para o administrador quando o espaço recuperável passa de 25% do arquivo (e de 1 MB), com link para a tela Sistema.
+- **Rede de segurança da gravação**: as rotas mais usadas durante a aula e a prova (rascunho e sincronização da prova, logs do Monitor, presença, caderno, progresso, entrega) gravam só as coleções que mudaram. De 10 em 10 minutos, se houve gravação parcial desde a última completa, o servidor faz uma gravação completa (espera a fila esvaziar por até 30 s). Se ela encontrar algo que a gravação parcial deixou para trás, o `data/crash.log` registra `[GRAVAÇÃO] Rede de segurança` com as coleções: avise o desenvolvimento, porque é uma rota com a anotação incompleta (o dado já foi gravado).
+
 ## Inicialização e build
 
 Requer Node.js 20.19 ou superior. Execute `npm run build` antes de `npm start`. O build gera `web/dist/build-meta.json`; o servidor recusa iniciar se o build estiver ausente ou se o hash das fontes e dependências divergir.

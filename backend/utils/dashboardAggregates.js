@@ -148,8 +148,11 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // ---------------------------------------------------------------------------
 // PRECISA DE VOCÊ — cada item é uma pendência com destino clicável.
 // `canSeeMatriculas` vem da rota (admin pleno); snooze é aplicado na rota.
+// `extras` (contrato da fase 2): blocos montados pela rota, cada um já filtrado pelo
+// escopo de quem vê. storage (H1-c): { freeBytes, databaseBytes } quando o banco tem
+// espaço a recuperar e quem vê é administrador (db.storageStatus().compactSuggested).
 // ---------------------------------------------------------------------------
-function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }) {
+function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }, extras = {}) {
     const emails = emailSet(students);
     const items = [];
 
@@ -260,6 +263,19 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
             titulo: 'Provas recuperadas depois do encerramento',
             detalhe: 'entregues com as respostas salvas no fim do tempo, aguardando revisão · Resultados',
             count: recuperadas.length, tone: 'warning', href: '/resultados', permissao: 'page.results',
+        });
+    }
+
+    // 7. Banco com muito espaço livre dentro do arquivo (mais de 25% depois de apagar
+    // dados): o botão Compactar do cartão Armazenamento devolve esse espaço ao disco.
+    const storage = extras && extras.storage;
+    if (storage && Number(storage.freeBytes) > 0) {
+        const freeMb = Math.max(1, Math.round(Number(storage.freeBytes) / (1024 * 1024)));
+        items.push({
+            id: 'compactar_banco', tipo: 'compactar_banco',
+            titulo: 'Compactar o banco',
+            detalhe: 'MB livres dentro do arquivo do banco · Sistema → Armazenamento',
+            count: freeMb, tone: 'info', href: '/sistema', permissao: 'system.manage',
         });
     }
 

@@ -195,7 +195,10 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
             existing.focusUnlockedAt = null;
             db.memory.studentExamState[stateKey] = existing;
         }
-        db.save();
+        // Rota quente (H1-c, DES-01): grava só o log novo e o estado da tentativa. As
+        // rotas do aluno anotadas levam também 'authSessions': a validação da sessão
+        // registra o IP novo do aparelho, que vai para a tabela auth_sessions.
+        db.save({ only: ['proctoringLogs', 'studentExamState', 'authSessions'] });
         
         res.json({ success: true });
     } catch (err) {
@@ -392,7 +395,8 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
             savedAt: new Date().toISOString()
         };
 
-        await db.save();
+        // Rota quente (H1-c, DES-01): o rascunho mexe só no estado da tentativa.
+        await db.save({ only: ['studentExamState', 'authSessions'] });
         res.json({ success: true });
     } catch (err) {
         return sendInternalError(err, req, res);
@@ -485,7 +489,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
                     state.studentClass = cls.name;
                     state.courseId = cls.courseId || null;
                     db.memory.studentExamState[stateKey] = state;
-                    db.save();
+                    db.save({ only: ['studentExamState', 'authSessions'] });
                 }
             }
         }
@@ -522,7 +526,7 @@ router.post('/api/student/acknowledge-message', validateStudentSession, (req, re
             msg.acknowledgedBy.push(req.studentEmail);
         }
         if (msg.targetEmail) msg.status = 'read';
-        db.save();
+        db.save({ only: ['broadcastMessages', 'authSessions'] });
         res.json({ success: true });
     } catch (err) {
         return sendInternalError(err, req, res);
@@ -574,7 +578,7 @@ router.post('/api/student/message-history/delete', validateStudentSession, (req,
                 }
             }
         });
-        db.save();
+        db.save({ only: ['broadcastMessages', 'authSessions'] });
         res.json({ success: true, deleted: count });
     } catch (err) {
         return sendInternalError(err, req, res);
@@ -660,7 +664,9 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
             }
             context.state.tokenValidated = true;
             db.memory.studentExamState[context.key] = context.state;
-            db.save();
+            // A tentativa nova pode consumir o "+N min" guardado na aplicação para o aluno
+            // (attemptContextForStudent), por isso examApplications vai junto.
+            db.save({ only: ['studentExamState', 'examApplications', 'authSessions'] });
             return res.json({ success: true, valid: true, applicationId: application.id, attemptId: context.state.attemptId || null });
         }
 
@@ -676,7 +682,7 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
         };
         existing.tokenValidated = true;
         db.memory.studentExamState[stateKey] = existing;
-        db.save();
+        db.save({ only: ['studentExamState', 'authSessions'] });
 
         res.json({ success: true, valid: true, applicationId: null, attemptId: existing.attemptId || null });
     } catch (err) {

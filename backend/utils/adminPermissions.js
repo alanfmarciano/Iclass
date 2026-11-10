@@ -112,6 +112,10 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET'], pattern: /^\/network-info$/, permission: 'page.system' },
     // Cartão "Saúde do servidor" da tela Sistema (H3c).
     { methods: ['GET'], pattern: /^\/system\/health$/, permission: 'page.system' },
+    // Cartão Armazenamento e Compactar (H1-c); compactar é só do administrador (a rota
+    // confere a conta).
+    { methods: ['GET'], pattern: /^\/storage$/, permission: 'system.manage' },
+    { methods: ['POST'], pattern: /^\/storage\/compact$/, permission: 'system.manage' },
     { methods: ['POST'], pattern: /^\/(flush-exam-state|server\/restart|reset)$/, permission: 'system.manage' },
     { methods: ['GET'], pattern: /^\/maintenance\/preview$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/settings$/, permission: 'system.manage' },
