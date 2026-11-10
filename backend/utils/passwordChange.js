@@ -39,6 +39,40 @@ const STUDENT_PASSWORD_CHANGE_PATHS = new Set([
     '/api/client-error',
 ]);
 
+// Rotas da prova (decisão do coordenador sobre o desvio do H5b, J2): depois do "Redefinir
+// senha" com uma tentativa aberta, o token de antes do reset vale só para estas, até a
+// tentativa fechar (entrega ou fim da janela): presença, estado e sincronização da prova,
+// rascunho, registros de atividade e de teclas, entrega, mensagens do professor durante a
+// prova, aviso de questão, token e início de tentativa (a tela da prova recarregada),
+// saída e registro de erro da tela. Qualquer outra rota responde 401
+// { reason: 'password_reset' } sem encerrar a sessão, para a prova continuar. Depois da
+// entrega a sessão é revogada de vez (validateStudentSession).
+const STUDENT_EXAM_SESSION_PATHS = new Set([
+    '/api/ping',
+    '/api/student/exam-state',
+    '/api/student/sync',
+    '/api/student/autosave-progress',
+    '/api/student/log-activity',
+    '/api/student/log-keystrokes',
+    '/api/student/submit',
+    '/api/student/acknowledge-message',
+    '/api/student/message-history',
+    '/api/student/message-history/delete',
+    '/api/student/report-question',
+    '/api/student/validate-exam-token',
+    '/api/student/exam-applications',
+    '/api/student/logout',
+    '/api/student/leave',
+    '/api/client-error',
+]);
+
+function isStudentExamSessionPath(routePath) {
+    const value = String(routePath || '');
+    if (STUDENT_EXAM_SESSION_PATHS.has(value)) return true;
+    // POST /api/student/exam-applications/:applicationId/start-attempt
+    return /^\/api\/student\/exam-applications\/[^/]+\/start-attempt$/.test(value);
+}
+
 function passwordChangeRuleActive() {
     return process.env.TEST_MODE !== '1';
 }
@@ -245,11 +279,13 @@ function passwordChanged(account, now = Date.now()) {
 
 module.exports = {
     PASSWORD_CHANGE_REASONS,
+    STUDENT_EXAM_SESSION_PATHS,
     STUDENT_PASSWORD_CHANGE_PATHS,
     adminPasswordChangeState,
     classExamWindowEnd,
     deferPasswordChange,
     isPasswordChangeDeferred,
+    isStudentExamSessionPath,
     passwordChangeReason,
     passwordChangeRequiredBody,
     passwordChangeRuleActive,

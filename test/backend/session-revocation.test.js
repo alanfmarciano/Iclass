@@ -157,7 +157,21 @@ test('[UC-AUTH-003] "Redefinir senha" com o aluno em prova: a sessão termina a 
     const prof = await adminToken(PROF);
     const res = await request(app).post('/api/admin/reset-password').set('x-admin-session', prof).send({ email: ANA, newPassword: 'nova-senha-ana-7' }).expect(200);
     assert.equal(res.body.sessionEnded, false);
-    // Em prova: a sessão segue.
+    // Em prova: a sessão segue, só nas rotas da prova (decisão do coordenador, J2).
+    await ping(token).expect(200);
+    const examState = await request(app).get('/api/student/exam-state').set('x-session-token', token).query({ email: ANA, studentClass: '1DES', courseId: 'DES', examKey: 'p1' });
+    assert.notEqual(examState.status, 401, 'rota da prova continua com o token de antes do reset');
+    const activity = await request(app).post('/api/student/log-activity').set('x-session-token', token)
+        .send({ email: ANA, studentClass: '1DES', courseId: 'DES', examKey: 'p1', applicationId: 'app-1', attemptId: 'at-1', eventType: 'focus_lost', details: 'teste' });
+    assert.notEqual(activity.status, 401, 'log-activity continua');
+    // O resto do portal não abre com o token de antes do reset (antes, abria até a entrega).
+    for (const [method, url] of [['get', '/api/student/enrollments'], ['get', '/api/student/dashboard'], ['get', '/api/student/account'], ['post', '/api/student/notes/get']]) {
+        const blocked = await request(app)[method](url).set('x-session-token', token).query({ email: ANA }).send({ email: ANA });
+        assert.equal(blocked.status, 401, `${url}: antes, ${blocked.status}`);
+        assert.equal(blocked.body.sessionRevoked, true);
+        assert.equal(blocked.body.reason, 'password_reset');
+    }
+    // A recusa fora da prova não encerra a sessão: a prova continua.
     await ping(token).expect(200);
     // Acabou a prova: o próximo pedido recebe 401 com o motivo, e a sessão sai.
     db.memory.examApplications[0].status = 'finished';

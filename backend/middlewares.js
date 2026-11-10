@@ -37,6 +37,7 @@ const {
 const {
     STUDENT_PASSWORD_CHANGE_PATHS,
     adminPasswordChangeState,
+    isStudentExamSessionPath,
     passwordChangeRequiredBody,
     studentHasOpenAttempt,
     studentPasswordChangeState,
@@ -195,15 +196,22 @@ function validateStudentSession(req, res, next) {
     }
     // Senha redefinida pelo professor depois deste login (H5b, SEG-10): a sessão de antes
     // do "Redefinir senha" acaba. Quem tem uma tentativa aberta agora termina a prova com
-    // ela; a sessão acaba no primeiro pedido depois da entrega (studentHasOpenAttempt).
+    // ela, e só com ela (decisão do coordenador, J2): até a tentativa fechar, o token
+    // antigo vale só nas rotas da prova (STUDENT_EXAM_SESSION_PATHS); as outras respondem
+    // 401 password_reset sem encerrar a sessão. Antes ele abria o portal inteiro até a
+    // entrega. Depois da entrega (ou do fim da janela) a sessão acaba no primeiro pedido.
     // A prova da turma que o aluno ainda não abriu não segura a sessão antiga.
-    if (sessionPredatesRevocation(student, session) && !studentHasOpenAttempt(db.memory, normalizedEmail, nowTs)) {
-        persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail, { reason: 'password_reset', now: nowTs }));
-        return res.status(401).json({
-            error: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
-            sessionRevoked: true,
-            reason: 'password_reset',
-        });
+    const routePath = `${req.baseUrl || ''}${req.path || ''}`;
+    if (sessionPredatesRevocation(student, session)) {
+        const attemptOpen = studentHasOpenAttempt(db.memory, normalizedEmail, nowTs);
+        if (!attemptOpen) persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail, { reason: 'password_reset', now: nowTs }));
+        if (!attemptOpen || !isStudentExamSessionPath(routePath)) {
+            return res.status(401).json({
+                error: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
+                sessionRevoked: true,
+                reason: 'password_reset',
+            });
+        }
     }
     touchSession(session, nowTs, { active: isUserActivityRequest(req) });
 
@@ -212,7 +220,6 @@ function validateStudentSession(req, res, next) {
     // a saída e o registro de erro da tela continuam; a prova em andamento nunca recebe
     // o 403.
     const passwordChange = studentPasswordChangeState(db.memory, student, session);
-    const routePath = `${req.baseUrl || ''}${req.path || ''}`;
     if (passwordChange.required && !STUDENT_PASSWORD_CHANGE_PATHS.has(routePath)) {
         return res.status(403).json(passwordChangeRequiredBody(passwordChange.reason));
     }
