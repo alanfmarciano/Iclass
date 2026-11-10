@@ -5,6 +5,7 @@ const db = require('../database.js');
 const { validateAdmin, isProfessorAccount, sendInternalError } = require('../middlewares.js');
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside, assertSafeId } = require('../utils/safePath.js');
+const { revokeStudentSession } = require('../utils/authSessions.js');
 
 const ARCHIVE_DIR = runtimePaths.ARCHIVE_DIR;
 
@@ -110,6 +111,10 @@ function createAdminArchiveRouter({ studentClassNames }) {
             db.memory.classes = classes.filter(item => item.courseId !== courseId);
             db.memory.submissions = (db.memory.submissions || []).filter(item => !(item.courseId === courseId || classNames.has(item.studentClass)));
             db.memory.students = (db.memory.students || []).filter(student => !orphanEmails.has(String(student.email || '').toLowerCase()));
+            // Os alunos que saíram com o curso perdem a sessão (também na tabela
+            // auth_sessions, H3a-2): ela não volta num reinício nem quando o curso arquivado
+            // for restaurado com eles.
+            orphanEmails.forEach(email => revokeStudentSession(db.memory, email));
             db.memory.students.forEach(student => {
                 if (Array.isArray(student.classes)) student.classes = student.classes.filter(item => !classNames.has(typeof item === 'string' ? item : (item && item.name)));
                 if (student.studentClass && classNames.has(student.studentClass)) {

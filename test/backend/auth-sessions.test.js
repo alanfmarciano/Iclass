@@ -384,7 +384,13 @@ test('[UC-AUTH-001] restoreSessions segue as regras de prazo, queda, origem e e-
         row('sem-tipo', { email: 'x@x.local', createdAt: now }),
         { key: sha256('json-quebrado'), value: '{"kind":' },
     ];
-    const memory = { sessions: { antigo: { tokenHash: sha256('antigo'), createdAt: now } }, adminSessions: {} };
+    // As contas existem e estão ativas (a regra da conta tem teste próprio, abaixo).
+    const memory = {
+        students: ['um@x.local', 'velho@x.local', 'setup@x.local', 'dup@x.local', 'x@x.local'].map(email => ({ email, status: 'Ativo' })),
+        admins: [{ email: 'prof@x.local' }, { email: 'adm@x.local' }],
+        sessions: { antigo: { tokenHash: sha256('antigo'), createdAt: now } },
+        adminSessions: {},
+    };
 
     const kept = restoreSessions(memory, rows, { now, downtimeMs: 5 * 60000, absoluteTtlMs: ttl });
     assert.equal(kept.students, 2);
@@ -424,6 +430,52 @@ test('[UC-AUTH-001] restoreSessions segue as regras de prazo, queda, origem e e-
     // Também aceita as linhas como Map (chave → valor), como sai de uma tabela.
     const asMap = new Map(rows.slice(0, 3).map(item => [item.key, item.value]));
     assert.equal(restoreSessions(memory, asMap, { now, downtimeMs: 1000, absoluteTtlMs: ttl }).admins, 1);
+});
+
+// Ajuste 2 do H3a-2. A retomada não conferia a conta: a sessão de um aluno bloqueado (ou
+// apagado, ou de um instrutor apagado) voltava no boot, e com o aluno desbloqueado (ou a
+// conta recriada com o mesmo e-mail) o token antigo entrava de novo, agora também depois
+// de um reinício. Antes desta versão o reinício zerava todas.
+test('[UC-AUTH-001] restoreSessions descarta sessão de aluno bloqueado ou apagado e de instrutor apagado', () => {
+    const now = 2_000_000_000_000;
+    const row = (token, value) => ({ key: sha256(token), value: JSON.stringify(value) });
+    const memory = {
+        students: [
+            { email: 'Ativa@X.local', status: 'Ativo' },
+            { email: 'active@x.local', status: ' active ' },
+            { email: 'bloqueada@x.local', status: 'Bloqueado' },
+            { email: 'inativa@x.local', status: 'Inativo' },
+            { email: 'sem-status@x.local' },
+        ],
+        admins: [{ email: 'Prof@X.local', role: 'professor' }],
+        sessions: {},
+        adminSessions: {},
+    };
+    const rows = [
+        row('ativa', { kind: 'student', email: 'ativa@x.local', createdAt: now - HOUR }),
+        row('active', { kind: 'student', email: 'active@x.local', createdAt: now - HOUR }),
+        row('bloqueada', { kind: 'student', email: 'bloqueada@x.local', createdAt: now - HOUR }),
+        row('inativa', { kind: 'student', email: 'inativa@x.local', createdAt: now - HOUR }),
+        row('sem-status', { kind: 'student', email: 'sem-status@x.local', createdAt: now - HOUR }),
+        row('aluno-apagado', { kind: 'student', email: 'apagado@x.local', createdAt: now - HOUR }),
+        row('prof', { kind: 'admin', email: 'prof@x.local', createdAt: now - HOUR }),
+        row('prof-apagado', { kind: 'admin', email: 'apagado@x.local', createdAt: now - HOUR }),
+        // Instrutor e aluno são contas diferentes: o e-mail de um não traz a sessão do outro.
+        row('aluno-com-email-de-prof', { kind: 'student', email: 'prof@x.local', createdAt: now - HOUR }),
+        row('prof-com-email-de-aluno', { kind: 'admin', email: 'ativa@x.local', createdAt: now - HOUR }),
+    ];
+    const result = restoreSessions(memory, rows, { now, downtimeMs: 60000, absoluteTtlMs: 8 * HOUR });
+    assert.deepEqual(result, { students: 2, admins: 1, dropped: 7, reason: null, clockWentBack: false });
+    assert.deepEqual(Object.keys(memory.sessions).sort(), ['active@x.local', 'ativa@x.local']);
+    assert.equal(findAdminSession(memory, 'prof').email, 'prof@x.local');
+    for (const token of ['bloqueada', 'inativa', 'sem-status', 'aluno-apagado', 'aluno-com-email-de-prof']) assert.equal(findStudentSession(memory, token), null, token);
+    for (const token of ['prof-apagado', 'prof-com-email-de-aluno']) assert.equal(findAdminSession(memory, token), null, token);
+
+    // Memória sem cadastro (contas ainda não lidas): ninguém volta.
+    const empty = { sessions: {}, adminSessions: {} };
+    assert.equal(restoreSessions(empty, rows, { now, downtimeMs: 60000, absoluteTtlMs: 8 * HOUR }).dropped, rows.length);
+    assert.deepEqual(empty.sessions, {});
+    assert.deepEqual(empty.adminSessions, {});
 });
 
 // Teste estático do contrato de sessões: fora de utils/authSessions.js ninguém lê
@@ -712,4 +764,147 @@ test('[UC-AUTH-001] sessionRowBelongsTo reconhece a conta da linha gravada', () 
     assert.equal(authSessions.sessionRowBelongsTo({ key: sha256('x'), value: '{estragada' }, { kind: 'admin', email: 'prof@x.local' }), false);
     assert.equal(authSessions.sessionRowBelongsTo({ key: 'curta', value: row.value }, { kind: 'admin', email: 'prof@x.local' }), false);
     assert.equal(authSessions.sessionRowBelongsTo(null, { kind: 'admin', email: 'prof@x.local' }), false);
+});
+
+// ---------------------------------------------------------------------------
+// Ajuste 2 do H3a-2: reason em todo 401 de sessão e nada de sessão de conta que não pode
+// mais entrar voltando pelo arquivo.
+// ---------------------------------------------------------------------------
+
+// Contrato das respostas de estado: 401 { sessionRevoked: true, reason }. Antes, os 401 do
+// aluno (token que não voltou depois de um reinício, vencido, outro aparelho, conta
+// apagada), o 403 de conta bloqueada, o 'Conta não encontrada.' do instrutor e o 401 de
+// validateAnySession saíam sem reason, e o cliente não distinguia vencida de encerrada.
+test('[UC-AUTH-001] 401 e 403 de sessão do aluno, do instrutor e de validateAnySession trazem reason', async () => {
+    const expectRevoked = (res, status, reason) => {
+        assert.equal(res.status, status, JSON.stringify(res.body));
+        assert.equal(res.body.sessionRevoked, true);
+        assert.equal(res.body.reason, reason, JSON.stringify(res.body));
+        assert.equal(typeof res.body.error, 'string');
+    };
+    // Token desconhecido (não voltou no boot) e e-mail sem sessão: vencida.
+    expectRevoked(await ping('token-que-nao-voltou'), 401, 'expired');
+    // Outro aparelho entrou com a conta: 'replaced'.
+    const first = await studentLogin();
+    const second = await studentLogin();
+    expectRevoked(await ping(first), 401, 'replaced');
+    // Prazo absoluto.
+    db.memory.sessions[ANA.email].createdAt = Date.now() - 9 * HOUR;
+    expectRevoked(await ping(second), 401, 'expired');
+    // Conta apagada e conta bloqueada (403).
+    const bia = await studentLogin(BIA);
+    db.memory.students = db.memory.students.filter(student => student.email !== BIA.email);
+    expectRevoked(await ping(bia, BIA.email), 401, 'account_missing');
+    const ana = await studentLogin();
+    db.memory.students.find(student => student.email === ANA.email).status = 'Bloqueado';
+    expectRevoked(await ping(ana), 403, 'account_inactive');
+
+    // Instrutor de conta apagada.
+    const profToken = createAdminSession(db.memory, PROF.email);
+    db.memory.admins = db.memory.admins.filter(account => account.email !== PROF.email);
+    expectRevoked(await whoami(profToken), 401, 'account_missing');
+
+    // validateAnySession (/api/status): token que o servidor não conhece = vencida; sem
+    // token nenhum = 'missing'.
+    expectRevoked(await request(app).get('/api/status').set('x-session-token', 'desconhecido'), 401, 'expired');
+    expectRevoked(await request(app).get('/api/status').set('x-admin-session', 'desconhecido'), 401, 'expired');
+    expectRevoked(await request(app).get('/api/status'), 401, 'missing');
+});
+
+// O 401/403 que derruba a sessão (vencida, conta apagada ou bloqueada) tira a linha de
+// auth_sessions antes da resposta. Antes a revogação ficava só na memória: a linha voltava
+// no boot seguinte e, com o aluno desbloqueado, o token antigo entrava de novo.
+test('[UC-AUTH-001] sessão derrubada por 401/403 sai da tabela auth_sessions antes da resposta', async () => {
+    const ana = await studentLogin();
+    const bia = await studentLogin(BIA);
+    const profToken = createAdminSession(db.memory, PROF.email);
+    await db.save();
+    assert.deepEqual(Object.keys(await storedSessionRows()).sort(), [sha256(ana), sha256(bia), sha256(profToken)].sort());
+
+    // Aluna bloqueada: 403, e a linha sai (sem db.save() do teste).
+    const student = db.memory.students.find(item => item.email === ANA.email);
+    student.status = 'Bloqueado';
+    await ping(ana).expect(403);
+    assert.equal(Object.hasOwn(await storedSessionRows(), sha256(ana)), false);
+    // Desbloqueada, o token antigo não volta: entra de novo.
+    student.status = 'Ativo';
+    const again = await ping(ana);
+    assert.equal(again.status, 401);
+    assert.equal(again.body.reason, 'expired');
+
+    // Prazo absoluto vencido.
+    db.memory.sessions[BIA.email].createdAt = Date.now() - 9 * HOUR;
+    await ping(bia, BIA.email).expect(401);
+    assert.equal(Object.hasOwn(await storedSessionRows(), sha256(bia)), false);
+
+    // Instrutor de conta apagada.
+    db.memory.admins = db.memory.admins.filter(account => account.email !== PROF.email);
+    await whoami(profToken).expect(401);
+    assert.deepEqual(await storedSessionRows(), {});
+});
+
+// Excluir uma conta de instrutor encerra as sessões dela. Antes elas ficavam na memória e
+// na tabela, voltavam no boot e, recriada a conta com o mesmo e-mail, o token antigo
+// entrava de novo.
+test('[UC-AUTH-001] excluir conta de instrutor encerra as sessões; conta recriada com o mesmo e-mail não herda token', async () => {
+    const adminToken = createAdminSession(db.memory, ADMIN.email);
+    const profToken = createAdminSession(db.memory, PROF.email);
+    const profOther = createAdminSession(db.memory, PROF.email);
+    await db.save();
+    const removed = await request(app).post('/api/admin/accounts/delete').set('x-admin-session', adminToken).send({ email: PROF.email.toUpperCase() });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.deepEqual(Object.keys(await storedSessionRows()), [sha256(adminToken)], 'as sessões do professor saíram do arquivo');
+    for (const token of [profToken, profOther]) assert.equal(findAdminSession(db.memory, token), null);
+
+    const created = await request(app).post('/api/admin/accounts/create').set('x-admin-session', adminToken)
+        .send({ name: 'Professor novo', email: PROF.email, password: 'outra-senha-forte-1', role: 'professor', assignedClasses: [] });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    for (const token of [profToken, profOther]) {
+        const res = await whoami(token);
+        assert.equal(res.status, 401, 'o token da conta excluída não entra na conta nova');
+        assert.equal(res.body.reason, 'expired');
+    }
+    await whoami(adminToken).expect(200);
+});
+
+// Conta nova não herda sessão que tenha ficado do e-mail (por exemplo, gravada por uma
+// versão anterior e retomada no boot).
+test('[UC-AUTH-001] criar conta de instrutor tira sessão que tenha ficado do mesmo e-mail', async () => {
+    const adminToken = createAdminSession(db.memory, ADMIN.email);
+    const orphan = createAdminSession(db.memory, 'reaproveitado@sessoes.local');
+    const created = await request(app).post('/api/admin/accounts/create').set('x-admin-session', adminToken)
+        .send({ name: 'Reaproveitado', email: 'Reaproveitado@sessoes.local', password: 'senha-forte-123', role: 'admin' });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    assert.equal(findAdminSession(db.memory, orphan), null);
+    await whoami(orphan).expect(401);
+    assert.equal(Object.hasOwn(await storedSessionRows(), sha256(orphan)), false);
+});
+
+// Excluir definitivamente um curso leva os alunos que só estavam nele (para o arquivo).
+// Antes a sessão deles ficava: gravada, voltava no boot e, restaurado o curso arquivado com
+// os alunos, o token antigo entrava de novo.
+test('[UC-AUTH-001] excluir curso definitivamente encerra a sessão dos alunos que saem com ele', async () => {
+    const CARLA = { email: 'carla@sessoes.local', password: 'senha-carla' };
+    db.memory.courses = [{ id: 'curso-arq', name: 'Curso arquivado', schoolId: null }];
+    db.memory.classes = [{ name: 'T-ARQ', courseId: 'curso-arq' }];
+    db.memory.students.push({ name: 'Carla', email: CARLA.email, status: 'Ativo', password: db.hashPassword(CARLA.password), classes: ['T-ARQ'], studentClass: 'T-ARQ' });
+    const carla = await studentLogin(CARLA);
+    const ana = await studentLogin();
+    const adminToken = createAdminSession(db.memory, ADMIN.email);
+    await db.save();
+
+    const purge = await request(app).post('/api/admin/courses/curso-arq/purge').set('x-admin-session', adminToken).send({});
+    assert.equal(purge.status, 200, JSON.stringify(purge.body));
+    assert.equal(purge.body.counts.alunos, 1);
+    const stored = await storedSessionRows();
+    assert.equal(Object.hasOwn(stored, sha256(carla)), false, 'a sessão da aluna saiu do arquivo');
+    assert.equal(Object.hasOwn(stored, sha256(ana)), true, 'os outros alunos continuam');
+
+    const restored = await request(app).post('/api/admin/archived-courses/restore').set('x-admin-session', adminToken).send({ folder: purge.body.folder });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    assert.ok(db.memory.students.some(student => student.email === CARLA.email), 'a aluna voltou com o curso');
+    const res = await ping(carla, CARLA.email);
+    assert.equal(res.status, 401, 'o token antigo não volta com o curso');
+    assert.equal(res.body.reason, 'expired');
+    await ping(ana).expect(200);
 });

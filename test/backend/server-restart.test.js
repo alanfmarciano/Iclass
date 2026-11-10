@@ -307,3 +307,60 @@ test('[UC-AUTH-001] senha redefinida pelo launcher com o servidor parado: a sess
         fs.rmSync(dataDir, { recursive: true, force: true });
     }
 });
+
+// Ajuste 2 do H3a-2. A retomada não conferia a conta: a sessão de um aluno bloqueado (sem
+// ping depois do bloqueio) ou de uma conta de instrutor que saiu do cadastro voltava no
+// boot; desbloqueado o aluno (ou recriada a conta), o token antigo entrava de novo, agora
+// também depois de um reinício. Antes desta versão o reinício zerava todas.
+test('[UC-AUTH-001] reinício não traz de volta a sessão de aluno bloqueado nem de instrutor fora do cadastro', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-server-restart-accounts-'));
+    try {
+        const server = await startServer(dataDir);
+        assert.equal((await call(server, '/api/test/seed', { method: 'POST', body: {} })).status, 200);
+        const studentToken = await studentLogin(server);
+        const professorToken = await professorLogin(server);
+        const adminLogin = await call(server, '/api/session/admin-login', { method: 'POST', body: { email: 'admin@teste.local', password: 'teste' } });
+        const adminToken = adminLogin.status === 404
+            ? (await call(server, '/api/admin/whoami', { headers: { Authorization: 'admin@teste.local:teste' } })).body.sessionToken
+            : adminLogin.body.sessionToken;
+        // O professor bloqueia o aluno; o aluno não faz nenhum pedido depois (a sessão fica
+        // na memória e no arquivo até o próximo ping dele).
+        const blocked = await call(server, '/api/admin/student/bulk-status', {
+            method: 'POST',
+            headers: { 'x-admin-session': adminToken },
+            body: { emails: [STUDENT.email], status: 'Bloqueado' },
+        });
+        assert.equal(blocked.status, 200, JSON.stringify(blocked.body));
+        assert.equal(blocked.body.updated, 1);
+        await server.stop('SIGKILL');
+        const keys = (await readTable(dataDir, 'auth_sessions')).map(row => row.key).sort();
+        assert.deepEqual(keys, [sha256(studentToken), sha256(professorToken), sha256(adminToken)].sort());
+        // A conta do professor sai do cadastro com a linha da sessão ainda no arquivo (como
+        // deixava a exclusão de conta antes deste ajuste).
+        await runSql(dataDir, 'DELETE FROM admins WHERE key = ?', [PROFESSOR.email]);
+
+        const second = await startServer(dataDir);
+        assert.match(second.output(), /Sessões retomadas: 0 alunos e 1 professor \(2 descartadas\)/);
+        const ping401 = await ping(second, studentToken);
+        assert.equal(ping401.status, 401, JSON.stringify(ping401.body));
+        assert.equal(ping401.body.reason, 'expired');
+        const me = await whoami(second, professorToken);
+        assert.equal(me.status, 401);
+        assert.equal((await whoami(second, adminToken)).status, 200);
+        // Desbloqueado, o token antigo continua sem entrar: é preciso entrar de novo.
+        const unblocked = await call(second, '/api/admin/student/bulk-status', {
+            method: 'POST',
+            headers: { 'x-admin-session': adminToken },
+            body: { emails: [STUDENT.email], status: 'Ativo' },
+        });
+        assert.equal(unblocked.status, 200);
+        assert.equal((await ping(second, studentToken)).status, 401);
+        await studentLogin(second);
+        await second.stop('SIGKILL');
+        const left = (await readTable(dataDir, 'auth_sessions')).map(row => row.key);
+        assert.equal(left.includes(sha256(studentToken)), false);
+        assert.equal(left.includes(sha256(professorToken)), false);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});

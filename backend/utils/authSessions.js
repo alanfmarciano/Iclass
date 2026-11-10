@@ -402,12 +402,30 @@ function sessionRowBelongsTo(row, { kind, email } = {}) {
     return !!parsed && parsed.kind === kind && parsed.email === normalizeEmail(email);
 }
 
+// E-mails (minúsculas) das contas que podem ter sessão: alunos ativos (mesma regra de
+// checkStudentSessionToken) e instrutores cadastrados (checkAdminSessionToken).
+function sessionAccountEmails(memory) {
+    const emailOf = item => (item && item.email ? String(item.email).trim().toLowerCase() : '');
+    const students = new Set();
+    (Array.isArray(memory && memory.students) ? memory.students : []).forEach(item => {
+        const status = String((item && item.status) || '').trim().toLowerCase();
+        if (emailOf(item) && ACTIVE_STUDENT_STATUSES.includes(status)) students.add(emailOf(item));
+    });
+    const admins = new Set((Array.isArray(memory && memory.admins) ? memory.admins : []).map(emailOf).filter(Boolean));
+    return { students, admins };
+}
+
 // Retomada das sessões gravadas depois de um reinício. Substitui sessions e
 // adminSessions. Uma sessão volta só se:
 // - o tempo fora do ar (downtimeMs, do heartbeat) é conhecido e cabe em maxDowntimeMs
 //   (60 min): servidor desligado entre turnos continua derrubando todos;
 // - now - createdAt cabe no prazo absoluto (8 h);
-// - origin 'setup' (acesso rápido local) só volta com o modo setup ligado.
+// - origin 'setup' (acesso rápido local) só volta com o modo setup ligado;
+// - a conta ainda pode entrar, conferida em memory.students e memory.admins (já lidos
+//   pelo db.init()): aluno cadastrado e ativo, instrutor cadastrado. Sessão de aluno
+//   bloqueado ou apagado, ou de instrutor apagado, fica de fora; antes ela voltava, e com
+//   o aluno desbloqueado (ou a conta recriada com o mesmo e-mail) o token antigo entrava
+//   de novo, agora também depois de um reinício.
 // Relógio que voltou (downtime negativo) conta como 0. E-mail de aluno repetido: fica
 // a sessão mais nova. lastSeen volta null (o aluno aparece offline até o próximo ping)
 // e lastActivityAt = now. Devolve { students, admins, dropped, reason, clockWentBack }.
@@ -442,12 +460,14 @@ function restoreSessions(memory, rows, options = {}) {
         return result;
     }
 
+    const accounts = sessionAccountEmails(memory);
     const students = new Map();
     list.forEach(row => {
         const parsed = parseSessionRow(row);
         if (!parsed) { result.dropped += 1; return; }
         const createdAt = Math.min(parsed.createdAt, now);
         if (now - createdAt > absoluteTtlMs || (parsed.origin === 'setup' && !setupMode)) { result.dropped += 1; return; }
+        if (!(parsed.kind === 'admin' ? accounts.admins : accounts.students).has(parsed.email)) { result.dropped += 1; return; }
         const origin = parsed.origin && parsed.origin !== DEFAULT_ORIGIN ? { origin: parsed.origin } : {};
         if (parsed.kind === 'admin') {
             const key = ADMIN_KEY_PREFIX + parsed.hash;
