@@ -48,9 +48,9 @@ const {
     studentInClass,
     normalizeClassEntriesForStorage,
 } = require('../utils/students.js');
-const { recordAudit } = require('../utils/audit.js');
+const { normalizeAuditEntry, recordAudit } = require('../utils/audit.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
-const { requirePasswordChange } = require('../utils/passwordChange.js');
+const { passwordChangeRuleActive, requirePasswordChange } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -372,10 +372,14 @@ router.post('/api/admin/reset-password', (req, res) => {
         }, { timestamp: now });
         await db.save();
 
+        // Com TEST_MODE (demonstração) a troca não é pedida: a resposta diz o que vale.
+        const changeRequired = passwordChangeRuleActive();
         res.json({
             success: true,
-            message: 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.',
-            mustChangePassword: true,
+            message: changeRequired
+                ? 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.'
+                : 'Senha redefinida.',
+            mustChangePassword: changeRequired,
             ...(temporaryPassword ? { temporaryPassword } : {}),
         });
     });
@@ -1301,7 +1305,7 @@ router.post('/api/admin/student/create', (req, res) => {
         // primeiro acesso" (requirePasswordChange) vem marcada; sem o campo (tela antiga),
         // vale marcada.
         if (studentPassword !== undefined && studentPassword !== null && typeof studentPassword !== 'string') {
-            return res.status(400).json({ error: 'Senha inicial inválida.', field: 'studentPassword' });
+            return res.status(400).json({ success: false, error: 'Senha inicial inválida.', field: 'studentPassword' });
         }
         const typedPassword = typeof studentPassword === 'string' ? studentPassword.trim() : '';
         if (typedPassword) {
@@ -1371,9 +1375,11 @@ router.post('/api/admin/student/create', (req, res) => {
         });
 
         await db.save();
+        // O que vale no primeiro acesso: a caixa desmarcada ou TEST_MODE (demonstração)
+        // não pedem a troca; a tela escolhe o texto do aviso por aqui.
         res.json({
             success: true,
-            mustChangePassword: askPasswordChange,
+            mustChangePassword: askPasswordChange && passwordChangeRuleActive(),
             ...(temporaryPassword ? { temporaryPassword } : {}),
         });
     });
@@ -1388,7 +1394,7 @@ router.post('/api/admin/student/update', (req, res) => {
         // senha é pelo "Redefinir senha" (reset-password), com auditoria e troca no
         // próximo acesso. Campo vazio (telas antigas mandavam password: '') é ignorado.
         if (password !== undefined && password !== null && password !== '') {
-            return res.status(400).json({ error: 'Para trocar a senha, use Redefinir senha.', field: 'password' });
+            return res.status(400).json({ success: false, error: 'Para trocar a senha, use Redefinir senha.', field: 'password' });
         }
 
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
@@ -1657,12 +1663,16 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
 });
 
 // Histórico de auditoria de um aluno (alterações no perfil) — somente admin.
+// As entradas saem no formato canônico (normalizeAuditEntry), com o rótulo da ação
+// (label): a que não é campo do cadastro, como o "Redefinir senha" (H5a), aparece na
+// ficha pelo rótulo, não como uma linha sem título.
 router.get('/api/admin/student/audit', (req, res) => {
     validateAdmin(req, res, () => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        const logs = (db.memory.auditLogs || [])
-            .filter(l => l.studentEmail === email)
+        const logs = (Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [])
+            .map(normalizeAuditEntry)
+            .filter(entry => entry && entry.studentEmail === email)
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         res.json(logs);
     });

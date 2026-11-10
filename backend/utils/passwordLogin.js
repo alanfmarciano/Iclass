@@ -1,8 +1,9 @@
 // ---------------------------------------------------------------------------
 // Login com senha (H2-B, H6b): o único caminho que confere senha, a de quem entra,
 // aluno (POST /api/student/login) ou instrutor (POST /api/session/admin-login), e a senha
-// atual pedida na troca de senha do instrutor (POST /api/admin/change-password), que
-// assim também fica sob o teto por IP: uma sessão roubada não testa senhas à vontade.
+// atual pedida na troca de senha do aluno e do instrutor (POST /api/student/change-password
+// e /api/admin/change-password), que assim também fica sob um teto por IP: uma sessão
+// roubada não testa senhas à vontade.
 //
 // - Só texto vale como credencial: e-mail ou senha ausentes, vazios ou de outro tipo
 //   respondem 400 sem gastar tentativa nem calcular scrypt.
@@ -40,6 +41,8 @@ const LOGIN_KINDS = Object.freeze({
     student: {
         accounts: () => db.memory.students,
         rateKey: 'student-login',
+        // A senha atual da troca de senha do aluno tem teto próprio (ver purpose).
+        changeRateKey: 'student-change-password',
         missing: 'E-mail e senha são obrigatórios.',
         invalid: 'E-mail ou senha incorretos.',
         tooMany: 'Muitas tentativas de login. Aguarde um instante e tente novamente.',
@@ -47,6 +50,8 @@ const LOGIN_KINDS = Object.freeze({
     admin: {
         accounts: () => db.memory.admins,
         rateKey: 'admin-login',
+        // Instrutor: a troca divide o teto com o login, como antes (são poucas contas).
+        changeRateKey: 'admin-login',
         missing: 'Informe e-mail e senha.',
         invalid: 'E-mail ou senha incorretos.',
         tooMany: 'Muitas tentativas de acesso. Aguarde um instante e tente novamente.',
@@ -96,14 +101,27 @@ function refusal(status, error, extra = {}) {
     return { ok: false, status, body: { error, ...extra } };
 }
 
-async function attemptPasswordLogin({ kind, email, password, req }) {
+// purpose: 'login' (padrão) ou 'change_password' (a senha atual pedida na troca de
+// senha, do aluno e do instrutor). Na troca do aluno o teto por IP é próprio, do mesmo
+// tamanho (changeRateKey): ela só roda com uma sessão válida, e dividir o teto com o
+// login fazia a turma atrás do mesmo IP (Wi-Fi da sala) gastar duas tentativas por aluno
+// na primeira aula depois da atualização (login com a senha fraca e a troca
+// obrigatória). A falha do aluno vai para loginLogs com o motivo change_password.
+const PASSWORD_CHECK_PURPOSES = Object.freeze({
+    login: { rateKey: settings => settings.rateKey, failReason: 'Credenciais inválidas' },
+    change_password: { rateKey: settings => settings.changeRateKey, failReason: 'change_password' },
+});
+
+async function attemptPasswordLogin({ kind, email, password, req, purpose = 'login' }) {
     const settings = LOGIN_KINDS[kind];
     if (!settings) throw new TypeError(`Tipo de login desconhecido: ${kind}`);
+    const check = PASSWORD_CHECK_PURPOSES[purpose];
+    if (!check) throw new TypeError(`Finalidade de conferência desconhecida: ${purpose}`);
     const normalizedEmail = credentialText(email).toLowerCase();
     const secret = credentialText(password);
     if (!normalizedEmail || !secret) return refusal(400, settings.missing);
 
-    const limit = rateLimit(`${settings.rateKey}:${getClientIp(req)}`, LOGIN_RATE_LIMIT);
+    const limit = rateLimit(`${check.rateKey(settings)}:${getClientIp(req)}`, LOGIN_RATE_LIMIT);
     if (!limit.allowed) {
         return refusal(429, settings.tooMany, { loginDelayed: true, retryAfterSeconds: Math.max(1, Math.ceil(limit.retryAfterMs / 1000)) });
     }
@@ -137,7 +155,7 @@ async function attemptPasswordLogin({ kind, email, password, req }) {
     }
 
     if (kind === 'student') {
-        recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'fail', reason: 'Credenciais inválidas', req });
+        recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'fail', reason: check.failReason, req });
     }
     const refused = refusal(401, settings.invalid);
     if (passwordChanged) refused.passwordChanged = true;

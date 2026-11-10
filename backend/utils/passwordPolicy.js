@@ -133,7 +133,8 @@ function validateNewPassword(password, options = {}) {
 
 // Resposta 400 de senha recusada pela política (formato único das rotas).
 function passwordPolicyRefusal(result) {
-    return { error: result.error, passwordPolicy: true, field: 'password' };
+    // Formato dos 400 combinado entre os grupos: { success: false, error, field }.
+    return { success: false, error: result.error, passwordPolicy: true, field: 'password' };
 }
 
 // A senha digitada no login seria recusada hoje? (troca obrigatória da senha fraca.)

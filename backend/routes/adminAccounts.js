@@ -12,7 +12,7 @@ const { parseAdditionalPermissions, isProfessorAccount } = require('../utils/adm
 const { revokeAdminSession } = require('../utils/authSessions.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
-const { passwordChangeReason, passwordChangeRuleActive, passwordChanged, requirePasswordChange } = require('../utils/passwordChange.js');
+const { adminPasswordChangeState, passwordChangeRuleActive, passwordChanged, requirePasswordChange } = require('../utils/passwordChange.js');
 
 // Gestão de contas (criar/editar/excluir) é exclusiva de administradores.
 // Backstop além do RBAC: mesmo que a capability accounts.manage vaze para um
@@ -123,6 +123,8 @@ function accountAuditSnapshot(account) {
 
 // Resposta do login e do whoami: a mesma, para o painel montar a sessão do mesmo jeito.
 function adminSessionPayload(account, sessionToken) {
+    // A tela segue o que vale agora (com TEST_MODE, a troca do H5a não é pedida).
+    const passwordChange = adminPasswordChangeState(account);
     return {
         email: account.email,
         name: account.name || '',
@@ -131,8 +133,8 @@ function adminSessionPayload(account, sessionToken) {
         assignedCourseIds: Array.isArray(account.assignedCourseIds) ? account.assignedCourseIds : [],
         assignedClasses: Array.isArray(account.assignedClasses) ? account.assignedClasses : [],
         additionalPermissions: Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [],
-        mustChangePassword: account.mustChangePassword === true,
-        ...(account.mustChangePassword === true ? { passwordChangeReason: passwordChangeReason(account) } : {}),
+        mustChangePassword: passwordChange.required === true,
+        ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
         sessionToken,
         instanceId: SERVER_INSTANCE_ID,
     };
@@ -254,7 +256,9 @@ function createAdminAccountsRouter() {
                 details: { mustChangePassword: askPasswordChange },
             });
             await db.save();
-            res.json({ success: true, mustChangePassword: askPasswordChange });
+            // O que vale no primeiro acesso: com TEST_MODE a troca não é pedida (o pedido
+            // fica gravado na conta, como a escolha do administrador).
+            res.json({ success: true, mustChangePassword: askPasswordChange && passwordChangeRuleActive() });
         });
     });
 
@@ -424,7 +428,7 @@ function createAdminAccountsRouter() {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             const { newPassword, currentPassword } = req.body;
             if (typeof newPassword !== 'string' || !newPassword.trim()) {
-                return res.status(400).json({ error: 'Informe a nova senha.', field: 'newPassword' });
+                return res.status(400).json({ success: false, error: 'Informe a nova senha.', field: 'newPassword' });
             }
             // Política de senha do instrutor (H5a): os 10 caracteres de antes e as regras de
             // senha comum e de dado pessoal.
@@ -443,20 +447,20 @@ function createAdminAccountsRouter() {
             const needsCurrent = matchedAdmin.mustChangePassword !== true
                 || matchedAdmin.passwordChangeReason === 'created' || matchedAdmin.passwordChangeReason === 'weak';
             if (needsCurrent && (typeof currentPassword !== 'string' || !currentPassword.trim())) {
-                return res.status(400).json({ error: 'Informe a senha atual.', currentPasswordRequired: true, field: 'currentPassword' });
+                return res.status(400).json({ success: false, error: 'Informe a senha atual.', currentPasswordRequired: true, field: 'currentPassword' });
             }
             if (needsCurrent && newPassword.trim() === currentPassword.trim()) {
-                return res.status(400).json({ error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
+                return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
             }
             if (needsCurrent) {
-                const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password: currentPassword, req });
+                const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password: currentPassword, req, purpose: 'change_password' });
                 if (!check.ok && check.status === 429) return res.status(429).json(check.body);
                 // Outra troca terminou durante a conferência (a senha digitada não vale
                 // para a nova) ou a conta foi regravada no meio: 409, não "incorreta".
                 if (!check.ok && check.passwordChanged) {
                     return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
                 }
-                if (!check.ok) return res.status(400).json({ error: 'Senha atual incorreta.', field: 'currentPassword' });
+                if (!check.ok) return res.status(400).json({ success: false, error: 'Senha atual incorreta.', field: 'currentPassword' });
                 // O valor que a conferência confirmou (o hash novo, se o antigo foi
                 // regravado): outra troca no meio da espera ainda dá o 409 abaixo.
                 if (check.account !== matchedAdmin || matchedAdmin.password !== check.password) {
@@ -469,7 +473,7 @@ function createAdminAccountsRouter() {
             if (matchedAdmin.password !== storedBefore) {
                 return res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
             }
-            const forced = matchedAdmin.mustChangePassword === true;
+            const forced = adminPasswordChangeState(matchedAdmin).required === true;
             matchedAdmin.password = passwordHash;
             passwordChanged(matchedAdmin);
             recordAudit(db.memory, {

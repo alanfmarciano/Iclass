@@ -34,7 +34,7 @@ const {
 } = require('./utils/authSessions.js');
 const {
     STUDENT_PASSWORD_CHANGE_PATHS,
-    passwordChangeReason,
+    adminPasswordChangeState,
     passwordChangeRequiredBody,
     studentPasswordChangeState,
 } = require('./utils/passwordChange.js');
@@ -801,8 +801,10 @@ function adminRbacGuard(req, res, next) {
                 .catch(() => {})
                 .then(() => res.status(403).json(body));
         };
-        if (matchedAdmin.mustChangePassword === true && !['/whoami', '/change-password'].includes(req.path)) {
-            return refuse(passwordChangeRequiredBody(passwordChangeReason(matchedAdmin)));
+        // Troca de senha pedida (H5a; com TEST_MODE, só a senha temporária do launcher).
+        const passwordChange = adminPasswordChangeState(matchedAdmin);
+        if (passwordChange.required && !['/whoami', '/change-password'].includes(req.path)) {
+            return refuse(passwordChangeRequiredBody(passwordChange.reason));
         }
         if (permission === undefined && isProfessorAccount(matchedAdmin)) {
             return refuse({ error: 'Esta operação administrativa não está liberada para professores.' });

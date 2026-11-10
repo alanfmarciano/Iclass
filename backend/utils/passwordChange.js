@@ -10,8 +10,11 @@
 //
 // Quando não vale:
 // - TEST_MODE=1 (testes e o modo demonstração do launcher, com as contas demo de senha
-//   "teste"): a regra inteira é ignorada, nem o login marca nem o servidor recusa;
-// - durante uma prova em andamento (tentativa aberta numa aplicação ativa): o login não
+//   "teste"): a regra inteira é ignorada, nem o login marca nem o servidor recusa, para
+//   o aluno e para o instrutor (adminPasswordChangeState); só a senha temporária do
+//   launcher continua pedindo a troca do instrutor, como antes;
+// - durante uma prova em andamento (tentativa aberta numa aplicação ativa, ou aplicação
+//   ativa na turma do aluno, mesmo antes de ele abrir a tentativa): o login não
 //   marca a senha fraca (fica para o login seguinte) e, se a troca já estava pedida, a
 //   sessão que estava em prova segue sem a troca até o fim (o pedido volta no próximo
 //   login). A prova nunca recebe o 403.
@@ -41,20 +44,49 @@ function normalizeEmail(value) {
     return String(value || '').trim().toLowerCase();
 }
 
-// O aluno está fazendo uma prova agora? Tentativa ainda não entregue numa aplicação
-// aguardando, em andamento ou pausada. Só roda quando a troca está pedida (é raro), e
-// percorre o estado das provas uma vez.
-function studentHasExamInProgress(memory, email) {
-    const target = normalizeEmail(email);
+// O aluno está na turma da aplicação? Pelo nome da turma e, quando os dois lados têm,
+// pelo curso (o mesmo nome de turma pode existir em dois cursos).
+function studentInApplicationClass(student, application) {
+    const className = String(application && application.studentClass || '').trim();
+    if (!student || !className) return false;
+    const courseId = String(application.courseId || '').trim();
+    const memberships = Array.isArray(student.classes) && student.classes.length
+        ? student.classes
+        : (student.studentClass ? [student.studentClass] : []);
+    return memberships.some(item => {
+        const name = String(typeof item === 'string' ? item : item && (item.name || item.className) || '').trim();
+        if (name !== className) return false;
+        const itemCourse = String(item && typeof item === 'object' ? item.courseId || '' : '').trim();
+        return !courseId || !itemCourse || itemCourse === courseId;
+    });
+}
+
+// O aluno está fazendo uma prova agora? Duas situações contam:
+// - tentativa ainda não entregue numa aplicação aguardando, em andamento ou pausada;
+// - aplicação aguardando, em andamento ou pausada na turma dele, mesmo antes de abrir a
+//   tentativa: quem entra na aula da prova não perde o começo trocando a senha (na
+//   primeira aula depois da atualização, as senhas fracas pedem a troca). A troca fica
+//   para o login seguinte.
+// Só roda quando a troca está pedida ou a senha do login é fraca, e percorre o estado
+// das provas e as aplicações uma vez. student: o cadastro (sem ele, o primeiro aluno com
+// o e-mail).
+function studentHasExamInProgress(memory, email, student) {
+    const target = normalizeEmail(email || (student && student.email));
     if (!target || !memory) return false;
     const states = memory.studentExamState && typeof memory.studentExamState === 'object' ? memory.studentExamState : {};
-    return Object.keys(states).some(key => {
+    const openAttempt = Object.keys(states).some(key => {
         const state = states[key];
         if (!state || typeof state !== 'object' || CLOSED_ATTEMPT_STATUSES.has(state.status)) return false;
         if (normalizeEmail(state.studentEmail) !== target || !state.applicationId) return false;
         const application = findExamApplication(memory.examApplications, state.applicationId);
         return !!application && ACTIVE_APPLICATION_STATUSES.has(application.status);
     });
+    if (openAttempt) return true;
+    const record = student || (Array.isArray(memory.students) ? memory.students.find(item => item && normalizeEmail(item.email) === target) : null);
+    if (!record) return false;
+    const applications = Array.isArray(memory.examApplications) ? memory.examApplications : [];
+    return applications.some(application => application && ACTIVE_APPLICATION_STATUSES.has(application.status)
+        && studentInApplicationClass(record, application));
 }
 
 // Sessões que estavam em prova quando a troca foi pedida seguem sem ela até o fim (só
@@ -80,11 +112,22 @@ function passwordChangeReason(account) {
 function studentPasswordChangeState(memory, student, session) {
     if (!passwordChangeRuleActive() || !student || student.mustChangePassword !== true) return { required: false };
     if (isPasswordChangeDeferred(session)) return { required: false };
-    if (studentHasExamInProgress(memory, student.email)) {
+    if (studentHasExamInProgress(memory, student.email, student)) {
         deferPasswordChange(session);
         return { required: false };
     }
     return { required: true, reason: passwordChangeReason(student) };
+}
+
+// A troca vale para a conta do instrutor agora? { required, reason }. Com TEST_MODE a
+// regra do H5a (senha criada, redefinida ou fraca, com passwordChangeReason) é ignorada,
+// como a do aluno (decisão P3). A senha temporária do launcher (scripts/
+// reset-admin-password.js, sem passwordChangeReason) continua pedindo a troca mesmo
+// assim, como antes do H5a: é a recuperação de acesso, não a regra nova.
+function adminPasswordChangeState(account) {
+    if (!account || account.mustChangePassword !== true) return { required: false };
+    if (!passwordChangeRuleActive() && PASSWORD_CHANGE_REASONS.has(account.passwordChangeReason)) return { required: false };
+    return { required: true, reason: passwordChangeReason(account) };
 }
 
 // Corpo do 403 (formato combinado entre os grupos: 403 { passwordChangeRequired: true }).
@@ -110,6 +153,7 @@ function passwordChanged(account, now = Date.now()) {
 module.exports = {
     PASSWORD_CHANGE_REASONS,
     STUDENT_PASSWORD_CHANGE_PATHS,
+    adminPasswordChangeState,
     deferPasswordChange,
     isPasswordChangeDeferred,
     passwordChangeReason,

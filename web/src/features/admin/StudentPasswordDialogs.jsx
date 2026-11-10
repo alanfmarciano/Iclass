@@ -13,6 +13,9 @@ import { passwordHint } from '../../lib/passwordPolicy'
 // tela: fechou o aviso, só redefinindo de novo.
 
 export const TEMPORARY_PASSWORD_TEXT = 'Entregue esta senha ao aluno. No próximo acesso ele vai escolher uma senha nova.'
+// Sem a troca pedida (caixa "Pedir troca no primeiro acesso" desmarcada): a senha
+// temporária continua valendo até o aluno trocar em Minha conta.
+export const TEMPORARY_PASSWORD_KEPT_TEXT = 'Entregue esta senha ao aluno. Ela continua valendo até ele trocar em Minha conta.'
 
 // Copiar sem depender de navigator.clipboard, que o navegador só libera na conexão segura
 // (o IClass na rede da escola abre em http): cai para o execCommand('copy').
@@ -39,7 +42,8 @@ export async function copyText(text) {
   }
 }
 
-export function TemporaryPasswordNotice({ open, email, password, onClose }) {
+// mustChangePassword: o que o servidor respondeu (false = a troca não foi pedida).
+export function TemporaryPasswordNotice({ open, email, password, mustChangePassword = true, onClose }) {
   const toast = useToast()
   async function copy() {
     const ok = await copyText(password || '')
@@ -55,7 +59,7 @@ export function TemporaryPasswordNotice({ open, email, password, onClose }) {
           <code data-testid="temporary-password" className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-lg font-semibold tracking-wider text-text select-all">{password}</code>
           <Button variant="secondary" icon={Copy} onClick={copy}>Copiar</Button>
         </div>
-        <p className="text-sm text-muted">{TEMPORARY_PASSWORD_TEXT}</p>
+        <p className="text-sm text-muted">{mustChangePassword === false ? TEMPORARY_PASSWORD_KEPT_TEXT : TEMPORARY_PASSWORD_TEXT}</p>
       </div>
     </Modal>
   )
@@ -82,7 +86,7 @@ export function StudentPasswordResetDialog({ email, onClose, onDone }) {
       const response = await api.post('/api/admin/reset-password', mode === 'typed' ? { email, newPassword: typed } : { email })
       if (onDone) onDone()
       if (response?.temporaryPassword) {
-        setTemporary({ email, password: response.temporaryPassword })
+        setTemporary({ email, password: response.temporaryPassword, mustChangePassword: response.mustChangePassword !== false })
       } else {
         if (toast) toast.success(response?.message || 'Senha redefinida.')
         close()
@@ -94,7 +98,7 @@ export function StudentPasswordResetDialog({ email, onClose, onDone }) {
     }
   }
 
-  if (temporary) return <TemporaryPasswordNotice open email={temporary.email} password={temporary.password} onClose={close} />
+  if (temporary) return <TemporaryPasswordNotice open email={temporary.email} password={temporary.password} mustChangePassword={temporary.mustChangePassword} onClose={close} />
   return (
     <Modal open={!!email} onClose={close} title="Redefinir senha" description={email}
       footer={<><Button variant="ghost" onClick={close}>Cancelar</Button><Button icon={KeyRound} loading={busy} onClick={submit}>Redefinir</Button></>}>

@@ -10,6 +10,7 @@ import { Textarea } from '../../components/ui/Textarea'
 import { Modal, ConfirmDialog } from '../../components/ui/Modal'
 import { STUDENT_DELETE_WARNING } from './studentDeletion'
 import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
+import { StudentAuditPanel } from './StudentAuditPanel'
 import { passwordHint } from '../../lib/passwordPolicy'
 import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
@@ -128,7 +129,7 @@ export default function AlunosPage() {
     try {
       const created = await api.post('/api/admin/student/create', payloadFrom(form, false))
       toast.success('Aluno cadastrado')
-      if (created?.temporaryPassword) setCreatedPassword({ email: form.email, password: created.temporaryPassword })
+      if (created?.temporaryPassword) setCreatedPassword({ email: form.email, password: created.temporaryPassword, mustChangePassword: created.mustChangePassword !== false })
       setOpen(false)
       setForm(emptyForm())
       refetch()
@@ -321,20 +322,10 @@ export default function AlunosPage() {
         </div>
       </Modal>
 
+      {/* O mesmo painel da ficha: a entrada sem campo do cadastro (como o "Redefinir
+          senha") aparece pelo rótulo da ação, não como uma linha sem título. */}
       <Modal open={!!audit} onClose={() => setAudit(null)} title="Auditoria do perfil" description={audit?.email}>
-        <div className="space-y-2 max-h-96 overflow-auto">
-          {auditRows.map((a) => (
-            <div key={a.id} className="rounded-md border border-border p-3 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="font-medium text-text">{a.field}</span>
-                <span className="text-xs text-subtle">{new Date(a.timestamp).toLocaleString('pt-BR')}</span>
-              </div>
-              {a.action !== 'create' && <p className="text-xs text-muted mt-1"><span className="line-through text-subtle">{a.oldValue || '(vazio)'}</span> → <span className="text-text">{a.newValue || '(vazio)'}</span></p>}
-              <p className="text-xs text-subtle mt-1">por {a.actor}{a.ip ? ` · ${a.ip}` : ''}</p>
-            </div>
-          ))}
-          {auditRows.length === 0 && <p className="text-sm text-muted">Nenhuma alteração registrada.</p>}
-        </div>
+        <StudentAuditPanel rows={auditRows} />
       </Modal>
 
       <Modal open={!!profile} onClose={() => setProfile(null)} title={profile ? displayName(profile) : 'Perfil'} description={profile?.email}>
@@ -571,7 +562,7 @@ export default function AlunosPage() {
         title={`Excluir ${del ? displayName(del) : ''}?`} description={STUDENT_DELETE_WARNING} />
 
       <StudentPasswordResetDialog email={reset?.email || null} onClose={() => setReset(null)} onDone={refetch} />
-      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} onClose={() => setCreatedPassword(null)} />
+      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} onClose={() => setCreatedPassword(null)} />
     </div>
   )
 }

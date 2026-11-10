@@ -8,7 +8,8 @@ const state = vi.hoisted(() => ({ apiPost: vi.fn(), toast: { success: vi.fn(), e
 vi.mock('../../lib/api', () => ({ api: { post: state.apiPost } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => state.toast }))
 
-import { StudentPasswordResetDialog, TEMPORARY_PASSWORD_TEXT } from './StudentPasswordDialogs'
+import { StudentPasswordResetDialog, TemporaryPasswordNotice, TEMPORARY_PASSWORD_KEPT_TEXT, TEMPORARY_PASSWORD_TEXT } from './StudentPasswordDialogs'
+import { StudentAuditPanel } from './StudentAuditPanel'
 
 beforeEach(() => {
   state.apiPost.mockReset()
@@ -50,5 +51,35 @@ describe('[UC-SENHA-001] redefinir senha do aluno pelo painel', () => {
     await user.click(screen.getByRole('button', { name: 'Redefinir' }))
     expect(state.apiPost).toHaveBeenCalledWith('/api/admin/reset-password', { email: 'ana@escola.local', newPassword: '12345678' })
     expect(await screen.findByText('Essa senha é muito comum. Escolha outra.')).toBeInTheDocument()
+  })
+})
+
+describe('[UC-SENHA-001] aviso da senha temporária segue a troca pedida', () => {
+  it('caixa "Pedir troca no primeiro acesso" desmarcada: não promete a troca', () => {
+    render(<TemporaryPasswordNotice open email="ana@escola.local" password="abcde-fghjk" mustChangePassword={false} onClose={vi.fn()} />)
+    expect(screen.getByText(TEMPORARY_PASSWORD_KEPT_TEXT)).toBeInTheDocument()
+    expect(TEMPORARY_PASSWORD_KEPT_TEXT).toBe('Entregue esta senha ao aluno. Ela continua valendo até ele trocar em Minha conta.')
+    expect(screen.queryByText(TEMPORARY_PASSWORD_TEXT)).toBeNull()
+  })
+
+  it('reset com o servidor dizendo que a troca não vale (demonstração): texto sem a troca', async () => {
+    state.apiPost.mockResolvedValue({ success: true, mustChangePassword: false, temporaryPassword: 'abcde-fghjk' })
+    const user = userEvent.setup()
+    render(<StudentPasswordResetDialog email="ana@escola.local" onClose={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Redefinir' }))
+    expect(await screen.findByText(TEMPORARY_PASSWORD_KEPT_TEXT)).toBeInTheDocument()
+  })
+})
+
+describe('[UC-SENHA-001] redefinição de senha na aba Auditoria da ficha', () => {
+  it('a entrada sem campo do cadastro aparece pelo rótulo, sem "(vazio) → (vazio)"', () => {
+    const rows = [
+      { id: 'r1', action: 'student_password_reset', category: 'security', label: 'Senha do aluno redefinida', field: '', oldValue: null, newValue: null, actor: 'prof@escola.local', timestamp: 1_800_000_000_000, details: { mode: 'generated' } },
+      { id: 'r2', action: 'update', category: 'student', label: 'Cadastro do aluno alterado', field: 'Telefone', oldValue: '1', newValue: '2', actor: 'admin@escola.local', timestamp: 1_800_000_000_000 },
+    ]
+    render(<StudentAuditPanel rows={rows} />)
+    expect(screen.getAllByText('Senha do aluno redefinida').length).toBeGreaterThan(0)
+    expect(screen.queryByText('(vazio)')).toBeNull()
+    expect(screen.getByText('por prof@escola.local')).toBeInTheDocument()
   })
 })

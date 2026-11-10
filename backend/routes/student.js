@@ -997,7 +997,7 @@ router.post('/api/student/login', async (req, res) => {
     // pedida, menos durante uma prova em andamento (fica para o login seguinte) e com
     // TEST_MODE (contas demo). Quem já tinha a troca pedida e está em prova segue sem
     // ela nesta sessão (utils/passwordChange.js).
-    const inExam = passwordChangeRuleActive() && studentHasExamInProgress(db.memory, normalizedEmail);
+    const inExam = passwordChangeRuleActive() && studentHasExamInProgress(db.memory, normalizedEmail, student);
     if (passwordChangeRuleActive() && login.weakPassword && student.mustChangePassword !== true && !inExam) {
         requirePasswordChange(student, 'weak');
     }
@@ -1140,26 +1140,26 @@ router.post('/api/student/change-password', validateStudentSession, async (req, 
     const student = req.studentAccount;
     const { currentPassword, newPassword } = req.body;
     if (typeof currentPassword !== 'string' || !currentPassword.trim()) {
-        return res.status(400).json({ error: 'Informe a senha atual.', field: 'currentPassword' });
+        return res.status(400).json({ success: false, error: 'Informe a senha atual.', field: 'currentPassword' });
     }
     if (typeof newPassword !== 'string' || !newPassword.trim()) {
-        return res.status(400).json({ error: 'Informe a nova senha.', field: 'newPassword' });
+        return res.status(400).json({ success: false, error: 'Informe a nova senha.', field: 'newPassword' });
     }
     const policy = validateNewPassword(newPassword, {
         kind: 'student', email: student.email, name: student.name, nomeSocial: student.nomeSocial, matricula: student.matricula,
     });
     if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
     if (newPassword.trim() === currentPassword.trim()) {
-        return res.status(400).json({ error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
+        return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
     }
     const changedMeanwhile = () => res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Entre de novo e tente outra vez.' });
-    const check = await attemptPasswordLogin({ kind: 'student', email: req.studentEmail, password: currentPassword, req });
+    const check = await attemptPasswordLogin({ kind: 'student', email: req.studentEmail, password: currentPassword, req, purpose: 'change_password' });
     if (!check.ok && check.status === 429) return res.status(429).json(check.body);
     if (!check.ok && check.passwordChanged) return changedMeanwhile();
     if (!check.ok) {
         // A tentativa errada fica em loginLogs (gravada pelo attemptPasswordLogin).
         await db.save();
-        return res.status(400).json({ error: 'Senha atual incorreta.', field: 'currentPassword' });
+        return res.status(400).json({ success: false, error: 'Senha atual incorreta.', field: 'currentPassword' });
     }
     if (check.account !== student || student.password !== check.password) return changedMeanwhile();
     const storedBefore = check.password;

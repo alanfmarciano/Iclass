@@ -87,7 +87,7 @@ export default function AlunoGlobalEditPage() {
         const created = await api.post('/api/admin/student/create', payload(form, false))
         toast.success('Aluno cadastrado')
         // Senha temporária gerada pelo servidor: mostra uma vez antes de voltar à lista.
-        if (created?.temporaryPassword) { setCreatedPassword({ email: form.email, password: created.temporaryPassword }); return }
+        if (created?.temporaryPassword) { setCreatedPassword({ email: form.email, password: created.temporaryPassword, mustChangePassword: created.mustChangePassword !== false }); return }
       } else {
         await api.post('/api/admin/student/update', payload(form, true))
         toast.success('Aluno atualizado')
@@ -166,7 +166,7 @@ export default function AlunoGlobalEditPage() {
         ) : null}
       </PageState>
       {!isNew && form && <StudentPasswordResetDialog email={resetOpen ? form.originalEmail : null} onClose={() => setResetOpen(false)} />}
-      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} onClose={() => { setCreatedPassword(null); nav('/diretorio') }} />
+      <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} onClose={() => { setCreatedPassword(null); nav('/diretorio') }} />
     </div>
   )
 }
