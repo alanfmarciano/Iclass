@@ -20,7 +20,7 @@ const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js
 const { logError } = require('./utils/errorLog.js');
 const { ownEntry } = require('./utils/ownEntry.js');
 const { DB_WRITE_ERROR_MESSAGE } = require('./utils/dbWriter.js');
-const { bindToRequestContext } = require('./utils/persistenceContext.js');
+const { bindToRequestContext, noteRequestWriteFailure } = require('./utils/persistenceContext.js');
 function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
 
 // Caminhos dos arquivos de banco de dados locais
@@ -1159,6 +1159,9 @@ function respondWithError(err, req, res, { context } = {}) {
         // motor de gravação (H1-a, por logError, no máximo uma linha por minuto), para uma
         // trava longa do banco não virar um bloco por pedido.
         console.error(`⚠️ [GRAVAÇÃO] ${request.method || ''} ${String(request.originalUrl || request.url || '').split('?')[0]}: ${err.message || err}`);
+        // Resposta já adiada pelo persistenceContext (a rota respondeu antes de esperar a
+        // gravação que agora falhou): ela também sai como 503.
+        noteRequestWriteFailure(err);
         if (headersSent) return finishStartedResponse(res);
         return res.status(503).json({ success: false, error: DB_WRITE_ERROR_MESSAGE, retryable: true, ...(requestId ? { requestId } : {}) });
     }

@@ -231,8 +231,9 @@ function snapshotSummary(snapshot, format) {
 // Valor restaurado de uma coleção conforme o modo dela no registro (restore):
 // - 'replace' e 'keep': o backup substitui a atual (quando falta no backup, a atual fica);
 // - 'merge': a trilha do backup junta com a atual. Enquanto mergeAuditTrails (utils/audit.js)
-//   não estiver ligado aqui (H7a-2, junto com a nova regra da lixeira de notas, que hoje
-//   depende de grade_restore), a auditoria do backup substitui a atual, como antes;
+//   não estiver ligado aqui, a auditoria do backup substitui a atual, como antes. Pelo
+//   plano, o H7a-2 liga o merge (junto com a nova regra da lixeira de notas, que hoje
+//   depende de grade_restore) e o H4a troca este trecho pelo laço por modo do registro;
 // - 'reset': volta vazia (sessões).
 function restoredCollectionValue(entry, restored) {
     if (entry.restore === 'reset') return db.emptyCollectionValue(entry);

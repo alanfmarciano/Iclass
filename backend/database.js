@@ -17,7 +17,7 @@ const {
 const { hashExamToken } = require('./utils/examToken.js');
 const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
 const { createDbWriter, DbWriteError, MEMORY_KINDS } = require('./utils/dbWriter.js');
-const { currentRequestContext, isSoleApiRequest } = require('./utils/persistenceContext.js');
+const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('./utils/persistenceContext.js');
 const { logError } = require('./utils/errorLog.js');
 
 function legacyHashPassword(password) {
@@ -197,7 +197,8 @@ const COLLECTION_TABLES = Object.freeze([
     tableEntry('broadcastMessages', 'broadcast_messages', 'array', 'id'),
     tableEntry('questionBank', 'question_bank', 'array', 'key'),
     // Auditoria: a restauração junta a trilha do backup com a atual (mergeAuditTrails,
-    // utils/audit.js, ligado pelo H7a-2).
+    // utils/audit.js). Pelo plano, o H7a-2 liga o merge na restauração e o H4a faz o
+    // laço por modo do registro ('merge' e 'keep'); até lá a restauração substitui.
     tableEntry('auditLogs', 'audit_logs', 'array', 'id', { append: true, restore: 'merge' }),
     tableEntry('loginLogs', 'login_logs', 'array', 'id', { append: true }), // segurança/LGPD
     tableEntry('pedagogicalObservations', 'pedagogical_observations', 'array', 'id'),
@@ -363,25 +364,37 @@ function migrateJsonToTable(filePath, tableName, keyField, isArray = true) {
 // JSON de cada linha exatamente como foi lido (DES-01): a primeira gravação depois do
 // boot escreve só o que mudou, em vez de apagar e reinserir todas as tabelas (26 s num
 // banco de um ano). Linha com JSON ilegível fica no arquivo, fora da memória e do mapa:
-// a gravação nunca a apaga (antes ela sumia no primeiro save).
+// a gravação nunca a apaga (antes ela sumia no primeiro save). Quando a memória ganha um
+// valor com a mesma chave, o texto original é copiado antes para '<chave>.ilegivel-<data>'
+// (utils/dbWriter.js). É o caso do singleton ilegível (config, branding,
+// courseStructure): o IClass segue com o valor padrão dele, e a primeira gravação guarda
+// a linha original ao lado em vez de sobrescrevê-la (antes as configurações e o segredo
+// das alternativas da prova sumiam sem aviso).
 async function loadRegisteredCollections() {
     for (const entry of COLLECTION_TABLES) {
         if (!MEMORY_KINDS.has(entry.kind)) continue;
         const rows = await allSql(`SELECT key, value FROM ${entry.table}`);
         const seed = new Map();
         const parsed = [];
-        let unreadable = 0;
+        const unreadable = [];
         rows.forEach(row => {
             try {
                 parsed.push([row.key, JSON.parse(row.value)]);
                 seed.set(String(row.key), row.value);
             } catch (e) {
-                unreadable += 1;
+                unreadable.push(String(row.key));
             }
         });
-        writer.seed(entry.table, seed);
-        if (unreadable) {
-            console.warn(`⚠️ ${unreadable} registro(s) ilegível(is) na tabela ${entry.table} ficaram no arquivo e fora da memória.`);
+        writer.seed(entry.table, seed, unreadable);
+        const singletonUnreadable = entry.kind === 'singleton' && unreadable.includes(String(entry.key));
+        const otherUnreadable = unreadable.length - (singletonUnreadable ? 1 : 0);
+        if (singletonUnreadable) {
+            // logError já põe a linha-resumo no console; o registro fica no crash.log.
+            const message = `A linha "${entry.key}" da tabela ${entry.table} está ilegível: o IClass seguiu com os valores padrão de "${entry.collection}". A linha original fica no arquivo, guardada como "${entry.key}.ilegivel-<data>" na primeira gravação. Para recuperar o que ela tinha, restaure um backup.`;
+            logError('[BANCO] Registro ilegível', { message }, { details: { tabela: entry.table, chave: entry.key } });
+        }
+        if (otherUnreadable) {
+            console.warn(`⚠️ ${otherUnreadable} registro(s) ilegível(is) na tabela ${entry.table} continuam no arquivo, fora da memória (a gravação não os apaga).`);
         }
         if (entry.kind === 'array') {
             memoryDB[entry.collection] = parsed.map(([, value]) => value);
@@ -1034,6 +1047,7 @@ const writer = createDbWriter({
     logFailure: err => {
         logError('[GRAVAÇÃO] Não foi possível gravar no banco', (err && err.cause) || err);
     },
+    busyTimeoutMs: () => connectionInfo.busyTimeoutMs,
 });
 
 // Verificador de gravação parcial (ICLASS_VERIFY_SAVES; ligado no node --test e no e2e):
@@ -1099,7 +1113,9 @@ function saveToDisk(options) {
     if (context && !scope.full) verifyPartialSave(context, scope);
     const completion = writer.request(scope);
     if (context) refreshSaveSnapshot(context, scope);
-    if (context && !detached) context.pending.push(completion);
+    // Dentro de um pedido a resposta espera esta gravação; a promessa devolvida sabe se a
+    // rota tratou a falha (utils/persistenceContext.js).
+    if (context && !detached) return trackRequestSave(context, completion);
     return completion;
 }
 
@@ -1155,7 +1171,8 @@ function defaultAdminEmail() {
 }
 
 // Gravação completa, espera da fila e fechamento da conexão (o SQLite aplica e apaga o
-// -wal). Usado no desligamento (SIGINT, SIGTERM, SIGHUP, SIGBREAK) e no Reiniciar.
+// -wal). Usado no desligamento por SIGINT e SIGTERM (server.js); SIGHUP, SIGBREAK e o
+// Reiniciar passam a chamá-lo com o requestShutdown do H3c (plano da fase 2).
 // Depois dele, db.save() rejeita com DbWriteError.
 function close() {
     return writer.close();

@@ -106,6 +106,53 @@ const scenarios = {
         await closeConnection(external);
         return { error, rejectedAfterMs, statusWhileLocked, foundAfterMs, counts, otherWriter, statusAfter: db.storageStatus() };
     },
+
+    // Linhas ilegíveis no arquivo (preparadas pelo teste antes do boot): config, um
+    // singleton, e uma nota cuja chave volta a ser usada. O boot segue com o padrão; a
+    // gravação guarda as linhas originais ao lado em vez de sobrescrevê-las.
+    async unreadable() {
+        const bootConfig = { ...db.memory.config };
+        await db.save();
+        db.memory.notes['volta@boot.local'] = { modulo: 'nota nova' };
+        await db.save();
+        return {
+            hasSecret: typeof db.memory.config.examAnswerSecret === 'string',
+            secret: db.memory.config.examAnswerSecret,
+            bootConfigKeys: Object.keys(bootConfig).sort(),
+        };
+    },
+
+    // Boot seguinte: o que foi gravado volta (segredo igual) e as cópias continuam no arquivo.
+    async reboot() {
+        await db.save();
+        return { secret: db.memory.config.examAnswerSecret, notes: Object.keys(db.memory.notes).sort() };
+    },
+
+    // Pedido que entra durante um ciclo travado: espera no total cerca de um busy_timeout
+    // (ICLASS_DB_BUSY_TIMEOUT_MS=1000), e não o ciclo travado mais o dele (2 s).
+    async busyQueue() {
+        await db.save();
+        const external = connect();
+        await exec(external, 'BEGIN IMMEDIATE');
+        const outcome = (startedAt, promise) => promise.then(
+            () => ({ ok: true, ms: Date.now() - startedAt }),
+            err => ({ ok: false, code: err.code, sqliteCode: err.sqliteCode, ms: Date.now() - startedAt }));
+        db.memory.notes['fila-a@boot.local'] = { modulo: 'primeira' };
+        const first = outcome(Date.now(), db.save());
+        await wait(300);
+        db.memory.notes['fila-b@boot.local'] = { modulo: 'segunda, durante o ciclo travado' };
+        const second = outcome(Date.now(), db.save());
+        const [a, b] = await Promise.all([first, second]);
+        await exec(external, 'COMMIT');
+        await closeConnection(external);
+        // A conexão volta ao busy_timeout normal depois do ciclo encurtado.
+        const busyAfter = await db.runExclusive(connection => get(connection, 'PRAGMA busy_timeout'));
+        await db.save();
+        const reader = connect();
+        const saved = await get(reader, 'SELECT count(*) AS n FROM notes WHERE key IN (?, ?)', ['fila-a@boot.local', 'fila-b@boot.local']);
+        await closeConnection(reader);
+        return { a, b, busyAfter: Number(Object.values(busyAfter)[0]), saved: saved.n };
+    },
 };
 
 (async () => {

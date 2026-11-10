@@ -3,8 +3,9 @@
 // ainda na fila (com uma espera fixa de 250 ms) e um kill -9, o Reiniciar ou uma trava
 // do arquivo o perdiam. Agora todo db.save() feito durante o pedido é esperado antes da
 // resposta (utils/persistenceContext.js); se a gravação falha, sai 503 retryable em vez
-// do "salvo". Também cobre o verificador de gravação parcial (ICLASS_VERIFY_SAVES) e o
-// db.save({ detached: true }), que não segura a resposta.
+// do "salvo". Falha que a rota trata de propósito (db.save().catch, try/catch: presença
+// automática, Reiniciar) mantém a resposta da rota. Também cobre o verificador de gravação
+// parcial (ICLASS_VERIFY_SAVES) e o db.save({ detached: true }), que não segura a resposta.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -177,7 +178,7 @@ test('[UC-GRAVACAO-001] trava longa do arquivo: 503 retryable sem pendurar e reg
 
 // Servidor de verdade num processo próprio (fixtures/save-kill-server.js), com uma
 // pasta de dados só dele. Devolve { child, base, exited, output() }.
-async function startFixtureServer(dataDir, args) {
+async function startFixtureServer(dataDir, args, extraEnv = {}) {
     const env = {
         ...process.env,
         ICLASS_DATA_DIR: dataDir,
@@ -187,6 +188,7 @@ async function startFixtureServer(dataDir, args) {
     };
     delete env.NODE_TEST_CONTEXT;
     delete env.ICLASS_DB_BUSY_TIMEOUT_MS;
+    Object.assign(env, extraEnv);
     const child = spawn(process.execPath, [path.join(__dirname, 'fixtures', 'save-kill-server.js'), ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
     let output = '';
@@ -241,7 +243,18 @@ test('[UC-GRAVACAO-001] kill -9 logo depois do 200 não perde o que foi confirma
     assert.equal(JSON.parse(row.value).Apostila_FUTEC_3, 'sobrevive ao kill -9');
 });
 
-test('[UC-GRAVACAO-001] Reiniciar grava, fecha o banco (sem -wal) e só então sai', async () => {
+// Fechar o banco no Reiniciar (db.close) e os sinais SIGHUP/SIGBREAK ficam com o H3c
+// (plano da fase 2, conflito H1 x H3). Aqui: o que recebeu 200 antes do Reiniciar já está
+// no arquivo (o -wal é aplicado na subida seguinte), e a falha de gravação que a rota do
+// Reiniciar trata de propósito não vira 503 (antes o administrador lia "Não foi possível
+// gravar" e o servidor reiniciava assim mesmo).
+async function adminSessionToken(server, email, password) {
+    const whoami = await fetch(`${server.base}/api/admin/whoami`, { headers: { Authorization: `${email}:${password}` } });
+    assert.equal(whoami.status, 200);
+    return (await whoami.json()).sessionToken;
+}
+
+test('[UC-GRAVACAO-001] Reiniciar logo depois do 200 não perde o que foi confirmado', async () => {
     const restartDir = fs.mkdtempSync(path.join(tempRoot, 'reiniciar-'));
     const restartFile = path.join(restartDir, 'database.db');
     const server = await startFixtureServer(restartDir, ['reinicio@teste.local', 'senha-aluno', 'admin-reinicio@teste.local', 'senha-admin']);
@@ -250,21 +263,17 @@ test('[UC-GRAVACAO-001] Reiniciar grava, fecha o banco (sem -wal) e só então s
         const { sessionToken } = await login.json();
         assert.equal((await postJson(`${server.base}/api/student/notes/save`,
             { moduleKey: 'Apostila_FUTEC_4', note: 'salva antes do reinício' }, { 'x-session-token': sessionToken })).status, 200);
-        const whoami = await fetch(`${server.base}/api/admin/whoami`, { headers: { Authorization: 'admin-reinicio@teste.local:senha-admin' } });
-        assert.equal(whoami.status, 200);
-        const { sessionToken: adminToken } = await whoami.json();
+        const adminToken = await adminSessionToken(server, 'admin-reinicio@teste.local', 'senha-admin');
         const restart = await postJson(`${server.base}/api/admin/server/restart`, { confirm: 'REINICIAR' }, { 'x-admin-session': adminToken });
         assert.equal(restart.status, 200);
         const result = await Promise.race([server.exited, wait(10000).then(() => null)]);
         assert.ok(result, 'o processo não saiu depois do Reiniciar');
         assert.equal(result.code, 0);
-        assert.match(server.output(), /SPAWN=/, 'o novo servidor é disparado depois de fechar o banco');
+        assert.match(server.output(), /SPAWN=/, 'o novo servidor é disparado');
     } finally {
         if (server.child.exitCode === null && server.child.signalCode === null) server.child.kill('SIGKILL');
         await server.exited;
     }
-    // close() aplicou o -wal no arquivo principal e o apagou.
-    assert.equal(fs.existsSync(`${restartFile}-wal`), false, 'o banco não foi fechado antes de sair');
     const row = await readRow('notes', 'reinicio@teste.local', restartFile);
     assert.equal(JSON.parse(row.value).Apostila_FUTEC_4, 'salva antes do reinício');
     const reader = openConnection(restartFile);
@@ -273,6 +282,31 @@ test('[UC-GRAVACAO-001] Reiniciar grava, fecha o banco (sem -wal) e só então s
     await closeConnection(reader);
     assert.ok(audit.some(item => JSON.parse(item.value).type === 'server_restart_requested'), 'o registro do reinício foi gravado');
     assert.equal(String(Object.values(mode)[0]).toLowerCase(), 'wal');
+});
+
+test('[UC-GRAVACAO-001] Reiniciar com o banco travado responde "reiniciando", não o 503 de gravação', async () => {
+    const restartDir = fs.mkdtempSync(path.join(tempRoot, 'reiniciar-travado-'));
+    const restartFile = path.join(restartDir, 'database.db');
+    const server = await startFixtureServer(restartDir, ['reinicio2@teste.local', 'senha-aluno', 'admin-reinicio2@teste.local', 'senha-admin'],
+        { ICLASS_DB_BUSY_TIMEOUT_MS: '300' });
+    let lock = null;
+    try {
+        const adminToken = await adminSessionToken(server, 'admin-reinicio2@teste.local', 'senha-admin');
+        const connection = openConnection(restartFile);
+        await exec(connection, 'BEGIN IMMEDIATE');
+        lock = async () => { await exec(connection, 'COMMIT'); await closeConnection(connection); };
+        const restart = await postJson(`${server.base}/api/admin/server/restart`, { confirm: 'REINICIAR' }, { 'x-admin-session': adminToken });
+        const body = await restart.json();
+        assert.equal(restart.status, 200, JSON.stringify(body));
+        assert.deepEqual(body, { success: true, message: 'Servidor reiniciando...' });
+        const result = await Promise.race([server.exited, wait(10000).then(() => null)]);
+        assert.ok(result, 'o processo não saiu depois do Reiniciar');
+        assert.equal(result.code, 0);
+    } finally {
+        if (lock) await lock();
+        if (server.child.exitCode === null && server.child.signalCode === null) server.child.kill('SIGKILL');
+        await server.exited;
+    }
 });
 
 // App mínimo com o mesmo middleware do createApp, para rotas de teste.
@@ -286,8 +320,97 @@ function verifierApp(routes) {
         onWriteFailure: (err, req, res) => errorHandler(err, req, res, () => {}),
     }));
     routes(mini);
+    mini.use(errorHandler);
     return mini;
 }
+
+test('[UC-GRAVACAO-001] falha de gravação: 503 só quando a rota não a tratou', async () => {
+    const uncaught = [];
+    const collect = err => uncaught.push(String((err && err.message) || err));
+    process.on('unhandledRejection', collect);
+    const mini = verifierApp(router => {
+        // Sem await nem catch (as ~105 gravações antigas): 503.
+        router.post('/api/teste/sem-tratar', (req, res) => {
+            db.memory.notes['sem-tratar@teste.local'] = { modulo: 'x' };
+            db.save();
+            res.json({ ok: true });
+        });
+        // Falha tratada de propósito (presença do ping, settleStudentAttempt): a resposta é da rota.
+        router.post('/api/teste/catch', (req, res) => {
+            db.memory.notes['catch@teste.local'] = { modulo: 'x' };
+            db.save().catch(() => {});
+            res.json({ ok: true, origem: 'catch' });
+        });
+        // try/catch em volta do await (Reiniciar): a resposta é da rota.
+        router.post('/api/teste/try-catch', async (req, res) => {
+            db.memory.notes['try-catch@teste.local'] = { modulo: 'x' };
+            try { await db.save(); } catch (_) { /* segue */ }
+            res.json({ ok: true, origem: 'try-catch' });
+        });
+        // await sem try: a falha sobe para o errorHandler (503).
+        router.post('/api/teste/await', async (req, res) => {
+            db.memory.notes['await@teste.local'] = { modulo: 'x' };
+            await db.save();
+            res.json({ ok: true });
+        });
+        // Responde antes e depois espera a gravação, que falha: a resposta adiada vira 503.
+        router.post('/api/teste/responde-e-espera', async (req, res) => {
+            db.memory.notes['responde@teste.local'] = { modulo: 'x' };
+            const saving = db.save();
+            res.json({ ok: true });
+            await saving;
+        });
+        // Duas gravações, uma tratada e outra não: 503.
+        router.post('/api/teste/misto', (req, res) => {
+            db.memory.notes['misto@teste.local'] = { modulo: 'x' };
+            db.save().catch(() => {});
+            db.save();
+            res.json({ ok: true });
+        });
+    });
+    const release = await holdWriteLock();
+    try {
+        const call = route => request(mini).post(route).timeout(5000).send({});
+        const results = await Promise.all([
+            call('/api/teste/sem-tratar'), call('/api/teste/catch'), call('/api/teste/try-catch'),
+            call('/api/teste/await'), call('/api/teste/responde-e-espera'), call('/api/teste/misto'),
+        ]);
+        const summary = results.map(response => [response.status, response.body.retryable === true ? 'retryable' : response.body.origem || null]);
+        assert.deepEqual(summary, [
+            [503, 'retryable'],
+            [200, 'catch'],
+            [200, 'try-catch'],
+            [503, 'retryable'],
+            [503, 'retryable'],
+            [503, 'retryable'],
+        ]);
+        results.filter(response => response.status === 503).forEach(response => assert.equal(response.body.error, WRITE_ERROR));
+    } finally {
+        await release();
+    }
+    await waitFor(() => db.storageStatus().pendingRetry === false, 9000, 'regravação em segundo plano');
+    // A falha tratada também volta para a fila: a nota chega ao disco sozinha.
+    assert.ok(await readRow('notes', 'catch@teste.local'));
+    assert.ok(await readRow('notes', 'try-catch@teste.local'));
+    process.removeListener('unhandledRejection', collect);
+    assert.deepEqual(uncaught, []);
+});
+
+test('[UC-GRAVACAO-001] promessa do db.save() num pedido continua uma promessa comum', async () => {
+    const mini = verifierApp(router => {
+        router.post('/api/teste/promessa', async (req, res) => {
+            db.memory.notes['promessa@teste.local'] = { modulo: 'x' };
+            const saving = db.save();
+            const derived = saving.then(() => 'depois');
+            let ranFinally = false;
+            await saving.finally(() => { ranFinally = true; });
+            res.json({ instance: saving instanceof Promise, derived: await derived, ranFinally, all: (await Promise.all([saving, db.save()])).length });
+        });
+    });
+    const response = await request(mini).post('/api/teste/promessa').send({});
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { instance: true, derived: 'depois', ranFinally: true, all: 2 });
+});
 
 test('[UC-GRAVACAO-001] verificador acusa alteração fora da gravação parcial e grava assim mesmo', async () => {
     let releaseSlow;

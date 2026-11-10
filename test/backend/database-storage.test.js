@@ -54,6 +54,15 @@ async function readRow(table, key, file = databaseFile) {
     }
 }
 
+async function allRows(table, file = databaseFile) {
+    const reader = openConnection(file);
+    try {
+        return await new Promise((resolve, reject) => reader.all(`SELECT key, value FROM ${table} ORDER BY key`, (err, rows) => (err ? reject(err) : resolve(rows))));
+    } finally {
+        await closeConnection(reader);
+    }
+}
+
 async function countRows(table, file = databaseFile) {
     const reader = openConnection(file);
     try {
@@ -299,6 +308,63 @@ test('[UC-GRAVACAO-001] trava além do busy_timeout rejeita com DbWriteError e a
     const crashLog = fs.readFileSync(path.join(busyDir, 'crash.log'), 'utf8');
     assert.match(crashLog, /\[GRAVAÇÃO\] Não foi possível gravar no banco\nError: SQLITE_BUSY: database is locked\n--> in Database#exec\('BEGIN IMMEDIATE'/);
     assert.equal(crashLog.match(/\[GRAVAÇÃO\]/g).length, 1, 'no máximo uma linha por minuto no crash.log');
+});
+
+test('[UC-GRAVACAO-001] linha ilegível nunca é sobrescrita: singleton e chave que volta a ser usada ficam guardados ao lado', async () => {
+    const dir = fs.mkdtempSync(path.join(tempRoot, 'ilegivel-'));
+    const file = path.join(dir, 'database.db');
+    const broken = '{"settings":{"attendance"';
+    const prepare = openConnection(file);
+    await exec(prepare, `CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO config (key, value) VALUES ('app_config', '${broken}');
+        CREATE TABLE notes (key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO notes (key, value) VALUES ('volta@boot.local', 'nota-antiga-quebrada');`);
+    await closeConnection(prepare);
+
+    const first = await runChild(dir, 'unreadable');
+    assert.deepEqual(first.uncaught, []);
+    // O boot segue com o padrão de config (e gera o segredo das alternativas)...
+    assert.equal(first.hasSecret, true);
+    const config = await allRows('config', file);
+    const current = config.find(row => row.key === 'app_config');
+    assert.equal(JSON.parse(current.value).examAnswerSecret, first.secret);
+    // ...e a linha original não some: antes ela era trocada pelo padrão sem aviso.
+    const configCopies = config.filter(row => row.key.startsWith('app_config.ilegivel-'));
+    assert.equal(configCopies.length, 1, JSON.stringify(config.map(row => row.key)));
+    assert.equal(configCopies[0].value, broken);
+    // Mesma regra para uma chave de coleção que volta a ser usada (o aluno grava a nota).
+    const notes = await allRows('notes', file);
+    assert.deepEqual(JSON.parse(notes.find(row => row.key === 'volta@boot.local').value), { modulo: 'nota nova' });
+    const noteCopies = notes.filter(row => row.key.startsWith('volta@boot.local.ilegivel-'));
+    assert.equal(noteCopies.length, 1);
+    assert.equal(noteCopies[0].value, 'nota-antiga-quebrada');
+    // O aviso vai para o crash.log (o administrador vê que a configuração voltou ao padrão).
+    const crashLog = fs.readFileSync(path.join(dir, 'crash.log'), 'utf8');
+    assert.match(crashLog, /\[BANCO\] Registro ilegível\nA linha "app_config" da tabela config está ilegível: o IClass seguiu com os valores padrão de "config"\. A linha original fica no arquivo, guardada como "app_config\.ilegivel-<data>"/);
+
+    // Boot seguinte: o segredo gravado volta igual, as cópias continuam no arquivo e fora
+    // da memória, e nenhum aviso novo de configuração ilegível.
+    const second = await runChild(dir, 'reboot');
+    assert.deepEqual(second.uncaught, []);
+    assert.equal(second.secret, first.secret);
+    assert.deepEqual(second.notes, ['volta@boot.local']);
+    assert.equal((await allRows('config', file)).filter(row => row.key.startsWith('app_config.ilegivel-')).length, 1);
+    assert.equal((await allRows('notes', file)).filter(row => row.key.startsWith('volta@boot.local.ilegivel-')).length, 1);
+    assert.equal(fs.readFileSync(path.join(dir, 'crash.log'), 'utf8').match(/\[BANCO\] Registro ilegível/g).length, 1);
+});
+
+test('[UC-GRAVACAO-001] pedido que entra durante um ciclo travado espera cerca de um busy_timeout, não dois', async () => {
+    const dir = fs.mkdtempSync(path.join(tempRoot, 'fila-travada-'));
+    const result = await runChild(dir, 'busyQueue', undefined, { ICLASS_DB_BUSY_TIMEOUT_MS: '1000' });
+    assert.deepEqual(result.uncaught, []);
+    assert.deepEqual([result.a.ok, result.a.sqliteCode, result.b.ok, result.b.sqliteCode], [false, 'SQLITE_BUSY', false, 'SQLITE_BUSY']);
+    assert.ok(result.a.ms >= 900 && result.a.ms < 1600, `o primeiro pedido desistiu em ${result.a.ms} ms (busy_timeout de 1000 ms)`);
+    // Pedido feito 300 ms depois, durante o ciclo travado: antes esperava o ciclo travado
+    // e mais um busy_timeout inteiro no dele (cerca de 1700 ms; 10 s com o padrão de 5 s).
+    assert.ok(result.b.ms < 1450, `o segundo pedido esperou ${result.b.ms} ms pela trava`);
+    assert.ok(result.b.ms >= 700, `o segundo pedido desistiu cedo demais (${result.b.ms} ms)`);
+    assert.equal(result.busyAfter, 1000, 'a conexão volta ao busy_timeout normal');
+    assert.equal(result.saved, 2, 'as duas notas entram quando a trava sai');
 });
 
 test('[UC-GRAVACAO-001] backup e restauração saem do registro único de tabelas', () => {

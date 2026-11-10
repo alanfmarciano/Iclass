@@ -414,11 +414,8 @@ async function startServer() {
         clearTimeout(forceCloseTimer);
         await db.close();
     };
-    // SIGHUP: fechar a janela do console no Windows (CTRL_CLOSE); SIGBREAK: Ctrl+Break.
-    // Antes só SIGINT e SIGTERM gravavam e fechavam o banco (CONF-04).
-    ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'].forEach(signal => {
-        process.once(signal, () => shutdown().catch(err => logCrash('desligamento', err)).finally(() => process.exit(0)));
-    });
+    process.once('SIGINT', () => shutdown().finally(() => process.exit(0)));
+    process.once('SIGTERM', () => shutdown().finally(() => process.exit(0)));
     return serverInstance;
 }
 

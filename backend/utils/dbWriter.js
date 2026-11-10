@@ -4,7 +4,10 @@
 // chave (key TEXT PRIMARY KEY, value JSON). Este módulo leva a memória para o disco:
 // - lastWritten guarda, por tabela, o JSON de cada linha como está no disco. No boot ele
 //   é semeado com o que foi lido (database.js), então a primeira gravação escreve só o
-//   que mudou. Linha com JSON ilegível não entra no mapa e por isso nunca é apagada.
+//   que mudou. Linha com JSON ilegível não entra no mapa e por isso nunca é apagada; se
+//   a memória ganhar um valor com a mesma chave (o padrão de um singleton como config,
+//   ou um aluno que volta a gravar a nota), a linha ilegível é copiada antes, na mesma
+//   transação, para a chave '<chave>.ilegivel-<data>', que fica no arquivo.
 // - Uma gravação por vez (ciclo), agendada com setImmediate, sem a espera fixa de 250 ms
 //   de antes. Pedidos feitos durante um ciclo se juntam no seguinte.
 // - O plano (texto de cada linha e comparação) é feito de uma vez no início do ciclo,
@@ -34,6 +37,12 @@ const RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 // Erro que não é trava (disco, arquivo preso por outro programa): uma nova tentativa
 // depois de 500 ms antes de desistir do ciclo.
 const IMMEDIATE_RETRY_MS = 500;
+// Espera pela trava contada por pedido: quem já esperou um ciclo que falhou (ou um ciclo
+// longo) não espera o busy_timeout inteiro de novo no ciclo seguinte. Antes, o pedido
+// que chegava durante um ciclo travado recebia o 503 só depois de 2 x busy_timeout (10 s).
+// Abaixo de 250 ms de espera o ciclo usa o busy_timeout inteiro; o mínimo é 100 ms.
+const LOCK_WAIT_ADJUST_FROM_MS = 250;
+const MIN_CYCLE_BUSY_MS = 100;
 const COMMIT_SAMPLES = 200;
 // No máximo uma linha por minuto no crash.log, para uma trava longa não encher o arquivo.
 const CRASH_LOG_INTERVAL_MS = 60000;
@@ -138,18 +147,28 @@ function collectionRows(entry, memory, options) {
     return rows;
 }
 
-// createDbWriter({ connection, tables, getMemory, ready, beforeCycle, logFailure })
+// Chave em que a linha ilegível fica guardada quando a memória ganha um valor com a
+// mesma chave: '<chave>.ilegivel-2026-11-09T22-45-00-123Z'.
+function unreadableCopyKey(key, stamp) {
+    return `${key}.ilegivel-${stamp}`;
+}
+
+// createDbWriter({ connection, tables, getMemory, ready, beforeCycle, logFailure, busyTimeoutMs })
 // - connection: sqlite3.Database;
 // - tables: o registro COLLECTION_TABLES (database.js);
 // - getMemory(): db.memory;
 // - ready(): promessa das PRAGMAs e das tabelas, esperada antes do primeiro ciclo;
 // - beforeCycle(): sincronizações que rodam no início de todo ciclo; devolve true se
 //   mudaram 'admins';
-// - logFailure(err, info): registro da falha (crash.log), no máximo uma vez por minuto.
-function createDbWriter({ connection, tables, getMemory, ready = () => Promise.resolve(), beforeCycle = () => false, logFailure = () => {} }) {
+// - logFailure(err, info): registro da falha (crash.log), no máximo uma vez por minuto;
+// - busyTimeoutMs(): o busy_timeout da conexão (PRAGMA), para limitar a espera de cada
+//   pedido pela trava a cerca de um busy_timeout.
+function createDbWriter({ connection, tables, getMemory, ready = () => Promise.resolve(), beforeCycle = () => false, logFailure = () => {}, busyTimeoutMs = () => null }) {
     const entries = tables.filter(entry => DIFF_KINDS.has(entry.kind));
     const byCollection = new Map(tables.map(entry => [entry.collection, entry]));
     const lastWritten = new Map();
+    // Por tabela, as chaves das linhas do disco com JSON ilegível (fora de lastWritten).
+    const unreadableKeys = new Map();
 
     let pendingScope = null;
     let pendingWaiters = [];
@@ -269,8 +288,41 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             : planWhole(entry, memory)));
     }
 
+    // busy_timeout deste ciclo: o que falta do busy_timeout para o pedido que espera há
+    // mais tempo (waitingSince), no mínimo 100 ms. null = o da conexão, sem mudar.
+    function cycleBusyTimeout(waitingSince) {
+        const full = Number(busyTimeoutMs());
+        if (!Number.isFinite(full) || full <= 0 || !Number.isFinite(waitingSince)) return null;
+        const waited = Date.now() - waitingSince;
+        if (waited < LOCK_WAIT_ADJUST_FROM_MS) return null;
+        const remaining = Math.max(Math.min(MIN_CYCLE_BUSY_MS, full), Math.round(full - waited));
+        return remaining < full ? remaining : null;
+    }
+
+    // BEGIN IMMEDIATE com o busy_timeout do ciclo; a conexão volta ao valor normal logo
+    // depois (a trava só é pedida no BEGIN, então só ele usa o valor encurtado).
+    async function beginImmediate(waitingSince) {
+        const shortened = cycleBusyTimeout(waitingSince);
+        if (shortened === null) return exec('BEGIN IMMEDIATE');
+        await exec(`PRAGMA busy_timeout = ${shortened}`);
+        try {
+            await exec('BEGIN IMMEDIATE');
+        } finally {
+            await exec(`PRAGMA busy_timeout = ${Number(busyTimeoutMs())}`).catch(err => {
+                console.error(`⚠️ [GRAVAÇÃO] não foi possível restaurar o busy_timeout: ${(err && err.message) || err}`);
+            });
+        }
+    }
+
+    // Linhas ilegíveis do disco que este plano vai sobrescrever: [chave da cópia, chave].
+    function unreadableToKeep(item, stamp) {
+        const keys = unreadableKeys.get(item.entry.table);
+        if (!keys || !keys.size) return [];
+        return item.upserts.filter(([key]) => keys.has(key)).map(([key]) => [unreadableCopyKey(key, stamp), key]);
+    }
+
     // Uma tentativa do ciclo. Devolve null (COMMIT feito) ou o erro (ROLLBACK feito).
-    async function attemptCycle(scope) {
+    async function attemptCycle(scope, waitingSince = Infinity) {
         let plan;
         try {
             if (beforeCycle() && !scope.full) scope.only.add('admins');
@@ -281,9 +333,11 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         const tablesWithRows = plan.filter(item => item.deletes.length || item.upserts.length);
         const rows = tablesWithRows.reduce((total, item) => total + item.deletes.length + item.upserts.length, 0);
         const started = performance.now();
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const kept = [];
         if (tablesWithRows.length) {
             try {
-                await exec('BEGIN IMMEDIATE');
+                await beginImmediate(waitingSince);
             } catch (err) {
                 await rollbackQuietly();
                 return err;
@@ -291,6 +345,13 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             let failure = null;
             for (const item of tablesWithRows) {
                 if (item.deletes.length) failure = await runStatement(`DELETE FROM ${item.entry.table} WHERE key = ?`, item.deletes);
+                // Linha ilegível que ia ser sobrescrita (o padrão de um singleton, uma chave
+                // que volta a ser usada): o texto original fica numa chave própria.
+                const keep = failure ? [] : unreadableToKeep(item, stamp);
+                if (keep.length) {
+                    failure = await runStatement(`INSERT OR IGNORE INTO ${item.entry.table} (key, value) SELECT ?, value FROM ${item.entry.table} WHERE key = ?`, keep);
+                    if (!failure) keep.forEach(([copyKey, key]) => kept.push({ table: item.entry.table, key, copyKey }));
+                }
                 // UPSERT atualiza a linha no lugar (mantém o rowid): a ordem das linhas no
                 // arquivo, que é a ordem da coleção no próximo boot, não muda quando uma
                 // linha antiga é alterada (INSERT OR REPLACE a levava para o fim).
@@ -306,6 +367,11 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             }
         }
         plan.forEach(item => item.apply());
+        kept.forEach(({ table, key, copyKey }) => {
+            const keys = unreadableKeys.get(table);
+            if (keys) keys.delete(key);
+            console.warn(`⚠️ [GRAVAÇÃO] A linha ilegível "${key}" da tabela ${table} foi guardada no arquivo como "${copyKey}" antes de receber o valor novo.`);
+        });
         const elapsed = performance.now() - started;
         cycles += 1;
         lastCycle = { at: new Date().toISOString(), full: scope.full, rows, ms: Math.round(elapsed * 10) / 10 };
@@ -364,6 +430,9 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         pendingScope = null;
         pendingWaiters = [];
         const throughSeq = requestSeq;
+        // Desde quando o pedido mais antigo do ciclo espera (a regravação de fundo não tem
+        // quem espere: usa o busy_timeout inteiro).
+        const waitingSince = waiters.reduce((oldest, waiter) => Math.min(oldest, waiter.requestedAt), Infinity);
         let error = null;
         try {
             await ready();
@@ -371,12 +440,12 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             error = err;
         }
         if (!error) {
-            error = await attemptCycle(scope);
+            error = await attemptCycle(scope, waitingSince);
             // Trava (SQLITE_BUSY/LOCKED): o SQLite já esperou o busy_timeout, desiste agora.
             // Outro erro: uma nova tentativa depois de 500 ms.
             if (error && !isBusyError(error)) {
                 await new Promise(resolve => setTimeout(resolve, IMMEDIATE_RETRY_MS));
-                error = await attemptCycle(scope);
+                error = await attemptCycle(scope, waitingSince);
             }
         }
         processedSeq = throughSeq;
@@ -419,7 +488,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         scheduled = false;
         if (running) return;
         // Tarefa exclusiva (VACUUM) roda assim que as gravações pedidas antes dela passaram
-        // por um ciclo; as pedidas depois esperam ela terminar.
+        // por um ciclo (ver runExclusive).
         if (exclusiveQueue.length && exclusiveQueue[0].afterSeq <= processedSeq) {
             runExclusiveJob(exclusiveQueue.shift());
             return;
@@ -449,7 +518,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         }
         requestSeq += 1;
         pendingScope = mergeScope(pendingScope || emptyScope(), scope);
-        const promise = new Promise((resolve, reject) => pendingWaiters.push({ resolve, reject }));
+        const promise = new Promise((resolve, reject) => pendingWaiters.push({ resolve, reject, requestedAt: Date.now() }));
         promise.catch(() => {});
         schedule();
         return promise;
@@ -493,9 +562,12 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         return new Promise(resolve => flushWaiters.push({ target, resolve }));
     }
 
-    // Roda fn(conexão) com a fila parada: nenhum ciclo começa antes de ela terminar. As
-    // gravações pedidas antes passam primeiro. Para VACUUM e VACUUM INTO (fora de
-    // transação). fn não pode chamar db.save e esperar (ficaria esperando a si mesma).
+    // Roda fn(conexão) com a fila parada: nenhum ciclo começa enquanto ela roda. As
+    // gravações pedidas antes passam primeiro, num ciclo antes dela; uma gravação pedida
+    // depois de runExclusive mas antes de esse ciclo começar vai junto nele (sai antes da
+    // tarefa); as pedidas com o ciclo já rodando ou com a tarefa já começada esperam a
+    // tarefa terminar. Para VACUUM e VACUUM INTO (fora de transação). fn não pode chamar
+    // db.save e esperar (ficaria esperando a si mesma).
     function runExclusive(fn) {
         if (typeof fn !== 'function') return Promise.reject(new TypeError('runExclusive precisa de uma função.'));
         if (closed) return Promise.reject(closedError());
@@ -532,9 +604,13 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         return closePromise;
     }
 
-    // Semeadura do boot: o JSON de cada linha exatamente como foi lido do disco.
-    function seed(table, rows) {
+    // Semeadura do boot: o JSON de cada linha exatamente como foi lido do disco, e as
+    // chaves das linhas ilegíveis (ficam fora do mapa; ver unreadableToKeep).
+    function seed(table, rows, unreadable = []) {
         lastWritten.set(table, rows instanceof Map ? rows : new Map(rows));
+        const keys = new Set([...unreadable].map(key => String(key)));
+        if (keys.size) unreadableKeys.set(table, keys);
+        else unreadableKeys.delete(table);
     }
 
     // Foto da memória para o verificador de gravação parcial (só lê): Map(coleção ->
