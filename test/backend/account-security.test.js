@@ -708,13 +708,49 @@ test('[UC-SENHA-001] recusas de senha no formato combinado { success:false, erro
     const policy = await request(app).post('/api/admin/reset-password').set(headers).send({ email: ANA.email, newPassword: '12345678' });
     assert.equal(policy.status, 400);
     assert.equal(policy.body.success, false);
-    assert.equal(policy.body.field, 'password');
+    assert.equal(policy.body.field, 'newPassword', 'o campo do corpo é newPassword (antes, sempre password)');
     assert.equal(policy.body.passwordPolicy, true);
     const student = studentHeaders(ANA.email);
     const missing = await request(app).post('/api/student/change-password').set(student).send({ newPassword: 'Ponte-Velha-48' });
     assert.deepEqual([missing.status, missing.body.success, missing.body.field], [400, false, 'currentPassword']);
     const same = await request(app).post('/api/student/change-password').set(student).send({ currentPassword: ANA.password, newPassword: ANA.password });
     assert.deepEqual([same.status, same.body.success], [400, false]);
+});
+
+test('[UC-SENHA-001] a recusa diz o campo do corpo de cada rota e o 400 de student/create também (H5a, J2)', async () => {
+    const headers = adminHeaders();
+    // Política: o nome do campo enviado, não sempre 'password'.
+    const reset = await request(app).post('/api/admin/reset-password').set(headers).send({ email: ANA.email, newPassword: 'a' });
+    assert.deepEqual([reset.status, reset.body.passwordPolicy, reset.body.field], [400, true, 'newPassword']);
+    const create = await request(app).post('/api/admin/student/create').set(headers)
+        .send({ name: 'Davi Rocha', email: 'davi.rocha@contas.local', classes: [{ name: '1DES', courseId: 'DES' }], studentPassword: '12345678' });
+    assert.deepEqual([create.status, create.body.passwordPolicy, create.body.field], [400, true, 'studentPassword']);
+    const adminWeak = await request(app).post('/api/admin/change-password').set(headers).send({ currentPassword: ADMIN.password, newPassword: '12345678' });
+    assert.deepEqual([adminWeak.status, adminWeak.body.passwordPolicy, adminWeak.body.field], [400, true, 'newPassword']);
+    const register = await request(app).post('/api/student/register')
+        .send({ name: 'Eva Prado', email: 'eva.prado@contas.local', courseId: 'DES', studentClass: '1DES', acceptedTerms: true, password: '1' });
+    assert.deepEqual([register.status, register.body.field], [400, 'password'], 'o autocadastro manda password');
+
+    // Troca de senha do aluno: política e "diferente da atual" apontam para newPassword.
+    const email = 'fabio.campo@contas.local';
+    const current = 'Lanterna-Clara-31';
+    db.memory.students.push({ name: 'Fábio Campo', email, status: 'Ativo', password: db.hashPassword(current), classes: [{ name: '1DES', courseId: 'DES' }], studentClass: '1DES' });
+    const student = studentHeaders(email);
+    const weak = await request(app).post('/api/student/change-password').set(student).send({ currentPassword: current, newPassword: '12345678' });
+    assert.deepEqual([weak.status, weak.body.passwordPolicy, weak.body.field], [400, true, 'newPassword']);
+    const same = await request(app).post('/api/student/change-password').set(student).send({ currentPassword: current, newPassword: current });
+    assert.deepEqual([same.status, same.body.success, same.body.field], [400, false, 'newPassword']);
+
+    // 400 genérico de student/create (validateStudentFields): antes, sem field.
+    const duplicate = await request(app).post('/api/admin/student/create').set(headers)
+        .send({ name: 'Ana Repetida', email: ANA.email, classes: [{ name: '1DES', courseId: 'DES' }] });
+    assert.deepEqual([duplicate.status, duplicate.body.success, duplicate.body.field], [400, false, 'email']);
+    const badPhone = await request(app).post('/api/admin/student/create').set(headers)
+        .send({ name: 'Gil Telefone', email: 'gil.telefone@contas.local', phone: 'abc', classes: [{ name: '1DES', courseId: 'DES' }] });
+    assert.deepEqual([badPhone.status, badPhone.body.success, badPhone.body.field], [400, false, 'phone']);
+    const update = await request(app).post('/api/admin/student/update').set(headers)
+        .send({ originalEmail: email, name: 'Fábio Campo', email: ANA.email, classes: [{ name: '1DES', courseId: 'DES' }] });
+    assert.deepEqual([update.status, update.body.success, update.body.field], [400, false, 'email'], 'a edição também diz o campo');
 });
 
 // Fica por último: gasta o teto de login por IP desta máquina de teste por um minuto.

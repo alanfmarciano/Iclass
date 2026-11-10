@@ -770,7 +770,7 @@ router.post('/api/student/register', async (req, res) => {
     };
     const validation = validateStudentFields(selfFields, students, null);
     if (!validation.ok) {
-        return res.status(400).json({ error: validation.error });
+        return res.status(400).json({ error: validation.error, field: validation.field });
     }
 
     if (!req.body.acceptedTerms) {
@@ -783,7 +783,7 @@ router.post('/api/student/register', async (req, res) => {
     const currentStudents = readJSON(DB_STUDENTS_FILE);
     const recheck = validateStudentFields(selfFields, currentStudents, null);
     if (!recheck.ok) {
-        return res.status(400).json({ error: recheck.error });
+        return res.status(400).json({ error: recheck.error, field: recheck.field });
     }
 
     const enrollmentRequest = {
@@ -1199,9 +1199,9 @@ router.post('/api/student/change-password', validateStudentSession, async (req, 
     const policy = validateNewPassword(newPassword, {
         kind: 'student', email: student.email, name: student.name, nomeSocial: student.nomeSocial, matricula: student.matricula,
     });
-    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'newPassword'));
     if (newPassword.trim() === currentPassword.trim()) {
-        return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
+        return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'newPassword' });
     }
     const changedMeanwhile = () => res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Entre de novo e tente outra vez.' });
     const check = await attemptPasswordLogin({ kind: 'student', email: req.studentEmail, password: currentPassword, req, purpose: 'change_password' });

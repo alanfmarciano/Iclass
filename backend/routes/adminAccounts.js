@@ -489,7 +489,7 @@ function createAdminAccountsRouter() {
             // Política de senha do instrutor (H5a): os 10 caracteres de antes e as regras de
             // senha comum e de dado pessoal.
             const policy = validateNewPassword(newPassword, { kind: 'instructor', email: matchedAdmin.email, name: matchedAdmin.name });
-            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'newPassword'));
             // Fora da troca obrigatória inicial (mustChangePassword), exige a senha
             // atual — impede que uma sessão sequestrada troque a senha sem conhecê-la.
             // Também na troca obrigatória de uma conta criada pelo administrador (H5a: a
@@ -506,7 +506,7 @@ function createAdminAccountsRouter() {
                 return res.status(400).json({ success: false, error: 'Informe a senha atual.', currentPasswordRequired: true, field: 'currentPassword' });
             }
             if (needsCurrent && newPassword.trim() === currentPassword.trim()) {
-                return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'password' });
+                return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'newPassword' });
             }
             if (needsCurrent) {
                 const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password: currentPassword, req, purpose: 'change_password' });

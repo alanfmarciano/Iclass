@@ -365,7 +365,7 @@ router.post('/api/admin/reset-password', (req, res) => {
             const policy = validateNewPassword(typed, {
                 kind: 'student', email: target.email, name: target.name, nomeSocial: target.nomeSocial, matricula: target.matricula,
             });
-            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'newPassword'));
         } else {
             temporaryPassword = generateTemporaryPassword();
         }
@@ -1462,7 +1462,7 @@ router.post('/api/admin/student/create', (req, res) => {
             const policy = validateNewPassword(typedPassword, {
                 kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial, matricula: fields.matricula,
             });
-            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'studentPassword'));
         }
         const temporaryPassword = typedPassword ? null : generateTemporaryPassword();
         const askPasswordChange = req.body.requirePasswordChange !== false;
@@ -1488,7 +1488,7 @@ router.post('/api/admin/student/create', (req, res) => {
         // Validações de campos (e-mail válido/único, matrícula única, telefones, status)
         const validation = validateStudentFields(fields, students, null);
         if (!validation.ok) {
-            return res.status(400).json({ success: false, error: validation.error });
+            return res.status(400).json({ success: false, error: validation.error, field: validation.field });
         }
 
         const newStudent = {
@@ -1569,7 +1569,7 @@ router.post('/api/admin/student/update', (req, res) => {
         // Validações (e-mail válido/único, matrícula única, telefones, status) ignorando o próprio.
         const validation = validateStudentFields({ ...fields, classes: studentClasses }, students, originalEmailNorm);
         if (!validation.ok) {
-            return res.status(400).json({ error: validation.error });
+            return res.status(400).json({ success: false, error: validation.error, field: validation.field });
         }
 
         const before = students[studentIndex];

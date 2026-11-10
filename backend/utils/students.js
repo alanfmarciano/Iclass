@@ -101,36 +101,38 @@ function extractStudentFields(body) {
 
 // Valida os campos do aluno. Retorna { ok, error }.
 // `students` é a lista atual; `selfEmail` é o e-mail original (para ignorar o próprio no update).
+// Cada recusa diz o campo do corpo (field), no formato dos 400 { success, error, field }
+// (H5a): o formulário marca o campo certo em vez de só mostrar a mensagem.
 function validateStudentFields(fields, students, selfEmail) {
     const self = normalizeEmail(selfEmail);
 
     if (fields.name !== undefined && !fields.name) {
-        return { ok: false, error: 'Nome completo é obrigatório.' };
+        return { ok: false, error: 'Nome completo é obrigatório.', field: 'name' };
     }
     if (fields.email !== undefined) {
-        if (!fields.email) return { ok: false, error: 'E-mail é obrigatório.' };
-        if (!isValidEmail(fields.email)) return { ok: false, error: 'E-mail em formato inválido.' };
+        if (!fields.email) return { ok: false, error: 'E-mail é obrigatório.', field: 'email' };
+        if (!isValidEmail(fields.email)) return { ok: false, error: 'E-mail em formato inválido.', field: 'email' };
         const emailTaken = students.some(s => s.email && normalizeEmail(s.email) === fields.email && normalizeEmail(s.email) !== self);
-        if (emailTaken) return { ok: false, error: 'E-mail já cadastrado para outro aluno.' };
+        if (emailTaken) return { ok: false, error: 'E-mail já cadastrado para outro aluno.', field: 'email' };
     }
     if (fields.matricula) {
         const matTaken = students.some(s => s.matricula && String(s.matricula).trim() === fields.matricula && normalizeEmail(s.email) !== self);
-        if (matTaken) return { ok: false, error: 'Matrícula/código interno já cadastrado para outro aluno.' };
+        if (matTaken) return { ok: false, error: 'Matrícula/código interno já cadastrado para outro aluno.', field: 'matricula' };
     }
     if (fields.phone !== undefined && !isValidPhone(fields.phone)) {
-        return { ok: false, error: 'Telefone em formato inválido.' };
+        return { ok: false, error: 'Telefone em formato inválido.', field: 'phone' };
     }
     if (fields.guardianPhone !== undefined && !isValidPhone(fields.guardianPhone)) {
-        return { ok: false, error: 'Telefone do responsável em formato inválido.' };
+        return { ok: false, error: 'Telefone do responsável em formato inválido.', field: 'guardianPhone' };
     }
     if (fields.guardian && fields.guardian.phone && !isValidPhone(fields.guardian.phone)) {
-        return { ok: false, error: 'Telefone do responsável em formato inválido.' };
+        return { ok: false, error: 'Telefone do responsável em formato inválido.', field: 'guardian.phone' };
     }
     if (fields.guardian && fields.guardian.email && !isValidEmail(fields.guardian.email)) {
-        return { ok: false, error: 'E-mail do responsável em formato inválido.' };
+        return { ok: false, error: 'E-mail do responsável em formato inválido.', field: 'guardian.email' };
     }
     if (fields.status !== undefined && fields.status && !isValidStatus(fields.status)) {
-        return { ok: false, error: `Status inválido. Use um de: ${STUDENT_STATUSES.join(', ')}.` };
+        return { ok: false, error: `Status inválido. Use um de: ${STUDENT_STATUSES.join(', ')}.`, field: 'status' };
     }
     return { ok: true };
 }

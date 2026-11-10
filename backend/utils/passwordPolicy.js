@@ -132,9 +132,11 @@ function validateNewPassword(password, options = {}) {
 }
 
 // Resposta 400 de senha recusada pela política (formato único das rotas).
-function passwordPolicyRefusal(result) {
+// `field` é o nome do campo no corpo do pedido (password, newPassword, studentPassword):
+// antes saía sempre 'password', mesmo em /api/admin/reset-password (H5a, J2).
+function passwordPolicyRefusal(result, field = 'password') {
     // Formato dos 400 combinado entre os grupos: { success: false, error, field }.
-    return { success: false, error: result.error, passwordPolicy: true, field: 'password' };
+    return { success: false, error: result.error, passwordPolicy: true, field };
 }
 
 // A senha digitada no login seria recusada hoje? (troca obrigatória da senha fraca.)
