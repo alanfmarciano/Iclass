@@ -41,6 +41,10 @@ const DB_FILE = path.join(DATA_DIR, 'database.db');
 const DB_SIDE_FILES = ['-wal', '-shm', '-journal'];
 const QUARANTINE_DIR = path.join(DATA_DIR, 'quarentena');
 const CLI_WORK_DIR = path.join(DATA_DIR, '.restauracao');
+// Marcador de restauração interrompida (backup.js recoverInterruptedRestore): o próximo
+// boot do servidor desfaz a restauração que caiu no meio.
+const UNDO_DIR = path.join(DATA_DIR, '.restauracao-desfazer');
+const INTERRUPTED_RESTORE_NOTE = 'Há uma restauração pela tela Sistema interrompida no meio (data/.restauracao-desfazer); o IClass a desfaz ao ligar.';
 
 class CliError extends Error {
     constructor(message, exitCode = EXIT.FAILED) {
@@ -95,6 +99,10 @@ async function listBackups(dir = BACKUPS_DIR) {
     const items = [];
     for (const name of fs.readdirSync(dir)) {
         if (!/\.(zip|json)$/i.test(name)) continue;
+        // JSON só com o nome de backup do IClass: o data/backups/estado.json (situação do
+        // backup, H4b) e outros .json da pasta não são backup. ZIP com outro nome continua
+        // (o ZIP do launcher, por exemplo, pode ter sido copiado para cá).
+        if (/\.json$/i.test(name) && !store.isBackupName(name)) continue;
         const file = path.join(dir, name);
         let stat;
         try { stat = fs.statSync(file); } catch (e) { continue; }
@@ -196,6 +204,7 @@ async function commandCreate(options) {
     // pendrive); sem destino ou com ele desconectado, data/backups.
     let dir = options.destino ? path.resolve(options.destino) : BACKUPS_DIR;
     const managed = !options.destino;
+    if (fs.existsSync(UNDO_DIR)) say(`${INTERRUPTED_RESTORE_NOTE} Este backup sai com os dados como estão agora, pela metade; prefira ligar e desligar o IClass uma vez antes.`);
     if (!options.destino) {
         const external = (await backupFolders()).find(folder => folder.local === 'externo');
         if (external && external.accessible) dir = external.dir;
@@ -429,6 +438,14 @@ async function commandRestore(target, options) {
                 const destination = path.join(quarantine, ...prefix.split('/'));
                 await moveWithFallback(source, destination);
                 moved.push({ from: source, to: destination });
+            }
+            // Restauração pela tela interrompida: esta a substitui. O marcador vai para a
+            // quarentena (senão o boot "desfaria" esta restauração com o banco de antes).
+            if (fs.existsSync(UNDO_DIR)) {
+                const destination = path.join(quarantine, 'restauracao-interrompida');
+                await moveWithFallback(UNDO_DIR, destination);
+                moved.push({ from: UNDO_DIR, to: destination });
+                say(INTERRUPTED_RESTORE_NOTE.replace('o IClass a desfaz ao ligar', 'esta restauração a substitui'));
             }
             // 2. Os arquivos do backup no lugar.
             await moveWithFallback(verified.dbPath, DB_FILE);

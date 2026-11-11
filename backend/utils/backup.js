@@ -9,7 +9,7 @@ const { resolveInside } = require('./safePath.js');
 const { normalizeStoredStudentClasses } = require('./students.js');
 const zipInspect = require('./zipInspect.js');
 const { mergeAuditTrails } = require('./audit.js');
-const { logError } = require('./errorLog.js');
+const { logError, crashLogPath } = require('./errorLog.js');
 const archive = require('./backupArchive.js');
 const schema = require('./backupSchema.js');
 const dbFile = require('./dbFile.js');
@@ -405,15 +405,25 @@ function savedInfo(saved, extra = {}) {
     return { arquivo: saved.name, bytes: saved.bytes, sha256: saved.sha256, ...extra };
 }
 
-// Mensagem da falha para a tela e para o estado (sem caminho interno nem pilha).
+// Mensagem da falha para a tela, para o estado (estado.json, GET /backup/status, item
+// "O backup falhou" da fila, externoErro) e para a auditoria: sem caminho interno, sem
+// pilha e sem o texto cru do erro (contrato H9a: falha inesperada não expõe
+// error.message). As recusas previstas (status < 500) têm texto próprio, já sem caminho;
+// os erros de disco conhecidos viram frase em pt-BR com o código; o resto é genérico, com
+// o código quando houver, e o detalhe fica no crash.log (logError de quem chama).
+const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,40}$/;
+
 function failureMessage(err) {
     if (!err) return 'Falha desconhecida.';
     if (err.status && err.status < 500) return String(err.message || '').slice(0, 300);
-    const code = err.code ? ` (${err.code})` : '';
+    const code = err.code && SAFE_ERROR_CODE.test(String(err.code)) ? ` (${err.code})` : '';
     if (err.code === 'ENOSPC') return 'O disco ficou sem espaço durante a gravação do backup.';
     if (['EACCES', 'EPERM', 'EROFS'].includes(err.code)) return `Sem permissão para gravar o backup${code}.`;
     if (['ENOENT', 'ENOTDIR', 'ENODEV', 'EIO', 'ENXIO'].includes(err.code)) return `A pasta do backup não está acessível${code}.`;
-    return `${String(err.message || 'Falha ao gravar o backup.').slice(0, 240)}${err.message && err.code && !String(err.message).includes(err.code) ? code : ''}`;
+    if (err.backupEtapa === 'verificacao' || err.backupStage === 'verificacao') {
+        return 'A conferência do backup recém-gravado falhou, e o arquivo foi descartado. Os detalhes ficam no registro de erros do servidor.';
+    }
+    return `Falha inesperada ao gravar o backup${code}. Os detalhes ficam no registro de erros do servidor.`;
 }
 
 async function recordFailure(etapa, err, { origem, destino = '', now = new Date() } = {}) {
@@ -431,7 +441,10 @@ async function writeExternalCopy(job, { dbInfo, origem, now, settings }) {
         const stat = await fs.promises.stat(destino);
         if (!stat.isDirectory()) throw new Error('não é pasta');
     } catch (e) {
-        throw Object.assign(new Error(`O destino externo não está acessível (pendrive ou HD desconectado, ou pasta removida): ${destino}.`), { status: 400 });
+        // Sem o caminho na mensagem: ela vai para o estado e para o professor com
+        // "Executar manutenção", que vê que há um destino, não onde (o administrador vê o
+        // caminho no próprio cartão).
+        throw Object.assign(new Error('O destino externo não está acessível (pendrive ou HD desconectado, ou pasta removida).'), { status: 400 });
     }
     const dir = store.externalDir(destino);
     await fs.promises.mkdir(dir, { recursive: true });
@@ -891,8 +904,22 @@ async function moveDir(from, to) {
 // backup vai primeiro para <pasta-mãe>/.iclass-restauracao-<id>/novo (mesmo disco do
 // destino: o rename não dá EXDEV), a atual para .../anterior e a nova para o lugar.
 // A anterior só é apagada depois de a restauração inteira dar certo (finishSwaps).
+// Uma pasta de preparo por pasta trocada: data/uploads e data/alunos têm a mesma
+// pasta-mãe (data/), e com um nome só por restauração a segunda troca apagava a "anterior"
+// da primeira (a biblioteca de antes sumia se a restauração precisasse voltar depois).
+function swapPrepDir(target, id) {
+    return path.join(path.dirname(target), `${SWAP_PREFIX}${id}-${path.basename(target)}`);
+}
+
+// Preparo desta pasta (nome com o sufixo da pasta) ou do formato sem sufixo.
+function isPrepDirOf(name, target) {
+    if (!name.startsWith(SWAP_PREFIX)) return false;
+    const rest = name.slice(SWAP_PREFIX.length);
+    return rest.endsWith(`-${path.basename(target)}`) || /^[0-9a-f]+$/.test(rest);
+}
+
 async function swapFolder(staged, target, id) {
-    const prep = path.join(path.dirname(target), `${SWAP_PREFIX}${id}`);
+    const prep = swapPrepDir(target, id);
     await fs.promises.rm(prep, { recursive: true, force: true });
     await fs.promises.mkdir(prep, { recursive: true });
     const fresh = path.join(prep, 'novo');
@@ -910,13 +937,17 @@ async function swapFolder(staged, target, id) {
     return swap;
 }
 
+// Devolve false quando a volta falhou (fica registrada no crash.log e o marcador da
+// restauração continua, para o boot tentar de novo).
 async function undoSwap(swap) {
     try {
         await fs.promises.rm(swap.target, { recursive: true, force: true });
         if (swap.hadPrevious && fs.existsSync(swap.previous)) await archive.renameWithRetry(swap.previous, swap.target);
         await fs.promises.rm(swap.prep, { recursive: true, force: true });
+        return true;
     } catch (err) {
         logError('restauração: volta de uma pasta trocada', err, { details: { pasta: swap.target } });
+        return false;
     }
 }
 
@@ -932,7 +963,7 @@ function recoverInterruptedSwaps() {
         const target = folderTarget(prefix);
         const parent = path.dirname(target);
         let names = [];
-        try { names = fs.readdirSync(parent).filter(name => name.startsWith(SWAP_PREFIX)); } catch (e) { return; }
+        try { names = fs.readdirSync(parent).filter(name => isPrepDirOf(name, target)); } catch (e) { return; }
         names.forEach(name => {
             const previous = path.join(parent, name, 'anterior');
             try {
@@ -950,7 +981,9 @@ function recoverInterruptedSwaps() {
 
 // Cursos arquivados (histórico só de acréscimo): as pastas do backup que não existem são
 // acrescentadas; nenhuma é apagada nem trocada. Devolve as pastas acrescentadas.
-async function mergeArchiveFolders(staged) {
+// beforeAdd(destino): chamado antes de cada pasta entrar (o marcador da restauração a
+// anota, para o boot tirá-la se o processo cair no meio).
+async function mergeArchiveFolders(staged, { beforeAdd = null } = {}) {
     const added = [];
     if (!fs.existsSync(staged)) return added;
     const target = runtimePaths.ARCHIVE_DIR;
@@ -959,10 +992,152 @@ async function mergeArchiveFolders(staged) {
         if (!item.isDirectory()) continue;
         const destination = path.join(target, item.name);
         if (fs.existsSync(destination)) continue;
+        if (beforeAdd) beforeAdd(destination);
         await moveDir(path.join(staged, item.name), destination);
         added.push(destination);
     }
     return added;
+}
+
+// --- marcador de restauração em andamento ---------------------------------
+// Decisões §12 (sobra do H4a): o processo que cai no meio do applyRestore (falta de luz,
+// kill, Ctrl+C duas vezes) não pode deixar as teclas ou as pastas do backup junto com o
+// banco de antes. Antes da primeira mudança, a restauração grava
+// DATA_DIR/.restauracao-desfazer/marcador.json com a cópia do banco de antes
+// (antes.db, ligada ou copiada da cópia tirada para o backup de segurança) e, antes de
+// cada passo, o que ele vai mudar: cada pasta trocada (com a pasta de preparo, onde fica a
+// "anterior"), cada .md de content/ (com a cópia do de antes) e cada curso arquivado
+// acrescentado. Terminou bem: o marcador sai antes de apagar as pastas anteriores. No
+// boot, marcador presente = restauração interrompida: recoverInterruptedRestore desfaz
+// tudo (pastas, .md, cursos, banco e teclas), registra na auditoria
+// (backup_restore_interrupted, ator 'sistema') e no crash.log, e apaga o marcador.
+const UNDO_DIR = path.join(DATA_DIR, '.restauracao-desfazer');
+const UNDO_MARKER = path.join(UNDO_DIR, 'marcador.json');
+
+function writeUndoMarker(marker) {
+    const temporary = `${UNDO_MARKER}.tmp`;
+    const descriptor = fs.openSync(temporary, 'w');
+    try {
+        fs.writeSync(descriptor, JSON.stringify(marker, null, 2));
+        fs.fsyncSync(descriptor);
+    } finally {
+        fs.closeSync(descriptor);
+    }
+    fs.renameSync(temporary, UNDO_MARKER);
+}
+
+async function beginUndoMarker({ id, rollbackDb }) {
+    await fs.promises.rm(UNDO_DIR, { recursive: true, force: true });
+    await fs.promises.mkdir(UNDO_DIR, { recursive: true });
+    let banco = null;
+    if (rollbackDb && fs.existsSync(rollbackDb)) {
+        const copy = path.join(UNDO_DIR, 'antes.db');
+        try { await fs.promises.link(rollbackDb, copy); } catch (e) { await fs.promises.copyFile(rollbackDb, copy); }
+        banco = 'antes.db';
+    }
+    const marker = { id, iniciadoEm: new Date().toISOString(), banco, pastas: [], conteudo: [], cursos: [], teclas: false };
+    writeUndoMarker(marker);
+    return {
+        dir: UNDO_DIR,
+        note(mutate) {
+            mutate(marker);
+            writeUndoMarker(marker);
+        },
+    };
+}
+
+function clearUndoMarker() {
+    try { fs.rmSync(UNDO_DIR, { recursive: true, force: true }); } catch (err) { logError('restauração: limpeza do marcador', err); }
+}
+
+// Queda simulada nos testes (só com TEST_MODE=1): o processo morre na hora, sem catch nem
+// finally, como numa falta de luz.
+function crashPointForTests(name) {
+    if (process.env.TEST_MODE !== '1' || process.env.ICLASS_TEST_RESTORE_CRASH_AT !== name) return;
+    process.kill(process.pid, 'SIGKILL');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000);
+}
+
+// Boot (server.js, logo depois do db.init): desfaz a restauração interrompida. Devolve
+// null (nada a desfazer) ou { desfeita, pastas, conteudo, cursos, banco }. Nunca lança:
+// o que não pôde ser desfeito vai para o crash.log e o marcador fica para o próximo boot.
+async function recoverInterruptedRestore() {
+    let marker = null;
+    try {
+        marker = JSON.parse(fs.readFileSync(UNDO_MARKER, 'utf8'));
+    } catch (err) {
+        if (err && err.code === 'ENOENT') {
+            // Sem marcador (ou só o .tmp da primeira gravação: nada foi mudado ainda).
+            if (fs.existsSync(UNDO_DIR)) clearUndoMarker();
+            return null;
+        }
+        logError('restauração interrompida: marcador ilegível', err);
+        return null;
+    }
+    const failures = [];
+    const step = (what, fn) => {
+        try { fn(); } catch (err) { failures.push(what); logError(`restauração interrompida: ${what}`, err); }
+    };
+    // Pastas, da última para a primeira: a "anterior" volta para o lugar; sem ela, a pasta
+    // nova sai só se antes não havia nenhuma (senão a troca nem tinha começado).
+    (Array.isArray(marker.pastas) ? marker.pastas : []).slice().reverse().forEach(item => step(`volta da pasta ${item.target}`, () => {
+        const previous = path.join(item.prep, 'anterior');
+        if (fs.existsSync(previous)) {
+            fs.rmSync(item.target, { recursive: true, force: true });
+            fs.renameSync(previous, item.target);
+        } else if (!item.hadPrevious) {
+            fs.rmSync(item.target, { recursive: true, force: true });
+        }
+        fs.rmSync(item.prep, { recursive: true, force: true });
+    }));
+    (Array.isArray(marker.conteudo) ? marker.conteudo : []).forEach(item => step(`volta do arquivo ${item.target}`, () => {
+        if (item.temporary) fs.rmSync(item.temporary, { force: true });
+        if (item.saved) fs.copyFileSync(item.saved, item.target);
+        else fs.rmSync(item.target, { force: true });
+    }));
+    (Array.isArray(marker.cursos) ? marker.cursos : []).forEach(destination => step(`curso arquivado ${destination}`, () => {
+        fs.rmSync(destination, { recursive: true, force: true });
+    }));
+    let banco = false;
+    const dbCopy = marker.banco ? path.join(UNDO_DIR, marker.banco) : null;
+    if (dbCopy && fs.existsSync(dbCopy)) {
+        try {
+            const { data } = await readBackupDatabase(dbCopy);
+            await applySnapshot({ type: 'iclass-backup-data', version: '3.0', exportedAt: marker.iniciadoEm, data }, { replaceAccounts: true, exact: true });
+            await db.keystrokes.copyFromAttached(dbCopy, { replace: true });
+            banco = true;
+        } catch (err) {
+            failures.push('banco');
+            logError('restauração interrompida: volta do banco', err);
+        }
+    } else if (marker.banco) {
+        failures.push('banco');
+    }
+    const summary = {
+        desfeita: failures.length === 0,
+        iniciadoEm: marker.iniciadoEm || null,
+        pastas: (marker.pastas || []).length,
+        conteudo: (marker.conteudo || []).length,
+        cursos: (marker.cursos || []).length,
+        banco,
+    };
+    recordAudit(db.memory, {
+        actor: 'sistema',
+        action: 'backup_restore_interrupted',
+        category: 'backup',
+        details: { iniciadoEm: summary.iniciadoEm, desfeita: summary.desfeita, pastas: summary.pastas, cursos: summary.cursos, ...(failures.length ? { error: `Não foi possível desfazer: ${failures.length} passo(s); veja o registro de erros do servidor.` } : {}) },
+    });
+    await db.save().catch(err => logError('restauração interrompida: gravação da auditoria', err));
+    logError('restauração interrompida', new Error(summary.desfeita
+        ? 'A restauração de backup foi interrompida no meio (o servidor parou) e foi desfeita no boot: banco, teclas e pastas voltaram ao que eram antes dela.'
+        : 'A restauração de backup foi interrompida no meio e não pôde ser desfeita por inteiro; o marcador fica para o próximo boot.'), { details: { iniciadoEm: summary.iniciadoEm || '' } });
+    if (summary.desfeita) {
+        console.warn('⚠️ A restauração de backup foi interrompida no meio (o servidor parou). Tudo voltou ao que era antes dela; faça a restauração de novo pela tela Sistema.');
+        clearUndoMarker();
+    } else {
+        console.error(`⛔ A restauração de backup foi interrompida no meio e não pôde ser desfeita por inteiro. Veja ${crashLogPath()}; o IClass tenta de novo no próximo início.`);
+    }
+    return summary;
 }
 
 // --- aplicação --------------------------------------------------------------
@@ -980,47 +1155,74 @@ async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [],
     const swaps = [];
     const writtenMd = [];
     const addedArchives = [];
+    // Marcador antes da primeira mudança (decisões §12): se o processo cair daqui em
+    // diante, o boot desfaz tudo. Falha ao gravá-lo: nada foi mudado ainda.
+    const undo = await beginUndoMarker({ id, rollbackDb });
+    crashPointForTests('marcador');
     try {
         if (contentMd) {
             await fs.promises.mkdir(CONTENT_DIR, { recursive: true });
+            await fs.promises.mkdir(path.join(undo.dir, 'conteudo'), { recursive: true });
             for (const [filename, value] of Object.entries(contentMd)) {
                 const target = resolveInside(CONTENT_DIR, filename);
                 const temporary = `${target}.restore-${process.pid}-${Date.now()}`;
+                const existed = fs.existsSync(target);
+                const saved = existed ? path.join(undo.dir, 'conteudo', `${writtenMd.length}.md`) : null;
+                if (saved) await fs.promises.copyFile(target, saved);
+                undo.note(marker => marker.conteudo.push({ target, temporary, saved }));
                 await fs.promises.writeFile(temporary, String(value), 'utf8');
-                writtenMd.push({ target, temporary, previous: fs.existsSync(target) ? await fs.promises.readFile(target) : null });
+                writtenMd.push({ target, temporary, previous: existed ? await fs.promises.readFile(target) : null });
             }
             for (const file of writtenMd) await fs.promises.rename(file.temporary, file.target);
+            crashPointForTests('conteudo');
         }
         for (const prefix of inclui) {
             if (prefix === 'cursos_arquivados') continue;
-            swaps.push(await swapFolder(path.join(stagingRoot, ...prefix.split('/')), folderTarget(prefix), id));
+            const target = folderTarget(prefix);
+            undo.note(marker => marker.pastas.push({ target, prep: swapPrepDir(target, id), hadPrevious: fs.existsSync(target) }));
+            swaps.push(await swapFolder(path.join(stagingRoot, ...prefix.split('/')), target, id));
+            crashPointForTests('pasta');
         }
-        if (mergeArchives && stagingRoot) addedArchives.push(...await mergeArchiveFolders(path.join(stagingRoot, 'cursos_arquivados')));
+        if (mergeArchives && stagingRoot) {
+            addedArchives.push(...await mergeArchiveFolders(path.join(stagingRoot, 'cursos_arquivados'), {
+                beforeAdd: destination => undo.note(marker => marker.cursos.push(destination)),
+            }));
+            crashPointForTests('cursos');
+        }
         let imported = Promise.resolve();
+        undo.note(marker => { marker.teclas = true; });
         if (keystrokes && keystrokes.mode === 'copy') {
             await db.keystrokes.copyFromAttached(keystrokes.file, { replace: true });
+            crashPointForTests('teclas');
         } else if (keystrokes && keystrokes.mode === 'import') {
             // Entra na mesma transação da gravação das coleções (db.save do applySnapshot).
             imported = db.keystrokes.importRows(keystrokes.rows || [], { replace: true });
         }
         const applications = await applySnapshot(snapshot, { replaceAccounts });
         await imported;
+        crashPointForTests('banco');
+        // Tudo gravado: o marcador sai antes de as pastas anteriores serem apagadas (uma
+        // queda depois daqui deixa só a "anterior" guardada ao lado, sem desfazer nada).
+        clearUndoMarker();
         for (const swap of swaps) await finishSwap(swap);
         return withApplications(snapshotSummary(snapshot, format), applications);
     } catch (error) {
+        let undone = true;
         for (const file of writtenMd) {
             try {
                 if (fs.existsSync(file.temporary)) fs.rmSync(file.temporary, { force: true });
                 if (file.previous === null) fs.rmSync(file.target, { force: true });
                 else fs.writeFileSync(file.target, file.previous);
-            } catch (e) {}
+            } catch (e) { undone = false; }
         }
-        for (const swap of swaps.reverse()) await undoSwap(swap);
-        for (const added of addedArchives) await fs.promises.rm(added, { recursive: true, force: true }).catch(() => {});
-        await applySnapshot(previous, { replaceAccounts: true, exact: true }).catch(err => logError('restauração: volta da memória', err));
+        for (const swap of swaps.reverse()) undone = (await undoSwap(swap)) && undone;
+        for (const added of addedArchives) await fs.promises.rm(added, { recursive: true, force: true }).catch(() => { undone = false; });
+        await applySnapshot(previous, { replaceAccounts: true, exact: true }).catch(err => { undone = false; logError('restauração: volta da memória', err); });
         if (rollbackDb) {
-            await db.keystrokes.copyFromAttached(rollbackDb, { replace: true }).catch(err => logError('restauração: volta do histórico de digitação', err));
+            await db.keystrokes.copyFromAttached(rollbackDb, { replace: true }).catch(err => { undone = false; logError('restauração: volta do histórico de digitação', err); });
         }
+        // Volta completa: o marcador sai. Senão fica, e o boot tenta desfazer de novo.
+        if (undone) clearUndoMarker();
         throw error;
     }
 }
@@ -1571,7 +1773,7 @@ module.exports = {
     buildDataSnapshot, buildFullDataSnapshot, validateDataSnapshot, restoreDataSnapshot,
     runAutomaticBackup, lastAutomaticBackupAt, createBackup, createSafetyBackup, pruneBackups, backupInProgress,
     runBackupJob, runAutomaticIfDue, backupStatus, backupAlerts, listStoredBackups, resolveStoredBackup,
-    noteDestinationConfigured, settleForShutdown, removeActivePartialsSync, failureMessage,
+    noteDestinationConfigured, settleForShutdown, removeActivePartialsSync, failureMessage, recoverInterruptedRestore, UNDO_DIR,
     AUTO_DUE_MS, AUTO_DEFER_MAX_MS, ALERT_LATE_MS, ALERT_GRACE_UPTIME_MS,
     buildFullZipBuffer, streamFullZip, restoreFromFile, prepareRestore, applyPreparedRestore, discardPrepared,
     createRestoreToken, takeRestoreToken, sweepRestoreTokens, cleanWorkDirs, getZipLib,

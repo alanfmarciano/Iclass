@@ -248,12 +248,14 @@ function readSidecar(file) {
     }
 }
 
-// Resultado da conferência por arquivo (caminho + mtime + tamanho): a lista mostra o que
-// a prévia já conferiu, sem recalcular nada.
+// Resultado da conferência por arquivo (caminho + mtime + tamanho do ZIP + hash esperado
+// do .sha256): a lista mostra o que a prévia já conferiu, sem recalcular nada. O hash
+// esperado entra na chave para que um .sha256 consertado (ou trocado) depois da
+// conferência valha na hora, sem esperar o servidor reiniciar.
 const checksumCache = new Map();
 
-function checksumKey(file, stat) {
-    return `${file}|${stat.mtimeMs}|${stat.size}`;
+function checksumKey(file, stat, expected) {
+    return `${file}|${stat.mtimeMs}|${stat.size}|${expected}`;
 }
 
 // 'ok' | 'diferente' | 'sem-arquivo' (sem o .sha256: backup antigo ou de outro programa).
@@ -261,7 +263,7 @@ async function verifyChecksum(file) {
     const expected = readSidecar(file);
     if (!expected) return 'sem-arquivo';
     const stat = await fs.promises.stat(file);
-    const key = checksumKey(file, stat);
+    const key = checksumKey(file, stat, expected);
     if (checksumCache.has(key)) return checksumCache.get(key);
     const result = (await fileSha256(file)) === expected ? 'ok' : 'diferente';
     if (checksumCache.size > 500) checksumCache.clear();
@@ -281,8 +283,9 @@ function listBackupDir(dir, local) {
         let stat;
         try { stat = fs.statSync(file); } catch (e) { return; }
         if (!stat.isFile()) return;
-        const hasSidecar = !!readSidecar(file);
-        const cached = hasSidecar ? checksumCache.get(checksumKey(file, stat)) : null;
+        const expected = readSidecar(file);
+        const hasSidecar = !!expected;
+        const cached = hasSidecar ? checksumCache.get(checksumKey(file, stat, expected)) : null;
         items.push({
             local,
             nome: name,

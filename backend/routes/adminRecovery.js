@@ -188,6 +188,17 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         };
     }
 
+    // Texto de falha sem o caminho do destino, para o professor. As mensagens novas já
+    // saem sem caminho (backup.js failureMessage); esta troca cobre o estado.json gravado
+    // antes disso e qualquer texto que ainda traga a pasta.
+    function withoutDestination(text, ...destinations) {
+        let value = String(text || '');
+        destinations.filter(item => typeof item === 'string' && item.trim()).forEach(destino => {
+            value = value.split(destino).join('o destino externo');
+        });
+        return value;
+    }
+
     // "Fazer backup agora" (H4b, OPS-03): o mesmo serviço do automático, com origem
     // 'manual': o ZIP dos dados em data/backups (manual_dados_<carimbo>.zip, ficam os 20
     // mais recentes) e, com o destino externo configurado, o completo na pasta deste
@@ -216,13 +227,17 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 ...(result.externoErro ? { externoErro: result.externoErro.slice(0, 300) } : {}),
             });
             await db.save();
+            // O professor vê que a cópia externa saiu (ou falhou), não onde (o caminho do
+            // destino é do administrador).
+            const professor = isProfessorAccount(matchedAdmin);
+            const destino = backupUtil.backupStatus().destino;
             res.json({
                 success: true,
                 fileName: result.local.name,
                 createdAt: Date.now(),
                 kept: MANUAL_BACKUPS_KEPT,
-                externo: result.externo ? { fileName: result.externo.name, pasta: result.externo.pasta } : null,
-                externoErro: result.externoErro || null,
+                externo: result.externo ? { fileName: result.externo.name, pasta: professor ? '' : result.externo.pasta } : null,
+                externoErro: result.externoErro ? (professor ? withoutDestination(result.externoErro, destino) : result.externoErro) : null,
             });
         });
     });
@@ -234,7 +249,10 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         validateAdmin(req, res, (config, matchedAdmin) => {
             const status = backupUtil.backupStatus();
             if (isProfessorAccount(matchedAdmin)) {
-                return res.json({ success: true, ...status, destino: '', pasta: '', ultimaFalha: status.ultimaFalha ? { ...status.ultimaFalha, destino: '' } : null });
+                const failure = status.ultimaFalha
+                    ? { ...status.ultimaFalha, destino: '', mensagem: withoutDestination(status.ultimaFalha.mensagem, status.destino, status.ultimaFalha.destino) }
+                    : null;
+                return res.json({ success: true, ...status, destino: '', pasta: '', ultimaFalha: failure });
             }
             res.json({ success: true, ...status });
         });

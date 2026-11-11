@@ -215,15 +215,20 @@ test('[UC-BACKUP-004] "Fazer backup agora": dados em data/backups e completo no 
     assert.equal(status.body.externo.acessivel, true);
     assert.equal(status.body.ultimaFalha, null);
     assert.ok(Date.parse(status.body.proximoAutomatico) > Date.now());
-    // Professor vê a situação, não o caminho.
+    // Professor vê a situação, não o caminho, nem no "Fazer backup agora".
     const profStatus = await as(PROFESSOR)('get', '/api/admin/backup/status');
     assert.equal(profStatus.status, 200);
     assert.equal(profStatus.body.destino, '');
     assert.equal(profStatus.body.pasta, '');
     assert.equal(profStatus.body.configurado, true);
+    const profBackup = await as(PROFESSOR)('post', '/api/admin/backup/server').send({});
+    assert.equal(profBackup.status, 200, profBackup.body.error);
+    assert.match(profBackup.body.externo.fileName, /^manual_completo_/);
+    assert.equal(profBackup.body.externo.pasta, '');
+    assert.equal(JSON.stringify(profBackup.body).includes(path.resolve(externalRoot)), false);
 
-    const created = auditOf('backup_server_created').at(-1);
-    assert.equal(created.details.file, res.body.fileName);
+    const created = auditOf('backup_server_created').find(entry => entry.details.file === res.body.fileName);
+    assert.ok(created);
     assert.equal(created.details.externo, res.body.externo.fileName);
     // estado.json fica fora do backup.
     assert.equal(new AdmZip(localFile).getEntries().some(entry => /estado\.json/.test(entry.entryName)), false);
@@ -283,6 +288,23 @@ test('[UC-BACKUP-004] destino removido: o local continua, a falha do externo fic
     const status = await as()('get', '/api/admin/backup/status');
     assert.equal(status.body.ultimaFalha.alvo, 'externo');
     assert.equal(status.body.externo.acessivel, false);
+    assert.equal(status.body.destino, destino, 'o administrador vê o caminho no cartão');
+
+    // O professor com "Executar manutenção" vê que a cópia externa falhou, nunca onde
+    // (antes a mensagem guardada e o externoErro traziam o caminho do pendrive).
+    assert.equal(failure.mensagem.includes(destino), false, failure.mensagem);
+    const profStatus = await as(PROFESSOR)('get', '/api/admin/backup/status');
+    assert.equal(profStatus.status, 200);
+    assert.equal(JSON.stringify(profStatus.body).includes(destino), false, JSON.stringify(profStatus.body));
+    assert.match(profStatus.body.ultimaFalha.mensagem, /não está acessível/);
+    // Mensagem antiga (gravada antes desta versão) com o caminho: troca para o professor.
+    await store.updateState(state => ({ ...state, ultimaFalha: { ...state.ultimaFalha, mensagem: `O destino externo não está acessível: ${destino}.` } }));
+    const oldMessage = await as(PROFESSOR)('get', '/api/admin/backup/status');
+    assert.equal(JSON.stringify(oldMessage.body).includes(destino), false, oldMessage.body.ultimaFalha.mensagem);
+    const profBackup = await as(PROFESSOR)('post', '/api/admin/backup/server').send({});
+    assert.equal(profBackup.status, 200, profBackup.body.error);
+    assert.match(profBackup.body.externoErro, /não está acessível/);
+    assert.equal(JSON.stringify(profBackup.body).includes(destino), false, JSON.stringify(profBackup.body));
 
     await withoutTestMode(async () => {
         const items = await queueOf(ADMIN);
@@ -505,8 +527,19 @@ test('[UC-BACKUP-006] restaurar um backup da lista: prévia pelo nome confere o 
     const bad = await as()('post', '/api/admin/backup/restore/preview').send({ local: 'servidor', nome });
     assert.equal(bad.status, 400);
     assert.match(bad.body.error, /soma de verificação/);
+    const listedBad = await as()('get', '/api/admin/backup/list');
+    assert.equal(listedBad.body.itens.find(item => item.nome === nome).sha256, 'diferente');
+    // O .sha256 consertado vale na hora (sem limpar o cache nem reiniciar o servidor):
+    // antes o "diferente" ficava preso porque a chave do cache era só o ZIP.
     fs.writeFileSync(`${file}.sha256`, sidecar);
-    store.checksumCache.clear();
+    assert.equal(await store.verifyChecksum(file), 'ok');
+    const listedOk = await as()('get', '/api/admin/backup/list');
+    assert.equal(listedOk.body.itens.find(item => item.nome === nome).sha256, 'ok');
+    // E o contrário: um "ok" já conferido não esconde um .sha256 trocado depois.
+    fs.writeFileSync(`${file}.sha256`, `${'1'.repeat(64)}  ${nome}\n`);
+    assert.equal(await store.verifyChecksum(file), 'diferente');
+    assert.equal((await as()('post', '/api/admin/backup/restore/preview').send({ local: 'servidor', nome })).status, 400);
+    fs.writeFileSync(`${file}.sha256`, sidecar);
 
     const preview = await as()('post', '/api/admin/backup/restore/preview').send({ local: 'servidor', nome });
     assert.equal(preview.status, 200, preview.body.error);
@@ -520,6 +553,22 @@ test('[UC-BACKUP-006] restaurar um backup da lista: prévia pelo nome confere o 
     assert.equal(db.memory.students.some(item => item.email === 'depois@h4b.local'), false, 'voltou ao backup');
     assert.ok(fs.existsSync(file), 'o backup da lista não é apagado ao restaurar');
     assert.ok(fs.readdirSync(runtimePaths.BACKUPS_DIR).some(name => /^seguranca-restauracao_dados_/.test(name)));
+});
+
+test('[UC-BACKUP-004] mensagem de falha guardada e mostrada não leva o texto cru do erro nem caminho (contrato H9a)', () => {
+    const unexpected = Object.assign(new Error('SQLITE_IOERR: disk I/O error at /home/escola/IClass/data/database.db'), { code: 'SQLITE_IOERR' });
+    const message = backup.failureMessage(unexpected);
+    assert.equal(message, 'Falha inesperada ao gravar o backup (SQLITE_IOERR). Os detalhes ficam no registro de erros do servidor.');
+    assert.equal(backup.failureMessage(new Error('ENOENT, open /tmp/x')), 'Falha inesperada ao gravar o backup. Os detalhes ficam no registro de erros do servidor.');
+    // Conferência do ZIP gravado (a mensagem original traz o caminho do arquivo).
+    const verification = Object.assign(new Error('O ZIP gravado está incompleto (data/database.db ausente): /media/pendrive/IClass-x/a.zip'), { backupStage: 'verificacao' });
+    assert.equal(/pendrive|\//.test(backup.failureMessage(verification)), false, backup.failureMessage(verification));
+    assert.match(backup.failureMessage(verification), /conferência do backup/);
+    // Código esquisito não entra no texto.
+    assert.equal(backup.failureMessage(Object.assign(new Error('x'), { code: 'não é <código>' })), 'Falha inesperada ao gravar o backup. Os detalhes ficam no registro de erros do servidor.');
+    // Erros conhecidos e recusas previstas continuam com o texto próprio.
+    assert.equal(backup.failureMessage(Object.assign(new Error('x'), { code: 'ENOSPC' })), 'O disco ficou sem espaço durante a gravação do backup.');
+    assert.equal(backup.failureMessage(Object.assign(new Error('Já há um backup em andamento.'), { status: 409 })), 'Já há um backup em andamento.');
 });
 
 // ------------------------------------------------------------------ desligamento
@@ -589,4 +638,34 @@ test('[UC-BACKUP-005] desligamento no meio de um backup: espera, interrompe e ap
     const source = fs.readFileSync(path.join(__dirname, '..', '..', 'backend', 'server.js'), 'utf8');
     const shutdown = source.slice(source.indexOf('async function performShutdown'));
     assert.ok(shutdown.indexOf('settleForShutdown') > 0 && shutdown.indexOf('settleForShutdown') < shutdown.indexOf('db.close()'));
+});
+
+test('[UC-BACKUP-005] servidor de verdade desligado (SIGTERM) no meio do "Fazer backup agora": a resposta chega (503 retryable) antes de a porta fechar e nada fica pela metade', async () => {
+    const proc = require('./fixtures/server-process.js');
+    const dataDir = fs.mkdtempSync(path.join(tempRoot, 'desligamento-'));
+    const server = proc.launch(path.join(__dirname, 'fixtures', 'backup-shutdown-child.js'), { dataDir, port: await proc.freePort() });
+    try {
+        await proc.waitForHealth(server.base, { exited: server.exited });
+        assert.equal((await proc.call(server.base, '/api/test/seed', { method: 'POST', body: {} })).status, 200);
+        const login = await proc.call(server.base, '/api/session/admin-login', { method: 'POST', body: { email: 'admin@teste.local', password: 'teste' } });
+        assert.equal(login.status, 200, JSON.stringify(login.body));
+        // Antes, a porta derrubava as conexões em 2 s, antes de o desligamento interromper
+        // o backup (4 s de espera): o pedido terminava em "fetch failed".
+        const pending = proc.call(server.base, '/api/admin/backup/server', { method: 'POST', headers: { 'x-admin-session': login.body.sessionToken }, body: {} })
+            .then(res => res, error => ({ error: String(error && error.message) }));
+        await proc.waitFor(() => /@@BACKUP_STARTED/.test(server.output()), { what: 'backup em andamento' });
+        server.child.kill('SIGTERM');
+        const res = await pending;
+        assert.equal(res.error, undefined, `a conexão caiu antes da resposta: ${res.error}\n${server.output()}`);
+        assert.equal(res.status, 503, JSON.stringify(res.body));
+        assert.equal(res.body.retryable, true);
+        assert.match(res.body.error, /desligado/);
+        const exited = await server.exited;
+        assert.equal(exited.code, 0, server.output());
+        assert.match(server.output(), /Backup em andamento interrompido pelo desligamento/);
+        const leftovers = fs.existsSync(path.join(dataDir, 'backups')) ? fs.readdirSync(path.join(dataDir, 'backups')).filter(name => /\.parcial$/.test(name)) : [];
+        assert.deepEqual(leftovers, []);
+    } finally {
+        proc.killAll();
+    }
 });

@@ -356,6 +356,11 @@ async function prepareServer() {
         throw err;
     }
     serverLifecycle.setBootPhase('restoring');
+    // Restauração de backup interrompida no meio (o processo caiu durante o applyRestore;
+    // decisões §12): o marcador em data/.restauracao-desfazer está lá, e tudo volta ao que
+    // era antes dela (banco, teclas, pastas e cursos arquivados), com o registro na
+    // auditoria e no crash.log. Antes de tudo o que lê a memória (sessões, provas).
+    await require('./utils/backup.js').recoverInterruptedRestore();
     // Pasta de dados dentro do OneDrive (H1-c, CONF-05): aviso no console (e no cartão
     // Armazenamento da tela Sistema).
     if (db.storageStatus().inSyncedFolder) console.warn(`⚠️ ${SYNCED_FOLDER_WARNING}`);
@@ -747,16 +752,29 @@ function withTimeout(promise, ms) {
 }
 
 // Fecha a porta: não aceita conexões novas, fecha as ociosas na hora e, passados 2 s,
-// as que continuam abertas.
-async function closeHttpServer(server) {
+// as que continuam abertas. hold (promessa): as abertas só caem depois que ela terminar
+// (e mais um instante para a resposta sair), por exemplo o backup em andamento, para o
+// "Fazer backup agora" interrompido receber o 503 retryable em vez de conexão cortada.
+const RESPONSE_FLUSH_MS = 300;
+
+async function closeHttpServer(server, { hold = null } = {}) {
     if (!server || !server.listening) return;
     const closed = new Promise(resolve => server.close(() => resolve()));
     if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
-    const timer = setTimeout(() => {
+    let flushTimer = null;
+    const forceClose = () => {
         if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    };
+    const timer = setTimeout(() => {
+        if (!hold) return forceClose();
+        Promise.resolve(hold).catch(() => {}).then(() => {
+            if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+            flushTimer = setTimeout(forceClose, RESPONSE_FLUSH_MS);
+        });
     }, CLOSE_CONNECTIONS_AFTER_MS);
     await closed;
     clearTimeout(timer);
+    if (flushTimer) clearTimeout(flushTimer);
 }
 
 const SHUTDOWN_MESSAGES = {
@@ -803,16 +821,18 @@ async function performShutdown({ restart = false, reason = 'stop' } = {}) {
         return;
     }
     console.log(SHUTDOWN_MESSAGES[reason] || SHUTDOWN_MESSAGES.stop);
-    try { await closeHttpServer(serverInstance); } catch (err) { logCrash('desligamento (porta)', err); }
     // Backup em andamento (H4b, decisões §12): espera um pouco; se não terminar, a
     // gravação do ZIP é interrompida e o .parcial sai (nada pela metade no pendrive nem em
-    // data/backups). Cabe no teto de 10 s do desligamento.
-    try {
-        const settled = await require('./utils/backup.js').settleForShutdown(reason === 'fatal' ? { waitMs: 1000, abortWaitMs: 1000 } : { waitMs: 4000, abortWaitMs: 1500 });
-        if (settled.aborted) console.warn('⚠️ Backup em andamento interrompido pelo desligamento; o arquivo pela metade foi apagado.');
-    } catch (err) {
-        logCrash('desligamento (backup em andamento)', err);
-    }
+    // data/backups). Corre junto com o fechamento da porta, e as conexões abertas só caem
+    // depois dele: quem pediu "Fazer backup agora" recebe a resposta (o 503 retryable da
+    // interrupção) em vez de conexão cortada. Cabe no teto de 10 s do desligamento.
+    const backupSettled = require('./utils/backup.js')
+        .settleForShutdown(reason === 'fatal' ? { waitMs: 1000, abortWaitMs: 1000 } : { waitMs: 4000, abortWaitMs: 1500 })
+        .then(settled => {
+            if (settled.aborted) console.warn('⚠️ Backup em andamento interrompido pelo desligamento; o arquivo pela metade foi apagado.');
+        }, err => logCrash('desligamento (backup em andamento)', err));
+    try { await closeHttpServer(serverInstance, { hold: backupSettled }); } catch (err) { logCrash('desligamento (porta)', err); }
+    await backupSettled;
     try {
         await (reason === 'fatal' ? withTimeout(db.close(), FATAL_SHUTDOWN_SAVE_MS) : db.close());
     } catch (err) {

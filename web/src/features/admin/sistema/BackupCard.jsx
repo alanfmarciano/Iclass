@@ -20,6 +20,7 @@ import { RestorePreview } from './RestorePreview'
 export const BACKUP_ACTION_LABEL = {
   backup_restored: 'Restauração concluída',
   backup_restore_failed: 'Restauração com falha',
+  backup_restore_interrupted: 'Restauração interrompida e desfeita',
   backup_server_created: 'Cópia gerada no servidor',
   backup_downloaded: 'Backup baixado',
   backup_auto_created: 'Backup automático feito',
@@ -78,7 +79,7 @@ function agoText(value, now = Date.now()) {
 }
 
 // A faixa do alto do cartão: vermelha (falhou ou atrasado), amarela (só neste computador,
-// cópia externa atrasada ou destino desconectado) ou verde. Devolve { tone, title, text }.
+// cópia externa atrasada, destino desconectado ou no mesmo disco) ou verde. Devolve { tone, title, text }.
 export function backupBand(status, { isAdmin = true, now = Date.now() } = {}) {
   if (!status) return null
   const failure = status.ultimaFalha
@@ -102,6 +103,17 @@ export function backupBand(status, { isAdmin = true, now = Date.now() } = {}) {
     const lastExternal = Date.parse(status.externo.ultimoSucesso || status.externo.configuradoEm || '')
     if (Number.isFinite(lastExternal) && now - lastExternal > 26 * HOUR) {
       return { tone: 'warning', title: 'Cópia externa atrasada', text: `Última cópia no destino externo ${status.externo.ultimoSucesso ? agoText(status.externo.ultimoSucesso, now) : 'ainda não feita'}.` }
+    }
+  }
+  // Destino no mesmo disco do IClass (desenho H4, Tela Sistema): se o disco der defeito
+  // ou o computador sumir, a cópia vai junto.
+  if (status.configurado && status.externo?.acessivel && status.externo?.mesmoDisco) {
+    return {
+      tone: 'warning',
+      title: 'Destino externo no mesmo disco do IClass',
+      text: isAdmin
+        ? 'Se o disco der defeito ou o computador for roubado, a cópia se perde junto. Prefira um pendrive, HD externo ou pasta de rede.'
+        : 'Se o disco der defeito ou o computador for roubado, a cópia se perde junto. Peça ao administrador para usar um pendrive, HD externo ou pasta de rede.',
     }
   }
   if (!status.configurado) {

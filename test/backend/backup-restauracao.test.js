@@ -488,10 +488,21 @@ test('[UC-BACKUP-001] falha no meio da restauração volta tudo: memória, tecla
     await resetState();
     await db.keystrokes.append([keystroke('antes1')]);
     fs.writeFileSync(path.join(runtimePaths.CONTENT_DIR, 'Volta_H4a.md'), '# do backup');
-    const zip = fs.readFileSync(await writeFormat2('dados'));
+    // Biblioteca e documentos de aluno (data/uploads e data/alunos têm a mesma pasta-mãe).
+    fs.rmSync(runtimePaths.UPLOADS_DIR, { recursive: true, force: true });
+    fs.mkdirSync(runtimePaths.UPLOADS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(runtimePaths.UPLOADS_DIR, 'do-backup.pdf'), '%PDF-backup');
+    fs.rmSync(runtimePaths.STUDENTS_DIR, { recursive: true, force: true });
+    fs.mkdirSync(path.join(runtimePaths.STUDENTS_DIR, 'ana'), { recursive: true });
+    fs.writeFileSync(path.join(runtimePaths.STUDENTS_DIR, 'ana', 'do-backup.pdf'), '%PDF-backup');
+    const zip = fs.readFileSync(await writeFormat2('completo'));
     db.memory.students[0].name = 'Ana de agora';
     await db.keystrokes.append([keystroke('agora1'), keystroke('agora2')]);
     fs.writeFileSync(path.join(runtimePaths.CONTENT_DIR, 'Volta_H4a.md'), '# de agora');
+    fs.rmSync(path.join(runtimePaths.UPLOADS_DIR, 'do-backup.pdf'));
+    fs.writeFileSync(path.join(runtimePaths.UPLOADS_DIR, 'de-agora.pdf'), '%PDF-agora');
+    fs.rmSync(path.join(runtimePaths.STUDENTS_DIR, 'ana', 'do-backup.pdf'));
+    fs.writeFileSync(path.join(runtimePaths.STUDENTS_DIR, 'ana', 'de-agora.pdf'), '%PDF-agora');
     await db.save();
     const checked = await preview(zip, 'falha.zip');
     assert.equal(checked.status, 200);
@@ -517,6 +528,12 @@ test('[UC-BACKUP-001] falha no meio da restauração volta tudo: memória, tecla
     assert.equal(db.memory.students[0].name, 'Ana de agora');
     assert.deepEqual((await db.keystrokes.exportRows()).map(row => row.id).sort(), ['agora1', 'agora2', 'antes1']);
     assert.equal(fs.readFileSync(path.join(runtimePaths.CONTENT_DIR, 'Volta_H4a.md'), 'utf8'), '# de agora');
+    // As duas pastas de data/ voltam (antes, a troca de data/alunos apagava a "anterior"
+    // de data/uploads, e a biblioteca de agora sumia na volta).
+    assert.deepEqual(fs.readdirSync(runtimePaths.UPLOADS_DIR), ['de-agora.pdf']);
+    assert.deepEqual(fs.readdirSync(path.join(runtimePaths.STUDENTS_DIR, 'ana')), ['de-agora.pdf']);
+    assert.deepEqual(fs.readdirSync(path.dirname(runtimePaths.UPLOADS_DIR)).filter(name => name.startsWith('.iclass-restauracao-')), []);
+    assert.equal(fs.existsSync(backup.UNDO_DIR), false, 'volta completa: o marcador da restauração sai');
     const failure = db.memory.auditLogs.filter(entry => entry.action === 'backup_restore_failed').pop();
     assert.match(failure.details.error, /Código do erro/);
 });

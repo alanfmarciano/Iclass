@@ -70,9 +70,15 @@ test('[UC-BACKUP-002] criar, listar e verificar: ZIP formato 2 com .sha256, list
     assert.match(zip, /^manual_completo_.+\.zip$/);
     assert.ok(fs.existsSync(path.join(dataDir, 'backups', `${zip}.sha256`)));
 
+    // O estado.json do servidor (H4b) mora em data/backups e é mais novo que o ZIP: não é
+    // backup e não aparece na lista (antes saía como "1. estado.json [formato antigo]",
+    // e o restaurar --ultimo do launcher o tomaria pelo backup mais recente).
+    fs.writeFileSync(path.join(dataDir, 'backups', 'estado.json'), JSON.stringify({ local: { ultimoSucesso: new Date().toISOString() } }));
+    fs.writeFileSync(path.join(dataDir, 'backups', 'anotacoes.json'), '{}');
     const listed = runCli(dataDir, port, ['listar']);
     assert.equal(listed.code, 0, listed.output);
     assert.match(listed.stdout, new RegExp(`1\\. ${zip.replace(/\./g, '\\.')} .*formato 2, completo`));
+    assert.equal(/estado\.json|anotacoes\.json/.test(listed.stdout), false, listed.stdout);
 
     const verified = runCli(dataDir, port, ['verificar', path.join(dataDir, 'backups', zip)]);
     assert.equal(verified.code, 0, verified.output);
@@ -97,9 +103,15 @@ test('[UC-BACKUP-002] restaurar --ultimo com o servidor parado: banco e content 
         db.memory.config.settings.network = { adminAccess: 'rede' };
     `);
     fs.writeFileSync(path.join(dataDir, 'content', 'Apostila_CLI.md'), '# editada depois');
+    // Restauração pela tela interrompida no meio (marcador do backup.js): a da CLI a
+    // substitui, e o marcador vai para a quarentena (senão o boot seguinte "desfaria" esta).
+    fs.mkdirSync(path.join(dataDir, '.restauracao-desfazer'), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, '.restauracao-desfazer', 'marcador.json'), JSON.stringify({ id: 'x', banco: null, pastas: [], conteudo: [], cursos: [] }));
 
     const restored = runCli(dataDir, port, ['restaurar', '--ultimo', '--sim']);
     assert.equal(restored.code, 0, restored.output);
+    assert.match(restored.stdout, /restauração pela tela Sistema interrompida/);
+    assert.equal(fs.existsSync(path.join(dataDir, '.restauracao-desfazer')), false);
     assert.match(restored.stdout, /Backup restaurado/);
     assert.match(restored.stdout, /opção \[S\] do launcher/);
 
@@ -112,6 +124,7 @@ test('[UC-BACKUP-002] restaurar --ultimo com o servidor parado: banco e content 
     const quarantine = fs.readdirSync(path.join(dataDir, 'quarentena'));
     assert.equal(quarantine.length, 1);
     assert.match(quarantine[0], /^antes-restauracao_/);
+    assert.ok(fs.existsSync(path.join(dataDir, 'quarentena', quarantine[0], 'restauracao-interrompida', 'marcador.json')));
     assert.ok(fs.existsSync(path.join(dataDir, 'quarentena', quarantine[0], 'data', 'database.db')), 'o banco de antes não é apagado');
     assert.equal(fs.readFileSync(path.join(dataDir, 'quarentena', quarantine[0], 'content', 'Apostila_CLI.md'), 'utf8'), '# editada depois');
 });

@@ -78,6 +78,17 @@ describe('backupBand: a faixa do cartão Backup', () => {
     expect(backupBand(status({ externo: { acessivel: false } , local: { ultimoSucesso: new Date(NOW - HOUR).toISOString() } }), { now: NOW }).title).toBe('Destino externo desconectado')
     expect(backupBand(status({ local: { ultimoSucesso: new Date(NOW - HOUR).toISOString() }, externo: { acessivel: true, ultimoSucesso: new Date(NOW - HOUR).toISOString() } }), { now: NOW }).tone).toBe('success')
   })
+
+  it('[UC-BACKUP-004] destino no mesmo disco do IClass é amarelo, não "Backup em dia" (desenho H4, Tela Sistema)', () => {
+    const recent = new Date(NOW - HOUR).toISOString()
+    const sameDisk = status({ local: { ultimoSucesso: recent }, externo: { acessivel: true, mesmoDisco: true, ultimoSucesso: recent } })
+    const band = backupBand(sameDisk, { now: NOW })
+    expect(band).toMatchObject({ tone: 'warning', title: 'Destino externo no mesmo disco do IClass' })
+    expect(band.text).toMatch(/pendrive, HD externo ou pasta de rede/)
+    expect(backupBand(sameDisk, { now: NOW, isAdmin: false }).text).toMatch(/Peça ao administrador/)
+    // Falha e atraso continuam na frente do aviso de mesmo disco.
+    expect(backupBand({ ...sameDisk, ultimaFalha: { em: recent, alvo: 'local', mensagem: 'x' } }, { now: NOW }).tone).toBe('danger')
+  })
 })
 
 describe('BackupCard', () => {
