@@ -790,7 +790,7 @@ function createAdminExamConfigRouter() {
                 }
                 const originalNumber = Number(req.body.questionNumber);
                 if (!liveQuestion(application, originalNumber)) return res.status(404).json({ error: 'Questão original não encontrada.' });
-                const bank = (db.memory.questionBank || []).find(question => question.key === req.body.bankQuestionKey);
+                const bank = (db.memory.questionBank || []).find(question => question && question.key === req.body.bankQuestionKey);
                 if (!bank) return res.status(404).json({ error: 'Questão do banco não encontrada.' });
                 const extraMinutes = Math.max(0, Math.min(30, Number(req.body.extraMinutes) || 0));
                 const allNumbers = (application.versionSnapshots || []).flatMap(snapshot =>

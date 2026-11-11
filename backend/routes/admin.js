@@ -187,6 +187,14 @@ const ADMIN_SCHEMAS = {
         visibility: adminTextField(100, 'visibilidade'),
         text: adminTextField(5000, 'observação'),
     }),
+    // A edição tem o mesmo teto da criação (sem ele, o texto de 5.000 do create passava
+    // por aqui sem limite).
+    observationUpdate: body({
+        id: adminIdField('observação'),
+        category: adminTextField(100, 'categoria'),
+        visibility: adminTextField(100, 'visibilidade'),
+        text: adminTextField(5000, 'observação'),
+    }),
     questionBank: body(questionBankFields()),
 };
 const {
@@ -1967,7 +1975,7 @@ router.post('/api/admin/student/observations/create', ADMIN_SCHEMAS.observationC
     });
 });
 
-router.post('/api/admin/student/observations/update', (req, res) => {
+router.post('/api/admin/student/observations/update', ADMIN_SCHEMAS.observationUpdate, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { id } = req.body;
         const list = db.memory.pedagogicalObservations || [];
@@ -5085,13 +5093,13 @@ router.post('/api/admin/question-bank/create', ADMIN_SCHEMAS.questionBank, (req,
         };
         db.memory.questionBank.push(item);
         db.save();
-        res.json({ success: true, question: item });
+        res.json({ success: true, question: questionBankItemForScreen(item) });
     });
 });
 
 router.post('/api/admin/question-bank/update', ADMIN_SCHEMAS.questionBank, (req, res) => {
     validateAdmin(req, res, () => {
-        const item = (db.memory.questionBank || []).find(question => question.key === req.body.key);
+        const item = (db.memory.questionBank || []).find(question => question && question.key === req.body.key);
         if (!item) return res.status(404).json({ error: 'Questão não encontrada no banco.' });
         let normalizedQuestion;
         try {
@@ -5113,7 +5121,9 @@ router.post('/api/admin/question-bank/update', ADMIN_SCHEMAS.questionBank, (req,
         if (req.body.curriculumKey !== undefined) item.curriculumKey = String(req.body.curriculumKey || '');
         item.updatedAt = new Date().toISOString();
         db.save();
-        res.json({ success: true, question: item });
+        // Item antigo com curriculumKey ou type de outro tipo volta como texto (o guardado
+        // fica como estava, igual ao GET).
+        res.json({ success: true, question: questionBankItemForScreen(item) });
     });
 });
 
@@ -5128,9 +5138,9 @@ router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.question
             return res.status(404).json({ error: 'Avaliação não encontrada ou sem questões estruturadas.' });
         }
 
-        const existingKeys = new Set((db.memory.questionBank || []).map(q => `${q.sourceExamKey}:${q.originalNumber}`));
+        const existingKeys = new Set((db.memory.questionBank || []).filter(Boolean).map(q => `${q.sourceExamKey}:${q.originalNumber}`));
         const imported = [];
-        questions.forEach(question => {
+        questions.filter(Boolean).forEach(question => {
             const originalNumber = Number(question.originalNumber || question.number || 0);
             const dedupeKey = `${examKey}:${originalNumber}`;
             if (existingKeys.has(dedupeKey)) return;
@@ -5151,7 +5161,7 @@ router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.question
         });
 
         db.save();
-        res.json({ success: true, importedCount: imported.length, questions: imported });
+        res.json({ success: true, importedCount: imported.length, questions: imported.map(questionBankItemForScreen) });
     });
 });
 
@@ -5159,9 +5169,10 @@ router.post('/api/admin/question-bank/delete', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { key } = req.body;
         if (!key) return res.status(400).json({ error: 'key é obrigatório.' });
+        // Um item null na lista (dado antigo) fica como está, sem derrubar a exclusão.
         const before = db.memory.questionBank.length;
-        const removed = db.memory.questionBank.filter(q => q.key === key);
-        db.memory.questionBank = db.memory.questionBank.filter(q => q.key !== key);
+        const removed = db.memory.questionBank.filter(q => q && q.key === key);
+        db.memory.questionBank = db.memory.questionBank.filter(q => !q || q.key !== key);
         removed.forEach(question => recordAudit(db.memory, {
             req,
             actor: matchedAdmin,

@@ -191,22 +191,36 @@ function shape(fields, options = {}) {
     });
 }
 
+// Nome de uma chave do mapa no `field` da resposta: 'completedUnits.a' dentro de um
+// campo, ou só a chave quando o mapa é o próprio corpo (preferências). Chave longa demais
+// para ecoar (mais de 200 caracteres) fica com o nome do mapa, ou com o começo dela.
+const MAX_ECHOED_KEY = 200;
+function keyFieldName(field, key) {
+    if (key.length > MAX_ECHOED_KEY) return field || key.slice(0, MAX_ECHOED_KEY);
+    return field ? `${field}.${key}` : key;
+}
+
 // Mapa de chave para valor: dict(value, { maxKeys, keyPattern, keyMax, label, nullable, required }).
-// Chave herdada de Object.prototype ('__proto__', 'constructor') nunca passa.
+// Chave herdada de Object.prototype ('__proto__', 'constructor') nunca passa. A recusa
+// aponta no `field` a chave enviada: a que tem caracteres não permitidos, ou a primeira
+// além do limite de chaves.
 function dict(value, options = {}) {
     return validator('dict', options, (raw, field, label, opts) => {
         if (!isPlainObject(raw)) return fail(field, MESSAGES.invalid(label));
         const keys = Object.keys(raw);
-        if (opts.maxKeys !== undefined && keys.length > opts.maxKeys) return fail(field, MESSAGES.maxItems(label, opts.maxKeys));
+        if (opts.maxKeys !== undefined && keys.length > opts.maxKeys) {
+            return fail(keyFieldName(field, keys[opts.maxKeys]), MESSAGES.maxItems(label, opts.maxKeys));
+        }
         for (const key of keys) {
-            if (isInheritedKey(key)) return fail(field, MESSAGES.pattern(label));
-            if (opts.keyMax !== undefined && key.length > opts.keyMax) return fail(field, MESSAGES.pattern(label));
+            const keyField = keyFieldName(field, key);
+            if (isInheritedKey(key)) return fail(keyField, MESSAGES.pattern(label));
+            if (opts.keyMax !== undefined && key.length > opts.keyMax) return fail(keyField, MESSAGES.pattern(label));
             if (opts.keyPattern) {
                 opts.keyPattern.lastIndex = 0;
-                if (!opts.keyPattern.test(key)) return fail(field, MESSAGES.pattern(label));
+                if (!opts.keyPattern.test(key)) return fail(keyField, MESSAGES.pattern(label));
             }
             if (!value) continue;
-            const result = value.run(raw[key], `${field}.${key}`, label);
+            const result = value.run(raw[key], keyField, label);
             if (!result.ok) return result;
             if (result.value !== raw[key]) raw[key] = result.value;
         }

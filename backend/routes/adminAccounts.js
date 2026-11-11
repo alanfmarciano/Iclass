@@ -46,6 +46,7 @@ const accountFields = () => ({
 // chaves; as preferências juntas ficam em até 64 KB (só recusa quando crescem, para a
 // conta que já passou disso continuar salvando o que diminui).
 const PREFERENCES_MAX_BYTES = 64 * 1024;
+const PREFERENCES_MAX_KEYS = 100;
 const ACCOUNT_SCHEMAS = {
     // Login: tipo errado continua com a mensagem de antes ('Informe e-mail e senha.').
     login: body({
@@ -59,7 +60,7 @@ const ACCOUNT_SCHEMAS = {
     logout: body({}),
     preferences: body({}),
 };
-const PREFERENCES_DICT = dict(null, { maxKeys: 100, keyPattern: /^[A-Za-z0-9_.-]{1,64}$/, label: 'preferências' });
+const PREFERENCES_DICT = dict(null, { maxKeys: PREFERENCES_MAX_KEYS, keyPattern: /^[A-Za-z0-9_.-]{1,64}$/, label: 'preferências' });
 
 function jsonBytes(value) {
     try { return Buffer.byteLength(JSON.stringify(value || {}), 'utf8'); } catch (_) { return Infinity; }
@@ -616,16 +617,25 @@ function createAdminAccountsRouter() {
             ));
             if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
             if (!ACCOUNT_SCHEMAS.preferences.check(req, res)) return;
-            const checked = PREFERENCES_DICT.run(req.body, 'preferences', 'preferências');
+            // O corpo é o próprio mapa: o `field` da recusa é a chave enviada que não passou
+            // ('a b'), a primeira chave nova além das 100, ou a maior das enviadas quando o
+            // total passa de 64 KB.
+            const checked = PREFERENCES_DICT.run(req.body, '', 'preferências');
             if (!checked.ok) return res.status(400).json({ success: false, error: checked.error, field: checked.field });
             const current = account.preferences && typeof account.preferences === 'object' && !Array.isArray(account.preferences) ? account.preferences : {};
             const merged = { ...current, ...req.body };
             const mergedBytes = jsonBytes(merged);
-            if (Object.keys(merged).length > 100 && Object.keys(merged).length > Object.keys(current).length) {
-                return res.status(400).json({ success: false, error: 'O campo "preferências" aceita no máximo 100 itens.', field: 'preferences' });
+            const sentKeys = Object.keys(req.body);
+            if (Object.keys(merged).length > PREFERENCES_MAX_KEYS && Object.keys(merged).length > Object.keys(current).length) {
+                const extra = sentKeys.filter(key => !Object.prototype.hasOwnProperty.call(current, key));
+                const field = extra[Math.max(0, PREFERENCES_MAX_KEYS - Object.keys(current).length)] || extra[extra.length - 1] || sentKeys[0];
+                return res.status(400).json({ success: false, error: `O campo "preferências" aceita no máximo ${PREFERENCES_MAX_KEYS} itens.`, field });
             }
             if (mergedBytes > PREFERENCES_MAX_BYTES && mergedBytes > jsonBytes(current)) {
-                return res.status(400).json({ success: false, error: 'As preferências desta conta passaram do limite de 64 KB. Limpe favoritos ou modelos de resposta antigos.', field: 'preferences' });
+                const field = sentKeys.reduce((biggest, key) => (
+                    biggest === null || jsonBytes(req.body[key]) > jsonBytes(req.body[biggest]) ? key : biggest
+                ), null);
+                return res.status(400).json({ success: false, error: 'As preferências desta conta passaram do limite de 64 KB. Limpe favoritos ou modelos de resposta antigos.', field });
             }
             account.preferences = merged;
             await db.save();

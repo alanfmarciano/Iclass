@@ -123,6 +123,12 @@ test('[UC-ERRO-003] inputSchema: números, lista de valores, listas, objetos, ma
     assert.equal(map.run(JSON.parse('{"__proto__": 1}'), 'p').ok, false);
     assert.equal(map.run({ 'a b': 1 }, 'p').error, 'O campo "preferências" tem caracteres não permitidos.');
     assert.equal(map.run({ a: 1, b: 2, c: 3 }, 'p').error, 'O campo "preferências" aceita no máximo 2 itens.');
+    // O field aponta a chave enviada: dentro de um campo com ponto; no corpo, só a chave.
+    assert.equal(map.run({ 'a b': 1 }, 'p').field, 'p.a b');
+    assert.equal(map.run({ 'a b': 1 }, '').field, 'a b');
+    assert.equal(map.run({ a: 1, b: 2, c: 3 }, '').field, 'c', 'a primeira além do limite');
+    assert.equal(map.run({ ['Z'.repeat(300)]: 1 }, 'p').field, 'p', 'chave longa demais fica com o nome do mapa');
+    assert.equal(schema.dict(schema.bool(), { label: 'unidades' }).run({ a: 'x' }, '').field, 'a');
 
     const version = schema.either([schema.str({ max: 30 }), schema.num()], { label: 'versão' });
     assert.equal(version.run('2026-11-11T10:00:00.000Z', 'v').ok, true);
@@ -186,6 +192,9 @@ test('[UC-ERRO-003] rotas do professor que davam 500 respondem 400 com o campo',
     assertRefused(await asAdmin('/api/admin/schools/create').send({ name: 42 }), 'name');
     assertRefused(await asAdmin('/api/admin/schools/update').send({ id: 'x', branding: 'azul' }), 'branding');
     assertRefused(await asAdmin('/api/admin/student/observations/create').send({ email: STUDENT_EMAIL, text: 'o'.repeat(5001) }), 'text', 'O campo "observação" aceita no máximo 5.000 caracteres.');
+    // A edição tem o mesmo teto da criação.
+    assertRefused(await asAdmin('/api/admin/student/observations/update').send({ id: 'obs-x', text: 'o'.repeat(5001) }), 'text', 'O campo "observação" aceita no máximo 5.000 caracteres.');
+    assertRefused(await asAdmin('/api/admin/student/observations/update').send({ id: { $ne: '' } }), 'id');
     assertRefused(await asAdmin('/api/admin/student/certificates/issue').send({ email: STUDENT_EMAIL, courseName: ['TI'] }), 'courseName');
     assertRefused(await asAdmin('/api/admin/unlock-student-focus').send({ studentEmail: 1, examKey: 'x' }), 'studentEmail');
     assertRefused(await asAdmin('/api/admin/assign-student-version').send({ studentEmail: STUDENT_EMAIL, examKey: 'x', version: { v: 'A' } }), 'version');
@@ -207,17 +216,43 @@ test('[UC-ERRO-003] banco de questões: categoria objeto recebe 400 e a questão
     assert.equal(old.curriculumKey, '');
     assert.equal(old.type, 'multiple_choice');
     assert.equal(old.questionText, '');
-    const stored = db.memory.questionBank.find(question => question.key === 'qb_antiga_h9b');
+    const stored = db.memory.questionBank.find(question => question && question.key === 'qb_antiga_h9b');
     assert.deepEqual(stored.category, { nome: 'Redes' }, 'o dado guardado fica como estava');
+
+    // A resposta do create e do update vem no formato da tela, como o GET; um item null
+    // na lista (dado antigo) não derruba o update nem a exclusão.
+    db.memory.questionBank.unshift(null);
+    const updated = await asAdmin('/api/admin/question-bank/update').send({ key: 'qb_antiga_h9b', questionText: 'Qual protocolo?', alternatives: [{ letter: 'A', text: 'TCP', isCorrect: true }, { letter: 'B', text: 'UDP' }], correctAnswer: 'A' });
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    assert.equal(updated.body.question.curriculumKey, '');
+    assert.equal(updated.body.question.type, 'multiple_choice');
+    assert.equal(updated.body.question.category, 'Geral');
+    assert.equal(stored.curriculumKey, 7, 'o update não regrava o que não foi enviado');
+    const created = await asAdmin('/api/admin/question-bank/create').send({ category: 'Redes', questionText: 'Qual porta?', alternatives: [{ letter: 'A', text: '80', isCorrect: true }, { letter: 'B', text: '21' }], correctAnswer: 'A' });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    assert.equal(typeof created.body.question.questionText, 'string');
+    const removed = await asAdmin('/api/admin/question-bank/delete').send({ key: created.body.question.key });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.equal(removed.body.deleted, 1);
+    assert.equal(db.memory.questionBank[0], null, 'o item null fica como estava');
+    db.memory.questionBank.shift();
 });
 
 test('[UC-ERRO-003] preferências: chave com espaço, mais de 100 chaves ou mais de 64 KB recebem 400; os modelos do fórum passam', async () => {
     const send = payload => asAdmin('/api/admin/preferences', PROFESSOR_TOKEN).send(payload);
-    assertRefused(await send({ 'a b': 1 }), 'preferences', 'O campo "preferências" tem caracteres não permitidos.');
+    // O corpo é o próprio mapa: o field é a chave enviada que foi recusada, nunca um
+    // 'preferences' que o cliente não mandou.
+    assertRefused(await send({ ok: 1, 'a b': 1 }), 'a b', 'O campo "preferências" tem caracteres não permitidos.');
+    assertRefused(await asAdmin('/api/admin/preferences', PROFESSOR_TOKEN).set('Content-Type', 'application/json').send('{"__proto__": {"x": 1}}'), '__proto__');
     const many = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`chave${index}`, index]));
-    assertRefused(await send(many), 'preferences', 'O campo "preferências" aceita no máximo 100 itens.');
-    assertRefused(await send({ 'forum.templates': ['x'.repeat(70 * 1024)] }), 'preferences',
+    assertRefused(await send(many), 'chave100', 'O campo "preferências" aceita no máximo 100 itens.');
+    assertRefused(await send({ 'gate.small': ['a'], 'forum.templates': ['x'.repeat(70 * 1024)] }), 'forum.templates',
         'As preferências desta conta passaram do limite de 64 KB. Limpe favoritos ou modelos de resposta antigos.');
+    // Já com 99 chaves guardadas, a primeira nova além das 100 é a apontada.
+    const professor = db.memory.admins.find(item => item.email === DEMO_ACCOUNTS.professor.email);
+    professor.preferences = Object.fromEntries(Array.from({ length: 99 }, (_, index) => [`velha${index}`, index]));
+    assertRefused(await send({ velha1: 'x', nova1: 1, nova2: 2 }), 'nova2', 'O campo "preferências" aceita no máximo 100 itens.');
+    professor.preferences = {};
     const templates = await send({ 'forum.templates': ['Obrigado pela pergunta!', 'Veja a apostila, seção 2.'] });
     assert.equal(templates.status, 200, JSON.stringify(templates.body));
     assert.deepEqual(templates.body.preferences['forum.templates'], ['Obrigado pela pergunta!', 'Veja a apostila, seção 2.']);
@@ -294,6 +329,45 @@ test('[UC-CADERNO-001] anotações: trecho destacado guardado com 1.000, nota at
     assertRefused(await annotate('u_nova', 'p1', { highlightedText: 'h', note: 'n' }), 'key', 'Você chegou ao limite de 300 unidades com anotações.');
     const list = await request(app).get('/api/student/annotations').set('x-session-token', STUDENT_TOKEN).query({ key: 'constructor' });
     assert.deepEqual(list.body.annotations, {}, 'chave herdada não devolve o que vem de Object');
+    delete db.memory.annotations[STUDENT_EMAIL];
+});
+
+test('[UC-CADERNO-001] anotações antigas: acima de 5.000 só diminuem e as guardadas em outro formato nunca são trocadas', async () => {
+    // Anotação gravada antes do teto, com 6.000 caracteres: pode ser editada sem crescer.
+    db.memory.annotations[STUDENT_EMAIL] = { Apostila_A: { 'p-1': { highlightedText: 'h', note: 'n'.repeat(6000), timestamp: 'x' } } };
+    assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: 'h', note: 'n'.repeat(5500) })).status, 200, 'diminuir passa');
+    assertRefused(await annotate('Apostila_A', 'p-1', { highlightedText: 'h', note: 'n'.repeat(5600) }), 'note', 'O campo "anotação" aceita no máximo 5.000 caracteres.');
+    assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_A['p-1'].note.length, 5500, 'nada se perde na recusa');
+    assertRefused(await annotate('Apostila_A', 'p-2', { highlightedText: 'h', note: 'n'.repeat(5001) }), 'note'); // parágrafo novo segue o teto
+
+    // Unidade guardada como texto (banco mexido à mão): 409 e o dado fica.
+    db.memory.annotations[STUDENT_EMAIL] = { Apostila_X: 'texto-legado', Apostila_L: ['a'] };
+    for (const key of ['Apostila_X', 'Apostila_L']) {
+        const refused = await annotate(key, 'p-1', { highlightedText: 'h', note: 'nova' });
+        assert.equal(refused.status, 409, JSON.stringify(refused.body));
+        assert.equal(refused.body.success, false);
+        assert.equal(refused.body.code, 'legacy_format');
+        assert.equal(refused.body.field, 'key');
+        assert.match(refused.body.error, /Nada foi alterado/);
+        assert.equal((await annotate(key, 'p-1', { highlightedText: null, note: null })).status, 200, 'apagar o que não existe não muda nada');
+    }
+    assert.deepEqual(db.memory.annotations[STUDENT_EMAIL], { Apostila_X: 'texto-legado', Apostila_L: ['a'] });
+    assert.equal((await annotate('Apostila_N', 'p-1', { highlightedText: 'h', note: 'n' })).status, 200, 'as outras unidades continuam');
+    assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_X, 'texto-legado');
+
+    // O mapa do aluno inteiro em outro formato: 409 na anotação e no caderno, sem trocar.
+    db.memory.annotations[STUDENT_EMAIL] = 'mapa-legado';
+    assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: 'h', note: 'n' })).status, 409);
+    assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: null, note: null })).status, 409);
+    assert.equal(db.memory.annotations[STUDENT_EMAIL], 'mapa-legado');
+    db.memory.notes[STUDENT_EMAIL] = 'caderno-legado';
+    const note = await saveNote('apostila_TI_1', 'oi');
+    assert.equal(note.status, 409, JSON.stringify(note.body));
+    assert.equal(note.body.code, 'legacy_format');
+    assert.equal((await saveNote('apostila_TI_1', '')).status, 409);
+    assert.equal(db.memory.notes[STUDENT_EMAIL], 'caderno-legado');
+    assert.equal((await getNote('0')).body.note, '', 'não lê letra do texto antigo como nota');
+    delete db.memory.notes[STUDENT_EMAIL];
     delete db.memory.annotations[STUDENT_EMAIL];
 });
 

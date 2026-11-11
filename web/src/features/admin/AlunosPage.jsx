@@ -13,6 +13,7 @@ import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPa
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { LoginProtectionBadge, UNLOCK_LOGIN_HINT } from './loginProtection'
 import { passwordHint } from '../../lib/passwordPolicy'
+import { OBSERVATION_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
 import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
 import { useApi } from '../../hooks/useApi'
@@ -502,7 +503,7 @@ export default function AlunosPage() {
               </Select>
             </div>
             <p className="text-xs text-subtle">Observações restritas à coordenação e as de acessibilidade só aparecem para o administrador e para quem as escreveu. Editar e excluir: o autor ou o administrador.</p>
-            <Textarea label="Observação" value={obsForm.text} onChange={(e) => setObsForm({ ...obsForm, text: e.target.value })} />
+            <Textarea label="Observação" value={obsForm.text} onChange={(e) => setObsForm({ ...obsForm, text: e.target.value })} maxLength={OBSERVATION_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} />
             <div className="flex justify-end"><Button loading={obsSaving} onClick={addObs}>Registrar</Button></div>
           </div>
           <div className="space-y-2 max-h-72 overflow-auto">

@@ -27,6 +27,25 @@ function own(map, key) {
     return !!map && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, key);
 }
 
+function isPlainMap(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Valor guardado num formato que o IClass não lê (texto ou lista no lugar do mapa, de
+// banco mexido à mão ou de versão muito antiga). Ele nunca é trocado por um mapa novo:
+// a gravação recebe 409 e o dado fica como estava.
+const LEGACY_FORMAT_ERROR = 'As anotações guardadas desta unidade estão num formato antigo que o IClass não consegue editar. Nada foi alterado; peça ajuda ao professor.';
+const LEGACY_ANNOTATIONS_ERROR = 'Suas anotações guardadas estão num formato antigo que o IClass não consegue editar. Nada foi alterado; peça ajuda ao professor.';
+const LEGACY_NOTES_ERROR = 'Seu caderno guardado está num formato antigo que o IClass não consegue editar. Nada foi alterado; peça ajuda ao professor.';
+
+// Mapa do aluno dentro de db.memory.notes ou db.memory.annotations. Devolve { map, legacy }:
+// `map` é o mapa guardado (ou um novo, vazio, quando o aluno ainda não tem nada) e
+// `legacy` é true quando o que está guardado não é um mapa (não pode ser sobrescrito).
+function studentMap(root, email) {
+    if (!own(root, email) || root[email] == null) return { map: {}, legacy: false };
+    return isPlainMap(root[email]) ? { map: root[email], legacy: false } : { map: null, legacy: true };
+}
+
 // Tamanho de uma nota gravada: o texto, ou o JSON de um valor antigo que não é texto
 // (o servidor aceitava qualquer coisa).
 function storedLength(value) {
@@ -78,12 +97,16 @@ function applyNoteWrite(notes, key, text) {
 // Anotação de parágrafo (annotation). `annotations` é o mapa do aluno
 // ({ chave: { parágrafo: { highlightedText, note, timestamp } } }). note e
 // highlightedText null juntos apagam (sempre aceito). O trecho destacado é guardado com
-// até 1.000 caracteres. Devolve { ok: true } ou { ok: false, error, field }.
+// até 1.000 caracteres. Devolve { ok: true } ou { ok: false, error, field, status? }
+// (status 409 quando a unidade guardada não é um mapa; sem status, 400).
 function applyAnnotationWrite(annotations, key, paragraphId, { note, highlightedText }, now = new Date()) {
     if (isInheritedKey(key) || isInheritedKey(paragraphId)) {
         return { ok: false, field: isInheritedKey(key) ? 'key' : 'paragraphId', error: 'Unidade ou parágrafo inválido.' };
     }
-    const unit = own(annotations, key) && annotations[key] && typeof annotations[key] === 'object' ? annotations[key] : null;
+    const stored = own(annotations, key) ? annotations[key] : null;
+    // Unidade guardada em outro formato (texto, lista): nada é apagado nem trocado.
+    const legacyUnit = stored != null && !isPlainMap(stored);
+    const unit = legacyUnit ? null : stored;
     if (note === null && highlightedText === null) {
         if (unit) {
             delete unit[paragraphId];
@@ -91,7 +114,13 @@ function applyAnnotationWrite(annotations, key, paragraphId, { note, highlighted
         }
         return { ok: true, deleted: true };
     }
-    if (typeof note === 'string' && note.length > ANNOTATION_NOTE_MAX_CHARS) {
+    if (legacyUnit) return { ok: false, status: 409, code: 'legacy_format', field: 'key', error: LEGACY_FORMAT_ERROR };
+    // Anotação antiga acima do limite (gravada antes do teto) pode ser editada desde que
+    // não cresça, como a nota do caderno.
+    const previous = unit && own(unit, paragraphId) && unit[paragraphId] && typeof unit[paragraphId].note === 'string'
+        ? unit[paragraphId].note.length
+        : 0;
+    if (typeof note === 'string' && note.length > ANNOTATION_NOTE_MAX_CHARS && note.length > previous) {
         return { ok: false, field: 'note', error: MESSAGES.maxChars('anotação', ANNOTATION_NOTE_MAX_CHARS) };
     }
     if (!unit && Object.keys(annotations).length >= ANNOTATION_MAX_KEYS) {
@@ -110,6 +139,9 @@ function applyAnnotationWrite(annotations, key, paragraphId, { note, highlighted
 }
 
 module.exports = {
+    LEGACY_ANNOTATIONS_ERROR,
+    LEGACY_FORMAT_ERROR,
+    LEGACY_NOTES_ERROR,
     ANNOTATION_HIGHLIGHT_MAX_CHARS,
     ANNOTATION_MAX_KEYS,
     ANNOTATION_MAX_PARAGRAPHS,
@@ -120,4 +152,5 @@ module.exports = {
     applyAnnotationWrite,
     applyNoteWrite,
     notesTotal,
+    studentMap,
 };

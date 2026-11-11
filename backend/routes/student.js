@@ -71,7 +71,7 @@ const {
 } = require('../utils/passwordChange.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const { KEY_PATTERN, body, bool, dict, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
-const { applyAnnotationWrite, applyNoteWrite } = require('../utils/studentNotes.js');
+const { LEGACY_ANNOTATIONS_ERROR, LEGACY_NOTES_ERROR, applyAnnotationWrite, applyNoteWrite, studentMap } = require('../utils/studentNotes.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
     createSubmissionFromAttempt,
@@ -2256,12 +2256,14 @@ router.post('/api/student/notes/save', validateStudentSession, STUDENT_SCHEMAS.n
     const email = req.studentEmail;
     if (!moduleKey) return res.status(400).json({ error: 'Dados insuficientes' });
     if (!db.memory.notes || typeof db.memory.notes !== 'object') db.memory.notes = {};
-    const existing = Object.prototype.hasOwnProperty.call(db.memory.notes, email) ? db.memory.notes[email] : null;
-    const notes = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
+    // Caderno guardado em outro formato (texto ou lista no lugar do mapa): fica como está.
+    const { map: notes, legacy } = studentMap(db.memory.notes, email);
+    if (legacy) return res.status(409).json({ success: false, code: 'legacy_format', error: LEGACY_NOTES_ERROR, field: 'moduleKey' });
+    const existed = Object.prototype.hasOwnProperty.call(db.memory.notes, email);
     const result = applyNoteWrite(notes, moduleKey, note);
     if (!result.ok) return res.status(400).json({ success: false, error: result.error, field: result.field });
     if (Object.keys(notes).length) db.memory.notes[email] = notes;
-    else delete db.memory.notes[email];
+    else if (existed) delete db.memory.notes[email];
     db.save({ only: ['notes', 'authSessions'] });
     res.json({ success: true });
 });
@@ -2272,7 +2274,7 @@ router.post('/api/student/notes/get', validateStudentSession, STUDENT_SCHEMAS.no
     if (!moduleKey) return res.status(400).json({ error: 'Dados insuficientes' });
     
     // Só a chave própria: 'constructor' devolvia a função herdada de Object.
-    const notesMap = (db.memory.notes && Object.prototype.hasOwnProperty.call(db.memory.notes, email) && db.memory.notes[email]) || {};
+    const notesMap = studentMap(db.memory.notes, email).map || {};
     const note = Object.prototype.hasOwnProperty.call(notesMap, moduleKey) ? notesMap[moduleKey] : '';
     res.json({ success: true, note: note || "" });
 });
@@ -2297,12 +2299,19 @@ router.post('/api/student/annotation', validateStudentSession, STUDENT_SCHEMAS.a
     
     const lowerEmail = email.toLowerCase();
     if (!db.memory.annotations || typeof db.memory.annotations !== 'object') db.memory.annotations = {};
-    const existing = Object.prototype.hasOwnProperty.call(db.memory.annotations, lowerEmail) ? db.memory.annotations[lowerEmail] : null;
-    const annotations = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
+    // Anotações guardadas em outro formato (texto ou lista no lugar do mapa, do aluno ou da
+    // unidade): nada é apagado nem trocado; a gravação recebe 409.
+    const { map: annotations, legacy } = studentMap(db.memory.annotations, lowerEmail);
+    if (legacy) return res.status(409).json({ success: false, code: 'legacy_format', error: LEGACY_ANNOTATIONS_ERROR, field: 'key' });
+    const existed = Object.prototype.hasOwnProperty.call(db.memory.annotations, lowerEmail);
     const result = applyAnnotationWrite(annotations, key, paragraphId, { note, highlightedText });
-    if (!result.ok) return res.status(400).json({ success: false, error: result.error, field: result.field });
+    if (!result.ok) {
+        const refusal = { success: false, error: result.error, field: result.field };
+        if (result.code) refusal.code = result.code;
+        return res.status(result.status || 400).json(refusal);
+    }
     if (Object.keys(annotations).length) db.memory.annotations[lowerEmail] = annotations;
-    else if (existing) delete db.memory.annotations[lowerEmail];
+    else if (existed) delete db.memory.annotations[lowerEmail];
     
     db.save({ only: ['annotations', 'authSessions'] });
     res.json({ success: true });
