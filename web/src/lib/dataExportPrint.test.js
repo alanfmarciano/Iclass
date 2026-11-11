@@ -65,6 +65,23 @@ describe('[UC-LGPD-010] Meus dados · versão para imprimir', () => {
     expect(html).toMatch(/<td>mod1_prova<\/td><td>2<\/td><td>1<\/td>/)
   })
 
+  // Antes: a coluna lia item.type || item.event, mas o registro guarda eventType, e a
+  // coluna saía sempre "—" com dados reais.
+  it('o evento de foco sai com o rótulo do Monitor, em português, e nunca como código', () => {
+    const html = dataExportHtml(sample({ proctoring: { keystrokes: [], focusEvents: [
+      { timestamp: 1760000000000, examKey: 'mod1_prova', eventType: 'tab_blur', details: 'Janela perdeu o foco' },
+      { timestamp: 1760000001000, examKey: 'mod1_prova', eventType: 'exam_left', details: 'Página fechada ou recarregada' },
+      { timestamp: 1760000002000, examKey: 'mod1_prova', eventType: 'fullscreen_exit' },
+      { timestamp: 1760000003000, examKey: 'mod1_prova', eventType: 'tipo_desconhecido' },
+    ] } }))
+    expect(html).toContain('<td>Saiu do foco da prova</td>')
+    expect(html).toContain('<td>Fechou ou recarregou a prova</td>')
+    expect(html).toContain('<td>Saiu da tela cheia</td>')
+    expect(html).toContain('<td>Outro registro da prova</td>')
+    expect(html).not.toContain('tab_blur')
+    expect(html).not.toContain('tipo_desconhecido')
+  })
+
   it(`lista longa mostra ${PRINT_ROW_LIMIT} linhas e diz quantas ficaram só no arquivo`, () => {
     const loginLogs = Array.from({ length: PRINT_ROW_LIMIT + 7 }, (_, i) => ({ timestamp: 1760000000000 + i * 1000, status: 'success', ip: `10.0.0.${i % 250}` }))
     const html = dataExportHtml(sample({ loginLogs }))

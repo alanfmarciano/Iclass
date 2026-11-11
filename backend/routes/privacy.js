@@ -101,8 +101,10 @@ router.post('/api/student/privacy/accept', validateStudentSession, async (req, r
 router.get('/api/student/my-data', validateStudentSession, async (req, res) => {
     const email = req.studentEmail;
     const limitKey = `student-my-data:${email}`;
-    // Confere antes e conta depois: só a cópia entregue gasta uma das cinco da hora.
-    const allowed = rateLimit.peek(limitKey, MY_DATA_LIMIT);
+    // Conta já aqui, antes de qualquer espera: conferir antes e contar depois deixava
+    // pedidos ao mesmo tempo passarem do teto (todos conferiam antes do primeiro contar).
+    // A cópia que não chega a ser entregue (aluno sumiu, falha ao gravar) devolve a vez.
+    const allowed = rateLimit.hit(limitKey, MY_DATA_LIMIT);
     if (!allowed.allowed) {
         const retryAfterSeconds = Math.max(1, Math.ceil(allowed.retryAfterMs / 1000));
         const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
@@ -114,24 +116,29 @@ router.get('/api/student/my-data', validateStudentSession, async (req, res) => {
             retryAfterSeconds,
         });
     }
-    const purposeText = typeof (req.query || {}).finalidade === 'string' ? req.query.finalidade.trim() : '';
-    const purpose = MY_DATA_PURPOSES.includes(purposeText) ? purposeText : 'baixar';
-    // As teclas da prova moram em tabela própria: buscadas antes, por todos os e-mails dele.
-    const keystrokes = await db.keystrokes.findByEmails(studentEmailOwnership(db.memory, email).emails);
-    const data = buildStudentDataExport(db.memory, email, { audience: 'aluno', keystrokes });
-    if (!data) return res.status(404).json({ success: false, error: 'Cadastro não encontrado.' });
-    rateLimit.hit(limitKey, MY_DATA_LIMIT);
-    recordAudit(db.memory, {
-        req,
-        actor: email,
-        action: 'lgpd_export',
-        category: 'privacy',
-        studentEmail: email,
-        details: { audience: 'aluno', purpose, counts: data.counts },
-    });
-    await db.save();
-    res.set('Content-Disposition', `attachment; filename="${exportFileName('aluno', email, todayIso())}"`);
-    res.json(data);
+    let delivered = false;
+    try {
+        const purposeText = typeof (req.query || {}).finalidade === 'string' ? req.query.finalidade.trim() : '';
+        const purpose = MY_DATA_PURPOSES.includes(purposeText) ? purposeText : 'baixar';
+        // As teclas da prova moram em tabela própria: buscadas antes, por todos os e-mails dele.
+        const keystrokes = await db.keystrokes.findByEmails(studentEmailOwnership(db.memory, email).emails);
+        const data = buildStudentDataExport(db.memory, email, { audience: 'aluno', keystrokes });
+        if (!data) return res.status(404).json({ success: false, error: 'Cadastro não encontrado.' });
+        recordAudit(db.memory, {
+            req,
+            actor: email,
+            action: 'lgpd_export',
+            category: 'privacy',
+            studentEmail: email,
+            details: { audience: 'aluno', purpose, counts: data.counts },
+        });
+        await db.save();
+        res.set('Content-Disposition', `attachment; filename="${exportFileName('aluno', email, todayIso())}"`);
+        res.json(data);
+        delivered = true;
+    } finally {
+        if (!delivered) rateLimit.release(limitKey);
+    }
 });
 
 module.exports = router;

@@ -306,11 +306,92 @@ test('[UC-LGPD-010] cadastro antigo (turma em texto, aceite 1.0, sem data de nas
     db.memory.students.push({ name: 'Caio Antigo', email: 'caio@meusdados.local', status: 'Ativo', password: db.hashPassword('Caderno-Azul-7'), studentClass: '1DES', termsAcceptance: { version: '1.0', at: NOW - 900 * DAY } });
     const res = await request(app).get('/api/student/my-data').set(studentHeaders('caio@meusdados.local'));
     assert.equal(res.status, 200, res.body.error);
-    assert.deepEqual(res.body.enrollments.classes, [{ className: '1DES', courseId: null, courseName: '' }]);
+    // A turma guardada só pelo nome acha o curso pela turma cadastrada com esse nome.
+    assert.deepEqual(res.body.enrollments.classes, [{ className: '1DES', courseId: 'DES', courseName: 'Desenvolvimento' }]);
     assert.equal(res.body.acceptances.terms.version, '1.0');
     assert.equal(res.body.acceptances.privacy, null);
     assert.deepEqual(res.body.submissions, []);
     assert.deepEqual(res.body.forum, { questions: [], replies: [] });
+});
+
+test('[UC-LGPD-010] turma só pelo nome: sem curso quando o nome existe em mais de um curso', async () => {
+    db.memory.courses.push({ id: 'ADM', name: 'Administração', schoolId: 'escola_a' });
+    db.memory.classes.push({ name: '1DES', courseId: 'ADM', status: 'active', releasedItems: {} });
+    db.memory.students.push({ name: 'Caio Antigo', email: 'caio@meusdados.local', status: 'Ativo', password: db.hashPassword('Caderno-Azul-7'), classes: ['1DES'] });
+    const res = await request(app).get('/api/student/my-data').set(studentHeaders('caio@meusdados.local'));
+    assert.equal(res.status, 200, res.body.error);
+    assert.deepEqual(res.body.enrollments.classes, [{ className: '1DES', courseId: null, courseName: '' }]);
+});
+
+// Antes: o histórico do cadastro do aluno levava toda entrada da categoria 'student' com
+// campo, inclusive "Observação pedagógica registrada" com a categoria da observação: a
+// observação restrita sumia de observations, mas a data e a categoria apareciam ali.
+test('[UC-LGPD-010] observação que não é Compartilhada não aparece nem pelo histórico do cadastro', async () => {
+    const admin = adminHeaders();
+    const restricted = await request(app).post('/api/admin/student/observations/create').set(admin)
+        .send({ email: ANA, category: 'Acessibilidade pedagógica', text: 'Laudo novo entregue.' });
+    assert.equal(restricted.status, 200, restricted.body.error);
+    assert.equal(restricted.body.observation.visibility, 'Restrita (coordenação)');
+    const team = await request(app).post('/api/admin/student/observations/create').set(admin)
+        .send({ email: ANA, category: 'Frequência', visibility: 'Equipe pedagógica', text: 'Faltas seguidas.' });
+    assert.equal(team.status, 200, team.body.error);
+    const edited = await request(app).post('/api/admin/student/observations/update').set(admin)
+        .send({ id: team.body.observation.id, text: 'Faltas seguidas na segunda.' });
+    assert.equal(edited.status, 200, edited.body.error);
+    const removed = await request(app).post('/api/admin/student/observations/delete').set(admin)
+        .send({ id: 'obs_restricted' });
+    assert.equal(removed.status, 200, removed.body.error);
+    // Mudança do cadastro de verdade, para conferir que o histórico continua.
+    db.memory.auditLogs.push({ id: 'aud_turma', action: 'update', category: 'student', actor: ADMIN, studentEmail: ANA, field: 'Turmas', oldValue: '', newValue: '1DES', timestamp: Date.now() });
+    assert.ok(auditOf('observation_create').length >= 2 && auditOf('observation_update').length && auditOf('observation_delete').length);
+
+    const res = await request(app).get('/api/student/my-data').set(studentHeaders(ANA));
+    assert.equal(res.status, 200, res.body.error);
+    const data = res.body;
+    assert.deepEqual(data.observations.map(item => item.id), ['obs_shared']);
+    assert.deepEqual(data.profileHistory.map(item => item.field), ['E-mail/login', 'Telefone', 'Turmas']);
+    const text = JSON.stringify(data);
+    for (const leak of ['Observação pedagógica', 'Acessibilidade pedagógica', 'Frequência', 'Observação geral', 'Laudo novo', 'Faltas seguidas']) {
+        assert.equal(text.includes(leak), false, `a cópia do aluno não pode trazer "${leak}"`);
+    }
+    assert.equal(data.counts.profileHistory, 3);
+
+    // O administrador continua vendo tudo (histórico e auditoria).
+    const full = await request(app).get(`/api/admin/lgpd/students/export?email=${ANA}`).set(admin);
+    assert.equal(full.status, 200, full.body.error);
+    const fields = full.body.profileHistory.map(item => `${item.field}:${item.newValue}`);
+    assert.ok(fields.includes('Observação pedagógica:Acessibilidade pedagógica'));
+    assert.ok(fields.includes('Observação pedagógica:Frequência'));
+    assert.ok(full.body.audit.some(entry => entry.action === 'observation_delete'));
+});
+
+test('[UC-LGPD-010] pedidos ao mesmo tempo não passam de 5 cópias por hora', async () => {
+    const headers = studentHeaders(ANA);
+    const results = await Promise.all(Array.from({ length: 10 }, () => request(app).get('/api/student/my-data').set(headers)));
+    const statuses = results.map(res => res.status);
+    assert.equal(statuses.filter(status => status === 200).length, 5, `status: ${statuses.join(', ')}`);
+    assert.equal(statuses.filter(status => status === 429).length, 5);
+    assert.equal(auditOf('lgpd_export').length, 5);
+});
+
+test('[UC-LGPD-010] cópia que não sai (falha ao montar) devolve a vez', async () => {
+    const headers = studentHeaders(ANA);
+    const saved = db.memory.examApplications;
+    // Falha inesperada ao montar a cópia (depois da conferência do limite): 500, e a vez
+    // volta para o aluno.
+    Object.defineProperty(db.memory, 'examApplications', { configurable: true, enumerable: true, get() { throw new Error('falha simulada'); } });
+    let failed;
+    try {
+        failed = await request(app).get('/api/student/my-data').set(headers);
+    } finally {
+        Object.defineProperty(db.memory, 'examApplications', { configurable: true, enumerable: true, writable: true, value: saved });
+    }
+    assert.equal(failed.status, 500);
+    assert.equal(rateLimit.peek(`student-my-data:${ANA}`, { max: 5 }).count, 0);
+    assert.equal(auditOf('lgpd_export').length, 0);
+    const ok = await request(app).get('/api/student/my-data').set(headers);
+    assert.equal(ok.status, 200, ok.body.error);
+    assert.equal(rateLimit.peek(`student-my-data:${ANA}`, { max: 5 }).count, 1);
 });
 
 test('[UC-LGPD-011] administrador exporta tudo do aluno pela ficha, com lgpd_export na auditoria', async () => {
@@ -340,6 +421,7 @@ test('[UC-LGPD-011] administrador exporta tudo do aluno pela ficha, com lgpd_exp
     assert.equal(thread.replies[0].authorEmail, PROF, 'quem da equipe respondeu fica na cópia completa');
     assert.deepEqual(thread.replies[1], { from: 'Outro aluno', text: '', timestamp: thread.replies[1].timestamp });
     assert.equal(thread.events.length, 1);
+    assert.equal(thread.events[0].by, PROF, 'quem da equipe mexeu na dúvida fica na cópia completa');
     assert.equal(data.examMessages[0].senderEmail, PROF);
     assert.equal(data.counts.audit, 3);
     const entries = auditOf('lgpd_export');
@@ -351,6 +433,33 @@ test('[UC-LGPD-011] administrador exporta tudo do aluno pela ficha, com lgpd_exp
     const print = await request(app).get(`/api/admin/lgpd/students/export?email=${ANA}&finalidade=imprimir`).set(adminHeaders());
     assert.equal(print.status, 200);
     assert.equal(auditOf('lgpd_export')[1].details.purpose, 'imprimir');
+});
+
+// Antes: o histórico da dúvida (events) ia sem filtro na cópia completa, com o e-mail e
+// o nome do outro aluno que respondeu e o trecho da resposta apagada.
+test('[UC-LGPD-011] na cópia completa, o histórico do fórum não traz e-mail, nome nem texto de outro aluno', async () => {
+    const thread = db.memory.forum.find(item => item.id === 'f_ana');
+    thread.events.push(
+        { type: 'reply', by: BIA, byName: 'Bruno Outro', role: 'Aluno', at: new Date(NOW - 2 * DAY).toISOString(), detail: null },
+        { type: 'delete_reply', by: PROF, byName: 'Professora Paula', role: 'Instrutor', at: new Date(NOW - DAY).toISOString(), detail: 'Palpite do Bruno' },
+        { type: 'edit_comment', by: ANA, byName: 'Ana Souza', role: 'Aluno', at: new Date(NOW - DAY).toISOString(), detail: null },
+    );
+    const res = await request(app).get(`/api/admin/lgpd/students/export?email=${ANA}`).set(adminHeaders());
+    assert.equal(res.status, 200, res.body.error);
+    const events = res.body.forum.questions[0].events;
+    assert.deepEqual(events.map(event => [event.type, event.by, event.byName]), [
+        ['answered', PROF, 'Professora Paula'],
+        ['reply', null, 'Outro aluno'],
+        ['delete_reply', PROF, 'Professora Paula'],
+        ['edit_comment', ANA, 'Ana Souza'],
+    ]);
+    assert.equal(events[2].detail, null, 'o trecho da resposta apagada pode ser de outro aluno');
+    const text = JSON.stringify(res.body);
+    for (const foreign of [BIA, 'Bruno Outro', 'Palpite do Bruno']) {
+        assert.equal(text.includes(foreign), false, `a cópia do administrador não pode trazer "${foreign}"`);
+    }
+    // A memória não muda.
+    assert.equal(thread.events[1].by, BIA);
 });
 
 test('[UC-LGPD-011] exportação do administrador: professor 403, sem sessão 401, pedido errado 400 e aluno desconhecido 404', async () => {

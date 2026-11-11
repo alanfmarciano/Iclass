@@ -9,6 +9,7 @@
 // linhas e dizem quantas ficaram só no arquivo JSON.
 import { fmtGrade } from './grades'
 import { acceptanceText, birthDateText } from './legalAcceptance'
+import { logLabel } from '../features/admin/monitorLogs'
 
 export const PRINT_ROW_LIMIT = 200
 
@@ -137,6 +138,15 @@ function keystrokeSummary(rows) {
   return [...byExam.values()].map((entry) => [entry.examKey, entry.total, entry.suspicious, fmtDateTime(entry.last)])
 }
 
+// Evento do registro de foco (proctoringLogs grava eventType, como 'tab_blur') com o mesmo
+// rótulo do Monitor. Tipo que o Monitor não conhece não sai como código.
+function focusEventLabel(item) {
+  const type = String((item && (item.eventType || item.type || item.event)) || '').trim()
+  if (!type) return '—'
+  const label = logLabel({ eventType: type, details: item.details })
+  return label && label !== type ? label : 'Outro registro da prova'
+}
+
 const ORIGIN_LABELS = { login: 'Automática (acesso)', chamada: 'Chamada', manual: 'Manual' }
 
 export function dataExportHtml(data) {
@@ -182,7 +192,7 @@ export function dataExportHtml(data) {
     .map((item) => [fmtDateTime(item.timestamp), item.status === 'success' ? 'Entrou' : (item.reason || item.status), item.ip, item.browser, item.device || item.os]), 'Nenhum acesso registrado.'),
   `${list(data.moduleAccess).length} acesso(s) a materiais registrados.`))
   sections.push(section('Monitoramento das provas', [
-    table(['Data e hora', 'Prova', 'Evento'], list(proctoring.focusEvents).map((item) => [fmtDateTime(item.timestamp), item.examKey, item.type || item.event]), 'Nenhuma saída da tela da prova registrada.'),
+    table(['Data e hora', 'Prova', 'Evento'], list(proctoring.focusEvents).map((item) => [fmtDateTime(item.timestamp), item.examKey, focusEventLabel(item)]), 'Nenhuma saída da tela da prova registrada.'),
     table(['Prova', 'Teclas registradas', 'Atalhos suspeitos', 'Último registro'], keystrokeSummary(list(proctoring.keystrokes)), 'Nenhuma tecla registrada.'),
   ].join(''), 'O detalhe de cada tecla registrada está no arquivo JSON.'))
   const examRecords = list(data.examRecords)

@@ -5,6 +5,8 @@
 // - rateLimit(key, opts) / hit(key, opts): conta esta chamada e diz se ela cabe no teto;
 // - peek(key, opts): só consulta, sem contar (o token da prova confere antes e conta
 //   depois, só quando o código está errado: H5b, DES-X2);
+// - release(key): devolve uma chamada já contada por hit (a cópia de "Meus dados" conta
+//   antes de esperar e devolve se não chegou a ser entregue: H8c);
 // - reset(key): zera a chave (o token certo zera os erros do aluno).
 // Tudo zera quando o servidor reinicia; nada vai para o banco nem para o backup.
 const { registerTimer } = require('./serverLifecycle.js');
@@ -40,6 +42,15 @@ function peek(key, { max = 30, now = Date.now() } = {}) {
     return { allowed: true, remaining: max - entry.count, retryAfterMs: 0, count: entry.count };
 }
 
+// Desconta uma chamada que hit contou e que não chegou a valer. Nunca abaixo de zero; a
+// janela continua a mesma.
+function release(key, { now = Date.now() } = {}) {
+    const entry = currentEntry(key, now);
+    if (!entry || entry.count <= 0) return false;
+    entry.count -= 1;
+    return true;
+}
+
 function reset(key) {
     return buckets.delete(key);
 }
@@ -58,4 +69,4 @@ registerTimer('rate-limit-cleanup', setInterval(() => {
     }
 }, 5 * 60 * 1000));
 
-module.exports = { rateLimit: hit, hit, peek, reset, resetForTests };
+module.exports = { rateLimit: hit, hit, peek, release, reset, resetForTests };

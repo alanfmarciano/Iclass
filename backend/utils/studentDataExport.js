@@ -21,7 +21,7 @@
 // buscadas (db.keystrokes.findByEmails), porque elas moram em tabela própria.
 const { stripSecrets, normalizeAuditEntry, auditEntryWithoutSecrets } = require('./audit.js');
 const { studentEmailOwnership } = require('./gradebook.js');
-const { normalizeEmail, studentClassEntries, isAnonymizedStudent } = require('./students.js');
+const { normalizeEmail, studentClassEntries, isAnonymizedStudent, AUDITABLE_FIELDS } = require('./students.js');
 const legal = require('./legalDocuments.js');
 const { studentCourseId } = require('./legalAcceptance.js');
 const { keystrokeModeOf, KEYSTROKE_MODE_LABELS } = require('./keystrokePolicy.js');
@@ -50,6 +50,22 @@ const ACTOR_SUFFIX = /By$/;
 const SESSION_KEY = /session/i;
 // Conteúdo da prova (enunciados e alternativas): não é dado pessoal e incha o arquivo.
 const EXAM_CONTENT_KEYS = ['examSnapshot', 'examQuestions'];
+// Campos do histórico do cadastro que o aluno vê (profileHistory na versão 'aluno'): só
+// os do próprio cadastro (AUDITABLE_FIELDS, turmas, acessibilidade, pedido de matrícula,
+// criação e o responsável informado no primeiro acesso). Lista fechada: a categoria
+// 'student' da auditoria também guarda as observações pedagógicas (observation_*, com a
+// categoria da observação em newValue), e a observação que não é 'Compartilhada' não
+// pode aparecer nem pela data nem pela categoria (SEG-04).
+const STUDENT_HISTORY_FIELDS = new Set([
+    ...AUDITABLE_FIELDS.map(({ label }) => label),
+    'Turmas',
+    'Preferências de acessibilidade',
+    'Matrícula',
+    'Cadastro',
+    'Nome do responsável',
+    'Telefone do responsável',
+]);
+const STAFF_ONLY_HISTORY_ACTION = /^observation_/;
 
 function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -105,11 +121,24 @@ function profileSection(student, audience) {
     return profile;
 }
 
+// Curso de uma turma guardada só pelo nome (cadastro antigo, classes como texto): o da
+// turma cadastrada com esse nome, quando só um curso tem turma com ele. Com o nome em
+// mais de um curso, fica sem curso (não dá para saber qual).
+function courseIdByClassName(memory, className) {
+    const wanted = String(className || '').trim().toLowerCase();
+    if (!wanted) return '';
+    const found = new Set(list(memory.classes)
+        .filter(cls => String(cls.name || '').trim().toLowerCase() === wanted && cls.courseId)
+        .map(cls => String(cls.courseId)));
+    return found.size === 1 ? [...found][0] : '';
+}
+
 function enrollmentsSection(memory, student, audience) {
     const courses = new Map(list(memory.courses).map(course => [String(course.id), course]));
     const classes = studentClassEntries(student).map(entry => {
-        const course = courses.get(String(entry.courseId || ''));
-        return { className: entry.name, courseId: entry.courseId || null, courseName: (course && course.name) || '' };
+        const courseId = entry.courseId || courseIdByClassName(memory, entry.name);
+        const course = courses.get(String(courseId || ''));
+        return { className: entry.name, courseId: courseId || null, courseName: (course && course.name) || '' };
     });
     return {
         classes,
@@ -182,9 +211,21 @@ function byEmailSection(memory, collection, ownership, audience) {
 // outro aluno", sem nome nem texto, nas duas versões: o arquivo pode ser entregue ao
 // titular, e a resposta é dado do outro aluno. Na versão do aluno, a resposta da equipe
 // fica com o texto, sem quem respondeu, e o histórico da dúvida (quem mexeu) fica de fora.
+// Na versão do administrador o histórico vem, mas o que outro aluno fez nele vira "Outro
+// aluno" (sem e-mail nem nome), e o trecho de resposta apagada (detail do delete_reply)
+// só fica quando foi ele mesmo que apagou: pode ser o texto da resposta de outro aluno.
 function forumSection(memory, ownership, audience) {
     const isStudentReply = reply => !!reply && (reply.authorRole === 'Aluno' || reply.role === 'Aluno');
     const ownsReply = reply => isStudentReply(reply) && ownership.owns(reply.authorEmail, reply, 'student');
+    const eventView = event => {
+        if (!isPlainObject(event)) return null;
+        const byOwner = event.role === 'Aluno' && ownership.owns(event.by, { at: event.at }, 'student');
+        const view = stripSecrets(event);
+        if (byOwner) return view;
+        if (event.role === 'Aluno') { view.by = null; view.byName = 'Outro aluno'; }
+        if (event.type === 'delete_reply') view.detail = null;
+        return view;
+    };
     const questions = [];
     const replies = [];
     list(memory.forum).forEach(comment => {
@@ -198,7 +239,7 @@ function forumSection(memory, ownership, audience) {
             questions.push({
                 ...clean(question, audience),
                 replies: list(thread).map(replyView),
-                ...(audience === 'admin' ? { events: stripSecrets(list(events)) } : {}),
+                ...(audience === 'admin' ? { events: list(events).map(eventView).filter(Boolean) } : {}),
             });
             return;
         }
@@ -291,11 +332,16 @@ function ownedAuditEntries(memory, ownership) {
         .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 }
 
-// Histórico das alterações do cadastro, para o aluno: quando, o quê, antes e depois. Sem
-// quem alterou, IP nem aparelho.
-function profileHistory(entries) {
+// Histórico das alterações do cadastro: quando, o quê, antes e depois. Sem quem alterou,
+// IP nem aparelho. Na versão do aluno, só os campos do próprio cadastro
+// (STUDENT_HISTORY_FIELDS): o registro de observação pedagógica fica de fora, porque
+// diria a data e a categoria de uma observação restrita. O administrador vê tudo (e a
+// auditoria inteira na seção audit).
+function profileHistory(entries, audience) {
     return entries
         .filter(entry => entry.category === 'student' && entry.field)
+        .filter(entry => audience === 'admin'
+            || (!STAFF_ONLY_HISTORY_ACTION.test(String(entry.action || '')) && STUDENT_HISTORY_FIELDS.has(entry.field)))
         .map(entry => ({
             timestamp: isoTime(entry.timestamp),
             label: entry.label,
@@ -376,7 +422,7 @@ function buildStudentDataExport(memory, email, { audience = 'aluno', keystrokes 
         },
         examRecords: examRecordsSection(memory, ownership, audience),
         examMessages: examMessagesSection(memory, ownership, audience),
-        profileHistory: profileHistory(auditEntries),
+        profileHistory: profileHistory(auditEntries, audience),
     };
     if (audience === 'admin') {
         data.openAttempts = openAttemptsSection(memory, ownership);
