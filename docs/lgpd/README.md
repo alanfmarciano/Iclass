@@ -67,6 +67,14 @@ Os dados do cadastro entram como texto literal: toda pontuação leva a barra do
 - O bloqueio dos atalhos (copiar, imprimir, buscar) e o registro das saídas da tela continuam iguais em todos os modos.
 - As instruções da prova dizem ao aluno o que é registrado e por quanto tempo fica guardado. O servidor filtra de novo, então um navegador com a versão antiga da prova também segue o modo.
 
+## Cópia dos dados do aluno (direito de acesso)
+
+- No portal, "Meus dados" (também pelo cartão em Minha conta) baixa um arquivo JSON com os dados pessoais do aluno ou abre uma versão para imprimir. São até 5 cópias por hora.
+- Entram o cadastro, as turmas, os aceites, as notas publicadas, a frequência, os certificados, as observações compartilhadas com o aluno, as dúvidas do fórum, os acessos ao portal e o que a prova registrou (saídas da tela e teclas). Não entram as questões e o gabarito, os dados de outros alunos, quem escreveu cada observação, a observação de acessibilidade (só o aviso de que existe) nem a nota ainda em revisão.
+- Para atender um pedido do aluno, o administrador gera a cópia completa na ficha do aluno, aba Segurança ("Baixar dados (JSON)" ou "Imprimir"): traz também a nota em revisão, as observações com o autor, a observação de acessibilidade, os e-mails antigos e a auditoria do aluno. O professor não tem esse botão.
+- Toda cópia, do aluno ou do administrador, fica na Auditoria ("Dados pessoais exportados") com quem gerou e se foi para baixar ou imprimir.
+- O registro dos pedidos do titular (correção, exclusão, revogação, com prazo e resposta) ainda não existe no IClass: anote fora dele por enquanto.
+
 ## Relatório de impacto (RIPD)
 
 - [`RIPD-modelo-monitoramento-prova.md`](RIPD-modelo-monitoramento-prova.md) é um modelo do Relatório de Impacto à Proteção de Dados Pessoais do monitoramento da prova: o que é registrado em cada modo do teclado, quem vê, por quanto tempo fica, as medidas de segurança e uma tabela de riscos para a escola preencher. Como os Termos, é um modelo de referência: revise com a direção e o encarregado.

@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
@@ -25,6 +25,7 @@ const NAV = [
   { to: '/aluno/avisos', icon: Megaphone, text: 'Avisos' },
   { to: '/aluno/calendario', icon: CalendarDays, text: 'Calendário' },
   { to: '/aluno/conta', icon: UserRound, text: 'Minha conta' },
+  { to: '/aluno/meus-dados', icon: ShieldCheck, text: 'Meus dados' },
 ]
 // A tela da prova chega sob demanda (lib/lazyPage.js). Dois segundos depois de o portal
 // abrir, o navegador já busca o arquivo dela, uma vez: quando o professor libera a

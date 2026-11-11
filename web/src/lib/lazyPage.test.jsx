@@ -329,9 +329,10 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     expect(screens).toEqual(['./features/LoginPage'])
     const lazyScreens = [...appSource.matchAll(/lazyPage\(\(\) => import\('([^']+)'\)/g)].map((match) => match[1])
     // 27 telas do instrutor (a Auditoria entrou no H7a-2, a Privacidade (LGPD) no H8a-1 e
-    // Cadastros encerrados no H7c), 9 do aluno (com Minha conta, H5a), a prova, a página
-    // pública dos Termos e da Privacidade (H8a-1) e os 3 layouts.
-    expect(lazyScreens.length).toBe(41)
+    // Cadastros encerrados no H7c), 10 do aluno (com Minha conta, H5a, e Meus dados, H8c),
+    // a prova, a página pública dos Termos e da Privacidade (H8a-1) e os 3 layouts.
+    expect(lazyScreens.length).toBe(42)
+    expect(lazyScreens).toContain('./features/student/MeusDadosPage')
     expect(lazyScreens).toContain('./features/admin/CadastrosEncerradosPage')
     expect(lazyScreens).toContain('./features/student/ContaPage')
     expect(lazyScreens).toContain('./features/admin/AuditoriaPage')

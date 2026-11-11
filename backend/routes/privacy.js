@@ -14,6 +14,12 @@
 //      privacy_accept e, para a data e o responsável, a alteração do cadastro.
 // Política 'ciência': nada disso bloqueia o login nem as outras rotas; o portão do portal
 // (StudentPrivacyGate) pede o que falta, e a prova nunca passa por ele.
+//
+// H8c reduzido (SEG-14, art. 18 da LGPD): GET /api/student/my-data?finalidade=imprimir
+// baixa a cópia dos dados pessoais do próprio aluno (meus-dados-AAAA-MM-DD.json, versão
+// 'aluno' de utils/studentDataExport.js), no máximo 5 vezes por hora. Cada cópia fica na
+// auditoria (lgpd_export, com quantos registros de cada tipo saíram). A tela "Meus dados"
+// mostra a mesma cópia para imprimir (web/src/lib/dataExportPrint.js).
 const express = require('express');
 const db = require('../database.js');
 const { publicLegalDocuments } = require('../utils/legalDocuments.js');
@@ -21,6 +27,14 @@ const { validateStudentSession } = require('../middlewares.js');
 const legalAcceptance = require('../utils/legalAcceptance.js');
 const { recordAudit } = require('../utils/audit.js');
 const { recordStudentAudit } = require('../utils/students.js');
+const { buildStudentDataExport, exportFileName } = require('../utils/studentDataExport.js');
+const { studentEmailOwnership } = require('../utils/gradebook.js');
+const { todayIso } = require('../utils/birthDate.js');
+const rateLimit = require('../utils/rateLimit.js');
+
+// Cópias de "Meus dados" por aluno: 5 por hora (o arquivo sai inteiro a cada pedido).
+const MY_DATA_LIMIT = Object.freeze({ max: 5, windowMs: 60 * 60 * 1000 });
+const MY_DATA_PURPOSES = ['baixar', 'imprimir'];
 
 const router = express.Router();
 
@@ -82,6 +96,42 @@ router.post('/api/student/privacy/accept', validateStudentSession, async (req, r
         await db.save();
     }
     res.json({ ...legalAcceptance.studentPrivacyStatus(db.memory, student, { courseId }), saved: accepted.length + changes.length > 0 });
+});
+
+router.get('/api/student/my-data', validateStudentSession, async (req, res) => {
+    const email = req.studentEmail;
+    const limitKey = `student-my-data:${email}`;
+    // Confere antes e conta depois: só a cópia entregue gasta uma das cinco da hora.
+    const allowed = rateLimit.peek(limitKey, MY_DATA_LIMIT);
+    if (!allowed.allowed) {
+        const retryAfterSeconds = Math.max(1, Math.ceil(allowed.retryAfterMs / 1000));
+        const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
+        res.set('Retry-After', String(retryAfterSeconds));
+        return res.status(429).json({
+            success: false,
+            code: 'my_data_rate_limited',
+            error: `Você já baixou seus dados ${MY_DATA_LIMIT.max} vezes na última hora. Tente de novo em ${minutes} ${minutes === 1 ? 'minuto' : 'minutos'}.`,
+            retryAfterSeconds,
+        });
+    }
+    const purposeText = typeof (req.query || {}).finalidade === 'string' ? req.query.finalidade.trim() : '';
+    const purpose = MY_DATA_PURPOSES.includes(purposeText) ? purposeText : 'baixar';
+    // As teclas da prova moram em tabela própria: buscadas antes, por todos os e-mails dele.
+    const keystrokes = await db.keystrokes.findByEmails(studentEmailOwnership(db.memory, email).emails);
+    const data = buildStudentDataExport(db.memory, email, { audience: 'aluno', keystrokes });
+    if (!data) return res.status(404).json({ success: false, error: 'Cadastro não encontrado.' });
+    rateLimit.hit(limitKey, MY_DATA_LIMIT);
+    recordAudit(db.memory, {
+        req,
+        actor: email,
+        action: 'lgpd_export',
+        category: 'privacy',
+        studentEmail: email,
+        details: { audience: 'aluno', purpose, counts: data.counts },
+    });
+    await db.save();
+    res.set('Content-Disposition', `attachment; filename="${exportFileName('aluno', email, todayIso())}"`);
+    res.json(data);
 });
 
 module.exports = router;

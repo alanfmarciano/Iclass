@@ -17,6 +17,9 @@
 //                                          o que a limpeza apagaria com outros prazos
 // POST /api/admin/lgpd/retention           grava os três prazos (retention_settings_changed)
 // POST /api/admin/lgpd/retention/run       limpa agora (APAGAR); 409 sem revisão dos prazos ou com prova aberta
+// GET  /api/admin/lgpd/students/export?email=&finalidade=baixar|imprimir
+//                                          cópia completa dos dados pessoais de um aluno
+//                                          (H8c reduzido, SEG-14), com lgpd_export na auditoria
 //
 // Só o administrador: a regra /lgpd de ADMIN_API_PERMISSION_RULES pede students.security,
 // que é exclusiva dele, e cada rota confere de novo. Publicar e trocar o encarregado
@@ -38,11 +41,15 @@ const { todayIso } = require('../utils/birthDate.js');
 const settingsUtil = require('../utils/settings.js');
 const storage = require('../utils/storage.js');
 const retention = require('../utils/retention.js');
+const { buildStudentDataExport, exportFileName } = require('../utils/studentDataExport.js');
+const { studentEmailOwnership } = require('../utils/gradebook.js');
+const { normalizeEmail } = require('../utils/students.js');
 
 const PERMISSION = 'students.security';
 const PUBLISH_WORD = 'PUBLICAR';
 const PURGE_WORD = 'APAGAR';
 const ACTIVE_EXAM_MESSAGE = 'Há prova em andamento; a limpeza roda quando ela terminar.';
+const EXPORT_PURPOSES = ['baixar', 'imprimir'];
 
 function queryText(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -425,6 +432,42 @@ function createAdminPrivacyRouter() {
                 return res.status(409).json({ success: false, code: 'busy', error: 'Já há uma limpeza em andamento. Aguarde alguns instantes.' });
             }
             res.json({ ...(await retentionPayload()), counts: result.counts, remaining: result.remaining });
+        });
+    });
+
+    // Exportação dos dados pessoais de um aluno (H8c reduzido; SEG-14, art. 18 da LGPD):
+    // a versão 'admin' de utils/studentDataExport.js, com tudo o que o IClass guarda da
+    // pessoa. Cada exportação fica na auditoria (lgpd_export, privacy) com quem exportou,
+    // a finalidade (baixar o arquivo ou imprimir) e quantos registros de cada tipo saíram.
+    router.get('/api/admin/lgpd/students/export', (req, res) => {
+        validateAdminPermission(req, res, PERMISSION, async (config, matchedAdmin) => {
+            const query = req.query || {};
+            const email = normalizeEmail(queryText(query.email));
+            if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail do aluno.', field: 'email' });
+            const purposeText = queryText(query.finalidade);
+            if (purposeText && !EXPORT_PURPOSES.includes(purposeText)) {
+                return res.status(400).json({ success: false, error: 'Finalidade inválida: use baixar ou imprimir.', field: 'finalidade' });
+            }
+            if (!(db.memory.students || []).some(student => student && normalizeEmail(student.email) === email)) {
+                return res.status(404).json({ success: false, error: 'Aluno não encontrado.' });
+            }
+            // As teclas da prova moram em tabela própria: buscadas antes, por todos os
+            // e-mails do aluno. A memória é lida de novo depois da espera.
+            const keystrokes = await db.keystrokes.findByEmails(studentEmailOwnership(db.memory, email).emails);
+            const actorEmail = (matchedAdmin && matchedAdmin.email) || null;
+            const data = buildStudentDataExport(db.memory, email, { audience: 'admin', keystrokes, generatedBy: actorEmail });
+            if (!data) return res.status(404).json({ success: false, error: 'Aluno não encontrado.' });
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'lgpd_export',
+                category: 'privacy',
+                studentEmail: email,
+                details: { audience: 'admin', purpose: purposeText || 'baixar', counts: data.counts },
+            });
+            await db.save();
+            res.set('Content-Disposition', `attachment; filename="${exportFileName('admin', email, todayIso())}"`);
+            res.json(data);
         });
     });
 

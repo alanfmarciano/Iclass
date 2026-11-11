@@ -57,6 +57,7 @@ const AvisosStudentPage = lazyPage(() => import('./features/student/AvisosPage')
 const CalendarioStudentPage = lazyPage(() => import('./features/student/CalendarioPage'))
 const BibliotecaStudentPage = lazyPage(() => import('./features/student/BibliotecaPage'))
 const ContaStudentPage = lazyPage(() => import('./features/student/ContaPage'))
+const MeusDadosStudentPage = lazyPage(() => import('./features/student/MeusDadosPage'))
 
 function RequireRole({ role, children }) {
   const { auth, authReady } = useAuth()
@@ -157,6 +158,7 @@ export default function App() {
         <Route path="calendario" element={<CalendarioStudentPage />} />
         <Route path="biblioteca" element={<BibliotecaStudentPage />} />
         <Route path="conta" element={<ContaStudentPage />} />
+        <Route path="meus-dados" element={<MeusDadosStudentPage />} />
       </Route>
 
       {/* Termos e Privacidade: abertos a qualquer um, com ou sem login (H8a-1). */}

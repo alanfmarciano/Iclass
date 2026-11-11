@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, BookOpen, CheckCircle2, LogIn, FileText } from 'lucide-react'
+import { ArrowLeft, Pencil, BookOpen, CheckCircle2, LogIn, FileText, Download, Printer } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -20,6 +20,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf } from '../../lib/grades'
 import { acceptanceText, birthDateText } from '../../lib/legalAcceptance'
 import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
+import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -97,6 +98,36 @@ export default function AlunoDetailPage() {
   const [auditRows, setAuditRows] = useState([])
   const [filterModule, setFilterModule] = useState('all')
   const [filterSemester, setFilterSemester] = useState('all')
+  const [exporting, setExporting] = useState('')
+
+  // Cópia dos dados pessoais do aluno (H8c reduzido; SEG-14): só o administrador
+  // (students.security). Cada pedido fica na auditoria com a finalidade; a aba Auditoria
+  // é relida em seguida para mostrar o registro.
+  async function exportStudentData(purpose) {
+    if (exporting) return
+    const win = purpose === 'imprimir' ? openPrintWindow() : null
+    if (purpose === 'imprimir' && !win) {
+      toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
+      return
+    }
+    setExporting(purpose)
+    try {
+      const query = new URLSearchParams({ email, finalidade: purpose })
+      const data = await api.get(`/api/admin/lgpd/students/export?${query}`)
+      if (purpose === 'imprimir') {
+        if (!printDataExport(data, win)) toast.error('A janela de impressão foi fechada antes de a cópia ficar pronta.')
+      } else {
+        const name = downloadDataExport(data)
+        toast.success(`Arquivo ${name} salvo na pasta de downloads.`)
+      }
+      api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => {})
+    } catch (e) {
+      if (win && !win.closed) win.close()
+      toast.error(e.message)
+    } finally {
+      setExporting('')
+    }
+  }
 
   const student = useMemo(() => (students || []).find((s) => s.email && s.email.toLowerCase() === email.toLowerCase()), [students, email])
 
@@ -319,6 +350,14 @@ export default function AlunoDetailPage() {
                   <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Último acesso</span><span className="text-text">{fmtDateTime(student.lastSeenAt)}</span></div>
                   <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Aceite dos Termos</span><span className="text-text">{acceptanceText(student.termsAcceptance)}</span></div>
                   <div className="flex justify-between"><span className="text-muted">Política de Privacidade</span><span className="text-text">{acceptanceText(student.privacyAcceptance)}</span></div>
+                </div>
+                <div className="mt-4 border-t border-border/50 pt-4">
+                  <p className="text-sm font-semibold text-text">Dados pessoais (LGPD)</p>
+                  <p className="mt-1 text-xs text-muted">Cópia de tudo o que o IClass guarda sobre este aluno, para atender um pedido dele. Fica registrada na auditoria.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button variant="secondary" icon={Download} loading={exporting === 'baixar'} disabled={!!exporting && exporting !== 'baixar'} onClick={() => exportStudentData('baixar')}>Baixar dados (JSON)</Button>
+                    <Button variant="secondary" icon={Printer} loading={exporting === 'imprimir'} disabled={!!exporting && exporting !== 'imprimir'} onClick={() => exportStudentData('imprimir')}>Imprimir</Button>
+                  </div>
                 </div>
               </Card>
             )}
