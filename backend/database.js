@@ -588,12 +588,73 @@ function runSql(sql, params = []) {
     return new Promise((resolve, reject) => sqliteDb.run(sql, params, err => (err ? reject(err) : resolve())));
 }
 
+// Leituras diretas na conexão, fora da fila de gravação (o SELECT 1 do db.ping, as
+// consultas do store de teclas do Monitor, os PRAGMA do cartão Armazenamento). O VACUUM e
+// o VACUUM INTO recusam rodar com outra instrução em andamento na mesma conexão ("cannot
+// VACUUM - SQL statements in progress"): o backup automático do boot falhava quando o
+// launcher ou o Reiniciar consultavam o /api/health na mesma hora (sobra do H4b na J3,
+// decisões §12). Cada leitura direta conta aqui do pedido até a resposta do sqlite (não
+// até o tempo-limite do ping); vacuumExclusive espera o contador zerar antes do VACUUM.
+let directStatements = 0;
+const directIdleWaiters = new Set();
+
+function beginDirectStatement() {
+    directStatements += 1;
+}
+
+function endDirectStatement() {
+    directStatements = Math.max(0, directStatements - 1);
+    if (directStatements === 0) {
+        for (const resolve of [...directIdleWaiters]) resolve(true);
+        directIdleWaiters.clear();
+    }
+}
+
+// Enquanto um VACUUM espera ou roda (vacuumExclusive), leitura direta nova não começa:
+// espera o fim dele (a fila de gravação já está parada pelo runExclusive). Sem isso, um
+// Monitor consultando sem parar podia nunca deixar o contador zerar.
+let vacuumGate = null;
+
+function trackedStatement(run) {
+    if (vacuumGate) {
+        vacuumGate.promise.then(() => trackedStatement(run));
+        return undefined;
+    }
+    beginDirectStatement();
+    let ended = false;
+    const end = () => { if (!ended) { ended = true; endDirectStatement(); } };
+    try {
+        return run(end);
+    } catch (err) {
+        end();
+        throw err;
+    }
+}
+
+// Espera as leituras diretas em andamento terminarem, com teto (timeoutMs); devolve true
+// quando nenhuma ficou em andamento.
+function waitDirectStatementsIdle(timeoutMs = 2000) {
+    if (directStatements === 0) return Promise.resolve(true);
+    return new Promise(resolve => {
+        const done = value => { clearTimeout(timer); directIdleWaiters.delete(done); resolve(value); };
+        const timer = setTimeout(() => done(directStatements === 0), timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref();
+        directIdleWaiters.add(done);
+    });
+}
+
 function getSql(sql, params = []) {
-    return new Promise((resolve, reject) => sqliteDb.get(sql, params, (err, row) => (err ? reject(err) : resolve(row))));
+    return new Promise((resolve, reject) => trackedStatement(end => sqliteDb.get(sql, params, (err, row) => {
+        end();
+        return err ? reject(err) : resolve(row);
+    })));
 }
 
 function allSql(sql, params = []) {
-    return new Promise((resolve, reject) => sqliteDb.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+    return new Promise((resolve, reject) => trackedStatement(end => sqliteDb.all(sql, params, (err, rows) => {
+        end();
+        return err ? reject(err) : resolve(rows);
+    })));
 }
 
 // Espera por trava do banco (outro programa gravando): ICLASS_DB_BUSY_TIMEOUT_MS ou 5 s.
@@ -1478,6 +1539,7 @@ async function init() {
 // do motor de gravação, na mesma transação das coleções.
 const keystrokeStore = createKeystrokeStore({
     connection: sqliteDb,
+    trackStatement: trackedStatement,
     requestWrite: result => requestSave(writer.scopeFromOptions({ only: [KEYSTROKE_COLLECTION] }), { result }),
     runExclusive: fn => writer.runExclusive(fn),
     flush: () => writer.flush(),
@@ -1720,6 +1782,40 @@ function storageStatus() {
     };
 }
 
+// VACUUM / VACUUM INTO dentro do runExclusive (decisões §12, sobra do H4b): espera as
+// leituras diretas em andamento (até 2 s; os pings que chegam agora respondem pelo
+// último resultado, porque a fila está "running") e, se mesmo assim o sqlite responder
+// "SQL statements in progress", tenta de novo até 5 vezes, com 200 ms entre elas.
+// beforeRetry apaga o arquivo parcial do VACUUM INTO antes de cada nova tentativa.
+const VACUUM_BUSY_RETRIES = 5;
+const VACUUM_BUSY_RETRY_MS = 200;
+
+function isStatementsInProgress(err) {
+    return !!err && /SQL statements in progress/i.test(String(err.message || err));
+}
+
+async function vacuumExclusive(run, { beforeRetry = null } = {}) {
+    let open;
+    const gate = { promise: new Promise(resolve => { open = resolve; }) };
+    vacuumGate = gate;
+    try {
+        await waitDirectStatementsIdle(2000);
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                return await run();
+            } catch (err) {
+                if (!isStatementsInProgress(err) || attempt >= VACUUM_BUSY_RETRIES) throw err;
+                await new Promise(resolve => setTimeout(resolve, VACUUM_BUSY_RETRY_MS));
+                await waitDirectStatementsIdle(1000);
+                if (typeof beforeRetry === 'function') beforeRetry();
+            }
+        }
+    } finally {
+        if (vacuumGate === gate) vacuumGate = null;
+        open();
+    }
+}
+
 // Compactar o banco (H1-c, DES-11): VACUUM pela fila (db.runExclusive, nenhuma gravação
 // no meio) e, como o banco está em WAL, o checkpoint com TRUNCATE leva o resultado para o
 // database.db e zera o -wal. As gravações pedidas antes passam primeiro; as pedidas
@@ -1733,14 +1829,16 @@ async function compactDatabase({ beforeVacuum = null } = {}) {
     await refreshStorageStats();
     const before = storageStatus();
     const started = Date.now();
-    await writer.runExclusive(connection => new Promise((resolve, reject) => {
+    await writer.runExclusive(async connection => {
         const refusal = typeof beforeVacuum === 'function' ? beforeVacuum() : null;
-        if (refusal) return reject(refusal);
-        connection.exec('VACUUM', vacuumError => {
-            if (vacuumError) return reject(vacuumError);
-            connection.exec('PRAGMA wal_checkpoint(TRUNCATE)', checkpointError => (checkpointError ? reject(checkpointError) : resolve()));
+        if (refusal) throw refusal;
+        // O checkpoint fica dentro da mesma espera: com leituras da conexão em andamento
+        // ele esperava por elas (a consulta do Monitor sem parar o segurava).
+        await vacuumExclusive(async () => {
+            await new Promise((resolve, reject) => connection.exec('VACUUM', err => (err ? reject(err) : resolve())));
+            await new Promise((resolve, reject) => connection.exec('PRAGMA wal_checkpoint(TRUNCATE)', err => (err ? reject(err) : resolve())));
         });
-    }));
+    });
     const ms = Date.now() - started;
     await refreshStorageStats();
     return { before, after: storageStatus(), ms };
@@ -1761,9 +1859,9 @@ async function snapshotTo(file) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const started = Date.now();
     await saveToDisk({ detached: true });
-    await writer.runExclusive(connection => new Promise((resolve, reject) => {
+    await writer.runExclusive(connection => vacuumExclusive(() => new Promise((resolve, reject) => {
         connection.run('VACUUM INTO ?', [target], err => (err ? reject(err) : resolve()));
-    }));
+    }), { beforeRetry: () => fs.rmSync(target, { force: true }) }));
     const ms = Date.now() - started;
     const info = await dbFile.inspectDatabaseFile(target);
     return { ...info, ms };
@@ -1891,7 +1989,7 @@ function pingResult(extra = {}) {
 
 function ping({ now = Date.now() } = {}) {
     if (lastPing && now - Date.parse(lastPing.at) < PING_CACHE_MS) return Promise.resolve(pingResult({ cached: true }));
-    if (writer.status().running) return Promise.resolve(pingResult({ cached: true, saving: true }));
+    if (writer.status().running || vacuumGate) return Promise.resolve(pingResult({ cached: true, saving: true }));
     if (pingInFlight) return pingInFlight;
     const started = Date.now();
     const pending = new Promise(resolve => {
@@ -1907,10 +2005,13 @@ function ping({ now = Date.now() } = {}) {
         const timer = setTimeout(() => finish(false, `sem resposta do banco em ${PING_TIMEOUT_MS / 1000} s`), PING_TIMEOUT_MS);
         if (typeof timer.unref === 'function') timer.unref();
         try {
-            sqliteDb.get('SELECT 1 AS ok', [], (err, row) => {
+            // Contado como leitura direta até o sqlite responder (mesmo depois do
+            // tempo-limite do ping): o VACUUM do backup espera por ele.
+            trackedStatement(end => sqliteDb.get('SELECT 1 AS ok', [], (err, row) => {
+                end();
                 if (err) return finish(false, err.code || err.message || err);
                 return finish(!!row && Number(row.ok) === 1, row ? null : 'resposta vazia');
-            });
+            }));
         } catch (err) {
             finish(false, (err && (err.code || err.message)) || err);
         }

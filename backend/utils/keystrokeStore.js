@@ -246,7 +246,9 @@ function unitKey(applicationId, studentEmail) {
 // - runExclusive(fn): roda fn com a fila de gravação parada (migração, cópia de arquivo);
 // - flush(): espera as gravações já pedidas;
 // - cap(): teto de teclas por aluno e aplicação (ou prova).
-function createKeystrokeStore({ connection, requestWrite, runExclusive, flush = () => Promise.resolve(), cap = configuredKeystrokeCap, log = console }) {
+// - trackStatement(run): conta a leitura como "em andamento" até o sqlite responder
+//   (database.js; o VACUUM INTO do backup espera essas leituras, decisões §12).
+function createKeystrokeStore({ connection, requestWrite, runExclusive, flush = () => Promise.resolve(), cap = configuredKeystrokeCap, log = console, trackStatement = run => run(() => {}) }) {
     // Operações pedidas e ainda sem COMMIT, na ordem em que foram pedidas.
     const queue = [];
     // Contadores: Map(grupo -> { studentEmail, studentClass, courseId, examKey,
@@ -263,11 +265,17 @@ function createKeystrokeStore({ connection, requestWrite, runExclusive, flush = 
     }
 
     function sqlAll(sql, params = []) {
-        return new Promise((resolve, reject) => connection.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+        return new Promise((resolve, reject) => trackStatement(end => connection.all(sql, params, (err, rows) => {
+            end();
+            return err ? reject(err) : resolve(rows);
+        })));
     }
 
     function sqlGet(sql, params = []) {
-        return new Promise((resolve, reject) => connection.get(sql, params, (err, row) => (err ? reject(err) : resolve(row))));
+        return new Promise((resolve, reject) => trackStatement(end => connection.get(sql, params, (err, row) => {
+            end();
+            return err ? reject(err) : resolve(row);
+        })));
     }
 
     function sqlExec(sql) {

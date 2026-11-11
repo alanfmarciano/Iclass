@@ -67,3 +67,10 @@ Cada grupo guarda os mais recentes: automático 14 neste computador e o número 
 
 O cartão Backup lista os backups deste computador e do destino externo. Baixar qualquer backup (da lista, completo, só os dados ou o JSON) pede a senha do administrador de novo, e a tela diz em uma linha o motivo (o backup traz os dados pessoais de todos os alunos); a senha errada fica no diálogo e conta no atraso da conta, o bilhete vale uma vez, por 2 minutos, para aquele arquivo, e o download vai para a Auditoria. Errar a senha demais faz esperar, com o texto do download (o login da conta espera o mesmo tempo). Nome com caminho ou fora do padrão é recusado. "Restaurar" num item da lista confere o `.sha256` ao lado e abre a mesma prévia do arquivo enviado; o backup escolhido continua na lista depois. Na prévia, a linha da Auditoria diz que a de hoje é mantida e somada à do backup.
 
+## UC-BACKUP-007 — Backup e compactação com o banco em uso
+
+- Estado: automatizado
+- Testes: `backup-vacuum-leituras.test.js`
+
+O backup do boot, o "Fazer backup agora" e o Compactar usam o `VACUUM` do sqlite, que falha se houver uma consulta em andamento na mesma conexão. O launcher e o Reiniciar consultam o `/api/health` durante a subida, o cartão Saúde consulta o banco e o Monitor lê as teclas ao vivo; nada disso pode fazer o backup falhar. Toda leitura direta do banco conta até o sqlite responder, o `VACUUM` espera essas leituras acabarem (as novas esperam o `VACUUM` terminar) e, se ainda assim o sqlite responder "SQL statements in progress", tenta de novo até 5 vezes, com 200 ms entre as tentativas.
+
