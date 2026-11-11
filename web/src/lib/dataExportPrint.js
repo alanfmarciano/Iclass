@@ -124,7 +124,7 @@ function attendanceSummary(item) {
   return parts.join(', ') || `${aulas.length} aula(s)`
 }
 
-function keystrokeSummary(rows) {
+function keystrokeSummary(rows, examName) {
   const byExam = new Map()
   rows.forEach((row) => {
     const key = row.examKey || '—'
@@ -135,7 +135,7 @@ function keystrokeSummary(rows) {
     if (time !== null && (entry.last === null || time > entry.last)) entry.last = time
     byExam.set(key, entry)
   })
-  return [...byExam.values()].map((entry) => [entry.examKey, entry.total, entry.suspicious, fmtDateTime(entry.last)])
+  return [...byExam.values()].map((entry) => [examName(entry.examKey), entry.total, entry.suspicious, fmtDateTime(entry.last)])
 }
 
 // Evento do registro de foco (proctoringLogs grava eventType, como 'tab_blur') com o mesmo
@@ -159,6 +159,10 @@ export function dataExportHtml(data) {
   const forum = data.forum || {}
   const proctoring = data.proctoring || {}
   const title = admin ? `Dados pessoais — ${name}` : `Meus dados — ${name}`
+  // Nome da prova como o portal mostra (examTitles vem no arquivo); arquivo sem o mapa
+  // (gerado antes) fica com o código.
+  const examTitles = data && data.examTitles && typeof data.examTitles === 'object' ? data.examTitles : {}
+  const examName = (key) => (key && Object.prototype.hasOwnProperty.call(examTitles, key) && examTitles[key]) || key
 
   const sections = []
   sections.push(section('Identificação', pairs(profileRows(profile, admin))))
@@ -172,7 +176,7 @@ export function dataExportHtml(data) {
     ['Aceites anteriores', String(list(acceptances.previous).length)],
   ])))
   sections.push(section('Notas e entregas', table(['Prova', 'Data', 'Nota', 'Situação'], list(data.submissions).map((item) => [
-    item.examTitle || item.examKey, fmtDate(item.timestamp), item.gradePublished === true || admin ? fmtGrade(item.score) : '—', submissionStatus(item),
+    item.examTitle || examName(item.examKey), fmtDate(item.timestamp), item.gradePublished === true || admin ? fmtGrade(item.score) : '—', submissionStatus(item),
   ]), 'Nenhuma entrega.'), admin ? '' : 'A nota em revisão só aparece depois de publicada pelo professor.'))
   sections.push(section('Frequência', table(['Data', 'Turma', 'Origem', 'Aulas', 'Justificativa'], list(data.attendance).map((item) => [
     fmtDate(item.date), item.studentClass, ORIGIN_LABELS[item.origin] || item.origin, attendanceSummary(item),
@@ -192,17 +196,17 @@ export function dataExportHtml(data) {
     .map((item) => [fmtDateTime(item.timestamp), item.status === 'success' ? 'Entrou' : (item.reason || item.status), item.ip, item.browser, item.device || item.os]), 'Nenhum acesso registrado.'),
   `${list(data.moduleAccess).length} acesso(s) a materiais registrados.`))
   sections.push(section('Monitoramento das provas', [
-    table(['Data e hora', 'Prova', 'Evento'], list(proctoring.focusEvents).map((item) => [fmtDateTime(item.timestamp), item.examKey, focusEventLabel(item)]), 'Nenhuma saída da tela da prova registrada.'),
-    table(['Prova', 'Teclas registradas', 'Atalhos suspeitos', 'Último registro'], keystrokeSummary(list(proctoring.keystrokes)), 'Nenhuma tecla registrada.'),
+    table(['Data e hora', 'Prova', 'Evento'], list(proctoring.focusEvents).map((item) => [fmtDateTime(item.timestamp), examName(item.examKey), focusEventLabel(item)]), 'Nenhuma saída da tela da prova registrada.'),
+    table(['Prova', 'Teclas registradas', 'Atalhos suspeitos', 'Último registro'], keystrokeSummary(list(proctoring.keystrokes), examName), 'Nenhuma tecla registrada.'),
   ].join(''), 'O detalhe de cada tecla registrada está no arquivo JSON.'))
   const examRecords = list(data.examRecords)
   if (examRecords.length) {
     sections.push(section('Registros das provas', table(['Prova', 'Registro do teclado', 'Versão', 'Tempo extra', 'Contestações'], examRecords.map((item) => [
-      item.examKey, item.keystrokeModeLabel, item.assignedVersion, item.adjustment && item.adjustment.extraMinutes ? `${item.adjustment.extraMinutes} min` : '—', list(item.questionReports).length,
+      examName(item.examKey), item.keystrokeModeLabel, item.assignedVersion, item.adjustment && item.adjustment.extraMinutes ? `${item.adjustment.extraMinutes} min` : '—', list(item.questionReports).length,
     ]), '')))
   }
   if (list(data.examMessages).length) {
-    sections.push(section('Mensagens recebidas durante a prova', table(['Data e hora', 'Prova', 'Mensagem'], list(data.examMessages).map((item) => [fmtDateTime(item.timestamp || item.createdAt), item.examKey, item.messageText]), '')))
+    sections.push(section('Mensagens recebidas durante a prova', table(['Data e hora', 'Prova', 'Mensagem'], list(data.examMessages).map((item) => [fmtDateTime(item.timestamp || item.createdAt), examName(item.examKey), item.messageText]), '')))
   }
   sections.push(section('Alterações do cadastro', table(['Data e hora', 'Campo', 'Antes', 'Depois'], list(data.profileHistory).map((item) => [fmtDateTime(item.timestamp), item.field, item.oldValue, item.newValue]), 'Nenhuma alteração registrada.')))
   if (admin) {

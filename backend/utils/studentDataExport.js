@@ -216,7 +216,10 @@ function byEmailSection(memory, collection, ownership, audience) {
 // só fica quando foi ele mesmo que apagou: pode ser o texto da resposta de outro aluno.
 function forumSection(memory, ownership, audience) {
     const isStudentReply = reply => !!reply && (reply.authorRole === 'Aluno' || reply.role === 'Aluno');
-    const ownsReply = reply => isStudentReply(reply) && ownership.owns(reply.authorEmail, reply, 'student');
+    // authorEmailInferred: resposta antiga de aluno sem e-mail, que a migração do boot
+    // (server.js) preencheu com o e-mail do dono da dúvida. Não dá para saber quem
+    // escreveu: conta como "de outro aluno" (sem texto), nunca como dele.
+    const ownsReply = reply => isStudentReply(reply) && !reply.authorEmailInferred && ownership.owns(reply.authorEmail, reply, 'student');
     const eventView = event => {
         if (!isPlainObject(event)) return null;
         const byOwner = event.role === 'Aluno' && ownership.owns(event.by, { at: event.at }, 'student');
@@ -302,6 +305,35 @@ function examMessagesSection(memory, ownership, audience) {
         });
 }
 
+// Saídas da tela da prova. O texto (details) do evento que o próprio servidor escreve
+// pode trazer quem da equipe agiu: o focus_unlocked do Monitor guarda "Tela desbloqueada
+// pelo instrutor (e-mail do professor)". Na versão do aluno esse evento fica com o texto
+// fixo, e nos outros sai qualquer e-mail que não seja dele (o texto vem do navegador e
+// não deveria ter e-mail, mas o arquivo não confia nisso). O administrador vê o texto
+// inteiro.
+const STAFF_UNLOCK_DETAILS = 'Tela desbloqueada pelo instrutor';
+const EMAIL_IN_TEXT = /[^\s()<>@,;:"\[\]]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+
+function withoutForeignEmails(text, ownership) {
+    if (typeof text !== 'string' || !text.includes('@')) return text;
+    const foreign = found => !ownership.emails.includes(normalizeEmail(found));
+    return text
+        // " (fulano@escola)" inteiro some, para não sobrar "()" no texto.
+        .replace(/\s*\(\s*([^\s()]+@[^\s()]+)\s*\)/g, (match, found) => (foreign(found) ? '' : match))
+        .replace(EMAIL_IN_TEXT, found => (foreign(found) ? '[e-mail omitido]' : found))
+        .trim();
+}
+
+function proctoringSection(memory, ownership, audience) {
+    const events = ownedList(memory, 'proctoringLogs', ownership, audience);
+    if (audience === 'admin') return events;
+    return events.map(item => {
+        if (!Object.prototype.hasOwnProperty.call(item, 'details')) return item;
+        const details = item.eventType === 'focus_unlocked' ? STAFF_UNLOCK_DETAILS : withoutForeignEmails(item.details, ownership);
+        return { ...item, details };
+    });
+}
+
 function keystrokesSection(rows, ownership, audience) {
     return list(rows)
         .filter(row => ownership.owns(row.studentEmail, { timestamp: row.serverTs }, 'renamed'))
@@ -349,6 +381,52 @@ function profileHistory(entries, audience) {
             oldValue: withoutActors(stripSecrets(entry.oldValue)),
             newValue: withoutActors(stripSecrets(entry.newValue)),
         }));
+}
+
+// Nome de cada prova citada no arquivo ({ examKey: título }), como o portal mostra
+// (studentApplicationLabel, student.js): o título da avaliação; senão o nome da unidade
+// na estrutura da turma dele (com a troca de nome da turma) ou do curso; senão o código
+// com espaços no lugar de "_". Assim a versão para imprimir mostra "Avaliação 2" e não
+// "Avaliacao_FUTEC_2". Lê só a memória recebida.
+function unitNameIn(structure, examKey) {
+    for (const module of list(structure)) {
+        const unit = list(module.units || module.items).find(item => item.avaliacaoKey === examKey);
+        if (unit && (unit.name || unit.title)) return unit.name || unit.title;
+    }
+    return '';
+}
+
+function examTitleOf(memory, student, examKey) {
+    const evaluations = isPlainObject(memory.evaluations) ? memory.evaluations : {};
+    const evaluation = isPlainObject(evaluations[examKey]) ? evaluations[examKey] : null;
+    if (evaluation && (evaluation.title || evaluation.name)) return String(evaluation.title || evaluation.name);
+    const courses = new Map(list(memory.courses).map(course => [String(course.id), course]));
+    for (const entry of studentClassEntries(student)) {
+        const courseId = String(entry.courseId || courseIdByClassName(memory, entry.name) || '');
+        const cls = list(memory.classes).find(item => String(item.courseId) === courseId && String(item.name) === String(entry.name));
+        const overrides = cls && isPlainObject(cls.contentOverrides) ? cls.contentOverrides : {};
+        const renamed = isPlainObject(overrides.unitNames) ? overrides.unitNames[examKey] : '';
+        if (renamed) return String(renamed);
+        const found = unitNameIn(overrides.structure, examKey)
+            || unitNameIn(overrides.extraUnits ? [{ units: overrides.extraUnits }] : [], examKey)
+            || unitNameIn(courses.get(courseId) && courses.get(courseId).structure, examKey);
+        if (found) return String(found);
+    }
+    return String(examKey).replace(/_/g, ' ');
+}
+
+function examTitlesSection(memory, student, data) {
+    const keys = new Set();
+    const add = item => { if (item && typeof item.examKey === 'string' && item.examKey) keys.add(item.examKey); };
+    list(data.submissions).forEach(add);
+    list(data.proctoring.focusEvents).forEach(add);
+    list(data.proctoring.keystrokes).forEach(add);
+    list(data.examRecords).forEach(add);
+    list(data.examMessages).forEach(add);
+    list(data.openAttempts).forEach(add);
+    const out = {};
+    [...keys].sort().forEach(key => { out[key] = examTitleOf(memory, student, key); });
+    return out;
 }
 
 // ------------------------------------------------------------ montagem
@@ -417,7 +495,7 @@ function buildStudentDataExport(memory, email, { audience = 'aluno', keystrokes 
         moduleAccess: ownedList(memory, 'moduleAccess', ownership, audience),
         loginLogs: loginLogsSection(memory, ownership, audience),
         proctoring: {
-            focusEvents: ownedList(memory, 'proctoringLogs', ownership, audience),
+            focusEvents: proctoringSection(memory, ownership, audience),
             keystrokes: keystrokesSection(keystrokes, ownership, audience),
         },
         examRecords: examRecordsSection(memory, ownership, audience),
@@ -428,6 +506,7 @@ function buildStudentDataExport(memory, email, { audience = 'aluno', keystrokes 
         data.openAttempts = openAttemptsSection(memory, ownership);
         data.audit = auditEntries.map(auditEntryWithoutSecrets);
     }
+    data.examTitles = examTitlesSection(memory, student, data);
     data.counts = sectionCounts(data);
     return data;
 }

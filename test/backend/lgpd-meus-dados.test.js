@@ -489,3 +489,100 @@ test('[UC-LGPD-011] unidade: audiência desconhecida é erro de programação e 
     exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno' });
     assert.equal(JSON.stringify(db.memory.students), before);
 });
+
+// Rodada de ajuste 2: o desbloqueio da tela pelo Monitor grava em proctoringLogs.details o
+// texto "Tela desbloqueada pelo instrutor (e-mail do professor)". withoutActors tira só
+// campos (actor, author, *By), e o e-mail do professor ia para a cópia do aluno dentro
+// desse texto. Agora o evento sai com o texto fixo, e qualquer outro e-mail que não seja
+// dele some do texto do evento. O administrador continua vendo o texto inteiro.
+test('[UC-LGPD-010] desbloqueio da tela pelo professor não leva o e-mail da equipe para a cópia do aluno', async () => {
+    const { examStateKey } = require('../../backend/utils/examApplications.js');
+    const key = examStateKey({ studentEmail: ANA, examKey: 'Prova_9' });
+    db.memory.studentExamState = { [key]: { studentEmail: ANA, examKey: 'Prova_9', answers: {}, focusLocked: true, focusLockedAt: NOW - 60000 } };
+    const unlock = await request(app).post('/api/admin/unlock-student-focus').set(adminHeaders(PROF))
+        .send({ studentEmail: ANA, studentClass: '1DES', courseId: 'DES', examKey: 'Prova_9' });
+    assert.equal(unlock.status, 200, unlock.body.error);
+    const stored = db.memory.proctoringLogs.find(log => log.eventType === 'focus_unlocked');
+    assert.ok(stored && stored.details.includes(PROF), 'o registro guardado continua com o e-mail (o Monitor e o administrador veem)');
+    // Evento escrito por outro caminho com e-mail de outra pessoa no texto, e um com o dele.
+    db.memory.proctoringLogs.push(
+        { id: 'pl_txt', studentEmail: ANA, examKey: 'Prova_9', eventType: 'tab_blur', details: `Aviso de ${ADMIN} lido`, timestamp: NOW - 1000 },
+        { id: 'pl_own', studentEmail: ANA, examKey: 'Prova_9', eventType: 'tab_blur', details: `Conta ${ANA}`, timestamp: NOW - 500 },
+    );
+
+    const res = await request(app).get('/api/student/my-data').set(studentHeaders(ANA));
+    assert.equal(res.status, 200, res.body.error);
+    const text = JSON.stringify(res.body);
+    for (const staff of [PROF, ADMIN, 'meusdados.local)']) {
+        assert.equal(text.includes(staff), false, `a cópia do aluno não pode trazer "${staff}"`);
+    }
+    const byType = Object.fromEntries(res.body.proctoring.focusEvents.map(item => [item.id || item.eventType, item]));
+    assert.equal(byType[stored.id].details, 'Tela desbloqueada pelo instrutor');
+    assert.equal(byType.pl_txt.details, 'Aviso de [e-mail omitido] lido');
+    assert.equal(byType.pl_own.details, `Conta ${ANA}`);
+    // A memória não muda, e o administrador vê o texto inteiro.
+    assert.ok(db.memory.proctoringLogs.find(log => log.id === stored.id).details.includes(PROF));
+    const full = await request(app).get(`/api/admin/lgpd/students/export?email=${ANA}`).set(adminHeaders());
+    assert.equal(full.status, 200, full.body.error);
+    assert.ok(full.body.proctoring.focusEvents.find(item => item.id === stored.id).details.includes(PROF));
+});
+
+test('[UC-LGPD-010] unidade: e-mail dentro de texto livre do evento sai, o do próprio aluno fica', () => {
+    db.memory.proctoringLogs = [
+        { id: 'p1', studentEmail: ANA, eventType: 'focus_unlocked', details: `Tela desbloqueada pelo instrutor (${PROF})`, timestamp: NOW },
+        { id: 'p2', studentEmail: ANA, eventType: 'exam_left', details: `Saiu (${PROF}) e voltou; ver ${ADMIN}.`, timestamp: NOW },
+        { id: 'p3', studentEmail: ANA, eventType: 'exam_left', details: `Antigo ${ANA_OLD}`, timestamp: NOW - 100 * DAY },
+        { id: 'p4', studentEmail: ANA, eventType: 'tab_blur', timestamp: NOW },
+    ];
+    const events = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno' }).proctoring.focusEvents;
+    assert.deepEqual(events.map(item => item.details), [
+        'Tela desbloqueada pelo instrutor',
+        'Saiu e voltou; ver [e-mail omitido].',
+        `Antigo ${ANA_OLD}`,
+        undefined,
+    ]);
+    const admin = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'admin' }).proctoring.focusEvents;
+    assert.equal(admin[0].details, `Tela desbloqueada pelo instrutor (${PROF})`);
+});
+
+// Rodada de ajuste 2: a migração do boot (server.js) preenche a resposta antiga de aluno
+// sem e-mail com o e-mail do dono da dúvida. Sem a marca, a resposta de outro aluno na
+// dúvida da Ana virava "minha" na cópia dela, com o texto do outro.
+test('[UC-LGPD-010] resposta antiga de aluno sem e-mail (preenchida no boot) não vira do dono da dúvida', () => {
+    const thread = db.memory.forum.find(item => item.id === 'f_ana');
+    thread.replies.push({ id: 'r_legacy', authorName: 'Carla Antiga', authorEmail: ANA, authorEmailInferred: true, authorRole: 'Aluno', text: 'Texto antigo da Carla', timestamp: new Date(NOW - 300 * DAY).toISOString() });
+    for (const audience of ['aluno', 'admin']) {
+        const data = exporter.buildStudentDataExport(db.memory, ANA, { audience });
+        const replies = data.forum.questions[0].replies;
+        assert.deepEqual(replies.map(reply => (reply.mine ? 'eu' : reply.from)), ['Equipe', 'Outro aluno', 'Outro aluno'], audience);
+        const text = JSON.stringify(data);
+        assert.equal(text.includes('Texto antigo da Carla'), false, audience);
+        assert.equal(text.includes('Carla Antiga'), false, audience);
+    }
+});
+
+test('[UC-LGPD-010] a migração do boot marca a resposta de aluno cujo e-mail ela deduziu', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../backend/server.js'), 'utf8');
+    const block = source.slice(source.indexOf('if (!reply.authorEmail) {'), source.indexOf('if (migrated) {'));
+    assert.match(block, /reply\.authorEmail = reply\.authorRole === 'Instrutor' \? db\.defaultAdminEmail\(\) : \(comment\.studentEmail \|\| ''\);/);
+    assert.match(block, /if \(reply\.authorRole !== 'Instrutor' && reply\.authorEmail\) reply\.authorEmailInferred = true;/);
+});
+
+// Rodada de ajuste 2: a versão para imprimir mostrava o código interno da prova
+// (Avaliacao_FUTEC_2). O arquivo traz examTitles com o nome que o portal mostra.
+test('[UC-LGPD-010] o arquivo traz o nome de cada prova citada (examTitles), como no portal', () => {
+    db.memory.evaluations = { Prova_1: { title: 'Avaliação 1 — Lógica' } };
+    db.memory.courses = [{ id: 'DES', name: 'Desenvolvimento', schoolId: 'escola_a', structure: [{ id: 'm1', name: 'Módulo 1', units: [{ name: 'Prova da unidade 2', avaliacaoKey: 'Prova_2' }] }] }];
+    db.memory.classes = [{ name: '1DES', courseId: 'DES', status: 'active', releasedItems: {}, contentOverrides: { unitNames: { Prova_3: 'Recuperação da turma' } } }];
+    db.memory.proctoringLogs.push(
+        { id: 'pl_3', studentEmail: ANA, examKey: 'Prova_3', eventType: 'tab_blur', timestamp: NOW },
+        { id: 'pl_4', studentEmail: ANA, examKey: 'Avaliacao_FUTEC_4', eventType: 'tab_blur', timestamp: NOW },
+    );
+    const data = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno', keystrokes: [keyRow(ANA, NOW)] });
+    assert.deepEqual(data.examTitles, {
+        Avaliacao_FUTEC_4: 'Avaliacao FUTEC 4',
+        Prova_1: 'Avaliação 1 — Lógica',
+        Prova_2: 'Prova da unidade 2',
+        Prova_3: 'Recuperação da turma',
+    });
+});

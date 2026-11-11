@@ -65,6 +65,26 @@ describe('[UC-LGPD-010] Meus dados · versão para imprimir', () => {
     expect(html).toMatch(/<td>mod1_prova<\/td><td>2<\/td><td>1<\/td>/)
   })
 
+  // Antes: a coluna Prova do Monitoramento e dos Registros das provas mostrava o código
+  // interno (Avaliacao_FUTEC_2). Agora usa o nome que vem em examTitles; arquivo sem o
+  // mapa (gerado antes) continua mostrando o código.
+  it('a coluna Prova mostra o nome da prova (examTitles), não o código', () => {
+    const html = dataExportHtml(sample({
+      examTitles: { mod1_prova: 'Avaliação do Módulo 1', mod2_prova: 'Avaliação do Módulo 2' },
+      proctoring: {
+        focusEvents: [{ timestamp: 1760000000000, examKey: 'mod1_prova', eventType: 'tab_blur' }],
+        keystrokes: [{ examKey: 'mod1_prova', serverTs: 1760000000000, suspicious: true }],
+      },
+      examRecords: [{ examKey: 'mod2_prova', keystrokeModeLabel: 'Só atalhos suspeitos', assignedVersion: 'B', questionReports: [] }],
+      examMessages: [{ timestamp: 1760000000000, examKey: 'mod1_prova', messageText: 'Atenção à questão 2' }],
+    }))
+    expect(html).not.toContain('mod1_prova')
+    expect(html).not.toContain('mod2_prova')
+    expect(html).toMatch(/<td>Avaliação do Módulo 1<\/td><td>1<\/td><td>1<\/td>/)
+    expect(html).toContain('<td>Avaliação do Módulo 2</td><td>Só atalhos suspeitos</td>')
+    expect(dataExportHtml(sample())).toMatch(/<td>mod1_prova<\/td><td>2<\/td>/)
+  })
+
   // Antes: a coluna lia item.type || item.event, mas o registro guarda eventType, e a
   // coluna saía sempre "—" com dados reais.
   it('o evento de foco sai com o rótulo do Monitor, em português, e nunca como código', () => {

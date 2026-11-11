@@ -391,6 +391,10 @@ async function prepareServer() {
                     }
                     if (!reply.authorEmail) {
                         reply.authorEmail = reply.authorRole === 'Instrutor' ? db.defaultAdminEmail() : (comment.studentEmail || '');
+                        // Resposta de aluno sem e-mail: o do dono da dúvida é um palpite (pode
+                        // ser de outro aluno). A marca impede que "Meus dados" a conte como
+                        // dele (H8c, SEG-14).
+                        if (reply.authorRole !== 'Instrutor' && reply.authorEmail) reply.authorEmailInferred = true;
                         migrated = true;
                     }
                 });

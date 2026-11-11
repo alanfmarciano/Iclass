@@ -42,7 +42,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `courseStructure` | array | estrutura legada (**em obsolescência**, migrada para `courses[].structure`) |
 | `notes` | objeto | caderno do aluno por material |
 | `annotations` | objeto | anotações por parágrafo |
-| `forum` | array | dúvidas/fórum por unidade |
+| `forum` | array | dúvidas/fórum por unidade (resposta antiga de aluno sem e-mail ganha no boot o e-mail do dono da dúvida e `authorEmailInferred: true`, para não ser contada como dele em "Meus dados") |
 | `progress` | objeto | progresso por aluno/unidade |
 | `uploads` | objeto | metadados de arquivos enviados |
 | `config` | objeto | configuração global; `releasedItems`; `retentionLastRun` `{ at, trigger: 'automatic'\|'manual', by, counts: { keystrokes, proctoringLogs, loginLogs, trash? }, remaining }` (última limpeza da retenção, H8b) |
