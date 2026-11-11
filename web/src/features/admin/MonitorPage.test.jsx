@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MonitorPage from './MonitorPage'
+import { keystrokeLiveEmptyText, keystrokeLiveTitle } from '../../lib/keystrokeModes'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -357,5 +358,25 @@ describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação'
     expect(screen.getByRole('columnheader', { name: 'Teclado' })).toBeTruthy()
     expect(screen.getByText('Desligado')).toBeTruthy()
     expect(screen.queryByTitle(/ao vivo/)).toBeNull()
+  })
+
+  it('janela ao vivo: título e texto sem eventos seguem o modo (decisões §12, sobra do H8b)', async () => {
+    renderWith(undefined)
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Ver atalhos ao vivo'))
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Atalhos ao vivo — Elisa' })).toBeTruthy())
+    fireEvent.click(screen.getByText('Fluxo completo'))
+    await waitFor(() => expect(screen.getByText('Nenhum atalho registrado ainda.')).toBeTruthy())
+    cleanup()
+    renderWith('tudo')
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Ver digitação ao vivo'))
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Digitação ao vivo — Elisa' })).toBeTruthy())
+    fireEvent.click(screen.getByText('Fluxo completo'))
+    await waitFor(() => expect(screen.getByText('Nenhuma digitação registrada ainda.')).toBeTruthy())
+    // 'nada' não abre a janela pelo Monitor; o texto, se aberta, é o do modo.
+    expect(keystrokeLiveTitle('nada', false, 'Elisa')).toBe('Teclado — Elisa')
+    expect(keystrokeLiveEmptyText('nada')).toBe('Registro de teclado desligado nesta prova.')
+    expect(keystrokeLiveTitle('eventos', true, 'Elisa')).toBe('Digitação ao vivo — Elisa')
   })
 })

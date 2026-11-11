@@ -27,7 +27,7 @@ import { serverOutageNotices, withLiveOutagePauses } from './serverOutage'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
-import { keystrokeColumnLabel, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
+import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -230,7 +230,7 @@ function Stat({ k, v, sub, warn }) {
 
 // logs: eventos de foco do aluno na aplicação, da resposta da digitação ao vivo (todos, até
 // 500). Antes de ela chegar, os últimos que vêm na linha do Monitor.
-function KeystrokeViewer({ events, row, loading, logs: liveLogs }) {
+function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Nenhuma digitação registrada ainda.' }) {
   const [tab, setTab] = useState('resumo')
   const [susOnly, setSusOnly] = useState(false)
   const logs = liveLogs || row?.logs || EMPTY_LIST
@@ -354,7 +354,7 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs }) {
         {tab === 'stream' && (
           <div>
             <p className="text-[11.5px] text-subtle mb-3">Eventos agrupados na ordem em que aconteceram: digitação normal vira um bloco só; cada comando fica destacado. “Só suspeitos” esconde os blocos de digitação.</p>
-            {stream.length === 0 && !loading && <p className="text-sm text-muted text-center py-8">Nenhuma digitação registrada ainda.</p>}
+            {stream.length === 0 && !loading && <p className="text-sm text-muted text-center py-8">{emptyText}</p>}
             <div className="space-y-2">
               {stream.map((seg, i) => {
                 if (seg.type === 'typing') {
@@ -1348,7 +1348,7 @@ export default function MonitorPage() {
       <Modal
         open={!!keystrokeWatch}
         onClose={() => setKeystrokeWatch(null)}
-        title={`Digitação ao vivo — ${keystrokeWatch?.name || ''}`}
+        title={keystrokeLiveTitle(keystrokeMode, keystrokeLegacy, keystrokeWatch?.name)}
         description="Leitura dos comandos capturados. Atualiza a cada 2s."
         size="lg"
       >
@@ -1357,6 +1357,7 @@ export default function MonitorPage() {
           logs={keystrokeLogs}
           row={rows.find((r) => r.email === keystrokeWatch?.email) || keystrokeWatch}
           loading={keystrokeLoading}
+          emptyText={keystrokeLiveEmptyText(keystrokeMode, keystrokeLegacy)}
         />
       </Modal>
       <Modal open={!!previewIssue} onClose={() => setPreviewIssue(null)} title={`Questão ${previewIssue?.questionPosition || previewIssue?.questionNumber || ''}`} description={`${previewIssue?.count || 0} contestação(ões) recebida(s)`}>

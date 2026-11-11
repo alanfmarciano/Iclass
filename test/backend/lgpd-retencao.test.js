@@ -265,6 +265,27 @@ test('[UC-LGPD-008] prazos: só o administrador grava; limites, mínimos, review
     assert.ok(onDisk.config.settings.retention.reviewedAt, 'o bloco gravado chega ao arquivo');
 });
 
+test('[UC-LGPD-008] salvar os mesmos prazos não registra alteração; os textos falam do "prazo da lixeira" (decisões §12)', async () => {
+    await post('admin', '/api/admin/lgpd/retention', { proctoringDays: 60, loginLogsDays: 365, trashDays: 20 }).expect(200);
+    const count = auditOf('retention_settings_changed').length;
+    // Mesmos números (um deles como texto): 200, sem registro novo.
+    await post('admin', '/api/admin/lgpd/retention', { proctoringDays: 60, loginLogsDays: '365', trashDays: 20 }).expect(200);
+    assert.equal(auditOf('retention_settings_changed').length, count, 'sem mudança, sem registro');
+    // Só a lixeira muda: um registro, com o antes e o depois.
+    await post('admin', '/api/admin/lgpd/retention', { proctoringDays: 60, loginLogsDays: 365, trashDays: 25 }).expect(200);
+    const entries = auditOf('retention_settings_changed');
+    assert.equal(entries.length, count + 1);
+    const last = entries.find(entry => entry.after && entry.after.trashDays === 25);
+    assert.deepEqual(last.before, { proctoringDays: 60, loginLogsDays: 365, trashDays: 20 });
+
+    const refused = await post('admin', '/api/admin/lgpd/retention', { proctoringDays: 0, loginLogsDays: 0, trashDays: 'x' }).expect(400);
+    assert.match(refused.body.error, /^Informe o prazo da lixeira em dias inteiros/);
+    assert.equal(retention.RETENTION_LIMITS.trashDays.label, 'prazo da lixeira');
+    const adjusted = await post('admin', '/api/admin/lgpd/retention', { proctoringDays: 60, loginLogsDays: 100, trashDays: 25 }).expect(200);
+    assert.equal(adjusted.body.adjusted[0].message, 'O prazo dos registros de acesso subiu para 180 dias, o mínimo.');
+    await post('admin', '/api/admin/lgpd/retention', { proctoringDays: 0, loginLogsDays: 0, trashDays: 0 }).expect(200);
+});
+
 test('[UC-LGPD-008] prévia conta o que a limpeza apagaria, com os prazos pedidos e sem apagar nada', async () => {
     const now = Date.now();
     await seedScenario(now);

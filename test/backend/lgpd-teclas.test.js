@@ -178,6 +178,47 @@ test('[UC-LGPD-009] AltGr (ABNT2 no Windows: Ctrl e Alt juntos) é digitação: 
     await finish(application);
 });
 
+test('[UC-LGPD-009] eventos: o servidor classifica o atalho e não confia no kind do navegador (decisões §12)', async () => {
+    const forged = [
+        // Alt sozinho com uma letra é digitação, mesmo com kind 'SHORTCUT '.
+        { seq: 1, key: 'ç', code: 'Semicolon', mods: 'Alt', kind: 'SHORTCUT ', suspicious: true },
+        { seq: 2, key: 'g', code: 'KeyG', mods: 'Alt', kind: 'shortcut', suspicious: true },
+        // Tecla digitada sem modificador marcada como atalho, cópia ou menu: não guarda.
+        { seq: 3, key: 'a', code: 'KeyA', mods: '', kind: 'shortcut' },
+        { seq: 4, key: 's', code: 'KeyS', mods: '', kind: 'Clipboard' },
+        { seq: 5, key: 'x', code: 'KeyX', mods: 'Shift', kind: 'contextmenu' },
+        { seq: 6, key: 'z', code: 'KeyZ', mods: 'Ctrl', kind: 'shortcut' },
+        // Atalhos de verdade, com o kind normalizado (ou trocado pelo do servidor).
+        { seq: 7, key: 'c', code: 'KeyC', mods: 'Ctrl', kind: ' SHORTCUT ', suspicious: true },
+        { seq: 8, key: 'V', code: 'KeyV', mods: 'Meta', kind: 'char' },
+        { seq: 9, key: 'copy', code: 'copy', mods: '', kind: 'CLIPBOARD' },
+        { seq: 10, key: 'contextmenu', code: 'contextmenu', mods: '', kind: 'ContextMenu ' },
+        { seq: 11, key: 'Tab', code: 'Tab', mods: 'Alt', kind: 'qualquer' },
+        { seq: 12, key: 'p', code: 'KeyP', mods: 'Ctrl', kind: 'shortcut' },
+    ];
+    assert.equal(policy.normalizeEventKind('SHORTCUT '), 'shortcut');
+    assert.equal(policy.normalizeEventKind('teclado'), 'key');
+    assert.equal(policy.normalizeEventKind(undefined), 'key');
+    assert.equal(policy.isServerShortcut(forged[0]), false);
+    const kept = policy.filterKeystrokeEvents('eventos', forged);
+    assert.deepEqual(kept.map(event => event.seq), [7, 8, 9, 10, 11, 12]);
+    assert.deepEqual(kept.map(event => event.kind), ['shortcut', 'shortcut', 'clipboard', 'contextmenu', 'shortcut', 'shortcut']);
+    // 'tudo' guarda tudo, com o kind na lista fechada.
+    const all = policy.filterKeystrokeEvents('tudo', forged);
+    assert.equal(all.length, forged.length);
+    assert.equal(all[0].kind, 'shortcut');
+    assert.equal(all[10].kind, 'key');
+
+    const application = await prepareAndStart({});
+    const sent = await sendKeys({ applicationId: application.id, events: forged }).expect(200);
+    assert.equal(sent.body.inserted, 6);
+    const stored = await db.keystrokes.query({ email: student.email, examKey, applicationId: application.id, limit: 100 });
+    assert.deepEqual(stored.events.map(event => event.key), ['c', 'V', 'copy', 'contextmenu', 'Tab', 'p']);
+    assert.ok(!stored.events.some(event => event.key === 'ç'), 'a tecla digitada não é guardada');
+    assert.deepEqual(stored.events.map(event => event.kind), ['shortcut', 'shortcut', 'clipboard', 'contextmenu', 'shortcut', 'shortcut']);
+    await finish(application);
+});
+
 test('[UC-LGPD-009] preparar sem escolher vale eventos; escolha inválida é recusada com o campo', async () => {
     const historyId = await historyEntry();
     const before = db.memory.examApplications.length;

@@ -405,8 +405,9 @@ test('[UC-DIGITACAO-001] teto por aluno e aplicação (ou prova) apaga as teclas
         assert.equal(db.keystrokes.stats({ email: students.bia.email, examKey, applicationId: 'app-atual' }).total, 50);
 
         // Sem aplicação: o teto vale para o aluno na prova (como antes). Sem aplicação o
-        // registro é o padrão (H8b, 'eventos'), que só guarda atalhos.
-        await sendKeys(students.eva, { events: keys(1, 55, { kind: 'shortcut' }) }).expect(200);
+        // registro é o padrão (H8b, 'eventos'), que só guarda atalhos, e o servidor mesmo
+        // classifica (decisões §12): letras com Ctrl, não só o kind 'shortcut'.
+        await sendKeys(students.eva, { events: keys(1, 55, { kind: 'shortcut', mods: 'Ctrl', key: 'c' }) }).expect(200);
         const exam = await liveView(students.eva.email, { limit: 5000 }).expect(200);
         assert.equal(exam.body.total, 50);
         assert.equal(exam.body.events[0].seq, 6);
@@ -455,7 +456,8 @@ test('[UC-DIGITACAO-001] campos do lote: identificação em texto curto e cortes
     assert.equal(saved[0].key.length, 40);
     assert.equal(saved[0].code.length, 40);
     assert.equal(saved[0].mods.length, 16);
-    assert.equal(saved[0].kind.length, 24);
+    // kind fica na lista fechada (decisões §12, sobra do H8b): valor desconhecido é 'key'.
+    assert.equal(saved[0].kind, 'key');
     assert.equal(saved[0].question.length, 12);
     assert.equal(saved[0].attemptId.length, 200);
     assert.equal(saved[1].key, '');

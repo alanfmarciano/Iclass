@@ -35,11 +35,12 @@ const APPLICATION_ID_CHUNK = 5000;
 
 // Limites de cada prazo, em dias. 0 desliga. Entre 1 e o mínimo, sobe para o mínimo:
 // 30 dias para o monitoramento (dá tempo de rever uma prova contestada) e 180 para os
-// acessos (Marco Civil da Internet, art. 15).
+// acessos (Marco Civil da Internet, art. 15). O rótulo é o nome do prazo com o artigo
+// ("prazo da lixeira"), para as mensagens ("Informe o prazo da lixeira...").
 const RETENTION_LIMITS = Object.freeze({
-    proctoringDays: Object.freeze({ min: 30, max: RETENTION_MAX_DAYS, label: 'monitoramento da prova' }),
-    loginLogsDays: Object.freeze({ min: 180, max: RETENTION_MAX_DAYS, label: 'registros de acesso' }),
-    trashDays: Object.freeze({ min: 1, max: RETENTION_MAX_DAYS, label: 'lixeira' }),
+    proctoringDays: Object.freeze({ min: 30, max: RETENTION_MAX_DAYS, label: 'prazo do monitoramento da prova' }),
+    loginLogsDays: Object.freeze({ min: 180, max: RETENTION_MAX_DAYS, label: 'prazo dos registros de acesso' }),
+    trashDays: Object.freeze({ min: 1, max: RETENTION_MAX_DAYS, label: 'prazo da lixeira' }),
 });
 // Botão "Usar prazos recomendados" (só vale quando o administrador salva).
 const RECOMMENDED_RETENTION = Object.freeze({ proctoringDays: 180, loginLogsDays: 365, trashDays: 30 });
@@ -55,7 +56,7 @@ class RetentionInputError extends Error {
 
 function fieldMessage(field) {
     const limit = RETENTION_LIMITS[field];
-    return `Informe o prazo de ${limit.label} em dias inteiros, de 0 a ${limit.max.toLocaleString('pt-BR')} (0 = não apagar).`;
+    return `Informe o ${limit.label} em dias inteiros, de 0 a ${limit.max.toLocaleString('pt-BR')} (0 = não apagar).`;
 }
 
 // Um prazo vindo do corpo (número) ou da URL (texto só com dígitos). Devolve o valor já

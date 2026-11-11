@@ -27,7 +27,7 @@ const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../uti
 const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
 const { FIELD_LIMITS: KEYSTROKE_FIELD_LIMITS } = require('../utils/keystrokeStore.js');
 const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
-const { filterKeystrokeEvents, keystrokeModeOf } = require('../utils/keystrokePolicy.js');
+const { filterKeystrokeEvents, keystrokeModeOf, normalizeEventKind } = require('../utils/keystrokePolicy.js');
 
 // Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
@@ -332,7 +332,7 @@ router.post('/api/student/log-keystrokes', validateStudentSession, PROCTORING_SC
                 key: typeof ev.key === 'string' ? ev.key.slice(0, KEYSTROKE_FIELD_LIMITS.key) : '',
                 code: typeof ev.code === 'string' ? ev.code.slice(0, KEYSTROKE_FIELD_LIMITS.code) : '',
                 mods: typeof ev.mods === 'string' ? ev.mods.slice(0, KEYSTROKE_FIELD_LIMITS.mods) : '',
-                kind: typeof ev.kind === 'string' ? ev.kind.slice(0, KEYSTROKE_FIELD_LIMITS.kind) : 'key',
+                kind: normalizeEventKind(ev.kind).slice(0, KEYSTROKE_FIELD_LIMITS.kind),
                 question: ev.question != null && typeof ev.question !== 'object' ? String(ev.question).slice(0, KEYSTROKE_FIELD_LIMITS.question) : null,
                 blocked: ev.blocked === true,
                 suspicious: ev.suspicious === true,

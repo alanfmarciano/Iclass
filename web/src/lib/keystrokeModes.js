@@ -34,3 +34,21 @@ export function keystrokeWatchTitle(value, legacy = false) {
   if (legacy) return 'Ver teclado ao vivo (aplicação de antes desta versão: guardou toda a digitação até a atualização; daqui em diante, só atalhos suspeitos)'
   return normalizeKeystrokeMode(value) === 'tudo' ? 'Ver digitação ao vivo' : 'Ver atalhos ao vivo'
 }
+
+// Janela ao vivo do teclado no Monitor (decisões §12, sobra do H8b): o título e o texto
+// sem eventos seguem o modo da aplicação. Aplicação de antes desta versão guardou a
+// digitação completa: fica como 'tudo'.
+export function keystrokeLiveTitle(value, legacy = false, name = '') {
+  const mode = legacy ? 'tudo' : normalizeKeystrokeMode(value)
+  const who = name || ''
+  if (mode === 'tudo') return `Digitação ao vivo — ${who}`
+  if (mode === 'nada') return `Teclado — ${who}`
+  return `Atalhos ao vivo — ${who}`
+}
+
+export function keystrokeLiveEmptyText(value, legacy = false) {
+  const mode = legacy ? 'tudo' : normalizeKeystrokeMode(value)
+  if (mode === 'tudo') return 'Nenhuma digitação registrada ainda.'
+  if (mode === 'nada') return 'Registro de teclado desligado nesta prova.'
+  return 'Nenhum atalho registrado ainda.'
+}

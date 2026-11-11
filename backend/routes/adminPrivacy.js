@@ -200,9 +200,11 @@ function adjustedNotes(values, adjusted) {
     return adjusted.map(field => ({
         field,
         value: values[field],
-        message: `O prazo de ${retention.RETENTION_LIMITS[field].label} subiu para ${values[field]} dias, o mínimo.`,
+        message: `O ${retention.RETENTION_LIMITS[field].label} subiu para ${values[field]} dias, o mínimo.`,
     }));
 }
+
+const RETENTION_AUDIT_FIELDS = ['proctoringDays', 'loginLogsDays', 'trashDays'];
 
 function createAdminPrivacyRouter() {
     const router = express.Router();
@@ -386,7 +388,11 @@ function createAdminPrivacyRouter() {
                 trash: { ...storedTrash, retentionDays: values.trashDays },
             };
             const pick = source => ({ proctoringDays: source.proctoringDays, loginLogsDays: source.loginLogsDays, trashDays: source.trashDays });
-            recordAudit(db.memory, {
+            // Salvar sem mudar nenhum prazo não é uma alteração (decisões §12, sobra do
+            // H8b): só a primeira revisão (que liga a limpeza automática) é registrada
+            // mesmo com os mesmos números.
+            const changed = RETENTION_AUDIT_FIELDS.some(field => before[field] !== values[field]);
+            if (changed || !before.reviewedAt) recordAudit(db.memory, {
                 req,
                 actor: matchedAdmin,
                 action: 'retention_settings_changed',
