@@ -356,6 +356,11 @@ async function prepareServer() {
         throw err;
     }
     serverLifecycle.setBootPhase('restoring');
+    // Restauração de backup interrompida no meio (o processo caiu durante o applyRestore;
+    // decisões §12): o marcador em data/.restauracao/desfazer está lá, e tudo volta ao que
+    // era antes dela (banco, teclas, pastas e cursos arquivados), com o registro na
+    // auditoria e no crash.log. Antes de tudo o que lê a memória (sessões, provas).
+    await require('./utils/backup.js').recoverInterruptedRestore();
     // Pasta de dados dentro do OneDrive (H1-c, CONF-05): aviso no console (e no cartão
     // Armazenamento da tela Sistema).
     if (db.storageStatus().inSyncedFolder) console.warn(`⚠️ ${SYNCED_FOLDER_WARNING}`);
@@ -456,19 +461,45 @@ async function prepareServer() {
         db.runSafetyNetSave().catch(err => logCrash('rede de segurança da gravação', err));
     }, db.SAFETY_NET_INTERVAL_MS));
 
-    // Backup automático diário dos dados em data/backups (guarda os 14 mais recentes).
-    // Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios do servidor.
+    // Pastas de trabalho do backup e da restauração deixadas por uma execução interrompida
+    // (cópia do banco, envios e prévias extraídas) saem no boot, e uma troca de pasta
+    // interrompida no meio volta ao que era (H4a). Os tokens de prévia ficam na memória:
+    // os vencidos (1 h) saem de hora em hora, com a pasta da prévia.
+    const backupUtil = require('./utils/backup.js');
+    backupUtil.cleanWorkDirs();
+    // Segunda passada das sobras do backup (H4b): o .parcial de uma queda logo antes deste
+    // boot (com menos de 1 min, que a primeira deixou por poder ser de outra gravação) sai
+    // um pouco depois, sem esperar o próximo backup.
+    serverLifecycle.registerTimer('backup-leftovers', setTimeout(() => {
+        try { backupUtil.cleanStaleLeftovers(); } catch (err) { logCrash('limpeza das sobras do backup', err); }
+    }, backupUtil.BOOT_LEFTOVER_RECHECK_MS));
+    serverLifecycle.registerTimer('restore-tokens', setInterval(() => backupUtil.sweepRestoreTokens(), 3600000));
+
+    // Backup automático (H4b, OPS-03): conferido no boot e de hora em hora. Está devido
+    // quando o último backup local bem-sucedido tem 20 h ou mais (o servidor ligado de
+    // manhã faz o backup antes da aula). Grava o ZIP dos dados em data/backups
+    // (automatico_dados_<carimbo>.zip, ficam 14) e, com o destino externo configurado na
+    // tela Sistema, o completo em <destino>/IClass-<computador> (ficam "Guardar no
+    // destino"), os dois da mesma cópia do banco (VACUUM INTO na fila de gravação). Com
+    // prova em andamento fica para depois, salvo quando o último passou de 48 h. O
+    // resultado vai para data/backups/estado.json e para a auditoria (ator 'sistema').
     // Desligado em TEST_MODE (demonstração e testes usam dados descartáveis).
     if (process.env.TEST_MODE !== '1') {
-        const backupUtil = require('./utils/backup.js');
         const backupIfDue = async () => {
             try {
-                const last = backupUtil.lastAutomaticBackupAt();
-                if (last && Date.now() - last < 24 * 3600000) return;
-                await db.save({ detached: true });
-                const file = backupUtil.runAutomaticBackup();
-                console.log('💾 Backup automático criado: ' + path.basename(file));
-            } catch (e) { logCrash('backup automático', e); }
+                const outcome = await backupUtil.runAutomaticIfDue();
+                if (outcome.ran) {
+                    const { local, externo, externoErro } = outcome.result;
+                    console.log('💾 Backup automático criado: ' + local.name + (externo ? ` (cópia externa: ${externo.name})` : ''));
+                    if (externoErro) console.warn('⚠️ Backup automático: a cópia externa falhou: ' + externoErro);
+                } else if (outcome.reason === 'exam') {
+                    console.log('💾 Backup automático adiado: há prova em andamento.');
+                } else if (outcome.reason === 'failed') {
+                    console.error('⚠️ Backup automático falhou: ' + backupUtil.failureMessage(outcome.error));
+                }
+            } catch (e) {
+                logCrash('backup automático', e);
+            }
         };
         backupIfDue();
         serverLifecycle.registerTimer('backup', setInterval(backupIfDue, 3600000));
@@ -581,7 +612,12 @@ function describeBootFailure(cause, err, { port = PORT } = {}) {
         return {
             exitCode: EXIT_CODES.DB_CORRUPT,
             kind: 'database',
-            message: `⛔ O banco de dados (${dbFile}) está danificado e o IClass não consegue abri-lo. Nada foi apagado. Restaure um backup com node backend/backup-cli.js (opção de restaurar backup do launcher) e abra de novo.`,
+            // H4a (OPS-05): o arquivo fica como está; a backup-cli lista os backups e
+            // restaura o mais recente com o servidor parado.
+            message: `⛔ O banco de dados (${dbFile}) está danificado e o IClass não consegue abri-lo. Nada foi apagado.\n`
+                + '   Para ver os backups: node backend/scripts/backup-cli.js listar\n'
+                + '   Para restaurar o mais recente: node backend/scripts/backup-cli.js restaurar --ultimo\n'
+                + '   Depois abra o IClass de novo.',
         };
     }
     if (err && err.bootStage === 'database') {
@@ -722,16 +758,29 @@ function withTimeout(promise, ms) {
 }
 
 // Fecha a porta: não aceita conexões novas, fecha as ociosas na hora e, passados 2 s,
-// as que continuam abertas.
-async function closeHttpServer(server) {
+// as que continuam abertas. hold (promessa): as abertas só caem depois que ela terminar
+// (e mais um instante para a resposta sair), por exemplo o backup em andamento, para o
+// "Fazer backup agora" interrompido receber o 503 retryable em vez de conexão cortada.
+const RESPONSE_FLUSH_MS = 300;
+
+async function closeHttpServer(server, { hold = null } = {}) {
     if (!server || !server.listening) return;
     const closed = new Promise(resolve => server.close(() => resolve()));
     if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
-    const timer = setTimeout(() => {
+    let flushTimer = null;
+    const forceClose = () => {
         if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    };
+    const timer = setTimeout(() => {
+        if (!hold) return forceClose();
+        Promise.resolve(hold).catch(() => {}).then(() => {
+            if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+            flushTimer = setTimeout(forceClose, RESPONSE_FLUSH_MS);
+        });
     }, CLOSE_CONNECTIONS_AFTER_MS);
     await closed;
     clearTimeout(timer);
+    if (flushTimer) clearTimeout(flushTimer);
 }
 
 const SHUTDOWN_MESSAGES = {
@@ -778,7 +827,18 @@ async function performShutdown({ restart = false, reason = 'stop' } = {}) {
         return;
     }
     console.log(SHUTDOWN_MESSAGES[reason] || SHUTDOWN_MESSAGES.stop);
-    try { await closeHttpServer(serverInstance); } catch (err) { logCrash('desligamento (porta)', err); }
+    // Backup em andamento (H4b, decisões §12): espera um pouco; se não terminar, a
+    // gravação do ZIP é interrompida e o .parcial sai (nada pela metade no pendrive nem em
+    // data/backups). Corre junto com o fechamento da porta, e as conexões abertas só caem
+    // depois dele: quem pediu "Fazer backup agora" recebe a resposta (o 503 retryable da
+    // interrupção) em vez de conexão cortada. Cabe no teto de 10 s do desligamento.
+    const backupSettled = require('./utils/backup.js')
+        .settleForShutdown(reason === 'fatal' ? { waitMs: 1000, abortWaitMs: 1000 } : { waitMs: 4000, abortWaitMs: 1500 })
+        .then(settled => {
+            if (settled.aborted) console.warn('⚠️ Backup em andamento interrompido pelo desligamento; o arquivo pela metade foi apagado.');
+        }, err => logCrash('desligamento (backup em andamento)', err));
+    try { await closeHttpServer(serverInstance, { hold: backupSettled }); } catch (err) { logCrash('desligamento (porta)', err); }
+    await backupSettled;
     try {
         await (reason === 'fatal' ? withTimeout(db.close(), FATAL_SHUTDOWN_SAVE_MS) : db.close());
     } catch (err) {

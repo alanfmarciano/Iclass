@@ -279,7 +279,7 @@ describe('Sistema · histórico de backup', () => {
   })
 })
 
-describe('Sistema · restaurar backup de versão anterior', () => {
+describe('Sistema · restaurar backup (prévia com token, H4a)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.workspace = INSTITUTION
@@ -287,112 +287,179 @@ describe('Sistema · restaurar backup de versão anterior', () => {
   })
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
-  it('[UC-BACKUP-001] avisa antes que o backup é de versão anterior e o que acontece com as aplicações; só restaura depois de confirmar', async () => {
+  // Resposta da prévia (POST /api/admin/backup/restore/preview), H4a.
+  function restorePreview(extra = {}) {
+    return {
+      success: true,
+      token: 'token-previa',
+      expiraEm: '2026-11-10T21:00:00.000Z',
+      formato: 'json',
+      variante: 'dados',
+      geradoEm: '2026-10-18T20:08:31.000Z',
+      computador: null,
+      contagens: [
+        { colecao: 'students', rotulo: 'Alunos', backup: 12, atual: 14 },
+        { colecao: 'attendance', rotulo: 'Presenças', backup: null, atual: 30 },
+        { colecao: 'forum', rotulo: 'Fórum', backup: 0, atual: 0 },
+      ],
+      arquivos: { inclui: [], quantidade: 2, bytes: 0 },
+      ficaraoVazias: [{ colecao: 'attendance', rotulo: 'Presenças', atual: 30 }],
+      legado: null,
+      contas: { noBackup: 2, foraDaqui: 1 },
+      provasEmAndamento: [],
+      anonimizados: { quantidade: 0, aviso: '' },
+      avisos: [],
+      integridade: { verificada: false, texto: 'sem soma de verificação (formato antigo)' },
+      redeMantida: true,
+      ...extra,
+    }
+  }
+
+  async function openPreview(user, container, name = 'backup.json') {
+    await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], name, { type: 'application/json' }))
+    await user.click(screen.getByRole('button', { name: 'Conferir backup' }))
+    return screen.findByRole('dialog', { name: 'Conferir antes de restaurar' })
+  }
+
+  it('[UC-BACKUP-001] a prévia mostra o aviso de versão anterior e o que acontece antes de restaurar; sem window.confirm nem segundo envio', async () => {
     const warning = 'Este backup é de uma versão anterior do IClass e não traz as aplicações de prova. Ao restaurar, as aplicações de prova atuais serão descartadas.'
-    // O envio vai pelo cliente da API (lib/api.js), que devolve a recusa com status e corpo.
-    const restoreReplies = [
-      () => Promise.reject(Object.assign(new Error(warning), { status: 409, data: { error: warning, legacyBackup: true, exportedAt: '2026-10-18T20:08:31.000Z' } })),
-      () => Promise.resolve({ success: true, accountsNotRestored: 0, legacyApplications: true, applicationsDiscarded: 3, applicationsRebuilt: 1 }),
-    ]
-    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore' ? restoreReplies.shift()() : Promise.resolve({ success: true })))
-    const restoreCalls = () => mocks.post.mock.calls.filter(([url]) => url === '/api/admin/backup/restore')
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocks.post.mockImplementation((url) => {
+      if (url === '/api/admin/backup/restore/preview') return Promise.resolve(restorePreview({ legado: { aviso: warning } }))
+      if (url === '/api/admin/backup/restore') return Promise.resolve({ success: true, accountsNotRestored: 0, legacyApplications: true, applicationsDiscarded: 3, applicationsRebuilt: 1 })
+      return Promise.resolve({ success: true })
+    })
+    const calls = (url) => mocks.post.mock.calls.filter(([called]) => called === url)
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
-    await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup-antigo.json', { type: 'application/json' }))
-    await user.type(screen.getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
-    await user.click(screen.getByRole('button', { name: 'Restaurar' }))
+    const dialog = await openPreview(user, container, 'backup-antigo.json')
 
-    // 1º envio: o servidor não restaura e devolve o aviso, que a tela mostra.
-    const dialog = await screen.findByRole('dialog', { name: 'Backup de uma versão anterior' })
-    expect(dialog).toHaveTextContent('versão anterior do IClass')
-    expect(dialog).toHaveTextContent('aplicações de prova atuais serão descartadas')
-    expect(restoreCalls()).toHaveLength(1)
-    expect(restoreCalls()[0][1]).toBeInstanceOf(FormData)
-    expect(restoreCalls()[0][1].get('acceptLegacy')).toBeNull()
-    expect(restoreCalls()[0][2]).toEqual({ timeoutMs: 0 })
-    expect(mocks.toast.success).not.toHaveBeenCalled()
-    expect(mocks.toast.error).not.toHaveBeenCalled()
+    // A prévia vai pelo cliente da API com o arquivo; nada foi restaurado ainda.
+    expect(calls('/api/admin/backup/restore/preview')).toHaveLength(1)
+    expect(calls('/api/admin/backup/restore/preview')[0][1]).toBeInstanceOf(FormData)
+    expect(calls('/api/admin/backup/restore/preview')[0][1].get('file')).toBeInstanceOf(File)
+    expect(calls('/api/admin/backup/restore/preview')[0][2]).toEqual({ timeoutMs: 0 })
+    expect(calls('/api/admin/backup/restore')).toHaveLength(0)
+    expect(within(dialog).getByRole('note', { name: 'Backup de uma versão anterior' })).toHaveTextContent('aplicações de prova atuais serão descartadas')
+    // No backup × hoje (só o que tem dado de um dos lados) e o que ficará vazio.
+    const table = within(dialog).getByRole('table', { name: 'No backup e hoje' })
+    expect(within(table).getByRole('row', { name: /Alunos/ })).toHaveTextContent('1214')
+    expect(within(table).getByRole('row', { name: /Presenças/ })).toHaveTextContent('—30')
+    expect(within(table).queryByRole('row', { name: /Fórum/ })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('list', { name: 'Ficarão vazios' })).toHaveTextContent('Presenças (30 hoje)')
+    expect(dialog).toHaveTextContent('sem soma de verificação (formato antigo)')
+    expect(dialog).toHaveTextContent(NETWORK_KEPT_NOTE)
+    expect(dialog).toHaveTextContent('1 não existe aqui')
 
-    // Confirmado no aviso: manda de novo com a confirmação e informa o que foi feito.
-    await user.click(within(dialog).getByRole('button', { name: 'Restaurar mesmo assim' }))
-    await waitFor(() => expect(restoreCalls()).toHaveLength(2))
-    expect(restoreCalls()[1][1].get('acceptLegacy')).toBe('1')
+    // Restaurar só com RESTAURAR digitado; manda o token, não o arquivo de novo.
+    const button = within(dialog).getByRole('button', { name: 'Restaurar' })
+    expect(button).toBeDisabled()
+    await user.type(within(dialog).getByLabelText('Digite RESTAURAR para confirmar'), 'restaurar')
+    expect(button).toBeEnabled()
+    await user.click(button)
+    await waitFor(() => expect(calls('/api/admin/backup/restore')).toHaveLength(1))
+    expect(calls('/api/admin/backup/restore')[0][1]).toEqual({ token: 'token-previa', confirm: 'RESTAURAR', replaceAccounts: false })
+    expect(calls('/api/admin/backup/restore')[0][2]).toEqual({ timeoutMs: 0 })
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
     expect(mocks.toast.success.mock.calls[0][0]).toMatch(/aplicações de prova foram refeitas a partir das turmas do backup \(3 aplicações atuais descartadas, 1 refeita\)/)
-    expect(window.confirm).toHaveBeenCalledTimes(1)
+    expect(confirmSpy).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Conferir antes de restaurar' })).not.toBeInTheDocument())
   })
 
-  it('[UC-BACKUP-001] a restauração diz em uma linha que a configuração de rede foi mantida (decisões §7)', async () => {
-    mocks.post.mockResolvedValue({ success: true, accountsNotRestored: 0, networkKept: true })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('[UC-BACKUP-001] a prévia mostra provas em andamento, alunos anonimizados que voltam e a integridade conferida; "Substituir as contas" vai no pedido', async () => {
+    const anonymized = '2 alunos anonimizados depois deste backup voltarão com dados pessoais.'
+    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore/preview'
+      ? Promise.resolve(restorePreview({
+        formato: 'zip-2',
+        variante: 'completo',
+        computador: 'SALA-01',
+        arquivos: { inclui: ['content', 'data/uploads'], quantidade: 40, bytes: 3 * 1024 * 1024 },
+        provasEmAndamento: [{ id: 'app-1', examKey: 'Avaliacao_X', studentClass: '1DES', status: 'running' }],
+        anonimizados: { quantidade: 2, aviso: anonymized },
+        avisos: [anonymized],
+        integridade: { verificada: true, texto: 'Soma de verificação (SHA-256), integridade do banco e contagens conferidas.' },
+      }))
+      : Promise.resolve({ success: true, accountsNotRestored: 0, replaceAccounts: true, networkKept: true })))
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
-    // Antes de restaurar: a linha fica junto do aviso do que a restauração substitui.
-    expect(screen.getByText(NETWORK_KEPT_NOTE)).toBeInTheDocument()
-    await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup.json', { type: 'application/json' }))
-    await user.type(screen.getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
-    await user.click(screen.getByRole('button', { name: 'Restaurar' }))
+    const dialog = await openPreview(user, container, 'iclass-backup-completo.zip')
+    expect(dialog).toHaveAccessibleDescription(/no computador SALA-01 · ZIP \(formato 2\) · completo/)
+    expect(within(dialog).getByRole('note', { name: 'Provas em andamento' })).toHaveTextContent('Há 1 prova em andamento agora.')
+    expect(within(dialog).getByRole('list', { name: 'Avisos do backup' })).toHaveTextContent(anonymized)
+    expect(dialog).toHaveTextContent('Soma de verificação (SHA-256), integridade do banco e contagens conferidas.')
+    expect(dialog).toHaveTextContent('Biblioteca e arquivos enviados')
+    expect(dialog).toHaveTextContent('3,0 MB')
+    await user.click(within(dialog).getByRole('checkbox', { name: /Substituir também as contas de acesso/ }))
+    await user.type(within(dialog).getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR{Enter}')
     await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
+    const restoreCall = mocks.post.mock.calls.find(([url]) => url === '/api/admin/backup/restore')
+    expect(restoreCall[1]).toEqual({ token: 'token-previa', confirm: 'RESTAURAR', replaceAccounts: true })
     expect(mocks.toast.success.mock.calls[0][0]).toBe(`Backup restaurado. Recarregue a página para ver os dados. ${NETWORK_KEPT_NOTE}`)
   })
 
-  it('[UC-BACKUP-001] restaurar usa a confirmação digitada padrão: o botão só libera com o arquivo e RESTAURAR', async () => {
-    mocks.post.mockResolvedValue({ success: true, accountsNotRestored: 0 })
-    const restoreCalls = () => mocks.post.mock.calls.filter(([url]) => url === '/api/admin/backup/restore')
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('[UC-BACKUP-001] sem arquivo, Conferir fica desligado; a recusa da prévia aparece em português e nada é restaurado', async () => {
+    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore/preview'
+      ? Promise.reject(Object.assign(new Error('Backup inválido: aluno sem e-mail na posição 3 (students).'), { status: 400 }))
+      : Promise.resolve({ success: true })))
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
-    const button = screen.getByRole('button', { name: 'Restaurar' })
-    const field = screen.getByLabelText('Digite RESTAURAR para confirmar')
-    expect(button).toBeDisabled()
-    await user.type(field, 'restaurar')
-    expect(button).toBeDisabled()
+    // A linha de que a rede continua a de hoje fica junto do aviso do que a restauração substitui.
+    expect(screen.getByText(NETWORK_KEPT_NOTE)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Conferir backup' })).toBeDisabled()
     await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup.json', { type: 'application/json' }))
-    expect(button).toBeEnabled()
-    await user.clear(field)
-    await user.type(field, 'RESTAURA')
-    expect(button).toBeDisabled()
-    await user.type(field, 'R{Enter}')
-    await waitFor(() => expect(restoreCalls()).toHaveLength(1))
-    expect(restoreCalls()[0][1].get('confirm')).toBe('RESTAURAR')
-    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled())
+    await user.click(screen.getByRole('button', { name: 'Conferir backup' }))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Backup inválido: aluno sem e-mail na posição 3 (students).'))
+    expect(screen.queryByRole('dialog', { name: 'Conferir antes de restaurar' })).not.toBeInTheDocument()
+    expect(mocks.post.mock.calls.some(([url]) => url === '/api/admin/backup/restore')).toBe(false)
   })
 
-  it('[UC-BACKUP-001] RESTAURAR digitado sem arquivo: Enter avisa que falta o arquivo e não envia nada', async () => {
+  it('[UC-BACKUP-001] prévia vencida ou já usada: a tela diz para enviar de novo e fecha a conferência', async () => {
+    const expired = 'A prévia desta restauração não vale mais (já usada ou vencida). Envie o arquivo de novo para conferir.'
+    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore/preview'
+      ? Promise.resolve(restorePreview())
+      : Promise.reject(Object.assign(new Error(expired), { status: 400 }))))
     const user = userEvent.setup()
-    render(<SistemaPage />)
-    const field = screen.getByLabelText('Digite RESTAURAR para confirmar')
-    expect(screen.queryByText('Escolha o arquivo de backup para liberar o botão Restaurar.')).not.toBeInTheDocument()
-    await user.type(field, 'RESTAURAR')
-    expect(screen.getByText('Escolha o arquivo de backup para liberar o botão Restaurar.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Restaurar' })).toBeDisabled()
-    await user.type(field, '{Enter}')
-    expect(mocks.toast.error).toHaveBeenCalledWith('Escolha o arquivo de backup')
-    expect(mocks.post).not.toHaveBeenCalled()
+    const { container } = render(<SistemaPage />)
+    const dialog = await openPreview(user, container)
+    await user.type(within(dialog).getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
+    await user.click(within(dialog).getByRole('button', { name: 'Restaurar' }))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith(expired))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Conferir antes de restaurar' })).not.toBeInTheDocument())
   })
 
   it('[UC-BACKUP-001] baixar e restaurar vão pelo cliente da API: sem rede, a mensagem em português (antes "Failed to fetch")', async () => {
     const offline = 'Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'
     const networkError = () => Object.assign(new Error(offline), { status: 0, network: true })
-    mocks.downloadFile.mockResolvedValueOnce('iclass-backup.json').mockRejectedValueOnce(networkError())
-    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore' ? Promise.reject(networkError()) : Promise.resolve({ success: true })))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocks.downloadFile.mockResolvedValueOnce('iclass-backup-dados.zip').mockRejectedValueOnce(networkError())
+    let ticket = 0
+    mocks.post.mockImplementation((url) => {
+      if (url === '/api/admin/backup/restore/preview') return Promise.reject(networkError())
+      if (url === '/api/admin/backup/download-ticket') { ticket += 1; return Promise.resolve({ success: true, ticket: `bilhete-${ticket}` }) }
+      return Promise.resolve({ success: true })
+    })
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
-    await user.click(screen.getByRole('button', { name: 'Baixar dados (JSON)' }))
-    expect(mocks.downloadFile).toHaveBeenCalledWith('/api/admin/backup/data', 'iclass-backup.json')
+    // Os dois downloads são o ZIP formato 2 (com o histórico de digitação); baixar pede a
+    // senha do administrador de novo (H4b, SEG-15) e o bilhete vai no ?ticket=.
+    const downloadWithPassword = async (button) => {
+      await user.click(screen.getByRole('button', { name: button }))
+      const dialog = await screen.findByRole('dialog', { name: 'Confirme a senha para baixar' })
+      await user.type(within(dialog).getByLabelText('Senha do administrador'), 'segredo{Enter}')
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Confirme a senha para baixar' })).not.toBeInTheDocument())
+    }
+    await downloadWithPassword('Baixar só os dados (ZIP)')
+    expect(mocks.post).toHaveBeenCalledWith('/api/admin/backup/download-ticket', { tipo: 'dados', password: 'segredo' }, { timeoutMs: 0 })
+    await waitFor(() => expect(mocks.downloadFile).toHaveBeenCalledWith('/api/admin/backup/full?variante=dados&ticket=bilhete-1', 'iclass-backup-dados.zip'))
     expect(mocks.toast.error).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Baixar completo (ZIP)' }))
-    expect(mocks.downloadFile).toHaveBeenLastCalledWith('/api/admin/backup/full', 'iclass-backup.zip')
+    await downloadWithPassword('Baixar completo (ZIP)')
+    await waitFor(() => expect(mocks.downloadFile).toHaveBeenLastCalledWith('/api/admin/backup/full?variante=completo&ticket=bilhete-2', 'iclass-backup-completo.zip'))
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith(offline))
 
     await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup.json', { type: 'application/json' }))
-    await user.type(screen.getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
-    await user.click(screen.getByRole('button', { name: 'Restaurar' }))
+    await user.click(screen.getByRole('button', { name: 'Conferir backup' }))
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledTimes(2))
     expect(mocks.toast.error).toHaveBeenLastCalledWith(offline)
-    expect(screen.queryByRole('dialog', { name: 'Backup de uma versão anterior' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Conferir antes de restaurar' })).not.toBeInTheDocument()
   })
 
   it('[UC-BACKUP-001] histórico anota a restauração de backup de versão anterior', () => {

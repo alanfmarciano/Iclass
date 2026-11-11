@@ -11,6 +11,7 @@ const path = require('node:path');
 const express = require('express');
 const multer = require('multer');
 const request = require('supertest');
+const { ticketUrl } = require('./fixtures/backupDownload.js');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-entrada-erros-test-'));
 process.env.ICLASS_DATA_DIR = tempRoot;
@@ -506,7 +507,8 @@ test('[UC-ERRO-001] falha ao gerar o ZIP do backup completo: antes do envio resp
     console.error = () => {};
     try {
         backupUtil.streamFullZip = async () => { throw new Error('EMFILE: too many open files'); };
-        const res = await request(app).get('/api/admin/backup/full').set('x-admin-session', ADMIN_TOKEN);
+        // Baixar pede a senha de novo (H4b, SEG-15): o bilhete vai no ?ticket=.
+        const res = await request(app).get(await ticketUrl(app, ADMIN_TOKEN, DEMO_ACCOUNTS.admin.password, '/api/admin/backup/full')).set('x-admin-session', ADMIN_TOKEN);
         assert.equal(res.status, 500);
         const id = res.headers['x-request-id'];
         assert.match(String(id), REQUEST_ID);
@@ -525,12 +527,13 @@ test('[UC-ERRO-001] falha ao gerar o ZIP do backup completo: antes do envio resp
             await new Promise(resolve => setTimeout(resolve, 20));
             throw new Error('EIO: falha de leitura no meio do ZIP');
         };
+        const fullPath = await ticketUrl(app, ADMIN_TOKEN, DEMO_ACCOUNTS.admin.password, '/api/admin/backup/full');
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         try {
             const outcome = await new Promise(resolve => {
                 const http = require('node:http');
-                const req = http.get({ host: '127.0.0.1', port: server.address().port, path: '/api/admin/backup/full', headers: { 'x-admin-session': ADMIN_TOKEN } }, response => {
+                const req = http.get({ host: '127.0.0.1', port: server.address().port, path: fullPath, headers: { 'x-admin-session': ADMIN_TOKEN } }, response => {
                     response.on('data', () => {});
                     response.on('error', () => {});
                     response.on('close', () => resolve({ status: response.statusCode, id: response.headers['x-request-id'], complete: response.complete }));
@@ -650,9 +653,14 @@ test('[UC-ERRO-001] envio de arquivo com falha de disco responde o 500 com o có
             assert.match(block, /contexto: Falha ao gravar no disco o arquivo enviado\./, route);
         }
         // Restaurar backup com a mesma falha: 500 com o código, e o histórico de backup
-        // guarda o mesmo texto.
+        // guarda o mesmo texto. Desde o H4a o backup enviado não passa por /uploads (multer
+        // próprio, pasta DATA_DIR/.restauracao/envios): a falha é a dessa pasta.
+        const backupUtil = require('../../backend/utils/backup.js');
+        fs.rmSync(backupUtil.RESTORE_DIR, { recursive: true, force: true });
+        fs.writeFileSync(backupUtil.RESTORE_DIR, 'não é pasta');
         const restore = await request(app).post('/api/admin/backup/restore').set('x-admin-session', ADMIN_TOKEN)
-            .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{}'), 'backup.json');
+            .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{}'), 'backup.json')
+            .then(response => { fs.rmSync(backupUtil.RESTORE_DIR, { force: true }); return response; });
         assert.equal(restore.status, 500);
         const restoreId = restore.headers['x-request-id'];
         assert.equal(restore.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${restoreId}.`);

@@ -3,6 +3,7 @@ const router = express.Router();
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
+const { logError } = require('../utils/errorLog.js');
 const {
     DB_STUDENTS_FILE,
     DB_SUBMISSIONS_FILE,
@@ -95,8 +96,10 @@ const {
     examStateKey,
     findExamApplication,
     findOpenAttemptState,
+    openAttemptFromEntries,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
+const { collectMonitorActivity, monitorKeystrokeEmail } = require('../utils/monitorActivity.js');
 const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
@@ -615,8 +618,16 @@ router.get('/api/admin/submissions', (req, res) => {
         const studentClass = String(req.query.studentClass || '').trim();
         // Mesmo recorte do boletim e da planilha: registro antigo sem curso entra
         // só no curso da matrícula do aluno naquela turma.
+        const applicationId = String(req.query.applicationId || '').trim();
         const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(submissions, matchedAdmin), gradeScope(courseId, studentClass));
-        res.json(enrichSubmissionsWithAttemptResult(scoped));
+        // O resultado consolidado (melhor nota, média...) é calculado sobre o grupo inteiro
+        // do escopo; só depois a lista fica com as entregas da aplicação pedida ("Liberar
+        // notas" do Monitor). Sem examSnapshot (DES-13): nenhuma tela lê as questões da
+        // lista, e a revisão (/submissions/:id/review) lê o snapshot no servidor. Era o
+        // grosso da resposta (13,2 MB por turma num ano de dados, 1,96 MB sem ele).
+        const enriched = enrichSubmissionsWithAttemptResult(scoped)
+            .filter(item => !applicationId || String(item.applicationId || '') === applicationId);
+        res.json(enriched.map(({ examSnapshot, ...rest }) => rest));
     });
 });
 
@@ -3936,6 +3947,8 @@ function makeBackup(key, content, isJson = false) {
     const ext = isJson ? '.json' : '.md';
     const backupPath = path.join(backupDir, `${key}_${timestamp}${ext}.bak`);
     fs.writeFileSync(backupPath, content, 'utf8');
+    // Ficam as 30 mais recentes de cada arquivo (H4b, CONF-11); antes eram ilimitadas.
+    try { require('../utils/backupStore.js').pruneEditBackups(backupDir); } catch (e) { logError('retenção dos .bak', e); }
 }
 
 
@@ -4436,6 +4449,10 @@ function discardedAttemptEmails(application) {
 }
 
 // 5. Retorna o status de monitoramento em tempo real de todos os estudantes
+//    Cada linha leva só os MONITOR_ROW_LOG_LIMIT últimos eventos de foco (`logs`) e o total
+//    (`logCount`): a resposta é consultada a cada 3 s e antes levava o histórico inteiro de
+//    cada aluno (DES-04, DES-13).
+const MONITOR_ROW_LOG_LIMIT = 10;
 router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
     validateAdmin(req, res, () => {
         const studentClass = req.params.class.trim();
@@ -4463,10 +4480,15 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         const monitorMaxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? currentConfig.maxAttempts);
         const perAttemptTimer = (application?.timerMode || currentConfig.timerMode) === 'per_attempt';
 
+        // Entregas, logs de foco, tentativas e teclas lidos uma vez só e agrupados por
+        // e-mail (DES-04), DEPOIS da varredura dos prazos acima. Antes cada aluno percorria
+        // o histórico inteiro da escola.
+        const activity = collectMonitorActivity(db.memory, { application, examKey, keystrokes: db.keystrokes });
+
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
             const openAttempt = application
-                ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
+                ? openAttemptFromEntries(activity.attemptsByEmail.get(email))
                 : null;
             // Com aplicação, a linha lê só as tentativas dela: o estado avulso da interface
             // antiga (sem aplicação) vale apenas quando a prova não tem aplicação.
@@ -4484,11 +4506,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             
             // Entregas do aluno nesta aplicação; a mais recente é a que o professor vê
             // quando ele não está fazendo outra tentativa.
-            const deliveries = db.memory.submissions.filter(sub =>
-                (sub.studentEmail ? sub.studentEmail.toLowerCase() : ((sub.student && sub.student.email) ? sub.student.email.toLowerCase() : '')) === email && 
-                sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase() &&
-                (application ? sub.applicationId === application.id : true)
-            ).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+            const deliveries = activity.deliveriesByEmail.get(email) || [];
             const latestDelivery = deliveries[0];
             // Tentativa ATUAL (maxAttempts > 1): quem entregou a tentativa 1 e já começou a
             // 2 aparece com a 2 (situação, progresso, tempo e trava), não como "Finalizou".
@@ -4506,22 +4524,18 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 ? (Number(submission.attemptNumber) || deliveredAttempts || 1)
                 : (Number(state.attemptNumber) || (openAttempt ? deliveredAttempts + 1 : null));
 
-            const studentLogs = db.memory.proctoringLogs.filter(l =>
-                l.studentEmail.toLowerCase() === email &&
-                l.examKey.toLowerCase() === examKey.toLowerCase() &&
-                (application ? l.applicationId === application.id : true)
-            );
+            const studentLogs = activity.logsByEmail.get(email) || [];
             // "Saiu da aba" e o histórico curto do foco são da tentativa atual quando o
             // aluno está em outra tentativa (os eventos das anteriores ficam na lista completa).
             const currentAttemptLogs = attemptInProgress && state.attemptId
                 ? studentLogs.filter(l => !l.attemptId || l.attemptId === state.attemptId)
                 : studentLogs;
 
-            // Teclas pelos contadores do histórico de digitação (db.keystrokes), sem
-            // percorrer as teclas: aluno e prova e, com aplicação, só as dela.
-            const keystrokeStats = db.keystrokes.stats({ email, examKey, applicationId: application ? application.id : undefined });
-            const keystrokeCount = keystrokeStats.total;
-            const suspiciousCount = keystrokeStats.suspicious;
+            // Teclas pelos contadores do histórico de digitação (db.keystrokes.statsEntries),
+            // sem percorrer as teclas: aluno e prova e, com aplicação, só as dela.
+            const keystrokeStats = activity.keystrokesByEmail.get(monitorKeystrokeEmail(email));
+            const keystrokeCount = keystrokeStats ? keystrokeStats.count : 0;
+            const suspiciousCount = keystrokeStats ? keystrokeStats.suspicious : 0;
             const lastKeystrokeAt = keystrokeCount ? keystrokeStats.lastAt : null;
 
             let status = 'absent';
@@ -4636,7 +4650,12 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 restoredAfterDiscard: !!submission?.restoredAfterDiscard,
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
                 fullscreenUnsupported: currentAttemptLogs.some(log => log.eventType === 'fullscreen_unsupported'),
-                logs: studentLogs,
+                // Só os últimos eventos de foco (a linha mostra os 2 últimos); o histórico
+                // completo vem com a digitação ao vivo (exam-keystrokes, `logs`). logCount
+                // diz quantos há. O status 'blur' e o fullscreenUnsupported acima já foram
+                // calculados sobre a lista completa.
+                logs: studentLogs.slice(-MONITOR_ROW_LOG_LIMIT),
+                logCount: studentLogs.length,
                 keystrokeCount,
                 suspiciousCount,
                 lastKeystrokeAt
@@ -5274,6 +5293,21 @@ async function _storageQueueBlock(matchedAdmin) {
     return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
 }
 
+// Bloco do backup na fila (H4b, OPS-03): só para administrador com "Executar
+// manutenção" (o professor não vê alertas de backup; baixar e restaurar são do
+// administrador). Desligado em TEST_MODE, onde o backup automático também não roda
+// (demonstração e testes usam dados descartáveis).
+function _backupQueueBlock(matchedAdmin, now = Date.now()) {
+    if (process.env.TEST_MODE === '1') return null;
+    if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
+    try {
+        return require('../utils/backup.js').backupAlerts({ now });
+    } catch (error) {
+        logError('fila: situação do backup', error);
+        return null;
+    }
+}
+
 // Bloco de segurança da fila (H5b; SEG-06, decisão 6 do Alan), já no escopo de quem vê:
 // - alunos da lista (os do escopo) que pediram nova senha ou estão com o login em espera
 //   por senhas erradas (utils/loginGuard.js, só na memória);
@@ -5320,11 +5354,13 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
-        }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }) });
+        }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
         items = items.filter(item => {
+            // Item que não se adia (backup falhou ou atrasado, H4b): fica até resolver.
+            if (item.adiavel === false) return true;
             const ts = Number(snoozed[item.id]);
             return !(Number.isFinite(ts) && now - ts < 86400000);
         });

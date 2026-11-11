@@ -372,6 +372,14 @@ function applicationForAdminRequest(applicationId) {
     return { application, cls };
 }
 
+// Aplicação sem versionSnapshots e questionReports, com openReportCount (view=summary).
+function applicationSummary(application) {
+    const { versionSnapshots, questionReports, ...summary } = application || {};
+    summary.openReportCount = (Array.isArray(questionReports) ? questionReports : [])
+        .filter(report => report && report.status === 'open').length;
+    return summary;
+}
+
 function createAdminExamConfigRouter() {
     const router = express.Router();
 
@@ -384,6 +392,13 @@ function createAdminExamConfigRouter() {
             }).filter(application => matchedAdmin?.role !== 'professor'
                 || (matchedAdmin.assignedClasses || []).some(item =>
                     item && item.courseId === application.courseId && item.className === application.studentClass));
+            // view=summary (Monitor, consultado a cada 5 s): sem as versões da prova
+            // (versionSnapshots, com o gabarito) e sem as contestações (questionReports),
+            // que nenhuma tela de polling lê e eram o grosso da resposta (DES-04, DES-13);
+            // openReportCount diz quantas contestações estão em aberto. Sem view, nada muda.
+            if (String(req.query.view || '') === 'summary') {
+                return res.json({ success: true, applications: applications.map(applicationSummary) });
+            }
             res.json({ success: true, applications });
         });
     });
@@ -622,7 +637,7 @@ function createAdminExamConfigRouter() {
     router.get('/api/admin/question-reports/:class/:examKey', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             try {
-                const { application, cls } = applicationForAdminRequest(req.query.applicationId);
+                const { application } = applicationForAdminRequest(req.query.applicationId);
                 if (application.studentClass.toLowerCase() !== String(req.params.class || '').trim().toLowerCase()
                     || application.examKey !== String(req.params.examKey || '').trim()) {
                     return res.status(404).json({ error: 'Aplicação não encontrada para a turma e prova informadas.' });
@@ -659,7 +674,8 @@ function createAdminExamConfigRouter() {
                     groups,
                     status: application.status,
                     finishSummary: finishSummary(application),
-                    config: cls.onlineExamConfigs?.[application.examKey] || null,
+                    // Sem `config` (DES-04): levava as versões e o gabarito a cada 3 s e
+                    // nenhuma tela o lia.
                 });
             } catch (error) {
                 return sendRouteError(error, req, res);

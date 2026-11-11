@@ -11,6 +11,7 @@ import { EmptyState } from '../../components/ui/EmptyState'
 import { Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
+import { usePolling } from '../../hooks/usePolling'
 import { api } from '../../lib/api'
 import { fmtGrade } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
@@ -29,6 +30,11 @@ import { csvCell } from '../../lib/csv'
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
 const DEFAULT_WAITING_ROOM_MINUTES = 10
+// Consultas periódicas do Monitor (fase 2, H2-D): situação dos alunos e digitação ao vivo.
+const MONITOR_POLL_MS = 3000
+const KEYSTROKE_POLL_MS = 2000
+// Teclas guardadas na tela da digitação ao vivo (as mais recentes).
+const KEYSTROKE_VIEW_LIMIT = 5000
 const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'], time_over: ['warning', 'Tempo esgotado'], discarded: ['neutral', 'Desconsiderada'] }
 const EXAM_STATUS = {
   prepared: ['neutral', 'Preparada'],
@@ -44,6 +50,8 @@ const REPORT_REASON_LABELS = {
   erro_digitacao: 'Erro de digitação',
   outro: 'Outro',
 }
+
+const EMPTY_LIST = []
 
 function fmt(sec) { if (sec == null) return '-'; const m = Math.floor(sec / 60), s = sec % 60; return `${m}:${String(s).padStart(2, '0')}` }
 function formatApplicationTimestamp(value) {
@@ -218,10 +226,12 @@ function Stat({ k, v, sub, warn }) {
   )
 }
 
-function KeystrokeViewer({ events, row, loading }) {
+// logs: eventos de foco do aluno na aplicação, da resposta da digitação ao vivo (todos, até
+// 500). Antes de ela chegar, os últimos que vêm na linha do Monitor.
+function KeystrokeViewer({ events, row, loading, logs: liveLogs }) {
   const [tab, setTab] = useState('resumo')
   const [susOnly, setSusOnly] = useState(false)
-  const logs = row?.logs || []
+  const logs = liveLogs || row?.logs || EMPTY_LIST
   const items = useMemo(() => buildItems(events, logs), [events, logs])
   const alerts = useMemo(() => buildAlerts(items), [items])
   const counters = useMemo(() => buildCounters(items), [items])
@@ -428,11 +438,12 @@ export default function MonitorPage() {
   const [keystrokeWatch, setKeystrokeWatch] = useState(null) // { email, name }
   const [keystrokeEvents, setKeystrokeEvents] = useState([])
   const [keystrokeLoading, setKeystrokeLoading] = useState(false)
+  const [keystrokeLogs, setKeystrokeLogs] = useState(null) // eventos de foco da resposta da digitação ao vivo
   const [err, setErr] = useState(null)
-  const timer = useRef(null)
-  const keystrokeTimer = useRef(null)
   const toast = useToast()
-  const activeApplicationsPath = `/api/admin/exam-applications?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}`
+  // view=summary: sem as versões da prova e as contestações, que o Monitor não lê da lista
+  // (consultada a cada 5 s).
+  const activeApplicationsPath = `/api/admin/exam-applications?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}&view=summary`
   const activeApplicationsRequest = useApi(activeApplicationsPath, [activeCourseId, activeClassName], { pollMs: 5000 })
 
   const courseClasses = useMemo(() => (classes || []).filter((c) => !activeCourseId || c.courseId === activeCourseId), [classes, activeCourseId])
@@ -533,7 +544,7 @@ export default function MonitorPage() {
     }
     const params = new URLSearchParams({ studentClass: selectedClass.name, courseId: selectedClass.courseId || courseId })
     const loadedKey = params.toString()
-    api.get(`/api/admin/exam-applications?${loadedKey}`)
+    api.get(`/api/admin/exam-applications?${loadedKey}&view=summary`)
       .then((response) => {
         if (cancelled) return
         setApplications(response.applications || [])
@@ -566,33 +577,47 @@ export default function MonitorPage() {
     setWaitMinutes(DEFAULT_WAITING_ROOM_MINUTES)
   }, [className, examKey, applicationId])
 
-  async function poll() {
-    if (!className || !examKey) return
+  // Consulta do Monitor (situação dos alunos e contestações) a cada 3 s pelo usePolling
+  // (fase 2, H2-D: DES-04, DES-09): uma por vez, pausa com a aba oculta, recuo de até 15 s
+  // com o servidor fora e consulta na hora ao voltar. Antes era um setInterval: com o
+  // servidor lento, as consultas se acumulavam. Depois de uma ação na tela, refreshMonitor()
+  // consulta na hora (ou logo depois da que está em andamento).
+  const monitorKey = className && examKey ? `${courseId}\u0000${className}\u0000${examKey}\u0000${applicationId}` : ''
+  const monitorKeyRef = useRef(monitorKey)
+  monitorKeyRef.current = monitorKey
+  async function poll(requestOptions) {
+    if (!className || !examKey) return true
+    const requestKey = monitorKey
     try {
       const params = new URLSearchParams()
       if (courseId) params.set('courseId', courseId)
       if (applicationId) params.set('applicationId', applicationId)
       const qs = params.toString() ? `?${params.toString()}` : ''
       const [r, reports] = await Promise.all([
-        api.get(`/api/admin/monitor-status/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}${qs}`),
+        api.get(`/api/admin/monitor-status/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}${qs}`, requestOptions),
         applicationId
-          ? api.get(`/api/admin/question-reports/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?applicationId=${encodeURIComponent(applicationId)}`)
+          ? api.get(`/api/admin/question-reports/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?applicationId=${encodeURIComponent(applicationId)}`, requestOptions)
           : Promise.resolve({ groups: [], totalOpen: 0 }),
       ])
+      // Resposta da turma, prova ou aplicação anterior (trocadas durante a consulta): descarta.
+      if (monitorKeyRef.current !== requestKey) return true
       setRows(Array.isArray(r) ? r : (r.monitorList || []))
       setReportGroups(reports.groups || [])
       setReportTotal(Number(reports.totalOpen || 0))
       setRowsSyncedAt(Date.now())
       setErr(null)
-    } catch (e) { setErr(e) }
+      return true
+    } catch (e) {
+      if (monitorKeyRef.current === requestKey) setErr(e)
+      return false
+    }
   }
-
-  useEffect(() => {
-    clearInterval(timer.current)
-    if (className && examKey) { poll(); timer.current = setInterval(poll, 3000) }
-    return () => clearInterval(timer.current)
-    // eslint-disable-next-line
-  }, [className, examKey, courseId, applicationId])
+  const monitorPolling = usePolling((requestOptions) => poll(requestOptions), {
+    intervalMs: MONITOR_POLL_MS,
+    enabled: !!(className && examKey),
+    resetKey: monitorKey,
+  })
+  const refreshMonitor = monitorPolling.runNow
 
   useEffect(() => {
     setRows([])
@@ -610,35 +635,61 @@ export default function MonitorPage() {
     return () => clearInterval(id)
   }, [selectedConfig.status, selectedConfig.startTime, selectedConfig.timerEnabled])
 
-  async function fetchKeystrokes(email) {
-    if (!className || !examKey || !email) return
+  // Digitação ao vivo (a cada 2 s, pelo usePolling): a primeira consulta traz as últimas
+  // teclas; as seguintes pedem só as que chegaram depois do cursor do servidor (`after`,
+  // o row_id da tabela: o seq do navegador recomeça quando o aluno recarrega a página) e
+  // acrescentam, guardando as últimas KEYSTROKE_VIEW_LIMIT. Com hasMore, busca de novo na
+  // hora. Os eventos de foco do aluno (`logs`) vêm na mesma resposta. Trocar de aluno,
+  // turma, prova ou aplicação recomeça do zero.
+  const keystrokeEmail = keystrokeWatch?.email || ''
+  const keystrokeKey = keystrokeEmail && className && examKey ? `${keystrokeEmail}\u0000${className}\u0000${examKey}\u0000${applicationId}` : ''
+  const keystrokeKeyRef = useRef(keystrokeKey)
+  keystrokeKeyRef.current = keystrokeKey
+  const keystrokeCursor = useRef(null)
+  useEffect(() => {
+    keystrokeCursor.current = null
+    setKeystrokeEvents([])
+    setKeystrokeLogs(null)
+  }, [keystrokeKey])
+
+  async function fetchKeystrokes(requestOptions) {
+    if (!keystrokeKey) return true
+    const requestKey = keystrokeKey
+    const after = keystrokeCursor.current
     try {
-      const params = new URLSearchParams({ email })
+      const params = new URLSearchParams({ email: keystrokeEmail })
       if (applicationId) params.set('applicationId', applicationId)
-      const r = await api.get(`/api/admin/exam-keystrokes/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?${params.toString()}`)
-      setKeystrokeEvents(r.events || [])
+      if (after !== null) params.set('after', String(after))
+      const r = await api.get(`/api/admin/exam-keystrokes/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?${params.toString()}`, requestOptions)
+      if (keystrokeKeyRef.current !== requestKey || keystrokeCursor.current !== after) return true
+      const events = Array.isArray(r.events) ? r.events : []
+      if (after === null) setKeystrokeEvents(events.slice(-KEYSTROKE_VIEW_LIMIT))
+      else if (events.length) setKeystrokeEvents((current) => [...current, ...events].slice(-KEYSTROKE_VIEW_LIMIT))
+      if (Array.isArray(r.logs)) setKeystrokeLogs(r.logs)
+      // Servidor sem cursor (versão anterior): continua buscando as últimas a cada vez.
+      const cursor = Number(r.cursor)
+      keystrokeCursor.current = r.cursor !== undefined && r.cursor !== null && Number.isFinite(cursor) ? cursor : null
+      if (r.hasMore === true && keystrokeCursor.current !== null) keystrokePolling.runNow()
+      return true
     } catch (e) {
-      setErr(e)
+      if (keystrokeKeyRef.current === requestKey) setErr(e)
+      return false
     } finally {
-      setKeystrokeLoading(false)
+      if (keystrokeKeyRef.current === requestKey) setKeystrokeLoading(false)
     }
   }
+  const keystrokePolling = usePolling((requestOptions) => fetchKeystrokes(requestOptions), {
+    intervalMs: KEYSTROKE_POLL_MS,
+    enabled: !!keystrokeKey,
+    resetKey: keystrokeKey,
+  })
 
   function openKeystrokeWatch(row) {
     setKeystrokeWatch({ email: row.email, name: row.name || row.email })
     setKeystrokeEvents([])
+    setKeystrokeLogs(null)
     setKeystrokeLoading(true)
   }
-
-  useEffect(() => {
-    clearInterval(keystrokeTimer.current)
-    if (keystrokeWatch?.email) {
-      fetchKeystrokes(keystrokeWatch.email)
-      keystrokeTimer.current = setInterval(() => fetchKeystrokes(keystrokeWatch.email), 2000)
-    }
-    return () => clearInterval(keystrokeTimer.current)
-    // eslint-disable-next-line
-  }, [keystrokeWatch?.email, className, examKey, applicationId])
 
   async function control(action, extra = {}) {
     try {
@@ -654,7 +705,7 @@ export default function MonitorPage() {
       else toast.success(result.text)
       await refetchClasses(true)
       await activeApplicationsRequest.refetch(true)
-      poll()
+      refreshMonitor()
       return response
     } catch (e) { toast.error(e.message); return null }
   }
@@ -688,7 +739,7 @@ export default function MonitorPage() {
         questionNumber: group.questionNumber,
       })
       toast.success('Contestações marcadas como revisadas')
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -715,7 +766,7 @@ export default function MonitorPage() {
       })
       setCorrectIssue(null)
       toast.success('Questão corrigida. Os alunos foram avisados.')
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -735,7 +786,7 @@ export default function MonitorPage() {
       })
       setAnnulIssue(null)
       toast.success('Questão anulada e resultados recalculados.')
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -766,7 +817,7 @@ export default function MonitorPage() {
       setReplaceIssue(null)
       toast.success('Questão substituída. Os alunos receberão a nova questão em instantes.')
       await refetchClasses(true)
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -794,7 +845,7 @@ export default function MonitorPage() {
         toast[feedback.tone](feedback.message)
       }
       if (!targetEmail) await refetchClasses(true)
-      poll()
+      refreshMonitor()
     } catch (e) { toast.error(e.message) }
   }
 
@@ -887,7 +938,7 @@ export default function MonitorPage() {
   }
 
   async function unlock(email) {
-    try { await api.post('/api/admin/unlock-student-focus', { studentEmail: email, studentClass: className, courseId, examKey, applicationId }); toast.success('Aluno desbloqueado'); poll() }
+    try { await api.post('/api/admin/unlock-student-focus', { studentEmail: email, studentClass: className, courseId, examKey, applicationId }); toast.success('Aluno desbloqueado'); refreshMonitor() }
     catch (e) { toast.error(e.message) }
   }
 
@@ -900,7 +951,7 @@ export default function MonitorPage() {
   async function assignVersion(email) {
     const version = prompt('Versão do aluno:', 'A')
     if (!version) return
-    try { await api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() }); toast.success('Versão atribuída'); poll() }
+    try { await api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() }); toast.success('Versão atribuída'); refreshMonitor() }
     catch (e) { toast.error(e.message) }
   }
 
@@ -926,6 +977,8 @@ export default function MonitorPage() {
       const params = new URLSearchParams()
       if (courseId) params.set('courseId', courseId)
       if (className) params.set('studentClass', className)
+      // Só as entregas desta aplicação (antes vinham todas as da turma, com as questões).
+      params.set('applicationId', applicationId)
       const list = await api.get(`/api/admin/submissions?${params.toString()}`)
       const subs = Array.isArray(list) ? list : (list?.submissions || [])
       const ids = subs
@@ -1295,6 +1348,7 @@ export default function MonitorPage() {
       >
         <KeystrokeViewer
           events={keystrokeEvents}
+          logs={keystrokeLogs}
           row={rows.find((r) => r.email === keystrokeWatch?.email) || keystrokeWatch}
           loading={keystrokeLoading}
         />

@@ -16,11 +16,12 @@ const {
     isProfessorAccount,
     sendHandledFailure,
     sendInternalError,
+    sendRouteError,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const { connectionInfo, httpsAvailable } = require('../utils/networkPolicy.js');
-const { saveServerBackup } = require('../utils/backup.js');
+const { createSafetyBackup } = require('../utils/backup.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
 const { finishApplication } = require('../utils/examFinish.js');
@@ -89,11 +90,16 @@ function maintenanceScope(req, matchedAdmin, { studentClass, courseId, applicati
     return { cls, application };
 }
 
-// Backup dos dados antes de apagar qualquer coisa: a limpeza pode ser desfeita.
-function safetyBackup(prefix) {
+// Backup dos dados antes de apagar qualquer coisa: a limpeza pode ser desfeita. Desde o
+// H4a é o ZIP formato 2 dos dados (<prefixo>_dados_<carimbo>.zip, com o histórico de
+// digitação), gerado sem travar o servidor (antes o JSON síncrono parava todos por
+// segundos num banco grande). Outro backup em andamento: busy (a rota responde 409).
+async function safetyBackup(prefix) {
     try {
-        return { ok: true, file: path.basename(saveServerBackup(prefix)) };
+        const saved = await createSafetyBackup(prefix);
+        return { ok: true, file: saved.name };
     } catch (error) {
+        if (error && error.code === 'ICLASS_BACKUP_BUSY') return { ok: false, busy: true, file: null, error };
         // A rota responde 503 com a mensagem própria (sendHandledFailure): o stack vai para o
         // crash.log com o código do pedido.
         return { ok: false, file: null, error };
@@ -357,23 +363,34 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             if (clearedCount === 0) {
                 return res.json({ success: true, clearedCount: 0, message: `Nada para limpar na turma ${cls.name}.` });
             }
-            const backup = safetyBackup('antes-limpeza-prova');
+            const backup = await safetyBackup('antes-limpeza-prova');
+            if (backup.busy) return sendRouteError(backup.error, req, res);
             if (!backup.ok) return sendHandledFailure(backup.error, req, res, 'Não foi possível salvar o backup de segurança; nada foi apagado.');
-            const removed = applyExamStateFlush(db.memory, plan);
+            // O backup roda sem travar o servidor: o plano é refeito com o estado de agora
+            // (uma prova pode ter começado na turma enquanto ele era gravado).
+            const current = planExamStateFlush(db.memory, { cls, application, examKey, studentEmail, ...classHelpers(cls) });
+            if (current.blockedBy.length) {
+                const names = current.blockedBy.map(item => item.examTitle).join(', ');
+                return res.status(409).json({
+                    error: `Há uma aplicação em andamento nesta turma (${names}). Encerre-a pelo Monitor antes de limpar o estado de prova.`,
+                    blockedBy: current.blockedBy,
+                });
+            }
+            const removed = applyExamStateFlush(db.memory, current);
             recordMaintenanceAudit(req, matchedAdmin, 'exam_state_flushed', cls, {
-                applicationId: plan.applicationId,
-                examKey: plan.examKey || (examKey ? String(examKey) : null),
-                studentEmail: plan.studentEmail,
+                applicationId: current.applicationId,
+                examKey: current.examKey || (examKey ? String(examKey) : null),
+                studentEmail: current.studentEmail,
                 ...removed,
-                pendingAnswers: plan.counts.pendingAnswers,
-                preserved: plan.preserved,
+                pendingAnswers: current.counts.pendingAnswers,
+                preserved: current.preserved,
                 backup: backup.file,
             });
             await db.save();
-            console.log(`[FLUSH] Estado de prova limpo na turma ${cls.name}: ${clearedCount} registros removidos.`);
+            console.log(`[FLUSH] Estado de prova limpo na turma ${cls.name}: ${current.counts.examStates + current.counts.messages} registros removidos.`);
             res.json({
                 success: true,
-                clearedCount,
+                clearedCount: current.counts.examStates + current.counts.messages,
                 ...removed,
                 backup: backup.file,
                 message: `Estado de prova limpo na turma ${cls.name}: ${removed.removedStates} estado(s) de tentativa e ${removed.removedMessages} mensagem(ns) removidos. Logs de monitoramento e histórico de digitação foram preservados.`,
@@ -432,7 +449,8 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             }
             const { cls } = scope;
             const helpers = classHelpers(cls);
-            const backup = safetyBackup('antes-resetar-sala');
+            const backup = await safetyBackup('antes-resetar-sala');
+            if (backup.busy) return sendRouteError(backup.error, req, res);
             if (!backup.ok) return sendHandledFailure(backup.error, req, res, 'Não foi possível salvar o backup de segurança; nada foi alterado.');
 
             const actor = (matchedAdmin && (matchedAdmin.email || matchedAdmin.name)) || 'Administrador';
@@ -556,8 +574,15 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         });
     });
 
+    // O caminho do destino externo do backup (settings.backup.destino, H4b) é só do
+    // administrador, como em GET /api/admin/backup/status: o professor vê que há um
+    // destino, não onde.
+    const settingsForAccount = (settings, account) => (isProfessorAccount(account) && settings && settings.backup && settings.backup.destino
+        ? { ...settings, backup: { ...settings.backup, destino: '' } }
+        : settings);
+
     router.get('/api/admin/settings', (req, res) => {
-        validateAdmin(req, res, () => res.json(settingsUtil.getSettings()));
+        validateAdmin(req, res, (config, account) => res.json(settingsForAccount(settingsUtil.getSettings(), account)));
     });
 
     // Configurações gerais: cada chave que mudou vai para a auditoria (settings_updated,
@@ -583,7 +608,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 });
             }
             await db.save();
-            res.json({ success: true, settings: db.memory.config.settings });
+            res.json({ success: true, settings: settingsForAccount(db.memory.config.settings, account) });
         });
     });
 

@@ -6,9 +6,6 @@ import { describe, expect, it } from 'vitest'
 // Exceções conhecidas:
 // - ExamRunner: a sincronização da prova (4 s) e o envio da digitação (2 s) não pausam
 //   com a aba oculta e têm a própria guarda de uma por vez (testes em ExamRunner.test.jsx);
-// - MonitorPage: as duas consultas do Monitor (3 s e 2 s) ficam com o H2-D (trilha A),
-//   que reescreve o Monitor; até lá, pendência conhecida, e a lista falha quando elas
-//   saírem, para não guardar exceção vencida;
 // - lazyPage: a conferência do servidor enquanto a tela espera o arquivo é uma espera
 //   curta e com fim (até 3 minutos), encadeada por setTimeout e com prazo em cada
 //   conferência; não é consulta periódica e não entra aqui.
@@ -17,9 +14,6 @@ const SOURCES = import.meta.glob('../**/*.{js,jsx}', { query: '?raw', import: 'd
 const CLOCK = /setInterval\(\s*\(\)\s*=>\s*set[A-Z]\w*\(/
 const GUARDED = {
   'features/student/exam/ExamRunner.jsx': [/setInterval\(\(\) => sync\(\{ fromTimer: true \}\), SYNC_MS\)/, /setInterval\(\(\) => flushKeystrokes\(\), KEYSTROKE_FLUSH_MS\)/],
-}
-const PENDING_UNTIL_H2D = {
-  'features/admin/MonitorPage.jsx': [/setInterval\(poll, 3000\)/, /setInterval\(\(\) => fetchKeystrokes\(/],
 }
 
 function productionSources() {
@@ -32,20 +26,15 @@ function productionSources() {
 describe('[UC-DESEMPENHO-002] consultas periódicas só pelo usePolling', () => {
   it('nenhum setInterval de consulta ao servidor fora das exceções conhecidas', () => {
     const unexpected = []
-    const pendingSeen = new Set()
     for (const [file, source] of productionSources()) {
       source.split('\n').forEach((line, index) => {
         if (!line.includes('setInterval(')) return
         if (CLOCK.test(line)) return
         if ((GUARDED[file] || []).some((pattern) => pattern.test(line))) return
-        const pending = (PENDING_UNTIL_H2D[file] || []).find((pattern) => pattern.test(line))
-        if (pending) { pendingSeen.add(`${file} ${pending}`); return }
         unexpected.push(`${file}:${index + 1}: ${line.trim()}`)
       })
     }
     expect(unexpected, 'Use o usePolling (hooks/usePolling.js) para consultar o servidor de tempos em tempos').toEqual([])
-    const allPending = Object.entries(PENDING_UNTIL_H2D).flatMap(([file, patterns]) => patterns.map((pattern) => `${file} ${pattern}`))
-    expect(allPending.filter((entry) => !pendingSeen.has(entry)), 'Consulta do Monitor já saiu do setInterval: tire da lista PENDING_UNTIL_H2D').toEqual([])
   })
 
   it('as telas que consultam de tempos em tempos usam o usePolling', () => {
@@ -66,5 +55,15 @@ describe('[UC-DESEMPENHO-002] consultas periódicas só pelo usePolling', () => 
       expect(sources[file], file).toMatch(/usePolling\(/)
       expect(sources[file], file).not.toMatch(/setInterval\(/)
     }
+  })
+
+  it('o Monitor consulta a situação dos alunos e a digitação ao vivo pelo usePolling (H2-D)', () => {
+    const source = Object.fromEntries(productionSources())['features/admin/MonitorPage.jsx']
+    expect(source).toBeTruthy()
+    expect(source.match(/usePolling\(/g) || []).toHaveLength(2)
+    // O único setInterval que sobra é o relógio da tela.
+    const intervals = source.split('\n').filter((line) => line.includes('setInterval('))
+    expect(intervals.length).toBeGreaterThan(0)
+    intervals.forEach((line) => expect(line).toMatch(CLOCK))
   })
 })

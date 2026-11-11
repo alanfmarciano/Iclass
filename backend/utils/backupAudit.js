@@ -15,7 +15,8 @@ function recordBackupAudit(req, account, action, details = {}) {
     });
 }
 
-const RESTORE_PATH = /^\/backup\/restore\/?$/i;
+// A prévia (/backup/restore/preview) conta como tentativa de restaurar (H4a).
+const RESTORE_PATH = /^\/backup\/restore(?:\/preview)?\/?$/i;
 
 function isBackupRestoreRequest(req) {
     return !!req && String(req.method || '').toUpperCase() === 'POST' && RESTORE_PATH.test(String(req.path || ''));

@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const request = require('supertest');
+const { ticketUrl } = require('./fixtures/backupDownload.js');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-audit-coverage-'));
 process.env.ICLASS_DATA_DIR = tempRoot;
@@ -253,7 +254,7 @@ test('[UC-AUDITORIA-002] dúvida e resposta apagadas de vez registram forum_purg
 
 // ------------------------------------------------------------ restauração
 async function downloadBackup() {
-    const response = await admin(request(app).get('/api/admin/backup/data')).buffer(true).parse((res, done) => {
+    const response = await admin(request(app).get(await ticketUrl(app, adminToken, 'x', '/api/admin/backup/data'))).buffer(true).parse((res, done) => {
         const chunks = [];
         res.on('data', chunk => chunks.push(chunk));
         res.on('end', () => done(null, Buffer.concat(chunks)));

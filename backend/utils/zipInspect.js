@@ -115,8 +115,17 @@ async function readZipDirectory(source) {
         const nameStart = cursor + 46;
         const entry = {
             name: directory.toString(flags & 0x800 ? 'utf8' : 'latin1', nameStart, nameStart + nameLength).replace(/\\/g, '/'),
+            // Nome como está gravado (sem trocar \ por /), para a restauração recusar o
+            // que não está normalizado.
+            rawName: directory.toString(flags & 0x800 ? 'utf8' : 'latin1', nameStart, nameStart + nameLength),
             method: directory.readUInt16LE(cursor + 10),
             encrypted: (flags & 0x1) === 0x1,
+            // CRC-32 declarado e quem gravou (byte alto: 3 = Unix) com os atributos externos
+            // (nos 16 bits altos, o modo do arquivo no Unix: link simbólico = 0o120000).
+            // A restauração confere o CRC de cada entrada e recusa link simbólico (H4a).
+            crc32: directory.readUInt32LE(cursor + 16),
+            versionMadeBy: directory.readUInt16LE(cursor + 4),
+            externalAttributes: directory.readUInt32LE(cursor + 38),
             compressedSize: directory.readUInt32LE(cursor + 20),
             size: directory.readUInt32LE(cursor + 24),
             localOffset: directory.readUInt32LE(cursor + 42),
@@ -198,8 +207,20 @@ async function readZipEntryBuffer(source, directory, entry, maxBytes) {
     return Buffer.concat(parts);
 }
 
+// Entrada gravada como link simbólico (ZIP feito no Linux ou no macOS com links): na
+// extração ela apontaria para fora da pasta de destino.
+const UNIX_HOST = 3;
+const S_IFMT = 0o170000;
+const S_IFLNK = 0o120000;
+function isSymlinkEntry(entry) {
+    if (!entry || (Number(entry.versionMadeBy) >> 8) !== UNIX_HOST) return false;
+    return ((Number(entry.externalAttributes) >>> 16) & S_IFMT) === S_IFLNK;
+}
+
 module.exports = {
     bufferSource,
+    isSymlinkEntry,
+    openEntryStream,
     fileSource,
     hasZipMagic,
     readZipDirectory,

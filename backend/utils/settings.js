@@ -14,6 +14,7 @@ const DEFAULTS = Object.freeze({
     trash: { retentionDays: 0 },
     maintenance: { enabled: false, message: 'Sistema em manutenção. Tente novamente em instantes.' },
     network: { adminAccess: 'rede-sem-https' },
+    backup: { destino: '', guardarExterno: 14 },
 });
 
 // Blocos que o POST genérico de configurações (/api/admin/settings) nunca altera: cada
@@ -46,6 +47,27 @@ function networkSettings(stored = storedSettings()) {
     return { adminAccess: normalizeAdminAccess(network.adminAccess) };
 }
 
+// Destino externo do backup (settings.backup, H4b, OPS-03): a pasta fora do computador
+// (pendrive, HD externo ou pasta de rede) onde o backup completo diário é copiado, e
+// quantos backups automáticos ficam lá (1 a 90). Gravado só por POST
+// /api/admin/backup/config, que confere a pasta e testa a gravação; a restauração de um
+// backup nunca o troca (gancho 'protectedConfig'). Banco de antes desta versão (sem o
+// bloco) ou valor estranho: sem destino e 14.
+const BACKUP_KEEP_EXTERNAL_MIN = 1;
+const BACKUP_KEEP_EXTERNAL_MAX = 90;
+
+function backupSettings(stored = storedSettings()) {
+    const backup = stored.backup && typeof stored.backup === 'object' && !Array.isArray(stored.backup) ? stored.backup : {};
+    const destino = typeof backup.destino === 'string' ? backup.destino.trim() : '';
+    const keep = Math.floor(Number(backup.guardarExterno));
+    return {
+        destino,
+        guardarExterno: Number.isFinite(keep) && keep >= BACKUP_KEEP_EXTERNAL_MIN
+            ? Math.min(BACKUP_KEEP_EXTERNAL_MAX, keep)
+            : DEFAULTS.backup.guardarExterno,
+    };
+}
+
 function getSettings() {
     const s = storedSettings();
     return {
@@ -58,6 +80,7 @@ function getSettings() {
         trash: { ...DEFAULTS.trash, ...(s.trash || {}) },
         maintenance: { ...DEFAULTS.maintenance, ...(s.maintenance || {}) },
         network: networkSettings(s),
+        backup: backupSettings(s),
     };
 }
 
@@ -156,6 +179,9 @@ module.exports = {
     getSettings,
     mergeSettings,
     networkSettings,
+    backupSettings,
+    BACKUP_KEEP_EXTERNAL_MIN,
+    BACKUP_KEEP_EXTERNAL_MAX,
     normalizeAdminAccess,
     isValidTimeZone,
     todayInTz,

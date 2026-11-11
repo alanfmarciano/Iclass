@@ -8,7 +8,7 @@ Por padrão, o sistema mantém `data/`, `content/` e `cursos_arquivados/`. Teste
 
 - **Fora do OneDrive** (e de qualquer pasta sincronizada: Google Drive, Dropbox, pasta de rede). Use algo como `C:\IClass`. O OneDrive abre o `database.db` e os arquivos `-wal`/`-shm` enquanto o IClass grava: travas, gravações que falham (503 "Não foi possível gravar os dados agora") e cópias do banco pela metade na nuvem. Com a pasta de dados dentro do OneDrive o servidor avisa no console ao ligar ("A pasta de dados está dentro do OneDrive...") e o cartão **Armazenamento** da tela Sistema mostra o mesmo aviso. A conferência olha o caminho: a pasta do OneDrive informada pelo Windows (variáveis `OneDrive`, `OneDriveCommercial`, `OneDriveConsumer`) ou qualquer parte do caminho que comece com "OneDrive".
 - **Exclusão no antivírus**: inclua a pasta `data\` do IClass nas exclusões do Windows Defender (ou do antivírus da escola). O antivírus que examina o banco a cada gravação causa as mesmas travas.
-- **Cópia manual do banco**: o certo é o backup do sistema (tela Sistema → Backup geral). Para copiar à mão, pare o servidor antes (Ctrl+C ou a opção do launcher) e copie juntos `database.db`, `database.db-wal` e `database.db-shm` (os dois últimos podem não existir depois de um desligamento limpo). Copiar só o `database.db` com o servidor ligado pode levar um banco sem as gravações mais recentes.
+- **Cópia manual do banco**: o certo é o backup do sistema (tela Sistema → Backup). Para copiar à mão, pare o servidor antes (Ctrl+C ou a opção do launcher) e copie juntos `database.db`, `database.db-wal` e `database.db-shm` (os dois últimos podem não existir depois de um desligamento limpo). Copiar só o `database.db` com o servidor ligado pode levar um banco sem as gravações mais recentes.
 
 ### Armazenamento e compactação (fase 2, H1-c, CONF-06, DES-11)
 
@@ -68,6 +68,36 @@ O teste automatizado não substitui a verificação manual de navegação por te
 Antes de cada fase ou operação sensível, faça snapshot completo externo com SHA-256. A restauração in-app cria backup completo de segurança, valida tipo, versão e schema, rejeita traversal, duplicidades e ZIP acima do limite descompactado, extrai em staging e invalida sessões.
 
 A restauração só responde sucesso depois do `COMMIT` do SQLite. Em falha, arquivos e coleções anteriores são recolocados.
+
+Fase 2, H4a: o backup do servidor é um ZIP formato 2 (`iclass-backup.json` + `data/database.db` copiado por `VACUUM INTO`, com as teclas da prova, e as pastas na variante completa), com um `.sha256` ao lado. O automático grava `data/backups/automatico_dados_<data>.zip` e guarda os 14 mais recentes. Restaurar pela tela Sistema é em dois passos: "Conferir backup" envia o arquivo e mostra a prévia (o que o backup traz ao lado do que há hoje, o que ficará vazio, provas em andamento, alunos anonimizados que voltariam com dados pessoais, aviso de backup de versão anterior); "Restaurar" só libera com RESTAURAR digitado e usa o token da prévia (1 hora, uso único). A regra de rede, a rotina de backup e o segredo das alternativas da prova continuam os deste computador. `data/tls` nunca entra no backup.
+
+### Rotina de backup e destino externo (fase 2, H4b, OPS-03, CONF-11, SEG-15)
+
+- **Quando**: no boot e de hora em hora o servidor confere se o último backup deste computador tem 20 h ou mais; se tem, grava o automático. Com prova em andamento, espera a prova acabar, até 48 h sem backup (aí grava mesmo assim; a cópia do banco não para a prova). "Fazer backup agora" (cartão **Backup** da tela Sistema) faz o mesmo na hora. Nada roda com `TEST_MODE=1`.
+- **Destino externo** (cartão Backup → "Destino externo", só administrador): uma pasta fora da pasta do IClass, de preferência pendrive, HD externo ou pasta de rede. "Testar e salvar" grava, relê e apaga um arquivo de teste antes de aceitar. Cada backup grava aqui a variante só de dados e, no destino, a variante completa (com a biblioteca) em `<destino>\IClass-<computador>\`, da mesma cópia do banco e com o `.sha256` ao lado (confira com `sha256sum -c` ou `certutil -hashfile`). "Guardar no destino" escolhe quantos automáticos ficam lá (1 a 90, padrão 14). O destino leva os dados pessoais de todos os alunos: guarde o pendrive com o mesmo cuidado do computador. Destino no mesmo disco do IClass mostra aviso (não protege de defeito do disco).
+- **Estado**: `data/backups/estado.json` guarda o último backup daqui e do destino, a última falha (etapa `local`, `externo` ou `verificacao`) e o adiamento por prova. Apagá-lo só faz a tela recalcular o "último backup" pelos arquivos da pasta.
+- **Alertas** (cartão Backup e "Precisa de você" do administrador; falha e atraso não têm "adiar 24h", os outros dois têm): backup que falhou, último backup daqui há mais de 26 h (com prova em andamento, só depois de 48 h), cópia externa atrasada e "Backup só neste computador" (sem destino externo). Nos primeiros 15 minutos depois de ligar, o atraso não alerta (o automático do boot ainda pode estar rodando).
+- **Retenção**: aqui, automático 14, manual 20, segurança 5, antes de limpar prova 10, antes de resetar sala 10; no destino, o automático guarda "Guardar no destino" e os outros os mesmos números. Só arquivos com nome de backup do IClass saem; o mais recente de cada grupo nunca sai. Cópias de edição `*.bak` ficam nas 30 mais recentes.
+- **Baixar** (lista, completo, só dados ou JSON): pede a senha do administrador de novo, porque o arquivo traz os dados pessoais de todos os alunos (decisões §3, SEG-15); cada download fica no histórico ("Backup baixado"). Restaurar um backup da lista confere o `.sha256` antes da prévia.
+- **Desligar no meio**: Ctrl+C ou Reiniciar durante um backup esperam até 4 s ele terminar; depois interrompem e apagam o `.parcial`, e quem clicou em "Fazer backup agora" recebe a mensagem para tentar quando o IClass voltar (a porta só derruba a conexão depois disso). Sobras `.parcial` de um processo morto à força somem no boot seguinte.
+- **Restauração interrompida**: se o processo cair no meio de uma restauração (falta de luz, processo encerrado à força), o boot seguinte desfaz tudo o que ela já tinha mudado (banco, histórico de digitação, apostilas, biblioteca, documentos dos alunos e cursos arquivados acrescentados), avisa no console, grava no `crash.log` e registra "Restauração interrompida (servidor parou) e desfeita" na Auditoria. O marcador fica em `data/.restauracao/desfazer/` enquanto a restauração está em andamento; não apague essa pasta à mão. Depois, faça a restauração de novo pela tela Sistema. Desligar o IClass (Ctrl+C, Reiniciar ou o launcher) no meio de uma restauração a interrompe no próximo passo e a desfaz na hora; a tela avisa que nada foi alterado. Uma queda logo depois do fim da restauração não a desfaz: o boot só apaga as pastas de antes que tinham ficado guardadas.
+
+### Banco danificado e backup-cli (servidor parado)
+
+O boot roda `PRAGMA quick_check` antes de ler o banco. Banco danificado: o servidor não sobe, sai com o código 3 (o supervisor não tenta de novo), não grava nada no arquivo e diz para usar o `backup-cli.js`:
+
+```
+node backend/scripts/backup-cli.js listar
+node backend/scripts/backup-cli.js criar [--dados] [--destino <pasta>]
+node backend/scripts/backup-cli.js verificar <arquivo.zip>
+node backend/scripts/backup-cli.js restaurar (<arquivo.zip> | --ultimo) [--sim]
+```
+
+- `listar`: os backups de `data/backups` e, se configurado, os do destino externo (`<destino>/IClass-<computador>`, lido do banco só para leitura), o mais recente primeiro, dizendo quais são formato 2; destino desconectado aparece como "não está acessível agora".
+- `criar`: ZIP formato 2 (completo; `--dados` só o banco) no destino externo configurado (se acessível; senão em `data/backups`, com aviso) ou em `--destino`, a partir de uma conexão só de leitura com `quick_check`, só com o servidor parado (ligado, sai com 2: use "Fazer backup agora" na tela Sistema).
+- `verificar`: confere o `.sha256` ao lado (se houver), o CRC e o tamanho de cada entrada ao extrair, o manifesto, o `quick_check`, a soma e as contagens do banco e a estrutura das coleções. Não muda nada.
+- `restaurar` (`--ultimo` procura nas duas pastas): só com o servidor parado (ligado na porta `PORT`, sai com 2). Confere tudo como o `verificar`, mostra o resumo e pede RESTAURAR (`--sim` pula a pergunta). O banco de agora (com `-wal`/`-shm`) e as pastas que o backup traz vão para `data/quarentena/antes-restauracao_<data>/` (nada é apagado); depois zera as sessões, protege senhas antigas e, se o banco de antes pôde ser lido, mantém a regra de rede e a configuração protegida dele. Falha no meio: tudo volta como estava.
+- Códigos de saída: 0 deu certo; 1 falhou ou foi recusado (nada mudou); 2 servidor ligado (`criar` e `restaurar`). Só ZIP formato 2: o JSON e o ZIP antigos continuam restaurando pela tela Sistema.
 
 ### Banco em modo WAL
 

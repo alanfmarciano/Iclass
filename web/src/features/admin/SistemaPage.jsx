@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { RefreshCw, Trash2, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
+import { RefreshCw, Trash2, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
@@ -9,7 +9,7 @@ import { TypedConfirm, typedConfirmMatches } from '../../components/ui/TypedConf
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Badge } from '../../components/ui/Badge'
 import { useApi } from '../../hooks/useApi'
-import { api, downloadFile } from '../../lib/api'
+import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -17,6 +17,7 @@ import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPerm
 import { SaudeCard } from './sistema/SaudeCard'
 import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { RedeCard } from './sistema/RedeCard'
+import { BackupCard, BackupHistory, NETWORK_KEPT_NOTE, legacyRestoreNote } from './sistema/BackupCard'
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
 // Texto do diálogo Reiniciar (H3c). Sem "Ninguém precisa entrar de novo" até a frente do H3.
@@ -145,153 +146,9 @@ function TrashCard() {
   )
 }
 
-const BACKUP_ACTION_LABEL = {
-  backup_restored: 'Restauração concluída',
-  backup_restore_failed: 'Restauração com falha',
-  backup_server_created: 'Cópia gerada no servidor',
-  backup_downloaded: 'Backup baixado',
-}
-
-// Restauração de backup de versão anterior (sem as aplicações de prova): o que
-// aconteceu com as aplicações, no histórico e no aviso de sucesso.
-export function legacyRestoreNote({ applicationsDiscarded = 0, applicationsRebuilt = 0 } = {}) {
-  const discarded = Number(applicationsDiscarded) || 0
-  const rebuilt = Number(applicationsRebuilt) || 0
-  return `Backup de versão anterior: as aplicações de prova foram refeitas a partir das turmas do backup (${discarded === 1 ? '1 aplicação atual descartada' : `${discarded} aplicações atuais descartadas`}, ${rebuilt === 1 ? '1 refeita' : `${rebuilt} refeitas`}).`
-}
-
-// Restaurar não muda quem abre o painel em outros aparelhos (settings.network fica o de
-// hoje; decisões do coordenador §7, J2): a tela diz isso em uma linha, antes e depois.
-export const NETWORK_KEPT_NOTE = 'A configuração de rede (quem abre o painel em outros aparelhos) continua a de hoje.'
-
-// Histórico de backup (só o administrador vê): restaurações, falhas, cópias e downloads.
-export function BackupHistory({ entries }) {
-  if (!entries) return null
-  return (
-    <div className="space-y-2">
-      <p className="text-sm font-semibold text-text">Histórico de backup</p>
-      {entries.length === 0 ? <p className="text-xs text-muted">Nenhum registro ainda.</p> : (
-        <ul className="divide-y divide-border rounded-lg border border-border" aria-label="Histórico de backup">
-          {entries.slice(0, 10).map((entry) => (
-            <li key={entry.id || `${entry.action}-${entry.timestamp}`} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2 text-xs">
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-text">
-                  {BACKUP_ACTION_LABEL[entry.action] || 'Backup'}
-                  {entry.action === 'backup_downloaded' && entry.format ? ` (${entry.format.toUpperCase()})` : ''}
-                  {entry.file ? <span className="font-normal text-muted"> · {entry.file}</span> : null}
-                </p>
-                {entry.error && <p className="text-danger">{entry.error}</p>}
-                {entry.legacyApplications && <p className="text-muted">{legacyRestoreNote(entry)}</p>}
-                <p className="text-subtle">{entry.timestamp ? new Date(entry.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {entry.actor || '—'}{entry.ip ? ` · IP ${entry.ip}` : ''}</p>
-              </div>
-              {entry.action === 'backup_restore_failed' ? <Badge tone="danger">Falhou</Badge> : entry.action === 'backup_restored' ? <Badge tone="success">Restaurado</Badge> : null}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-// Baixar e restaurar backup é só do administrador: o arquivo leva todos os alunos e
-// os hashes de senha das contas (SEG-X1). Professor com "Executar manutenção" só gera
-// a cópia de segurança, que fica guardada no servidor.
-function BackupCard({ isAdmin }) {
-  const toast = useToast()
-  const history = useApi(isAdmin ? '/api/admin/backup/history' : null, [isAdmin])
-  const [file, setFile] = useState(null)
-  const [confirmTxt, setConfirmTxt] = useState('')
-  const [replaceAccounts, setReplaceAccounts] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [serverBusy, setServerBusy] = useState(false)
-  // Backup de versão anterior: o servidor não restaura sem antes a tela mostrar o que
-  // acontece com as aplicações de prova (409 legacyBackup) e o administrador confirmar.
-  const [legacyWarning, setLegacyWarning] = useState(null)
-  async function serverBackup() {
-    setServerBusy(true)
-    try {
-      const r = await api.post('/api/admin/backup/server', {}, { timeoutMs: 0 })
-      toast.success(`Cópia de segurança gerada no servidor (${r.fileName}). Ficam as ${r.kept || 20} cópias manuais mais recentes.`)
-      if (isAdmin) history.refetch(true)
-    } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
-  }
-  // Download e restauração passam pelo cliente da API (lib/api.js): sem rede, a mensagem
-  // em português em vez do "Failed to fetch" do navegador (fase 2, H9c).
-  async function download(kind) {
-    try {
-      await downloadFile('/api/admin/backup/' + kind, kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
-      history.refetch(true)
-    } catch (e) { toast.error(e.message) }
-  }
-  async function restore({ acceptLegacy = false } = {}) {
-    if (!file) return toast.error('Escolha o arquivo de backup')
-    if (!typedConfirmMatches(confirmTxt, 'RESTAURAR')) return toast.error('Digite RESTAURAR para confirmar')
-    if (!acceptLegacy && !window.confirm(replaceAccounts
-      ? 'Isto substitui TODOS os dados atuais, inclusive as contas de acesso. Um backup de segurança será criado antes. Continuar?'
-      : 'Isto substitui TODOS os dados atuais (as contas de acesso continuam as de hoje). Um backup de segurança será criado antes. Continuar?')) return
-    const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt.trim().toUpperCase()); fd.append('replaceAccounts', replaceAccounts ? '1' : '0')
-    if (acceptLegacy) fd.append('acceptLegacy', '1')
-    setLegacyWarning(null)
-    setBusy(true)
-    try {
-      const d = await api.post('/api/admin/backup/restore', fd, { timeoutMs: 0 })
-      const skipped = Number(d && d.accountsNotRestored) || 0
-      const legacy = d?.legacyApplications ? ` ${legacyRestoreNote(d)}` : ''
-      const network = d?.networkKept ? ` ${NETWORK_KEPT_NOTE}` : ''
-      toast.success(skipped > 0
-        ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".${legacy}${network}`
-        : `Backup restaurado. Recarregue a página para ver os dados.${legacy}${network}`)
-      setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
-    } catch (e) {
-      if (e.status === 409 && e.data?.legacyBackup) {
-        setLegacyWarning({ message: e.data.error, exportedAt: e.data.exportedAt || '' })
-        return
-      }
-      toast.error(e.message)
-      // A falha fica no histórico (a restauração bem-sucedida encerra as sessões).
-      history.refetch(true)
-    } finally { setBusy(false) }
-  }
-  return (
-    <Card>
-      <CardHeader title={<span className="inline-flex items-center gap-2"><Database size={16} /> Backup geral</span>} subtitle={isAdmin ? 'Gere, baixe ou restaure o sistema a partir de um arquivo' : 'Gere uma cópia de segurança guardada no servidor'} />
-      <CardBody className="space-y-4">
-        <div className="flex flex-wrap gap-3">
-          <Button variant="secondary" icon={Save} loading={serverBusy} onClick={serverBackup}>Gerar cópia no servidor</Button>
-          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('data')}>Baixar dados (JSON)</Button>}
-          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('full')}>Baixar completo (ZIP)</Button>}
-        </div>
-        {!isAdmin && <p className="text-xs text-muted">Baixar e restaurar backup é exclusivo do administrador, porque o arquivo traz os dados de todos os alunos e as senhas protegidas das contas.</p>}
-        {isAdmin && <div className="p-4 rounded-lg border border-danger/40 bg-danger-soft space-y-3">
-          <p className="text-sm font-semibold text-text">Restaurar de um arquivo</p>
-          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo. Numa instalação nova (troca de computador), marque a opção para trazer os professores do backup.</p>
-          <p className="text-xs text-muted">{NETWORK_KEPT_NOTE}</p>
-          <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
-          <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
-          <div className="max-w-sm">
-            {/* Enter sem arquivo: restore() avisa "Escolha o arquivo de backup", como o botão fazia antes de ficar desligado. */}
-            <TypedConfirm id="bk-confirm" word="RESTAURAR" value={confirmTxt} onChange={setConfirmTxt} disabled={busy} onConfirm={() => restore()} />
-          </div>
-          {!file && typedConfirmMatches(confirmTxt, 'RESTAURAR') && <p className="text-xs text-muted">Escolha o arquivo de backup para liberar o botão Restaurar.</p>}
-          <Button variant="destructive" icon={Upload} loading={busy} disabled={!file || !typedConfirmMatches(confirmTxt, 'RESTAURAR')} onClick={() => restore()}>Restaurar</Button>
-        </div>}
-        {isAdmin && <BackupHistory entries={history.data?.entries} />}
-        <Modal
-          open={!!legacyWarning}
-          onClose={() => !busy && setLegacyWarning(null)}
-          title="Backup de uma versão anterior"
-          description={legacyWarning?.exportedAt ? `Gerado em ${new Date(legacyWarning.exportedAt).toLocaleString('pt-BR')}` : undefined}
-          footer={<><Button variant="ghost" onClick={() => setLegacyWarning(null)} disabled={busy}>Cancelar</Button><Button variant="destructive" icon={Upload} loading={busy} onClick={() => restore({ acceptLegacy: true })}>Restaurar mesmo assim</Button></>}
-        >
-          <div className="flex items-start gap-2 text-sm text-text">
-            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
-            <p>{legacyWarning?.message}</p>
-          </div>
-        </Modal>
-      </CardBody>
-    </Card>
-  )
-}
+// Cartão Backup (H4b): web/src/features/admin/sistema/BackupCard.jsx. O histórico, a nota
+// da regra de rede e a da restauração de versão anterior continuam exportados daqui.
+export { BackupHistory, NETWORK_KEPT_NOTE, legacyRestoreNote }
 
 const APPLICATION_STATUS = { prepared: 'Preparada', waiting: 'Sala de espera', running: 'Em andamento', paused: 'Pausada', finished: 'Finalizada', cancelled: 'Cancelada' }
 function _plural(n, one, many) { return `${n} ${n === 1 ? one : many}` }

@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { ticketUrl } = require('./fixtures/backupDownload.js');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -192,8 +193,12 @@ test('atribuições por escola e curso são herdadas sem apagar vínculos espec�
     assert.deepEqual(professor.assignedClasses, []);
 });
 
+// Desde o H4a o ZIP é o formato 2 (manifesto iclass-backup.json + data/database.db pela
+// cópia do VACUUM INTO + pastas), escrito em streaming; a restauração confere o arquivo
+// (CRC, soma de verificação do banco) antes de mudar qualquer coisa.
 test('backup ZIP é escrito em streaming e validado antes da restauração', async () => {
     const backup = require('../../backend/utils/backup.js');
+    const archive = require('../../backend/utils/backupArchive.js');
     const uploadDir = path.join(tempRoot, 'uploads');
     fs.mkdirSync(uploadDir, { recursive: true });
     fs.writeFileSync(path.join(uploadDir, 'binario.pdf'), '%PDF-original');
@@ -201,15 +206,35 @@ test('backup ZIP é escrito em streaming e validado antes da restauração', asy
     await db.save();
     const zipPath = path.join(tempRoot, 'streaming.zip');
     await backup.streamFullZip(fs.createWriteStream(zipPath));
-    const parsed = backup.validateZip(fs.readFileSync(zipPath));
-    assert.equal(parsed.snapshot.type, 'iclass-backup-data');
+    const manifest = await archive.verifyBackupZip(zipPath, { checkDbCrc: true });
+    assert.equal(manifest.type, 'iclass-backup-manifest');
+    assert.equal(manifest.formato, 2);
     assert.ok(fs.statSync(zipPath).size > 0);
 
     db.memory.notes['zip@teste.local'] = { valor: 'alterado' };
     fs.writeFileSync(path.join(uploadDir, 'binario.pdf'), '%PDF-alterado');
-    await backup.restoreFullZip(fs.readFileSync(zipPath));
+    const upload = path.join(tempRoot, 'streaming-envio.zip');
+    fs.copyFileSync(zipPath, upload);
+    await backup.restoreFromFile(upload, 'streaming.zip');
     assert.deepEqual(db.memory.notes['zip@teste.local'], { valor: 'original' });
     assert.equal(fs.readFileSync(path.join(uploadDir, 'binario.pdf'), 'utf8'), '%PDF-original');
+    assert.equal(fs.existsSync(upload), false, 'o arquivo enviado sai depois da restauração');
+});
+
+test('validação de ZIP rejeita path traversal antes de extrair', async () => {
+    const AdmZip = require('adm-zip');
+    const backup = require('../../backend/utils/backup.js');
+    const archive = require('../../backend/utils/backupArchive.js');
+    const zip = new AdmZip();
+    zip.addFile('backup-data.json', Buffer.from(JSON.stringify(backup.buildDataSnapshot())));
+    zip.addFile('escape.txt', Buffer.from('não extrair'));
+    zip.getEntries().find(entry => entry.entryName === 'escape.txt').entryName = '../escape.txt';
+    const file = path.join(tempRoot, 'traversal.zip');
+    fs.writeFileSync(file, zip.toBuffer());
+    const staging = path.join(tempRoot, 'traversal-extraido', 'dentro');
+    await assert.rejects(archive.extractBackupZip(file, staging), /Caminho inseguro/);
+    assert.equal(fs.existsSync(path.join(tempRoot, 'traversal-extraido', 'escape.txt')), false);
+    assert.equal(fs.existsSync(path.join(staging, 'backup-data.json')), false, 'nada é extraído antes da conferência');
 });
 
 test('uploads exigem sessão e respeitam o curso da biblioteca', async () => {
@@ -230,16 +255,6 @@ test('uploads exigem sessão e respeitam o curso da biblioteca', async () => {
     await request(app).get('/uploads/protegido.png?access=token-teste').expect(403);
     db.memory.library[0].courseId = 'curso-1';
     await request(app).get('/uploads/protegido.png?access=token-teste').expect(200).expect('X-Content-Type-Options', 'nosniff');
-});
-
-test('validação de ZIP rejeita path traversal antes de extrair', () => {
-    const AdmZip = require('adm-zip');
-    const backup = require('../../backend/utils/backup.js');
-    const zip = new AdmZip();
-    zip.addFile('backup-data.json', Buffer.from(JSON.stringify(backup.buildDataSnapshot())));
-    zip.addFile('escape.txt', Buffer.from('não extrair'));
-    zip.getEntries().find(entry => entry.entryName === 'escape.txt').entryName = '../escape.txt';
-    assert.throws(() => backup.validateZip(zip.toBuffer()), /Caminho inseguro/);
 });
 
 test('aluno inativo não autentica e identidade do body não substitui a sessão', async () => {
@@ -267,7 +282,7 @@ test('routers extraídos preservam contratos administrativos', async () => {
     const trash = await request(app).get('/api/admin/trash').set('x-admin-session', 'admin-token').expect(200);
     assert.equal(Array.isArray(trash.body), true);
     await request(app).get('/api/admin/archived-courses').set('x-admin-session', 'admin-token').expect(200);
-    await request(app).get('/api/admin/backup/data').set('x-admin-session', 'admin-token').expect(200).expect('Content-Type', /application\/json/).expect('Content-Disposition', /iclass-backup-dados_/);
+    await request(app).get(await ticketUrl(app, 'admin-token', 'senha-administrativa', '/api/admin/backup/data')).set('x-admin-session', 'admin-token').expect(200).expect('Content-Type', /application\/json/).expect('Content-Disposition', /iclass-backup-dados_/);
 
     const config = await request(app).post('/api/admin/config').set('x-admin-session', 'admin-token').send({}).expect(200);
     assert.match(config.body.serverUrl, /^http:\/\//);

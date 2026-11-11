@@ -163,17 +163,26 @@ test('minhas dúvidas, notificações e boletim respondem com os dados do aluno'
     assert.equal(forbidden.status, 403);
 });
 
-test('backup automático guarda só os mais recentes', () => {
+// Desde o H4a o automático é o ZIP formato 2 dos dados (<prefixo>_dados_<carimbo>.zip, com
+// o .sha256 ao lado), gerado sem travar o servidor; os JSON antigos do mesmo prefixo contam
+// juntos na retenção.
+test('backup automático guarda só os mais recentes', async () => {
     const backupUtil = require('../../backend/utils/backup.js');
+    const AdmZip = require('adm-zip');
     const { BACKUPS_DIR } = require('../../backend/runtimePaths.js');
     fs.mkdirSync(BACKUPS_DIR, { recursive: true });
     for (let i = 1; i <= 4; i += 1) fs.writeFileSync(path.join(BACKUPS_DIR, `teste-auto_2026-01-0${i}T00-00-00-000Z.json`), '{}');
-    const file = backupUtil.runAutomaticBackup({ prefix: 'teste-auto', keep: 3 });
-    const kept = fs.readdirSync(BACKUPS_DIR).filter(name => name.startsWith('teste-auto_')).sort();
+    const file = await backupUtil.runAutomaticBackup({ prefix: 'teste-auto', keep: 3 });
+    const kept = fs.readdirSync(BACKUPS_DIR).filter(name => name.startsWith('teste-auto_') && !name.endsWith('.sha256')).sort();
     assert.equal(kept.length, 3);
     assert.ok(kept.includes(path.basename(file)), 'o backup novo é mantido');
+    assert.match(path.basename(file), /^teste-auto_dados_.+\.zip$/);
     assert.ok(!kept.includes('teste-auto_2026-01-01T00-00-00-000Z.json'), 'o mais antigo é apagado');
-    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).type, 'iclass-backup-data');
+    assert.ok(!kept.includes('teste-auto_2026-01-02T00-00-00-000Z.json'));
+    const manifest = JSON.parse(new AdmZip(file).readAsText('iclass-backup.json'));
+    assert.equal(manifest.type, 'iclass-backup-manifest');
+    assert.equal(manifest.formato, 2);
+    assert.ok(fs.existsSync(`${file}.sha256`), 'o .sha256 fica ao lado');
     assert.ok(backupUtil.lastAutomaticBackupAt('teste-auto') > 0);
 });
 

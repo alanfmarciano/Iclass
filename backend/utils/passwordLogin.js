@@ -204,8 +204,9 @@ function refusal(status, error, extra = {}) {
     return { ok: false, status, body: { error, ...extra } };
 }
 
-// purpose: 'login' (padrão) ou 'change_password' (a senha atual pedida na troca de
-// senha, do aluno e do instrutor). Na troca do aluno o teto por IP é próprio, do mesmo
+// purpose: 'login' (padrão), 'change_password' (a senha atual pedida na troca de
+// senha, do aluno e do instrutor) ou 'backup_download' (a senha pedida de novo para
+// baixar um backup). Na troca do aluno o teto por IP é próprio, do mesmo
 // tamanho (changeRateKey): ela só roda com uma sessão válida, e dividir o teto com o
 // login fazia a turma atrás do mesmo IP (Wi-Fi da sala) gastar duas tentativas por aluno
 // na primeira aula depois da atualização (login com a senha fraca e a troca
@@ -216,6 +217,10 @@ function refusal(status, error, extra = {}) {
 const PASSWORD_CHECK_PURPOSES = Object.freeze({
     login: { rateKey: settings => settings.rateKey, failReason: 'Credenciais inválidas', throttledReason: 'Login em espera por senhas erradas (senha não conferida)' },
     change_password: { rateKey: settings => settings.changeRateKey, failReason: 'change_password', throttledReason: 'change_password em espera (senha não conferida)' },
+    // A senha do administrador pedida de novo para baixar um backup (H4b, SEG-15): o
+    // arquivo leva os dados pessoais de todos os alunos, e a sessão esquecida aberta no
+    // computador da sala não baixa a escola inteira sem a senha.
+    backup_download: { rateKey: settings => settings.changeRateKey, failReason: 'backup_download', throttledReason: 'backup_download em espera (senha não conferida)' },
 });
 
 async function attemptPasswordLogin({ kind, email, password, req, purpose = 'login' }) {
