@@ -72,9 +72,19 @@ export function StudentExamAvailability() {
   const navigate = useNavigate()
   const activeCourseId = auth.activeClass?.courseId || ''
   const activeClassName = auth.activeClass?.name || ''
-  const applications = useApi(auth.email && activeCourseId && activeClassName
-    ? `/api/student/exam-applications?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}`
-    : null, [auth.email, activeCourseId, activeClassName], { pollMs: 3000 })
+  // Aluno em duas turmas ou mais e ainda sem turma escolhida (o login deixa activeClass
+  // null, e a escolha mora no StudentCourseGate, por dentro do StudentPrivacyGate): a
+  // faixa procura a prova em todas as turmas dele (o servidor filtra pelas matrículas).
+  // Sem isso, quem tinha o primeiro acesso pendente não chegava à prova, nem para voltar
+  // a uma em andamento depois de entrar de novo (decisão P4: a prova nunca passa pelo
+  // portão). "Abrir prova" já escolhe a turma da aplicação.
+  const hasMemberships = (auth.student?.classes || []).length > 0
+  const endpoint = !auth.email
+    ? null
+    : activeCourseId && activeClassName
+      ? `/api/student/exam-applications?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}`
+      : !auth.activeClass && hasMemberships ? '/api/student/exam-applications' : null
+  const applications = useApi(endpoint, [endpoint], { pollMs: 3000 })
   const [now, setNow] = useState(Date.now())
 
   const available = useMemo(() => (applications.data?.applications || [])

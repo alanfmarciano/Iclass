@@ -61,8 +61,10 @@ function activeStudentCount() {
 function acceptanceSummary() {
     const today = todayIso();
     const out = { activeStudents: 0, termsPending: 0, privacyPending: 0, birthDateMissing: 0, minors: 0, minorsWithoutGuardian: 0 };
+    // Só conta: sem montar o texto dos documentos para cada aluno pendente.
+    const current = { termos: legal.currentDocument(db.memory, 'termos'), privacidade: legal.currentDocument(db.memory, 'privacidade') };
     activeStudents().forEach(student => {
-        const status = legalAcceptance.studentPrivacyStatus(db.memory, student, { today, ruleActive: true });
+        const status = legalAcceptance.studentPrivacyStatus(db.memory, student, { today, ruleActive: true, includeText: false, current });
         out.activeStudents += 1;
         if (status.termsPending) out.termsPending += 1;
         if (status.privacyPending) out.privacyPending += 1;
@@ -70,7 +72,7 @@ function acceptanceSummary() {
         if (status.isMinor) out.minors += 1;
         if (status.guardianMissing) out.minorsWithoutGuardian += 1;
     });
-    out.published = legal.LEGAL_KINDS.some(kind => !legal.currentDocument(db.memory, kind).isModel);
+    out.published = legal.LEGAL_KINDS.some(kind => !current[kind].isModel);
     out.policy = legalAcceptance.MINORS_POLICY;
     out.gateActive = legalAcceptance.privacyGateActive();
     return out;

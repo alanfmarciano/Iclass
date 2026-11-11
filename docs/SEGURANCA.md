@@ -48,7 +48,8 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 ### 2026-11-11 — primeiro acesso do aluno (fase 2, H8a-2)
 
 - O aceite dos Termos e da Política passa a guardar o id exato do documento aceito (com a escola, a data, o IP e o aparelho), no autocadastro e no portal, e só é pedido depois que o administrador publica o texto. Cada publicação nova pede um aceite novo, e o anterior fica no histórico; cada aceite vai para a auditoria (`privacy_accept`). (SEG-08, OPS-12)
-- Data de nascimento no cadastro e, para menor de 18 anos, nome e contato do responsável, pedidos a todos no próximo acesso sem bloquear o login (política "ciência", decisão P4). A rota da prova não passa pelo portão. (SEG-09)
+- Data de nascimento no cadastro e, para menor de 18 anos, nome e contato do responsável, pedidos a todos no próximo acesso sem bloquear o login (política "ciência", decisão P4). A rota da prova não passa pelo portão, e a faixa "Prova disponível" aparece por cima dele, também para o aluno em mais de uma turma que ainda não escolheu a turma. (SEG-09)
+- Anonimizar o aluno tira o IP e o aparelho das entradas de auditoria que ele mesmo gravou (aceite, data de nascimento, responsável). (SEG-09)
 
 ### 2026-11-10 — Termos e Privacidade (fase 2, H8a-1)
 

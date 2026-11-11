@@ -919,6 +919,10 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
             replacementName,
         };
         next = scrubPersonalText(next, scrubIdentity, '', aboutStudent || byStudent);
+        // Entrada gravada pelo próprio aluno (aceite dos documentos e data/responsável no
+        // primeiro acesso, H8a-2; troca de senha...): o IP e o aparelho são dele, como na
+        // presença (studentLifecycle.anonymizedAttendance). Os do professor ficam.
+        if (byStudent) { delete next.ip; delete next.device; }
         if (aboutStudent) {
             next.studentEmail = replacementEmail;
             next.studentAnonymized = true;

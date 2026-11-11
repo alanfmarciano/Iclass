@@ -45,9 +45,9 @@ O autocadastro pede a data de nascimento e, para menor de 18 anos, o nome e um t
 ## UC-LGPD-007 — Completar o primeiro acesso no portal
 
 - Estado: automatizado
-- Testes: `lgpd-primeiro-acesso.test.js`, `StudentPrivacyGate.test.jsx`, `legalAcceptance.test.js`, `PrivacidadePage.test.jsx`, `lazyPage.test.jsx`
+- Testes: `lgpd-primeiro-acesso.test.js`, `StudentPrivacyGate.test.jsx`, `StudentExamAvailability.classes.test.jsx`, `legalAcceptance.test.js`, `PrivacidadePage.test.jsx`, `lazyPage.test.jsx`
 
-No portal, o aluno vê "Antes de continuar" só com o que falta: a data de nascimento, o responsável do menor e, depois da publicação, o aceite da versão publicada. O login não é bloqueado (política "ciência"), a prova não passa por essa tela e, em demonstração, ela não aparece. Uma publicação nova pede aceite novo; o anterior fica no histórico. O professor informa a data no cadastro; a ficha mostra a idade e o texto do aceite; a página Privacidade conta os pendentes.
+No portal, o aluno vê "Antes de continuar" só com o que falta: a data de nascimento, o responsável do menor e, depois da publicação, o aceite da versão publicada. O login não é bloqueado (política "ciência"), a prova não passa por essa tela (a faixa "Prova disponível" aparece por cima dela, também para o aluno em duas turmas que ainda não escolheu a turma) e, em demonstração, ela não aparece. A Auditoria só registra "Termos de Uso ou Política de Privacidade aceitos" quando o aluno aceitou um documento; anonimizar tira o IP e o aparelho das entradas que ele mesmo gravou. Uma publicação nova pede aceite novo; o anterior fica no histórico. O professor informa a data no cadastro; a ficha mostra a idade e o texto do aceite; a página Privacidade conta os pendentes.
 
 ## O que vem depois
 

@@ -58,7 +58,11 @@ router.post('/api/student/privacy/accept', validateStudentSession, async (req, r
     }
     const { accepted, changes, birthDateInformed, guardianInformed, isMinor, school } = result;
     if (accepted.length || changes.length) {
-        recordAudit(db.memory, {
+        // privacy_accept ("Termos de Uso ou Política de Privacidade aceitos") só quando o aluno
+        // aceitou um documento. Só a data de nascimento ou o responsável (antes de a escola
+        // publicar os textos, por exemplo) ficam apenas na alteração do cadastro abaixo:
+        // a Auditoria não diz que ele aceitou o que não aceitou.
+        if (accepted.length) recordAudit(db.memory, {
             req,
             actor: student.email,
             action: 'privacy_accept',

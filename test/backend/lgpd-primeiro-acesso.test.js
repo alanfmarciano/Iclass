@@ -141,6 +141,22 @@ test('[UC-LGPD-006] autocadastro pede a data de nascimento e, para menor, o resp
     assert.equal(shortName.body.field, 'guardian.name');
     assert.equal(findStudent(minor.email), undefined, 'nada é criado na recusa');
 
+    // Formato único dos 400 da rota { success: false, error, field } (contrato): antes, o
+    // e-mail inválido do responsável (validateStudentFields), "Dados incompletos." e a turma
+    // fechada saíam sem success:false (e os dois últimos sem field).
+    const badEmail = await request(app).post('/api/student/register').send({ ...minor, guardian: { name: 'Maria Nova', email: 'x@' } });
+    assert.equal(badEmail.status, 400);
+    assert.deepEqual([badEmail.body.success, badEmail.body.field], [false, 'guardian.email']);
+    const incomplete = await request(app).post('/api/student/register').send({ ...minor, name: '' });
+    assert.equal(incomplete.status, 400);
+    assert.deepEqual([incomplete.body.success, incomplete.body.error, incomplete.body.field], [false, 'Dados incompletos.', 'name']);
+    const noClass = await request(app).post('/api/student/register').send({ ...minor, studentClass: '' });
+    assert.deepEqual([noClass.status, noClass.body.success, noClass.body.field], [400, false, 'studentClass']);
+    const closedClass = await request(app).post('/api/student/register').send({ ...minor, studentClass: '9ZZZ' });
+    assert.deepEqual([closedClass.status, closedClass.body.success, closedClass.body.field], [400, false, 'studentClass']);
+    const badPhone = await request(app).post('/api/student/register').send({ ...minor, phone: '12', guardian: { name: 'Maria Nova', phone: '(11) 98888-1234' } });
+    assert.deepEqual([badPhone.status, badPhone.body.success, badPhone.body.field], [400, false, 'phone']);
+
     const ok = await request(app).post('/api/student/register').send({ ...minor, guardian: { name: 'Maria Nova', phone: '(11) 98888-1234', parentesco: 'Mãe' } });
     assert.equal(ok.status, 200, ok.body.error);
     const bia = findStudent(minor.email);
@@ -166,6 +182,9 @@ test('[UC-LGPD-006] autocadastro grava o aceite do documento exato (modelo antes
     assert.equal(audit[0].studentEmail, bia.email);
     assert.equal(audit[0].details.source, 'cadastro');
     assert.equal(audit[0].details.terms.documentId, 'modelo-2026.1:termos');
+    // O mesmo papel do aceite pelo portão (antes, actorRole vazio: não há sessão no cadastro).
+    assert.equal(audit[0].actor, bia.email);
+    assert.equal(audit[0].actorRole, 'aluno');
 });
 
 test('[UC-LGPD-006] autocadastro com documento trocado responde 409; tela antiga sem os ids aceita os atuais', async () => {
@@ -200,6 +219,8 @@ test('[UC-LGPD-007] portão: a data é pedida a todos; os documentos só depois 
     const change = db.memory.auditLogs.find(entry => entry.field === 'Data de nascimento');
     assert.ok(change, 'a data entra no histórico do cadastro');
     assert.equal(change.actor, ANA.email);
+    // Só a data (nada publicado ainda): nenhum "Termos ... aceitos" na Auditoria.
+    assert.equal(auditOf('privacy_accept').length, 0, 'antes, privacy_accept com terms e privacy null');
 
     // A data gravada não muda pelo portão (quem corrige é a escola).
     const again = await request(app).post('/api/student/privacy/accept').set(headers).send({ birthDate: '2001-01-01' });
@@ -280,7 +301,9 @@ test('[UC-LGPD-007] menor no portão: o responsável é pedido e gravado; adulto
     const ana = findStudent(ANA.email);
     assert.deepEqual([ana.guardian.name, ana.guardian.email, ana.guardian.parentesco], ['Carlos Souza', 'carlos@familia.local', 'Pai']);
     assert.ok(db.memory.auditLogs.some(entry => entry.field === 'Nome do responsável' && entry.newValue === 'Carlos Souza'));
-    assert.equal(auditOf('privacy_accept')[0].details.guardianInformed, true);
+    // Antes de publicar não há documento aceito: só a alteração do cadastro vai para a
+    // auditoria (antes, privacy_accept "Termos e Política de Privacidade aceitos").
+    assert.equal(auditOf('privacy_accept').length, 0, 'só a data e o responsável não são aceite de documento');
 
     // Menor cadastrado pelo professor já com a data, sem responsável: o portão pede só ele.
     ana.guardian = null;
@@ -336,4 +359,51 @@ test('[UC-LGPD-007] professor cadastra e edita a data (opcional e conferida); re
     );
     const prof = await request(app).get('/api/admin/lgpd/acceptance').set(adminHeaders(PROF));
     assert.equal(prof.status, 403);
+});
+
+test('[UC-LGPD-007] resumo do primeiro acesso conta sem montar o texto dos documentos de cada aluno', async () => {
+    for (let i = 0; i < 40; i += 1) {
+        db.memory.students.push({ name: `Aluno ${i}`, email: `aluno${i}@primeiro.local`, status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }] });
+    }
+    await publish('termos');
+    await publish('privacidade');
+    const legal = require('../../backend/utils/legalDocuments.js');
+    const original = legal.renderedDocument;
+    let renders = 0;
+    legal.renderedDocument = (...args) => { renders += 1; return original(...args); };
+    try {
+        const summary = await request(app).get('/api/admin/lgpd/acceptance').set(adminHeaders());
+        assert.equal(summary.status, 200, summary.body.error);
+        assert.deepEqual([summary.body.activeStudents, summary.body.termsPending, summary.body.privacyPending], [41, 41, 41]);
+        assert.equal(renders, 0, 'antes, dois textos renderizados por aluno pendente (82 aqui)');
+        // O portão do aluno continua recebendo o texto pendente.
+        const status = await request(app).get('/api/student/privacy/status').set(studentHeaders(ANA.email));
+        assert.match(status.body.documents.terms.markdown, /Termos/);
+        assert.ok(renders > 0);
+    } finally {
+        legal.renderedDocument = original;
+    }
+});
+
+test('[UC-LGPD-007] anonimizar tira o IP e o aparelho das entradas que o próprio aluno gravou no primeiro acesso', async () => {
+    await publish('termos');
+    const headers = { ...studentHeaders(ANA.email), 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile', 'X-Forwarded-For': '10.0.0.77' };
+    const ok = await request(app).post('/api/student/privacy/accept').set(headers).send({ birthDate: '1998-11-20', termsDocumentId: 'termos_v1' });
+    assert.equal(ok.status, 200, ok.body.error);
+    const own = () => db.memory.auditLogs.filter(entry => entry.actor === ANA.email || (entry.action === 'privacy_accept'));
+    assert.ok(own().length >= 2, 'privacy_accept e a alteração do cadastro');
+    findStudent(ANA.email).status = 'Inativo';
+    const anon = await request(app).post('/api/admin/students/anonymize').set(adminHeaders())
+        .send({ email: ANA.email, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    assert.equal(anon.status, 200, anon.body.error);
+    const accepted = db.memory.auditLogs.filter(entry => entry.action === 'privacy_accept');
+    assert.equal(accepted.length, 1);
+    assert.equal(accepted[0].ip, undefined, 'antes, o IP do aluno ficava');
+    assert.equal(accepted[0].device, undefined);
+    const birthChange = db.memory.auditLogs.find(entry => entry.field === 'Data de nascimento');
+    assert.equal(birthChange.ip, undefined);
+    assert.equal(birthChange.newValue, '', 'a data também sai');
+    // A entrada do administrador (a própria anonimização) mantém o IP dele.
+    assert.ok(db.memory.auditLogs.find(entry => entry.action === 'student_anonymized').ip);
+    assert.doesNotMatch(JSON.stringify(db.memory.auditLogs), /ana@primeiro\.local|1998-11-20|10\.0\.0\.77/);
 });

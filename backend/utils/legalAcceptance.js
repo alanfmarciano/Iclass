@@ -199,10 +199,14 @@ function documentSummary(memory, school, doc, includeText) {
 
 // O que falta para este aluno no primeiro acesso. required: o portão aparece (com
 // TEST_MODE, nunca). O texto dos documentos só vai quando o documento está pendente.
-function studentPrivacyStatus(memory, student, { courseId, today = todayIso(), ruleActive = privacyGateActive() } = {}) {
+// Para contar muitos alunos (resumo do administrador), includeText: false não monta o
+// texto (renderizar o markdown de dois documentos por aluno pendente travava o servidor:
+// ~0,5 s para 2000 alunos) e current ({ termos, privacidade }) evita procurar os
+// documentos atuais de novo a cada aluno.
+function studentPrivacyStatus(memory, student, { courseId, today = todayIso(), ruleActive = privacyGateActive(), includeText = true, current = null } = {}) {
     const school = schoolFor(memory, student, courseId);
-    const terms = legal.currentDocument(memory, 'termos');
-    const privacy = legal.currentDocument(memory, 'privacidade');
+    const terms = (current && current.termos) || legal.currentDocument(memory, 'termos');
+    const privacy = (current && current.privacidade) || legal.currentDocument(memory, 'privacidade');
     const termsPending = documentPending(student, terms);
     const privacyPending = documentPending(student, privacy);
     const birthDateMissing = !hasValidBirthDate(student, { today });
@@ -228,8 +232,8 @@ function studentPrivacyStatus(memory, student, { courseId, today = todayIso(), r
         published: !terms.isModel || !privacy.isModel,
         school: legal.schoolSummary(school),
         documents: {
-            terms: documentSummary(memory, school, terms, termsPending),
-            privacy: documentSummary(memory, school, privacy, privacyPending),
+            terms: documentSummary(memory, school, terms, includeText && termsPending),
+            privacy: documentSummary(memory, school, privacy, includeText && privacyPending),
         },
     };
 }

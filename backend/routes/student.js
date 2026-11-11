@@ -740,8 +740,12 @@ router.post('/api/student/register', async (req, res) => {
     const { password, studentClass, courseId } = req.body;
     const fields = extractStudentFields(req.body);
 
-    if (!fields.name || !fields.email || !password || !studentClass || !courseId) {
-        return res.status(400).json({ error: 'Dados incompletos.' });
+    // Formato dos 400 combinado entre os grupos: { success: false, error, field } (o campo
+    // que falta primeiro, na ordem da tela).
+    const missingField = [['name', fields.name], ['email', fields.email], ['password', password], ['courseId', courseId], ['studentClass', studentClass]]
+        .find(([, value]) => !value);
+    if (missingField) {
+        return res.status(400).json({ success: false, error: 'Dados incompletos.', field: missingField[0] });
     }
     // Política de senha (H5a, SEG-06): a senha "1" era aceita. O autocadastro nunca pede
     // a troca no primeiro acesso: quem escolheu a senha foi o próprio aluno.
@@ -753,7 +757,7 @@ router.post('/api/student/register', async (req, res) => {
     const classes = readJSON(DB_CLASSES_FILE);
     const matchedClass = classes.find(c => c.name === studentClass && c.courseId === courseId && c.registrationEnabled);
     if (!matchedClass) {
-        return res.status(400).json({ error: 'A turma selecionada não existe ou não está liberada para cadastro.' });
+        return res.status(400).json({ success: false, error: 'A turma selecionada não existe ou não está liberada para cadastro.', field: 'studentClass' });
     }
 
     const period = matchedClass.period || 'Tarde';
@@ -771,7 +775,7 @@ router.post('/api/student/register', async (req, res) => {
     };
     const validation = validateStudentFields(selfFields, students, null);
     if (!validation.ok) {
-        return res.status(400).json({ error: validation.error, field: validation.field });
+        return res.status(400).json({ success: false, error: validation.error, field: validation.field });
     }
 
     if (!req.body.acceptedTerms) {
@@ -796,7 +800,7 @@ router.post('/api/student/register', async (req, res) => {
     const currentStudents = readJSON(DB_STUDENTS_FILE);
     const recheck = validateStudentFields(selfFields, currentStudents, null);
     if (!recheck.ok) {
-        return res.status(400).json({ error: recheck.error, field: recheck.field });
+        return res.status(400).json({ success: false, error: recheck.error, field: recheck.field });
     }
 
     const enrollmentRequest = {
@@ -842,7 +846,8 @@ router.post('/api/student/register', async (req, res) => {
     currentStudents.push(studentObj);
     recordAudit(db.memory, {
         req,
-        actor: studentObj.email,
+        // Sem sessão no cadastro: o papel vem da conta passada (o aluno, como no portão).
+        actor: { email: studentObj.email, role: 'aluno' },
         action: 'privacy_accept',
         category: 'privacy',
         studentEmail: studentObj.email,
