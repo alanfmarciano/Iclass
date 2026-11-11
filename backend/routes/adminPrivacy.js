@@ -16,7 +16,7 @@
 // GET  /api/admin/lgpd/retention/preview?proctoringDays=&loginLogsDays=&trashDays=
 //                                          o que a limpeza apagaria com outros prazos
 // POST /api/admin/lgpd/retention           grava os três prazos (retention_settings_changed)
-// POST /api/admin/lgpd/retention/run       limpa agora (APAGAR); 409 com prova aberta
+// POST /api/admin/lgpd/retention/run       limpa agora (APAGAR); 409 sem revisão dos prazos ou com prova aberta
 //
 // Só o administrador: a regra /lgpd de ADMIN_API_PERMISSION_RULES pede students.security,
 // que é exclusiva dele, e cada rota confere de novo. Publicar e trocar o encarregado
@@ -399,11 +399,17 @@ function createAdminPrivacyRouter() {
             if (typeof body.confirm !== 'string' || body.confirm.trim().toUpperCase() !== PURGE_WORD) {
                 return res.status(400).json({ success: false, error: `Digite ${PURGE_WORD} para confirmar a limpeza.`, field: 'confirm' });
             }
+            // Antes da primeira revisão dos prazos, nada é limpo à mão (a tela também deixa
+            // o botão desligado): quem liga a retenção é o administrador, salvando os prazos.
+            const currentSettings = settingsUtil.retentionSettings();
+            if (!currentSettings.reviewedAt) {
+                return res.status(409).json({ success: false, code: 'not_reviewed', error: 'Revise e salve os prazos de retenção antes de limpar.' });
+            }
             const result = await retention.runRetention({
                 memory: db.memory,
                 keystrokes: db.keystrokes,
                 trash: trashForRetention(),
-                settings: settingsUtil.retentionSettings(),
+                settings: currentSettings,
                 trigger: 'manual',
                 actor: matchedAdmin,
                 req,

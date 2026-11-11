@@ -19,6 +19,21 @@ export function normalizeKeystrokeMode(value) {
   return KEYSTROKE_MODES.includes(value) ? value : DEFAULT_KEYSTROKE_MODE
 }
 
+// Tecla AltGr (teclado ABNT2 e outros do Windows): o navegador manda ctrlKey e altKey
+// juntos para os caracteres digitados com AltGr (/, ?, °, ª, ², €...). É digitação, não
+// atalho: sem isto, o modo 'eventos' guardaria esses caracteres como 'atalho'. Vale o
+// estado AltGraph do navegador e, sem ele, Ctrl+Alt com um caractere que não é letra
+// nem número (o atalho de verdade, como Ctrl+Alt+V, chega com a letra).
+export function isAltGrTyping(e) {
+  if (!e || e.metaKey) return false
+  try {
+    if (typeof e.getModifierState === 'function' && e.getModifierState('AltGraph')) return true
+  } catch { /* navegador sem getModifierState('AltGraph') */ }
+  if (!e.ctrlKey || !e.altKey) return false
+  const key = typeof e.key === 'string' ? e.key : ''
+  return Array.from(key).length === 1 && !/[a-z0-9]/i.test(key)
+}
+
 // O evento veio de um campo de texto fora das alternativas da prova (data-exam-answer)?
 export function isOutsideAnswerTextField(target) {
   if (!target || typeof target.closest !== 'function') return false

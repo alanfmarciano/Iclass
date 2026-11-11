@@ -40,6 +40,20 @@ function keystrokeModeOf(application) {
     return normalizeKeystrokeMode(application && typeof application === 'object' ? application.keystrokeMode : undefined);
 }
 
+// Aplicação gravada antes desta versão (sem o campo): o modo vale 'eventos' daqui em
+// diante, mas o que ela já guardou é a digitação completa (o código antigo da prova
+// mandava tudo). O painel usa isto para não chamar esses registros de "atalhos".
+function keystrokeModeIsLegacy(application) {
+    return !!application && typeof application === 'object' && !KEYSTROKE_MODES.includes(application.keystrokeMode);
+}
+
+// Cópia da aplicação para o painel do professor, com o modo lido (o banco não muda).
+function withKeystrokeMode(application) {
+    const out = { ...application, keystrokeMode: keystrokeModeOf(application) };
+    if (keystrokeModeIsLegacy(application)) out.keystrokeModeLegacy = true;
+    return out;
+}
+
 // Escolha vinda da tela de preparar (applicationOptions.keystrokeMode): ausente, null ou
 // vazio vale o padrão; texto fora da lista (ou outro tipo) é recusado.
 function parseKeystrokeModeOption(options) {
@@ -55,12 +69,28 @@ function eventKind(event) {
     return event && typeof event === 'object' && typeof event.kind === 'string' ? event.kind.trim().toLowerCase() : 'key';
 }
 
+// Caractere digitado com AltGr (teclado ABNT2 e outros do Windows): o navegador manda
+// Ctrl e Alt juntos, e o código da prova de antes desta versão marcava isso como atalho
+// ('shortcut', mods 'Ctrl+Alt'). É digitação: '/', '?', '°', '€'... O ExamRunner novo já
+// manda esses como 'char' com mods 'AltGr'; aqui o servidor reconhece o formato antigo
+// (Ctrl+Alt, sem Meta, com um caractere que não é letra nem número), para o modo
+// 'eventos' não guardar o que a pessoa digitou. O atalho de verdade (Ctrl+Alt+V) chega
+// com a letra e continua guardado.
+function isAltGrTyping(event) {
+    if (!event || typeof event !== 'object') return false;
+    const mods = typeof event.mods === 'string' ? event.mods.split('+').map(part => part.trim().toLowerCase()).filter(Boolean) : [];
+    if (mods.includes('altgr')) return true;
+    if (!mods.includes('ctrl') || !mods.includes('alt') || mods.includes('meta')) return false;
+    const key = typeof event.key === 'string' ? event.key : '';
+    return Array.from(key).length === 1 && !/[a-z0-9]/i.test(key);
+}
+
 // O evento entra no registro deste modo?
 function keystrokeAllowed(mode, event) {
     const normalized = normalizeKeystrokeMode(mode);
     if (normalized === 'nada') return false;
     if (normalized === 'tudo') return true;
-    return SUSPICIOUS_EVENT_KINDS.has(eventKind(event));
+    return SUSPICIOUS_EVENT_KINDS.has(eventKind(event)) && !isAltGrTyping(event);
 }
 
 // Os eventos do lote que o modo deixa gravar, na ordem em que vieram.
@@ -79,8 +109,11 @@ module.exports = {
     KEYSTROKE_MODE_LABELS,
     SUSPICIOUS_EVENT_KINDS,
     filterKeystrokeEvents,
+    isAltGrTyping,
     keystrokeAllowed,
+    keystrokeModeIsLegacy,
     keystrokeModeOf,
     normalizeKeystrokeMode,
     parseKeystrokeModeOption,
+    withKeystrokeMode,
 };

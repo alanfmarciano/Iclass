@@ -2,8 +2,8 @@
 // registros técnicos têm prazo, e só quando o administrador liga: teclas e saídas de tela
 // da prova, registros de acesso e lixeira. Mostra o que nunca é apagado, a prévia do que
 // a próxima limpeza apaga com os prazos da tela, a última limpeza e o aviso enquanto os
-// prazos não foram revisados. "Limpar agora" pede APAGAR e o servidor recusa com prova
-// em andamento (GET/POST /api/admin/lgpd/retention, /preview e /run). O professor vê o
+// prazos não foram revisados. "Limpar agora" só liga depois da primeira revisão, pede
+// APAGAR e o servidor recusa sem revisão (not_reviewed) e com prova em andamento (GET/POST /api/admin/lgpd/retention, /preview e /run). O professor vê o
 // cartão desligado.
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Eraser, Save, ShieldCheck, Sparkles } from 'lucide-react'
@@ -26,6 +26,15 @@ export const RETENTION_FIELDS = [
 ]
 
 const integer = (n) => (Math.round(Number(n) || 0)).toLocaleString('pt-BR')
+
+// Aviso enquanto os prazos não foram revisados. A lixeira já tinha prazo antes desta
+// versão (padrão de 30 dias) e continua sendo esvaziada a cada 6 h por ele; o resto
+// (teclas, saídas de tela e registros de acesso) não é apagado sozinho.
+export function notReviewedText(trashDays) {
+  const days = Math.round(Number(trashDays) || 0)
+  if (days <= 0) return 'Enquanto isso, nada é apagado sozinho.'
+  return `Enquanto isso, teclas, saídas de tela e registros de acesso não são apagados; só a lixeira continua sendo esvaziada sozinha, com o prazo de ${integer(days)} ${days === 1 ? 'dia' : 'dias'} que já valia.`
+}
 
 // "Com estes prazos, a próxima limpeza apaga X teclas, Y saídas de tela, Z registros de
 // acesso e W itens da lixeira."
@@ -186,7 +195,7 @@ function RetencaoAdmin() {
         {!data.reviewed && (
           <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text" role="status">
             <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
-            <span><strong className="font-semibold">{RETENTION_NOT_REVIEWED}.</strong> Enquanto isso, nada é apagado sozinho. Revise e salve os prazos (os recomendados servem para a maioria das escolas).</span>
+            <span><strong className="font-semibold">{RETENTION_NOT_REVIEWED}.</strong> {notReviewedText(data.settings?.trashDays)} Revise e salve os prazos (os recomendados servem para a maioria das escolas).</span>
           </div>
         )}
         <p className="text-xs text-muted">{RETENTION_NEVER_DELETED}</p>
@@ -203,8 +212,8 @@ function RetencaoAdmin() {
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button variant="ghost" size="sm" icon={Sparkles} disabled={busy}
             onClick={() => setForm(toForm(data.recommended))}>Usar prazos recomendados</Button>
-          <Button variant="secondary" icon={Eraser} disabled={busy || changed || !anyDeadline || active > 0}
-            title={changed ? 'Salve os prazos antes de limpar' : undefined} onClick={() => setOpen(true)}>Limpar agora</Button>
+          <Button variant="secondary" icon={Eraser} disabled={busy || changed || !data.reviewed || !anyDeadline || active > 0}
+            title={changed || !data.reviewed ? 'Salve os prazos antes de limpar' : undefined} onClick={() => setOpen(true)}>Limpar agora</Button>
           <Button icon={Save} loading={busy} disabled={!changed && !!data.reviewed} onClick={save}>Salvar prazos</Button>
         </div>
         {active > 0 && <p className="text-xs text-muted">Há prova em andamento; a limpeza roda quando ela terminar.</p>}

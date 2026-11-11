@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
-const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption } = require('../utils/keystrokePolicy.js');
+const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
 const {
     questionNumber,
     regradeSubmission,
@@ -387,8 +387,9 @@ function createAdminExamConfigRouter() {
             }).filter(application => matchedAdmin?.role !== 'professor'
                 || (matchedAdmin.assignedClasses || []).some(item =>
                     item && item.courseId === application.courseId && item.className === application.studentClass))
-                // Aplicação de antes do H8b, sem o campo, aparece como 'eventos' (cópia; o banco não muda).
-                .map(application => ({ ...application, keystrokeMode: keystrokeModeOf(application) }));
+                // Aplicação de antes do H8b, sem o campo, aparece como 'eventos' (cópia; o banco não
+                // muda), com keystrokeModeLegacy: o que ela já guardou é a digitação completa.
+                .map(withKeystrokeMode);
             res.json({ success: true, applications });
         });
     });
@@ -397,7 +398,7 @@ function createAdminExamConfigRouter() {
         validateAdmin(req, res, () => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
-            res.json({ success: true, application: { ...application, keystrokeMode: keystrokeModeOf(application) } });
+            res.json({ success: true, application: withKeystrokeMode(application) });
         });
     });
 

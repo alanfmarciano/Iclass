@@ -27,7 +27,7 @@ import {
   writeExamDraft,
 } from '../../../lib/examDrafts'
 import { fmtGrade } from '../../../lib/grades'
-import { keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
+import { isAltGrTyping, keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
@@ -135,6 +135,8 @@ const ANSWER_ID_PATTERN = /^[0-9A-Z]{13}$/
 // Combinações bloqueadas dentro da prova (fluxos de cópia/busca/impressão/devtools/Lens).
 // Retorna a razão se a combinação for suspeita/bloqueável, senão null.
 function classifyCombo(e) {
+  // Caractere digitado com AltGr (chega com Ctrl e Alt juntos): digitação, não atalho (H8b).
+  if (isAltGrTyping(e)) return null
   const k = (e.key || '').toLowerCase()
   const ctrl = e.ctrlKey, alt = e.altKey, meta = e.metaKey, shift = e.shiftKey
   if ((ctrl || meta) && ['c', 'x'].includes(k)) return { block: true, reason: 'copiar_recortar' }
@@ -149,6 +151,7 @@ function classifyCombo(e) {
 }
 
 function modsOf(e) {
+  if (isAltGrTyping(e)) return ['AltGr', e.shiftKey && 'Shift'].filter(Boolean).join('+')
   return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta'].filter(Boolean).join('+')
 }
 
@@ -628,7 +631,7 @@ export default function ExamRunner() {
     }
     const onKeyDown = (e) => {
       const cls = classifyCombo(e)
-      const isChar = e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey
+      const isChar = e.key && e.key.length === 1 && ((!e.ctrlKey && !e.altKey && !e.metaKey) || isAltGrTyping(e))
       if (cls && cls.block) e.preventDefault()
       const recorded = record(e, {
         key: e.key,

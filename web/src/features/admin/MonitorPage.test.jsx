@@ -168,8 +168,8 @@ describe('MonitorPage · servidor fora do ar durante a prova (H3b, CONF-03)', ()
 
 describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação', () => {
   const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', logs: [], keystrokeCount: 3, suspiciousCount: 3 }
-  function renderWith(keystrokeMode) {
-    const list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, ...(keystrokeMode ? { keystrokeMode } : {}) } : item))
+  function renderWith(keystrokeMode, extra = {}) {
+    const list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, ...(keystrokeMode ? { keystrokeMode } : {}), ...extra } : item))
     mocks.liveApplications = list
     mocks.get.mockImplementation(async (url) => {
       if (url.startsWith('/api/admin/exam-applications?')) return { applications: list }
@@ -191,6 +191,16 @@ describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação'
     await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
     expect(screen.getByRole('columnheader', { name: 'Atalhos' })).toBeTruthy()
     expect(screen.getByTitle('Ver atalhos ao vivo')).toBeTruthy()
+  })
+
+  it('aplicação de antes desta versão (keystrokeModeLegacy): "Teclado", porque guardou toda a digitação', async () => {
+    renderWith('eventos', { keystrokeModeLegacy: true })
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Teclado' })).toBeTruthy()
+    expect(screen.queryByRole('columnheader', { name: 'Atalhos' })).toBeNull()
+    expect(screen.queryByTitle('Ver atalhos ao vivo')).toBeNull()
+    expect(screen.getByTitle(/^Ver teclado ao vivo \(aplicação de antes desta versão/)).toBeTruthy()
+    expect(screen.queryByText('Desligado')).toBeNull()
   })
 
   it('"tudo" mostra "Digitação"; "nada" mostra "Teclado" com "Desligado", sem a janela ao vivo', async () => {

@@ -1669,6 +1669,41 @@ describe('[UC-LGPD-009] ExamRunner: registro do teclado conforme a aplicação',
     expect(keystrokeEvents().map((event) => event.seq)).toEqual([1, 2])
   })
 
+  it('"eventos": caractere digitado com AltGr (Ctrl e Alt juntos, teclado ABNT2 no Windows) não é atalho e não sai', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockResolvedValue({ success: true })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    act(() => {
+      for (let index = 0; index < 30; index += 1) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', code: 'KeyQ', ctrlKey: true, altKey: true, bubbles: true, cancelable: true }))
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: '°', code: 'KeyE', ctrlKey: true, altKey: true, bubbles: true, cancelable: true }))
+      }
+      // Com o estado AltGraph do navegador (o caso do Chrome no Windows).
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'AltGraph', code: 'AltRight', ctrlKey: true, altKey: true, modifierAltGraph: true, bubbles: true, cancelable: true }))
+    })
+    const ctrlC = new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', ctrlKey: true, bubbles: true, cancelable: true })
+    act(() => { window.dispatchEvent(ctrlC) })
+    expect(ctrlC.defaultPrevented).toBe(true)
+    copyEvent()
+    await waitFor(() => expect(keystrokeEvents().map((event) => event.kind)).toEqual(['shortcut', 'clipboard']))
+    expect(keystrokeEvents()[0]).toMatchObject({ key: 'c', mods: 'Ctrl' })
+  })
+
+  it('"tudo": o caractere com AltGr vai como digitação (char, AltGr), não como atalho', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600, keystrokeMode: 'tudo' }))
+    apiMock.post.mockResolvedValue({ success: true })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    act(() => {
+      for (let index = 0; index < 20; index += 1) window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', code: 'KeyQ', ctrlKey: true, altKey: true, bubbles: true, cancelable: true }))
+    })
+    await waitFor(() => expect(keystrokeEvents()).toHaveLength(20))
+    expect(keystrokeEvents().every((event) => event.kind === 'char' && event.mods === 'AltGr' && event.suspicious === false)).toBe(true)
+  })
+
   it('"nada": nenhuma tecla sai, mas copiar e imprimir continuam bloqueados', async () => {
     apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600, keystrokeMode: 'nada' }))
     apiMock.post.mockResolvedValue({ success: true })

@@ -6,6 +6,8 @@
 //    guarda tudo; 'nada' não guarda nada e nem pede a gravação.
 // 3) Aplicação de antes desta versão (sem o campo) e tecla sem aplicação valem 'eventos'.
 // 4) O aluno recebe o modo (sync e lista de aplicações) e o prazo de guarda.
+// 5) Caractere digitado com AltGr (Ctrl e Alt juntos no Windows) é digitação, não atalho.
+// 6) O painel marca a aplicação de antes desta versão (keystrokeModeLegacy).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -149,6 +151,33 @@ test('[UC-LGPD-009] regra do modo: eventos guarda só atalhos, cópia e menu; tu
     assert.equal(policy.parseKeystrokeModeOption({ keystrokeMode: ['tudo'] }).valid, false);
 });
 
+test('[UC-LGPD-009] AltGr (ABNT2 no Windows: Ctrl e Alt juntos) é digitação: eventos não guarda', async () => {
+    // Como o código antigo da prova mandava: 'shortcut' com mods 'Ctrl+Alt' e o caractere.
+    const altGr = [
+        { seq: 1, key: '/', code: 'KeyQ', mods: 'Ctrl+Alt', kind: 'shortcut', suspicious: true },
+        { seq: 2, key: '°', code: 'KeyE', mods: 'Ctrl+Alt', kind: 'shortcut', suspicious: true },
+        { seq: 3, key: '?', code: 'KeyW', mods: 'Ctrl+Alt+Shift', kind: 'shortcut', suspicious: true },
+        { seq: 4, key: '€', code: 'KeyE', mods: 'AltGr', kind: 'char' },
+        // Atalhos de verdade continuam: Ctrl+Alt com letra, Ctrl+C, Alt+Tab, Win.
+        { seq: 5, key: 'v', code: 'KeyV', mods: 'Ctrl+Alt', kind: 'shortcut', suspicious: true },
+        { seq: 6, key: 'c', code: 'KeyC', mods: 'Ctrl', kind: 'shortcut', suspicious: true },
+        { seq: 7, key: 'Tab', code: 'Tab', mods: 'Alt', kind: 'shortcut', suspicious: true },
+        { seq: 8, key: 'Meta', code: 'MetaLeft', mods: 'Meta', kind: 'shortcut', suspicious: true },
+        { seq: 9, key: '/', code: 'KeyQ', mods: 'Ctrl+Alt+Meta', kind: 'shortcut', suspicious: true },
+    ];
+    assert.equal(policy.isAltGrTyping(altGr[0]), true);
+    assert.equal(policy.isAltGrTyping(altGr[4]), false);
+    assert.deepEqual(policy.filterKeystrokeEvents('eventos', altGr).map(event => event.seq), [5, 6, 7, 8, 9]);
+    assert.equal(policy.filterKeystrokeEvents('tudo', altGr).length, altGr.length);
+
+    const application = await prepareAndStart({});
+    const sent = await sendKeys({ applicationId: application.id, events: altGr }).expect(200);
+    assert.equal(sent.body.inserted, 5);
+    const stored = await db.keystrokes.query({ email: student.email, examKey, applicationId: application.id, limit: 100 });
+    assert.deepEqual(stored.events.map(event => event.key), ['v', 'c', 'Tab', 'Meta', '/']);
+    await finish(application);
+});
+
 test('[UC-LGPD-009] preparar sem escolher vale eventos; escolha inválida é recusada com o campo', async () => {
     const historyId = await historyEntry();
     const before = db.memory.examApplications.length;
@@ -229,7 +258,17 @@ test('[UC-LGPD-009] aplicação de antes desta versão (sem o campo) e tecla sem
     const single = await admin('get', `/api/admin/exam-applications/${application.id}`).expect(200);
     assert.equal(single.body.application.keystrokeMode, 'eventos');
     assert.equal(Object.prototype.hasOwnProperty.call(stored, 'keystrokeMode'), false);
+    // ...e sabe que ela é de antes desta versão: o que já guardou é a digitação completa.
+    assert.equal(listed.body.applications.find(item => item.id === application.id).keystrokeModeLegacy, true);
+    assert.equal(single.body.application.keystrokeModeLegacy, true);
     await finish(application);
+    // Aplicação nova (com o campo) não tem a marca.
+    const fresh = await prepareAndStart({ keystrokeMode: 'tudo' });
+    const freshListed = await admin('get', '/api/admin/exam-applications').query({ studentClass, courseId, examKey }).expect(200);
+    assert.equal(freshListed.body.applications.find(item => item.id === fresh.id).keystrokeModeLegacy, undefined);
+    const freshSingle = await admin('get', `/api/admin/exam-applications/${fresh.id}`).expect(200);
+    assert.equal(freshSingle.body.application.keystrokeModeLegacy, undefined);
+    await finish(fresh);
 
     // Sem aplicação (prova de antes das aplicações): 'eventos'.
     const loose = await sendKeys({ examKey: 'Prova_Sem_Aplicacao' }).expect(200);

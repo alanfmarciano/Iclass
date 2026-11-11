@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { RETENTION_ADMIN_ONLY, RETENTION_NEVER_DELETED, RETENTION_NOT_REVIEWED, RetencaoCard, lastRunText, retentionPreviewText } from './RetencaoCard'
+import { RETENTION_ADMIN_ONLY, RETENTION_NEVER_DELETED, RETENTION_NOT_REVIEWED, RetencaoCard, lastRunText, notReviewedText, retentionPreviewText } from './RetencaoCard'
 
 const mocks = vi.hoisted(() => ({
   results: {},
@@ -68,6 +68,19 @@ describe('[UC-LGPD-008] RetencaoCard · Retenção de dados', () => {
     expect(mocks.post).toHaveBeenCalledWith('/api/admin/lgpd/retention', { proctoringDays: 180, loginLogsDays: 365, trashDays: 30 })
     expect(mocks.toast.success).toHaveBeenCalledWith('Prazos de retenção salvos.')
     expect(mocks.refetch).toHaveBeenCalled()
+  })
+
+  it('antes da primeira revisão, com o prazo da lixeira de antes (30 dias): "Limpar agora" desligado e o aviso fala da lixeira', () => {
+    mocks.results['/api/admin/lgpd/retention'] = { data: payload({ settings: { proctoringDays: 0, loginLogsDays: 0, trashDays: 30, reviewedAt: null, reviewedBy: null }, preview: { counts: { keystrokes: 0, proctoringLogs: 0, loginLogs: 0, trash: 4 } } }) }
+    render(<RetencaoCard isAdmin />)
+    expect(screen.getByText(`${RETENTION_NOT_REVIEWED}.`)).toBeVisible()
+    const run = screen.getByRole('button', { name: 'Limpar agora' })
+    expect(run).toBeDisabled()
+    expect(run).toHaveAttribute('title', 'Salve os prazos antes de limpar')
+    expect(screen.getByRole('status')).toHaveTextContent('só a lixeira continua sendo esvaziada sozinha, com o prazo de 30 dias que já valia')
+    expect(screen.getByRole('status')).not.toHaveTextContent('nada é apagado sozinho')
+    expect(notReviewedText(0)).toBe('Enquanto isso, nada é apagado sozinho.')
+    expect(notReviewedText(1)).toContain('prazo de 1 dia que já valia')
   })
 
   it('valor abaixo do mínimo: o servidor ajusta e a tela avisa; prévia inválida mostra o erro', async () => {

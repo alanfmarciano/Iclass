@@ -50,7 +50,8 @@ Os dados do cadastro entram como texto literal: toda pontuação leva a barra do
 - Mínimos: 30 dias para o monitoramento (dá tempo de rever uma prova contestada), 180 para os acessos (Marco Civil da Internet, art. 15) e 1 para a lixeira. Um prazo menor sobe para o mínimo e a tela avisa. Máximo de 3.650 dias.
 - O que pode ser apagado: as teclas e as saídas de tela de aplicações encerradas há mais que o prazo, os registros de acesso antigos e os itens vencidos da lixeira de arquivos. Nunca são apagados por prazo: cadastro do aluno, notas, entregas, frequência, auditoria, observações e mensagens.
 - As 14 cópias de segurança automáticas guardam os dados como estavam no dia de cada cópia: um registro apagado pela retenção ainda fica nelas por até 14 dias, até a cópia ser trocada.
-- A prévia mostra quanto a próxima limpeza apagaria com os prazos da tela. "Limpar agora" pede a palavra APAGAR. A limpeza nunca roda com prova em espera, em andamento ou pausada.
+- Enquanto os prazos não forem revisados, teclas, saídas de tela e registros de acesso não são apagados. A lixeira já tinha prazo antes desta versão (30 dias no padrão) e continua sendo esvaziada a cada 6 horas por ele; o aviso do cartão diz isso.
+- A prévia mostra quanto a próxima limpeza apagaria com os prazos da tela. "Limpar agora" só liga depois de salvar os prazos uma vez e pede a palavra APAGAR. A limpeza nunca roda com prova em espera, em andamento ou pausada.
 - Com algum prazo ligado, o IClass confere de hora em hora e limpa uma vez por dia, no máximo 20 mil de cada tipo por vez (o resto fica para a hora seguinte). Toda limpeza entra na auditoria (`retention_purge`) e mudar os prazos também (`retention_settings_changed`).
 - Os prazos aparecem nos Termos e na Política (`{{prazo_monitoramento}}`, `{{prazo_acessos}}`, `{{prazo_lixeira}}`) e nas instruções da prova.
 
@@ -60,10 +61,15 @@ Os dados do cadastro entram como texto literal: toda pontuação leva a barra do
   - "Só atalhos suspeitos" (padrão): copiar, colar, recortar, menu do botão direito, troca de janela e as tentativas de atalho que a prova bloqueia;
   - "Toda a digitação": todas as teclas da tela da prova;
   - "Não registrar o teclado".
-- Aplicação de antes desta versão vale como "Só atalhos suspeitos".
+- Aplicação de antes desta versão vale como "Só atalhos suspeitos" daqui em diante. O que ela já tinha guardado é a digitação completa (a versão anterior registrava tudo), então o Monitor chama a coluna dela de "Teclado", e não de "Atalhos".
+- Caractere digitado com AltGr (no teclado ABNT2 do Windows, o navegador manda Ctrl e Alt juntos: `/`, `?`, `°`...) conta como digitação, não como atalho.
 - O que o aluno escreve em "Reportar problema" nunca é registrado, em nenhum modo.
 - O bloqueio dos atalhos (copiar, imprimir, buscar) e o registro das saídas da tela continuam iguais em todos os modos.
 - As instruções da prova dizem ao aluno o que é registrado e por quanto tempo fica guardado. O servidor filtra de novo, então um navegador com a versão antiga da prova também segue o modo.
+
+## Relatório de impacto (RIPD)
+
+- [`RIPD-modelo-monitoramento-prova.md`](RIPD-modelo-monitoramento-prova.md) é um modelo do Relatório de Impacto à Proteção de Dados Pessoais do monitoramento da prova: o que é registrado em cada modo do teclado, quem vê, por quanto tempo fica, as medidas de segurança e uma tabela de riscos para a escola preencher. Como os Termos, é um modelo de referência: revise com a direção e o encarregado.
 
 ## Backup
 

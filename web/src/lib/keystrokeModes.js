@@ -18,10 +18,19 @@ export function keystrokeModeDescription(value) {
   return KEYSTROKE_MODE_OPTIONS.find((option) => option.value === mode).description
 }
 
-// Título da coluna do teclado no Monitor: o que ela mostra nesta aplicação.
-export function keystrokeColumnLabel(value) {
+// Título da coluna do teclado no Monitor: o que ela mostra nesta aplicação. Aplicação de
+// antes desta versão (keystrokeModeLegacy, sem o campo no banco) vale 'eventos' daqui em
+// diante, mas já guardou a digitação completa: a coluna diz só "Teclado".
+export function keystrokeColumnLabel(value, legacy = false) {
+  if (legacy) return 'Teclado'
   const mode = normalizeKeystrokeMode(value)
   if (mode === 'tudo') return 'Digitação'
   if (mode === 'nada') return 'Teclado'
   return 'Atalhos'
+}
+
+// Dica do botão do teclado no Monitor (abre a janela ao vivo).
+export function keystrokeWatchTitle(value, legacy = false) {
+  if (legacy) return 'Ver teclado ao vivo (aplicação de antes desta versão: guardou toda a digitação até a atualização; daqui em diante, só atalhos suspeitos)'
+  return normalizeKeystrokeMode(value) === 'tudo' ? 'Ver digitação ao vivo' : 'Ver atalhos ao vivo'
 }

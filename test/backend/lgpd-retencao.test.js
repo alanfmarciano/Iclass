@@ -307,9 +307,20 @@ test('[UC-LGPD-008] limpar agora apaga só os registros técnicos vencidos e gra
     const oldAudit = { id: 'a-old', action: 'login', category: 'access', timestamp: iso(now - 900 * DAY) };
     db.memory.auditLogs.push(oldAudit);
 
-    // Sem APAGAR: 400; sem prazo: 409.
+    // Sem APAGAR: 400.
     const unconfirmed = await post('admin', '/api/admin/lgpd/retention/run', {}).expect(400);
     assert.equal(unconfirmed.body.field, 'confirm');
+    // Antes da primeira revisão, nem com o prazo da lixeira de antes (30 dias, o padrão do
+    // banco do Alan) a limpeza à mão roda: 409 not_reviewed e nada é apagado.
+    db.memory.config.settings = { trash: { retentionDays: 30 } };
+    const keysBefore = db.keystrokes.total();
+    const notReviewed = await post('admin', '/api/admin/lgpd/retention/run', { confirm: 'APAGAR' }).expect(409);
+    assert.equal(notReviewed.body.code, 'not_reviewed');
+    assert.match(notReviewed.body.error, /Revise e salve os prazos/);
+    assert.equal(db.keystrokes.total(), keysBefore);
+    assert.equal(db.memory.config.retentionLastRun, undefined);
+    // Revisados com tudo em 0: sem prazo, 409.
+    await post('admin', '/api/admin/lgpd/retention', { proctoringDays: 0, loginLogsDays: 0, trashDays: 0 }).expect(200);
     const noDeadline = await post('admin', '/api/admin/lgpd/retention/run', { confirm: 'APAGAR' }).expect(409);
     assert.equal(noDeadline.body.code, 'no_deadline');
 
