@@ -142,6 +142,53 @@ const { createSystemHealthRouter } = require('./systemHealth.js');
 const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
+const { body, either, list, shape, str } = require('../utils/inputSchema.js');
+
+// Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
+// H9b: ENG-03, ENG-04): só tipo e tamanho (utils/inputSchema.js), escritos a partir do
+// que as telas mandam. A sessão e a permissão já foram conferidas antes (adminRbacGuard);
+// a presença de cada campo continua com a rota, com as mensagens de antes. As outras
+// rotas do professor ficam para a fase 4 (scope_cuts do H9).
+const adminEmailField = (label = 'e-mail') => str({ max: 254, nullable: true, label });
+const adminIdField = (label) => str({ max: 100, nullable: true, label });
+const adminTextField = (max, label) => str({ max, nullable: true, label });
+// Dados institucionais e identidade visual da escola: objetos simples (cada campo é
+// conferido por extractInstitutional e rejectInvalidBranding).
+const schoolInfoField = () => shape({}, { nullable: true, label: 'dados da escola' });
+const schoolBrandingField = () => shape({}, { nullable: true, label: 'identidade visual' });
+const questionBankFields = () => ({
+    key: adminIdField('questão'),
+    category: adminTextField(100, 'categoria'),
+    curriculumKey: adminTextField(100, 'componente curricular'),
+    type: adminTextField(40, 'tipo'),
+    questionText: adminTextField(10000, 'texto da questão'),
+    alternatives: list(either([str({ max: 2000 }), shape({})], { label: 'alternativas' }), { max: 10, nullable: true, label: 'alternativas' }),
+    correctAnswer: adminTextField(10, 'resposta correta'),
+    sourceExamKey: adminTextField(200, 'prova de origem'),
+    examKey: adminTextField(200, 'prova'),
+});
+const ADMIN_SCHEMAS = {
+    resetPassword: body({ email: adminEmailField(), newPassword: str({ max: 200, trim: false, nullable: true, label: 'nova senha' }) }),
+    examStudent: body({
+        studentEmail: adminEmailField('e-mail do aluno'),
+        studentClass: adminTextField(200, 'turma'),
+        courseId: adminIdField('curso'),
+        examKey: adminTextField(200, 'prova'),
+        applicationId: adminIdField('aplicação'),
+        version: adminTextField(10, 'versão'),
+    }),
+    schoolCreate: body({ name: adminTextField(200, 'nome da escola'), info: schoolInfoField(), branding: schoolBrandingField() }),
+    schoolUpdate: body({ id: adminIdField('escola'), name: adminTextField(200, 'nome da escola'), info: schoolInfoField(), branding: schoolBrandingField() }),
+    schoolDelete: body({ id: adminIdField('escola') }),
+    certificateIssue: body({ email: adminEmailField(), courseName: adminTextField(200, 'curso'), courseId: adminIdField('curso') }),
+    observationCreate: body({
+        email: adminEmailField(),
+        category: adminTextField(100, 'categoria'),
+        visibility: adminTextField(100, 'visibilidade'),
+        text: adminTextField(5000, 'observação'),
+    }),
+    questionBank: body(questionBankFields()),
+};
 const {
     addExtraUnit,
     courseClasses: contentCourseClasses,
@@ -347,7 +394,7 @@ function resetPasswordMessage(changeRequired, deferred) {
 //   (mustChangePassword false) e, com o aluno em prova agora, ela fica para o primeiro
 //   acesso depois da prova (passwordChangeDeferred), em vez de prometer a troca já.
 // O escopo continua o de sempre: page.students e aluno visível ao professor (guarda).
-router.post('/api/admin/reset-password', (req, res) => {
+router.post('/api/admin/reset-password', ADMIN_SCHEMAS.resetPassword, (req, res) => {
     validateAdmin(req, res, async (config, matchedAdmin) => {
         const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
         const typed = typeof req.body.newPassword === 'string' ? req.body.newPassword.trim() : '';
@@ -1891,7 +1938,7 @@ router.get('/api/admin/student/observations', (req, res) => {
     });
 });
 
-router.post('/api/admin/student/observations/create', (req, res) => {
+router.post('/api/admin/student/observations/create', ADMIN_SCHEMAS.observationCreate, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.body.email || '').trim().toLowerCase();
         const category = (req.body.category || '').trim();
@@ -2731,7 +2778,7 @@ router.post('/api/admin/announcements/calendar/delete', (req, res) => {
 
 
 // Emitir certificado (Fase 4)
-router.post('/api/admin/student/certificates/issue', (req, res) => {
+router.post('/api/admin/student/certificates/issue', ADMIN_SCHEMAS.certificateIssue, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.body.email || '').trim().toLowerCase();
         const courseName = (req.body.courseName || '').trim();
@@ -4215,7 +4262,7 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
 });
 
 // 3. Atribui uma versão específica de prova (A, B, C...) a um aluno em tempo real
-router.post('/api/admin/assign-student-version', (req, res) => {
+router.post('/api/admin/assign-student-version', ADMIN_SCHEMAS.examStudent, (req, res) => {
     validateAdmin(req, res, () => {
         const { studentEmail, examKey, applicationId, version } = req.body;
         if (!studentEmail || !examKey || !version) {
@@ -4262,7 +4309,7 @@ router.post('/api/admin/assign-student-version', (req, res) => {
 });
 
 // 3.1. Desbloqueia a tela de um aluno travada por perda de foco
-router.post('/api/admin/unlock-student-focus', (req, res) => {
+router.post('/api/admin/unlock-student-focus', ADMIN_SCHEMAS.examStudent, (req, res) => {
     validateAdmin(req, res, (config, currentAdmin) => {
         const { studentEmail, studentClass, courseId, examKey, applicationId } = req.body;
         if (!studentEmail || !examKey) {
@@ -4987,16 +5034,30 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
 });
 
 // 8. Banco centralizado de questões reutilizáveis
+// A tela mostra category, curriculumKey, type e questionText como texto: um item antigo
+// gravado pela API com um objeto ali (antes do schema do H9b) derrubava Provas e Monitor
+// com a tela de erro. Só a resposta é normalizada; o banco não é regravado.
+function questionBankItemForScreen(question) {
+    const text = (value, fallback) => (typeof value === 'string' ? value : fallback);
+    return {
+        ...question,
+        category: text(question.category, 'Geral'),
+        curriculumKey: text(question.curriculumKey, ''),
+        type: text(question.type, 'multiple_choice'),
+        questionText: text(question.questionText, ''),
+    };
+}
+
 router.get('/api/admin/question-bank', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const questions = isProfessorAccount(matchedAdmin)
-            ? (db.memory.questionBank || []).filter(question => !question.sourceExamKey || adminCanAccessItem(matchedAdmin, question.sourceExamKey))
-            : (db.memory.questionBank || []);
-        res.json({ success: true, questions });
+            ? (db.memory.questionBank || []).filter(question => question && (!question.sourceExamKey || adminCanAccessItem(matchedAdmin, question.sourceExamKey)))
+            : (db.memory.questionBank || []).filter(Boolean);
+        res.json({ success: true, questions: questions.map(questionBankItemForScreen) });
     });
 });
 
-router.post('/api/admin/question-bank/create', (req, res) => {
+router.post('/api/admin/question-bank/create', ADMIN_SCHEMAS.questionBank, (req, res) => {
     validateAdmin(req, res, () => {
         const { category, type, questionText, alternatives, correctAnswer, sourceExamKey, curriculumKey } = req.body;
         if (!questionText || String(questionText).trim() === '') {
@@ -5028,7 +5089,7 @@ router.post('/api/admin/question-bank/create', (req, res) => {
     });
 });
 
-router.post('/api/admin/question-bank/update', (req, res) => {
+router.post('/api/admin/question-bank/update', ADMIN_SCHEMAS.questionBank, (req, res) => {
     validateAdmin(req, res, () => {
         const item = (db.memory.questionBank || []).find(question => question.key === req.body.key);
         if (!item) return res.status(404).json({ error: 'Questão não encontrada no banco.' });
@@ -5056,7 +5117,7 @@ router.post('/api/admin/question-bank/update', (req, res) => {
     });
 });
 
-router.post('/api/admin/question-bank/import-evaluation', (req, res) => {
+router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.questionBank, (req, res) => {
     validateAdmin(req, res, () => {
         const { examKey, category, curriculumKey } = req.body;
         if (!examKey) return res.status(400).json({ error: 'examKey é obrigatório.' });
@@ -5123,7 +5184,7 @@ function schoolAuditView(school) {
 router.get('/api/admin/schools', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => { res.json(filterSchoolsForAdmin(db.memory.schools || [], matchedAdmin)); });
 });
-router.post('/api/admin/schools/create', (req, res) => {
+router.post('/api/admin/schools/create', ADMIN_SCHEMAS.schoolCreate, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const name = (req.body.name || '').trim();
         if (!name) return res.status(400).json({ error: 'Nome da escola é obrigatório.' });
@@ -5148,7 +5209,7 @@ router.post('/api/admin/schools/create', (req, res) => {
         res.json({ success: true, school });
     });
 });
-router.post('/api/admin/schools/update', (req, res) => {
+router.post('/api/admin/schools/update', ADMIN_SCHEMAS.schoolUpdate, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const school = (db.memory.schools || []).find(s => s.id === id);
@@ -5179,7 +5240,7 @@ router.post('/api/admin/schools/update', (req, res) => {
         res.json({ success: true, school });
     });
 });
-router.post('/api/admin/schools/delete', (req, res) => {
+router.post('/api/admin/schools/delete', ADMIN_SCHEMAS.schoolDelete, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const schools = db.memory.schools || [];

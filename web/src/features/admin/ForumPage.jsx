@@ -16,6 +16,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 import { usePolling } from '../../hooks/usePolling'
+import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -268,7 +269,7 @@ export default function ForumPage() {
                 </div>
               )}
               <div className="mt-3 flex gap-2">
-                <Textarea id={`reply-${c.id}`} value={reply[c.id] || ''} onChange={(e) => setReply((r) => ({ ...r, [c.id]: e.target.value }))} placeholder="Responder como instrutor..." className="min-h-[70px]" />
+                <Textarea id={`reply-${c.id}`} value={reply[c.id] || ''} onChange={(e) => setReply((r) => ({ ...r, [c.id]: e.target.value }))} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Responder como instrutor..." className="min-h-[70px]" />
                 <div className="flex flex-col gap-2">
                   <Button icon={Send} onClick={() => sendReply(c.id)}>Enviar</Button>
                   <Button variant="secondary" icon={status === 'resolvida' ? RotateCcw : CircleCheck} onClick={() => resolveToggle(c)}>{status === 'resolvida' ? 'Reabrir' : 'Resolver'}</Button>
@@ -348,7 +349,7 @@ export default function ForumPage() {
           ))}
           <div className="pt-3 border-t border-border space-y-2">
             <Input label="Título" value={tplForm.title} onChange={(e) => setTplForm({ ...tplForm, title: e.target.value })} placeholder="Ex.: Prazo da prova" />
-            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} placeholder="Resposta padrão..." className="min-h-[70px]" />
+            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Resposta padrão..." className="min-h-[70px]" />
             <Button icon={Plus} onClick={addTemplate}>Adicionar modelo</Button>
           </div>
         </div>

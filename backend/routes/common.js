@@ -31,6 +31,7 @@ const {
 } = require('../middlewares.js');
 const { logError, oneLine } = require('../utils/errorLog.js');
 const { rateLimit } = require('../utils/rateLimit.js');
+const { body, oneOf, str } = require('../utils/inputSchema.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
 // O cliente compara o instanceId; se mudou (servidor reiniciado), forca novo login.
@@ -69,39 +70,18 @@ router.get('/api/connection', (req, res) => {
 // Cada campo vira uma linha só (quebras de linha e caracteres de controle saem), para
 // o texto mandado pelo navegador não forjar no arquivo um bloco com cabeçalho de outro
 // usuário. Fora de /api/admin: o aluno também avisa.
-// O schema fica aqui até o H9b trazer o utils/inputSchema.js (mesmas mensagens).
+// Campos conferidos pelo schema (utils/inputSchema.js, H9b) depois da sessão: o aviso
+// recusado (400) não grava nada nem conta no limite.
 const CLIENT_ERROR_AREAS = ['raiz', 'admin', 'aluno', 'prova'];
-const CLIENT_ERROR_FIELDS = [
-    { field: 'area', label: 'área', oneOf: CLIENT_ERROR_AREAS, required: true },
-    { field: 'message', label: 'mensagem', max: 300, required: true },
-    { field: 'path', label: 'caminho', max: 200 },
-    { field: 'build', label: 'versão', max: 64 },
-];
+const CLIENT_ERROR_SCHEMA = body({
+    area: oneOf(CLIENT_ERROR_AREAS, { required: true, label: 'área' }),
+    message: str({ max: 300, required: true, label: 'mensagem' }),
+    path: str({ max: 200, label: 'caminho' }),
+    build: str({ max: 64, label: 'versão' }),
+});
 const CLIENT_ERROR_RATE_LIMIT = { max: 10, windowMs: 60000 };
 
-// Devolve { error, field } do primeiro campo errado, ou null com o corpo certo.
-function clientErrorProblem(body) {
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Dados enviados em formato inválido.' };
-    for (const rule of CLIENT_ERROR_FIELDS) {
-        const raw = body[rule.field];
-        if (raw === undefined) {
-            if (rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
-            continue;
-        }
-        if (typeof raw !== 'string') return { field: rule.field, error: `O campo "${rule.label}" está em formato inválido.` };
-        const value = raw.trim();
-        if (!value && rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
-        if (rule.oneOf && !rule.oneOf.includes(value)) return { field: rule.field, error: `O campo "${rule.label}" tem um valor não permitido.` };
-        if (rule.max && value.length > rule.max) {
-            return { field: rule.field, error: `O campo "${rule.label}" aceita no máximo ${rule.max.toLocaleString('pt-BR')} caracteres.` };
-        }
-    }
-    return null;
-}
-
-router.post('/api/client-error', validateAnySession, (req, res) => {
-    const problem = clientErrorProblem(req.body);
-    if (problem) return res.status(400).json({ success: false, ...problem });
+router.post('/api/client-error', validateAnySession, CLIENT_ERROR_SCHEMA, (req, res) => {
     const email = String((req.requester && req.requester.email) || '').toLowerCase();
     const limit = rateLimit(`client-error:${email}`, CLIENT_ERROR_RATE_LIMIT);
     if (!limit.allowed) {

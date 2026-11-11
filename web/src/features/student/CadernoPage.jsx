@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/Button'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
 import { useToast } from '../../context/ToastProvider'
+import { NOTE_COUNTER_FROM, NOTE_MAX_CHARS } from '../../lib/textLimits'
 
 export default function CadernoPage() {
   const { email } = useStudent()
@@ -27,7 +28,7 @@ export default function CadernoPage() {
       <div><h1 className="text-2xl font-bold text-text">Caderno</h1><p className="text-sm text-muted">Suas anotações, salvas na sua conta.</p></div>
       <Card>
         <CardHeader title="Minhas anotações" action={<Button icon={Save} loading={saving} onClick={save}>Salvar</Button>} />
-        <CardBody><Textarea id="nb" value={note} onChange={(e) => setNote(e.target.value)} className="min-h-[360px]" placeholder="Escreva aqui…" /></CardBody>
+        <CardBody><Textarea id="nb" value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX_CHARS} counterFrom={NOTE_COUNTER_FROM} className="min-h-[360px]" placeholder="Escreva aqui…" /></CardBody>
       </Card>
     </div>
   )

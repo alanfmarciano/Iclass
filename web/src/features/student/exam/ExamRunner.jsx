@@ -1233,7 +1233,7 @@ export default function ExamRunner() {
     // Monitor como erro técnico e a prova não trava (o aluno recarrega e continua).
     const renderError = recentRenderError()
     if (renderError) {
-      api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_render_error', details: `Erro técnico na tela da prova: ${renderError.message}` }, { keepalive: true }).catch(() => {})
+      api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_render_error', details: `Erro técnico na tela da prova: ${String(renderError.message || '').slice(0, 400)}` }, { keepalive: true }).catch(() => {})
       // A tela de erro da prova confirma e registra uma saída por voltar ou link.
       markInterruptedExam({ ...ctx, attemptId: attemptIdRef.current })
       return

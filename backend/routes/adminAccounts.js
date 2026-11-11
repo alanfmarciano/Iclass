@@ -15,6 +15,55 @@ const loginGuard = require('../utils/loginGuard.js');
 const { recordLoginLog } = require('../utils/security.js');
 const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { adminPasswordChangeState, passwordChangeRuleActive, passwordChanged, requirePasswordChange } = require('../utils/passwordChange.js');
+const { body, bool, dict, either, list, shape, str } = require('../utils/inputSchema.js');
+
+// Entrada do login e das contas (fase 2, H9b: ENG-03, ENG-04): tipo e tamanho
+// (utils/inputSchema.js), a partir do que LoginPage, AdminEditPage e PasswordChangeForm
+// mandam. Nas rotas de /api/admin a sessão já foi conferida (adminRbacGuard); a presença
+// de cada campo continua com a rota, com as mensagens de antes.
+const accountEmailField = () => str({ max: 254, nullable: true, label: 'e-mail' });
+const accountPasswordField = (label = 'senha') => str({ max: 200, trim: false, nullable: true, label });
+const assignmentIdsField = (label) => list(str({ max: 100, label }), { max: 500, nullable: true, label });
+const accountFields = () => ({
+    email: accountEmailField(),
+    name: str({ max: 120, nullable: true, label: 'nome' }),
+    role: str({ max: 40, nullable: true, label: 'papel' }),
+    // Turmas atribuídas: o nome da turma (tela antiga) ou { courseId, className }.
+    assignedClasses: list(either([
+        str({ max: 200 }),
+        shape({
+            courseId: str({ max: 100, nullable: true, label: 'curso da turma' }),
+            className: str({ max: 200, nullable: true, label: 'turma' }),
+            name: str({ max: 200, nullable: true, label: 'turma' }),
+        }),
+    ], { label: 'turmas atribuídas' }), { max: 500, nullable: true, label: 'turmas atribuídas' }),
+    assignedSchoolIds: assignmentIdsField('escolas atribuídas'),
+    assignedCourseIds: assignmentIdsField('cursos atribuídos'),
+    additionalPermissions: list(str({ max: 100, label: 'permissões extras' }), { max: 100, nullable: true, label: 'permissões extras' }),
+    requirePasswordChange: bool({ nullable: true, label: 'pedir troca no primeiro acesso' }),
+});
+// Preferências da tela (painel, fórum, portão de curso): chave curta e no máximo 100
+// chaves; as preferências juntas ficam em até 64 KB (só recusa quando crescem, para a
+// conta que já passou disso continuar salvando o que diminui).
+const PREFERENCES_MAX_BYTES = 64 * 1024;
+const ACCOUNT_SCHEMAS = {
+    // Login: tipo errado continua com a mensagem de antes ('Informe e-mail e senha.').
+    login: body({
+        email: str({ max: 254, nullable: true, label: 'e-mail', typeMessage: 'Informe e-mail e senha.' }),
+        password: str({ max: 200, trim: false, nullable: true, label: 'senha', typeMessage: 'Informe e-mail e senha.' }),
+    }),
+    create: body({ ...accountFields(), password: accountPasswordField() }),
+    update: body(accountFields()),
+    delete: body({ email: accountEmailField() }),
+    changePassword: body({ currentPassword: accountPasswordField('senha atual'), newPassword: accountPasswordField('nova senha') }),
+    logout: body({}),
+    preferences: body({}),
+};
+const PREFERENCES_DICT = dict(null, { maxKeys: 100, keyPattern: /^[A-Za-z0-9_.-]{1,64}$/, label: 'preferências' });
+
+function jsonBytes(value) {
+    try { return Buffer.byteLength(JSON.stringify(value || {}), 'utf8'); } catch (_) { return Infinity; }
+}
 
 // Gestão de contas (criar/editar/excluir) é exclusiva de administradores.
 // Backstop além do RBAC: mesmo que a capability accounts.manage vaze para um
@@ -151,7 +200,7 @@ function createAdminAccountsRouter() {
     // networkPolicy.js) já decidiu antes se este aparelho pode abrir o painel. A senha é
     // conferida pelo attemptPasswordLogin (scrypt assíncrono, teto por IP, regravação do
     // hash antigo), o único caminho que confere senha.
-    router.post('/api/session/admin-login', async (req, res) => {
+    router.post('/api/session/admin-login', ACCOUNT_SCHEMAS.login, async (req, res) => {
         const login = await attemptPasswordLogin({ kind: 'admin', email: req.body.email, password: req.body.password, req });
         if (!login.ok) return res.status(login.status).json(login.body);
         // Senha fraca pela política de hoje (H5a, decisão P3 do Alan): a troca passa a ser
@@ -226,7 +275,7 @@ function createAdminAccountsRouter() {
         });
     });
 
-    router.post('/api/admin/accounts/create', (req, res) => {
+    router.post('/api/admin/accounts/create', ACCOUNT_SCHEMAS.create, (req, res) => {
         validateAdmin(req, res, async (config, currentAdmin) => {
             if (!requireAdminManager(res, currentAdmin)) return;
             const { name, email, password } = req.body;
@@ -315,7 +364,7 @@ function createAdminAccountsRouter() {
         });
     });
 
-    router.post('/api/admin/accounts/update', (req, res) => {
+    router.post('/api/admin/accounts/update', ACCOUNT_SCHEMAS.update, (req, res) => {
         validateAdmin(req, res, async (config, currentAdmin) => {
             if (!requireAdminManager(res, currentAdmin)) return;
             const email = (req.body.email || '').trim().toLowerCase();
@@ -403,6 +452,9 @@ function createAdminAccountsRouter() {
 
     router.post('/api/session/logout', (req, res) => {
         validateAdmin(req, res, async () => {
+            // Fora de /api/admin: o corpo é conferido depois da sessão (quem não entrou
+            // recebe o 401, não um 400).
+            if (!ACCOUNT_SCHEMAS.logout.check(req, res)) return;
             revokeAdminSession(db.memory, req.adminSessionToken, { reason: 'logout' });
             // Também sai da tabela auth_sessions (H3a-2): não volta depois de um reinício.
             await db.save();
@@ -447,7 +499,7 @@ function createAdminAccountsRouter() {
         });
     });
 
-    router.post('/api/admin/accounts/delete', (req, res) => {
+    router.post('/api/admin/accounts/delete', ACCOUNT_SCHEMAS.delete, (req, res) => {
         validateAdmin(req, res, async (config, currentAdmin) => {
             if (!requireAdminManager(res, currentAdmin)) return;
             const { email } = req.body;
@@ -484,7 +536,7 @@ function createAdminAccountsRouter() {
         });
     });
 
-    router.post('/api/admin/change-password', (req, res) => {
+    router.post('/api/admin/change-password', ACCOUNT_SCHEMAS.changePassword, (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             const { newPassword, currentPassword } = req.body;
             if (typeof newPassword !== 'string' || !newPassword.trim()) {
@@ -563,7 +615,19 @@ function createAdminAccountsRouter() {
                 item.email && matchedAdmin && item.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase()
             ));
             if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
-            account.preferences = { ...(account.preferences || {}), ...(req.body || {}) };
+            if (!ACCOUNT_SCHEMAS.preferences.check(req, res)) return;
+            const checked = PREFERENCES_DICT.run(req.body, 'preferences', 'preferências');
+            if (!checked.ok) return res.status(400).json({ success: false, error: checked.error, field: checked.field });
+            const current = account.preferences && typeof account.preferences === 'object' && !Array.isArray(account.preferences) ? account.preferences : {};
+            const merged = { ...current, ...req.body };
+            const mergedBytes = jsonBytes(merged);
+            if (Object.keys(merged).length > 100 && Object.keys(merged).length > Object.keys(current).length) {
+                return res.status(400).json({ success: false, error: 'O campo "preferências" aceita no máximo 100 itens.', field: 'preferences' });
+            }
+            if (mergedBytes > PREFERENCES_MAX_BYTES && mergedBytes > jsonBytes(current)) {
+                return res.status(400).json({ success: false, error: 'As preferências desta conta passaram do limite de 64 KB. Limpe favoritos ou modelos de resposta antigos.', field: 'preferences' });
+            }
+            account.preferences = merged;
             await db.save();
             res.json({ success: true, preferences: account.preferences });
         });

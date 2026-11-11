@@ -46,26 +46,8 @@ const SWEEP_EXCLUDED = [
     /^POST \/api\/setup\//,
 ];
 
-// Pendência conhecida até o H9b (schemas por rota): estas rotas ainda respondem 500
-// com campo de tipo errado (só nas variantes "campos como ..."; sem corpo e com {}
-// elas também têm de responder abaixo de 500). Nunca ficam sem resposta (a guarda
-// leva a exceção ao errorHandler). O H9b zera esta lista; a varredura falha se uma
-// rota daqui deixar de falhar, para a lista não guardar rota já corrigida.
-const KNOWN_TYPE_ERRORS_UNTIL_H9B = new Set([
-    'POST /api/admin/accounts/delete',
-    'POST /api/admin/accounts/update',
-    'POST /api/admin/assign-student-version',
-    'POST /api/admin/schools/create',
-    'POST /api/admin/schools/delete',
-    'POST /api/admin/schools/update',
-    'POST /api/admin/student/certificates/issue',
-    'POST /api/admin/student/observations/create',
-    'POST /api/admin/unlock-student-focus',
-    'POST /api/forum/comment',
-    'POST /api/forum/comment/edit',
-    'POST /api/forum/reply',
-    'POST /api/forum/reply/edit',
-]);
+// Desde o H9b (schemas por rota) nenhuma rota tem exceção: campo de tipo errado recebe
+// 400 { success:false, error, field } em todas, e a varredura não guarda lista de pendências.
 
 // Campos mais usados nos corpos das rotas (grep de req.body em backend/routes).
 const FIELDS = [
@@ -83,7 +65,6 @@ const WRONG_VALUES = [
     ['null', null],
     ['booleano', true],
 ];
-const TYPED_VARIANT = /^campos como /;
 
 function routesFromSource(methods) {
     const pattern = new RegExp(`router\\.(${methods})\\(\\s*['"\`]([^'"\`]+)`, 'g');
@@ -189,7 +170,6 @@ test('[UC-ERRO-001] varredura: nenhuma rota de escrita fica sem resposta ou resp
     process.on('unhandledRejection', onRejection);
     const hung = [];
     const failures = new Map();
-    const knownFailures = new Map();
     const missingRequestId = [];
     try {
         for (const route of routes) {
@@ -200,10 +180,8 @@ test('[UC-ERRO-001] varredura: nenhuma rota de escrita fica sem resposta ou resp
                     const where = `${route} [${identity}, ${label}]`;
                     if (result.timeout) hung.push(`${where}: ${result.error}`);
                     else if (result.status >= 500) {
-                        const known = KNOWN_TYPE_ERRORS_UNTIL_H9B.has(route) && TYPED_VARIANT.test(label);
-                        const bucket = known ? knownFailures : failures;
-                        if (!bucket.has(route)) bucket.set(route, []);
-                        bucket.get(route).push(`${where}: ${result.status} ${result.error || ''}`);
+                        if (!failures.has(route)) failures.set(route, []);
+                        failures.get(route).push(`${where}: ${result.status} ${result.error || ''}`);
                     }
                     if (!result.timeout && !REQUEST_ID.test(String(result.requestId || ''))) missingRequestId.push(where);
                 }
@@ -216,8 +194,6 @@ test('[UC-ERRO-001] varredura: nenhuma rota de escrita fica sem resposta ou resp
 
     assert.deepEqual(hung, [], `Pedidos sem resposta em 2 s:\n${hung.join('\n')}`);
     assert.deepEqual([...failures.values()].flat(), [], 'Rotas com resposta 500 ou acima');
-    const alreadyFixed = [...KNOWN_TYPE_ERRORS_UNTIL_H9B].filter(route => !knownFailures.has(route));
-    assert.deepEqual(alreadyFixed, [], 'Rotas que já não falham: tire da lista KNOWN_TYPE_ERRORS_UNTIL_H9B');
     assert.deepEqual(missingRequestId, [], 'Respostas sem X-Request-Id');
     assert.deepEqual(rejections, [], 'unhandledRejection durante a varredura');
 });

@@ -40,8 +40,8 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `questionBank` | array | banco de questões reutilizáveis |
 | `evaluations` | objeto | avaliações |
 | `courseStructure` | array | estrutura legada (**em obsolescência**, migrada para `courses[].structure`) |
-| `notes` | objeto | caderno do aluno por material |
-| `annotations` | objeto | anotações por parágrafo |
+| `notes` | objeto | caderno do aluno por material (`{ e-mail: { chave: texto } }`; desde o H9b até 50.000 caracteres por chave, 300 chaves e 1.000.000 no total por aluno, e nota vazia apaga a chave; dado antigo acima disso fica como está e só diminui) |
+| `annotations` | objeto | anotações por parágrafo (desde o H9b: nota até 5.000, trecho destacado guardado com até 1.000, 500 parágrafos por unidade, 300 unidades por aluno) |
 | `forum` | array | dúvidas/fórum por unidade |
 | `progress` | objeto | progresso por aluno/unidade |
 | `uploads` | objeto | metadados de arquivos enviados |
