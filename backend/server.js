@@ -456,19 +456,31 @@ async function prepareServer() {
         db.runSafetyNetSave().catch(err => logCrash('rede de segurança da gravação', err));
     }, db.SAFETY_NET_INTERVAL_MS));
 
-    // Backup automático diário dos dados em data/backups (guarda os 14 mais recentes).
-    // Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios do servidor.
-    // Desligado em TEST_MODE (demonstração e testes usam dados descartáveis).
+    // Pastas de trabalho do backup e da restauração deixadas por uma execução interrompida
+    // (cópia do banco, envios e prévias extraídas) saem no boot, e uma troca de pasta
+    // interrompida no meio volta ao que era (H4a). Os tokens de prévia ficam na memória:
+    // os vencidos (1 h) saem de hora em hora, com a pasta da prévia.
+    const backupUtil = require('./utils/backup.js');
+    backupUtil.cleanWorkDirs();
+    serverLifecycle.registerTimer('restore-tokens', setInterval(() => backupUtil.sweepRestoreTokens(), 3600000));
+
+    // Backup automático diário dos dados em data/backups (automatico_dados_<carimbo>.zip,
+    // formato 2 com o histórico de digitação; guarda os 14 mais recentes, contando os JSON
+    // antigos). Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios
+    // do servidor. Gerado sem travar o servidor (VACUUM INTO na fila de gravação); com outro
+    // backup em andamento, fica para a hora seguinte. Desligado em TEST_MODE (demonstração e
+    // testes usam dados descartáveis).
     if (process.env.TEST_MODE !== '1') {
-        const backupUtil = require('./utils/backup.js');
         const backupIfDue = async () => {
             try {
                 const last = backupUtil.lastAutomaticBackupAt();
                 if (last && Date.now() - last < 24 * 3600000) return;
-                await db.save({ detached: true });
-                const file = backupUtil.runAutomaticBackup();
+                const file = await backupUtil.runAutomaticBackup();
                 console.log('💾 Backup automático criado: ' + path.basename(file));
-            } catch (e) { logCrash('backup automático', e); }
+            } catch (e) {
+                if (e && e.code === 'ICLASS_BACKUP_BUSY') return;
+                logCrash('backup automático', e);
+            }
         };
         backupIfDue();
         serverLifecycle.registerTimer('backup', setInterval(backupIfDue, 3600000));
@@ -581,7 +593,12 @@ function describeBootFailure(cause, err, { port = PORT } = {}) {
         return {
             exitCode: EXIT_CODES.DB_CORRUPT,
             kind: 'database',
-            message: `⛔ O banco de dados (${dbFile}) está danificado e o IClass não consegue abri-lo. Nada foi apagado. Restaure um backup com node backend/backup-cli.js (opção de restaurar backup do launcher) e abra de novo.`,
+            // H4a (OPS-05): o arquivo fica como está; a backup-cli lista os backups e
+            // restaura o mais recente com o servidor parado.
+            message: `⛔ O banco de dados (${dbFile}) está danificado e o IClass não consegue abri-lo. Nada foi apagado.\n`
+                + '   Para ver os backups: node backend/scripts/backup-cli.js listar\n'
+                + '   Para restaurar o mais recente: node backend/scripts/backup-cli.js restaurar --ultimo\n'
+                + '   Depois abra o IClass de novo.',
         };
     }
     if (err && err.bootStage === 'database') {

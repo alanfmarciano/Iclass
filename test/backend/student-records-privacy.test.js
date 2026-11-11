@@ -288,7 +288,9 @@ test('[UC-BACKUP-001] histórico de backup na tela do administrador (formato nov
     db.memory.auditLogs = [{ id: 'audit_backup_legado', actorEmail: 'admin@g6.local', at: 1700000000000, ip: '10.0.0.5', type: 'backup_restore_failed', file: 'velho.json', size: 10, replaceAccounts: false, error: 'Arquivo de backup inválido.' }];
 
     fs.mkdirSync(runtimePaths.BACKUPS_DIR, { recursive: true });
-    const manual = () => fs.readdirSync(runtimePaths.BACKUPS_DIR).filter(name => name.startsWith('manual_') && name.endsWith('.json'));
+    // Desde o H4a a cópia manual é o ZIP formato 2 (manual_dados_<carimbo>.zip, com o
+    // .sha256 ao lado); os .json manuais antigos contam juntos na retenção.
+    const manual = () => fs.readdirSync(runtimePaths.BACKUPS_DIR).filter(name => name.startsWith('manual_') && /\.(json|zip)$/.test(name));
     manual().forEach(name => fs.rmSync(path.join(runtimePaths.BACKUPS_DIR, name), { force: true }));
     // 22 cópias antigas mais uma nova: ficam as 20 mais recentes.
     for (let index = 0; index < 22; index += 1) {

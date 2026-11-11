@@ -17,6 +17,7 @@ import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPerm
 import { SaudeCard } from './sistema/SaudeCard'
 import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { RedeCard } from './sistema/RedeCard'
+import { RestorePreview } from './sistema/RestorePreview'
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
 // Texto do diálogo Reiniciar (H3c). Sem "Ninguém precisa entrar de novo" até a frente do H3.
@@ -200,13 +201,15 @@ function BackupCard({ isAdmin }) {
   const toast = useToast()
   const history = useApi(isAdmin ? '/api/admin/backup/history' : null, [isAdmin])
   const [file, setFile] = useState(null)
-  const [confirmTxt, setConfirmTxt] = useState('')
-  const [replaceAccounts, setReplaceAccounts] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [serverBusy, setServerBusy] = useState(false)
-  // Backup de versão anterior: o servidor não restaura sem antes a tela mostrar o que
-  // acontece com as aplicações de prova (409 legacyBackup) e o administrador confirmar.
-  const [legacyWarning, setLegacyWarning] = useState(null)
+  // Prévia da restauração (H4a): o servidor confere o arquivo sem mudar nada e devolve o
+  // token de uso único com o que o backup traz ao lado do que há hoje. O aviso de backup
+  // de versão anterior, as provas em andamento e o que ficará vazio aparecem nela; antes
+  // eram o window.confirm e o diálogo do 409.
+  const [preview, setPreview] = useState(null)
+  const fileInputRef = useRef(null)
   async function serverBackup() {
     setServerBusy(true)
     try {
@@ -216,38 +219,46 @@ function BackupCard({ isAdmin }) {
     } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
   }
   // Download e restauração passam pelo cliente da API (lib/api.js): sem rede, a mensagem
-  // em português em vez do "Failed to fetch" do navegador (fase 2, H9c).
-  async function download(kind) {
+  // em português em vez do "Failed to fetch" do navegador (fase 2, H9c). Os dois downloads
+  // são o ZIP formato 2 (com o histórico de digitação): completo ou só os dados.
+  async function download(variante) {
     try {
-      await downloadFile('/api/admin/backup/' + kind, kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
+      await downloadFile(`/api/admin/backup/full?variante=${variante}`, `iclass-backup-${variante}.zip`)
       history.refetch(true)
     } catch (e) { toast.error(e.message) }
   }
-  async function restore({ acceptLegacy = false } = {}) {
+  async function check() {
     if (!file) return toast.error('Escolha o arquivo de backup')
-    if (!typedConfirmMatches(confirmTxt, 'RESTAURAR')) return toast.error('Digite RESTAURAR para confirmar')
-    if (!acceptLegacy && !window.confirm(replaceAccounts
-      ? 'Isto substitui TODOS os dados atuais, inclusive as contas de acesso. Um backup de segurança será criado antes. Continuar?'
-      : 'Isto substitui TODOS os dados atuais (as contas de acesso continuam as de hoje). Um backup de segurança será criado antes. Continuar?')) return
-    const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt.trim().toUpperCase()); fd.append('replaceAccounts', replaceAccounts ? '1' : '0')
-    if (acceptLegacy) fd.append('acceptLegacy', '1')
-    setLegacyWarning(null)
+    const fd = new FormData(); fd.append('file', file)
+    setChecking(true)
+    try {
+      setPreview(await api.post('/api/admin/backup/restore/preview', fd, { timeoutMs: 0 }))
+    } catch (e) {
+      toast.error(e.message)
+      history.refetch(true)
+    } finally { setChecking(false) }
+  }
+  function clearFile() {
+    setFile(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+  async function restore({ replaceAccounts }) {
+    if (!preview?.token) return
     setBusy(true)
     try {
-      const d = await api.post('/api/admin/backup/restore', fd, { timeoutMs: 0 })
+      const d = await api.post('/api/admin/backup/restore', { token: preview.token, confirm: 'RESTAURAR', replaceAccounts }, { timeoutMs: 0 })
       const skipped = Number(d && d.accountsNotRestored) || 0
       const legacy = d?.legacyApplications ? ` ${legacyRestoreNote(d)}` : ''
       const network = d?.networkKept ? ` ${NETWORK_KEPT_NOTE}` : ''
       toast.success(skipped > 0
         ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".${legacy}${network}`
         : `Backup restaurado. Recarregue a página para ver os dados.${legacy}${network}`)
-      setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
+      setPreview(null)
+      clearFile()
     } catch (e) {
-      if (e.status === 409 && e.data?.legacyBackup) {
-        setLegacyWarning({ message: e.data.error, exportedAt: e.data.exportedAt || '' })
-        return
-      }
       toast.error(e.message)
+      // Prévia vencida ou já usada: envie o arquivo de novo.
+      if (e.status === 400 || e.status === 403) setPreview(null)
       // A falha fica no histórico (a restauração bem-sucedida encerra as sessões).
       history.refetch(true)
     } finally { setBusy(false) }
@@ -258,36 +269,19 @@ function BackupCard({ isAdmin }) {
       <CardBody className="space-y-4">
         <div className="flex flex-wrap gap-3">
           <Button variant="secondary" icon={Save} loading={serverBusy} onClick={serverBackup}>Gerar cópia no servidor</Button>
-          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('data')}>Baixar dados (JSON)</Button>}
-          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('full')}>Baixar completo (ZIP)</Button>}
+          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('dados')}>Baixar só os dados (ZIP)</Button>}
+          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('completo')}>Baixar completo (ZIP)</Button>}
         </div>
         {!isAdmin && <p className="text-xs text-muted">Baixar e restaurar backup é exclusivo do administrador, porque o arquivo traz os dados de todos os alunos e as senhas protegidas das contas.</p>}
         {isAdmin && <div className="p-4 rounded-lg border border-danger/40 bg-danger-soft space-y-3">
           <p className="text-sm font-semibold text-text">Restaurar de um arquivo</p>
-          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo. Numa instalação nova (troca de computador), marque a opção para trazer os professores do backup.</p>
+          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Antes de mudar qualquer coisa, o IClass confere o arquivo e mostra o que ele traz ao lado do que há hoje. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção na conferência. Numa instalação nova (troca de computador), marque a opção para trazer os professores do backup.</p>
           <p className="text-xs text-muted">{NETWORK_KEPT_NOTE}</p>
-          <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
-          <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
-          <div className="max-w-sm">
-            {/* Enter sem arquivo: restore() avisa "Escolha o arquivo de backup", como o botão fazia antes de ficar desligado. */}
-            <TypedConfirm id="bk-confirm" word="RESTAURAR" value={confirmTxt} onChange={setConfirmTxt} disabled={busy} onConfirm={() => restore()} />
-          </div>
-          {!file && typedConfirmMatches(confirmTxt, 'RESTAURAR') && <p className="text-xs text-muted">Escolha o arquivo de backup para liberar o botão Restaurar.</p>}
-          <Button variant="destructive" icon={Upload} loading={busy} disabled={!file || !typedConfirmMatches(confirmTxt, 'RESTAURAR')} onClick={() => restore()}>Restaurar</Button>
+          <input ref={fileInputRef} type="file" accept=".json,.zip" aria-label="Arquivo de backup" onChange={(e) => setFile(e.target.files?.[0] || null)} className="max-w-full text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
+          <Button variant="destructive" icon={Upload} loading={checking} disabled={!file} onClick={check}>Conferir backup</Button>
         </div>}
         {isAdmin && <BackupHistory entries={history.data?.entries} />}
-        <Modal
-          open={!!legacyWarning}
-          onClose={() => !busy && setLegacyWarning(null)}
-          title="Backup de uma versão anterior"
-          description={legacyWarning?.exportedAt ? `Gerado em ${new Date(legacyWarning.exportedAt).toLocaleString('pt-BR')}` : undefined}
-          footer={<><Button variant="ghost" onClick={() => setLegacyWarning(null)} disabled={busy}>Cancelar</Button><Button variant="destructive" icon={Upload} loading={busy} onClick={() => restore({ acceptLegacy: true })}>Restaurar mesmo assim</Button></>}
-        >
-          <div className="flex items-start gap-2 text-sm text-text">
-            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
-            <p>{legacyWarning?.message}</p>
-          </div>
-        </Modal>
+        <RestorePreview preview={preview} busy={busy} networkNote={NETWORK_KEPT_NOTE} onCancel={() => setPreview(null)} onConfirm={restore} />
       </CardBody>
     </Card>
   )

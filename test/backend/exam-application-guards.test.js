@@ -445,18 +445,43 @@ test('[UC-MANUT-001] resetar sala só na turma escolhida encerra a prova salvand
 });
 
 // Disco cheio (ENOSPC) só ao gravar na pasta de backups: o backup de segurança falha.
+// Desde o H4a o backup de segurança é o ZIP formato 2 gravado em stream
+// (fs.createWriteStream), não mais o JSON do writeFileSync: as duas gravações falham.
 async function withBackupDiskFull(fn) {
     const originalWrite = fs.writeFileSync;
+    const originalStream = fs.createWriteStream;
     const backupsDir = path.resolve(runtimePaths.BACKUPS_DIR);
+    const inBackups = file => typeof file === 'string' && path.resolve(file).startsWith(backupsDir + path.sep);
+    const diskFull = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
     fs.writeFileSync = function patchedWrite(file, ...args) {
-        if (typeof file === 'string' && path.resolve(file).startsWith(backupsDir + path.sep)) {
-            const error = new Error('ENOSPC: no space left on device, write');
-            error.code = 'ENOSPC';
-            throw error;
-        }
+        if (inBackups(file)) throw diskFull();
         return originalWrite.call(this, file, ...args);
     };
-    try { return await fn(); } finally { fs.writeFileSync = originalWrite; }
+    fs.createWriteStream = function patchedStream(file, ...args) {
+        if (inBackups(file)) {
+            const { Writable } = require('node:stream');
+            return new Writable({ write(chunk, encoding, callback) { callback(diskFull()); } });
+        }
+        return originalStream.call(this, file, ...args);
+    };
+    try { return await fn(); } finally { fs.writeFileSync = originalWrite; fs.createWriteStream = originalStream; }
+}
+
+// Coleções gravadas no banco de um backup ZIP formato 2 (data/database.db), lidas pelo
+// mesmo caminho do boot (db.readStoredData).
+async function readBackupZipData(file) {
+    const AdmZip = require('adm-zip');
+    const dbFile = require('../../backend/utils/dbFile.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-guards-zip-'));
+    const target = path.join(dir, 'database.db');
+    fs.writeFileSync(target, new AdmZip(file).getEntry('data/database.db').getData());
+    const connection = await dbFile.openDatabaseFile(target);
+    try {
+        return (await db.readStoredData(connection)).memory;
+    } finally {
+        await dbFile.closeDatabaseFile(connection);
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 }
 
 test('[UC-MANUT-001] backup de segurança que não pôde ser salvo: 503 com a mensagem própria e o código, nada muda (H9a, decisão do coordenador 5)', async () => {
@@ -664,8 +689,10 @@ test('[UC-MANUT-001] resetar sala mantém conectado quem faz prova em outra turm
     assert.equal(applicationOf(appA.id).status, 'finished');
 
     // O backup salvo antes do reset traz as aplicações como estavam: restaurá-lo desfaz o encerramento.
-    const snapshot = JSON.parse(fs.readFileSync(path.join(runtimePaths.BACKUPS_DIR, reset.body.backup), 'utf8'));
-    assert.equal(snapshot.data.examApplications.find(item => item.id === appA.id).status, 'running');
+    // Desde o H4a é o ZIP formato 2 dos dados (antes-resetar-sala_dados_*.zip).
+    assert.match(reset.body.backup, /^antes-resetar-sala_dados_.+\.zip$/);
+    const saved = await readBackupZipData(path.join(runtimePaths.BACKUPS_DIR, reset.body.backup));
+    assert.equal(saved.examApplications.find(item => item.id === appA.id).status, 'running');
 
     resetSessions();
     await control(appB.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);

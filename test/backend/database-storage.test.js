@@ -367,16 +367,18 @@ test('[UC-GRAVACAO-001] pedido que entra durante um ciclo travado espera cerca d
     assert.equal(result.saved, 2, 'as duas notas entram quando a trava sai');
 });
 
-test('[UC-GRAVACAO-001] backup e restauração saem do registro único de tabelas', () => {
+test('[UC-GRAVACAO-001] backup e restauração saem do registro único de tabelas', async () => {
     const backup = require('../../backend/utils/backup.js');
     const expected = db.COLLECTION_TABLES
         .filter(entry => entry.backup !== false && entry.kind !== 'derived')
         .map(entry => entry.collection);
     assert.deepEqual(backup.COLLECTIONS, expected);
-    // As teclas (tabela própria, kind 'store') estão no registro com backup, mas só entram
-    // no JSON pelo exportRows do H4a: até lá o backup continua sem elas, como sempre foi.
+    // As teclas (tabela própria, kind 'store') estão no registro com backup e, desde o
+    // H4a, entram no JSON completo pelo exportRows (buildFullDataSnapshot, o do "Baixar
+    // dados") e no ZIP formato 2 dentro do banco. O snapshot da memória continua sem elas.
     assert.equal(backup.COLLECTIONS.includes('examKeystrokes'), true);
     assert.equal(backup.buildDataSnapshot().data.examKeystrokes, undefined);
+    assert.ok(Array.isArray((await backup.buildFullDataSnapshot()).data.examKeystrokes));
     assert.equal('examKeystrokes' in db.memory, false, 'as teclas ficam fora da memória');
     assert.equal(backup.COLLECTIONS.includes('examApplications'), true);
     // Toda coleção da memória tem tabela e toda tabela aparece uma vez.

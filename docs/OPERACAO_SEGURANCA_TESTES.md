@@ -69,6 +69,25 @@ Antes de cada fase ou operação sensível, faça snapshot completo externo com 
 
 A restauração só responde sucesso depois do `COMMIT` do SQLite. Em falha, arquivos e coleções anteriores são recolocados.
 
+Fase 2, H4a: o backup do servidor é um ZIP formato 2 (`iclass-backup.json` + `data/database.db` copiado por `VACUUM INTO`, com as teclas da prova, e as pastas na variante completa), com um `.sha256` ao lado. O automático (no boot e de 24 em 24 h) grava `data/backups/automatico_dados_<data>.zip` e guarda os 14 mais recentes. Restaurar pela tela Sistema é em dois passos: "Conferir backup" envia o arquivo e mostra a prévia (o que o backup traz ao lado do que há hoje, o que ficará vazio, provas em andamento, alunos anonimizados que voltariam com dados pessoais, aviso de backup de versão anterior); "Restaurar" só libera com RESTAURAR digitado e usa o token da prévia (1 hora, uso único). A regra de rede, a rotina de backup e o segredo das alternativas da prova continuam os deste computador. `data/tls` nunca entra no backup.
+
+### Banco danificado e backup-cli (servidor parado)
+
+O boot roda `PRAGMA quick_check` antes de ler o banco. Banco danificado: o servidor não sobe, sai com o código 3 (o supervisor não tenta de novo), não grava nada no arquivo e diz para usar o `backup-cli.js`:
+
+```
+node backend/scripts/backup-cli.js listar
+node backend/scripts/backup-cli.js criar [--dados] [--destino <pasta>]
+node backend/scripts/backup-cli.js verificar <arquivo.zip>
+node backend/scripts/backup-cli.js restaurar (<arquivo.zip> | --ultimo) [--sim]
+```
+
+- `listar`: os backups de `data/backups`, o mais recente primeiro, dizendo quais são formato 2.
+- `criar`: ZIP formato 2 (completo; `--dados` só o banco) em `data/backups` ou em `--destino`, a partir de uma conexão só de leitura com `quick_check`, só com o servidor parado (ligado, sai com 2: use "Gerar cópia no servidor" na tela Sistema).
+- `verificar`: confere o `.sha256` ao lado (se houver), o CRC e o tamanho de cada entrada ao extrair, o manifesto, o `quick_check`, a soma e as contagens do banco e a estrutura das coleções. Não muda nada.
+- `restaurar`: só com o servidor parado (ligado na porta `PORT`, sai com 2). Confere tudo como o `verificar`, mostra o resumo e pede RESTAURAR (`--sim` pula a pergunta). O banco de agora (com `-wal`/`-shm`) e as pastas que o backup traz vão para `data/quarentena/antes-restauracao_<data>/` (nada é apagado); depois zera as sessões, protege senhas antigas e, se o banco de antes pôde ser lido, mantém a regra de rede e a configuração protegida dele. Falha no meio: tudo volta como estava.
+- Códigos de saída: 0 deu certo; 1 falhou ou foi recusado (nada mudou); 2 servidor ligado (`criar` e `restaurar`). Só ZIP formato 2: o JSON e o ZIP antigos continuam restaurando pela tela Sistema.
+
 ### Banco em modo WAL
 
 O banco (`data/database.db`) roda em modo WAL: com o servidor ligado existem também `database.db-wal` e `database.db-shm`. Uma cópia manual do banco feita com o servidor ligado precisa dos três arquivos juntos (só o `.db` pode vir sem as últimas gravações); prefira o backup do sistema ou desligue o servidor antes. Desligar com Ctrl+C, fechar a janela do console e o Reiniciar em Sistema gravam, fecham o banco e apagam o `-wal` (fase 2, H3c); só o processo morto à força (kill -9, `taskkill /f`, falta de energia) deixa o `-wal`, que é aplicado na subida seguinte (por isso a cópia manual com o servidor ligado precisa dos três arquivos). Não deixe a pasta do IClass dentro do OneDrive ou de pasta de rede: o modo WAL pode não pegar (aviso no console) e o sincronizador pode prender o arquivo.

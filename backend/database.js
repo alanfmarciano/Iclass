@@ -23,6 +23,7 @@ const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('.
 const { logError } = require('./utils/errorLog.js');
 const { syncedFolderInfo } = require('./utils/syncedFolder.js');
 const { clearSessions, persistedSessionRows, revokeAdminSessions, revokeStudentSession, sessionRowBelongsTo } = require('./utils/authSessions.js');
+const dbFile = require('./utils/dbFile.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
@@ -477,13 +478,45 @@ function currentNetworkSettings(memory = memoryDB) {
     return structuredClone(settings.network);
 }
 
+// Configuração protegida de agora (H4a): settings.backup (a rotina de backup deste
+// computador, que um backup de outro computador não pode trocar) e o segredo que embaralha
+// os identificadores das alternativas da prova (config.examAnswerSecret). Lida antes da
+// restauração e posta de volta pelo gancho 'protectedConfig'.
+function currentProtectedConfig(memory = memoryDB) {
+    const config = memory.config && typeof memory.config === 'object' ? memory.config : {};
+    const settings = config.settings && typeof config.settings === 'object' ? config.settings : {};
+    return {
+        backup: settings.backup === undefined ? undefined : structuredClone(settings.backup),
+        examAnswerSecret: typeof config.examAnswerSecret === 'string' ? config.examAnswerSecret : undefined,
+    };
+}
+
+// settings.backup fica o de agora (como settings.network); o segredo das alternativas
+// volta ao de agora quando o backup não traz um válido (backup antigo ou editado), para as
+// provas em andamento não trocarem os identificadores no meio. keepProtectedConfig false: a
+// volta exata ao estado de antes.
+function keepProtectedConfig(memory, context = {}) {
+    if (!context.keepProtectedConfig) return;
+    const previous = context.previousProtectedConfig || {};
+    const config = memory.config && typeof memory.config === 'object' ? memory.config : (memory.config = {});
+    const settings = config.settings && typeof config.settings === 'object' ? config.settings : (config.settings = {});
+    if (previous.backup === undefined) delete settings.backup;
+    else settings.backup = structuredClone(previous.backup);
+    if ((typeof config.examAnswerSecret !== 'string' || config.examAnswerSecret.length < 32)
+        && typeof previous.examAnswerSecret === 'string' && previous.examAnswerSecret.length >= 32) {
+        config.examAnswerSecret = previous.examAnswerSecret;
+    }
+}
+
 // Ganchos pós-restauração, numa declaração só (trilhas A e B da J2): sessões, senhas
-// antigas e rede. Cada gancho recebe a memória já restaurada e o contexto da
-// restauração (utils/backup.js applySnapshot).
+// antigas, rede e configuração protegida (H4a). Cada gancho recebe a memória já
+// restaurada e o contexto da restauração (utils/backup.js applySnapshot). Valem para
+// todos os formatos: JSON, ZIP formato 1 e ZIP formato 2.
 const AFTER_RESTORE_HOOKS = [
     { name: 'authSessions', run: resetAuthSessions },
     { name: 'legacyPasswordHashes', run: memory => upgradeLegacyPasswordHashes(memory) },
     { name: 'networkSettings', run: keepCurrentNetworkSettings },
+    { name: 'protectedConfig', run: keepProtectedConfig },
 ];
 
 async function runAfterRestore(memory = memoryDB, context = {}) {
@@ -611,12 +644,23 @@ async function createTables() {
     }
 }
 
-// PRAGMAs e tabelas, uma vez: o init e o primeiro ciclo de gravação esperam. Se falhar
-// (disco), a próxima tentativa recomeça.
+// Integridade do arquivo antes de tudo (H4a, OPS-05): PRAGMA quick_check antes dos PRAGMAs
+// e do createTables. Banco danificado (cabeçalho trocado, páginas estragadas: SQLITE_NOTADB,
+// SQLITE_CORRUPT ou resultado diferente de exatamente uma linha 'ok') rejeita com code
+// 'ICLASS_DB_CORRUPT': o boot sai com o código 3, a mensagem cita a backup-cli e o arquivo
+// não é movido nem alterado (nada foi gravado nele ainda, nem o modo WAL). Antes o boot
+// seguia com 28 uncaughtException SQLITE_NOTADB e saía com o código 1, sem orientação.
+// SQLITE_BUSY e SQLITE_CANTOPEN continuam erro comum (o supervisor tenta de novo).
+async function checkDatabaseIntegrity() {
+    await dbFile.quickCheck(sqliteDb, { file: dbPath });
+}
+
+// Integridade, PRAGMAs e tabelas, uma vez: o init e o primeiro ciclo de gravação esperam.
+// Se falhar (disco), a próxima tentativa recomeça.
 let connectionReady = null;
 function ensureConnection() {
     if (!connectionReady) {
-        connectionReady = connectionOpened.then(configureConnection).then(createTables);
+        connectionReady = connectionOpened.then(checkDatabaseIntegrity).then(configureConnection).then(createTables);
         connectionReady.catch(() => { connectionReady = null; });
     }
     return connectionReady;
@@ -669,6 +713,66 @@ function migrateJsonToTable(filePath, tableName, keyField, isArray = true) {
     });
 }
 
+// Leitura das coleções do registro de um arquivo de banco (H4a): o mesmo caminho do
+// boot e da restauração do backup formato 2 (data/database.db de dentro do ZIP, aberto só
+// para leitura). Devolve:
+// - memory: as coleções da memória ('array', 'object', 'singleton'), já com a migração de
+//   studentClass para classes; singleton sem linha legível fica com o valor padrão;
+// - rawRows: Map(tabela -> Map(chave -> texto JSON)) das linhas legíveis, como foram lidas
+//   (semeadura do motor de gravação no boot);
+// - unreadable: Map(tabela -> [chaves]) das linhas com JSON ilegível (ficam de fora);
+// - absent: Set das coleções que o arquivo não tem (tabela que não existe num banco de
+//   versão antiga, ou singleton sem linha legível). No boot não acontece: o createTables
+//   já criou todas.
+async function readStoredData(connection = sqliteDb) {
+    const existing = new Set(await dbFile.tableNames(connection));
+    const memory = {};
+    const rawRows = new Map();
+    const unreadable = new Map();
+    const absent = new Set();
+    for (const entry of COLLECTION_TABLES) {
+        if (!MEMORY_KINDS.has(entry.kind)) continue;
+        if (!existing.has(entry.table)) {
+            absent.add(entry.collection);
+            memory[entry.collection] = emptyCollectionValue(entry);
+            continue;
+        }
+        const rows = await dbFile.allOn(connection, `SELECT key, value FROM ${entry.table}`);
+        const seed = new Map();
+        const parsed = [];
+        const bad = [];
+        rows.forEach(row => {
+            try {
+                parsed.push([row.key, JSON.parse(row.value)]);
+                seed.set(String(row.key), row.value);
+            } catch (e) {
+                bad.push(String(row.key));
+            }
+        });
+        rawRows.set(entry.table, seed);
+        unreadable.set(entry.table, bad);
+        if (entry.kind === 'array') {
+            memory[entry.collection] = parsed.map(([, value]) => value);
+        } else if (entry.kind === 'object') {
+            const object = {};
+            parsed.forEach(([key, value]) => { object[key] = value; });
+            memory[entry.collection] = object;
+        } else {
+            const found = parsed.find(([key]) => key === entry.key);
+            if (!found || !found[1]) absent.add(entry.collection);
+            memory[entry.collection] = (found && found[1]) || emptyCollectionValue(entry);
+        }
+    }
+    // Migração de studentClass para classes array (alunos de versões antigas).
+    (Array.isArray(memory.students) ? memory.students : []).forEach(student => {
+        if (student && !student.classes) {
+            student.classes = [];
+            if (student.studentClass) student.classes.push(student.studentClass);
+        }
+    });
+    return { memory, rawRows, unreadable, absent };
+}
+
 // Carrega as coleções do registro para a memória e semeia o motor de gravação com o
 // JSON de cada linha exatamente como foi lido (DES-01): a primeira gravação depois do
 // boot escreve só o que mudou, em vez de apagar e reinserir todas as tabelas (26 s num
@@ -680,20 +784,11 @@ function migrateJsonToTable(filePath, tableName, keyField, isArray = true) {
 // a linha original ao lado em vez de sobrescrevê-la (antes as configurações e o segredo
 // das alternativas da prova sumiam sem aviso).
 async function loadRegisteredCollections() {
+    const stored = await readStoredData(sqliteDb);
     for (const entry of COLLECTION_TABLES) {
         if (!MEMORY_KINDS.has(entry.kind)) continue;
-        const rows = await allSql(`SELECT key, value FROM ${entry.table}`);
-        const seed = new Map();
-        const parsed = [];
-        const unreadable = [];
-        rows.forEach(row => {
-            try {
-                parsed.push([row.key, JSON.parse(row.value)]);
-                seed.set(String(row.key), row.value);
-            } catch (e) {
-                unreadable.push(String(row.key));
-            }
-        });
+        const seed = stored.rawRows.get(entry.table) || new Map();
+        const unreadable = stored.unreadable.get(entry.table) || [];
         writer.seed(entry.table, seed, unreadable);
         const singletonUnreadable = entry.kind === 'singleton' && unreadable.includes(String(entry.key));
         const otherUnreadable = unreadable.length - (singletonUnreadable ? 1 : 0);
@@ -705,16 +800,7 @@ async function loadRegisteredCollections() {
         if (otherUnreadable) {
             console.warn(`⚠️ ${otherUnreadable} registro(s) ilegível(is) na tabela ${entry.table} continuam no arquivo, fora da memória (a gravação não os apaga).`);
         }
-        if (entry.kind === 'array') {
-            memoryDB[entry.collection] = parsed.map(([, value]) => value);
-        } else if (entry.kind === 'object') {
-            const object = {};
-            parsed.forEach(([key, value]) => { object[key] = value; });
-            memoryDB[entry.collection] = object;
-        } else {
-            const found = parsed.find(([key]) => key === entry.key);
-            memoryDB[entry.collection] = (found && found[1]) || emptyCollectionValue(entry);
-        }
+        memoryDB[entry.collection] = stored.memory[entry.collection];
     }
 }
 
@@ -1211,15 +1297,7 @@ async function init() {
     await loadRegisteredCollections();
     await loadDerivedTables();
 
-    // Migração de studentClass para classes array
-    memoryDB.students.forEach(student => {
-        if (student && !student.classes) {
-            student.classes = [];
-            if (student.studentClass) {
-                student.classes.push(student.studentClass);
-            }
-        }
-    });
+    // A migração de studentClass para classes já vem do readStoredData.
 
     // 3. Garante defaults se tabelas estruturais estiverem vazias
     populateDefaultsIfEmpty();
@@ -1661,6 +1739,29 @@ async function compactDatabase({ beforeVacuum = null } = {}) {
     return { before, after: storageStatus(), ms };
 }
 
+// Cópia consistente do banco para o backup (H4a: CONF-07, OPS-03), sem o JSON do banco
+// inteiro (que travava o servidor 3 a 6 s num banco de um ano e subia a memória em
+// centenas de MB). Primeiro uma gravação completa (o que está na memória vai para o
+// disco; se ela falhar, a cópia não é feita), depois VACUUM INTO pela fila
+// (db.runExclusive: nenhuma gravação no meio, fora de transação, que o VACUUM recusa).
+// Gravações pedidas durante a cópia esperam e entram logo depois. A cópia sai em modo
+// journal normal (sem -wal), legível sozinha. O destino não pode existir. Depois, numa
+// conexão só de leitura da cópia: quick_check exatamente 'ok', contagem de cada tabela e
+// SHA-256 por stream. Devolve { file, bytes, sha256, tabelas, quickCheck, ms }.
+async function snapshotTo(file) {
+    const target = path.resolve(String(file || ''));
+    if (!file || fs.existsSync(target)) throw new Error(`O arquivo da cópia do banco já existe ou não foi informado: ${target}`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const started = Date.now();
+    await saveToDisk({ detached: true });
+    await writer.runExclusive(connection => new Promise((resolve, reject) => {
+        connection.run('VACUUM INTO ?', [target], err => (err ? reject(err) : resolve()));
+    }));
+    const ms = Date.now() - started;
+    const info = await dbFile.inspectDatabaseFile(target);
+    return { ...info, ms };
+}
+
 // Rede de segurança da gravação parcial (H1-c, DES-01): de 10 em 10 min (timer registrado
 // no server.js), se houve gravação parcial desde a última completa, uma gravação completa
 // assim que a fila esvaziar (ou depois de 30 s, na fila mesmo assim). Ela leva ao disco o
@@ -1842,8 +1943,14 @@ module.exports = {
     afterRestore: AFTER_RESTORE_HOOKS,
     runAfterRestore,
     currentNetworkSettings,
+    currentProtectedConfig,
     COLLECTION_TABLES,
     emptyCollectionValue,
+    // Leitura das coleções de um arquivo de banco (boot e backup formato 2) e cópia
+    // consistente pelo VACUUM INTO (H4a).
+    readStoredData,
+    snapshotTo,
+    get dbPath() { return dbPath; },
     save: saveToDisk,
     // Resolve quando toda gravação pedida até agora terminou (com sucesso ou não).
     flush: () => writer.flush(),

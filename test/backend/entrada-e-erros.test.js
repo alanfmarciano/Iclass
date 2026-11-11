@@ -650,9 +650,14 @@ test('[UC-ERRO-001] envio de arquivo com falha de disco responde o 500 com o có
             assert.match(block, /contexto: Falha ao gravar no disco o arquivo enviado\./, route);
         }
         // Restaurar backup com a mesma falha: 500 com o código, e o histórico de backup
-        // guarda o mesmo texto.
+        // guarda o mesmo texto. Desde o H4a o backup enviado não passa por /uploads (multer
+        // próprio, pasta DATA_DIR/.restauracao/envios): a falha é a dessa pasta.
+        const backupUtil = require('../../backend/utils/backup.js');
+        fs.rmSync(backupUtil.RESTORE_DIR, { recursive: true, force: true });
+        fs.writeFileSync(backupUtil.RESTORE_DIR, 'não é pasta');
         const restore = await request(app).post('/api/admin/backup/restore').set('x-admin-session', ADMIN_TOKEN)
-            .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{}'), 'backup.json');
+            .field('confirm', 'RESTAURAR').attach('file', Buffer.from('{}'), 'backup.json')
+            .then(response => { fs.rmSync(backupUtil.RESTORE_DIR, { force: true }); return response; });
         assert.equal(restore.status, 500);
         const restoreId = restore.headers['x-request-id'];
         assert.equal(restore.body.error, `Ocorreu um erro interno no servidor. Código do erro: ${restoreId}.`);
