@@ -42,6 +42,7 @@ const {
 } = require('./students.js');
 const {
     anonymizeStudentAuditTrail,
+    tidyScrubbedText,
     anonymizeStudentExamRecords,
     studentEmailOwnership,
 } = require('./gradebook.js');
@@ -141,7 +142,7 @@ function scrubReason(text, { emails = [], names = [], matriculas = [], replaceme
         .sort((a, b) => b.length - a.length)
         .forEach(name => edge(name, replacement));
     matriculas.map(value => String(value || '').trim()).filter(value => value.length >= 3).forEach(value => edge(value, ''));
-    return out.trim();
+    return tidyScrubbedText(out, [replacement]);
 }
 
 function countBy(list, predicate) {
@@ -208,6 +209,8 @@ function moveStudentFolderToTrash(memory, student, files, { deletedBy, asName } 
         }
         if (shared ? !targets.length : !fs.existsSync(dir)) return;
         const neutral = freeStudentDir(asName);
+        // Os arquivos ganham nome neutro (arquivo-1.pdf...) depois de chegar à pasta nova
+        // (decisões §12, sobra do H7c): "atestado-natalia.pdf" identificava a pessoa.
         if (!shared) fs.renameSync(dir, neutral);
         else {
             targets.forEach(target => {
@@ -218,8 +221,34 @@ function moveStudentFolderToTrash(memory, student, files, { deletedBy, asName } 
                 } catch (e) { /* segue com os outros: o que não mudou de pasta fica onde estava */ }
             });
         }
-        if (fs.existsSync(neutral)) fileStore.moveDirToTrash(neutral, { deletedBy });
+        if (fs.existsSync(neutral)) {
+            neutralizeFileNames(neutral);
+            fileStore.moveDirToTrash(neutral, { deletedBy });
+        }
     } catch (e) { /* a pasta é só cópia de documento: falha aqui não desfaz o resto */ }
+}
+
+// Renomeia os arquivos da pasta (e das subpastas, que ficam com o nome que têm) para
+// arquivo-1.<ext>, arquivo-2.<ext>... na ordem do nome, mantendo a extensão. Falha num
+// arquivo não para os outros.
+function neutralizeFileNames(dir) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    entries.filter(entry => entry.isDirectory()).forEach(entry => neutralizeFileNames(path.join(dir, entry.name)));
+    const files = entries.filter(entry => entry.isFile()).map(entry => entry.name).sort((a, b) => a.localeCompare(b));
+    const taken = new Set(files.map(name => name.toLowerCase()));
+    let counter = 0;
+    files.forEach(name => {
+        const ext = path.extname(name).replace(/[^A-Za-z0-9.]/g, '').toLowerCase();
+        if (/^arquivo-\d+$/.test(path.basename(name, path.extname(name))) && path.extname(name) === ext) return;
+        let next;
+        do { counter += 1; next = `arquivo-${counter}${ext}`; } while (taken.has(next.toLowerCase()));
+        try {
+            fs.renameSync(path.join(dir, name), path.join(dir, next));
+            taken.delete(name.toLowerCase());
+            taken.add(next.toLowerCase());
+        } catch (e) { /* segue com os outros */ }
+    });
 }
 
 // alunos/<nome> que ainda não existe (o pseudônimo é único; o sufixo é só uma garantia).

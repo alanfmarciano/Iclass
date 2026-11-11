@@ -370,7 +370,9 @@ test('[UC-ENCERRADOS-002] anonimizar manda a pasta de documentos para a lixeira 
     // Restaurar devolve a pasta com o pseudônimo, sem ligação com a Ana.
     const restored = await admin(request(app).post('/api/admin/trash/restore')).send({ id: trash.body[0].id }).expect(200);
     assert.equal(restored.body.restoredTo, `alunos/${res.body.name}`);
-    assert.ok(fs.existsSync(path.join(fileStore.ALUNOS_DIR, res.body.name, 'atestados', '2026-03-03_atestado-medico.pdf')));
+    // Decisões §12 (sobra do H7c): o arquivo ganhou nome neutro (o nome original citava a
+    // pessoa), na mesma subpasta e com a mesma extensão.
+    assert.deepEqual(fs.readdirSync(path.join(fileStore.ALUNOS_DIR, res.body.name, 'atestados')), ['arquivo-1.pdf']);
     assert.ok(!fs.existsSync(path.join(fileStore.ALUNOS_DIR, 'MAT-77881 - Aninha')));
     clearFiles();
 });
@@ -396,7 +398,8 @@ test('[UC-ENCERRADOS-002] anonimizar homônimo sem matrícula leva só os arquiv
     assert.equal(trash.body[0].isDir, true);
     const visible = `${JSON.stringify(trash.body)}\n${trashDiskText()}`;
     assert.ok(!visible.includes(ANA.name), 'sem o nome na lixeira');
-    assert.ok(fs.existsSync(path.join(fileStore.LIXEIRA_DIR, trash.body[0].id, 'atestados', '2026-03-03_da-ana.pdf')));
+    // Decisões §12 (sobra do H7c): o arquivo ganha nome neutro, na mesma subpasta.
+    assert.deepEqual(fs.readdirSync(path.join(fileStore.LIXEIRA_DIR, trash.body[0].id, 'atestados')), ['arquivo-1.pdf']);
     clearFiles();
 });
 
@@ -423,7 +426,8 @@ test('[UC-ENCERRADOS-002] apagar de vez remove o cadastro e deixa a auditoria se
     [ANA.email, ANA.name, ANA.matricula, ANA.phone].forEach(value => assert.ok(!dump.includes(value), `sobrou "${value}"`));
     const entry = db.memory.auditLogs.find(item => item.action === 'student_purged');
     assert.ok(entry);
-    assert.equal(entry.reason, 'Matrícula da aluno feita por engano');
+    // Decisões §12 (sobra do H7c): "da <nome>" vira "de aluno" (antes "da aluno").
+    assert.equal(entry.reason, 'Matrícula de aluno feita por engano');
     assert.ok(!entry.studentEmail);
 });
 
@@ -489,5 +493,80 @@ test('scrubReason tira e-mail, nome e matrícula sem pegar pedaço de palavra', 
     const out = scrubReason('Ana Souza (MAT-1) e ana@x.local; Anabela fica', {
         emails: ['ana@x.local'], names: ['Ana Souza', 'Ana'], matriculas: ['MAT-1'], replacement: 'aluno',
     });
-    assert.equal(out, 'aluno () e aluno; Anabela fica');
+    // Decisões §12 (sobra do H7c): sem o "()" que a matrícula deixava.
+    assert.equal(out, 'aluno e aluno; Anabela fica');
+});
+
+// Decisões §12 (sobras do H7c). Antes: a anonimização apagava o antes/depois de toda
+// alteração de cadastro (até Status e Turmas, que não identificam a pessoa); o motivo
+// ficava "pediu para sair ()" e "da Aluno anonimizado"; e os arquivos na pasta mandada à
+// lixeira mantinham o nome original (atestado-natalia.pdf).
+test('[UC-ENCERRADOS-002] anonimizar mantém o antes/depois de Status, Turmas e matrícula em curso e apaga o dos dados pessoais', async () => {
+    const { recordStudentAudit } = require('../../backend/utils/students.js');
+    recordStudentAudit(db.memory, {
+        actor: 'admin@vida.local',
+        studentEmail: ANA.email,
+        action: 'update',
+        changes: [
+            { field: 'Nome completo', oldValue: 'Ana Souza', newValue: ANA.name },
+            { field: 'Telefone', oldValue: '(11) 90000-0000', newValue: ANA.phone },
+            { field: 'Data de nascimento', oldValue: '', newValue: '2009-05-10' },
+            { field: 'Matrícula', oldValue: '', newValue: ANA.matricula },
+            { field: 'Turmas', oldValue: '', newValue: CLASS },
+            { field: 'Unidade/instituição', oldValue: '', newValue: 'Unidade Norte' },
+        ],
+    });
+    recordStudentAudit(db.memory, {
+        actor: 'admin@vida.local', studentEmail: ANA.email, action: 'enrollment_approved',
+        changes: [{ field: 'Matrícula', oldValue: 'Pendente', newValue: `${COURSE} · ${CLASS}` }],
+    });
+    await desligar({ emails: [ANA.email], status: 'Evadido', reason: `${ANA.name} pediu para sair (${ANA.matricula})` }).expect(200);
+    const res = await anonymize({ email: ANA.email, confirm: 'ANONIMIZAR', reason: `Pedido da ${ANA.name} (${ANA.matricula}) por e-mail` });
+    assert.equal(res.status, 200, res.body.error);
+    const pseudo = res.body.email;
+    const byField = field => db.memory.auditLogs.filter(item => item.studentEmail === pseudo && item.field === field);
+
+    const [status] = byField('Status');
+    assert.deepEqual([status.oldValue, status.newValue], ['Ativo', 'Evadido'], 'a situação fica');
+    assert.deepEqual([byField('Turmas')[0].oldValue, byField('Turmas')[0].newValue], ['', CLASS]);
+    assert.equal(byField('Unidade/instituição')[0].newValue, 'Unidade Norte');
+    const enrollment = byField('Matrícula').find(item => item.action === 'enrollment_approved');
+    assert.deepEqual([enrollment.oldValue, enrollment.newValue], ['Pendente', `${COURSE} · ${CLASS}`], 'a matrícula em curso e turma fica');
+    const number = byField('Matrícula').find(item => item.action === 'update');
+    assert.deepEqual([number.oldValue, number.newValue], ['', ''], 'o número de matrícula sai');
+    ['Nome completo', 'Telefone', 'Data de nascimento'].forEach(field => {
+        const [entry] = byField(field);
+        assert.deepEqual([entry.oldValue, entry.newValue], ['', ''], `${field} sai`);
+    });
+
+    // Motivos sem parênteses vazios e sem "da <pseudônimo>".
+    assert.equal(status.reason, `${res.body.name} pediu para sair`);
+    const anonymized = db.memory.auditLogs.find(item => item.action === 'student_anonymized');
+    assert.equal(anonymized.reason, `Pedido de ${res.body.name} por e-mail`);
+    const dump = JSON.stringify(db.memory.auditLogs);
+    [ANA.name, ANA.matricula, ANA.phone, '2009-05-10', '()'].forEach(value => assert.ok(!dump.includes(value), `sobrou "${value}" na auditoria`));
+});
+
+test('[UC-ENCERRADOS-002] anonimizar dá nome neutro aos arquivos da pasta mandada à lixeira, com a extensão e a subpasta', async () => {
+    clearFiles();
+    const ana = findStudent(ANA.email);
+    const folder = path.join(fileStore.ALUNOS_DIR, fileStore.studentFolderName(ana));
+    fs.mkdirSync(path.join(folder, 'atestados'), { recursive: true });
+    fs.writeFileSync(path.join(folder, 'atestados', '2026-03-03_atestado-ana-souza.pdf'), 'pdf');
+    fs.writeFileSync(path.join(folder, 'atestados', 'foto da Ana.JPG'), 'jpg');
+    fs.writeFileSync(path.join(folder, 'ficha-ana.docx'), 'docx');
+    fs.writeFileSync(path.join(folder, 'LEIA'), 'sem extensão');
+    await desligar({ emails: [ANA.email], status: 'Inativo' }).expect(200);
+    const res = await anonymize({ email: ANA.email, confirm: 'ANONIMIZAR', reason: 'Pedido da família' }).expect(200);
+
+    const trash = await admin(request(app).get('/api/admin/trash')).expect(200);
+    assert.equal(trash.body.length, 1);
+    assert.equal(trash.body[0].name, res.body.name);
+    const root = path.join(fileStore.LIXEIRA_DIR, trash.body[0].id);
+    assert.deepEqual(fs.readdirSync(root).sort(), ['arquivo-1.docx', 'arquivo-2', 'atestados']);
+    assert.deepEqual(fs.readdirSync(path.join(root, 'atestados')).sort(), ['arquivo-1.pdf', 'arquivo-2.jpg']);
+    assert.equal(fs.readFileSync(path.join(root, 'atestados', 'arquivo-1.pdf'), 'utf8'), 'pdf', 'o conteúdo é o mesmo');
+    const visible = `${JSON.stringify(trash.body)}\n${trashDiskText()}\n${fs.readdirSync(root, { recursive: true }).join('\n')}`;
+    ['ana', 'Ana', 'atestado-', 'foto', 'ficha', 'LEIA'].forEach(value => assert.ok(!visible.includes(value), `sobrou "${value}" nos nomes`));
+    clearFiles();
 });

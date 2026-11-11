@@ -1633,7 +1633,8 @@ test('[UC-NOTAS-004] excluir o aluno não tira nome e matrícula de identificado
         ['Avaliacao_Ana', 'app_2026', '2026-03-01T10:00:00.000Z', '2026-03-02', 'sub_2026_Ana', 'att_Ana_2026', '2026-03-01T09:00:00.000Z'],
     );
     assert.equal(/\d{4}-\d{2}-\d{2}T/.test(entry.anonymizedAt), true, 'anonymizedAt fica uma data inteira');
-    assert.equal(entry.details.reason, 'Aluno excluído (matrícula ) pediu revisão', 'o texto livre perde nome e matrícula');
+    // Decisões §12 (sobra do H7c): sem o espaço que a matrícula deixava antes do parêntese.
+    assert.equal(entry.details.reason, 'Aluno excluído (matrícula) pediu revisão', 'o texto livre perde nome e matrícula');
     assert.equal(entry.studentEmail, '');
 });
 

@@ -826,6 +826,28 @@ function isIdentifierOrDateKey(key) {
     return IDENTIFIER_OR_DATE_KEY.test(String(key || ''));
 }
 
+// Texto do qual saiu o nome, o e-mail ou a matrícula (decisões §12, sobra do H7c): sem
+// parênteses ou colchetes vazios ("pediu para sair ()"), sem espaço sobrando, e a
+// preposição contraída antes do pseudônimo ("da Ana" virou "da Aluno anonimizado") passa a
+// "de", "em" ou "por" ("de Aluno anonimizado 1A2B3C"), que serve a qualquer pseudônimo.
+const CONTRACTION_TARGET = { da: 'de', do: 'de', das: 'de', dos: 'de', na: 'em', no: 'em', nas: 'em', nos: 'em', pela: 'por', pelo: 'por', pelas: 'por', pelos: 'por' };
+function tidyScrubbedText(text, replacements = []) {
+    let out = String(text);
+    replacements.map(item => String(item || '').trim()).filter(Boolean).forEach(replacement => {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}])(da|do|das|dos|na|no|nas|nos|pela|pelo|pelas|pelos)\\s+(?=${escapeRegExp(replacement)})`, 'giu'), (match, before, word) => {
+            const target = CONTRACTION_TARGET[word.toLowerCase()];
+            const cased = word[0] === word[0].toUpperCase() ? target[0].toUpperCase() + target.slice(1) : target;
+            return `${before}${cased} `;
+        });
+    });
+    return out
+        .replace(/\(\s*\)|\[\s*\]/g, '')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/[ \t]+([,.;:!?)\]])/g, '$1')
+        .replace(/([(\[])[ \t]+/g, '$1')
+        .trim();
+}
+
 function scrubPersonalText(value, identity, key, owned) {
     if (typeof value === 'string') {
         const trimmed = value.trim();
@@ -843,7 +865,7 @@ function scrubPersonalText(value, identity, key, owned) {
         identity.matriculas.forEach(matricula => {
             text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(matricula)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), '$1');
         });
-        return text;
+        return text === value ? text : tidyScrubbedText(text, [identity.replacementName || ANONYMIZED_STUDENT_NAME]);
     }
     if (Array.isArray(value)) return value.map(item => scrubPersonalText(item, identity, key, owned));
     if (value && typeof value === 'object') {
@@ -864,6 +886,17 @@ function scrubPersonalText(value, identity, key, owned) {
 // pseudônimo) entram no lugar do e-mail e do nome, e as entradas do aluno ficam com
 // studentEmail = pseudônimo (a ficha do cadastro anonimizado mostra a trilha dele). As
 // cópias das notas na lixeira continuam anonimizadas e não restauráveis.
+// Campos do cadastro (rótulos de students.js AUDITABLE_FIELDS e das rotas) cujo valor não
+// identifica a pessoa. Lista do que fica: campo novo que não estiver aqui tem o valor
+// apagado na anonimização. "Matrícula" é o número (dado pessoal) na edição do cadastro e
+// o curso e turma na aprovação/recusa da matrícula (enrollment_*).
+const NON_PERSONAL_PROFILE_FIELDS = new Set(['Status', 'Turmas', 'Unidade/instituição', 'Cadastro', 'Observação pedagógica', 'Preferências de acessibilidade']);
+function keepsProfileValues(entry) {
+    const field = String(entry.field || '');
+    if (NON_PERSONAL_PROFILE_FIELDS.has(field)) return true;
+    return field === 'Matrícula' && /^enrollment_/.test(String(entry.action || ''));
+}
+
 function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toISOString() } = {}) {
     if (!memory || !Array.isArray(memory.auditLogs)) return 0;
     const emails = [...new Set((identity.emails || []).map(normalizeEmailValue).filter(Boolean))];
@@ -907,9 +940,12 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
         if (copy && typeof copy === 'object' && copy.anonymized !== true && aboutStudent) {
             next.details = { ...next.details, deletedSubmission: anonymizeDeletedCopy(copy, at, { email: replacementEmail, name: replacementName }) };
         }
-        // Alteração do cadastro (recordStudentAudit): o valor é o próprio dado pessoal.
+        // Alteração do cadastro (recordStudentAudit): o valor de nome, e-mail, telefone,
+        // matrícula (o número), nascimento e afins é o próprio dado pessoal e sai. Os de
+        // situação, turma, curso e matrícula em curso ficam (decisões §12, sobra do H7c);
+        // o nome ou e-mail citado dentro deles sai no scrub abaixo.
         const profileChange = aboutStudent && !next.type && next.category !== 'grade' && !String(next.action || '').startsWith('grade_') && 'field' in next;
-        if (profileChange) { next.oldValue = ''; next.newValue = ''; }
+        if (profileChange && !keepsProfileValues(next)) { next.oldValue = ''; next.newValue = ''; }
         const scrubIdentity = {
             emails: new Set(entryEmails),
             emailPatterns: entryEmails.map(email => patterns.get(email)),
@@ -1131,6 +1167,7 @@ function buildApplicationAuditTrail(application, auditLogs = [], { students = []
 }
 
 module.exports = {
+    tidyScrubbedText,
     ANONYMIZED_STUDENT_NAME,
     CSV_BOM,
     GRADE_MAX,
