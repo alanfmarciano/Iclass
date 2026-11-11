@@ -22,6 +22,7 @@ import { fmtGrade, gradeOf } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { acceptanceText, birthDateText, isMinorBirthDate, todayIso } from '../../lib/legalAcceptance'
 
 const STATUS_OPTIONS = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido']
 const STATUS_TONE = {
@@ -50,7 +51,7 @@ function displayName(s) {
 
 function emptyForm() {
   return {
-    name: '', nomeSocial: '', email: '', matricula: '', phone: '', status: 'Ativo',
+    name: '', nomeSocial: '', email: '', matricula: '', phone: '', status: 'Ativo', birthDate: '',
     studentPassword: '', requirePasswordChange: true, unidade: '', courseId: '', classes: [],
     guardian: { name: '', phone: '', email: '', parentesco: '', observacao: '' },
     accessibility: { fonteAmpliada: false, altoContraste: false, reducaoAnimacoes: false, leitorTela: false, tempoAdicional: false, tempoAdicionalPercent: 0, observacao: '' },
@@ -119,7 +120,7 @@ export default function AlunosPage() {
   function payloadFrom(v, isEdit) {
     const base = {
       name: v.name, nomeSocial: v.nomeSocial, email: v.email, matricula: v.matricula,
-      phone: v.phone, guardianPhone: v.guardian?.phone || '', status: v.status,
+      phone: v.phone, guardianPhone: v.guardian?.phone || '', status: v.status, birthDate: v.birthDate || '',
       unidade: v.unidade, classes: v.classes, studentClass: v.classes[0], guardian: v.guardian, accessibility: v.accessibility,
     }
     // A senha não vai na edição (H5a): troca de senha só pelo "Redefinir senha".
@@ -402,8 +403,9 @@ export default function AlunosPage() {
             <Section title="Segurança e privacidade">
               <Row label="Último login" value={profile.lastLoginAt ? new Date(profile.lastLoginAt).toLocaleString('pt-BR') : ''} />
               <Row label="Último acesso" value={profile.lastSeenAt ? new Date(profile.lastSeenAt).toLocaleString('pt-BR') : ''} />
-              <Row label="Aceite dos Termos" value={profile.termsAcceptance ? `v${profile.termsAcceptance.version} · ${new Date(profile.termsAcceptance.at).toLocaleDateString('pt-BR')}` : 'pendente'} />
-              <Row label="Política de Privacidade" value={profile.privacyAcceptance ? `v${profile.privacyAcceptance.version} · ${new Date(profile.privacyAcceptance.at).toLocaleDateString('pt-BR')}` : 'pendente'} />
+              <Row label="Data de nascimento" value={birthDateText(profile.birthDate) || 'Não informada'} />
+              <Row label="Aceite dos Termos" value={acceptanceText(profile.termsAcceptance)} />
+              <Row label="Política de Privacidade" value={acceptanceText(profile.privacyAcceptance)} />
             </Section>
             )}
 
@@ -541,12 +543,12 @@ export default function AlunosPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="rounded-md border border-border p-3">
               <p className="text-xs text-subtle">Aceite dos Termos</p>
-              {security?.termsAcceptance ? <p className="text-text">v{security.termsAcceptance.version} · {new Date(security.termsAcceptance.at).toLocaleDateString('pt-BR')}</p> : <Badge tone="warning">pendente</Badge>}
+              <p className="text-text">{acceptanceText(security?.termsAcceptance)}</p>
               {security?.termsAcceptance?.ip && <p className="text-xs text-subtle mt-1">IP: {security.termsAcceptance.ip}</p>}
             </div>
             <div className="rounded-md border border-border p-3">
               <p className="text-xs text-subtle">Política de Privacidade</p>
-              {security?.privacyAcceptance ? <p className="text-text">v{security.privacyAcceptance.version} · {new Date(security.privacyAcceptance.at).toLocaleDateString('pt-BR')}</p> : <Badge tone="warning">pendente</Badge>}
+              <p className="text-text">{acceptanceText(security?.privacyAcceptance)}</p>
             </div>
           </div>
           <div>
@@ -626,6 +628,10 @@ export function StudentFormTabs({ value, onChange, classes, courses, schools, on
               {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
             </Select>
           </div>
+          {/* Data de nascimento (H8a-2, SEG-09): opcional aqui; o primeiro acesso do aluno
+              pede a quem não tem, e para menor de 18 anos o responsável também. */}
+          <Input label="Data de nascimento (opcional)" type="date" min="1900-01-01" max={todayIso()} value={value.birthDate || ''} onChange={(e) => set({ birthDate: e.target.value })}
+            helper={isMinorBirthDate(value.birthDate) ? 'Menor de 18 anos: preencha o responsável na aba Responsável.' : 'Se ficar em branco, o aluno informa no primeiro acesso ao portal.'} />
           {passwordField && (
             <div className="space-y-2">
               <Input label={passwordLabel} type="password" autoComplete="new-password" value={value[passwordField] || ''} onChange={(e) => set({ [passwordField]: e.target.value })}

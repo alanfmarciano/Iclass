@@ -12,8 +12,17 @@ import { useBranding } from '../context/BrandingProvider'
 import { InsecureConnectionNotice } from '../components/ui/InsecureConnectionNotice'
 import { adminAccessRefusalText, LOCAL_ONLY_TEXT } from '../lib/adminAccess'
 import { useConnectionInfo } from '../hooks/useConnectionInfo'
+import { DOCUMENTS_CHANGED_MESSAGE, MINOR_GUARDIAN_MESSAGE, guardianComplete, isMinorBirthDate, todayIso } from '../lib/legalAcceptance'
 
 const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }
+// Links dos Termos e da Política (H8a-2): abrem em nova aba, com o curso escolhido no
+// cadastro (os marcadores do texto usam os dados da escola dele).
+function legalHref(path, courseId) {
+  return courseId ? `${path}?courseId=${encodeURIComponent(courseId)}` : path
+}
+function LegalLink({ path, courseId, children }) {
+  return <a href={legalHref(path, courseId)} target="_blank" rel="noopener noreferrer" className="font-medium text-text underline">{children}</a>
+}
 const LOCAL_QUICK_KEY = 'iclass-local-quick-token'
 export const RECOVER_SENT_TEXT = 'Pedido enviado. Avise o professor: ele vai gerar uma senha temporária para você. No próximo acesso, entre com ela e escolha uma senha nova.'
 export default function LoginPage() {
@@ -33,6 +42,13 @@ export default function LoginPage() {
   const [guardian, setGuardian] = useState(emptyGuardian)
   const [showGuardian, setShowGuardian] = useState(false)
   const [acceptedTerms, setAcceptedTerms] = useState(false)
+  // Data de nascimento (H8a-2, SEG-09): obrigatória no autocadastro; para menor de 18
+  // anos, o responsável também.
+  const [birthDate, setBirthDate] = useState('')
+  // Documentos que a tela mostra no aceite (GET /api/legal/documents): os ids vão no
+  // cadastro, e o servidor responde 409 se a escola publicou outra versão no meio.
+  const [legalDocs, setLegalDocs] = useState(null)
+  const [legalDocsAttempt, setLegalDocsAttempt] = useState(0)
   const [courseValue, setCourseValue] = useState('')
   const [classValue, setClassValue] = useState('')
   const [classes, setClasses] = useState([])
@@ -114,6 +130,21 @@ export default function LoginPage() {
     } catch {}
   }, [])
 
+  const registering = mode === 'student' && studentAction === 'register'
+  useEffect(() => {
+    if (!registering) return undefined
+    let active = true
+    const query = courseValue ? `?courseId=${encodeURIComponent(courseValue)}` : ''
+    api.get(`/api/legal/documents${query}`, { auth: false })
+      .then((data) => { if (active) setLegalDocs(data) })
+      .catch(() => { if (active) setLegalDocs(null) })
+    return () => { active = false }
+  }, [registering, courseValue, legalDocsAttempt])
+
+  // Menor de 18 anos: a seção do responsável abre sozinha e passa a ser obrigatória.
+  const minorRegistration = registering && isMinorBirthDate(birthDate)
+  useEffect(() => { if (minorRegistration) setShowGuardian(true) }, [minorRegistration])
+
   useEffect(() => {
     api.get('/api/classes', { auth: false }).then((r) => setClasses(Array.isArray(r) ? r : (r.classes || []))).catch(() => setClasses([]))
   }, [])
@@ -138,15 +169,30 @@ export default function LoginPage() {
         try { await loginAdmin(email, password) } catch (err) { noteRefusal(err); throw err }
         nav('/')
       } else if (studentAction === 'register') {
+        if (!birthDate) { toast.error('Informe a data de nascimento.'); setLoading(false); return }
+        if (minorRegistration && !guardianComplete(guardian)) { setShowGuardian(true); toast.error(MINOR_GUARDIAN_MESSAGE); setLoading(false); return }
         if (!acceptedTerms) { toast.error('Aceite os Termos de Uso e a Política de Privacidade'); setLoading(false); return }
         const courseId = courseValue
         const studentClass = classValue
         const hasGuardian = guardian.name || guardian.phone || guardian.email || guardian.parentesco
-        await api.post('/api/student/register', {
-          name, nomeSocial, email, password, phone, courseId, studentClass,
-          guardian: hasGuardian ? guardian : undefined,
-          acceptedTerms,
-        }, { auth: false })
+        try {
+          await api.post('/api/student/register', {
+            name, nomeSocial, email, password, phone, courseId, studentClass, birthDate,
+            guardian: hasGuardian ? guardian : undefined,
+            acceptedTerms,
+            termsDocumentId: legalDocs?.terms?.documentId || undefined,
+            privacyDocumentId: legalDocs?.privacy?.documentId || undefined,
+          }, { auth: false })
+        } catch (err) {
+          // A escola publicou outra versão enquanto a tela estava aberta: busca a nova e
+          // pede o aceite de novo.
+          if (err?.status === 409 && err?.data?.code === 'documents_changed') {
+            setAcceptedTerms(false)
+            setLegalDocsAttempt((value) => value + 1)
+            throw Object.assign(new Error(err.data.error || DOCUMENTS_CHANGED_MESSAGE), { status: 409 })
+          }
+          throw err
+        }
         await loginStudent(email, password)
         toast.success('Solicitação de matrícula enviada')
         nav('/aluno')
@@ -344,14 +390,18 @@ export default function LoginPage() {
               </div>
             )}
             {isRegister && (
+              <Input id="lbd" label="Data de nascimento" type="date" min="1900-01-01" max={todayIso()} value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required
+                helper={minorRegistration ? 'Menor de 18 anos: informe também o responsável, logo abaixo.' : undefined} />
+            )}
+            {isRegister && (
               <div className="rounded-xl border border-border bg-surface-2/30">
                 <button type="button" onClick={() => setShowGuardian((v) => !v)} className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium text-text">
-                  <span>Responsável (opcional)</span>
+                  <span>{minorRegistration ? 'Responsável (obrigatório para menores de 18 anos)' : 'Responsável (opcional)'}</span>
                   <ChevronDown size={16} className={`transition-transform ${showGuardian ? 'rotate-180' : ''}`} />
                 </button>
                 {showGuardian && (
                   <div className="p-3 pt-0 space-y-3">
-                    <p className="text-xs text-subtle">Preencha se você for menor de idade ou a instituição exigir.</p>
+                    <p className="text-xs text-subtle">{minorRegistration ? MINOR_GUARDIAN_MESSAGE : 'Preencha se você for menor de idade ou a instituição exigir.'}</p>
                     <Input id="lgn" label="Nome do responsável" value={guardian.name} onChange={(e) => setG({ name: e.target.value })} />
                     <Input id="lgp" label="Telefone do responsável" value={guardian.phone} onChange={(e) => setG({ phone: e.target.value })} placeholder="(11) 90000-0000" />
                     <Input id="lge" label="E-mail do responsável" type="email" value={guardian.email} onChange={(e) => setG({ email: e.target.value })} />
@@ -363,7 +413,7 @@ export default function LoginPage() {
             {isRegister && (
               <label className="flex items-start gap-2 text-xs text-muted">
                 <input type="checkbox" checked={acceptedTerms} onChange={(e) => setAcceptedTerms(e.target.checked)} required className="mt-0.5" />
-                <span>Li e aceito os <span className="text-text font-medium">Termos de Uso</span> e a <span className="text-text font-medium">Política de Privacidade</span>.</span>
+                <span>Li e aceito os <LegalLink path="/termos" courseId={courseValue}>Termos de Uso</LegalLink> e li a <LegalLink path="/privacidade" courseId={courseValue}>Política de Privacidade</LegalLink>.</span>
               </label>
             )}
             {delayNotice && delayNotice.mode === mode && (mode === 'admin' || studentAction === 'login') && (
@@ -377,6 +427,11 @@ export default function LoginPage() {
             )}
         </div>
           <p className="mt-5 flex items-center justify-center gap-2 text-center text-xs text-subtle"><ShieldCheck size={13} /> Ambiente protegido · acesso pela rede da instituição</p>
+          <p className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-center text-xs text-muted" data-testid="login-legal-links">
+            <LegalLink path="/termos" courseId={isRegister ? courseValue : ''}>Termos de Uso</LegalLink>
+            <span aria-hidden="true">·</span>
+            <LegalLink path="/privacidade" courseId={isRegister ? courseValue : ''}>Política de Privacidade</LegalLink>
+          </p>
         </section>
       </main>
     </div>

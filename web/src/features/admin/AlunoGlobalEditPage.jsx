@@ -27,7 +27,7 @@ function displayName(s) { return (s.nomeSocial && s.nomeSocial.trim()) || s.name
 function initials(n) { return (n || '?').split(' ').map((x) => x[0]).slice(0, 2).join('').toUpperCase() }
 function emptyForm() {
   return {
-    name: '', nomeSocial: '', email: '', matricula: '', phone: '', status: 'Ativo',
+    name: '', nomeSocial: '', email: '', matricula: '', phone: '', status: 'Ativo', birthDate: '',
     studentPassword: '', requirePasswordChange: true, unidade: '', courseId: '', classes: [],
     guardian: { name: '', phone: '', email: '', parentesco: '', observacao: '' },
     accessibility: { fonteAmpliada: false, altoContraste: false, reducaoAnimacoes: false, leitorTela: false, tempoAdicional: false, tempoAdicionalPercent: 0, observacao: '' },
@@ -74,7 +74,7 @@ export default function AlunoGlobalEditPage() {
   function payload(v, isEdit) {
     const base = {
       name: v.name, nomeSocial: v.nomeSocial, email: v.email, matricula: v.matricula,
-      phone: v.phone, guardianPhone: v.guardian?.phone || '', status: v.status,
+      phone: v.phone, guardianPhone: v.guardian?.phone || '', status: v.status, birthDate: v.birthDate || '',
       unidade: v.unidade, classes: v.classes, studentClass: v.classes[0], guardian: v.guardian, accessibility: v.accessibility,
     }
     // A senha não vai na edição (H5a): troca de senha só pelo "Redefinir senha".

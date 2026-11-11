@@ -18,6 +18,7 @@ import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf } from '../../lib/grades'
+import { acceptanceText, birthDateText } from '../../lib/legalAcceptance'
 import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
@@ -246,6 +247,7 @@ export default function AlunoDetailPage() {
                     <div className="space-y-2 text-sm">
                       <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Telefone</span><span className="text-text">{student.phone || '—'}</span></div>
                       <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Unidade</span><span className="text-text">{student.unidade || '—'}</span></div>
+                      <div className="flex justify-between gap-3 border-b border-border/50 pb-2"><span className="text-muted">Nascimento</span><span className="text-right text-text">{birthDateText(student.birthDate) || 'Não informado'}</span></div>
                       <div className="flex justify-between"><span className="text-muted">Responsável</span><span className="text-text">{student.guardian?.name ? `${student.guardian.name}${student.guardian.parentesco ? ' (' + student.guardian.parentesco + ')' : ''}` : '—'}</span></div>
                     </div>
                   </Card>
@@ -315,8 +317,8 @@ export default function AlunoDetailPage() {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Último login</span><span className="text-text">{fmtDateTime(student.lastLoginAt)}</span></div>
                   <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Último acesso</span><span className="text-text">{fmtDateTime(student.lastSeenAt)}</span></div>
-                  <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Aceite dos Termos</span><span className="text-text">{student.termsAcceptance ? `v${student.termsAcceptance.version} · ${fmtDate(student.termsAcceptance.at)}` : 'pendente'}</span></div>
-                  <div className="flex justify-between"><span className="text-muted">Política de Privacidade</span><span className="text-text">{student.privacyAcceptance ? `v${student.privacyAcceptance.version} · ${fmtDate(student.privacyAcceptance.at)}` : 'pendente'}</span></div>
+                  <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Aceite dos Termos</span><span className="text-text">{acceptanceText(student.termsAcceptance)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted">Política de Privacidade</span><span className="text-text">{acceptanceText(student.privacyAcceptance)}</span></div>
                 </div>
               </Card>
             )}

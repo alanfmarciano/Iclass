@@ -35,8 +35,21 @@ A página e as rotas `/api/admin/lgpd/*` são só do administrador (`students.se
 
 O backup leva os documentos. A restauração junta pelo id: o que foi publicado depois do backup continua, e o backup de uma versão anterior do IClass (sem os documentos) não apaga nada.
 
+## UC-LGPD-006 — Cadastrar-se com a data de nascimento e o aceite do documento
+
+- Estado: automatizado
+- Testes: `lgpd-primeiro-acesso.test.js`, `LoginPage.test.jsx`
+
+O autocadastro pede a data de nascimento e, para menor de 18 anos, o nome e um telefone ou e-mail do responsável. O aceite guarda o id exato do documento que a tela mostrou (o modelo, antes da publicação). Se a escola publicou outra versão com a tela aberta, o cadastro é recusado e a tela pede o aceite da versão nova. O login tem os links dos Termos e da Política.
+
+## UC-LGPD-007 — Completar o primeiro acesso no portal
+
+- Estado: automatizado
+- Testes: `lgpd-primeiro-acesso.test.js`, `StudentPrivacyGate.test.jsx`, `legalAcceptance.test.js`, `PrivacidadePage.test.jsx`, `lazyPage.test.jsx`
+
+No portal, o aluno vê "Antes de continuar" só com o que falta: a data de nascimento, o responsável do menor e, depois da publicação, o aceite da versão publicada. O login não é bloqueado (política "ciência"), a prova não passa por essa tela e, em demonstração, ela não aparece. Uma publicação nova pede aceite novo; o anterior fica no histórico. O professor informa a data no cadastro; a ficha mostra a idade e o texto do aceite; a página Privacidade conta os pendentes.
+
 ## O que vem depois
 
-- Aceite com o id do documento no cadastro e no primeiro acesso (portão), data de nascimento e responsável do menor, links no login: H8a-2.
 - Prazos de retenção e modo do teclado na prova: H8b. Os marcadores `{{prazo_monitoramento}}` e `{{prazo_acessos}}` passam a mostrar os prazos quando eles existirem.
 - "Meus dados" e exportação do administrador: H8c.

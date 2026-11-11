@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -277,5 +277,106 @@ describe('[UC-AUTH-003] motivo da sessão encerrada no login', () => {
     await waitFor(() => expect(sessionStorage.getItem('iclass-logout-reason')).toBeNull())
     expect(mocks.toast.info).not.toHaveBeenCalled()
     expect(mocks.toast.error).not.toHaveBeenCalled()
+  })
+})
+
+// Fase 2, H8a-2 (SEG-08, SEG-09): o login mostra os links dos Termos e da Política, e o
+// cadastro pede a data de nascimento, o responsável do menor e manda o id dos documentos.
+describe('[UC-LGPD-006] cadastro com data de nascimento, responsável e aceite do documento', () => {
+  const LEGAL = {
+    terms: { documentId: 'termos_v2', version: 2 },
+    privacy: { documentId: 'privacidade_v1', version: 1 },
+  }
+  function mockRegisterApis() {
+    mocks.get.mockImplementation(async (path) => {
+      if (path === '/api/connection') return mocks.connection
+      if (path === '/api/test-mode') return { enabled: false }
+      if (path === '/api/classes') return [{ courseId: 'c1', courseName: 'Informática', name: 'Turma A' }]
+      if (path.startsWith('/api/legal/documents')) return LEGAL
+      return []
+    })
+  }
+  async function fillRegister(user, birthDate) {
+    await user.click(screen.getByRole('button', { name: 'Cadastro' }))
+    await user.type(screen.getByLabelText('Nome completo'), 'Ana Souza')
+    await user.type(screen.getByLabelText('E-mail'), 'ana@escola.local')
+    await user.type(screen.getByLabelText('Senha'), 'Ponte-Velha-48')
+    await user.selectOptions(await screen.findByLabelText('Curso'), 'c1')
+    await user.selectOptions(screen.getByLabelText('Turma'), 'Turma A')
+    fireEvent.change(screen.getByLabelText('Data de nascimento'), { target: { value: birthDate } })
+  }
+
+  it('o rodapé do login tem os links dos Termos e da Política, em outra aba', () => {
+    renderLogin()
+    const links = within(screen.getByTestId('login-legal-links')).getAllByRole('link')
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/termos', '/privacidade'])
+    for (const link of links) expect(link).toHaveAttribute('target', '_blank')
+  })
+
+  it('adulto: manda a data e o id dos documentos lidos; os links do aceite levam a escola do curso', async () => {
+    mockRegisterApis()
+    mocks.post.mockResolvedValue({ success: true })
+    const user = userEvent.setup()
+    const { container } = renderLogin()
+    await fillRegister(user, '2000-03-15')
+    expect(screen.getByText('Responsável (opcional)')).toBeInTheDocument()
+    const acceptLabel = screen.getByText(/Li e aceito os/)
+    expect(within(acceptLabel).getByRole('link', { name: 'Termos de Uso' })).toHaveAttribute('href', '/termos?courseId=c1')
+    await user.click(screen.getByRole('checkbox'))
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/legal/documents?courseId=c1', { auth: false }))
+    fireEvent.submit(container.querySelector('form'))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalled())
+    const [path, body] = mocks.post.mock.calls[0]
+    expect(path).toBe('/api/student/register')
+    expect(body).toMatchObject({ birthDate: '2000-03-15', acceptedTerms: true, termsDocumentId: 'termos_v2', privacyDocumentId: 'privacidade_v1', courseId: 'c1' })
+    expect(body.guardian).toBeUndefined()
+  })
+
+  it('sem a data de nascimento, o cadastro não é enviado', async () => {
+    mockRegisterApis()
+    const user = userEvent.setup()
+    const { container } = renderLogin()
+    await fillRegister(user, '')
+    await user.click(screen.getByRole('checkbox'))
+    fireEvent.submit(container.querySelector('form'))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Informe a data de nascimento.'))
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('menor de 18 anos: a seção do responsável abre, é obrigatória e vai no cadastro', async () => {
+    mockRegisterApis()
+    mocks.post.mockResolvedValue({ success: true })
+    const user = userEvent.setup()
+    const { container } = renderLogin()
+    const year = new Date().getFullYear() - 15
+    await fillRegister(user, `${year}-01-10`)
+    expect(screen.getByText('Responsável (obrigatório para menores de 18 anos)')).toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox'))
+    fireEvent.submit(container.querySelector('form'))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Para menores de 18 anos, informe o nome e um telefone ou e-mail do responsável.'))
+    expect(mocks.post).not.toHaveBeenCalled()
+    await user.type(screen.getByLabelText('Nome do responsável'), 'Maria Souza')
+    await user.type(screen.getByLabelText('Telefone do responsável'), '11 98888-7777')
+    fireEvent.submit(container.querySelector('form'))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalled())
+    expect(mocks.post.mock.calls[0][1].guardian).toMatchObject({ name: 'Maria Souza', phone: '11 98888-7777' })
+  })
+
+  it('documento trocado com a tela aberta (409): desmarca o aceite e busca a versão nova', async () => {
+    mockRegisterApis()
+    mocks.post.mockRejectedValue(Object.assign(new Error('Os documentos foram atualizados. Leia a nova versão e marque o aceite de novo.'), {
+      status: 409, data: { code: 'documents_changed', error: 'Os documentos foram atualizados. Leia a nova versão e marque o aceite de novo.' },
+    }))
+    const user = userEvent.setup()
+    const { container } = renderLogin()
+    await fillRegister(user, '2000-03-15')
+    await user.click(screen.getByRole('checkbox'))
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/legal/documents?courseId=c1', { auth: false }))
+    const before = mocks.get.mock.calls.filter(([path]) => path.startsWith('/api/legal/documents')).length
+    fireEvent.submit(container.querySelector('form'))
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Os documentos foram atualizados. Leia a nova versão e marque o aceite de novo.'))
+    expect(screen.getByRole('checkbox')).not.toBeChecked()
+    await waitFor(() => expect(mocks.get.mock.calls.filter(([path]) => path.startsWith('/api/legal/documents')).length).toBe(before + 1))
+    expect(mocks.loginStudent).not.toHaveBeenCalled()
   })
 })

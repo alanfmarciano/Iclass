@@ -308,7 +308,7 @@ test('[UC-AUTH-001] cadastro, contas e senhas pelo painel gravam scrypt$ sem cry
     const admin = { 'x-admin-session': token };
     await withoutSyncScrypt(async () => {
         const reg = await request(app).post('/api/student/register').send({
-            name: 'Bia Nova', email: 'bia@senhas.local', password: 'senha-bia', courseId: 'DES', studentClass: '1DES', acceptedTerms: true,
+            name: 'Bia Nova', email: 'bia@senhas.local', password: 'senha-bia', courseId: 'DES', studentClass: '1DES', acceptedTerms: true, birthDate: '2000-01-01',
         });
         assert.ok(reg.status < 300, `cadastro: ${reg.status} ${reg.body && reg.body.error}`);
         const created = await request(app).post('/api/admin/accounts/create').set(admin).send({

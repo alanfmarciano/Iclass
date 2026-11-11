@@ -274,7 +274,7 @@ test('[UC-SIGILO-001] data.js do aluno: só apostilas liberadas do próprio curs
 test('[UC-SIGILO-001] conta autocadastrada pendente e aluno de outra turma não veem nada da prova (SEG-02)', async () => {
     const application = await prepareApplication();
     await request(app).post('/api/student/register').send({
-        name: 'Intruso', email: 'intruso@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true,
+        name: 'Intruso', email: 'intruso@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true, birthDate: '2000-01-01',
     }).expect(200);
     const intruder = await loginStudent('intruso@sigilo.local', 'Sigilo-Prova-77');
     const outsider = await loginStudent('bia@sigilo.local');
@@ -312,7 +312,7 @@ test('[UC-SIGILO-001] conta autocadastrada pendente e aluno de outra turma não 
 
 test('[UC-SIGILO-001] conta pendente não valida token de prova, nem com turma inexistente ou sem turma', async () => {
     await request(app).post('/api/student/register').send({
-        name: 'Pendente', email: 'pendente@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true,
+        name: 'Pendente', email: 'pendente@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true, birthDate: '2000-01-01',
     }).expect(200);
     const pending = await loginStudent('pendente@sigilo.local', 'Sigilo-Prova-77');
     const application = await prepareApplication({ tokenEnabled: true });
@@ -510,7 +510,7 @@ test('[UC-SIGILO-001] mensagens da prova só para aluno da turma, sem os e-mails
     db.memory.broadcastMessages.find(m => m.id === toClass.id).acknowledgedBy = ['colega@sigilo.local'];
 
     await request(app).post('/api/student/register').send({
-        name: 'Intruso', email: 'intruso@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true,
+        name: 'Intruso', email: 'intruso@sigilo.local', password: 'Sigilo-Prova-77', studentClass: classA, courseId: courseA, acceptedTerms: true, birthDate: '2000-01-01',
     }).expect(200);
     const intruder = await loginStudent('intruso@sigilo.local', 'Sigilo-Prova-77');
     const outsider = await loginStudent('bia@sigilo.local');

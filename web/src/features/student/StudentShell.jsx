@@ -7,6 +7,7 @@ import { cn } from '../../lib/cn'
 import { api } from '../../lib/api'
 import { StudentCourseGate } from './StudentCourseGate'
 import { StudentPasswordChangeGate } from './StudentPasswordChangeGate'
+import { StudentPrivacyGate } from './StudentPrivacyGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
@@ -102,7 +103,7 @@ export function StudentShell() {
           onLogout={() => { logout(); nav('/login') }}
           notifications={notifications}
         >
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentPrivacyGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPrivacyGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
         </LumenShell>
         {examAvailability}
       </>
@@ -162,7 +163,7 @@ export function StudentShell() {
           {notifications}
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentPrivacyGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPrivacyGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
         </main>
       </div>
       {examAvailability}

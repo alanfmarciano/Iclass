@@ -1379,6 +1379,8 @@ router.post('/api/admin/student/create', (req, res) => {
             matricula: fields.matricula || '',
             phone: fields.phone || '',
             guardianPhone: fields.guardianPhone || '',
+            // Opcional pelo professor (H8a-2); o portão do primeiro acesso pede a quem não tem.
+            birthDate: fields.birthDate || '',
             unidade: fields.unidade || '',
             status: fields.status || DEFAULT_STATUS, // Padrão: Ativo
             guardian: fields.guardian || null,
@@ -1483,6 +1485,7 @@ router.post('/api/admin/student/update', (req, res) => {
             matricula: fields.matricula !== undefined ? fields.matricula : (before.matricula || ''),
             phone: fields.phone !== undefined ? fields.phone : (before.phone || ''),
             guardianPhone: fields.guardianPhone !== undefined ? fields.guardianPhone : (before.guardianPhone || ''),
+            birthDate: fields.birthDate !== undefined ? fields.birthDate : (before.birthDate || ''),
             unidade: fields.unidade !== undefined ? fields.unidade : (before.unidade || ''),
             status: fields.status || before.status || DEFAULT_STATUS,
             guardian: fields.guardian !== undefined ? fields.guardian : (before.guardian || null),

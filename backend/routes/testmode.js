@@ -10,6 +10,7 @@ const attendanceUtil = require('../utils/attendance.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { applicationToOnlineConfig, createExamApplication } = require('../utils/examApplications.js');
 const { markStudentPresence } = require('../utils/authSessions.js');
+const { modelDocumentId } = require('../utils/legalDocuments.js');
 
 const TEST = process.env.TEST_MODE === '1';
 const TEST_ADMIN = DEMO_ACCOUNTS.admin;
@@ -226,8 +227,11 @@ function ensureStudents() {
       studentClass: TEST_CLASS, period: 'Manhã',
       guardian: { name: `Responsável por ${name.split(' ')[0]}`, phone: `(11) 98888-${String(1100 + index).slice(-4)}`, email: `responsavel.${index + 1}@teste.local`, parentesco: index % 2 ? 'Pai' : 'Mãe', observacao: 'Contato autorizado para assuntos acadêmicos.' },
       accessibility,
-      termsAcceptance: { version: '1.0', at: now - (60 - index) * 86400000 },
-      privacyAcceptance: { version: '1.0', at: now - (60 - index) * 86400000 },
+      // Primeiro acesso (H8a-2): data de nascimento de adulto e aceite do modelo (nada é
+      // publicado na demonstração), para o portão não aparecer nas contas demo.
+      birthDate: `${2000 + (index % 6)}-0${1 + (index % 9)}-1${index % 10}`,
+      termsAcceptance: { documentId: modelDocumentId('termos'), version: null, schoolId: null, at: now - (60 - index) * 86400000 },
+      privacyAcceptance: { documentId: modelDocumentId('privacidade'), version: null, schoolId: null, at: now - (60 - index) * 86400000 },
       lastLoginAt: now - (index + 1) * 3600000,
       lastSeenAt: now - index * 180000,
       createdAt: current && current.createdAt || now - (120 + index) * 86400000,

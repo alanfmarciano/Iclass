@@ -2,6 +2,7 @@
 // Mantém o padrão do projeto (objetos JSON em memoryDB, sem ORM/migrations).
 
 const { recordAudit, getClientIp, auditTimestamp } = require('./audit.js');
+const { checkBirthDate } = require('./birthDate.js');
 
 // Status permitidos para o aluno. "Ativo" é o padrão ao cadastrar.
 const STUDENT_STATUSES = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido'];
@@ -94,6 +95,8 @@ const AUDITABLE_FIELDS = [
     { key: 'matricula', label: 'Matrícula' },
     { key: 'phone', label: 'Telefone' },
     { key: 'guardianPhone', label: 'Telefone do responsável' },
+    // Data de nascimento (H8a-2, SEG-09): 'AAAA-MM-DD' (utils/birthDate.js).
+    { key: 'birthDate', label: 'Data de nascimento' },
     { key: 'status', label: 'Status' },
     { key: 'unidade', label: 'Unidade/instituição' },
 ];
@@ -134,6 +137,9 @@ function extractStudentFields(body) {
     if (body.matricula !== undefined) out.matricula = String(body.matricula).trim();
     if (body.phone !== undefined) out.phone = String(body.phone).trim();
     if (body.guardianPhone !== undefined) out.guardianPhone = String(body.guardianPhone).trim();
+    // Data de nascimento (H8a-2): null ou vazio apagam; o resto é conferido em
+    // validateStudentFields.
+    if (body.birthDate !== undefined) out.birthDate = body.birthDate === null ? '' : String(body.birthDate).trim();
     if (body.unidade !== undefined) out.unidade = String(body.unidade).trim();
     if (body.status !== undefined) out.status = String(body.status).trim();
     if (body.period !== undefined) out.period = String(body.period).trim();
@@ -192,6 +198,11 @@ function validateStudentFields(fields, students, selfEmail) {
     }
     if (fields.guardian && fields.guardian.email && !isValidEmail(fields.guardian.email)) {
         return { ok: false, error: 'E-mail do responsável em formato inválido.', field: 'guardian.email' };
+    }
+    // Opcional no cadastro e na edição pelo professor, mas conferida (H8a-2).
+    if (fields.birthDate) {
+        const birth = checkBirthDate(fields.birthDate);
+        if (!birth.ok) return { ok: false, error: birth.error, field: birth.field };
     }
     if (fields.status !== undefined && fields.status && !isValidStatus(fields.status)) {
         return { ok: false, error: `Status inválido. Use um de: ${STUDENT_STATUSES.join(', ')}.`, field: 'status' };

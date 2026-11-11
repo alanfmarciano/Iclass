@@ -36,7 +36,8 @@ const {
     sendInternalError
 } = require('../middlewares.js');
 const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
-const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_VERSION } = require('../utils/security.js');
+const { recordLoginLog } = require('../utils/security.js');
+const legalAcceptance = require('../utils/legalAcceptance.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
@@ -774,7 +775,19 @@ router.post('/api/student/register', async (req, res) => {
     }
 
     if (!req.body.acceptedTerms) {
-        return res.status(400).json({ error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.' });
+        return res.status(400).json({ success: false, error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.', field: 'acceptedTerms' });
+    }
+    // Primeiro acesso (H8a-2; SEG-08, SEG-09): data de nascimento obrigatória; menor de 18
+    // anos informa o responsável (nome e telefone ou e-mail); o aceite vale para os
+    // documentos atuais. A tela manda os ids dos documentos que mostrou: se a escola
+    // publicou outra versão no meio, 409 para o aluno ler a nova. Sem os ids (tela antiga
+    // ainda no navegador), vale o documento atual.
+    let registration;
+    try {
+        registration = legalAcceptance.checkRegistration(db.memory, req.body, { courseId });
+    } catch (error) {
+        if (!(error instanceof legalAcceptance.PrivacyAcceptError)) throw error;
+        return res.status(error.status).json(legalAcceptance.privacyErrorBody(error));
     }
 
     // Hash com o scrypt assíncrono (DES-07). Durante a espera outro cadastro pode ter
@@ -803,8 +816,11 @@ router.post('/api/student/register', async (req, res) => {
         nomeSocial: fields.nomeSocial || '',
         email: fields.email,
         phone: fields.phone || '',
-        guardianPhone: (fields.guardian && fields.guardian.phone) || '',
-        guardian: fields.guardian || null,
+        guardianPhone: (registration.guardian && registration.guardian.phone) || (fields.guardian && fields.guardian.phone) || '',
+        guardian: registration.guardian
+            ? { ...(fields.guardian || {}), ...registration.guardian, observacao: (fields.guardian && fields.guardian.observacao) || '' }
+            : (fields.guardian || null),
+        birthDate: registration.birthDate,
         matricula: '',
         unidade: '',
         status: DEFAULT_STATUS,
@@ -816,12 +832,28 @@ router.post('/api/student/register', async (req, res) => {
         loginTime: null,
         recoveryRequested: false,
         passwordChangedAt: new Date().toISOString(),
-        termsAcceptance: buildAcceptance(DEFAULT_TERMS_VERSION, req),
-        privacyAcceptance: buildAcceptance(DEFAULT_PRIVACY_VERSION, req),
+        // Aceite do documento exato (H8a-2): { documentId, version, schoolId, at, ip,
+        // device }. Antes do H8a-2 gravava só { version: '1.0' }.
+        termsAcceptance: legalAcceptance.buildDocumentAcceptance(registration.terms, registration.school, req),
+        privacyAcceptance: legalAcceptance.buildDocumentAcceptance(registration.privacy, registration.school, req),
         createdAt: Date.now(),
         updatedAt: Date.now()
     };
     currentStudents.push(studentObj);
+    recordAudit(db.memory, {
+        req,
+        actor: studentObj.email,
+        action: 'privacy_accept',
+        category: 'privacy',
+        studentEmail: studentObj.email,
+        courseId,
+        details: legalAcceptance.acceptAuditDetails([registration.terms, registration.privacy], {
+            source: 'cadastro',
+            schoolId: registration.school ? registration.school.id : null,
+            isMinor: registration.isMinor,
+            guardianInformed: !!registration.guardian,
+        }),
+    });
     writeJSON(DB_STUDENTS_FILE, currentStudents);
 
     res.json({ success: true, enrollmentRequest });

@@ -8,6 +8,8 @@
 // POST /api/admin/lgpd/documents/restore-model   rascunho volta ao texto do modelo
 // POST /api/admin/lgpd/documents/publish   publica o rascunho como nova versão (PUBLICAR)
 // GET  /api/admin/lgpd/dpo                 dados do controlador e do encarregado por escola
+// GET  /api/admin/lgpd/acceptance          quantos alunos o primeiro acesso ainda vai
+//                                          pedir: aceite, data de nascimento, responsável (H8a-2)
 // POST /api/admin/lgpd/dpo                 grava o encarregado de uma escola (ou de todas)
 //
 // Só o administrador: a regra /lgpd de ADMIN_API_PERMISSION_RULES pede students.security,
@@ -15,7 +17,8 @@
 // ficam na auditoria (legal_publish e dpo_changed, categoria privacy).
 //
 // Enquanto nada é publicado, o aluno vê o modelo e ninguém precisa aceitar nada
-// (decisão P4). O aceite com documentId, o portão e os links no login são do H8a-2.
+// (decisão P4). O aceite com documentId, o portão e os links no login são do H8a-2
+// (utils/legalAcceptance.js, routes/privacy.js).
 const express = require('express');
 const db = require('../database.js');
 const { validateAdminPermission } = require('../middlewares.js');
@@ -24,6 +27,8 @@ const { isClosedStudentStatus } = require('../utils/students.js');
 const { MODEL_ID } = require('../utils/legalTemplates.js');
 const legal = require('../utils/legalDocuments.js');
 const { INSTITUTIONAL_KEYS } = require('../utils/branding.js');
+const legalAcceptance = require('../utils/legalAcceptance.js');
+const { todayIso } = require('../utils/birthDate.js');
 
 const PERMISSION = 'students.security';
 const PUBLISH_WORD = 'PUBLICAR';
@@ -43,9 +48,32 @@ function sendLegalError(res, validationError) {
 }
 
 // Alunos que teriam de aceitar uma versão nova: todos com cadastro em aberto (o
-// encerrado não volta ao portal). A cobrança do aceite é do H8a-2.
+// encerrado não volta ao portal). O portão do primeiro acesso cobra o aceite (H8a-2).
+function activeStudents() {
+    return (db.memory.students || []).filter(student => student && student.email && !isClosedStudentStatus(student.status));
+}
+
 function activeStudentCount() {
-    return (db.memory.students || []).filter(student => student && student.email && !isClosedStudentStatus(student.status)).length;
+    return activeStudents().length;
+}
+
+// Contagem do que o primeiro acesso ainda vai pedir aos alunos com cadastro em aberto.
+function acceptanceSummary() {
+    const today = todayIso();
+    const out = { activeStudents: 0, termsPending: 0, privacyPending: 0, birthDateMissing: 0, minors: 0, minorsWithoutGuardian: 0 };
+    activeStudents().forEach(student => {
+        const status = legalAcceptance.studentPrivacyStatus(db.memory, student, { today, ruleActive: true });
+        out.activeStudents += 1;
+        if (status.termsPending) out.termsPending += 1;
+        if (status.privacyPending) out.privacyPending += 1;
+        if (status.birthDateMissing) out.birthDateMissing += 1;
+        if (status.isMinor) out.minors += 1;
+        if (status.guardianMissing) out.minorsWithoutGuardian += 1;
+    });
+    out.published = legal.LEGAL_KINDS.some(kind => !legal.currentDocument(db.memory, kind).isModel);
+    out.policy = legalAcceptance.MINORS_POLICY;
+    out.gateActive = legalAcceptance.privacyGateActive();
+    return out;
 }
 
 function schoolList() {
@@ -185,6 +213,12 @@ function createAdminPrivacyRouter() {
             } catch (error) {
                 return sendLegalError(res, error);
             }
+        });
+    });
+
+    router.get('/api/admin/lgpd/acceptance', (req, res) => {
+        validateAdminPermission(req, res, PERMISSION, () => {
+            res.json({ success: true, ...acceptanceSummary() });
         });
     });
 
