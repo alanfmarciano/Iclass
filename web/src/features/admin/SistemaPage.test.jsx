@@ -125,15 +125,15 @@ describe('SistemaPage · manutenção', () => {
     expect(screen.queryByText('Nenhuma prova em andamento agora.')).not.toBeInTheDocument()
   }, CASE_MS)
 
-  it('[UC-MANUT-001] o reinício promete só o que vale hoje: volta sozinho e o tempo parado volta, sem "ninguém entra de novo" até a frente do H3 (H3c, CONF-12)', async () => {
+  it('[UC-MANUT-001] o reinício promete o que o sistema faz: volta sozinho, ninguém entra de novo e o tempo parado volta (H3c e frente do H3, CONF-12, UXA-06)', async () => {
     const user = userEvent.setup()
     render(<SistemaPage />)
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     expect(await screen.findByText(/1 prova em andamento/, {}, SLOW)).toBeVisible()
-    expect(screen.getByText('O IClass fica fora do ar por alguns segundos e volta sozinho. Quem estiver usando pode precisar entrar de novo.')).toBeVisible()
-    // O navegador ainda pede login de novo ao ver o servidor novo (AuthProvider), até a
-    // frente do H3 na J3 (decisões §9): a tela não promete o contrário.
-    expect(screen.queryByText(/Ninguém precisa entrar de novo/)).not.toBeInTheDocument()
+    // Com a frente do H3 o navegador confere a sessão ao ver o servidor novo, em vez de
+    // mandar todos para o login (decisões §9): a frase voltou ao diálogo.
+    expect(screen.getByText('O IClass fica fora do ar por alguns segundos e volta sozinho. Ninguém precisa entrar de novo.')).toBeVisible()
+    expect(screen.queryByText(/pode precisar entrar de novo/)).not.toBeInTheDocument()
     expect(screen.getByText(/Quem estiver fazendo prova pode continuar respondendo: as respostas são enviadas quando a conexão voltar e o tempo parado é devolvido automaticamente \(até 15 minutos\)\./)).toBeVisible()
     expect(screen.queryByText(/precisam entrar de novo/)).not.toBeInTheDocument()
     expect(screen.queryByText(/derruba/)).not.toBeInTheDocument()

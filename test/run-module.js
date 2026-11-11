@@ -78,7 +78,9 @@ const SUITES = {
       'safe-path.test.js',
       'launcher-safety.test.js',
       'admin-rbac-catalog.test.js',
+      'security-headers.test.js',
     ),
+    npmScript('test:audit', 'Auditoria das dependencias'),
   ],
   full: [
     npmScript('test:docs', 'Rastreabilidade da documentacao'),
@@ -86,6 +88,7 @@ const SUITES = {
     npmScript('test:web', 'Todos os testes da interface'),
     npmScript('build', 'Compilacao da interface'),
     npmScript('check:bundle', 'Orcamento do pacote da interface'),
+    npmScript('test:audit', 'Auditoria das dependencias'),
     e2e(),
   ],
 };

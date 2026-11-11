@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck } from 'lucide-react'
+import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
 import { canAccessAdminPath } from '../../lib/adminPermissions'
@@ -9,6 +9,8 @@ import { useApi } from '../../hooks/useApi'
 const COURSE_GROUPS = [
   { label: 'Visão geral', items: [
     { to: '/', icon: LayoutDashboard, text: 'Dashboard', end: true },
+    // Endereço e QR code para projetar no quadro (H6a): abre em tela cheia, sem o menu.
+    { to: '/endereco', icon: QrCode, text: 'Endereço da sala' },
     { to: '/matriculas', icon: UserCheck, text: 'Matrículas', adminOnly: true },
   ] },
   { label: 'Avaliações', items: [

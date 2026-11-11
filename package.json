@@ -21,6 +21,7 @@
     "test:report": "node test/run-module.js report",
     "test:docs": "node test/validate-traceability.js",
     "test:perf": "node test/perf/storage-volume.js",
+    "test:audit": "node test/audit-deps.js",
     "check:bundle": "node web/scripts/check-bundle-size.mjs",
     "test:coverage:backend": "node --experimental-test-coverage --test test/backend/*.test.js",
     "test:backend": "node --test test/backend/*.test.js",
@@ -29,11 +30,11 @@
     "check": "npm run test:full"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
+    "adm-zip": "^0.6.1",
     "archiver": "^7.0.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "multer": "^2.1.1",
+    "multer": "^2.5.0",
     "sqlite3": "^6.0.1"
   },
   "devDependencies": {

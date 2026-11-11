@@ -26,6 +26,7 @@ const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
 const { FIELD_LIMITS: KEYSTROKE_FIELD_LIMITS } = require('../utils/keystrokeStore.js');
+const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
 
 // Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
@@ -47,6 +48,57 @@ const STUDENT_ACTIVITY_EVENTS = new Set([
     'exam_render_error', 'exam_error_reload', 'exam_update_reload',
 ]);
 const ACTIVITY_DETAILS_MAX = 500;
+// Teto da lista de eventos de um lote de teclas (H9b): 4 lotes do ExamRunner. Acima
+// disso o pedido recebe 400 { field: 'events' }, sem gravar nada.
+const KEYSTROKE_EVENTS_MAX = 2000;
+
+// Entrada das rotas da prova (fase 2, H9b: ENG-03): tipo e tamanho de cada campo
+// (utils/inputSchema.js), conferidos depois da sessão; a presença continua com a rota.
+// Os identificadores aceitam null (prova sem aplicação, aluno sem curso) como as telas
+// mandam (ExamRunner.jsx, ExamErrorScreen.jsx).
+const examIdentity = ({ idMax = 100 } = {}) => ({
+    email: str({ max: 254, nullable: true, label: 'e-mail' }),
+    studentClass: str({ max: 200, nullable: true, label: 'turma' }),
+    courseId: str({ max: 100, nullable: true, label: 'curso' }),
+    examKey: str({ max: 200, nullable: true, label: 'prova' }),
+    applicationId: str({ max: idMax, nullable: true, label: 'aplicação' }),
+    attemptId: str({ max: idMax, nullable: true, label: 'tentativa' }),
+});
+const PROCTORING_SCHEMAS = {
+    logActivity: body({
+        ...examIdentity(),
+        eventType: str({ max: 60, nullable: true, label: 'tipo de evento' }),
+        details: str({ max: 2000, nullable: true, label: 'detalhes' }),
+        pageExit: bool({ nullable: true, label: 'saída da página' }),
+    }),
+    // Lote de teclas: os identificadores com até 200 caracteres (contrato do H1-b) e os
+    // eventos numa lista de até 2.000 itens (o corpo inteiro já fica em 512 KB; o
+    // ExamRunner manda lotes de 500). A rota grava os 500 primeiros e diz quantos além
+    // deles ficaram de fora (dropped). O item que não é objeto continua pulado, sem
+    // recusar o lote (contrato e teste do H1-b: o lote só com itens inválidos responde
+    // 200 com inserted 0); por isso os itens não passam por shape().
+    logKeystrokes: body({
+        ...examIdentity({ idMax: 200 }),
+        events: list(null, { max: KEYSTROKE_EVENTS_MAX, nullable: true, label: 'eventos' }),
+    }),
+    autosave: body({
+        ...examIdentity(),
+        answers: shape({}, { nullable: true, label: 'respostas' }),
+        examConfigVersion: either([str({ max: 64 }), num()], { nullable: true, label: 'versão da prova' }),
+    }),
+    acknowledgeMessage: body({
+        email: str({ max: 254, nullable: true, label: 'e-mail' }),
+        messageId: str({ max: 100, nullable: true, label: 'mensagem' }),
+    }),
+    messageHistoryDelete: body({
+        ...examIdentity(),
+        messageId: str({ max: 100, nullable: true, label: 'mensagem' }),
+    }),
+    validateExamToken: body({
+        ...examIdentity(),
+        token: str({ max: 64, nullable: true, label: 'código da prova' }),
+    }),
+};
 
 function applicationForClass(cls, examKey, applicationId) {
     const id = applicationId || cls?.onlineExamConfigs?.[examKey]?.applicationId;
@@ -122,7 +174,7 @@ function stateContext({ application, studentEmail, examKey, attemptId } = {}) {
 }
 
 // 1. Recebe e grava logs de perda de foco do navegador do aluno (Proctoring)
-router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
+router.post('/api/student/log-activity', validateStudentSession, PROCTORING_SCHEMAS.logActivity, (req, res) => {
     try {
         const { email, studentClass, courseId, examKey, applicationId, attemptId, eventType, details } = req.body;
         if (!email || !examKey || !eventType) {
@@ -209,7 +261,8 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
 // 1b. Recebe lotes do histórico de digitação da prova (Modo Prova Rigoroso).
 //     Armazenamento dedicado (tabela própria, db.keystrokes) para não poluir os logs de
 //     foco. Nunca dispara pausa. Ordem: sessão → campos (texto curto) → cortes de campo
-//     de cada evento → append; lote sem evento válido não grava nada.
+//     de cada evento → append; lote sem evento válido não grava nada. O schema (H9b)
+//     vem logo depois da sessão; o filtro por keystrokeMode (H8b) entra depois dele.
 //     O teto por aluno e aplicação (ICLASS_KEYSTROKE_CAP, padrão 20 mil) é aplicado pelo
 //     store no mesmo ciclo da gravação, pelos contadores, sem percorrer as teclas.
 const KEYSTROKE_BATCH_MAX = 500;
@@ -232,7 +285,7 @@ function safeInteger(value) {
     return Number.isSafeInteger(number) && number !== 0 ? number : null;
 }
 
-router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) => {
+router.post('/api/student/log-keystrokes', validateStudentSession, PROCTORING_SCHEMAS.logKeystrokes, (req, res) => {
     try {
         const { studentClass, courseId, examKey, applicationId, attemptId, events } = req.body;
         if (!examKey || !Array.isArray(events) || events.length === 0) {
@@ -282,7 +335,8 @@ router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) =>
         // Sem evento válido, nada é gravado. Com eventos, a resposta sai depois do COMMIT
         // (503 retryable se a gravação falhar).
         if (rows.length) db.keystrokes.append(rows);
-        res.json({ success: true, inserted: rows.length });
+        // Eventos além dos 500 do lote não são gravados: a resposta diz quantos (H9b).
+        res.json({ success: true, inserted: rows.length, dropped: Math.max(0, events.length - KEYSTROKE_BATCH_MAX) });
     } catch (err) {
         return sendInternalError(err, req, res);
     }
@@ -336,7 +390,7 @@ router.get('/api/admin/exam-keystrokes/:class/:examKey', (req, res) => {
 });
 
 // 2. Salva periodicamente as respostas intermediárias e o tempo restante do aluno
-router.post('/api/student/autosave-progress', validateStudentSession, async (req, res) => {
+router.post('/api/student/autosave-progress', validateStudentSession, PROCTORING_SCHEMAS.autosave, async (req, res) => {
     try {
         const { examKey, applicationId, attemptId, studentClass, courseId, answers } = req.body;
         if (!examKey) {
@@ -509,7 +563,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
 
 
 // 5. Confirma o recebimento de uma mensagem (marca como lida)
-router.post('/api/student/acknowledge-message', validateStudentSession, (req, res) => {
+router.post('/api/student/acknowledge-message', validateStudentSession, PROCTORING_SCHEMAS.acknowledgeMessage, (req, res) => {
     try {
         const { messageId } = req.body;
         if (!messageId) {
@@ -557,7 +611,7 @@ router.get('/api/student/message-history', validateStudentSession, (req, res) =>
     }
 });
 
-router.post('/api/student/message-history/delete', validateStudentSession, (req, res) => {
+router.post('/api/student/message-history/delete', validateStudentSession, PROCTORING_SCHEMAS.messageHistoryDelete, (req, res) => {
     try {
         const email = req.studentEmail;
         const { messageId, studentClass, courseId, examKey, applicationId } = req.body || {};
@@ -594,7 +648,7 @@ router.post('/api/student/message-history/delete', validateStudentSession, (req,
 const EXAM_TOKEN_FAILURE_LIMIT = Object.freeze({ max: 10, windowMs: 5 * 60 * 1000 });
 const EXAM_TOKEN_TOO_MANY = 'Muitas tentativas com o código da prova. Aguarde alguns minutos ou chame o professor.';
 
-router.post('/api/student/validate-exam-token', validateStudentSession, (req, res) => {
+router.post('/api/student/validate-exam-token', validateStudentSession, PROCTORING_SCHEMAS.validateExamToken, (req, res) => {
     try {
         const rateLimiter = require('../utils/rateLimit.js');
         const tokenFailureKey = `exam-token-fail:${req.studentEmail}`;

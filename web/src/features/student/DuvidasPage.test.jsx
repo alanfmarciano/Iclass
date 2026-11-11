@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Fase 2, H2-C (DES-09): a resposta que chega depois de trocar de curso ou turma não
@@ -35,5 +35,16 @@ describe('[UC-DESEMPENHO-002] Dúvidas do aluno: troca de turma no meio da consu
     await act(async () => {})
     expect(screen.queryByText('Dúvida da turma A')).not.toBeInTheDocument()
     expect(screen.getByText('Dúvida da turma B')).toBeInTheDocument()
+  })
+})
+
+describe('[UC-CADERNO-001] Dúvidas do aluno: teto de 5.000 caracteres', () => {
+  it('o campo da dúvida tem maxLength 5.000 e mostra a contagem a partir de 4.500', async () => {
+    apiGet.mockResolvedValue({ comments: [], topics: [{ key: 'geral', title: 'Dúvida geral', module: '' }] })
+    const { container } = render(<DuvidasPage />)
+    const field = container.querySelector('#q')
+    expect(field.getAttribute('maxLength')).toBe('5000')
+    fireEvent.change(field, { target: { value: 'd'.repeat(4500) } })
+    expect(screen.getByText('4.500 de 5.000 caracteres')).toBeInTheDocument()
   })
 })

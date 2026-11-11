@@ -4,9 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const buildMock = vi.hoisted(() => ({ noteServerBuild: vi.fn() }))
 vi.mock('./buildVersion', async (importOriginal) => ({ ...(await importOriginal()), noteServerBuild: buildMock.noteServerBuild }))
 
-import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, downloadFile, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from './api'
+import { getConnectionState, resetConnectionForTests } from './connection'
+import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, RETRYABLE_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, downloadFile, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from './api'
 
 afterEach(() => {
+  resetConnectionForTests()
   buildMock.noteServerBuild.mockReset()
   vi.restoreAllMocks()
   setAuthProvider(() => ({}))
@@ -360,5 +362,50 @@ describe('[UC-ERRO-002] tempo-limite e falhas de conexão do cliente', () => {
     expect(error.status).toBe(404)
     expect(error.message).toBe('Turma não encontrada.')
     expect(error.timeout).toBeUndefined()
+  })
+})
+
+// Frente do H3 (contrato do cliente HTTP): toda resposta alimenta lib/connection.js, e o
+// 503 de gravação (retryable) sai com o texto fixo das telas (decisões §3), sem logout.
+describe('[UC-AUTH-001] respostas de estado do servidor no cliente', () => {
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+  it('503 retryable: "Não foi possível gravar agora. Tente de novo em instantes." com err.retryable, e a conexão segue online', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(503, { success: false, error: 'Não foi possível gravar os dados agora. Tente de novo em alguns segundos.', retryable: true })))
+    const err = await api.post('/api/admin/students', { name: 'x' }).catch((e) => e)
+    expect(RETRYABLE_MESSAGE).toBe('Não foi possível gravar agora. Tente de novo em instantes.')
+    expect(err.message).toBe(RETRYABLE_MESSAGE)
+    expect(err.status).toBe(503)
+    expect(err.retryable).toBe(true)
+    expect(getConnectionState()).toBe('online')
+  })
+
+  it('503 starting marca err.starting e leva a conexão a starting; a resposta seguinte volta a online', async () => {
+    const fetchMock = vi.fn(async () => json(503, { error: 'O IClass está iniciando. Aguarde alguns segundos.', starting: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const err = await api.get('/api/student/sync').catch((e) => e)
+    expect(err.starting).toBe(true)
+    expect(err.message).toBe('O IClass está iniciando. Aguarde alguns segundos.')
+    expect(getConnectionState()).toBe('starting')
+    fetchMock.mockImplementation(async () => json(200, { ok: true }))
+    await api.get('/api/student/sync')
+    expect(getConnectionState()).toBe('online')
+  })
+
+  it('duas falhas de rede seguidas levam a conexão a offline; o cancelamento de quem chamou não conta', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+      if (options?.signal?.aborted) throw new DOMException('cancelado', 'AbortError')
+      throw new TypeError('Failed to fetch')
+    }))
+    const controller = new AbortController()
+    controller.abort()
+    await api.get('/api/x', { signal: controller.signal }).catch(() => {})
+    await api.get('/api/x', { signal: controller.signal }).catch(() => {})
+    expect(getConnectionState()).toBe('online')
+    const first = await api.get('/api/x').catch((e) => e)
+    expect(first.network).toBe(true)
+    expect(getConnectionState()).toBe('online')
+    await api.get('/api/x').catch(() => {})
+    expect(getConnectionState()).toBe('offline')
   })
 })

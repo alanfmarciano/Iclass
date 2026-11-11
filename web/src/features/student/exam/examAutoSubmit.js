@@ -48,8 +48,7 @@ export function classifyAutoSubmitError(error) {
 // Texto do aviso quando o envio automático volta com 409 deadlineExtended: com reason
 // 'server_outage' o prazo só ficou à frente pelo tempo devolvido de uma queda do
 // servidor (o professor não fez nada); sem reason, foi o professor que deu mais tempo.
-// O ExamRunner (da trilha B) passa a usar este texto na frente do H3; até lá ele mostra
-// o texto do professor nos dois casos.
+// O ExamRunner usa este texto no envio automático do fim do tempo (frente do H3).
 export const AUTO_SUBMIT_EXTENDED_MESSAGE = 'O professor deu mais tempo. A prova continua.'
 export const AUTO_SUBMIT_SERVER_OUTAGE_MESSAGE = 'O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'
 

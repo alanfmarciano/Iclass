@@ -11,6 +11,7 @@ import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
 import { useToast } from '../../context/ToastProvider'
 import { usePolling } from '../../hooks/usePolling'
+import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
 
 const FILTERS = [
   { key: 'all', label: 'Todas' },
@@ -90,7 +91,7 @@ export default function DuvidasPage() {
         <Select label="Sobre qual tópico?" value={topic} onChange={(e) => setTopic(e.target.value)}>
           {topics.map((t) => <option key={t.key} value={t.key}>{t.module ? `${t.module} · ${t.title}` : t.title}</option>)}
         </Select>
-        <Textarea id="q" value={text} onChange={(e) => setText(e.target.value)} placeholder="Escreva sua dúvida…" className="min-h-[90px]" />
+        <Textarea id="q" value={text} onChange={(e) => setText(e.target.value)} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Escreva sua dúvida…" className="min-h-[90px]" />
         <div className="flex justify-end"><Button icon={Send} loading={sending} onClick={post} disabled={!text.trim()}>Enviar</Button></div>
       </Card>
 

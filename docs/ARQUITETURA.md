@@ -27,7 +27,7 @@ backend/
 
 ### server.js — ordem de montagem (importa)
 
-1. `assignRequestId` (X-Request-Id), `cors`, cabeçalho do build, `Cache-Control: no-store` em todo `/api` (e em `.html`/`.js` fora de `/assets`, como `/data.js`), `compressTextResponses` (gzip das respostas de texto acima de 1 KB, `utils/httpCompression.js`; fica antes de quem espera o COMMIT para responder) e leitor JSON com limite por sessão (10 MB com sessão de instrutor, 512 KB nos demais, inclusive o lote de teclas da prova, que o cliente manda em lotes de até 500 desde o H2-C), seguido de `req.body = {}` quando não há corpo. O leitor de query fica com o último valor de parâmetro repetido.
+1. `assignRequestId` (X-Request-Id), `cors`, cabeçalhos de segurança (`utils/securityHeaders.js`: CSP, `nosniff`, `X-Frame-Options`, `Referrer-Policy`; sem `X-Powered-By`; ver SEGURANCA.md), cabeçalho do build, `Cache-Control: no-store` em todo `/api` (e em `.html`/`.js` fora de `/assets`, como `/data.js`), `compressTextResponses` (gzip das respostas de texto acima de 1 KB, `utils/httpCompression.js`; fica antes de quem espera o COMMIT para responder) e leitor JSON com limite por sessão (10 MB com sessão de instrutor, 512 KB nos demais, inclusive o lote de teclas da prova, que o cliente manda em lotes de até 500 desde o H2-C), seguido de `req.body = {}` quando não há corpo. O leitor de query fica com o último valor de parâmetro repetido.
 2. `/assets` → `serveBuildAssets` (`utils/staticAssets.js`): terminal, com cache imutável de um ano e as versões `.br`/`.gz` do build; nome que não existe é 404 com no-store, nunca o `index.html`. A regra de nomes (`isServableAssetName`: letras sem acento, números, `.`, `_` e `-`, sem ponto no começo nem no fim) é a mesma que o build usa para dar nome aos arquivos (`toServableAssetName` no `sanitizeFileName` do `vite.config.js`) e que o `check:bundle` confere em cada arquivo de `web/dist/assets`. Por isso o `staticAssets.js` entra no hash do build (`BACKEND_BUILD_FILES` em `utils/buildIntegrity.js`): mudar a regra deixa o build desatualizado e o servidor pede `npm run build`.
 3. Rotas de arquivos controlados: `/uploads/:filename`, `/imagens/:filename` (passam por `sendControlledFile`).
 4. `express.static(web/dist, { index: false })` — o resto da raiz do build, sem entregar o `index.html` sozinho.
@@ -87,7 +87,7 @@ O `db.health()` e o `db.ping()` (`database.js`, H3b) dão o estado da gravação
 | `adminArchive.js` | arquivamento de cursos |
 | `adminExamConfig.js` | configuração e aplicação de provas |
 | `adminRecovery.js` | recuperação/restore |
-| `adminSystem.js` | configuração de sistema, IP, flush de estado |
+| `adminSystem.js` | configuração de sistema, endereços da rede (`network-info`) e endereço da sala com QR (`room-address`, H6a), flush de estado |
 | `proctoring.js` | monitoramento antifraude da prova |
 | `setupMode.js` | modo de setup/acesso rápido local |
 | `testmode.js` | seed/reset apenas sob `TEST_MODE=1` |

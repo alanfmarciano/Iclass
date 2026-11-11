@@ -352,7 +352,7 @@ test('[UC-AUTH-001] restoreSessions: reinício rápido mantém aluno e professor
 
     const now = Date.now();
     const result = restoreSessions(db.memory, rows, { now, downtimeMs: 5 * 60000 });
-    assert.deepEqual(result, { students: 1, admins: 1, dropped: 0, reason: null, clockWentBack: false });
+    assert.deepEqual(result, { students: 1, admins: 1, dropped: 0, revocations: 0, reason: null, clockWentBack: false });
     assert.equal(db.memory.sessions[ANA.email].lastSeen, null, 'aparece offline até o próximo ping');
     assert.equal(db.memory.sessions[ANA.email].lastActivityAt, now);
     await ping(studentToken).expect(200);
@@ -465,7 +465,7 @@ test('[UC-AUTH-001] restoreSessions descarta sessão de aluno bloqueado ou apaga
         row('prof-com-email-de-aluno', { kind: 'admin', email: 'ativa@x.local', createdAt: now - HOUR }),
     ];
     const result = restoreSessions(memory, rows, { now, downtimeMs: 60000, absoluteTtlMs: 8 * HOUR });
-    assert.deepEqual(result, { students: 2, admins: 1, dropped: 7, reason: null, clockWentBack: false });
+    assert.deepEqual(result, { students: 2, admins: 1, dropped: 7, revocations: 0, reason: null, clockWentBack: false });
     assert.deepEqual(Object.keys(memory.sessions).sort(), ['active@x.local', 'ativa@x.local']);
     assert.equal(findAdminSession(memory, 'prof').email, 'prof@x.local');
     for (const token of ['bloqueada', 'inativa', 'sem-status', 'aluno-apagado', 'aluno-com-email-de-prof']) assert.equal(findStudentSession(memory, token), null, token);
@@ -506,14 +506,25 @@ test('[UC-AUTH-001] só utils/authSessions.js lê e grava sessão pelo token', (
 // ---------------------------------------------------------------------------
 
 // Linhas de auth_sessions lidas do arquivo por outra conexão (o que sobrevive a um kill -9).
-async function storedSessionRows() {
+async function storedAuthRows() {
     const connection = new sqlite3.Database(path.join(tempRoot, 'database.db'), sqlite3.OPEN_READONLY);
     try {
-        const rows = await new Promise((resolve, reject) => connection.all('SELECT key, value FROM auth_sessions ORDER BY key', (err, list) => (err ? reject(err) : resolve(list))));
-        return Object.fromEntries(rows.map(row => [row.key, row.value]));
+        return await new Promise((resolve, reject) => connection.all('SELECT key, value FROM auth_sessions ORDER BY key', (err, list) => (err ? reject(err) : resolve(list))));
     } finally {
         await new Promise(resolve => connection.close(() => resolve()));
     }
+}
+
+const isRevokedRow = row => JSON.parse(row.value).kind === 'revoked';
+
+// Só as sessões (aluno e instrutor). As linhas de motivo de sessão encerrada
+// ({ kind: 'revoked' }, frente do H3) têm conferência própria (storedRevocationRows).
+async function storedSessionRows() {
+    return Object.fromEntries((await storedAuthRows()).filter(row => !isRevokedRow(row)).map(row => [row.key, row.value]));
+}
+
+async function storedRevocationRows() {
+    return Object.fromEntries((await storedAuthRows()).filter(isRevokedRow).map(row => [row.key, JSON.parse(row.value)]));
 }
 
 test('[UC-AUTH-001] login, Sair e saída do aluno gravam a tabela auth_sessions antes da resposta (antes: sessões só na memória)', async () => {
@@ -546,17 +557,25 @@ test('[UC-AUTH-001] login, Sair e saída do aluno gravam a tabela auth_sessions 
     stored = await storedSessionRows();
     assert.equal(stored[sha256(studentToken)], before);
 
-    // Sair e /api/student/leave tiram a linha (sem db.save() do teste).
+    // Sair e /api/student/leave tiram a linha (sem db.save() do teste). O Sair do
+    // instrutor deixa no lugar a linha do motivo (frente do H3): só o hash, o motivo e a
+    // hora, sem e-mail.
     await request(app).post('/api/session/logout').set('x-admin-session', adminToken).expect(200);
     assert.deepEqual(Object.keys(await storedSessionRows()), [sha256(studentToken)]);
+    const logoutRow = (await storedRevocationRows())[sha256(adminToken)];
+    assert.deepEqual(Object.keys(logoutRow).sort(), ['at', 'kind', 'reason']);
+    assert.equal(logoutRow.reason, 'logout');
     await request(app).post('/api/student/leave').set('x-session-token', studentToken).send({ email: ANA.email }).expect(200);
     assert.deepEqual(await storedSessionRows(), {});
 
-    // Login novo do mesmo aluno (outro aparelho): a linha antiga sai junto.
+    // Login novo do mesmo aluno (outro aparelho): a linha antiga sai junto, e o motivo
+    // 'replaced' fica no lugar dela.
     const first = await studentLogin();
     const second = await studentLogin();
     assert.deepEqual(Object.keys(await storedSessionRows()), [sha256(second)]);
     assert.notEqual(first, second);
+    assert.equal((await storedRevocationRows())[sha256(first)].reason, 'replaced');
+    assert.equal(JSON.stringify(await storedAuthRows()).includes(first), false, 'nada de token cru no arquivo');
 });
 
 test('[UC-AUTH-001] backup não leva sessões, e restaurar desconecta todos e esvazia auth_sessions', async () => {
@@ -571,7 +590,8 @@ test('[UC-AUTH-001] backup não leva sessões, e restaurar desconecta todos e es
     for (const secret of [studentToken, adminToken, sha256(studentToken), sha256(adminToken)]) assert.equal(text.includes(secret), false);
 
     await backup.restoreDataSnapshot(snapshot);
-    assert.deepEqual(await storedSessionRows(), {});
+    // A tabela inteira fica vazia: sessões e motivos de sessões encerradas antes.
+    assert.deepEqual(await storedAuthRows(), []);
     assert.deepEqual(persistedSessionRows(db.memory), []);
     await ping(studentToken).expect(401);
     await whoami(adminToken).expect(401);
@@ -907,4 +927,45 @@ test('[UC-AUTH-001] excluir curso definitivamente encerra a sessão dos alunos q
     assert.equal(res.status, 401, 'o token antigo não volta com o curso');
     assert.equal(res.body.reason, 'expired');
     await ping(ana).expect(200);
+});
+
+// Frente do H3 (sobra da J2): o motivo da sessão encerrada vai para auth_sessions como
+// { kind: 'revoked', reason, at } e volta no boot pela restoreSessions, mesmo quando as
+// sessões não voltam (tempo fora do ar desconhecido ou longo demais). Linha de motivo
+// ilegível, de motivo desconhecido ou vencida não volta; nenhuma conta como sessão
+// descartada. Antes o motivo ficava só na memória e o reinício o perdia.
+test('[UC-AUTH-001] restoreSessions traz de volta os motivos das sessões encerradas, no prazo, sem contar como descartadas', () => {
+    authSessions.clearRecentRevocationsForTests();
+    const now = Date.now();
+    const ttl = 8 * HOUR;
+    const revoked = (token, value) => ({ key: sha256(token), value: JSON.stringify({ kind: 'revoked', ...value }) });
+    const rows = [
+        revoked('saiu', { reason: 'logout', at: now - HOUR }),
+        revoked('senha', { reason: 'password_reset', at: now - 2 * HOUR }),
+        revoked('outro-aparelho', { reason: 'replaced', at: now - 60000 }),
+        revoked('velho', { reason: 'logout', at: now - 9 * HOUR }),
+        revoked('motivo-estranho', { reason: 'hackeado', at: now }),
+        revoked('sem-hora', { reason: 'logout' }),
+        { key: 'nao-e-hash', value: JSON.stringify({ kind: 'revoked', reason: 'logout', at: now }) },
+    ];
+    const memory = { students: [], admins: [], sessions: {}, adminSessions: {} };
+    const result = restoreSessions(memory, rows, { now, downtimeMs: undefined, absoluteTtlMs: ttl });
+    assert.equal(result.reason, 'downtime_unknown');
+    assert.equal(result.dropped, 0, 'linha de motivo não é sessão descartada');
+    assert.equal(result.revocations, 3);
+    assert.equal(authSessions.revokedSessionReason('saiu', now), 'logout');
+    assert.equal(authSessions.revokedSessionReason('senha', now), 'password_reset');
+    assert.equal(authSessions.revokedSessionReason('outro-aparelho', now), 'replaced');
+    for (const token of ['velho', 'motivo-estranho', 'sem-hora']) assert.equal(authSessions.revokedSessionReason(token, now), null, token);
+    // O motivo nunca autentica.
+    assert.equal(findStudentSession(memory, 'saiu'), null);
+    assert.equal(findAdminSession(memory, 'saiu'), null);
+    // Volta a ser gravado (persistedRevocationRows), e o login novo que substitui uma
+    // sessão grava 'replaced' para o token antigo.
+    const persisted = Object.fromEntries(authSessions.persistedRevocationRows({ now, absoluteTtlMs: ttl }).map(row => [row.key, row.value]));
+    assert.equal(persisted[sha256('senha')].reason, 'password_reset');
+    const old = createStudentSession(memory, 'ana@x.local', { now });
+    createStudentSession(memory, 'ana@x.local', { now });
+    assert.equal(authSessions.revokedSessionReason(old, now), 'replaced');
+    authSessions.clearRecentRevocationsForTests();
 });

@@ -22,14 +22,19 @@ function thumbFor(e) {
   return { kind: 'none' }
 }
 // Player/visualizador grande (ao abrir).
-function embed(e) {
+export function embed(e) {
   const url = e.url || ''
   const yt = ytId(url); if (yt) return { kind: 'iframe', src: `https://www.youtube.com/embed/${yt}` }
   const vm = vimeoId(url); if (vm) return { kind: 'iframe', src: `https://player.vimeo.com/video/${vm}` }
   if (e.type === 'video' || /\.(mp4|webm|ogg)(\?|$)/i.test(url)) return { kind: 'video', src: url }
   if (e.type === 'image') return { kind: 'image', src: url }
-  if (e.type === 'pdf' || /\.pdf(\?|$)/i.test(url)) return { kind: 'pdf', src: `${url}${url.includes('?') ? '&' : '?'}preview=1` }
+  // Prévia só do PDF enviado ao IClass (/uploads): a CSP (frame-src, H5d) não deixa
+  // embutir página de outro site, e um PDF de link externo abre por "Abrir em nova aba".
+  if ((e.type === 'pdf' || /\.pdf(\?|$)/i.test(url)) && isSameOrigin(url)) return { kind: 'pdf', src: `${url}${url.includes('?') ? '&' : '?'}preview=1` }
   return { kind: 'none' }
+}
+function isSameOrigin(url) {
+  try { return new URL(url, window.location.href).origin === window.location.origin } catch { return false }
 }
 
 function Thumb({ e }) {
@@ -50,7 +55,7 @@ function Preview({ e }) {
   if (p.kind === 'video') return <video src={p.src} controls className="w-full rounded-lg max-h-[70vh] bg-black" />
   if (p.kind === 'image') return <img src={p.src} alt={e.name} className="max-h-[70vh] rounded-lg mx-auto" />
   if (p.kind === 'pdf') return <iframe src={p.src} title={e.name} className="w-full rounded-lg border border-border" style={{ height: '70vh' }} />
-  return <div className="rounded-lg border border-border bg-surface-2 p-6 text-center text-sm text-muted">Pré-visualização não disponível para este tipo. Use "Abrir externamente".</div>
+  return <div className="rounded-lg border border-border bg-surface-2 p-6 text-center text-sm text-muted">Pré-visualização não disponível para este material. Use "Abrir em nova aba".</div>
 }
 
 export default function BibliotecaPage() {

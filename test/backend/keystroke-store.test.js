@@ -277,7 +277,7 @@ test('[UC-DIGITACAO-001] log-keystrokes grava na tabela antes do 200 e a consult
     const startedAt = Date.now();
     const first = await sendKeys(students.ana, { applicationId: 'app-atual', attemptId: 'tentativa-ana', events: keys(1, 3, { mods: 'ctrl' }) });
     assert.equal(first.status, 200, JSON.stringify(first.body));
-    assert.deepEqual(first.body, { success: true, inserted: 3 });
+    assert.deepEqual(first.body, { success: true, inserted: 3, dropped: 0 });
     // A resposta saiu depois do COMMIT: outra conexão já vê as teclas no arquivo.
     assert.equal(await savedFor(students.ana.email), 3);
 
@@ -461,12 +461,14 @@ test('[UC-DIGITACAO-001] campos do lote: identificação em texto curto e cortes
     // Lote só com eventos inválidos: nada é gravado.
     const before = await savedFor(students.duda.email);
     const empty = await sendKeys(students.duda, { events: [null, 3, 'texto', []] }).expect(200);
-    assert.deepEqual(empty.body, { success: true, inserted: 0 });
+    assert.deepEqual(empty.body, { success: true, inserted: 0, dropped: 0 });
     assert.equal(await savedFor(students.duda.email), before);
 
     // Lote maior que 500: só os 500 primeiros entram.
     const big = await sendKeys(students.duda, { applicationId: 'app-anterior', events: keys(1, 520) }).expect(200);
     assert.equal(big.body.inserted, 500);
+    // A resposta diz quantos ficaram de fora (H9b): o ExamRunner manda até 500 por vez.
+    assert.equal(big.body.dropped, 20);
 });
 
 // ---------------------------------------------------------------- aluno

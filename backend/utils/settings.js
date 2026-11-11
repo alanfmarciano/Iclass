@@ -13,7 +13,7 @@ const DEFAULTS = Object.freeze({
     attendance: { autoOnLogin: true, windowStart: '', windowEnd: '' },
     trash: { retentionDays: 0 },
     maintenance: { enabled: false, message: 'Sistema em manutenção. Tente novamente em instantes.' },
-    network: { adminAccess: 'rede-sem-https' },
+    network: { adminAccess: 'rede-sem-https', studentsHttps: false },
     backup: { destino: '', guardarExterno: 14 },
 });
 
@@ -28,9 +28,13 @@ const PROTECTED_SETTINGS_SECTIONS = Object.freeze(['backup', 'network', 'retenti
 //   desta versão): abre em qualquer aparelho da rede, como antes, e a tela avisa que a
 //   senha passa pela rede sem proteção quando não é o computador do IClass;
 // - 'local': só no computador onde o IClass está ligado;
-// - 'rede': outros aparelhos só pela conexão segura (https). Enquanto esta versão não
-//   tem https (H6c), a rota de rede recusa essa escolha.
+// - 'rede': outros aparelhos só pela conexão segura (https, H6c). A rota de rede só
+//   aceita essa escolha com a conexão segura funcionando.
 // Valor gravado desconhecido vale o padrão: ninguém fica trancado fora do painel.
+//
+// Alunos pela conexão segura (settings.network.studentsHttps, H6c): false por padrão (e
+// no banco antigo). Ligado, o aluno que abre o IClass por http em outro aparelho vai
+// para o endereço https, e o QR da sala passa a ser https. Só true liga.
 const ADMIN_ACCESS_MODES = Object.freeze(['rede-sem-https', 'local', 'rede']);
 
 function normalizeAdminAccess(value) {
@@ -44,7 +48,7 @@ function storedSettings() {
 
 function networkSettings(stored = storedSettings()) {
     const network = stored.network && typeof stored.network === 'object' ? stored.network : {};
-    return { adminAccess: normalizeAdminAccess(network.adminAccess) };
+    return { adminAccess: normalizeAdminAccess(network.adminAccess), studentsHttps: network.studentsHttps === true };
 }
 
 // Destino externo do backup (settings.backup, H4b, OPS-03): a pasta fora do computador

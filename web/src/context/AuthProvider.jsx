@@ -4,6 +4,7 @@ import { revokedLogoutFromError } from '../lib/sessionRevoked'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
 import { usePolling } from '../hooks/usePolling'
+import { useOnReconnect } from '../hooks/useServerConnection'
 import { reduceStoredStudentAuth, studentSessionProfile } from '../lib/studentProfile'
 
 const AuthCtx = createContext()
@@ -122,16 +123,16 @@ export function AuthProvider({ children }) {
       const now = Date.now()
       if (auth.loginAt && now - auth.loginAt > absMsRef.current) { if (!cancelled) doLogout('expired'); return }
 
+      // Instância do servidor que mudou (reinício): a sessão é conferida abaixo, como em
+      // qualquer abertura; só um 401/403 de verdade manda para o login (frente do H3).
+      let serverInst = null
       try {
-        // Instância do servidor: se mudou (reinício), força novo login.
-        let serverInst = null
         try { const st = await api.get('/api/session/status', { auth: false }); serverInst = st.instanceId } catch { /* rede: não desloga aqui */ }
-        if (serverInst && auth.serverInstanceId && serverInst !== auth.serverInstanceId) { if (!cancelled) doLogout('restart'); return }
 
         if (auth.role === 'student') {
           if (!auth.email || !auth.sessionToken) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
           const presence = await api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`)
-          if (!cancelled && serverInst && !auth.serverInstanceId) setAuth((c) => ({ ...c, serverInstanceId: serverInst }))
+          if (!cancelled && serverInst && serverInst !== auth.serverInstanceId) setAuth((c) => ({ ...c, serverInstanceId: serverInst }))
           if (!cancelled && presence && typeof presence.passwordChangeRequired === 'boolean') {
             syncPasswordChange(presence.passwordChangeRequired, presence.passwordChangeReason)
           }
@@ -166,8 +167,11 @@ export function AuthProvider({ children }) {
         else if (err && (err.status === 401 || err.status === 403)) {
           // Sessão encerrada por uma ação (senha redefinida ou trocada, Sair em outra aba):
           // o login mostra o motivo do servidor.
+          // Servidor reiniciado e a sessão não voltou (mais de 60 min fora do ar, mais de
+          // 8 h desde o login): o login diz que o servidor foi reiniciado.
           const revoked = revokedLogoutFromError(err)
-          if (!cancelled) { if (revoked) doLogout(revoked.reason, revoked.message); else doLogout('expired') }
+          const restarted = !!(serverInst && auth.serverInstanceId && serverInst !== auth.serverInstanceId)
+          if (!cancelled) { if (revoked) doLogout(revoked.reason, revoked.message); else doLogout(restarted ? 'restart' : 'expired') }
         }
         else if (!cancelled) setAuthReady(true)
       }
@@ -194,14 +198,82 @@ export function AuthProvider({ children }) {
     try {
       const st = await api.get('/api/session/status', { auth: false, ...requestOptions })
       netFailRef.current = 0
-      if (st.instanceId && auth.serverInstanceId && st.instanceId !== auth.serverInstanceId) { doLogout('restart'); return true }
+      if (st.instanceId && auth.serverInstanceId && st.instanceId !== auth.serverInstanceId) return revalidate(st.instanceId, requestOptions)
       return true
     } catch {
       netFailRef.current += 1 // rede instável: tolera, não desloga por 1 falha isolada
       return false
     }
   }
+
+  // O servidor reiniciou (instanceId novo). Antes, o navegador mandava todos para o login
+  // (doLogout('restart')), inclusive quem estava no meio da prova, e apagava a cópia local
+  // das respostas. Agora o servidor retoma as sessões gravadas (H3a-2) e aqui a sessão é
+  // conferida (frente do H3: CONF-03, UXA-06):
+  // - aluno: GET /api/ping; instrutor: GET /api/admin/whoami;
+  // - 2xx: a sessão continua, com o instanceId novo (a cópia local da prova fica);
+  // - 401/403 (ou sessionRevoked): login, com o motivo do servidor se houver ou "O servidor
+  //   foi reiniciado";
+  // - rede ou 503 (iniciando, gravação): a sessão continua e a conferência seguinte tenta
+  //   de novo (o instanceId guardado continua o antigo).
+  async function revalidate(instanceId, requestOptions) {
+    const current = authRef.current || {}
+    if (!current.role) return true
+    try {
+      if (current.role === 'student') {
+        const presence = await api.get(`/api/ping?email=${encodeURIComponent(current.email || '')}`, requestOptions)
+        if (presence && typeof presence.passwordChangeRequired === 'boolean') syncPasswordChange(presence.passwordChangeRequired, presence.passwordChangeReason)
+        setAuth((c) => (c.role === 'student' ? { ...c, serverInstanceId: instanceId } : c))
+      } else {
+        const who = await api.get('/api/admin/whoami', requestOptions)
+        setAuth((c) => (c.role === 'admin' ? {
+          ...c,
+          serverInstanceId: who.instanceId || instanceId,
+          adminSession: who.sessionToken || c.adminSession,
+          mustChangePassword: who.mustChangePassword === true,
+          passwordChangeReason: who.mustChangePassword === true ? (who.passwordChangeReason || null) : null,
+        } : c))
+      }
+      return true
+    } catch (err) {
+      if (err && err.status === 403 && err.data?.adminAccess) { doLogout('admin-network', err.data.error); return true }
+      if (err && err.status === 403 && err.data?.passwordChangeRequired) {
+        // A sessão vale; só a troca de senha está pendente (o formulário já aparece).
+        setAuth((c) => (c.role ? { ...c, serverInstanceId: instanceId } : c))
+        return true
+      }
+      if (err && (err.status === 401 || err.status === 403 || err.data?.sessionRevoked === true)) {
+        const revoked = revokedLogoutFromError(err)
+        if (revoked) doLogout(revoked.reason, revoked.message)
+        else doLogout('restart')
+        return true
+      }
+      return false
+    }
+  }
+  // Sessão recusada (401) numa chamada de fundo, como o ping de presença do aluno (15 s),
+  // que costuma chegar antes da conferência da instância (60 s). Mesmo critério da abertura
+  // e da revalidação: motivo do servidor (senha redefinida, Sair, outro aparelho) se houver;
+  // senão, se o servidor é outro (instanceId novo: reiniciou e a sessão não voltou, mais de
+  // 60 min fora do ar), "O servidor foi reiniciado"; senão, sessão expirada. Antes, o ping
+  // saía sem motivo e o aluno chegava ao login sem aviso nenhum (frente do H3, ajuste 1).
+  const endSessionFromError = useCallback(async (err) => {
+    const revoked = revokedLogoutFromError(err)
+    if (revoked) { doLogout(revoked.reason, revoked.message); return }
+    const known = authRef.current?.serverInstanceId || null
+    let restarted = false
+    if (known) {
+      try {
+        const st = await api.get('/api/session/status', { auth: false, background: true, timeoutMs: 5000 })
+        restarted = !!(st?.instanceId && st.instanceId !== known)
+      } catch { /* sem resposta: fica "expirada" */ }
+    }
+    doLogout(restarted ? 'restart' : 'expired')
+  }, [doLogout])
   const revalidation = usePolling(check, { intervalMs: REVALIDATE_MS, enabled: !!auth?.role, immediate: false })
+  // A conexão voltou (lib/connection.js: de 'offline' ou 'starting' para 'online'): confere
+  // na hora, sem esperar o minuto da revalidação (o servidor pode ter reiniciado).
+  useOnReconnect(() => { if (authRef.current?.role) revalidation.runNow() })
   useEffect(() => {
     if (!auth?.role) return
     const markActivity = () => { lastActivityRef.current = Date.now() }
@@ -328,7 +400,7 @@ export function AuthProvider({ children }) {
   }, [doLogout])
 
   return (
-    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
+    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
       {children}
     </AuthCtx.Provider>
   )

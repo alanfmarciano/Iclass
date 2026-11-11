@@ -50,25 +50,8 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const DB_CLASSES_FILE = path.join(DATA_DIR, 'db_classes.json');
 const DB_ADMINS_FILE = path.join(DATA_DIR, 'db_admins.json');
 
-// Armazena todos os IPs da rede local
-let localIpAddresses = [];
-function detectIP() {
-    const os = require('os');
-    const interfaces = os.networkInterfaces();
-    for (let devName in interfaces) {
-        let iface = interfaces[devName];
-        for (let i = 0; i < iface.length; i++) {
-            let alias = iface[i];
-            if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
-                localIpAddresses.push({ name: devName, address: alias.address });
-            }
-        }
-    }
-    if (localIpAddresses.length === 0) {
-        localIpAddresses.push({ name: 'localhost', address: 'localhost' });
-    }
-}
-detectIP();
+// Os endereços da rede local saíram daqui (o detectIP lia os adaptadores uma vez só, ao
+// subir): agora são relidos a cada pedido em utils/networkAddresses.js (H6a, OPS-10).
 
 function normalizeIp(ip) {
     if (!ip) return '';
@@ -106,6 +89,7 @@ const REVOKED_SESSION_MESSAGES = Object.freeze({
     logout: 'Esta sessão foi encerrada pelo botão Sair. Faça login novamente.',
     password_reset: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
     password_changed: 'A senha desta conta foi trocada em outro aparelho. Entre de novo com a senha nova.',
+    replaced: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
 });
 
 function revokedSessionBody(token) {
@@ -144,6 +128,14 @@ function validateStudentSession(req, res, next) {
         normalizedEmail = tokenMatch.email;
     }
     if (!normalizedEmail) {
+        // Token que o servidor não conhece (sessão vencida ou que não voltou depois de um
+        // reinício) numa rota sem e-mail na query nem no corpo (GET /api/student/enrollments):
+        // é sessão encerrada, não pedido malformado. Antes respondia 400 "E-mail do estudante
+        // é obrigatório." e o portal não levava o aluno ao login. O token substituído por um
+        // login novo já saiu acima, com 'replaced' (revokedSessionBody).
+        if (typeof providedToken === 'string' && providedToken) {
+            return sendSessionRevoked(res, 401, 'Sessão expirada ou não autenticada. Por favor, faça login novamente.', 'expired');
+        }
         return res.status(400).json({ error: 'E-mail do estudante é obrigatório.' });
     }
     // Só a sessão gravada com esse e-mail (chave própria): '__proto__' ou 'constructor'
@@ -1395,7 +1387,6 @@ module.exports = {
     CONFIG_FILE,
     DB_CLASSES_FILE,
     DB_ADMINS_FILE,
-    localIpAddresses,
     normalizeIp,
     validateStudentSession,
     resolveRequester,

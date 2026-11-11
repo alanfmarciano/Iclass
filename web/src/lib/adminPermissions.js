@@ -27,6 +27,8 @@ export const ADMIN_PERMISSIONS = Object.freeze({
 
 export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
+  // Endereço da sala em tela cheia, para projetar (H6a).
+  '/endereco': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
   '/provas': ADMIN_PERMISSIONS.PAGE_EXAMS,
   '/monitor': ADMIN_PERMISSIONS.PAGE_MONITOR,
   '/resultados': ADMIN_PERMISSIONS.PAGE_RESULTS,

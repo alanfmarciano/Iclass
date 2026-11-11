@@ -203,7 +203,11 @@ test('[UC-AUTH-001] servidor que cai (kill -9) e volta: aluno e professor seguem
         assert.equal(left.status, 200);
         await second.stop('SIGKILL');
         const third = await startServer(dataDir);
-        assert.equal((await ping(third, studentToken)).status, 401, 'quem saiu não volta com o reinício');
+        // Quem saiu não volta com o reinício, e o token antigo ouve o motivo também depois
+        // dele (frente do H3: antes o motivo ficava só na memória e virava 'expired').
+        const afterLeave = await ping(third, studentToken);
+        assert.equal(afterLeave.status, 401, 'quem saiu não volta com o reinício');
+        assert.equal(afterLeave.body.reason, 'logout');
         assert.equal((await whoami(third, professorToken)).status, 200);
         const stopped = await third.stop('SIGTERM');
         assert.equal(stopped.code, 0);
@@ -220,8 +224,12 @@ test('[UC-AUTH-001] servidor que cai (kill -9) e volta: aluno e professor seguem
         const dropped = await whoami(fourth, professorToken);
         assert.equal(dropped.status, 401);
         assert.deepEqual(dropped.body, { error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
+        // O motivo do Sair do aluno continua (é verdade mesmo com o servidor desligado entre
+        // turnos, dentro do prazo absoluto); sessão nenhuma fica no arquivo.
+        assert.equal((await ping(fourth, studentToken)).body.reason, 'logout');
         await fourth.stop('SIGKILL');
-        assert.deepEqual(await readTable(dataDir, 'auth_sessions'), []);
+        const remaining = await readTable(dataDir, 'auth_sessions');
+        assert.deepEqual(remaining.map(row => [row.key, JSON.parse(row.value).kind, JSON.parse(row.value).reason]), [[sha256(studentToken), 'revoked', 'logout']]);
     } finally {
         fs.rmSync(dataDir, { recursive: true, force: true });
     }
@@ -360,6 +368,69 @@ test('[UC-AUTH-001] reinício não traz de volta a sessão de aluno bloqueado ne
         const left = (await readTable(dataDir, 'auth_sessions')).map(row => row.key);
         assert.equal(left.includes(sha256(studentToken)), false);
         assert.equal(left.includes(sha256(professorToken)), false);
+    } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
+// Frente do H3 (sobras da J2). (b) O motivo da sessão encerrada ficava só na memória: depois
+// de um reinício o token antigo do aluno cuja senha o professor redefiniu recebia 401
+// 'expired' ("Sua sessão expirou") em vez de 'password_reset'. Agora o motivo vai para a
+// tabela auth_sessions junto com as sessões. (c) O token substituído por um login novo,
+// numa rota sem e-mail na query nem no corpo (GET /api/student/enrollments), respondia 400
+// "E-mail do estudante é obrigatório." em vez de 401 'replaced'.
+test('[UC-AUTH-001] motivo da sessão encerrada sobrevive ao reinício e token substituído responde 401 replaced sem e-mail na rota', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-server-restart-reasons-'));
+    try {
+        const server = await startServer(dataDir);
+        assert.equal((await call(server, '/api/test/seed', { method: 'POST', body: {} })).status, 200);
+        const professorToken = await professorLogin(server);
+        // Aluno entra em dois aparelhos: o primeiro token foi substituído pelo segundo.
+        const replacedToken = await studentLogin(server);
+        const studentToken = await studentLogin(server);
+        const enrollments = token => call(server, '/api/student/enrollments', { headers: { 'x-session-token': token } });
+        const replaced = await enrollments(replacedToken);
+        assert.equal(replaced.status, 401, `antes: 400 sem e-mail na rota (${JSON.stringify(replaced.body)})`);
+        assert.equal(replaced.body.sessionRevoked, true);
+        assert.equal(replaced.body.reason, 'replaced');
+        assert.match(replaced.body.error, /acessada em outro dispositivo/);
+        assert.equal((await enrollments(studentToken)).status, 200);
+        // Token que o servidor nunca viu, também sem e-mail: sessão vencida (401), não 400.
+        const unknown = await enrollments('token-que-nunca-existiu');
+        assert.equal(unknown.status, 401);
+        assert.equal(unknown.body.reason, 'expired');
+
+        // O professor redefine a senha (sem prova aberta): a sessão acaba na hora.
+        const reset = await call(server, '/api/admin/reset-password', {
+            method: 'POST',
+            headers: { 'x-admin-session': professorToken },
+            body: { email: STUDENT.email, newPassword: 'Nova-senha-ana-7' },
+        });
+        assert.equal(reset.status, 200, JSON.stringify(reset.body));
+        assert.equal((await ping(server, studentToken)).body.reason, 'password_reset');
+        await server.stop('SIGKILL');
+
+        // No arquivo, os motivos só levam o hash, o motivo e a hora (sem e-mail nem token).
+        const rows = await readTable(dataDir, 'auth_sessions');
+        const reasons = Object.fromEntries(rows.map(row => [row.key, JSON.parse(row.value)]).filter(([, value]) => value.kind === 'revoked'));
+        assert.equal(reasons[sha256(studentToken)].reason, 'password_reset');
+        assert.equal(reasons[sha256(replacedToken)].reason, 'replaced');
+        const text = JSON.stringify(rows);
+        assert.equal(text.includes(studentToken) || text.includes(replacedToken), false);
+        assert.equal(Object.values(reasons).some(value => Object.hasOwn(value, 'email')), false);
+
+        // Depois do reinício (kill -9), o aluno vê o motivo certo (antes: 'expired').
+        const second = await startServer(dataDir);
+        const afterRestart = await ping(second, studentToken);
+        assert.equal(afterRestart.status, 401);
+        assert.equal(afterRestart.body.reason, 'password_reset', JSON.stringify(afterRestart.body));
+        assert.match(afterRestart.body.error, /senha desta conta foi redefinida/);
+        const stillReplaced = await call(second, '/api/student/enrollments', { headers: { 'x-session-token': replacedToken } });
+        assert.equal(stillReplaced.status, 401);
+        assert.equal(stillReplaced.body.reason, 'replaced');
+        // O professor continua com a mesma sessão.
+        assert.equal((await whoami(second, professorToken)).status, 200);
+        await second.stop('SIGTERM');
     } finally {
         fs.rmSync(dataDir, { recursive: true, force: true });
     }

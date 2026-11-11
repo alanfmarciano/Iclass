@@ -40,8 +40,8 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `questionBank` | array | banco de questões reutilizáveis |
 | `evaluations` | objeto | avaliações |
 | `courseStructure` | array | estrutura legada (**em obsolescência**, migrada para `courses[].structure`) |
-| `notes` | objeto | caderno do aluno por material |
-| `annotations` | objeto | anotações por parágrafo |
+| `notes` | objeto | caderno do aluno por material (`{ e-mail: { chave: texto } }`; desde o H9b até 50.000 caracteres por chave, 300 chaves e 1.000.000 no total por aluno, e nota vazia apaga a chave; dado antigo acima disso fica como está e só diminui) |
+| `annotations` | objeto | anotações por parágrafo (desde o H9b: nota até 5.000, trecho destacado guardado com até 1.000, 500 parágrafos por unidade, 300 unidades por aluno) |
 | `forum` | array | dúvidas/fórum por unidade |
 | `progress` | objeto | progresso por aluno/unidade |
 | `uploads` | objeto | metadados de arquivos enviados |
@@ -83,6 +83,7 @@ Fase 2, H3a-2 (CONF-03, UXA-06, DES-08). Antes, as sessões de aluno e de instru
 - **Backup**: as sessões não vão no backup, e restaurar um backup desconecta todos e esvazia a tabela. Quem zera é o gancho `authSessions` de `db.afterRestore` (lista de ganchos pós-restauração em `database.js`, rodada por `db.runAfterRestore` no fim do `applySnapshot` de `utils/backup.js`, antes da gravação); o laço da restauração não mexe na entrada `derived`.
 - **Senha redefinida pelo launcher** (`backend/scripts/reset-admin-password.js`, com o servidor parado): `db.revokeAccountSessions({ kind: 'admin', email })` tira as sessões da conta da memória e das linhas lidas no boot do script, e a gravação as apaga da tabela. As sessões das outras contas ficam e voltam no boot seguinte pelas regras de sempre.
 - **Primeiro boot desta versão**: a tabela ainda não existe; todos entram de novo uma vez, como antes.
+- **Motivo das sessões encerradas** (frente do H3): a mesma tabela guarda, por até 8 h, uma linha por sessão encerrada com motivo, para o 401 continuar dizendo por que a sessão caiu depois de um reinício: `key` = sha256 do token, `value` = `{ kind: 'revoked', reason, at }`, com `reason` em `logout`, `password_reset`, `password_changed` ou `replaced` (o aluno entrou em outro aparelho) e `at` em ms. Sem e-mail e sem token cru. Vem de `persistedRevocationRows` (`utils/authSessions.js`, guardadas no máximo 5000); `restoreSessions` as traz de volta mesmo quando as sessões não voltam (mais de 60 min fora do ar ou sem heartbeat) e não as conta como descartadas. Restaurar backup também as apaga. Versão anterior que lê a tabela ignora essas linhas (não são sessão).
 
 ## Histórico de digitação da prova (`exam_keystroke_events`)
 

@@ -16,6 +16,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 import { usePolling } from '../../hooks/usePolling'
+import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM, clampText, formatCount, tooLongMessage } from '../../lib/textLimits'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -156,6 +157,9 @@ export default function ForumPage() {
   async function editText(target) {
     const text = prompt('Editar texto:', target.text)
     if (!text || text === target.text) return
+    // O prompt do navegador não tem limite: o teto do servidor (5.000) é conferido aqui,
+    // com o motivo na tela, antes de mandar (H9b).
+    if (text.trim().length > FORUM_TEXT_MAX_CHARS) return toast.error(tooLongMessage(text.trim().length, FORUM_TEXT_MAX_CHARS))
     try {
       if (target.replyId) await api.post('/api/forum/reply/edit', { commentId: target.commentId, replyId: target.replyId, courseId: activeCourseId, studentClass: activeClassName, email: auth.email, text })
       else await api.post('/api/forum/comment/edit', { commentId: target.commentId, courseId: activeCourseId, studentClass: activeClassName, email: auth.email, text })
@@ -171,7 +175,13 @@ export default function ForumPage() {
     catch (e) { toast.error(e.message) }
   }
   function markAllRead() { setPref('forum.lastSeen', new Date().toISOString()); toast.success('Marcadas como lidas') }
-  function applyTemplate(commentId, text) { setReply((r) => ({ ...r, [commentId]: (r[commentId] ? r[commentId] + '\n' : '') + text })) }
+  // O modelo entra no fim da resposta sem passar do teto do campo (5.000): o que sobrar é
+  // cortado e o professor é avisado (antes o servidor recusava a resposta inteira).
+  function applyTemplate(commentId, text) {
+    const joined = clampText((reply[commentId] ? reply[commentId] + '\n' : '') + text, FORUM_TEXT_MAX_CHARS)
+    setReply((r) => ({ ...r, [commentId]: joined.text }))
+    if (joined.cut) toast.warning(`O modelo foi cortado para a resposta caber em ${formatCount(FORUM_TEXT_MAX_CHARS)} caracteres.`)
+  }
   function addTemplate() {
     if (!tplForm.title.trim() || !tplForm.text.trim()) return toast.error('Preencha título e texto')
     setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: tplForm.title.trim(), text: tplForm.text.trim() }])
@@ -268,7 +278,7 @@ export default function ForumPage() {
                 </div>
               )}
               <div className="mt-3 flex gap-2">
-                <Textarea id={`reply-${c.id}`} value={reply[c.id] || ''} onChange={(e) => setReply((r) => ({ ...r, [c.id]: e.target.value }))} placeholder="Responder como instrutor..." className="min-h-[70px]" />
+                <Textarea id={`reply-${c.id}`} value={reply[c.id] || ''} onChange={(e) => setReply((r) => ({ ...r, [c.id]: e.target.value }))} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Responder como instrutor..." className="min-h-[70px]" />
                 <div className="flex flex-col gap-2">
                   <Button icon={Send} onClick={() => sendReply(c.id)}>Enviar</Button>
                   <Button variant="secondary" icon={status === 'resolvida' ? RotateCcw : CircleCheck} onClick={() => resolveToggle(c)}>{status === 'resolvida' ? 'Reabrir' : 'Resolver'}</Button>
@@ -348,7 +358,7 @@ export default function ForumPage() {
           ))}
           <div className="pt-3 border-t border-border space-y-2">
             <Input label="Título" value={tplForm.title} onChange={(e) => setTplForm({ ...tplForm, title: e.target.value })} placeholder="Ex.: Prazo da prova" />
-            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} placeholder="Resposta padrão..." className="min-h-[70px]" />
+            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Resposta padrão..." className="min-h-[70px]" />
             <Button icon={Plus} onClick={addTemplate}>Adicionar modelo</Button>
           </div>
         </div>

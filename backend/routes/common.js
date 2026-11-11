@@ -6,6 +6,7 @@ const db = require('../database.js');
 const { SERVER_INSTANCE_ID } = require('../utils/sessionConfig.js');
 const settingsUtil = require('../utils/settings.js');
 const { connectionInfo } = require('../utils/networkPolicy.js');
+const secureConnection = require('../utils/secureConnection.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -19,7 +20,6 @@ const {
 } = require('../utils/contentAccess.js');
 const {
     sanitizeEvaluationForStudent,
-    localIpAddresses,
     validateAdmin,
     validateAdminPermission,
     validateAnySession,
@@ -31,6 +31,7 @@ const {
 } = require('../middlewares.js');
 const { logError, oneLine } = require('../utils/errorLog.js');
 const { rateLimit } = require('../utils/rateLimit.js');
+const { body, oneOf, str } = require('../utils/inputSchema.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
 // O cliente compara o instanceId; se mudou (servidor reiniciado), forca novo login.
@@ -59,6 +60,41 @@ router.get('/api/connection', (req, res) => {
     res.json(connectionInfo(req));
 });
 
+// Conexão segura (H6c, SEG-03 e OPS-08), sem login, em http e em https: o aparelho baixa
+// o certificado da CA deste IClass antes de confiar no https (guia /certificado).
+// - GET /iclass-ca.crt: o certificado da CA (DER), para instalar no aparelho;
+// - GET /api/connection/certificate: a impressão digital (para comparar com a de Sistema
+//   → Rede, no computador do IClass) e as validades. Sem conexão segura, 200 com
+//   available:false e um texto curto (sem resposta de estado nova: contrato 9). O motivo
+//   (pasta, permissão) aparece só no console e em Sistema → Rede, não para quem abre a
+//   página sem login. httpsUrl é null quando o endereço seguro não serve a este aparelho
+//   (IP da rede fora do certificado): o guia diz para avisar o administrador.
+router.get('/iclass-ca.crt', (req, res) => {
+    const der = secureConnection.caCertificateDer();
+    res.set('Cache-Control', 'no-store');
+    if (!der) return res.status(404).type('text/plain; charset=utf-8').send(`${secureConnection.publicUnavailableText()} O certificado do IClass não pode ser baixado agora.`);
+    res.set('Content-Type', 'application/x-x509-ca-cert');
+    res.set('Content-Disposition', 'attachment; filename="iclass-ca.crt"');
+    return res.send(Buffer.from(der));
+});
+
+router.get('/api/connection/certificate', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const status = secureConnection.status();
+    if (!status.available) {
+        return res.json({ available: false, error: secureConnection.publicUnavailableText() });
+    }
+    return res.json({
+        available: true,
+        fingerprintSha256: status.ca.fingerprintSha256,
+        validFrom: status.ca.validFrom,
+        validTo: status.ca.validTo,
+        recreatedAt: status.ca.recreatedAt,
+        server: status.server,
+        httpsUrl: connectionInfo(req).httpsUrl,
+    });
+});
+
 // Erro de tela do navegador (fase 2, H9c: ENG-05): a área de erro dos layouts e a tela
 // de erro da raiz (web/src/lib/clientErrors.js) avisam aqui, e o aviso vira uma linha
 // "erro de tela" no crash.log da pasta de dados, com quem estava na tela, a área, o
@@ -69,39 +105,18 @@ router.get('/api/connection', (req, res) => {
 // Cada campo vira uma linha só (quebras de linha e caracteres de controle saem), para
 // o texto mandado pelo navegador não forjar no arquivo um bloco com cabeçalho de outro
 // usuário. Fora de /api/admin: o aluno também avisa.
-// O schema fica aqui até o H9b trazer o utils/inputSchema.js (mesmas mensagens).
+// Campos conferidos pelo schema (utils/inputSchema.js, H9b) depois da sessão: o aviso
+// recusado (400) não grava nada nem conta no limite.
 const CLIENT_ERROR_AREAS = ['raiz', 'admin', 'aluno', 'prova'];
-const CLIENT_ERROR_FIELDS = [
-    { field: 'area', label: 'área', oneOf: CLIENT_ERROR_AREAS, required: true },
-    { field: 'message', label: 'mensagem', max: 300, required: true },
-    { field: 'path', label: 'caminho', max: 200 },
-    { field: 'build', label: 'versão', max: 64 },
-];
+const CLIENT_ERROR_SCHEMA = body({
+    area: oneOf(CLIENT_ERROR_AREAS, { required: true, label: 'área' }),
+    message: str({ max: 300, required: true, label: 'mensagem' }),
+    path: str({ max: 200, label: 'caminho' }),
+    build: str({ max: 64, label: 'versão' }),
+});
 const CLIENT_ERROR_RATE_LIMIT = { max: 10, windowMs: 60000 };
 
-// Devolve { error, field } do primeiro campo errado, ou null com o corpo certo.
-function clientErrorProblem(body) {
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Dados enviados em formato inválido.' };
-    for (const rule of CLIENT_ERROR_FIELDS) {
-        const raw = body[rule.field];
-        if (raw === undefined) {
-            if (rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
-            continue;
-        }
-        if (typeof raw !== 'string') return { field: rule.field, error: `O campo "${rule.label}" está em formato inválido.` };
-        const value = raw.trim();
-        if (!value && rule.required) return { field: rule.field, error: `O campo "${rule.label}" é obrigatório.` };
-        if (rule.oneOf && !rule.oneOf.includes(value)) return { field: rule.field, error: `O campo "${rule.label}" tem um valor não permitido.` };
-        if (rule.max && value.length > rule.max) {
-            return { field: rule.field, error: `O campo "${rule.label}" aceita no máximo ${rule.max.toLocaleString('pt-BR')} caracteres.` };
-        }
-    }
-    return null;
-}
-
-router.post('/api/client-error', validateAnySession, (req, res) => {
-    const problem = clientErrorProblem(req.body);
-    if (problem) return res.status(400).json({ success: false, ...problem });
+router.post('/api/client-error', validateAnySession, CLIENT_ERROR_SCHEMA, (req, res) => {
     const email = String((req.requester && req.requester.email) || '').toLowerCase();
     const limit = rateLimit(`client-error:${email}`, CLIENT_ERROR_RATE_LIMIT);
     if (!limit.allowed) {
@@ -287,11 +302,6 @@ router.get('/:key.md', async (req, res, next) => {
             return res.status(404).type('text/plain').send('');
         }
     });
-});
-
-// Retorna os IPs da rede local
-router.get('/api/admin/network-info', (req, res) => {
-    res.json(localIpAddresses);
 });
 
 const { extractBranding, resolveEffectiveBranding, validateBrandingPatch } = require('../utils/branding.js');

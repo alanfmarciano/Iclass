@@ -26,6 +26,7 @@ const settingsUtil = require('../../backend/utils/settings.js');
 const {
     LOCAL_ONLY_MESSAGE,
     HTTPS_REQUIRED_MESSAGE,
+    HTTPS_UNAVAILABLE_MESSAGE,
     adminAccessDecision,
     isInstructorRequest,
     isThisComputerRequest,
@@ -83,7 +84,10 @@ test('[UC-REDE-001] decisão por modo: este computador sempre entra; outro apare
     assert.deepEqual(adminAccessDecision({ mode: 'local', thisComputer: false, secure: true }), { allowed: false, body: { error: DECISION_TEXT, adminAccess: 'local-only', httpsUrl: null } });
     // As duas recusas levam o httpsUrl do formato combinado (contrato 9), quando houver.
     assert.equal(adminAccessDecision({ mode: 'local', thisComputer: false, secure: false, httpsUrl: 'https://192.0.2.10:3000' }).body.httpsUrl, 'https://192.0.2.10:3000');
-    assert.deepEqual(adminAccessDecision({ mode: 'rede', thisComputer: false, secure: false }), { allowed: false, body: { error: HTTPS_REQUIRED_MESSAGE, adminAccess: 'https-required', httpsUrl: null } });
+    // 'rede' sem endereço seguro (sem certificado) e com ele (H6c): o texto aponta para /certificado.
+    assert.deepEqual(adminAccessDecision({ mode: 'rede', thisComputer: false, secure: false }), { allowed: false, body: { error: HTTPS_UNAVAILABLE_MESSAGE, adminAccess: 'https-required', httpsUrl: null } });
+    assert.deepEqual(adminAccessDecision({ mode: 'rede', thisComputer: false, secure: false, httpsUrl: 'https://192.168.0.10:3000' }), { allowed: false, body: { error: HTTPS_REQUIRED_MESSAGE, adminAccess: 'https-required', httpsUrl: 'https://192.168.0.10:3000' } });
+    assert.match(HTTPS_REQUIRED_MESSAGE, /\/certificado/);
     assert.deepEqual(adminAccessDecision({ mode: 'rede', thisComputer: false, secure: true }), { allowed: true, insecure: false });
     assert.equal(LOCAL_ONLY_MESSAGE, DECISION_TEXT, 'texto exato da decisão §2 P1');
 });
@@ -210,7 +214,7 @@ test('[UC-REDE-001] "rede" guardado (backup de versão nova) sem https: outro ap
     seed({ adminAccess: 'rede' });
     const login = await request(remoteApp).post('/api/session/admin-login').send(ADMIN);
     assert.equal(login.status, 403);
-    assert.deepEqual(login.body, { error: HTTPS_REQUIRED_MESSAGE, adminAccess: 'https-required', httpsUrl: null });
+    assert.deepEqual(login.body, { error: HTTPS_UNAVAILABLE_MESSAGE, adminAccess: 'https-required', httpsUrl: null });
     const connection = await request(remoteApp).get('/api/connection').expect(200);
     assert.equal(connection.body.adminAccess, 'https-required');
     assert.equal(connection.body.tlsAvailable, false);

@@ -6,6 +6,7 @@ import { Input } from '../../components/ui/Input'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { passwordHint } from '../../lib/passwordPolicy'
+import { copyText } from '../../lib/clipboard'
 
 // Senha do aluno pelo professor (H5a; SEG-06, UXA-13): o "Redefinir senha" com senha
 // temporária gerada pelo servidor (o padrão) ou definida pelo professor, e o aviso que
@@ -29,37 +30,14 @@ function temporaryPasswordText(mustChangePassword, deferred) {
   return TEMPORARY_PASSWORD_TEXT
 }
 
-// Copiar sem depender de navigator.clipboard, que o navegador só libera na conexão segura
-// (o IClass na rede da escola abre em http): cai para o execCommand('copy').
-export async function copyText(text) {
-  try {
-    if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch { /* tenta o caminho antigo */ }
-  try {
-    const area = document.createElement('textarea')
-    area.value = text
-    area.setAttribute('readonly', '')
-    area.style.position = 'fixed'
-    area.style.opacity = '0'
-    document.body.appendChild(area)
-    area.select()
-    const ok = document.execCommand('copy')
-    area.remove()
-    return ok
-  } catch {
-    return false
-  }
-}
-
 // mustChangePassword: o que o servidor respondeu (false = a troca não foi pedida);
 // deferred: passwordChangeDeferred (o aluno está em prova e troca depois dela).
 export function TemporaryPasswordNotice({ open, email, password, mustChangePassword = true, deferred = false, onClose }) {
   const toast = useToast()
   async function copy() {
-    const ok = await copyText(password || '')
+    // lib/clipboard.js (H6a): API de copiar no contexto seguro, execCommand pelo IP da
+    // rede (http). Sem nenhum dos dois, a senha continua à vista no aviso para anotar.
+    const ok = (await copyText(password || '')) === 'copied'
     if (!toast) return
     if (ok) toast.success('Senha copiada')
     else toast.error('Não foi possível copiar. Anote a senha.')
