@@ -54,6 +54,17 @@ function storedLength(value) {
     try { return JSON.stringify(value).length || 0; } catch (_) { return 0; }
 }
 
+// Nota como a tela lê (notes/get): sempre texto. Valor antigo que não é texto (o servidor
+// aceitava qualquer coisa antes do H9b) vai como texto, sem regravar: número e
+// verdadeiro/falso viram o próprio texto, objeto e lista viram o JSON (a tela mostrava
+// "[object Object]"). Ausente, null ou vazio: ''.
+function noteForScreen(value) {
+    if (value == null || value === '') return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    try { return JSON.stringify(value) || ''; } catch (_) { return ''; }
+}
+
 function notesTotal(notes) {
     if (!notes || typeof notes !== 'object') return 0;
     return Object.keys(notes).reduce((sum, key) => sum + storedLength(notes[key]), 0);
@@ -151,6 +162,7 @@ module.exports = {
     NOTES_MAX_TOTAL_CHARS,
     applyAnnotationWrite,
     applyNoteWrite,
+    noteForScreen,
     notesTotal,
     studentMap,
 };

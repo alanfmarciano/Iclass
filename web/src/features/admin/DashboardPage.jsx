@@ -16,6 +16,7 @@ import { DisciplineFrequency } from './dashboard/DisciplineFrequency'
 import { WeekAgenda } from './dashboard/WeekAgenda'
 import { DataQualityNote } from './dashboard/DataQualityNote'
 import { csvCell } from '../../lib/csv'
+import { snoozedWith } from './dashboard/snooze'
 
 // Dashboard v3 — "fila de trabalho do dia", não relatório em miniatura.
 // São 4 endpoints com volatilidades diferentes; cada seção carrega, falha e
@@ -73,9 +74,10 @@ export default function DashboardPage() {
 
   // Fila: adiar por 24h persiste em preferences (servidor filtra na próxima carga;
   // aqui remove otimisticamente para a linha sumir na hora).
+  // Os adiamentos já vencidos (mais de 24h) saem da lista ao adiar outro: antes ela só
+  // crescia e podia levar as preferências da conta ao teto de 64 KB (H9b).
   const snooze = (item) => {
-    const cur = pref('dashboard.snoozed', {})
-    setPref('dashboard.snoozed', { ...cur, [item.id]: Date.now() })
+    setPref('dashboard.snoozed', snoozedWith(pref('dashboard.snoozed', {}), item.id))
     queue.setData((queue.data || []).filter((i) => i.id !== item.id))
   }
 

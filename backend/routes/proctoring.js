@@ -48,6 +48,9 @@ const STUDENT_ACTIVITY_EVENTS = new Set([
     'exam_render_error', 'exam_error_reload', 'exam_update_reload',
 ]);
 const ACTIVITY_DETAILS_MAX = 500;
+// Teto da lista de eventos de um lote de teclas (H9b): 4 lotes do ExamRunner. Acima
+// disso o pedido recebe 400 { field: 'events' }, sem gravar nada.
+const KEYSTROKE_EVENTS_MAX = 2000;
 
 // Entrada das rotas da prova (fase 2, H9b: ENG-03): tipo e tamanho de cada campo
 // (utils/inputSchema.js), conferidos depois da sessão; a presença continua com a rota.
@@ -69,12 +72,14 @@ const PROCTORING_SCHEMAS = {
         pageExit: bool({ nullable: true, label: 'saída da página' }),
     }),
     // Lote de teclas: os identificadores com até 200 caracteres (contrato do H1-b) e os
-    // eventos numa lista (o corpo inteiro já fica em 512 KB). A rota grava os 500
-    // primeiros (o ExamRunner manda lotes de 500), pula o item que não é objeto, como
-    // antes, e diz quantos eventos além dos 500 ficaram de fora (dropped).
+    // eventos numa lista de até 2.000 itens (o corpo inteiro já fica em 512 KB; o
+    // ExamRunner manda lotes de 500). A rota grava os 500 primeiros e diz quantos além
+    // deles ficaram de fora (dropped). O item que não é objeto continua pulado, sem
+    // recusar o lote (contrato e teste do H1-b: o lote só com itens inválidos responde
+    // 200 com inserted 0); por isso os itens não passam por shape().
     logKeystrokes: body({
         ...examIdentity({ idMax: 200 }),
-        events: list(null, { nullable: true, label: 'eventos' }),
+        events: list(null, { max: KEYSTROKE_EVENTS_MAX, nullable: true, label: 'eventos' }),
     }),
     autosave: body({
         ...examIdentity(),

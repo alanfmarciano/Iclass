@@ -180,6 +180,12 @@ test('[UC-ERRO-003] prova e tela do aluno: tipo errado nos campos lidos responde
     assertRefused(await asStudent('/api/student/report-question').send({ email: STUDENT_EMAIL, examKey: 'x', questionNumber: 'dois', text: 'a' }), 'questionNumber');
     assertRefused(await asStudent('/api/student/notifications/seen').send({ email: STUDENT_EMAIL, ids: 'n1' }), 'ids');
     assertRefused(await asStudent('/api/student/log-activity').send({ email: STUDENT_EMAIL, examKey: 'x', eventType: 'blur', details: 'd'.repeat(2001) }), 'details');
+    // Lote de teclas: até 2.000 itens na lista (o ExamRunner manda 500 por vez); acima disso
+    // 400 { field: 'events' } sem gravar nada. Antes não havia teto além dos 512 KB do corpo.
+    const before = db.keystrokes.stats({ email: STUDENT_EMAIL }).total;
+    const tiny = Array.from({ length: 2001 }, () => ({}));
+    assertRefused(await asStudent('/api/student/log-keystrokes').send({ email: STUDENT_EMAIL, studentClass: CLASS_NAME, courseId: COURSE_ID, examKey: 'Avaliacao_FUTEC_5', events: tiny }), 'events', 'O campo "eventos" aceita no máximo 2.000 itens.');
+    assert.equal(db.keystrokes.stats({ email: STUDENT_EMAIL }).total, before, 'nada gravado do lote recusado');
     const area = await request(app).post('/api/client-error').set('x-session-token', STUDENT_TOKEN).send({ area: 'aluno', message: { texto: 'x' } });
     assertRefused(area, 'message', 'O campo "mensagem" está em formato inválido.');
 });
@@ -304,6 +310,22 @@ test('[UC-CADERNO-001] caderno: até 300 unidades e 1.000.000 caracteres; nota a
     assertRefused(await saveNote('u1', 'b'.repeat(40001)), 'note');
     assert.equal((await saveNote('u1', 'b'.repeat(100))).status, 200, 'diminuir passa mesmo acima do total');
     assert.equal(db.memory.notes[STUDENT_EMAIL].u2.length, 40000, 'nenhuma nota antiga é apagada ou encurtada');
+    delete db.memory.notes[STUDENT_EMAIL];
+});
+
+test('[UC-CADERNO-001] caderno: nota antiga que não é texto chega à tela como texto, sem regravar', async () => {
+    db.memory.notes[STUDENT_EMAIL] = { objeto: { titulo: 'Redes', itens: [1, 2] }, numero: 42, lista: ['a', 'b'], zero: 0, falso: false };
+    assert.equal((await getNote('objeto')).body.note, '{"titulo":"Redes","itens":[1,2]}', 'antes: a tela mostrava "[object Object]"');
+    assert.equal((await getNote('numero')).body.note, '42');
+    assert.equal((await getNote('lista')).body.note, '["a","b"]');
+    assert.equal((await getNote('zero')).body.note, '0');
+    assert.equal((await getNote('falso')).body.note, 'false');
+    assert.deepEqual(db.memory.notes[STUDENT_EMAIL].objeto, { titulo: 'Redes', itens: [1, 2] }, 'a leitura não regrava');
+    // O aluno edita o texto que viu e grava (do mesmo tamanho ou menor: passa).
+    assert.equal((await saveNote('objeto', 'Redes: itens 1 e 2')).status, 200);
+    assert.equal(db.memory.notes[STUDENT_EMAIL].objeto, 'Redes: itens 1 e 2');
+    assert.equal(notesUtil.noteForScreen(undefined), '');
+    assert.equal(notesUtil.noteForScreen(null), '');
     delete db.memory.notes[STUDENT_EMAIL];
 });
 

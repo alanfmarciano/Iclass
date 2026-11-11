@@ -71,7 +71,7 @@ const {
 } = require('../utils/passwordChange.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const { KEY_PATTERN, body, bool, dict, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
-const { LEGACY_ANNOTATIONS_ERROR, LEGACY_NOTES_ERROR, applyAnnotationWrite, applyNoteWrite, studentMap } = require('../utils/studentNotes.js');
+const { LEGACY_ANNOTATIONS_ERROR, LEGACY_NOTES_ERROR, applyAnnotationWrite, applyNoteWrite, noteForScreen, studentMap } = require('../utils/studentNotes.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
     createSubmissionFromAttempt,
@@ -2276,7 +2276,8 @@ router.post('/api/student/notes/get', validateStudentSession, STUDENT_SCHEMAS.no
     // Só a chave própria: 'constructor' devolvia a função herdada de Object.
     const notesMap = studentMap(db.memory.notes, email).map || {};
     const note = Object.prototype.hasOwnProperty.call(notesMap, moduleKey) ? notesMap[moduleKey] : '';
-    res.json({ success: true, note: note || "" });
+    // Sempre texto (H9b): nota antiga gravada como objeto ou número não vira "[object Object]".
+    res.json({ success: true, note: noteForScreen(note) });
 });
 
 // ==========================================
