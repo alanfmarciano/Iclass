@@ -117,7 +117,10 @@ test('[UC-REDE-002] GET /api/admin/network-info: objeto com o recomendado e a ur
     assert.equal(res.body.recommended.url, 'http://192.168.0.10:3000');
     assert.equal(res.body.addresses.length, 4);
     res.body.addresses.forEach(item => assert.match(item.url, /^http:\/\/[\d.]+:3000$/));
-    assert.deepEqual(res.body.https, { available: false, studentsHttps: false });
+    // Sem o certificado preparado (supertest, sem startServer): conexão segura indisponível (H6c).
+    assert.equal(res.body.https.available, false);
+    assert.equal(res.body.https.studentsHttps, false);
+    assert.equal(res.body.https.url, null);
     assert.equal(res.body.hostname, null);
     assert.equal(res.body.adminAccess, 'rede-sem-https');
     await request(app).get('/api/admin/network-info').expect(401);
@@ -194,6 +197,27 @@ test('[UC-REDE-002] vigia da rede: avisa no console quando o endereço muda, uma
     networkAddresses.setInterfaceProvider(provider);
     assert.equal(watcher.check(), true);
     assert.match(logs[1], /mudou: sem rede \(antes: http:\/\/192\.168\.1\.50:3000\)/);
+});
+
+test('[UC-REDE-005] vigia da rede: ligar o https dos alunos troca o esquema sem contar como rede nova', () => {
+    const logs = [];
+    const changes = [];
+    let scheme = 'http';
+    const watcher = networkAddresses.createAddressWatcher({ port: 3000, scheme: () => scheme, log: line => logs.push(line), onChange: now => changes.push(now.recommended && now.recommended.url) });
+    assert.equal(watcher.check(), false);
+    scheme = 'https';
+    // Antes, a troca de esquema aparecia como "Endereço da rede mudou" e refazia o certificado.
+    assert.equal(watcher.check(), false, 'a rede não mudou');
+    assert.deepEqual(changes, []);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /^🔄 Endereço para os alunos agora é https:\/\/192\.168\.0\.10:3000 \(antes: http:\/\/192\.168\.0\.10:3000\)\.$/);
+    assert.equal(watcher.current().recommended.url, 'https://192.168.0.10:3000');
+    assert.equal(watcher.check(), false);
+    assert.equal(logs.length, 1, 'uma vez por troca');
+    interfaces = { 'Wi-Fi': [{ family: 'IPv4', address: '192.168.1.50', internal: false }] };
+    networkAddresses.setInterfaceProvider(provider);
+    assert.equal(watcher.check(), true);
+    assert.deepEqual(changes, ['https://192.168.1.50:3000']);
 });
 
 test('[UC-REDE-002] com TEST_MODE, ICLASS_TEST_INTERFACES_FILE simula os adaptadores; fora dele é ignorado', () => {

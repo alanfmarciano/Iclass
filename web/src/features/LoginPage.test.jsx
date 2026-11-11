@@ -279,3 +279,75 @@ describe('[UC-AUTH-003] motivo da sessão encerrada no login', () => {
     expect(mocks.toast.error).not.toHaveBeenCalled()
   })
 })
+
+// Fase 2, H6c (SEG-03, OPS-08): conexão segura no login.
+const HTTPS_REQUIRED = 'O painel do professor em outro aparelho só abre pela conexão segura (https). Abra o endereço seguro. Se o navegador avisar que a conexão não é particular, instale antes o certificado do IClass neste aparelho: o passo a passo está na página /certificado.'
+
+describe('[UC-REDE-005] login com a conexão segura', () => {
+  it('"Só com conexão segura" em outro aparelho por http: botão para o endereço seguro e link para o guia', async () => {
+    mocks.connection = { secure: false, thisComputer: false, adminAccess: 'https-required', adminAccessMode: 'rede', adminAccessError: HTTPS_REQUIRED, insecureAdmin: false, tlsAvailable: true, httpsUrl: 'https://192.168.0.10:3000' }
+    const user = userEvent.setup()
+    renderLogin()
+    await user.click(screen.getByRole('button', { name: 'Instrutor' }))
+    const refused = await screen.findByTestId('admin-access-refused')
+    expect(refused).toHaveTextContent('Abra o endereço seguro')
+    expect(screen.getByTestId('open-secure-address')).toHaveAttribute('href', 'https://192.168.0.10:3000/login?mode=admin')
+    expect(screen.getByTestId('certificate-guide-link')).toHaveAttribute('href', '/certificado')
+    expect(screen.getByRole('button', { name: /Entrar como instrutor/ })).toBeDisabled()
+  })
+
+  it('sem a conexão segura funcionando (httpsUrl null): texto de indisponível e nenhum botão para o https', async () => {
+    mocks.connection = { secure: false, thisComputer: false, adminAccess: 'https-required', adminAccessMode: 'rede', insecureAdmin: false, tlsAvailable: false, httpsUrl: null }
+    const user = userEvent.setup()
+    renderLogin()
+    await user.click(screen.getByRole('button', { name: 'Instrutor' }))
+    expect(await screen.findByTestId('admin-access-refused')).toHaveTextContent('ela não está funcionando neste IClass agora')
+    expect(screen.queryByTestId('open-secure-address')).toBeNull()
+  })
+
+  it('"Todos os aparelhos da rede" com a conexão segura funcionando: o aviso traz "Usar conexão segura"', async () => {
+    mocks.connection = { ...OPEN_INSECURE, tlsAvailable: true, httpsUrl: 'https://192.168.0.10:3000' }
+    const user = userEvent.setup()
+    renderLogin()
+    await user.click(screen.getByRole('button', { name: 'Instrutor' }))
+    const notice = await screen.findByTestId('insecure-connection-notice')
+    expect(notice.querySelector('a')).toHaveAttribute('href', '/certificado')
+    expect(notice).toHaveTextContent('Usar conexão segura')
+  })
+
+  it('aluno com a tela aberta por http depois de o https dos alunos ser ligado: vai para o login no endereço seguro', async () => {
+    mocks.loginStudent.mockRejectedValue(Object.assign(new Error('Abra o endereço seguro para entrar.'), { status: 403, data: { error: 'Abra o endereço seguro para entrar.', httpsRequired: true, httpsUrl: 'https://192.168.0.10:3000' } }))
+    const assign = vi.fn()
+    const original = window.location
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...original, assign, search: '' } })
+    try {
+      const user = userEvent.setup()
+      renderLogin()
+      await user.type(screen.getByLabelText('E-mail'), 'aluno@teste.local')
+      await user.type(screen.getByLabelText('Senha'), 'teste')
+      await user.click(screen.getByRole('button', { name: /Entrar como aluno/ }))
+      await waitFor(() => expect(assign).toHaveBeenCalledWith('https://192.168.0.10:3000/login'))
+      expect(mocks.toast.error).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: original })
+    }
+  })
+
+  it('httpsUrl que não é https não vira redirecionamento', async () => {
+    mocks.loginStudent.mockRejectedValue(Object.assign(new Error('Abra o endereço seguro para entrar.'), { status: 403, data: { httpsRequired: true, httpsUrl: 'javascript:alert(1)' } }))
+    const assign = vi.fn()
+    const original = window.location
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...original, assign, search: '' } })
+    try {
+      const user = userEvent.setup()
+      renderLogin()
+      await user.type(screen.getByLabelText('E-mail'), 'aluno@teste.local')
+      await user.type(screen.getByLabelText('Senha'), 'teste')
+      await user.click(screen.getByRole('button', { name: /Entrar como aluno/ }))
+      await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Abra o endereço seguro para entrar.'))
+      expect(assign).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: original })
+    }
+  })
+})

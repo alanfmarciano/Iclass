@@ -1,7 +1,8 @@
-// Sistema → Rede: onde o painel do professor abre (H6b, SEG-03). Só o administrador troca
-// settings.network.adminAccess, pela rota própria, com registro na auditoria. O POST
-// genérico de configurações não mexe no bloco (PROTECTED_SETTINGS_SECTIONS), e a opção
-// 'rede' (só pela conexão segura) é recusada enquanto o IClass não tiver https (H6c).
+// Sistema → Rede: onde o painel do professor abre (H6b, SEG-03) e se os alunos entram pela
+// conexão segura (studentsHttps, H6c). Só o administrador troca settings.network, pela rota
+// própria, com registro na auditoria. O POST genérico de configurações não mexe no bloco
+// (PROTECTED_SETTINGS_SECTIONS), e a opção 'rede' (só pela conexão segura) é recusada
+// enquanto a conexão segura não funcionar (aqui, sem o prepare do startServer).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -58,8 +59,11 @@ test('[UC-REDE-001] GET network-settings: padrão do banco antigo, modos e se a 
     const res = await asAdmin(request(app).get('/api/admin/network-settings')).expect(200);
     assert.deepEqual(res.body, {
         adminAccess: 'rede-sem-https',
+        studentsHttps: false,
         modes: ['rede-sem-https', 'local', 'rede'],
         httpsAvailable: false,
+        httpsError: 'Conexão segura indisponível.',
+        httpsUrl: null,
         thisComputer: true,
         secure: false,
     });
@@ -91,12 +95,12 @@ test('[UC-REDE-001] administrador troca para "Só o computador do IClass" e a tr
     assert.equal(networkAudits().length, 2);
 });
 
-test('[UC-REDE-001] "Outros aparelhos só com conexão segura" é recusado enquanto não há https, em português claro', async () => {
+test('[UC-REDE-001] "Outros aparelhos só com conexão segura" é recusado sem a conexão segura funcionando, em português claro', async () => {
     const res = await asAdmin(request(app).post('/api/admin/network-settings')).send({ adminAccess: 'rede' });
     assert.equal(res.status, 409);
     assert.equal(res.body.success, false);
     assert.equal(res.body.field, 'adminAccess');
-    assert.match(res.body.error, /ainda não pode ser usada: esta versão do IClass ainda não tem a conexão segura \(https\)/);
+    assert.match(res.body.error, /precisa da conexão segura \(https\) funcionando neste computador\. Conexão segura indisponível\./);
     assert.equal(settingsUtil.networkSettings().adminAccess, 'rede-sem-https');
     assert.equal(networkAudits().length, 0);
 });
@@ -114,7 +118,7 @@ test('[UC-REDE-001] valor inválido é recusado sem gravar', async () => {
 test('[UC-REDE-001] professor não troca a regra, nem com "Executar manutenção"', async () => {
     const res = await asProf(request(app).post('/api/admin/network-settings')).send({ adminAccess: 'local' });
     assert.equal(res.status, 403);
-    assert.equal(res.body.error, 'Só o administrador pode mudar onde o painel do professor abre.');
+    assert.equal(res.body.error, 'Só o administrador pode mudar as configurações de rede.');
     assert.equal(db.memory.config.settings.network, undefined);
     assert.equal(networkAudits().length, 0);
 });
@@ -147,7 +151,7 @@ test('[UC-REDE-001] a regra gravada sobrevive ao reinício (vai para o banco)', 
 const settingsUtil = require(${JSON.stringify(require.resolve('../../backend/utils/settings.js'))});
 db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(settingsUtil.networkSettings())); await db.close(); });`;
     const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
-    assert.deepEqual(JSON.parse(output.slice(output.indexOf('@@') + 2)), { adminAccess: 'local' });
+    assert.deepEqual(JSON.parse(output.slice(output.indexOf('@@') + 2)), { adminAccess: 'local', studentsHttps: false });
 });
 
 // Restaurar um backup não afrouxa o acesso do painel (decisões do coordenador §7, J2):
@@ -195,5 +199,5 @@ test('[UC-REDE-001] restaurar backup mantém o settings.network de agora', async
 const settingsUtil = require(${JSON.stringify(require.resolve('../../backend/utils/settings.js'))});
 db.init().then(async () => { process.stdout.write('@@' + JSON.stringify(settingsUtil.networkSettings())); await db.close(); });`;
     const output = require('node:child_process').execFileSync(process.execPath, ['-e', script], { env: process.env, encoding: 'utf8' });
-    assert.deepEqual(JSON.parse(output.slice(output.indexOf('@@') + 2)), { adminAccess: 'local' });
+    assert.deepEqual(JSON.parse(output.slice(output.indexOf('@@') + 2)), { adminAccess: 'local', studentsHttps: false });
 });

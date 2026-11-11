@@ -19,6 +19,7 @@ const {
 const settingsUtil = require('../utils/settings.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const { connectionInfo, httpsAvailable, studentsHttpsEnabled } = require('../utils/networkPolicy.js');
+const secureConnection = require('../utils/secureConnection.js');
 const { networkAddresses } = require('../utils/networkAddresses.js');
 const { encodeQr } = require('../utils/qrCode.js');
 const { saveServerBackup } = require('../utils/backup.js');
@@ -179,15 +180,31 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
 
     // Endereços desta máquina (utils/networkAddresses.js, relidos a cada 2 s), com o
     // esquema que os alunos usam: http enquanto a conexão segura para os alunos estiver
-    // desligada (studentsHttps, padrão; H6c).
+    // desligada (studentsHttps, padrão), https quando ligada (H6c).
     function studentAddresses(req) {
         return networkAddresses({ port: listeningPort(req), scheme: studentsHttpsEnabled() ? 'https' : 'http' });
     }
 
+    // Conexão segura (H6c) para a tela: se funciona (ou o motivo), o endereço seguro
+    // recomendado, a impressão digital e as validades da CA e do certificado do servidor.
+    function httpsPayload(port, snapshot) {
+        const status = secureConnection.status();
+        const recommended = snapshot && snapshot.recommended;
+        return {
+            available: status.available,
+            error: status.available ? null : secureConnection.unavailableText(),
+            studentsHttps: studentsHttpsEnabled(),
+            studentsHttpsSetting: settingsUtil.networkSettings().studentsHttps,
+            url: status.available ? `https://${recommended ? recommended.address : 'localhost'}:${port}` : null,
+            ca: status.ca,
+            server: status.server,
+        };
+    }
+
     // Cartão Rede da tela Sistema (H6a, OPS-10): todos os adaptadores, cada um com o
     // endereço completo (esquema, IP e porta) e o tipo ('rede', 'virtual', 'link-local'),
-    // e o recomendado para os alunos. hostname (nome fixo, H6d) e https (conexão segura,
-    // H6c) já vêm no formato final, desligados nesta versão.
+    // e o recomendado para os alunos; a conexão segura (H6c) em https. hostname (nome
+    // fixo, H6d) já vem no formato final, desligado nesta versão.
     router.get('/api/admin/network-info', (req, res) => {
         validateAdmin(req, res, () => {
             const snapshot = studentAddresses(req);
@@ -196,7 +213,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 recommended: snapshot.recommended,
                 addresses: snapshot.addresses,
                 hostname: null,
-                https: { available: httpsAvailable(), studentsHttps: studentsHttpsEnabled() },
+                https: httpsPayload(snapshot.port, snapshot),
                 adminAccess: settingsUtil.networkSettings().adminAccess,
             });
         });
@@ -559,19 +576,34 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         });
     });
 
-    // Rede (SEG-03): quem abre o painel do professor em outros aparelhos. Só o
-    // administrador troca (o professor recebe 403 mesmo com system.manage), com registro
-    // na auditoria. O POST genérico de configurações nunca mexe neste bloco
-    // (PROTECTED_SETTINGS_SECTIONS em utils/settings.js).
+    // Rede (SEG-03): quem abre o painel do professor em outros aparelhos (adminAccess) e
+    // se os alunos entram pela conexão segura (studentsHttps, H6c). Só o administrador
+    // troca (o professor recebe 403 mesmo com system.manage), com registro na auditoria.
+    // O POST genérico de configurações nunca mexe neste bloco (PROTECTED_SETTINGS_SECTIONS
+    // em utils/settings.js).
     function networkSettingsPayload(req) {
         const connection = connectionInfo(req);
+        const status = secureConnection.status();
         return {
             ...settingsUtil.networkSettings(),
             modes: settingsUtil.ADMIN_ACCESS_MODES,
             httpsAvailable: httpsAvailable(),
+            httpsError: status.available ? null : secureConnection.unavailableText(),
+            httpsUrl: connection.httpsUrl,
             thisComputer: connection.thisComputer,
             secure: connection.secure,
         };
+    }
+
+    // Provas em andamento (aberta ou pausada), pelo nome, para a recusa de trocar o https
+    // dos alunos: a troca muda o endereço, e quem está com a prova aberta perderia a sessão.
+    function activeApplicationTitles() {
+        return (db.memory.examApplications || [])
+            .filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status))
+            .map(item => {
+                const title = item.title || item.examTitle || examTitleFor(item.examKey);
+                return item.studentClass ? `${title} (${item.studentClass})` : title;
+            });
     }
 
     router.get('/api/admin/network-settings', (req, res) => {
@@ -581,37 +613,77 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     router.post('/api/admin/network-settings', (req, res) => {
         validateAdmin(req, res, async (config, account) => {
             if (isProfessorAccount(account)) {
-                return res.status(403).json({ error: 'Só o administrador pode mudar onde o painel do professor abre.' });
+                return res.status(403).json({ error: 'Só o administrador pode mudar as configurações de rede.' });
             }
-            const requested = req.body.adminAccess;
-            if (typeof requested !== 'string' || !settingsUtil.ADMIN_ACCESS_MODES.includes(requested)) {
+            const body = req.body || {};
+            const hasAccess = body.adminAccess !== undefined;
+            const hasStudents = body.studentsHttps !== undefined;
+            if (!hasAccess && !hasStudents) {
                 return res.status(400).json({ success: false, error: 'Escolha onde o painel do professor pode abrir.', field: 'adminAccess' });
             }
-            if (requested === 'rede' && !httpsAvailable()) {
+            if (hasAccess && (typeof body.adminAccess !== 'string' || !settingsUtil.ADMIN_ACCESS_MODES.includes(body.adminAccess))) {
+                return res.status(400).json({ success: false, error: 'Escolha onde o painel do professor pode abrir.', field: 'adminAccess' });
+            }
+            if (hasStudents && typeof body.studentsHttps !== 'boolean') {
+                return res.status(400).json({ success: false, error: 'Diga se os alunos entram pela conexão segura (sim ou não).', field: 'studentsHttps' });
+            }
+            const before = settingsUtil.networkSettings();
+            const after = {
+                adminAccess: hasAccess ? body.adminAccess : before.adminAccess,
+                studentsHttps: hasStudents ? body.studentsHttps : before.studentsHttps,
+            };
+            const unavailable = secureConnection.status().available ? '' : ` ${secureConnection.unavailableText()}`;
+            if (hasAccess && after.adminAccess === 'rede' && before.adminAccess !== 'rede' && !httpsAvailable()) {
                 return res.status(409).json({
                     success: false,
                     field: 'adminAccess',
-                    error: 'A opção "Outros aparelhos só com conexão segura" ainda não pode ser usada: esta versão do IClass ainda não tem a conexão segura (https). Por enquanto, escolha "Todos os aparelhos da rede" ou "Só o computador do IClass".',
+                    error: `A opção "Outros aparelhos só com conexão segura" precisa da conexão segura (https) funcionando neste computador.${unavailable} Por enquanto, escolha "Todos os aparelhos da rede" ou "Só o computador do IClass".`,
                 });
             }
-            const before = settingsUtil.networkSettings();
-            if (before.adminAccess === requested) {
+            if (hasStudents && after.studentsHttps && !before.studentsHttps && !httpsAvailable()) {
+                return res.status(409).json({
+                    success: false,
+                    field: 'studentsHttps',
+                    error: `Os alunos só podem entrar pela conexão segura com ela funcionando neste computador.${unavailable}`,
+                });
+            }
+            if (after.studentsHttps !== before.studentsHttps) {
+                // A troca muda o endereço dos alunos (http e https não dividem a sessão no
+                // navegador): com prova em andamento, a turma inteira teria de entrar de novo.
+                const active = activeApplicationTitles();
+                if (active.length) {
+                    return res.status(409).json({
+                        success: false,
+                        field: 'studentsHttps',
+                        error: `Há prova em andamento: ${active.join('; ')}. Troque a conexão dos alunos depois que as provas terminarem (ao trocar, quem estiver com o IClass aberto precisa entrar de novo).`,
+                        activeApplications: active,
+                    });
+                }
+            }
+            const changes = ['adminAccess', 'studentsHttps'].filter(key => before[key] !== after[key]);
+            if (!changes.length) {
                 return res.json({ success: true, unchanged: true, network: networkSettingsPayload(req) });
             }
             if (!db.memory.config) db.memory.config = {};
             const settings = db.memory.config.settings && typeof db.memory.config.settings === 'object' ? db.memory.config.settings : {};
             const storedNetwork = settings.network && typeof settings.network === 'object' ? settings.network : {};
-            db.memory.config.settings = { ...settings, network: { ...storedNetwork, adminAccess: requested } };
-            recordAudit(db.memory, {
-                req,
-                actor: account,
-                action: 'network_settings_changed',
-                category: 'system',
-                field: 'adminAccess',
-                oldValue: before.adminAccess,
-                newValue: requested,
-                before: { adminAccess: before.adminAccess },
-                after: { adminAccess: requested },
+            // Só os campos que mudaram são gravados; o resto do bloco (inclusive campos que
+            // esta versão não conhece) fica como estava.
+            const patch = Object.fromEntries(changes.map(field => [field, after[field]]));
+            db.memory.config.settings = { ...settings, network: { ...storedNetwork, ...patch } };
+            // Uma entrada por campo que mudou (campo, antes e depois), como as da tela.
+            changes.forEach(field => {
+                recordAudit(db.memory, {
+                    req,
+                    actor: account,
+                    action: 'network_settings_changed',
+                    category: 'system',
+                    field,
+                    oldValue: before[field],
+                    newValue: after[field],
+                    before: { [field]: before[field] },
+                    after: { [field]: after[field] },
+                });
             });
             await db.save();
             res.json({ success: true, network: networkSettingsPayload(req) });

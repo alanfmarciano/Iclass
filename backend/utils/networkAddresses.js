@@ -18,7 +18,7 @@
 //
 // O endereço que os alunos digitam é sempre esquema + IP + porta (http://IP:3000): sem a
 // porta o celular cai na 80 e a página não abre. Enquanto a conexão segura para os alunos
-// estiver desligada (studentsHttps, padrão; H6c), o esquema é http.
+// estiver desligada (studentsHttps, padrão; H6c), o esquema é http; ligada, https.
 //
 // Testes: setInterfaceProvider(fn) troca a fonte dos adaptadores. Com TEST_MODE=1,
 // ICLASS_TEST_INTERFACES_FILE aponta para um JSON no formato de os.networkInterfaces(),
@@ -156,8 +156,9 @@ const PANEL_LINES = {
 };
 
 // Linhas do banner do console (o printBanner do server.js, H3c, chama esta função). link
-// recebe a url e devolve o texto clicável (OSC 8) ou a própria url.
-function consoleLines({ port, scheme = 'http', adminAccess = 'rede-sem-https', link = url => url, now } = {}) {
+// recebe a url e devolve o texto clicável (OSC 8) ou a própria url. secure (H6c):
+// { available, studentsHttps, error } da conexão segura; sem ele, a linha não sai.
+function consoleLines({ port, scheme = 'http', adminAccess = 'rede-sem-https', secure = null, link = url => url, now } = {}) {
     const snapshot = networkAddresses({ port, scheme, now });
     const lines = [];
     if (snapshot.recommended) {
@@ -177,14 +178,22 @@ function consoleLines({ port, scheme = 'http', adminAccess = 'rede-sem-https', l
             lines.push(` -> ${link(item.url)}  (${note}${item.kind === 'rede' ? '' : `: ${item.name}`})`);
         });
     }
+    if (secure && secure.available) {
+        const host = snapshot.recommended ? snapshot.recommended.address : 'localhost';
+        lines.push(`Endereço seguro: ${link(addressUrl(host, snapshot.port, 'https'))}  (${secure.studentsHttps ? 'ligado para os alunos' : 'disponível; os alunos entram por http'}). Cada aparelho instala o certificado uma vez: veja /certificado.`);
+    } else if (secure) {
+        lines.push(`⚠️ ${secure.error || 'Conexão segura indisponível.'}`);
+    }
     lines.push((PANEL_LINES[adminAccess] || PANEL_LINES['rede-sem-https'])(snapshot.port));
     lines.push(`⚠️ IMPORTANTE: se os alunos não conseguirem abrir, libere a porta TCP ${snapshot.port} no Firewall do Windows.`);
     return lines;
 }
 
+// Retrato da rede para o vigia: o IP recomendado e o conjunto de IPs (sem o esquema: ligar
+// a conexão segura para os alunos troca http por https sem a rede ter mudado).
 function snapshotKey(snapshot) {
     return JSON.stringify({
-        recommended: snapshot.recommended ? snapshot.recommended.url : null,
+        recommended: snapshot.recommended ? snapshot.recommended.address : null,
         addresses: snapshot.addresses.map(item => item.address).sort(),
     });
 }
@@ -192,16 +201,28 @@ function snapshotKey(snapshot) {
 // Vigia da troca de rede: compara o retrato a cada chamada de check() e avisa no console
 // quando o recomendado ou o conjunto de IPs mudou. onChange(atual, anterior) é o gancho
 // para quem precisar refazer algo com o endereço novo (certificado do H6c, mDNS do H6d).
+// Quando só o esquema muda (conexão segura dos alunos ligada ou desligada em Sistema →
+// Rede, H6c), o console diz o endereço novo dos alunos, sem chamar onChange.
 function createAddressWatcher({ port, scheme = 'http', log = console.log, onChange } = {}) {
     const read = () => networkAddresses({ port, scheme: typeof scheme === 'function' ? scheme() : scheme });
     let previous = read();
     let previousKey = snapshotKey(previous);
+    const urlOf = snapshot => (snapshot.recommended ? snapshot.recommended.url : null);
     return {
         current: () => previous,
         check() {
             const current = read();
             const key = snapshotKey(current);
-            if (key === previousKey) return false;
+            if (key === previousKey) {
+                const before = previous;
+                previous = current;
+                if (urlOf(current) && urlOf(before) && urlOf(current) !== urlOf(before)) {
+                    try {
+                        log(`🔄 Endereço para os alunos agora é ${urlOf(current)} (antes: ${urlOf(before)}).`);
+                    } catch (error) { /* console indisponível não para o vigia */ }
+                }
+                return false;
+            }
             const before = previous;
             previous = current;
             previousKey = key;

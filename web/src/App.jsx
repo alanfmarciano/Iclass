@@ -48,6 +48,8 @@ const PrivacidadePage = lazyPage(() => import('./features/admin/PrivacidadePage'
 const EnderecoSalaPage = lazyPage(() => import('./features/admin/EnderecoSalaPage'))
 // Públicas (sem login): Termos de Uso e Política de Privacidade (H8a-1).
 const LegalDocumentPage = lazyPage(() => import('./features/LegalDocumentPage'))
+// Pública (sem login): guia de instalação do certificado da conexão segura (H6c, OPS-08).
+const CertificadoPage = lazyPage(() => import('./features/CertificadoPage'))
 // Aluno
 const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
 const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
@@ -166,6 +168,8 @@ export default function App() {
       {/* Termos e Privacidade: abertos a qualquer um, com ou sem login (H8a-1). */}
       <Route path="/termos" element={<LegalDocumentPage kind="termos" />} />
       <Route path="/privacidade" element={<LegalDocumentPage kind="privacidade" />} />
+      {/* Guia do certificado: aberto a qualquer um, em http e em https (H6c). */}
+      <Route path="/certificado" element={<CertificadoPage />} />
 
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>

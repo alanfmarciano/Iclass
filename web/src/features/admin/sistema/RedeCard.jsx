@@ -10,13 +10,15 @@ import { useApi } from '../../../hooks/useApi'
 import { NO_NETWORK_TEXT, ROOM_ADDRESS_PATH } from '../RoomAddress'
 import { api } from '../../../lib/api'
 import { useToast } from '../../../context/ToastProvider'
-import { ADMIN_ACCESS_MODES, ADMIN_ACCESS_OPTIONS, adminAccessLabel } from '../../../lib/adminAccess'
+import { ADMIN_ACCESS_MODES, ADMIN_ACCESS_OPTIONS, adminAccessLabel, CERTIFICATE_GUIDE_PATH, secureAdminLoginUrl } from '../../../lib/adminAccess'
+import { ConexaoSeguraSection } from './ConexaoSeguraSection'
 
 // Cartão Rede da tela Sistema (H6): endereço para os alunos, com o QR code (H6a, OPS-10),
 // os outros adaptadores desta máquina e, para quem gerencia o sistema, onde o painel do
 // professor abre (settings.network.adminAccess, SEG-03, H6b). Só o administrador troca a
-// regra; o professor vê qual vale. A opção da conexão segura fica desligada enquanto o
-// IClass não tiver https (H6c).
+// regra; o professor vê qual vale. A opção da conexão segura ('rede') fica desligada
+// enquanto o https não funcionar neste IClass, e a seção "Conexão segura" (H6c, só para o
+// administrador) mostra o certificado e liga o https para os alunos.
 
 // GET /api/admin/network-info: { recommended, addresses: [{ name, address, kind, recommended,
 // url }] }. A versão anterior devolvia só [{ name, address }]: sem url, mostra o IP.
@@ -55,7 +57,9 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
   const current = settings.data?.adminAccess || ''
   const [choice, setChoice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [confirmLocal, setConfirmLocal] = useState(false)
+  // Confirmação antes de salvar: 'local' (este aparelho sai do painel) ou 'rede' (este
+  // aparelho, por http, vai para o endereço seguro).
+  const [confirmMode, setConfirmMode] = useState('')
   const toast = useToast()
   useEffect(() => { if (current) setChoice(current) }, [current])
 
@@ -66,14 +70,22 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
   // Quem muda daqui para "só o computador do IClass" estando em outro aparelho perde o
   // painel neste aparelho logo depois de salvar: pede confirmação antes.
   const elsewhere = settings.data?.thisComputer === false
+  // Em outro aparelho por http, "só com conexão segura" tira este aparelho do http: depois
+  // de salvar, a tela vai para o login no endereço seguro.
+  const plainElsewhere = elsewhere && settings.data?.secure !== true
+  const secureLogin = secureAdminLoginUrl(settings.data?.httpsUrl)
   const changed = !!choice && choice !== current
 
   async function save() {
     setBusy(true)
     try {
       const r = await api.post('/api/admin/network-settings', { adminAccess: choice })
-      setConfirmLocal(false)
+      setConfirmMode('')
       toast.success(r?.unchanged ? 'Nada mudou.' : `Painel do professor agora abre em: ${adminAccessLabel(choice)}.`)
+      if (!r?.unchanged && choice === ADMIN_ACCESS_MODES.SECURE && plainElsewhere && secureLogin) {
+        window.location.assign(secureLogin)
+        return
+      }
       settings.refetch(true)
     } catch (e) {
       toast.error(e.message)
@@ -82,7 +94,8 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
     }
   }
   function requestSave() {
-    if (choice === ADMIN_ACCESS_MODES.LOCAL && elsewhere) { setConfirmLocal(true); return }
+    if (choice === ADMIN_ACCESS_MODES.LOCAL && elsewhere) { setConfirmMode(ADMIN_ACCESS_MODES.LOCAL); return }
+    if (choice === ADMIN_ACCESS_MODES.SECURE && plainElsewhere) { setConfirmMode(ADMIN_ACCESS_MODES.SECURE); return }
     save()
   }
 
@@ -164,11 +177,22 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
             )}
           </div>
         )}
+        {canManage && isAdmin && current && (
+          <ConexaoSeguraSection https={net?.https} settings={settings.data} copy={copy} onSaved={() => settings.refetch(true)} />
+        )}
       </CardBody>
-      <Modal open={confirmLocal} onClose={() => !busy && setConfirmLocal(false)} title="Fechar o painel neste aparelho?"
+      <Modal open={confirmMode === ADMIN_ACCESS_MODES.LOCAL} onClose={() => !busy && setConfirmMode('')} title="Fechar o painel neste aparelho?"
         description="Você está usando o painel em outro aparelho, fora do computador do IClass."
-        footer={<><Button variant="ghost" disabled={busy} onClick={() => setConfirmLocal(false)}>Cancelar</Button><Button loading={busy} onClick={save}>Salvar mesmo assim</Button></>}>
+        footer={<><Button variant="ghost" disabled={busy} onClick={() => setConfirmMode('')}>Cancelar</Button><Button loading={busy} onClick={save}>Salvar mesmo assim</Button></>}>
         <p className="text-sm text-text">Depois de salvar, o painel do professor só abre no computador onde o IClass está ligado. Este aparelho sai do painel na hora, e para voltar a usar daqui alguém precisa trocar a opção nesse computador.</p>
+      </Modal>
+      <Modal open={confirmMode === ADMIN_ACCESS_MODES.SECURE} onClose={() => !busy && setConfirmMode('')} title="Usar o painel só pela conexão segura?"
+        description="Você está usando o painel em outro aparelho, por http."
+        footer={<><Button variant="ghost" disabled={busy} onClick={() => setConfirmMode('')}>Cancelar</Button><Button loading={busy} onClick={save}>Salvar e abrir o endereço seguro</Button></>}>
+        <div className="space-y-2 text-sm text-text">
+          <p>Depois de salvar, este aparelho vai para o login no endereço seguro{secureLogin ? <> (<span className="font-mono break-all">{settings.data?.httpsUrl}</span>)</> : ''} e você entra de novo.</p>
+          <p>Instale antes o certificado do IClass neste aparelho e nos dos outros professores (guia em <a href={CERTIFICATE_GUIDE_PATH} target="_blank" rel="noopener" className="underline font-semibold">/certificado</a>): sem ele, o navegador avisa que a conexão não é particular.</p>
+        </div>
       </Modal>
       {manualCopy}
     </Card>

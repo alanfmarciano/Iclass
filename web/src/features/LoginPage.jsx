@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, RefreshCw, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
+import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, ExternalLink, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, RefreshCw, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
@@ -10,7 +10,7 @@ import { api } from '../lib/api'
 import { passwordHint } from '../lib/passwordPolicy'
 import { useBranding } from '../context/BrandingProvider'
 import { InsecureConnectionNotice } from '../components/ui/InsecureConnectionNotice'
-import { adminAccessRefusalText, LOCAL_ONLY_TEXT } from '../lib/adminAccess'
+import { adminAccessRefusalText, CERTIFICATE_GUIDE_PATH, LOCAL_ONLY_TEXT, secureAdminLoginUrl } from '../lib/adminAccess'
 import { useConnectionInfo } from '../hooks/useConnectionInfo'
 
 const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }
@@ -132,7 +132,19 @@ export default function LoginPage() {
   function noteRefusal(err) {
     const adminAccess = err?.status === 403 && err?.data?.adminAccess
     if (!adminAccess) return
-    overrideConnection((current) => ({ ...(current || {}), adminAccess, adminAccessError: err.data.error || '', insecureAdmin: false }))
+    const patch = { adminAccess, adminAccessError: err.data.error || '', insecureAdmin: false }
+    if (err.data.httpsUrl !== undefined) patch.httpsUrl = err.data.httpsUrl
+    overrideConnection((current) => ({ ...(current || {}), ...patch }))
+  }
+
+  // Alunos pela conexão segura (Sistema → Rede, H6c): a tela foi aberta por http antes da
+  // troca, e o servidor recusa o login, o cadastro e o pedido de senha por http com
+  // { httpsRequired, httpsUrl }. Vai para a mesma tela no endereço seguro.
+  function goSecureForStudent(err) {
+    const httpsUrl = err?.status === 403 && err?.data?.httpsRequired === true ? err.data.httpsUrl : ''
+    if (typeof httpsUrl !== 'string' || !/^https:\/\//.test(httpsUrl)) return false
+    window.location.assign(`${httpsUrl.replace(/\/+$/, '')}/login`)
+    return true
   }
 
   async function submit(e) {
@@ -161,6 +173,7 @@ export default function LoginPage() {
         await loginStudent(email, password); nav('/aluno')
       }
     } catch (err) {
+      if (mode === 'student' && goSecureForStudent(err)) { toast.info(err.message || 'Abra o endereço seguro para entrar.'); return }
       // Login em espera: o aviso fixo acima do botão já mostra o texto; o toast repetido
       // cobria o botão "Entrar" no celular.
       const delayed = err?.status === 429 && err?.data?.loginDelayed
@@ -200,8 +213,10 @@ export default function LoginPage() {
   const isRegister = mode === 'student' && studentAction === 'register'
   // Painel do professor recusado neste aparelho ('local' ou 'rede' sem conexão segura).
   const adminRefusal = connection && connection.adminAccess && connection.adminAccess !== 'ok'
-    ? adminAccessRefusalText(connection.adminAccess, connection.adminAccessError)
+    ? adminAccessRefusalText(connection.adminAccess, connection.adminAccessError, connection.httpsUrl)
     : ''
+  // 'rede' com a conexão segura funcionando: o botão leva ao login no endereço https.
+  const secureLoginUrl = adminRefusal && connection.adminAccess === 'https-required' ? secureAdminLoginUrl(connection.httpsUrl) : ''
   const activeCourses = Array.from(new Map((classes || []).map((c) => [c.courseId, c.courseName])).entries()).map(([id, name]) => ({ id, name }))
   const courseClasses = (classes || []).filter((c) => c.courseId === courseValue)
   const setG = (patch) => setGuardian((g) => ({ ...g, ...patch }))
@@ -298,6 +313,14 @@ export default function LoginPage() {
                 <MonitorX aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-danger" />
                 <div className="min-w-0 space-y-2">
                   <p>{adminRefusal}</p>
+                  {secureLoginUrl && (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      <a href={secureLoginUrl} data-testid="open-secure-address" className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-sm font-semibold text-primary-fg hover:opacity-90">
+                        <ExternalLink aria-hidden="true" size={15} /> Abrir endereço seguro
+                      </a>
+                      <a href={CERTIFICATE_GUIDE_PATH} data-testid="certificate-guide-link" className="text-sm font-semibold text-text underline">Como instalar o certificado</a>
+                    </div>
+                  )}
                   <Button type="button" variant="secondary" size="sm" icon={RefreshCw} loading={checkingConnection} onClick={() => refreshConnection({ force: true })}>Verificar de novo</Button>
                 </div>
               </div>

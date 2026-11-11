@@ -22,10 +22,10 @@
 // Os arquivos de /uploads e /imagens trocam a CSP por uma sandbox própria, mais fechada
 // (sendControlledFile em server.js), que vale por cima desta.
 //
-// HSTS (Strict-Transport-Security): não é enviado. O IClass fala http com os alunos
+// HSTS (Strict-Transport-Security): não é enviado, nem na conexão https (H6c). O IClass fala http com os alunos
 // (studentsHttps desligado) no mesmo endereço; um HSTS gravado no navegador trancaria esse
-// acesso. Se o HTTPS (H6c) passar a enviar HSTS, que seja só na conexão https
-// (req.socket.encrypted) e nunca na http — há teste que confere a resposta http.
+// acesso (e o computador do IClass, em http://localhost). Há teste que confere as duas
+// respostas, http e https (dual-listener.test.js e https-end-to-end.test.js).
 
 const CONTENT_SECURITY_POLICY = [
     "default-src 'self'",

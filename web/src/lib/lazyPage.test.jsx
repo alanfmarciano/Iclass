@@ -330,8 +330,10 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     const lazyScreens = [...appSource.matchAll(/lazyPage\(\(\) => import\('([^']+)'\)/g)].map((match) => match[1])
     // 27 telas do instrutor (a Auditoria entrou no H7a-2, a Privacidade (LGPD) no H8a-1 e o
     // Endereço da sala em tela cheia no H6a), 9 do aluno (com Minha conta, H5a), a prova, a
-    // página pública dos Termos e da Privacidade (H8a-1) e os 3 layouts.
-    expect(lazyScreens.length).toBe(41)
+    // página pública dos Termos e da Privacidade (H8a-1), o guia público do certificado
+    // (/certificado, H6c) e os 3 layouts.
+    expect(lazyScreens.length).toBe(42)
+    expect(lazyScreens).toContain('./features/CertificadoPage')
     expect(lazyScreens).toContain('./features/admin/EnderecoSalaPage')
     expect(lazyScreens).toContain('./features/student/ContaPage')
     expect(lazyScreens).toContain('./features/admin/AuditoriaPage')

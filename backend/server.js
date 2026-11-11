@@ -2,7 +2,6 @@ const childProcess = require('child_process');
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
-const http = require('http');
 const path = require('path');
 const db = require('./database.js');
 const settingsUtil = require('./utils/settings.js');
@@ -23,7 +22,10 @@ const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/sta
 const serverLifecycle = require('./utils/serverLifecycle.js');
 const { SYNCED_FOLDER_WARNING } = require('./utils/syncedFolder.js');
 const { createNetworkPolicy, studentsHttpsEnabled } = require('./utils/networkPolicy.js');
-const { consoleLines, createAddressWatcher, WATCH_INTERVAL_MS: NETWORK_WATCH_INTERVAL_MS } = require('./utils/networkAddresses.js');
+const { consoleLines, createAddressWatcher, networkAddresses, WATCH_INTERVAL_MS: NETWORK_WATCH_INTERVAL_MS } = require('./utils/networkAddresses.js');
+const { createDualServer } = require('./utils/dualListener.js');
+const secureConnection = require('./utils/secureConnection.js');
+const { SERVER_RENEW_BEFORE_MS } = require('./utils/tlsCertificates.js');
 const { securityHeaders } = require('./utils/securityHeaders.js');
 
 // Registro de falhas do servidor: o único é utils/errorLog.js (data/crash.log, 5 MB), e o
@@ -497,7 +499,7 @@ async function prepareServer() {
 //    tempo fora do ar, varredura do fim do tempo e heartbeat;
 // 5. o handler passa a ser o app (createApp), e o banner com os endereços sai só aqui.
 // O handler é trocável (createSwitchableHandler): o mesmo (req, res) => handler(req, res)
-// serve ao http e, depois, ao https na mesma porta (H6c).
+// serve ao http e ao https na mesma porta (H6c, utils/dualListener.js).
 const { EXIT_CODES } = serverLifecycle;
 // Tentativas a mais do listen com a porta ocupada, quando este processo nasceu de um
 // reinício: o processo anterior pode levar um instante para liberar a porta.
@@ -679,6 +681,7 @@ function printBanner(port) {
         port,
         scheme: studentsHttpsEnabled() ? 'https' : 'http',
         adminAccess: settingsUtil.networkSettings().adminAccess,
+        secure: { available: secureConnection.isAvailable(), studentsHttps: studentsHttpsEnabled(), error: secureConnection.isAvailable() ? null : secureConnection.unavailableText() },
         link: url => link(url),
     }).forEach(line => console.log(line));
     console.log(`===========================================`);
@@ -686,13 +689,42 @@ function printBanner(port) {
 
 // Vigia da rede (H6a): a cada 30 s confere se o endereço recomendado ou os IPs da máquina
 // mudaram (notebook que trocou de Wi-Fi, roteador que deu outro IP) e avisa no console.
-// A tela Sistema, o QR e /endereco já releem a cada pedido.
+// A tela Sistema, o QR e /endereco já releem a cada pedido. Com o IP novo, o certificado
+// do servidor é refeito e trocado a quente (H6c): o https continua valendo no endereço
+// novo sem reiniciar e sem instalar nada de novo nos aparelhos (a CA é a mesma). Na mesma
+// volta, o certificado que vence em menos de 30 dias é renovado, e a conexão segura que
+// não pôde ser preparada no boot é tentada de novo.
 // Com TEST_MODE=1, ICLASS_TEST_NETWORK_WATCH_MS encurta o intervalo (conferência ao vivo).
-function startNetworkWatcher(port) {
+function refreshSecureConnection(server, addresses, reason) {
+    const wasAvailable = secureConnection.isAvailable();
+    const material = secureConnection.refresh({ addresses });
+    if (material && server && typeof server.updateTls === 'function') {
+        server.updateTls(material);
+        if (!wasAvailable) {
+            console.log('🔒 Conexão segura (https) disponível agora.');
+        } else {
+            console.log(`🔒 Certificado do servidor refeito (${reason}): ${material.server.ips.join(', ')}. Os aparelhos não precisam instalar nada de novo.`);
+        }
+    } else if (!secureConnection.isAvailable() && wasAvailable !== secureConnection.isAvailable()) {
+        console.warn(`⚠️ ${secureConnection.unavailableText()}`);
+    }
+}
+
+function startNetworkWatcher(port, server) {
     const testInterval = process.env.TEST_MODE === '1' ? Number(process.env.ICLASS_TEST_NETWORK_WATCH_MS) : 0;
     const intervalMs = testInterval > 0 ? Math.max(200, testInterval) : NETWORK_WATCH_INTERVAL_MS;
-    const watcher = createAddressWatcher({ port, scheme: () => (studentsHttpsEnabled() ? 'https' : 'http') });
-    serverLifecycle.registerTimer('network-watch', setInterval(() => watcher.check(), intervalMs));
+    const watcher = createAddressWatcher({
+        port,
+        scheme: () => (studentsHttpsEnabled() ? 'https' : 'http'),
+        onChange: current => refreshSecureConnection(server, current.addresses, 'endereço da rede mudou'),
+    });
+    serverLifecycle.registerTimer('network-watch', setInterval(() => {
+        const changed = watcher.check();
+        if (changed) return;
+        if (!secureConnection.isAvailable() || secureConnection.serverExpiresBefore(SERVER_RENEW_BEFORE_MS)) {
+            refreshSecureConnection(server, watcher.current().addresses, 'renovação antes de vencer');
+        }
+    }, intervalMs));
     return watcher;
 }
 
@@ -878,13 +910,19 @@ async function startServer({ port = PORT, host = '0.0.0.0' } = {}) {
     }
 
     const handler = createSwitchableHandler(createBootApp());
-    serverInstance = http.createServer(handler);
+    // Conexão segura (H6c): a CA e o certificado do servidor (DATA_DIR/tls) antes de abrir a
+    // porta, para o https valer desde o "iniciando". Falhou? Sobe só em http, com o motivo
+    // no console e em Sistema → Rede: o servidor nunca deixa de subir por causa do https.
+    const tls = secureConnection.prepare({ addresses: networkAddresses({ port: Number(port) }).addresses });
+    if (!tls) console.warn(`⚠️ ${secureConnection.unavailableText()} O IClass segue só em http.`);
+    // http e https na mesma porta, com o mesmo handler trocável (utils/dualListener.js).
+    serverInstance = createDualServer(handler, { tls });
     try {
         await listenWithRetry(serverInstance, Number(port), host);
     } catch (err) {
         return failBoot('listen', err, { port });
     }
-    serverInstance.on('error', err => logCrash('servidor http', err));
+    serverInstance.on('error', err => logCrash('servidor http/https', err));
     const actualPort = serverInstance.address() && serverInstance.address().port;
     serverLifecycle.writeControlToken();
     console.log(`⏳ Carregando os dados do IClass (porta ${actualPort} já respondendo "iniciando")...`);
@@ -908,7 +946,7 @@ async function startServer({ port = PORT, host = '0.0.0.0' } = {}) {
     const resumed = restored || {};
     serverLifecycle.markReady({ sessionsRestored: { students: resumed.students || 0, admins: resumed.admins || 0, dropped: resumed.dropped || 0 } });
     printBanner(actualPort);
-    startNetworkWatcher(actualPort);
+    startNetworkWatcher(actualPort, serverInstance);
     if (serverLifecycle.isSupervised()) console.log('🔁 Reinício automático ligado (supervisor).');
     sendToSupervisor({ type: 'ready', instanceId: SERVER_INSTANCE_ID, port: actualPort, pid: process.pid });
     return serverInstance;

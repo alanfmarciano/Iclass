@@ -6,6 +6,7 @@ const db = require('../database.js');
 const { SERVER_INSTANCE_ID } = require('../utils/sessionConfig.js');
 const settingsUtil = require('../utils/settings.js');
 const { connectionInfo } = require('../utils/networkPolicy.js');
+const secureConnection = require('../utils/secureConnection.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -57,6 +58,38 @@ router.get('/api/session/status', (req, res) => {
 router.get('/api/connection', (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json(connectionInfo(req));
+});
+
+// Conexão segura (H6c, SEG-03 e OPS-08), sem login, em http e em https: o aparelho baixa
+// o certificado da CA deste IClass antes de confiar no https (guia /certificado).
+// - GET /iclass-ca.crt: o certificado da CA (DER), para instalar no aparelho;
+// - GET /api/connection/certificate: a impressão digital (para comparar com a de Sistema
+//   → Rede, no computador do IClass) e as validades. Sem conexão segura, 200 com
+//   available:false e o motivo (sem resposta de estado nova: contrato 9).
+router.get('/iclass-ca.crt', (req, res) => {
+    const der = secureConnection.caCertificateDer();
+    res.set('Cache-Control', 'no-store');
+    if (!der) return res.status(404).type('text/plain; charset=utf-8').send(`${secureConnection.unavailableText()} O certificado do IClass não pode ser baixado agora.`);
+    res.set('Content-Type', 'application/x-x509-ca-cert');
+    res.set('Content-Disposition', 'attachment; filename="iclass-ca.crt"');
+    return res.send(Buffer.from(der));
+});
+
+router.get('/api/connection/certificate', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const status = secureConnection.status();
+    if (!status.available) {
+        return res.json({ available: false, error: secureConnection.unavailableText() });
+    }
+    return res.json({
+        available: true,
+        fingerprintSha256: status.ca.fingerprintSha256,
+        validFrom: status.ca.validFrom,
+        validTo: status.ca.validTo,
+        recreatedAt: status.ca.recreatedAt,
+        server: status.server,
+        httpsUrl: connectionInfo(req).httpsUrl,
+    });
 });
 
 // Erro de tela do navegador (fase 2, H9c: ENG-05): a área de erro dos layouts e a tela
