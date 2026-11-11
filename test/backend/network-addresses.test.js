@@ -181,6 +181,42 @@ test('[UC-REDE-002] linhas do console: endereço para os alunos, virtuais marcad
     assert.match(networkAddresses.consoleLines({ port: 3000 })[0], /não está ligado a nenhuma rede/);
 });
 
+test('[UC-REDE-005] endereço seguro só com IP que está no certificado: faixa não privada, virtual e sem rede explicam por quê', () => {
+    const ips = ['127.0.0.1', '192.168.0.10'];
+    assert.deepEqual(networkAddresses.secureAddressStatus({ name: 'Wi-Fi', address: '192.168.0.10', kind: 'rede' }, ips), { usable: true, address: '192.168.0.10', reason: null });
+    // Rede da escola em faixa pública (aqui, 192.0.2.2) ou 100.64/10: o certificado não tem o
+    // IP, e antes a tela dizia "funcionando" com https://192.0.2.2, que nunca validava.
+    const outside = networkAddresses.secureAddressStatus({ name: 'eth0', address: '192.0.2.2', kind: 'rede' }, ['127.0.0.1']);
+    assert.equal(outside.usable, false);
+    assert.equal(outside.address, null);
+    assert.match(outside.reason, /192\.0\.2\.2.*não é de uma faixa de rede local/);
+    assert.match(networkAddresses.secureAddressStatus({ name: 'x', address: '100.64.1.2', kind: 'rede' }, ['127.0.0.1']).reason, /não é de uma faixa de rede local/);
+    assert.match(networkAddresses.secureAddressStatus({ name: 'VirtualBox', address: '192.168.56.1', kind: 'virtual' }, ips).reason, /adaptador virtual/);
+    assert.match(networkAddresses.secureAddressStatus({ name: 'Wi-Fi', address: '192.168.1.77', kind: 'rede' }, ips).reason, /ainda não inclui o endereço 192\.168\.1\.77/);
+    assert.match(networkAddresses.secureAddressStatus(null, ips).reason, /não está ligado a nenhuma rede/);
+});
+
+test('[UC-REDE-005] com https para os alunos, só os endereços do certificado ganham https (o virtual fica em http)', () => {
+    const snapshot = networkAddresses.networkAddresses({ port: 3000, scheme: 'https', httpsIps: ['127.0.0.1', '192.168.0.10'] });
+    assert.equal(snapshot.recommended.url, 'https://192.168.0.10:3000');
+    const byAddress = Object.fromEntries(snapshot.addresses.map(item => [item.address, item.url]));
+    assert.equal(byAddress['192.168.0.10'], 'https://192.168.0.10:3000');
+    assert.equal(byAddress['172.20.0.1'], 'http://172.20.0.1:3000', 'adaptador virtual não está no certificado');
+    assert.equal(byAddress['169.254.3.4'], 'http://169.254.3.4:3000');
+    // Sem httpsIps (chamadas antigas), vale o esquema para todos.
+    assert.equal(networkAddresses.networkAddresses({ port: 3000, scheme: 'https' }).addresses.every(item => item.url.startsWith('https://')), true);
+});
+
+test('[UC-REDE-005] console: endereço seguro só com o IP no certificado; fora dele, "só neste computador" com o motivo', () => {
+    const ok = networkAddresses.consoleLines({ port: 3000, secure: { available: true, studentsHttps: false, ips: ['127.0.0.1', '192.168.0.10'] } });
+    assert.ok(ok.some(line => /^Endereço seguro: https:\/\/192\.168\.0\.10:3000 /.test(line)), ok.join('\n'));
+    interfaces = { eth0: [{ family: 'IPv4', address: '192.0.2.2', internal: false }] };
+    networkAddresses.setInterfaceProvider(provider);
+    const outside = networkAddresses.consoleLines({ port: 3000, secure: { available: true, studentsHttps: false, ips: ['127.0.0.1'] } });
+    assert.equal(outside.some(line => /Endereço seguro: https:\/\/192\.0\.2\.2/.test(line)), false, outside.join('\n'));
+    assert.ok(outside.some(line => /^⚠️ Conexão segura só neste computador \(https:\/\/localhost:3000\): O endereço desta rede \(192\.0\.2\.2\)/.test(line)), outside.join('\n'));
+});
+
 test('[UC-REDE-002] vigia da rede: avisa no console quando o endereço muda, uma vez por mudança', () => {
     const logs = [];
     const changes = [];

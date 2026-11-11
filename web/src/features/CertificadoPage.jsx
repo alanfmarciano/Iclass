@@ -167,10 +167,16 @@ export default function CertificadoPage() {
               ) : (
                 <>
                   <p className="text-sm">Depois de instalar, abra o IClass pelo endereço seguro (repare no <strong>https</strong> e no número da porta):</p>
-                  {data.httpsUrl && (
+                  {data.httpsUrl ? (
                     <a href={`${data.httpsUrl.replace(/\/+$/, "")}/login`} className="inline-flex items-center gap-2 font-mono text-sm font-semibold text-text underline break-all" data-testid="certificate-https-url">
                       <ExternalLink aria-hidden="true" size={15} className="shrink-0" /> {data.httpsUrl}
                     </a>
+                  ) : (
+                    // O servidor não dá endereço seguro para este aparelho: o IP da rede da
+                    // escola não entra no certificado (faixa que não é de rede local).
+                    <p role="status" data-testid="certificate-no-https-url" className="text-sm text-warning">
+                      O endereço seguro ainda não funciona nesta rede. Avise o administrador: o motivo aparece em Sistema → Rede, no computador do IClass. Enquanto isso, continue pelo endereço de sempre (http).
+                    </p>
                   )}
                 </>
               )}

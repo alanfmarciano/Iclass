@@ -16,13 +16,23 @@
 //   fica só neste computador, com o motivo no texto.
 //
 // settings.network.studentsHttps (padrão false): ligado, e com a conexão segura
-// funcionando, o aluno que abre uma página por http em outro aparelho vai para o https
-// (302), e o login, o cadastro e o "esqueci a senha" por http recebem 403
-// { httpsRequired: true, httpsUrl }. O resto da API do aluno continua em http: uma
+// funcionando para os outros aparelhos, o aluno que abre uma página por http em outro
+// aparelho vai para o https (302), e o login, o cadastro e o "esqueci a senha" por http
+// recebem a mesma resposta de estado do contrato 9: 403 { error, adminAccess:
+// 'https-required', httpsUrl } (a lista fechada não tem uma resposta só do aluno; a tela
+// do aluno lê adminAccess 'https-required' como "vá para o endereço seguro"). O resto da
+// API do aluno continua em http: uma
 // página aberta antes da troca não quebra no meio do uso. O guia /certificado e o
 // arquivo /iclass-ca.crt nunca são redirecionados (é por eles que o aparelho passa a
 // confiar no https). Nenhuma resposta manda Strict-Transport-Security: os alunos (e o
 // computador do IClass, em http://localhost) continuam usando http no mesmo endereço.
+//
+// Endereço seguro (httpsUrl): só um endereço que está no certificado do servidor. O
+// certificado leva 'localhost', 127.0.0.1 e os IPs de rede local desta máquina; numa rede
+// da escola em faixa pública (ou 100.64/10) o IP fica de fora, e o https por ele não
+// valida em aparelho nenhum. Nesse caso a conexão segura vale só neste computador
+// (https://localhost), 'rede' e studentsHttps são recusados em Sistema → Rede com o
+// motivo, e nenhum aparelho é mandado para um https que não abriria.
 //
 // "Este computador": o endereço de quem conecta (socket, nunca cabeçalho) é de loopback
 // (127.0.0.0/8, ::1) ou um dos endereços atuais dos adaptadores desta máquina (o
@@ -43,7 +53,7 @@ const os = require('os');
 const settingsUtil = require('./settings.js');
 const { checkAdminSessionToken } = require('./authSessions.js');
 const secureConnection = require('./secureConnection.js');
-const { networkAddresses } = require('./networkAddresses.js');
+const { networkAddresses, secureAddressStatus } = require('./networkAddresses.js');
 
 const LOCAL_ONLY_MESSAGE = 'O painel do professor só abre no computador onde o IClass está ligado. O administrador pode liberar outros aparelhos em Sistema → Rede.';
 // 'rede' com a conexão segura funcionando: o texto aponta para o endereço seguro e para o
@@ -124,30 +134,52 @@ function listenerPort(req) {
     return Number.isInteger(port) && port > 0 ? port : (Number(process.env.PORT) || 3000);
 }
 
-// Endereço seguro para quem pergunta: 'https://<host>:<porta>'. O host vem do cabeçalho
-// Host só quando é 'localhost' ou um IPv4 atual desta máquina (um Host forjado como
-// 'evil.com' não vira link); senão, o IP recomendado para os alunos; sem rede, o IP em
-// que o pedido chegou. null quando não há conexão segura.
-function httpsUrlFor(req) {
+// Conexão segura para os outros aparelhos da rede: funciona E o certificado do servidor
+// tem o IP recomendado. { usable, address, reason }; reason em português quando não dá
+// (sem o certificado, o motivo de indisponível).
+function networkHttpsStatus() {
+    if (!httpsAvailable()) {
+        return { usable: false, address: null, reason: secureConnection.unavailableText() };
+    }
+    const { recommended } = networkAddresses({ port: 0 });
+    return secureAddressStatus(recommended, secureConnection.serverIps());
+}
+
+function isIpv4Text(value) {
+    return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
+}
+
+// Endereço seguro para quem pergunta: 'https://<host>:<porta>', sempre com um host que
+// está no certificado do servidor:
+// 1. o do cabeçalho Host, quando é 'localhost' ou um IPv4 desta máquina que está no
+//    certificado (um Host forjado como 'evil.com' não vira link);
+// 2. o IP recomendado para os alunos, quando está no certificado;
+// 3. neste computador, https://localhost.
+// null quando não há conexão segura, ou quando ela não serve a este aparelho (IP
+// recomendado fora do certificado): melhor nenhum link que um https que nunca abre.
+// options.thisComputer(): a mesma decisão de "este computador" que a política usa
+// (createApp({ network }) troca nos testes); sem ela, a regra real.
+function httpsUrlFor(req, options = {}) {
     if (!httpsAvailable()) return null;
     const port = listenerPort(req);
     const host = hostHeaderName(req);
-    if (host === 'localhost' || (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) && (host.startsWith('127.') || localAddresses().has(host)))) {
+    if (host === 'localhost') return `https://localhost:${port}`;
+    if (isIpv4Text(host) && secureConnection.coversIp(host) && (host.startsWith('127.') || localAddresses().has(host))) {
         return `https://${host}:${port}`;
     }
-    const recommended = networkAddresses({ port }).recommended;
-    if (recommended) return `https://${recommended.address}:${port}`;
-    const local = normalizeAddress(req && req.socket && req.socket.localAddress);
-    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(local)) return `https://${local}:${port}`;
-    return `https://localhost:${port}`;
+    const network = networkHttpsStatus();
+    if (network.usable) return `https://${network.address}:${port}`;
+    const thisComputer = typeof options.thisComputer === 'function' ? options.thisComputer() : isThisComputerRequest(req);
+    if (thisComputer) return `https://localhost:${port}`;
+    return null;
 }
 
 // Os alunos entram pela conexão segura? settings.network.studentsHttps ligado E a conexão
-// segura funcionando: sem o certificado, mandar a turma para o https deixaria todos sem
-// entrar. Enquanto for false, o endereço da sala e o QR (H6a, utils/networkAddresses.js)
-// usam http://IP:porta.
+// segura funcionando para os outros aparelhos (com o IP recomendado no certificado): sem
+// isso, mandar a turma para o https deixaria todos sem entrar. Enquanto for false, o
+// endereço da sala e o QR (H6a, utils/networkAddresses.js) usam http://IP:porta.
 function studentsHttpsEnabled() {
-    return settingsUtil.networkSettings().studentsHttps === true && httpsAvailable();
+    return settingsUtil.networkSettings().studentsHttps === true && networkHttpsStatus().usable;
 }
 
 // Páginas do painel do professor (as rotas do instrutor no App.jsx, fora a '/', que
@@ -265,15 +297,16 @@ function createNetworkAccess(req, options) {
     const detectors = networkDetectors(options);
     let memo;
     let urlMemo;
+    const thisComputer = () => {
+        if (memo === undefined) memo = !!detectors.isThisComputer(req);
+        return memo;
+    };
     return {
-        thisComputer() {
-            if (memo === undefined) memo = !!detectors.isThisComputer(req);
-            return memo;
-        },
+        thisComputer,
         secure: !!detectors.isSecure(req),
         // Calculado só quando alguém pergunta (a maior parte dos pedidos não precisa).
         get httpsUrl() {
-            if (urlMemo === undefined) urlMemo = detectors.httpsUrl(req) || null;
+            if (urlMemo === undefined) urlMemo = detectors.httpsUrl(req, { thisComputer }) || null;
             return urlMemo;
         },
     };
@@ -315,11 +348,13 @@ function createNetworkPolicy(options = {}) {
         const plainRemote = !access.secure && !access.thisComputer() && !!access.httpsUrl;
         if (plainRemote) {
             const network = settingsUtil.networkSettings();
-            const studentsHttps = network.studentsHttps === true;
             if (network.adminAccess === 'rede' && isAdminPanelPage(req)) return redirectToHttps(req, res, access.httpsUrl);
-            if (studentsHttps && isPageNavigation(req)) return redirectToHttps(req, res, access.httpsUrl);
-            if (studentsHttps && isStudentEntryPost(req)) {
-                return res.status(403).json({ error: STUDENT_HTTPS_MESSAGE, httpsRequired: true, httpsUrl: access.httpsUrl });
+            // Só calculado para página ou entrada do aluno (relê os adaptadores, com cache).
+            const studentRoute = isPageNavigation(req) || isStudentEntryPost(req);
+            if (studentRoute && network.studentsHttps === true && studentsHttpsEnabled()) {
+                if (isPageNavigation(req)) return redirectToHttps(req, res, access.httpsUrl);
+                // Resposta de estado do contrato 9 (a mesma do painel): vá para o https.
+                return res.status(403).json({ error: STUDENT_HTTPS_MESSAGE, adminAccess: 'https-required', httpsUrl: access.httpsUrl });
             }
         }
         if (!isInstructorRequest(req)) return next();
@@ -348,6 +383,7 @@ module.exports = {
     createNetworkPolicy,
     httpsAvailable,
     isInstructorRequest,
+    networkHttpsStatus,
     isThisComputerRequest,
     normalizeAddress,
     studentsHttpsEnabled,

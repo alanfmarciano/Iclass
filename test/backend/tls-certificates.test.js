@@ -78,6 +78,7 @@ test('[UC-REDE-004] CA própria restrita e certificado do servidor com os IPs pr
     }
     assert.deepEqual(material.changed, { ca: true, server: true });
     assert.equal(material.ca.recreatedAt, null, 'primeira CA não é "recriada"');
+    assert.equal(material.caRecreatedNow, false);
 });
 
 test('[UC-REDE-004] openssl confere a cadeia e a CA recusa nome e IP de fora', { skip: !hasOpenssl() && 'openssl ausente' }, () => {
@@ -167,6 +168,11 @@ test('[UC-REDE-004] arquivo corrompido é renomeado para *.invalido-* e recriado
     assert.equal(again.changed.ca, true);
     assert.notEqual(again.ca.fingerprintSha256, first.ca.fingerprintSha256);
     assert.match(again.ca.recreatedReason, /ilegível/);
+    // O motivo da tela e do console é só português; a mensagem crua fica como detalhe no arquivo.
+    assert.equal(again.ca.recreatedReason, 'arquivo ilegível ou danificado');
+    assert.equal(again.caRecreatedNow, true, 'o console avisa no boot que a CA foi trocada');
+    assert.equal(ensureTlsMaterial({ dir, addresses: WIFI }).caRecreatedNow, false, 'só na leitura que recriou');
+    assert.ok(JSON.parse(fs.readFileSync(path.join(dir, FILES.caRecreated), 'utf8')).detail);
     assert.ok(fs.readdirSync(dir).some(name => name.startsWith(`${FILES.caKey}.invalido-`)));
     // Chave e certificado da CA de outro par (cópia misturada): também é recriada.
     const dir3 = freshDir();

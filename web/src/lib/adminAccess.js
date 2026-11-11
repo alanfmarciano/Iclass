@@ -39,7 +39,7 @@ export const ADMIN_ACCESS_OPTIONS = Object.freeze([
     value: ADMIN_ACCESS_MODES.SECURE,
     label: 'Outros aparelhos só com conexão segura',
     description: 'Outros aparelhos entram só pela conexão segura (https). Antes de trocar, instale o certificado do IClass em cada aparelho dos professores (guia em /certificado): sem ele, o navegador avisa que a conexão não é particular.',
-    unavailable: 'Indisponível agora: a conexão segura (https) não está funcionando neste IClass. O motivo aparece abaixo, em "Conexão segura".',
+    unavailable: 'Indisponível agora: a conexão segura (https) não está funcionando para os outros aparelhos da rede. O motivo aparece abaixo, em "Conexão segura".',
   },
 ])
 

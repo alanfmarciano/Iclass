@@ -129,24 +129,56 @@ function addressUrl(address, port, scheme = 'http') {
 // está em rede nenhuma (só o loopback).
 // { port, scheme, recommended: { name, address, kind, url } | null,
 //   addresses: [{ name, address, kind, recommended, url }] }
-function networkAddresses({ port, scheme = 'http', now } = {}) {
+// httpsIps (H6c): os IPs do certificado do servidor. Com scheme 'https', só esses
+// endereços ganham https na url; os outros (adaptador virtual, IP fora das faixas da CA)
+// ficam em http, porque por https o certificado não valeria neles (por http, a página
+// leva o aluno ao endereço seguro certo). Sem httpsIps, vale o scheme para todos.
+function networkAddresses({ port, scheme = 'http', httpsIps, now } = {}) {
     const adapters = readAdapters(now === undefined ? Date.now() : now);
     const recommended = pickRecommended(adapters);
+    const covered = Array.isArray(httpsIps) ? new Set(httpsIps) : null;
+    const schemeFor = address => (scheme === 'https' && (!covered || covered.has(address)) ? 'https' : 'http');
     const addresses = adapters.map(item => ({
         name: item.name,
         address: item.address,
         kind: item.kind,
         recommended: !!recommended && item.name === recommended.name && item.address === recommended.address,
-        url: addressUrl(item.address, port, scheme),
+        url: addressUrl(item.address, port, schemeFor(item.address)),
     }));
     return {
         port: Number(port),
         scheme: scheme === 'https' ? 'https' : 'http',
         recommended: recommended
-            ? { name: recommended.name, address: recommended.address, kind: recommended.kind, url: addressUrl(recommended.address, port, scheme) }
+            ? { name: recommended.name, address: recommended.address, kind: recommended.kind, url: addressUrl(recommended.address, port, schemeFor(recommended.address)) }
             : null,
         addresses,
     };
+}
+
+// Endereço seguro para os outros aparelhos (H6c): o IP recomendado, desde que esteja no
+// certificado do servidor (ips, o SAN). Só IPs de rede local entram no certificado (a CA
+// do IClass não permite outros): numa rede da escola em faixa pública ou em 100.64/10, o
+// https pelo IP não valida em aparelho nenhum, nem com o certificado instalado, e a tela
+// não pode dizer que funciona. O nome '<nome>.local' (H6d) resolve esse caso depois.
+// Devolve { usable, address, reason }, com reason em português quando não dá.
+function secureAddressStatus(recommended, ips) {
+    const covered = new Set(Array.isArray(ips) ? ips : []);
+    if (!recommended || !recommended.address) {
+        return { usable: false, address: null, reason: 'Este computador não está ligado a nenhuma rede agora: os outros aparelhos não têm como chegar ao endereço seguro. Conecte ao Wi-Fi ou ao cabo da sala.' };
+    }
+    const address = recommended.address;
+    if (covered.has(address)) return { usable: true, address, reason: null };
+    let reason;
+    if (recommended.kind === 'virtual') {
+        reason = `O endereço recomendado (${address}) é de um adaptador virtual e não entra no certificado do IClass. Conecte o computador ao Wi-Fi ou ao cabo da sala.`;
+    } else if (recommended.kind === 'link-local') {
+        reason = `O computador está sem endereço da rede (${address}) e esse endereço não entra no certificado do IClass. Confira a conexão com o Wi-Fi ou o cabo da sala.`;
+    } else if (!isPrivateIpv4(address)) {
+        reason = `O endereço desta rede (${address}) não é de uma faixa de rede local (10.x, 172.16 a 172.31 ou 192.168.x) e não pode entrar no certificado do IClass: por ele, a conexão segura não funcionaria em nenhum aparelho.`;
+    } else {
+        reason = `O certificado do IClass ainda não inclui o endereço ${address}. Ele é refeito sozinho em até 30 segundos depois que o endereço muda.`;
+    }
+    return { usable: false, address: null, reason };
 }
 
 const PANEL_LINES = {
@@ -157,9 +189,11 @@ const PANEL_LINES = {
 
 // Linhas do banner do console (o printBanner do server.js, H3c, chama esta função). link
 // recebe a url e devolve o texto clicável (OSC 8) ou a própria url. secure (H6c):
-// { available, studentsHttps, error } da conexão segura; sem ele, a linha não sai.
+// { available, studentsHttps, error, ips } da conexão segura (ips: os IPs do certificado
+// do servidor); sem ele, a linha não sai.
 function consoleLines({ port, scheme = 'http', adminAccess = 'rede-sem-https', secure = null, link = url => url, now } = {}) {
-    const snapshot = networkAddresses({ port, scheme, now });
+    const httpsIps = secure && secure.available && Array.isArray(secure.ips) ? secure.ips : undefined;
+    const snapshot = networkAddresses({ port, scheme, httpsIps, now });
     const lines = [];
     if (snapshot.recommended) {
         lines.push(`Para os alunos: ${link(snapshot.recommended.url)}  (✅ ${snapshot.recommended.name})`);
@@ -179,8 +213,13 @@ function consoleLines({ port, scheme = 'http', adminAccess = 'rede-sem-https', s
         });
     }
     if (secure && secure.available) {
-        const host = snapshot.recommended ? snapshot.recommended.address : 'localhost';
-        lines.push(`Endereço seguro: ${link(addressUrl(host, snapshot.port, 'https'))}  (${secure.studentsHttps ? 'ligado para os alunos' : 'disponível; os alunos entram por http'}). Cada aparelho instala o certificado uma vez: veja /certificado.`);
+        // Só um IP que está no certificado vira endereço seguro (secureAddressStatus).
+        const status = secureAddressStatus(snapshot.recommended, secure.ips);
+        if (status.usable) {
+            lines.push(`Endereço seguro: ${link(addressUrl(status.address, snapshot.port, 'https'))}  (${secure.studentsHttps ? 'ligado para os alunos' : 'disponível; os alunos entram por http'}). Cada aparelho instala o certificado uma vez: veja /certificado.`);
+        } else {
+            lines.push(`⚠️ Conexão segura só neste computador (${link(addressUrl('localhost', snapshot.port, 'https'))}): ${status.reason}`);
+        }
     } else if (secure) {
         lines.push(`⚠️ ${secure.error || 'Conexão segura indisponível.'}`);
     }
@@ -248,5 +287,6 @@ module.exports = {
     createAddressWatcher,
     isPrivateIpv4,
     networkAddresses,
+    secureAddressStatus,
     setInterfaceProvider,
 };

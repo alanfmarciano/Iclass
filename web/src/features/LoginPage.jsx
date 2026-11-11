@@ -138,10 +138,11 @@ export default function LoginPage() {
   }
 
   // Alunos pela conexão segura (Sistema → Rede, H6c): a tela foi aberta por http antes da
-  // troca, e o servidor recusa o login, o cadastro e o pedido de senha por http com
-  // { httpsRequired, httpsUrl }. Vai para a mesma tela no endereço seguro.
+  // troca, e o servidor recusa o login, o cadastro e o pedido de senha por http com a
+  // resposta de estado do contrato 9, { adminAccess: 'https-required', httpsUrl }. Vai
+  // para a mesma tela no endereço seguro.
   function goSecureForStudent(err) {
-    const httpsUrl = err?.status === 403 && err?.data?.httpsRequired === true ? err.data.httpsUrl : ''
+    const httpsUrl = err?.status === 403 && err?.data?.adminAccess === 'https-required' ? err.data.httpsUrl : ''
     if (typeof httpsUrl !== 'string' || !/^https:\/\//.test(httpsUrl)) return false
     window.location.assign(`${httpsUrl.replace(/\/+$/, '')}/login`)
     return true

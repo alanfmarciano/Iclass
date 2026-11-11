@@ -53,12 +53,20 @@ describe('[UC-REDE-004] guia /certificado', () => {
   })
 
   it('sem a conexão segura neste IClass: explica e não oferece o download', async () => {
-    mocks.get.mockResolvedValue({ available: false, error: 'Conexão segura indisponível: disco cheio: não foi possível gravar o certificado.' })
+    mocks.get.mockResolvedValue({ available: false, error: 'Conexão segura indisponível neste IClass agora.' })
     renderPage()
-    expect(await screen.findByTestId('certificate-unavailable')).toHaveTextContent('disco cheio')
+    expect(await screen.findByTestId('certificate-unavailable')).toHaveTextContent('Conexão segura indisponível neste IClass agora. Avise o administrador')
     expect(screen.queryByRole('link', { name: /Baixar certificado/ })).toBeNull()
     expect(screen.queryByTestId('certificate-https-url')).toBeNull()
     expect(screen.getByTestId('platform-android')).toBeInTheDocument()
+  })
+
+  it('sem endereço seguro para este aparelho (IP da rede fora do certificado): não mostra link de https, diz para avisar o administrador', async () => {
+    mocks.get.mockResolvedValue({ ...AVAILABLE, httpsUrl: null })
+    renderPage()
+    await screen.findByTestId('certificate-fingerprint')
+    expect(screen.queryByTestId('certificate-https-url')).toBeNull()
+    expect(screen.getByTestId('certificate-no-https-url')).toHaveTextContent('O endereço seguro ainda não funciona nesta rede')
   })
 
   it('falha de rede mostra "Tentar de novo", que consulta outra vez', async () => {

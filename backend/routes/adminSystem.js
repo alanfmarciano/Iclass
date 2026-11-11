@@ -18,7 +18,7 @@ const {
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
-const { connectionInfo, httpsAvailable, studentsHttpsEnabled } = require('../utils/networkPolicy.js');
+const { connectionInfo, httpsAvailable, networkHttpsStatus, studentsHttpsEnabled } = require('../utils/networkPolicy.js');
 const secureConnection = require('../utils/secureConnection.js');
 const { networkAddresses } = require('../utils/networkAddresses.js');
 const { encodeQr } = require('../utils/qrCode.js');
@@ -180,22 +180,32 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
 
     // Endereços desta máquina (utils/networkAddresses.js, relidos a cada 2 s), com o
     // esquema que os alunos usam: http enquanto a conexão segura para os alunos estiver
-    // desligada (studentsHttps, padrão), https quando ligada (H6c).
+    // desligada (studentsHttps, padrão), https quando ligada (H6c), e só nos endereços que
+    // estão no certificado (um adaptador virtual continua em http).
     function studentAddresses(req) {
-        return networkAddresses({ port: listeningPort(req), scheme: studentsHttpsEnabled() ? 'https' : 'http' });
+        return networkAddresses({
+            port: listeningPort(req),
+            scheme: studentsHttpsEnabled() ? 'https' : 'http',
+            httpsIps: secureConnection.serverIps(),
+        });
     }
 
-    // Conexão segura (H6c) para a tela: se funciona (ou o motivo), o endereço seguro
-    // recomendado, a impressão digital e as validades da CA e do certificado do servidor.
-    function httpsPayload(port, snapshot) {
+    // Conexão segura (H6c) para a tela: se funciona (ou o motivo), se serve aos outros
+    // aparelhos (networkReady: o IP recomendado está no certificado; senão, networkError
+    // diz por quê e o https vale só neste computador, em localUrl), o endereço seguro, a
+    // impressão digital e as validades da CA e do certificado do servidor.
+    function httpsPayload(port) {
         const status = secureConnection.status();
-        const recommended = snapshot && snapshot.recommended;
+        const network = networkHttpsStatus();
         return {
             available: status.available,
             error: status.available ? null : secureConnection.unavailableText(),
+            networkReady: network.usable,
+            networkError: status.available && !network.usable ? network.reason : null,
             studentsHttps: studentsHttpsEnabled(),
             studentsHttpsSetting: settingsUtil.networkSettings().studentsHttps,
-            url: status.available ? `https://${recommended ? recommended.address : 'localhost'}:${port}` : null,
+            url: network.usable ? `https://${network.address}:${port}` : null,
+            localUrl: status.available ? `https://localhost:${port}` : null,
             ca: status.ca,
             server: status.server,
         };
@@ -213,7 +223,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 recommended: snapshot.recommended,
                 addresses: snapshot.addresses,
                 hostname: null,
-                https: httpsPayload(snapshot.port, snapshot),
+                https: httpsPayload(snapshot.port),
                 adminAccess: settingsUtil.networkSettings().adminAccess,
             });
         });
@@ -583,12 +593,15 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     // em utils/settings.js).
     function networkSettingsPayload(req) {
         const connection = connectionInfo(req);
-        const status = secureConnection.status();
+        const network = networkHttpsStatus();
         return {
             ...settingsUtil.networkSettings(),
             modes: settingsUtil.ADMIN_ACCESS_MODES,
             httpsAvailable: httpsAvailable(),
-            httpsError: status.available ? null : secureConnection.unavailableText(),
+            // Serve aos outros aparelhos (o IP recomendado está no certificado)? É o que
+            // libera 'rede' e studentsHttps; httpsError diz por que não.
+            httpsReady: network.usable,
+            httpsError: network.usable ? null : network.reason,
             httpsUrl: connection.httpsUrl,
             thisComputer: connection.thisComputer,
             secure: connection.secure,
@@ -632,19 +645,23 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 adminAccess: hasAccess ? body.adminAccess : before.adminAccess,
                 studentsHttps: hasStudents ? body.studentsHttps : before.studentsHttps,
             };
-            const unavailable = secureConnection.status().available ? '' : ` ${secureConnection.unavailableText()}`;
-            if (hasAccess && after.adminAccess === 'rede' && before.adminAccess !== 'rede' && !httpsAvailable()) {
+            // 'rede' e os alunos pelo https só com a conexão segura funcionando para os
+            // outros aparelhos: o certificado existe E tem o IP recomendado. Com a rede da
+            // escola fora das faixas locais, o https por IP não abriria em aparelho nenhum.
+            const network = (hasAccess || hasStudents) ? networkHttpsStatus() : { usable: true };
+            const why = network.usable ? '' : ` ${network.reason}`;
+            if (hasAccess && after.adminAccess === 'rede' && before.adminAccess !== 'rede' && !network.usable) {
                 return res.status(409).json({
                     success: false,
                     field: 'adminAccess',
-                    error: `A opção "Outros aparelhos só com conexão segura" precisa da conexão segura (https) funcionando neste computador.${unavailable} Por enquanto, escolha "Todos os aparelhos da rede" ou "Só o computador do IClass".`,
+                    error: `A opção "Outros aparelhos só com conexão segura" precisa da conexão segura (https) funcionando para os outros aparelhos da rede.${why} Por enquanto, escolha "Todos os aparelhos da rede" ou "Só o computador do IClass".`,
                 });
             }
-            if (hasStudents && after.studentsHttps && !before.studentsHttps && !httpsAvailable()) {
+            if (hasStudents && after.studentsHttps && !before.studentsHttps && !network.usable) {
                 return res.status(409).json({
                     success: false,
                     field: 'studentsHttps',
-                    error: `Os alunos só podem entrar pela conexão segura com ela funcionando neste computador.${unavailable}`,
+                    error: `Os alunos só podem entrar pela conexão segura com ela funcionando para os outros aparelhos da rede.${why}`,
                 });
             }
             if (after.studentsHttps !== before.studentsHttps) {

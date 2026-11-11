@@ -26,6 +26,8 @@ const runtimePaths = require('../../backend/runtimePaths.js');
 const { createApp } = require('../../backend/server.js');
 const settingsUtil = require('../../backend/utils/settings.js');
 const secureConnection = require('../../backend/utils/secureConnection.js');
+const { PUBLIC_UNAVAILABLE_TEXT } = secureConnection;
+const consoleLinesOf = require('../../backend/utils/networkAddresses.js').consoleLines;
 const { createDualServer } = require('../../backend/utils/dualListener.js');
 const { setInterfaceProvider } = require('../../backend/utils/networkAddresses.js');
 const { createAdminSession } = require('../../backend/utils/authSessions.js');
@@ -209,7 +211,8 @@ test('[UC-REDE-005] alunos pelo https (studentsHttps): página por http vai para
     for (const entry of ['/api/student/login', '/api/student/register', '/api/student/recover']) {
         const res = await send('http', remote.port, { method: 'POST', path: entry, body: { email: ANA.email, password: ANA.password } });
         assert.equal(res.status, 403, entry);
-        assert.deepEqual(res.body, { error: STUDENT_HTTPS_MESSAGE, httpsRequired: true, httpsUrl });
+        // A resposta de estado do contrato 9 (lista fechada), a mesma do painel: vá para o https.
+        assert.deepEqual(res.body, { error: STUDENT_HTTPS_MESSAGE, adminAccess: 'https-required', httpsUrl });
     }
     const viaHttps = await send('https', remote.port, { method: 'POST', path: '/api/student/login', body: ANA });
     assert.equal(viaHttps.status, 200, JSON.stringify(viaHttps.body));
@@ -287,10 +290,24 @@ test('[UC-REDE-005] sem a conexão segura (pasta tls que não pode ser gravada):
     const blocker = path.join(tempRoot, 'bloqueio');
     fs.writeFileSync(blocker, 'x');
     try {
+        const crashLog = path.join(runtimePaths.DATA_DIR, 'crash.log');
+        const crashBefore = fs.existsSync(crashLog) ? fs.readFileSync(crashLog, 'utf8').length : 0;
         assert.equal(secureConnection.prepare({ dir: path.join(blocker, 'tls'), addresses: [] }), null);
         const status = secureConnection.status();
         assert.equal(status.available, false);
         assert.match(secureConnection.unavailableText(), /^Conexão segura indisponível: /);
+        // O motivo é português simples, sem o código repetido, sem a mensagem do sistema e
+        // sem o caminho da pasta de dados (antes: "EEXIST: EEXIST: file already exists,
+        // mkdir '/.../data/tls'", inclusive na rota pública).
+        const text = secureConnection.unavailableText();
+        assert.match(text, /há um arquivo com o nome "tls" na pasta de dados/);
+        assert.equal(text.includes(tempRoot), false, text);
+        assert.equal(/ENOTDIR|EEXIST|file already exists|not a directory|mkdir/i.test(text), false, text);
+        // O detalhe técnico vai para o crash.log, uma vez por motivo.
+        const crash = fs.readFileSync(crashLog, 'utf8').slice(crashBefore);
+        assert.match(crash, /conexão segura \(https\)/);
+        assert.equal(secureConnection.prepare({ dir: path.join(blocker, 'tls'), addresses: [] }), null);
+        assert.equal(fs.readFileSync(crashLog, 'utf8').slice(crashBefore), crash, 'a mesma falha não se repete no crash.log');
         seed({ adminAccess: 'rede' });
         const res = await send('http', remote.port, { method: 'POST', path: '/api/session/admin-login', body: ADMIN });
         assert.equal(res.status, 403);
@@ -303,15 +320,123 @@ test('[UC-REDE-005] sem a conexão segura (pasta tls que não pode ser gravada):
         const info = await send('http', remote.port, { path: '/api/connection/certificate' });
         assert.equal(info.status, 200);
         assert.equal(info.body.available, false);
-        assert.match(info.body.error, /^Conexão segura indisponível: /);
-        assert.equal((await send('http', remote.port, { path: '/iclass-ca.crt' })).status, 404);
+        // Rota pública (o guia /certificado, sem login): só "indisponível"; o motivo fica
+        // no console e em Sistema → Rede.
+        assert.equal(info.body.error, PUBLIC_UNAVAILABLE_TEXT);
+        const caFile = await send('http', remote.port, { path: '/iclass-ca.crt' });
+        assert.equal(caFile.status, 404);
+        assert.equal(caFile.raw.toString('utf8').includes(tempRoot), false);
+        assert.match(caFile.raw.toString('utf8'), /^Conexão segura indisponível neste IClass agora\. /);
         seed();
         const token = createAdminSession(db.memory, ADMIN.email);
         const refused = await send('http', local.port, { method: 'POST', path: '/api/admin/network-settings', headers: { 'x-admin-session': token }, body: { studentsHttps: true } });
         assert.equal(refused.status, 409);
-        assert.match(refused.body.error, /Conexão segura indisponível: /);
+        assert.match(refused.body.error, /Conexão segura indisponível: há um arquivo com o nome "tls"/);
+        const settings = await send('http', local.port, { path: '/api/admin/network-settings', headers: { 'x-admin-session': token } });
+        assert.equal(settings.body.httpsReady, false);
+        assert.equal(settings.body.httpsError, secureConnection.unavailableText());
     } finally {
         assert.ok(saved.available);
+        secureConnection.prepare({ dir: path.join(runtimePaths.DATA_DIR, 'tls'), addresses: [{ name: 'Wi-Fi', address: '192.168.0.10', kind: 'rede' }] });
+    }
+});
+
+test('[UC-REDE-005] IP da rede fora das faixas locais (192.0.2.2): a conexão segura vale só neste computador; nada manda para um https que não valida', async () => {
+    // Antes: a tela dizia "funcionando" com https://192.0.2.2, aceitava 'rede' e
+    // studentsHttps, e redirecionava professores e alunos para um https cujo certificado
+    // (SAN só com localhost e 127.0.0.1) nunca validava, nem com a CA instalada.
+    const outsideInterfaces = { eth0: [{ address: '192.0.2.2', family: 'IPv4', internal: false }] };
+    const outsideDir = path.join(tempRoot, 'tls-fora');
+    setInterfaceProvider(() => outsideInterfaces);
+    try {
+        const { networkAddresses } = require('../../backend/utils/networkAddresses.js');
+        const outside = secureConnection.prepare({ dir: outsideDir, addresses: networkAddresses({ port: local.port }).addresses });
+        assert.ok(outside);
+        assert.deepEqual(outside.server.ips, ['127.0.0.1'], 'o IP fora das faixas da CA não entra no certificado');
+        assert.equal(new crypto.X509Certificate(outside.cert).checkIP('192.0.2.2'), undefined);
+
+        seed();
+        const token = createAdminSession(db.memory, ADMIN.email);
+        const auth = { 'x-admin-session': token };
+        const info = await send('http', local.port, { path: '/api/admin/network-info', headers: auth });
+        assert.equal(info.body.https.available, true);
+        assert.equal(info.body.https.networkReady, false);
+        assert.equal(info.body.https.url, null, 'nenhum endereço https://192.0.2.2');
+        assert.equal(info.body.https.localUrl, `https://localhost:${local.port}`);
+        assert.match(info.body.https.networkError, /O endereço desta rede \(192\.0\.2\.2\) não é de uma faixa de rede local/);
+
+        const settings = await send('http', local.port, { path: '/api/admin/network-settings', headers: auth });
+        assert.equal(settings.body.httpsAvailable, true);
+        assert.equal(settings.body.httpsReady, false);
+        assert.match(settings.body.httpsError, /192\.0\.2\.2/);
+        const post = body => send('http', local.port, { method: 'POST', path: '/api/admin/network-settings', headers: auth, body });
+        const rede = await post({ adminAccess: 'rede' });
+        assert.equal(rede.status, 409);
+        assert.equal(rede.body.field, 'adminAccess');
+        assert.match(rede.body.error, /192\.0\.2\.2.*não é de uma faixa de rede local/);
+        const students = await post({ studentsHttps: true });
+        assert.equal(students.status, 409);
+        assert.equal(students.body.field, 'studentsHttps');
+        assert.equal(settingsUtil.networkSettings().adminAccess, 'rede-sem-https');
+        assert.equal(settingsUtil.networkSettings().studentsHttps, false);
+
+        // Opções já gravadas antes (banco de outra rede): nenhum redirecionamento para o
+        // https por IP; o painel em outro aparelho é recusado com o texto de indisponível.
+        seed({ adminAccess: 'rede', studentsHttps: true });
+        const host = { host: `192.0.2.2:${remote.port}` };
+        const login = await send('http', remote.port, { method: 'POST', path: '/api/session/admin-login', body: ADMIN, headers: host });
+        assert.equal(login.status, 403);
+        assert.deepEqual(login.body, { error: HTTPS_UNAVAILABLE_MESSAGE, adminAccess: 'https-required', httpsUrl: null });
+        assert.equal((await send('http', remote.port, { path: '/sistema', headers: host })).status === 302, false);
+        assert.equal((await send('http', remote.port, { path: '/aluno', headers: host })).status === 302, false);
+        assert.equal((await send('http', remote.port, { method: 'POST', path: '/api/student/login', body: ANA, headers: host })).status, 200, 'os alunos seguem por http');
+        const connection = await send('http', remote.port, { path: '/api/connection', headers: host });
+        assert.equal(connection.body.httpsUrl, null);
+        assert.equal(connection.body.studentsHttps, false);
+        const guide = await send('http', remote.port, { path: '/api/connection/certificate', headers: host });
+        assert.equal(guide.body.available, true);
+        assert.equal(guide.body.httpsUrl, null, 'o guia não oferece um https que não abre');
+        // O endereço da sala e o QR continuam em http.
+        const room = await send('http', local.port, { path: '/api/admin/room-address', headers: { 'x-admin-session': createAdminSession(db.memory, ADMIN.email) } });
+        assert.equal(room.body.studentUrl, `http://192.0.2.2:${local.port}`);
+        assert.equal(room.body.studentsHttps, false);
+        // Neste computador, o https por localhost continua valendo.
+        const own = await send('http', local.port, { path: '/api/connection', headers: { host: `192.0.2.2:${local.port}` } });
+        assert.equal(own.body.httpsUrl, `https://localhost:${local.port}`);
+        // Console: nada de "Endereço seguro: https://192.0.2.2".
+        const lines = consoleLinesOf({ port: local.port, secure: { available: true, studentsHttps: false, ips: secureConnection.serverIps() } });
+        assert.equal(lines.some(line => line.includes('https://192.0.2.2')), false, lines.join('\n'));
+        assert.ok(lines.some(line => /Conexão segura só neste computador/.test(line)));
+    } finally {
+        setInterfaceProvider(() => INTERFACES);
+        secureConnection.prepare({ dir: path.join(runtimePaths.DATA_DIR, 'tls'), addresses: [{ name: 'Wi-Fi', address: '192.168.0.10', kind: 'rede' }] });
+    }
+});
+
+test('[UC-REDE-005] com https para os alunos, o adaptador virtual (fora do certificado) continua em http na tela', async () => {
+    seed({ studentsHttps: true });
+    const token = createAdminSession(db.memory, ADMIN.email);
+    const info = await send('http', local.port, { path: '/api/admin/network-info', headers: { 'x-admin-session': token } });
+    const byAddress = Object.fromEntries(info.body.addresses.map(item => [item.address, item.url]));
+    assert.equal(byAddress['192.168.0.10'], `https://192.168.0.10:${local.port}`);
+    assert.equal(byAddress['192.168.56.1'], `http://192.168.56.1:${local.port}`, 'antes: https://192.168.56.1, fora do certificado');
+    assert.equal(info.body.https.networkReady, true);
+    assert.equal(info.body.https.url, `https://192.168.0.10:${local.port}`);
+});
+
+test('[UC-REDE-005] aviso de CA recriada: some depois de 30 dias (antes ficava para sempre)', () => {
+    const dir = path.join(tempRoot, 'tls-recriada');
+    try {
+        assert.ok(secureConnection.prepare({ dir, addresses: [] }));
+        const file = path.join(dir, 'ca-recriada.json');
+        fs.writeFileSync(file, JSON.stringify({ at: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(), reason: 'a CA venceu' }));
+        assert.ok(secureConnection.prepare({ dir, addresses: [] }));
+        assert.ok(secureConnection.status().ca.recreatedAt, 'dentro dos 30 dias, a tela avisa');
+        fs.writeFileSync(file, JSON.stringify({ at: new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString(), reason: 'a CA venceu' }));
+        assert.ok(secureConnection.prepare({ dir, addresses: [] }));
+        assert.equal(secureConnection.status().ca.recreatedAt, null);
+        assert.ok(fs.existsSync(file), 'o histórico continua na pasta tls');
+    } finally {
         secureConnection.prepare({ dir: path.join(runtimePaths.DATA_DIR, 'tls'), addresses: [{ name: 'Wi-Fi', address: '192.168.0.10', kind: 'rede' }] });
     }
 });

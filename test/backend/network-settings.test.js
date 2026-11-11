@@ -62,6 +62,7 @@ test('[UC-REDE-001] GET network-settings: padrão do banco antigo, modos e se a 
         studentsHttps: false,
         modes: ['rede-sem-https', 'local', 'rede'],
         httpsAvailable: false,
+        httpsReady: false,
         httpsError: 'Conexão segura indisponível.',
         httpsUrl: null,
         thisComputer: true,
@@ -100,7 +101,7 @@ test('[UC-REDE-001] "Outros aparelhos só com conexão segura" é recusado sem a
     assert.equal(res.status, 409);
     assert.equal(res.body.success, false);
     assert.equal(res.body.field, 'adminAccess');
-    assert.match(res.body.error, /precisa da conexão segura \(https\) funcionando neste computador\. Conexão segura indisponível\./);
+    assert.match(res.body.error, /precisa da conexão segura \(https\) funcionando para os outros aparelhos da rede\. Conexão segura indisponível\./);
     assert.equal(settingsUtil.networkSettings().adminAccess, 'rede-sem-https');
     assert.equal(networkAudits().length, 0);
 });

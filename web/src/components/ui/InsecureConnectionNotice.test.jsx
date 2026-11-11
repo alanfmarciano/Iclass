@@ -62,6 +62,12 @@ describe('[UC-REDE-005] link "Usar conexão segura" no aviso (H6c)', () => {
     expect(link).toHaveAttribute('href', '/certificado')
   })
 
+  it('com o certificado, mas sem endereço seguro para este aparelho (IP da rede fora do certificado), o aviso não traz o link', () => {
+    render(<InsecureConnectionNotice connection={{ ...OPEN_INSECURE, tlsAvailable: true, httpsUrl: null }} />)
+    expect(screen.getByTestId('insecure-connection-notice')).toBeInTheDocument()
+    expect(screen.queryByTestId('use-secure-connection')).toBeNull()
+  })
+
   it('sem a conexão segura neste IClass, o aviso não traz o link', () => {
     render(<InsecureConnectionNotice connection={{ ...OPEN_INSECURE, tlsAvailable: false, httpsUrl: null }} />)
     expect(screen.getByTestId('insecure-connection-notice')).toBeInTheDocument()

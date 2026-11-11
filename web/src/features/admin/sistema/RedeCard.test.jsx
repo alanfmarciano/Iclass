@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../../../lib/api', () => ({ api: { get: vi.fn(), post: mocks.post } }))
-vi.mock('../../../hooks/useApi', () => ({ useApi: (path) => ({ data: (path && mocks.apiData[path]) || null, loading: false, error: null, refetch: mocks.refetch }) }))
+vi.mock('../../../hooks/useApi', () => ({ useApi: (path) => ({ data: (path && mocks.apiData[path]) || null, loading: false, error: null, refetch: (...args) => mocks.refetch(path, ...args) }) }))
 vi.mock('../../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 vi.mock('../../../lib/clipboard', () => ({ copyText: vi.fn(async () => 'copied') }))
 
@@ -56,7 +56,7 @@ describe('[UC-REDE-001] Sistema → Rede: onde o painel do professor abre', () =
     expect(open).toBeChecked()
     expect(screen.getByRole('radio', { name: /Só o computador do IClass/ })).toBeEnabled()
     expect(screen.getByRole('radio', { name: /Outros aparelhos só com conexão segura/ })).toBeDisabled()
-    expect(screen.getByText(/Indisponível agora: a conexão segura \(https\) não está funcionando neste IClass/)).toBeInTheDocument()
+    expect(screen.getByText(/Indisponível agora: a conexão segura \(https\) não está funcionando para os outros aparelhos/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Salvar acesso ao painel' })).toBeDisabled()
   })
 
@@ -214,7 +214,28 @@ describe('[UC-REDE-005] Sistema → Rede: conexão segura (https)', () => {
     expect(dialog).toHaveTextContent('instale o certificado do IClass em cada aparelho dos alunos')
     await user.click(within(dialog).getByRole('button', { name: 'Ligar para os alunos' }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/network-settings', { studentsHttps: true }))
-    expect(mocks.refetch).toHaveBeenCalled()
+    // O endereço da sala, o QR e os endereços passam a https sem recarregar a página
+    // (antes só as configurações eram relidas, e o cartão ficava com o http até recarregar).
+    const reloaded = mocks.refetch.mock.calls.map(([path]) => path)
+    expect(reloaded).toEqual(expect.arrayContaining(['/api/admin/network-settings', '/api/admin/network-info', '/api/admin/room-address']))
+  })
+
+  it('certificado sem o IP desta rede (faixa não privada): "só neste computador", com o motivo, e nada liga para a rede', () => {
+    withHttps(
+      { networkReady: false, networkError: 'O endereço desta rede (192.0.2.2) não é de uma faixa de rede local (10.x, 172.16 a 172.31 ou 192.168.x) e não pode entrar no certificado do IClass.', url: null, localUrl: 'https://localhost:3000' },
+      { httpsAvailable: true, httpsReady: false, httpsUrl: 'https://localhost:3000' },
+    )
+    render(<RedeCard canManage isAdmin />)
+    const section = screen.getByTestId('secure-connection-settings')
+    expect(section).toHaveTextContent('só neste computador')
+    expect(section).not.toHaveTextContent('funcionando')
+    expect(screen.getByTestId('secure-connection-network-error')).toHaveTextContent('192.0.2.2')
+    expect(screen.getByTestId('secure-connection-network-error')).toHaveTextContent('https://localhost:3000')
+    expect(screen.queryByTestId('secure-url')).toBeNull()
+    expect(screen.getByRole('checkbox', { name: /Alunos entram pela conexão segura/ })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: /Outros aparelhos só com conexão segura/ })).toBeDisabled()
+    // O certificado continua disponível para baixar (vale no próprio computador).
+    expect(within(section).getByRole('link', { name: /Baixar certificado/ })).toHaveAttribute('href', '/iclass-ca.crt')
   })
 
   it('desligar salva direto; a recusa por prova em andamento aparece no aviso', async () => {

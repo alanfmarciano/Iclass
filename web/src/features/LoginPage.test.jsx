@@ -316,7 +316,7 @@ describe('[UC-REDE-005] login com a conexão segura', () => {
   })
 
   it('aluno com a tela aberta por http depois de o https dos alunos ser ligado: vai para o login no endereço seguro', async () => {
-    mocks.loginStudent.mockRejectedValue(Object.assign(new Error('Abra o endereço seguro para entrar.'), { status: 403, data: { error: 'Abra o endereço seguro para entrar.', httpsRequired: true, httpsUrl: 'https://192.168.0.10:3000' } }))
+    mocks.loginStudent.mockRejectedValue(Object.assign(new Error('Abra o endereço seguro para entrar.'), { status: 403, data: { error: 'Abra o endereço seguro para entrar.', adminAccess: 'https-required', httpsUrl: 'https://192.168.0.10:3000' } }))
     const assign = vi.fn()
     const original = window.location
     Object.defineProperty(window, 'location', { configurable: true, value: { ...original, assign, search: '' } })
@@ -334,7 +334,7 @@ describe('[UC-REDE-005] login com a conexão segura', () => {
   })
 
   it('httpsUrl que não é https não vira redirecionamento', async () => {
-    mocks.loginStudent.mockRejectedValue(Object.assign(new Error('Abra o endereço seguro para entrar.'), { status: 403, data: { httpsRequired: true, httpsUrl: 'javascript:alert(1)' } }))
+    mocks.loginStudent.mockRejectedValue(Object.assign(new Error('Abra o endereço seguro para entrar.'), { status: 403, data: { adminAccess: 'https-required', httpsUrl: 'javascript:alert(1)' } }))
     const assign = vi.fn()
     const original = window.location
     Object.defineProperty(window, 'location', { configurable: true, value: { ...original, assign, search: '' } })

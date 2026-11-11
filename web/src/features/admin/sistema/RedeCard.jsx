@@ -50,7 +50,8 @@ function AdapterLine({ item }) {
 }
 
 export function RedeCard({ canManage = false, isAdmin = false }) {
-  const { data: net } = useApi('/api/admin/network-info')
+  const netApi = useApi('/api/admin/network-info')
+  const net = netApi.data
   const room = useApi(ROOM_ADDRESS_PATH)
   const { copy, manualCopy } = useCopyText()
   const settings = useApi(canManage ? '/api/admin/network-settings' : null, [canManage])
@@ -66,7 +67,9 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
   const adapters = networkAdapters(net)
   const studentUrl = room.data?.studentUrl || adapters.recommended?.url || ''
   const qrRows = room.data?.studentUrl ? room.data?.qr?.rows : null
-  const httpsReady = settings.data?.httpsAvailable === true
+  // 'rede' só com a conexão segura servindo aos outros aparelhos (httpsReady: o IP da rede
+  // está no certificado). Servidor anterior, sem o campo: vale httpsAvailable.
+  const httpsReady = settings.data?.httpsReady !== undefined ? settings.data.httpsReady === true : settings.data?.httpsAvailable === true
   // Quem muda daqui para "só o computador do IClass" estando em outro aparelho perde o
   // painel neste aparelho logo depois de salvar: pede confirmação antes.
   const elsewhere = settings.data?.thisComputer === false
@@ -92,6 +95,13 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
     } finally {
       setBusy(false)
     }
+  }
+  // Alunos pela conexão segura ligados ou desligados: o endereço da sala, o QR e os
+  // endereços passam de http para https (ou o contrário) na hora, sem recarregar a página.
+  function reloadAfterSecureChange() {
+    settings.refetch(true)
+    netApi.refetch(true)
+    room.refetch(true)
   }
   function requestSave() {
     if (choice === ADMIN_ACCESS_MODES.LOCAL && elsewhere) { setConfirmMode(ADMIN_ACCESS_MODES.LOCAL); return }
@@ -178,7 +188,7 @@ export function RedeCard({ canManage = false, isAdmin = false }) {
           </div>
         )}
         {canManage && isAdmin && current && (
-          <ConexaoSeguraSection https={net?.https} settings={settings.data} copy={copy} onSaved={() => settings.refetch(true)} />
+          <ConexaoSeguraSection https={net?.https} settings={settings.data} copy={copy} onSaved={reloadAfterSecureChange} />
         )}
       </CardBody>
       <Modal open={confirmMode === ADMIN_ACCESS_MODES.LOCAL} onClose={() => !busy && setConfirmMode('')} title="Fechar o painel neste aparelho?"

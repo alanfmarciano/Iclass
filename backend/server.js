@@ -21,7 +21,7 @@ const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
 const serverLifecycle = require('./utils/serverLifecycle.js');
 const { SYNCED_FOLDER_WARNING } = require('./utils/syncedFolder.js');
-const { createNetworkPolicy, studentsHttpsEnabled } = require('./utils/networkPolicy.js');
+const { createNetworkPolicy, networkHttpsStatus, studentsHttpsEnabled } = require('./utils/networkPolicy.js');
 const { consoleLines, createAddressWatcher, networkAddresses, WATCH_INTERVAL_MS: NETWORK_WATCH_INTERVAL_MS } = require('./utils/networkAddresses.js');
 const { createDualServer } = require('./utils/dualListener.js');
 const secureConnection = require('./utils/secureConnection.js');
@@ -681,10 +681,23 @@ function printBanner(port) {
         port,
         scheme: studentsHttpsEnabled() ? 'https' : 'http',
         adminAccess: settingsUtil.networkSettings().adminAccess,
-        secure: { available: secureConnection.isAvailable(), studentsHttps: studentsHttpsEnabled(), error: secureConnection.isAvailable() ? null : secureConnection.unavailableText() },
+        secure: {
+            available: secureConnection.isAvailable(),
+            studentsHttps: studentsHttpsEnabled(),
+            error: secureConnection.isAvailable() ? null : secureConnection.unavailableText(),
+            ips: secureConnection.serverIps(),
+        },
         link: url => link(url),
     }).forEach(line => console.log(line));
     console.log(`===========================================`);
+}
+
+// A CA (certificado do IClass) trocada por outra nesta leitura: os aparelhos que tinham
+// a antiga precisam instalar a nova. Avisa no console (a tela Sistema avisa por 30 dias).
+function warnCaRecreated(material) {
+    if (!material || !material.caRecreatedNow) return;
+    const reason = material.ca && material.ca.recreatedReason ? ` (${material.ca.recreatedReason})` : '';
+    console.warn(`⚠️ O certificado do IClass (CA) foi criado de novo${reason}. Os aparelhos que já tinham instalado o anterior precisam instalar este: veja /certificado.`);
 }
 
 // Vigia da rede (H6a): a cada 30 s confere se o endereço recomendado ou os IPs da máquina
@@ -700,6 +713,7 @@ function refreshSecureConnection(server, addresses, reason) {
     const material = secureConnection.refresh({ addresses });
     if (material && server && typeof server.updateTls === 'function') {
         server.updateTls(material);
+        warnCaRecreated(material);
         if (!wasAvailable) {
             console.log('🔒 Conexão segura (https) disponível agora.');
         } else {
@@ -716,7 +730,14 @@ function startNetworkWatcher(port, server) {
     const watcher = createAddressWatcher({
         port,
         scheme: () => (studentsHttpsEnabled() ? 'https' : 'http'),
-        onChange: current => refreshSecureConnection(server, current.addresses, 'endereço da rede mudou'),
+        onChange: current => {
+            refreshSecureConnection(server, current.addresses, 'endereço da rede mudou');
+            // Rede nova fora das faixas locais: o https por IP não abre nos outros aparelhos.
+            const network = networkHttpsStatus();
+            if (secureConnection.isAvailable() && !network.usable) {
+                console.warn(`⚠️ Conexão segura só neste computador: ${network.reason}`);
+            }
+        },
     });
     serverLifecycle.registerTimer('network-watch', setInterval(() => {
         const changed = watcher.check();
@@ -915,6 +936,7 @@ async function startServer({ port = PORT, host = '0.0.0.0' } = {}) {
     // no console e em Sistema → Rede: o servidor nunca deixa de subir por causa do https.
     const tls = secureConnection.prepare({ addresses: networkAddresses({ port: Number(port) }).addresses });
     if (!tls) console.warn(`⚠️ ${secureConnection.unavailableText()} O IClass segue só em http.`);
+    warnCaRecreated(tls);
     // http e https na mesma porta, com o mesmo handler trocável (utils/dualListener.js).
     serverInstance = createDualServer(handler, { tls });
     try {

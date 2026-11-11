@@ -354,7 +354,7 @@ function createServerCertificate(dir, ca, subject, now) {
 // Garante a CA e o certificado do servidor em `dir` para os nomes e IPs de agora.
 // Devolve { key, cert, ca: { certPem, der, fingerprintSha256, validFrom, validTo,
 // recreatedAt, recreatedReason }, server: { validFrom, validTo, names, ips },
-// changed: { ca, server }, setAside: [arquivos renomeados] }. Lança se a pasta não puder
+// changed: { ca, server }, caRecreatedNow, setAside: [arquivos renomeados] }. Lança se a pasta não puder
 // ser criada ou gravada (o servidor sobe só em http: ver server.js).
 function ensureTlsMaterial({ dir, addresses = [], dnsNames = [], now = Date.now() } = {}) {
     if (!dir) throw new Error('pasta do certificado não informada');
@@ -365,7 +365,10 @@ function ensureTlsMaterial({ dir, addresses = [], dnsNames = [], now = Date.now(
     // 1) CA: só é criada quando falta, está ilegível ou venceu.
     let ca = loadPair(path.join(dir, FILES.caKey), path.join(dir, FILES.caCert));
     let recreateReason = null;
-    if (ca.invalid) recreateReason = `arquivo ilegível (${ca.reason})`;
+    // O motivo vai para a tela e o console em português; a mensagem crua da leitura (em
+    // inglês) fica só como detalhe em ca-recriada.json.
+    const invalidDetail = ca.invalid ? ca.reason : null;
+    if (ca.invalid) recreateReason = 'arquivo ilegível ou danificado';
     else if (!ca.missing && (!ca.cert.ca || Date.parse(ca.cert.validTo) <= now)) recreateReason = !ca.cert.ca ? 'o arquivo não é de uma CA' : 'a CA venceu';
     if (ca.missing || recreateReason) {
         if (recreateReason) {
@@ -377,7 +380,7 @@ function ensureTlsMaterial({ dir, addresses = [], dnsNames = [], now = Date.now(
         ca = createCa(dir, now);
         changed.ca = true;
         if (recreateReason) {
-            writeAtomic(path.join(dir, FILES.caRecreated), JSON.stringify({ at: new Date(now).toISOString(), reason: recreateReason }, null, 2));
+            writeAtomic(path.join(dir, FILES.caRecreated), JSON.stringify({ at: new Date(now).toISOString(), reason: recreateReason, ...(invalidDetail ? { detail: invalidDetail } : {}) }, null, 2));
         }
     }
 
@@ -420,6 +423,9 @@ function ensureTlsMaterial({ dir, addresses = [], dnsNames = [], now = Date.now(
         },
         server: { ...certDates(server.cert), names: serverNames.names, ips: serverNames.ips },
         changed,
+        // Nesta chamada, uma CA que existia foi trocada por outra (o console avisa para
+        // instalar de novo nos aparelhos). A primeira CA de uma instalação não conta.
+        caRecreatedNow: !!recreateReason,
         setAside: renamed,
     };
 }

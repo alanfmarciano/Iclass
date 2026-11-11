@@ -14,8 +14,13 @@ import { CA_DOWNLOAD_PATH, CERTIFICATE_GUIDE_PATH, formatCertificateDate } from 
 // entrarem pela conexão segura (settings.network.studentsHttps, padrão desligado).
 //
 // https: o bloco `https` de GET /api/admin/network-info
-//   { available, error, studentsHttps, studentsHttpsSetting, url, ca, server }.
-// settings: GET /api/admin/network-settings ({ studentsHttps, httpsAvailable, ... }).
+//   { available, error, networkReady, networkError, studentsHttps, studentsHttpsSetting,
+//     url, localUrl, ca, server }.
+// settings: GET /api/admin/network-settings ({ studentsHttps, httpsAvailable, httpsReady, ... }).
+// "funcionando" só quando o https serve aos outros aparelhos (networkReady: o IP da rede
+// está no certificado). Com o certificado, mas a rede fora das faixas locais (ou um
+// adaptador virtual), o selo diz "só neste computador", com o motivo, e os alunos não
+// podem ser mandados para o https.
 export function ConexaoSeguraSection({ https, settings, onSaved, copy }) {
   const toast = useToast()
   const stored = settings?.studentsHttps === true
@@ -26,6 +31,8 @@ export function ConexaoSeguraSection({ https, settings, onSaved, copy }) {
 
   if (!https) return null
   const available = https.available === true
+  // Servidor anterior, sem networkReady: vale available.
+  const networkReady = available && (https.networkReady === undefined ? true : https.networkReady === true)
   const ca = https.ca || null
   const server = https.server || null
   const changed = studentsChoice !== stored
@@ -53,12 +60,20 @@ export function ConexaoSeguraSection({ https, settings, onSaved, copy }) {
     <div className="border-t border-border pt-4 space-y-3" data-testid="secure-connection-settings">
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-sm font-semibold text-text inline-flex items-center gap-2"><Lock size={16} aria-hidden="true" /> Conexão segura (https)</p>
-        {available ? <Badge tone="success">funcionando</Badge> : <Badge tone="warning">indisponível</Badge>}
+        {networkReady
+          ? <Badge tone="success">funcionando</Badge>
+          : available ? <Badge tone="warning">só neste computador</Badge> : <Badge tone="warning">indisponível</Badge>}
       </div>
       {!available && (
         <p role="status" data-testid="secure-connection-error" className="text-sm text-warning flex items-start gap-2">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
           <span>{https.error || 'Conexão segura indisponível.'} O IClass continua funcionando por http. Confira a pasta de dados e ligue o IClass de novo.</span>
+        </p>
+      )}
+      {available && !networkReady && (
+        <p role="status" data-testid="secure-connection-network-error" className="text-sm text-warning flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>{https.networkError || 'O endereço desta rede não entra no certificado do IClass.'} Por enquanto, o endereço seguro abre só neste computador{https.localUrl ? <> (<span className="font-mono break-all">{https.localUrl}</span>)</> : ''}; os outros aparelhos e os alunos continuam por http.</span>
         </p>
       )}
       {available && (
@@ -99,15 +114,15 @@ export function ConexaoSeguraSection({ https, settings, onSaved, copy }) {
         </div>
       )}
 
-      <fieldset className="space-y-2" disabled={busy || (!available && !stored)}>
+      <fieldset className="space-y-2" disabled={busy || (!networkReady && !stored)}>
         <legend className="sr-only">Alunos pela conexão segura</legend>
-        <label htmlFor="students-https" className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 text-sm ${studentsChoice ? 'border-primary bg-primary-soft' : 'border-border'} ${!available && !stored ? 'opacity-60' : 'cursor-pointer'}`}>
+        <label htmlFor="students-https" className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 text-sm ${studentsChoice ? 'border-primary bg-primary-soft' : 'border-border'} ${!networkReady && !stored ? 'opacity-60' : 'cursor-pointer'}`}>
           <input id="students-https" type="checkbox" checked={studentsChoice} onChange={(e) => setStudentsChoice(e.target.checked)} className="mt-1" />
           <span>
             <span className="font-medium text-text">Alunos entram pela conexão segura</span>
             {stored && <Badge tone="neutral" className="ml-2">ligado</Badge>}
             <span className="block text-xs text-muted mt-0.5">Desligado (padrão): os alunos entram por http, como sempre. Ligado: o endereço da sala e o QR code passam a usar https, e cada aparelho dos alunos precisa ter o certificado instalado antes. Não troque com prova em andamento.</span>
-            {stored && !available && <span className="block text-xs text-warning mt-0.5">Enquanto a conexão segura não funcionar, os alunos continuam entrando por http.</span>}
+            {stored && !networkReady && <span className="block text-xs text-warning mt-0.5">Enquanto a conexão segura não funcionar para os outros aparelhos, os alunos continuam entrando por http.</span>}
           </span>
         </label>
       </fieldset>

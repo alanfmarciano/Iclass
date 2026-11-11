@@ -13,14 +13,25 @@
 // - refresh({ addresses }) refaz o que for preciso (IP novo, vencendo em 30 dias) e
 //   devolve o material novo só quando o certificado do servidor mudou (para o updateTls).
 // - status() devolve o que a tela mostra; caCertificateDer() o arquivo de /iclass-ca.crt.
+// - O motivo de "indisponível" é sempre um texto em português, sem o caminho da pasta de
+//   dados (no Windows, C:\Users\<usuário>\...) nem a mensagem crua do sistema: essas vão
+//   só para o crash.log (utils/errorLog.js). As rotas públicas (/iclass-ca.crt e
+//   /api/connection/certificate, lidas sem login) dizem só que está indisponível
+//   (publicUnavailableText); o motivo aparece no console e em Sistema → Rede.
 //
 // Sem prepare (testes com supertest, scripts), o estado é "indisponível" sem motivo.
 // ---------------------------------------------------------------------------
 const path = require('path');
 const runtimePaths = require('../runtimePaths.js');
 const { ensureTlsMaterial } = require('./tlsCertificates.js');
+const { logError } = require('./errorLog.js');
 
 const UNAVAILABLE_PREFIX = 'Conexão segura indisponível';
+const PUBLIC_UNAVAILABLE_TEXT = 'Conexão segura indisponível neste IClass agora.';
+// O aviso "o certificado do IClass foi criado de novo" fica em Sistema → Rede por 30 dias
+// (tempo de passar nos aparelhos); depois some sozinho. ca-recriada.json continua na
+// pasta tls como histórico.
+const CA_RECREATED_NOTICE_MS = 30 * 24 * 3600 * 1000;
 
 let state = { available: false, error: null, dir: null, material: null, checkedAt: 0 };
 
@@ -28,12 +39,18 @@ function defaultDir() {
     return path.join(runtimePaths.DATA_DIR, 'tls');
 }
 
+// Motivo em português para a falha ao ler ou gravar o certificado. Nunca leva o caminho
+// nem a mensagem do sistema (em inglês); o código técnico só quando não há texto próprio.
 function describeError(error) {
-    const code = error && typeof error === 'object' && error.code ? String(error.code) : '';
+    const code = error && typeof error === 'object' && typeof error.code === 'string' ? error.code : '';
     if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return 'sem permissão para gravar o certificado na pasta de dados (tls)';
-    if (code === 'ENOSPC') return 'disco cheio: não foi possível gravar o certificado';
-    const message = error && error.message ? String(error.message) : String(error || 'erro desconhecido');
-    return code ? `${code}: ${message}` : message;
+    if (code === 'ENOSPC' || code === 'EDQUOT') return 'disco cheio: não foi possível gravar o certificado';
+    if (code === 'EEXIST' || code === 'ENOTDIR' || code === 'EISDIR') return 'há um arquivo com o nome "tls" na pasta de dados, no lugar da pasta do certificado: tire esse arquivo de lá e ligue o IClass de novo';
+    if (code === 'EBUSY' || code === 'ETXTBSY') return 'o arquivo do certificado está aberto em outro programa (antivírus ou sincronização de pasta)';
+    if (code === 'EMFILE' || code === 'ENFILE') return 'arquivos abertos demais neste computador agora';
+    if (code === 'EIO') return 'erro de leitura ou gravação no disco';
+    const safeCode = /^[A-Z][A-Z0-9_]{1,40}$/.test(code) ? code : '';
+    return safeCode ? `não foi possível preparar o certificado (código ${safeCode})` : 'não foi possível preparar o certificado';
 }
 
 function apply(dir, material) {
@@ -42,7 +59,13 @@ function apply(dir, material) {
 }
 
 function fail(dir, error) {
-    state = { available: false, error: describeError(error), dir, material: null, checkedAt: Date.now() };
+    const text = describeError(error);
+    // O detalhe (mensagem do sistema e caminho) vai só para o crash.log, uma vez por motivo:
+    // o vigia de rede tenta de novo a cada 30 s.
+    if (text !== state.error) {
+        logError('conexão segura (https)', error, { details: { motivo: text } });
+    }
+    state = { available: false, error: text, dir, material: null, checkedAt: Date.now() };
     return null;
 }
 
@@ -85,6 +108,22 @@ function isAvailable() {
     return state.available;
 }
 
+// IPs do certificado do servidor (o SAN). Só eles servem de endereço seguro
+// (utils/networkAddresses.js secureAddressStatus).
+function serverIps() {
+    return state.available && state.material ? [...state.material.server.ips] : [];
+}
+
+function coversIp(ip) {
+    return serverIps().includes(String(ip || ''));
+}
+
+// A CA foi recriada há menos de 30 dias? (o aviso da tela some depois disso)
+function recentRecreation(recreatedAt, now = Date.now()) {
+    const time = Date.parse(recreatedAt || '');
+    return Number.isFinite(time) && now - time < CA_RECREATED_NOTICE_MS ? recreatedAt : null;
+}
+
 function status() {
     if (!state.available || !state.material) {
         return { available: false, error: state.error, ca: null, server: null };
@@ -97,7 +136,7 @@ function status() {
             fingerprintSha256: ca.fingerprintSha256,
             validFrom: ca.validFrom,
             validTo: ca.validTo,
-            recreatedAt: ca.recreatedAt || null,
+            recreatedAt: recentRecreation(ca.recreatedAt),
         },
         server: { validFrom: server.validFrom, validTo: server.validTo, names: server.names, ips: server.ips },
     };
@@ -105,6 +144,10 @@ function status() {
 
 function unavailableText() {
     return state.error ? `${UNAVAILABLE_PREFIX}: ${state.error}.` : `${UNAVAILABLE_PREFIX}.`;
+}
+
+function publicUnavailableText() {
+    return PUBLIC_UNAVAILABLE_TEXT;
 }
 
 function caCertificateDer() {
@@ -117,13 +160,19 @@ function resetForTests() {
 }
 
 module.exports = {
+    CA_RECREATED_NOTICE_MS,
+    PUBLIC_UNAVAILABLE_TEXT,
     UNAVAILABLE_PREFIX,
     caCertificateDer,
+    coversIp,
+    describeError,
     isAvailable,
     prepare,
+    publicUnavailableText,
     refresh,
     resetForTests,
     serverExpiresBefore,
+    serverIps,
     status,
     unavailableText,
 };
