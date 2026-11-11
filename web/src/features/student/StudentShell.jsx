@@ -7,7 +7,7 @@ import { cn } from '../../lib/cn'
 import { api } from '../../lib/api'
 import { StudentCourseGate } from './StudentCourseGate'
 import { StudentPasswordChangeGate } from './StudentPasswordChangeGate'
-import { StudentPrivacyGate } from './StudentPrivacyGate'
+import { StudentPrivacyGate, notePublishedLegalVersion } from './StudentPrivacyGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
@@ -77,7 +77,11 @@ export function StudentShell() {
   // Com a troca de senha pedida (H5a), o servidor recusa o sino e a faixa da prova (403):
   // nenhum dos dois consulta até a senha nova.
   const passwordChangePending = auth.mustChangePassword === true
-  const notifications = <NotificationBell endpoint={passwordChangePending ? null : notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} />
+  // O sino traz a versão publicada dos documentos: outra versão derruba a guarda do portão
+  // de primeiro acesso (StudentPrivacyGate).
+  const studentEmail = auth.email || s.email || ''
+  const onNotifications = (data) => notePublishedLegalVersion(studentEmail, data?.legalVersion)
+  const notifications = <NotificationBell endpoint={passwordChangePending ? null : notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} onData={onNotifications} />
   const examAvailability = passwordChangePending ? null : <StudentExamAvailability />
   useStudentHeartbeat()
   usePrefetchExamScreen()

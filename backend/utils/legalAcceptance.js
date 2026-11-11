@@ -238,6 +238,13 @@ function studentPrivacyStatus(memory, student, { courseId, today = todayIso(), r
     };
 }
 
+// Versão dos documentos que valem agora, "<id dos termos>|<id da política>" (o mesmo
+// documentId do status): vai no sino do aluno para o portão saber que mudou.
+function publishedLegalVersion(memory) {
+    return [legal.currentDocument(memory, 'termos'), legal.currentDocument(memory, 'privacidade')]
+        .map(doc => String((doc && doc.documentId) || '')).join('|');
+}
+
 // ------------------------------------------------------------ aceite pelo portão
 // POST /api/student/privacy/accept { termsDocumentId?, privacyDocumentId?, birthDate?,
 // guardian? }. Confere tudo antes de mudar qualquer coisa:
@@ -347,6 +354,7 @@ function acceptAuditDetails(accepted, extra = {}) {
 }
 
 module.exports = {
+    publishedLegalVersion,
     MINORS_POLICY,
     DOCUMENTS_CHANGED_MESSAGE,
     MINOR_GUARDIAN_MESSAGE,

@@ -24,9 +24,17 @@ import { PageLoading } from '../../components/ui/PageLoading'
 // de novo). Com TEST_MODE (demonstração) o servidor responde required: false.
 //
 // O layout remonta a página a cada navegação (key={pathname}): o resultado fica guardado
-// por conta (STATUS_TTL_MS) para o portão não consultar o servidor a cada clique.
+// por conta (STATUS_TTL_MS) para o portão não consultar o servidor a cada clique. A
+// guarda cai antes do prazo quando a escola publica outra versão dos documentos
+// (decisões §12, sobra do H8a-2): o sino do aluno traz a versão publicada (legalVersion,
+// "<id dos termos>|<id da política>") e o StudentShell a passa a notePublishedLegalVersion;
+// diferente da que o status guardado mostrava, o portão consulta de novo na hora.
+// Consulta pendurada não prende o aluno em "Carregando": passados STATUS_TIMEOUT_MS, o
+// portal abre (política 'ciência') e a próxima navegação pergunta de novo.
 const STATUS_TTL_MS = 10 * 60 * 1000
+export const STATUS_TIMEOUT_MS = 8000
 const statusCache = { email: '', at: 0, status: null }
+const invalidationListeners = new Set()
 
 export function resetPrivacyGateCache() {
   statusCache.email = ''
@@ -44,6 +52,21 @@ function remember(email, status) {
   statusCache.email = email
   statusCache.at = Date.now()
   statusCache.status = status
+}
+
+export function legalVersionOf(status) {
+  const docs = status?.documents || {}
+  return `${docs.terms?.documentId || ''}|${docs.privacy?.documentId || ''}`
+}
+
+// Versão publicada vista em outra resposta (o sino). Só derruba a guarda da mesma conta
+// e quando a versão é outra.
+export function notePublishedLegalVersion(email, version) {
+  if (!email || typeof version !== 'string' || !version) return
+  if (statusCache.email !== email || !statusCache.status) return
+  if (legalVersionOf(statusCache.status) === version) return
+  resetPrivacyGateCache()
+  invalidationListeners.forEach((listener) => listener(email))
 }
 
 function legalQuery(courseId) {
@@ -65,20 +88,32 @@ export function StudentPrivacyGate({ children }) {
   const courseId = auth.activeClass?.courseId || ''
   const [status, setStatus] = useState(() => cachedStatus(email))
   const [failed, setFailed] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    const listener = (changed) => { if (changed === email) setReloadKey((key) => key + 1) }
+    invalidationListeners.add(listener)
+    return () => { invalidationListeners.delete(listener) }
+  }, [email])
 
   useEffect(() => {
     if (!email || cachedStatus(email)) return undefined
     let active = true
     setFailed(false)
-    api.get(`/api/student/privacy/status${legalQuery(courseId)}`)
+    // Teto próprio, além do do api.js: estourado, o portal abre e fica aberto nesta
+    // página; a resposta que chegar depois fica guardada para a próxima navegação.
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; if (active) setFailed(true) }, STATUS_TIMEOUT_MS)
+    api.get(`/api/student/privacy/status${legalQuery(courseId)}`, { timeoutMs: STATUS_TIMEOUT_MS })
       .then((data) => {
-        if (!active) return
         remember(email, data)
+        if (!active || timedOut) return
         setStatus(data)
       })
       .catch(() => { if (active) setFailed(true) })
-    return () => { active = false }
-  }, [email, courseId])
+      .finally(() => clearTimeout(timer))
+    return () => { active = false; clearTimeout(timer) }
+  }, [email, courseId, reloadKey])
 
   if (!email || failed) return children
   if (!status) return <PageLoading />

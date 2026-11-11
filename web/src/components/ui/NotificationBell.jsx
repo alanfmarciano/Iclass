@@ -47,7 +47,9 @@ function timeAgo(at) {
 // marca o aviso como lido no do aluno. Se devolver true, o item fica lido na hora.
 const NO_NOTIFICATIONS = { endpoint: null, items: [], unread: 0 }
 
-export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName, onOpenItem }) {
+// onData(resposta): chamado a cada consulta que deu certo (o portal do aluno lê dela a
+// versão publicada dos documentos).
+export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName, onOpenItem, onData }) {
   // A lista guarda de qual endpoint veio: depois de trocar de turma ou curso, a da turma
   // anterior não aparece nem é marcada como lida (o sino fica vazio até a nova chegar).
   const [stored, setData] = useState(NO_NOTIFICATIONS)
@@ -62,11 +64,16 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
   // resposta atrasada do endpoint anterior não vale mais.
   const endpointRef = useRef(endpoint)
   endpointRef.current = endpoint
+  const onDataRef = useRef(onData)
+  onDataRef.current = onData
   const load = useCallback(async (requestOptions) => {
     if (!endpoint) return true
     try {
       const next = await api.get(endpoint, requestOptions)
-      if (endpointRef.current === endpoint) setData({ items: [], unread: 0, ...(next || {}), endpoint })
+      if (endpointRef.current === endpoint) {
+        setData({ items: [], unread: 0, ...(next || {}), endpoint })
+        if (onDataRef.current) onDataRef.current(next || {})
+      }
       return true
     } catch { return false /* mantém o último estado */ }
   }, [endpoint])

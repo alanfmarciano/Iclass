@@ -407,3 +407,22 @@ test('[UC-LGPD-007] anonimizar tira o IP e o aparelho das entradas que o própri
     assert.ok(db.memory.auditLogs.find(entry => entry.action === 'student_anonymized').ip);
     assert.doesNotMatch(JSON.stringify(db.memory.auditLogs), /ana@primeiro\.local|1998-11-20|10\.0\.0\.77/);
 });
+
+// Decisões §12 (sobra do H8a-2): o portão guarda o status por 10 min; o sino do aluno
+// (consultado a cada 30 s) traz a versão publicada dos documentos para o portão saber que
+// a escola publicou outra e perguntar de novo.
+test('[UC-LGPD-007] o sino do aluno traz a versão publicada dos documentos, a mesma do status do portão', async () => {
+    const headers = studentHeaders(ANA.email);
+    const bell = () => request(app).get('/api/student/notifications?courseId=DES&studentClass=1DES').set(headers);
+    const first = await bell();
+    assert.equal(first.status, 200, first.body.error);
+    const status = await request(app).get('/api/student/privacy/status?courseId=DES').set(headers);
+    assert.equal(first.body.legalVersion, `${status.body.documents.terms.documentId}|${status.body.documents.privacy.documentId}`);
+
+    await publish('termos');
+    const second = await bell();
+    assert.notEqual(second.body.legalVersion, first.body.legalVersion);
+    assert.equal(second.body.legalVersion.split('|')[0], 'termos_v1');
+    await publish('privacidade');
+    assert.equal((await bell()).body.legalVersion, 'termos_v1|privacidade_v1');
+});

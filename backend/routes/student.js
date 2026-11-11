@@ -2108,7 +2108,9 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     items.sort((a, b) => b.at - a.at);
     const limited = items.slice(0, 30);
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length });
+    // legalVersion: os documentos publicados agora ("<termos>|<política>"); o portão de
+    // primeiro acesso do portal compara com o que guardou (decisões §12, sobra do H8a-2).
+    res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length, legalVersion: legalAcceptance.publishedLegalVersion(db.memory) });
 });
 
 // "Marcar como lidas" (UXA-X3): carimbo para dúvidas, notas e provas e leitura dos

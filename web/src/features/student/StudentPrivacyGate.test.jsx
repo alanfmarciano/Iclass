@@ -13,7 +13,7 @@ vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: state.aut
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => state.toast }))
 vi.mock('react-router-dom', () => ({ useNavigate: () => state.nav }))
 
-import { StudentPrivacyGate, resetPrivacyGateCache } from './StudentPrivacyGate'
+import { StudentPrivacyGate, STATUS_TIMEOUT_MS, notePublishedLegalVersion, resetPrivacyGateCache } from './StudentPrivacyGate'
 
 const NOT_REQUIRED = { success: true, required: false, termsPending: false, privacyPending: false, birthDateMissing: false, guardianMissing: false, documents: {} }
 const TERMS = { documentId: 'termos_v2', version: 2, title: 'Termos de Uso', publishedAt: '2026-11-10T12:00:00.000Z', markdown: '# Termos\n\nTexto **publicado** pela escola.' }
@@ -37,7 +37,8 @@ describe('[UC-LGPD-007] primeiro acesso no portal do aluno', () => {
     state.apiGet.mockResolvedValue(NOT_REQUIRED)
     renderGate()
     expect(await screen.findByText('Início do aluno')).toBeInTheDocument()
-    expect(state.apiGet).toHaveBeenCalledWith('/api/student/privacy/status?courseId=c1')
+    // Com o teto próprio de 8 s (decisões §12, sobra do H8a-2).
+    expect(state.apiGet).toHaveBeenCalledWith('/api/student/privacy/status?courseId=c1', { timeoutMs: 8000 })
   })
 
   it('falha ao consultar não prende o aluno (política ciência)', async () => {
@@ -156,5 +157,44 @@ describe('[UC-LGPD-007] primeiro acesso no portal do aluno', () => {
     await waitFor(() => expect(state.apiPost).toHaveBeenCalledWith('/api/student/privacy/accept', {
       courseId: 'c1', guardian: { name: 'João Lima', phone: '(11) 97777-6666', email: '', parentesco: '' },
     }))
+  })
+
+  // Decisões §12 (sobras do H8a-2). Antes: a guarda de 10 min seguia valendo depois de a
+  // escola publicar outra versão dos documentos, e a consulta pendurada deixava o portal em
+  // "Carregando" para sempre.
+  it('outra versão publicada (vinda do sino) derruba a guarda e o portão consulta de novo', async () => {
+    const accepted = { ...NOT_REQUIRED, documents: { terms: { documentId: 'termos_v1' }, privacy: { documentId: 'privacidade_v1' } } }
+    state.apiGet.mockResolvedValueOnce(accepted)
+    renderGate()
+    await screen.findByText('Início do aluno')
+    // Mesma versão, ou de outra conta: nada muda.
+    notePublishedLegalVersion('ana@escola.local', 'termos_v1|privacidade_v1')
+    notePublishedLegalVersion('outra@escola.local', 'termos_v2|privacidade_v1')
+    expect(state.apiGet).toHaveBeenCalledTimes(1)
+    state.apiGet.mockResolvedValueOnce({ ...NOT_REQUIRED, required: true, termsPending: true, documents: { terms: TERMS, privacy: { documentId: 'privacidade_v1' } } })
+    notePublishedLegalVersion('ana@escola.local', 'termos_v2|privacidade_v1')
+    expect(await screen.findByRole('heading', { name: 'Antes de continuar' })).toBeInTheDocument()
+    expect(state.apiGet).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Li e aceito os Termos de Uso.')).toBeInTheDocument()
+  })
+
+  it('consulta pendurada: passados 8 s o portal abre, e a próxima navegação pergunta de novo', async () => {
+    vi.useFakeTimers()
+    try {
+      state.apiGet.mockReturnValueOnce(new Promise(() => {}))
+      renderGate()
+      expect(screen.queryByText('Início do aluno')).toBeNull()
+      await vi.advanceTimersByTimeAsync(STATUS_TIMEOUT_MS - 100)
+      expect(screen.queryByText('Início do aluno')).toBeNull()
+      await vi.advanceTimersByTimeAsync(200)
+      expect(screen.getByText('Início do aluno')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+    cleanup()
+    state.apiGet.mockResolvedValueOnce({ ...NOT_REQUIRED, required: true, birthDateMissing: true, isMinor: false })
+    renderGate()
+    expect(await screen.findByRole('heading', { name: 'Antes de continuar' })).toBeInTheDocument()
+    expect(state.apiGet).toHaveBeenCalledTimes(2)
   })
 })
