@@ -29,6 +29,10 @@ const MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024;
 const WORK_DIR = path.join(DATA_DIR, '.backup-trabalho');
 const RESTORE_DIR = path.join(DATA_DIR, '.restauracao');
 const UPLOADS_INBOX_DIR = path.join(RESTORE_DIR, 'envios');
+// Marcador da restauração em andamento (decisões §12): dentro de .restauracao, que o
+// contrato "Arquivos fora do banco" já deixa fora do banco e do backup. O boot limpa o
+// resto da pasta, nunca esta (ver cleanWorkDirs e recoverInterruptedRestore).
+const UNDO_DIR = path.join(RESTORE_DIR, 'desfazer');
 // Coleções do backup: derivadas do registro único de tabelas (database.js,
 // COLLECTION_TABLES), as que têm backup e não são derivadas. A ordem é a do registro.
 // Entre elas está examApplications: sem as aplicações, restaurar um backup (por exemplo o
@@ -164,23 +168,35 @@ function removeActivePartialsSync() {
 process.once('exit', removeActivePartialsSync);
 
 // Desligamento do servidor (server.js performShutdown): espera o backup em andamento por
-// até waitMs; se ainda não terminou, interrompe a gravação do ZIP (a restauração não é
-// interrompida: ela já volta tudo sozinha se falhar no meio) e espera mais abortWaitMs.
-// Os .parcial que sobrarem saem na hora. Devolve { waited, aborted, finished }.
-async function settleForShutdown({ waitMs = 4000, abortWaitMs = 1500 } = {}) {
+// até waitMs; se ainda não terminou, interrompe (o AbortController do trabalho) e espera
+// mais abortWaitMs. A gravação de um ZIP para no meio. A restauração para no próximo passo
+// (applyRestore confere o sinal antes de cada mudança) e se desfaz ainda neste processo,
+// com o banco aberto; por isso a espera depois do aviso é maior para ela
+// (restoreAbortWaitMs, dentro do teto de 10 s do desligamento). Se nem assim terminar, o
+// marcador fica e o próximo boot desfaz o resto. Os .parcial que sobrarem saem na hora.
+// Devolve { waited, aborted, finished }.
+async function settleForShutdown({ waitMs = 4000, abortWaitMs = 1500, restoreAbortWaitMs = 4000 } = {}) {
     const job = activeJob;
     if (!job) return { waited: false, aborted: false, finished: true };
     const settled = job.done.then(() => true, () => true);
     const within = ms => Promise.race([settled, new Promise(resolve => setTimeout(() => resolve(false), ms).unref())]);
     if (await within(waitMs)) return { waited: true, aborted: false, finished: true };
-    let aborted = false;
-    if (job.kind !== 'restore') {
-        job.controller.abort();
-        aborted = true;
-    }
-    const finished = await within(abortWaitMs);
+    job.controller.abort();
+    const finished = await within(job.kind === 'restore' ? Math.max(abortWaitMs, restoreAbortWaitMs) : abortWaitMs);
     removeActivePartialsSync();
-    return { waited: true, aborted, finished };
+    return { waited: true, aborted: true, finished };
+}
+
+const RESTORE_ABORTED_MESSAGE = 'A restauração foi interrompida porque o servidor está sendo desligado; nada foi alterado. Tente de novo quando o IClass voltar.';
+
+function restoreAbortedError() {
+    return Object.assign(new Error(RESTORE_ABORTED_MESSAGE), { code: 'ICLASS_BACKUP_ABORTED', status: 503, restoreAborted: true });
+}
+
+// A restauração em andamento recebeu o aviso de desligamento: para antes da próxima
+// mudança (o catch do applyRestore desfaz o que já tinha sido feito).
+function stopRestoreIfShuttingDown() {
+    if (activeJob && activeJob.kind === 'restore' && activeJob.controller.signal.aborted) throw restoreAbortedError();
 }
 
 // ---------------------------------------------------------------------------
@@ -262,20 +278,39 @@ async function newWorkDir(base = WORK_DIR) {
 // Os .parcial de um backup interrompido (processo parado no meio, kill, falta de luz)
 // saem também, em data/backups e na pasta deste computador no destino externo (sobra da
 // J3, decisões §12): os parados há mais de 1 min (um .parcial que ainda cresce é de outra
-// gravação, como a backup-cli).
+// gravação, como a backup-cli). Os mais novos que isso (o processo caiu logo antes do
+// boot) saem na segunda passada, BOOT_LEFTOVER_RECHECK_MS depois do boot (server.js),
+// em vez de esperar a limpeza depois do próximo backup.
 const BOOT_LEFTOVER_AGE_MS = 60 * 1000;
+const BOOT_LEFTOVER_RECHECK_MS = BOOT_LEFTOVER_AGE_MS + 5000;
 
 function cleanWorkDirs() {
-    [WORK_DIR, RESTORE_DIR].forEach(dir => {
-        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { logError('limpeza da pasta de trabalho do backup', e); }
+    try { fs.rmSync(WORK_DIR, { recursive: true, force: true }); } catch (e) { logError('limpeza da pasta de trabalho do backup', e); }
+    // .restauracao: os envios e as prévias saem; a pasta do marcador (desfazer) fica. O
+    // boot já passou por recoverInterruptedRestore: se ela não conseguiu desfazer tudo, o
+    // marcador espera o próximo boot.
+    let names = [];
+    try { names = fs.readdirSync(RESTORE_DIR); } catch (e) { if (e.code !== 'ENOENT') logError('limpeza da pasta de trabalho da restauração', e); }
+    names.filter(name => name !== path.basename(UNDO_DIR)).forEach(name => {
+        try { fs.rmSync(path.join(RESTORE_DIR, name), { recursive: true, force: true }); } catch (e) { logError('limpeza da pasta de trabalho da restauração', e); }
     });
     recoverInterruptedSwaps();
+    cleanStaleLeftovers();
+}
+
+// .parcial/.tmp de backup parados há mais de 1 min, em data/backups e no destino externo.
+// Os do backup em andamento neste processo nunca saem (gravação lenta num pendrive).
+function cleanStaleLeftovers() {
+    const active = new Set(activeJob ? [...activeJob.partials] : []);
+    let total = 0;
     backupDirs().forEach(dir => {
         try {
-            const removed = store.cleanLeftovers(dir, { olderThanMs: BOOT_LEFTOVER_AGE_MS });
+            const removed = store.cleanLeftovers(dir, { olderThanMs: BOOT_LEFTOVER_AGE_MS, skip: active });
+            total += removed.length;
             if (removed.length) console.warn(`⚠️ Backup interrompido: ${removed.length} arquivo(s) pela metade removido(s) de ${dir}.`);
         } catch (e) { logError('limpeza dos backups interrompidos', e); }
     });
+    return total;
 }
 
 // Gera um backup formato 2 em `dir` (padrão data/backups) com o nome
@@ -426,6 +461,8 @@ function failureMessage(err) {
     return `Falha inesperada ao gravar o backup${code}. Os detalhes ficam no registro de erros do servidor.`;
 }
 
+const EXTERNAL_ABORTED_MESSAGE = 'A cópia no destino externo foi interrompida porque o servidor está sendo desligado; ela sai no próximo backup.';
+
 async function recordFailure(etapa, err, { origem, destino = '', now = new Date() } = {}) {
     const alvo = etapa === 'externo' || (etapa === 'verificacao' && err && err.backupAlvo === 'externo') ? 'externo' : 'local';
     await store.updateState(state => ({
@@ -500,7 +537,16 @@ async function runBackupJob({ origem = 'automatico', now = new Date() } = {}) {
                     store.cleanLeftovers(dir);
                     result.externo = { file: saved.file, name: saved.name, bytes: saved.bytes, sha256: saved.sha256, pasta: dir };
                 } catch (err) {
-                    if (err && err.code === 'ICLASS_BACKUP_ABORTED') throw err;
+                    // Desligamento no meio da cópia externa: o backup deste computador já
+                    // está gravado e conferido, e vale. A resposta é a de sucesso (com a
+                    // auditoria), e a cópia externa fica para o próximo backup. Não é falha
+                    // do destino: o estado não muda.
+                    if (err && err.code === 'ICLASS_BACKUP_ABORTED') {
+                        result.externoErro = EXTERNAL_ABORTED_MESSAGE;
+                        result.externoEtapa = 'externo';
+                        result.externoInterrompido = true;
+                        return result;
+                    }
                     const failed = stageError('externo', err);
                     await recordFailure(failed.backupEtapa, failed, { origem, destino: settings.destino, now });
                     if (!(failed.status && failed.status < 500)) logError('backup: cópia no destino externo', failed);
@@ -957,8 +1003,14 @@ async function finishSwap(swap) {
 
 // Troca interrompida no meio (o processo caiu entre mover a pasta atual e pôr a nova no
 // lugar): no boot, a pasta que ficou só como "anterior" volta para o lugar. Uma troca
-// completa deixa a pasta anterior guardada ao lado (nunca é apagada aqui).
+// completa do formato antigo (pasta de preparo sem o sufixo da pasta, de antes do
+// marcador) deixa a pasta anterior guardada ao lado (nunca é apagada aqui).
+// Pasta de preparo do formato com sufixo e nenhuma restauração a desfazer (o marcador já
+// saiu): a restauração terminou e o processo caiu antes de apagar a "anterior"
+// (finishSwap). Ela sai agora, como teria saído; o backup de segurança da restauração
+// guarda esses dados. Roda depois do recoverInterruptedRestore (boot).
 function recoverInterruptedSwaps() {
+    const pending = undoPending();
     ['content', 'data/uploads', 'data/alunos', 'cursos_arquivados'].forEach(prefix => {
         const target = folderTarget(prefix);
         const parent = path.dirname(target);
@@ -971,7 +1023,8 @@ function recoverInterruptedSwaps() {
                     fs.renameSync(previous, target);
                     console.warn(`⚠️ Restauração interrompida: a pasta ${target} voltou ao que era antes.`);
                 }
-                if (!fs.existsSync(previous)) fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+                const finished = !pending && name.endsWith(`-${path.basename(target)}`) && fs.existsSync(target);
+                if (!fs.existsSync(previous) || finished) fs.rmSync(path.join(parent, name), { recursive: true, force: true });
             } catch (e) {
                 logError('restauração interrompida: volta da pasta', e, { details: { pasta: target } });
             }
@@ -1003,7 +1056,7 @@ async function mergeArchiveFolders(staged, { beforeAdd = null } = {}) {
 // Decisões §12 (sobra do H4a): o processo que cai no meio do applyRestore (falta de luz,
 // kill, Ctrl+C duas vezes) não pode deixar as teclas ou as pastas do backup junto com o
 // banco de antes. Antes da primeira mudança, a restauração grava
-// DATA_DIR/.restauracao-desfazer/marcador.json com a cópia do banco de antes
+// DATA_DIR/.restauracao/desfazer/marcador.json com a cópia do banco de antes
 // (antes.db, ligada ou copiada da cópia tirada para o backup de segurança) e, antes de
 // cada passo, o que ele vai mudar: cada pasta trocada (com a pasta de preparo, onde fica a
 // "anterior"), cada .md de content/ (com a cópia do de antes) e cada curso arquivado
@@ -1011,8 +1064,15 @@ async function mergeArchiveFolders(staged, { beforeAdd = null } = {}) {
 // boot, marcador presente = restauração interrompida: recoverInterruptedRestore desfaz
 // tudo (pastas, .md, cursos, banco e teclas), registra na auditoria
 // (backup_restore_interrupted, ator 'sistema') e no crash.log, e apaga o marcador.
-const UNDO_DIR = path.join(DATA_DIR, '.restauracao-desfazer');
 const UNDO_MARKER = path.join(UNDO_DIR, 'marcador.json');
+// "Nada mais a desfazer", gravado só quando o marcador.json não pôde ser apagado (arquivo
+// preso por antivírus ou indexador no Windows): com ele, o boot não desfaz a restauração.
+const UNDO_DONE = path.join(UNDO_DIR, 'concluida');
+
+// Há uma restauração a desfazer (marcador presente e sem o "concluída").
+function undoPending() {
+    return fs.existsSync(UNDO_MARKER) && !fs.existsSync(UNDO_DONE);
+}
 
 function writeUndoMarker(marker) {
     const temporary = `${UNDO_MARKER}.tmp`;
@@ -1046,8 +1106,36 @@ async function beginUndoMarker({ id, rollbackDb }) {
     };
 }
 
+// Fim do marcador: a restauração terminou (ou foi desfeita) e o boot não deve mexer em
+// nada. Primeiro sai o marcador.json, que é o que o boot procura; só depois o resto da
+// pasta (antes.db, conteudo/). Apagar a pasta inteira de uma vez podia falhar no meio (o
+// antes.db preso pelo antivírus no Windows) e deixar o marcador.json: o boot "desfazia"
+// uma restauração que deu certo e perdia o que foi gravado depois dela. Marcador que não
+// sai nem com as novas tentativas: grava "concluida" ao lado (arquivo novo, que o
+// antivírus não está segurando) e deixa a pasta como está. Devolve false quando nem isso
+// deu certo (o boot vai desfazer; quem chama não apaga as pastas anteriores, para a volta
+// ficar inteira).
 function clearUndoMarker() {
-    try { fs.rmSync(UNDO_DIR, { recursive: true, force: true }); } catch (err) { logError('restauração: limpeza do marcador', err); }
+    let definitive = false;
+    try {
+        fs.rmSync(UNDO_MARKER, { force: true, maxRetries: 5, retryDelay: 100 });
+        fs.rmSync(`${UNDO_MARKER}.tmp`, { force: true, maxRetries: 2, retryDelay: 50 });
+        definitive = true;
+    } catch (err) {
+        logError('restauração: remoção do marcador', err);
+        try {
+            fs.writeFileSync(UNDO_DONE, new Date().toISOString());
+            return true;
+        } catch (e) {
+            logError('restauração: gravação de "concluída" no marcador', e);
+            return false;
+        }
+    }
+    try { fs.rmSync(UNDO_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch (err) {
+        // Sem o marcador.json, o que sobrou sai no próximo boot.
+        logError('restauração: limpeza da pasta do marcador', err);
+    }
+    return definitive;
 }
 
 // Queda simulada nos testes (só com TEST_MODE=1): o processo morre na hora, sem catch nem
@@ -1062,6 +1150,11 @@ function crashPointForTests(name) {
 // null (nada a desfazer) ou { desfeita, pastas, conteudo, cursos, banco }. Nunca lança:
 // o que não pôde ser desfeito vai para o crash.log e o marcador fica para o próximo boot.
 async function recoverInterruptedRestore() {
+    if (fs.existsSync(UNDO_DONE)) {
+        // A restauração terminou (ou já foi desfeita), mas o marcador.json não saiu na hora.
+        clearUndoMarker();
+        return null;
+    }
     let marker = null;
     try {
         marker = JSON.parse(fs.readFileSync(UNDO_MARKER, 'utf8'));
@@ -1157,6 +1250,7 @@ async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [],
     const addedArchives = [];
     // Marcador antes da primeira mudança (decisões §12): se o processo cair daqui em
     // diante, o boot desfaz tudo. Falha ao gravá-lo: nada foi mudado ainda.
+    stopRestoreIfShuttingDown();
     const undo = await beginUndoMarker({ id, rollbackDb });
     crashPointForTests('marcador');
     try {
@@ -1178,18 +1272,21 @@ async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [],
         }
         for (const prefix of inclui) {
             if (prefix === 'cursos_arquivados') continue;
+            stopRestoreIfShuttingDown();
             const target = folderTarget(prefix);
             undo.note(marker => marker.pastas.push({ target, prep: swapPrepDir(target, id), hadPrevious: fs.existsSync(target) }));
             swaps.push(await swapFolder(path.join(stagingRoot, ...prefix.split('/')), target, id));
             crashPointForTests('pasta');
         }
         if (mergeArchives && stagingRoot) {
+            stopRestoreIfShuttingDown();
             addedArchives.push(...await mergeArchiveFolders(path.join(stagingRoot, 'cursos_arquivados'), {
                 beforeAdd: destination => undo.note(marker => marker.cursos.push(destination)),
             }));
             crashPointForTests('cursos');
         }
         let imported = Promise.resolve();
+        stopRestoreIfShuttingDown();
         undo.note(marker => { marker.teclas = true; });
         if (keystrokes && keystrokes.mode === 'copy') {
             await db.keystrokes.copyFromAttached(keystrokes.file, { replace: true });
@@ -1198,13 +1295,18 @@ async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [],
             // Entra na mesma transação da gravação das coleções (db.save do applySnapshot).
             imported = db.keystrokes.importRows(keystrokes.rows || [], { replace: true });
         }
+        stopRestoreIfShuttingDown();
         const applications = await applySnapshot(snapshot, { replaceAccounts });
         await imported;
         crashPointForTests('banco');
         // Tudo gravado: o marcador sai antes de as pastas anteriores serem apagadas (uma
-        // queda depois daqui deixa só a "anterior" guardada ao lado, sem desfazer nada).
-        clearUndoMarker();
-        for (const swap of swaps) await finishSwap(swap);
+        // queda depois daqui deixa só a "anterior" guardada ao lado, sem desfazer nada, e o
+        // boot seguinte a apaga: recoverInterruptedSwaps). Se o marcador não saiu, as
+        // anteriores ficam: o boot vai desfazer, e precisa delas.
+        const definitive = clearUndoMarker();
+        crashPointForTests('fim');
+        if (definitive) for (const swap of swaps) await finishSwap(swap);
+        else console.error('⛔ A restauração terminou, mas o marcador em data/.restauracao/desfazer não pôde ser apagado; o próximo início do IClass vai desfazê-la. Veja o registro de erros do servidor.');
         return withApplications(snapshotSummary(snapshot, format), applications);
     } catch (error) {
         let undone = true;
@@ -1501,6 +1603,8 @@ async function applyPreparedRestore(prepared, { replaceAccounts = false, acceptL
                     lock: false,
                 });
             } catch (err) {
+                // Desligamento durante o backup de segurança: nada mudou ainda.
+                if (err && err.code === 'ICLASS_BACKUP_ABORTED') throw restoreAbortedError();
                 throw safetyBackupError(err);
             }
             // Retenção do grupo de segurança (5, contando os seguranca-completa antigos); o
@@ -1773,7 +1877,8 @@ module.exports = {
     buildDataSnapshot, buildFullDataSnapshot, validateDataSnapshot, restoreDataSnapshot,
     runAutomaticBackup, lastAutomaticBackupAt, createBackup, createSafetyBackup, pruneBackups, backupInProgress,
     runBackupJob, runAutomaticIfDue, backupStatus, backupAlerts, listStoredBackups, resolveStoredBackup,
-    noteDestinationConfigured, settleForShutdown, removeActivePartialsSync, failureMessage, recoverInterruptedRestore, UNDO_DIR,
+    noteDestinationConfigured, settleForShutdown, removeActivePartialsSync, failureMessage, recoverInterruptedRestore, UNDO_DIR, UNDO_MARKER,
+    clearUndoMarker, cleanStaleLeftovers, BOOT_LEFTOVER_RECHECK_MS, RESTORE_ABORTED_MESSAGE, EXTERNAL_ABORTED_MESSAGE,
     AUTO_DUE_MS, AUTO_DEFER_MAX_MS, ALERT_LATE_MS, ALERT_GRACE_UPTIME_MS,
     buildFullZipBuffer, streamFullZip, restoreFromFile, prepareRestore, applyPreparedRestore, discardPrepared,
     createRestoreToken, takeRestoreToken, sweepRestoreTokens, cleanWorkDirs, getZipLib,

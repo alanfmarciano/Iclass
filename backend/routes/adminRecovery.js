@@ -12,7 +12,7 @@ const backupAudit = require('../utils/backupAudit.js');
 const { recordAudit } = require('../utils/audit.js');
 const backupStore = require('../utils/backupStore.js');
 const settingsUtil = require('../utils/settings.js');
-const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
+const { attemptPasswordLogin, waitText } = require('../utils/passwordLogin.js');
 
 // uploadErrorMessage e isUploadRequestError vêm de admin.js: o envio recusado (multer,
 // formulário cortado) responde 400 em português; o resto é falha do disco (500 com código).
@@ -220,6 +220,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 return sendRouteError(error, req, res, 'Falha ao gerar a cópia de segurança no servidor.');
             }
             recordBackupAudit(req, matchedAdmin, 'backup_server_created', {
+                // Desligamento no meio da cópia externa: o local foi gravado e vale.
+                ...(result.externoInterrompido ? { interrompido: true } : {}),
                 file: result.local.name,
                 format: 'zip',
                 variante: 'dados',
@@ -282,7 +284,11 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     router.post('/api/admin/backup/config', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             if (rejectProfessor(res, matchedAdmin)) return;
-            const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+            // Corpo que não é objeto (uma lista, por exemplo) não é "nada a mudar": 400.
+            if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+                return res.status(400).json({ success: false, error: 'Envie o destino e o número de backups guardados como objeto { destino, guardarExterno }.', field: 'destino' });
+            }
+            const body = req.body;
             const before = settingsUtil.backupSettings();
             if (body.destino !== undefined && typeof body.destino !== 'string') {
                 return res.status(400).json({ success: false, error: 'Informe a pasta do destino como texto.', field: 'destino' });
@@ -395,7 +401,18 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             const password = typeof body.password === 'string' ? body.password : '';
             if (!password.trim()) return res.status(400).json({ success: false, error: 'Informe a senha do administrador.', field: 'password' });
             const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password, req, purpose: 'backup_download' });
-            if (!check.ok && check.status === 429) return res.status(429).json(check.body);
+            // A espera é a do login desta conta (mesma senha: errar aqui conta como errar no
+            // login, para a sessão esquecida aberta não servir de atalho para adivinhar a
+            // senha), com o texto do download.
+            if (!check.ok && check.status === 429) {
+                const wait = Math.max(1, Number(check.body && check.body.retryAfterSeconds) || 1);
+                return res.status(429).json({
+                    ...check.body,
+                    success: false,
+                    error: `Muitas tentativas com a senha errada. Espere ${waitText(wait)} para baixar o backup; o login desta conta também espera esse tempo.`,
+                    field: 'password',
+                });
+            }
             if (!check.ok && check.passwordChanged) {
                 return res.status(409).json({ success: false, error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
             }
@@ -681,6 +698,13 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         if (restoreError && restoreError.legacyBackup) {
             // Nada foi restaurado: a tela mostra o aviso e pede a confirmação.
             return res.status(409).json({ error: backupUtil.LEGACY_BACKUP_WARNING, legacyBackup: true, exportedAt: restoreError.exportedAt });
+        }
+        if (restoreError && restoreError.restoreAborted) {
+            // Desligamento do servidor no meio: a restauração parou e foi desfeita (ou o
+            // boot desfaz). Não é erro interno: 503 retryable, como o "Fazer backup agora".
+            recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...fileInfo, error: backupUtil.RESTORE_ABORTED_MESSAGE });
+            await db.save().catch(() => {});
+            return res.status(503).json({ success: false, error: backupUtil.RESTORE_ABORTED_MESSAGE, retryable: true });
         }
         const safety = restoreError && restoreError.code === 'ICLASS_SAFETY_BACKUP';
         const shownError = safety ? backupUtil.SAFETY_BACKUP_FAILED_MESSAGE : publicErrorMessage(restoreError, req);

@@ -105,13 +105,13 @@ test('[UC-BACKUP-002] restaurar --ultimo com o servidor parado: banco e content 
     fs.writeFileSync(path.join(dataDir, 'content', 'Apostila_CLI.md'), '# editada depois');
     // Restauração pela tela interrompida no meio (marcador do backup.js): a da CLI a
     // substitui, e o marcador vai para a quarentena (senão o boot seguinte "desfaria" esta).
-    fs.mkdirSync(path.join(dataDir, '.restauracao-desfazer'), { recursive: true });
-    fs.writeFileSync(path.join(dataDir, '.restauracao-desfazer', 'marcador.json'), JSON.stringify({ id: 'x', banco: null, pastas: [], conteudo: [], cursos: [] }));
+    fs.mkdirSync(path.join(dataDir, '.restauracao', 'desfazer'), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, '.restauracao', 'desfazer', 'marcador.json'), JSON.stringify({ id: 'x', banco: null, pastas: [], conteudo: [], cursos: [] }));
 
     const restored = runCli(dataDir, port, ['restaurar', '--ultimo', '--sim']);
     assert.equal(restored.code, 0, restored.output);
     assert.match(restored.stdout, /restauração pela tela Sistema interrompida/);
-    assert.equal(fs.existsSync(path.join(dataDir, '.restauracao-desfazer')), false);
+    assert.equal(fs.existsSync(path.join(dataDir, '.restauracao', 'desfazer')), false);
     assert.match(restored.stdout, /Backup restaurado/);
     assert.match(restored.stdout, /opção \[S\] do launcher/);
 

@@ -49,7 +49,7 @@ for (const point of ['marcador', 'pasta', 'cursos', 'teclas', 'banco']) {
 
         const crashed = run(dataDir, ['restaurar', prepared.body.zip], { ICLASS_TEST_RESTORE_CRASH_AT: point });
         assert.equal(crashed.signal, 'SIGKILL', `o processo devia cair no ponto ${point}:\n${crashed.output}`);
-        assert.ok(fs.existsSync(path.join(dataDir, 'data', '.restauracao-desfazer', 'marcador.json')), 'o marcador ficou');
+        assert.ok(fs.existsSync(path.join(dataDir, 'data', '.restauracao', 'desfazer', 'marcador.json')), 'o marcador ficou');
 
         const booted = run(dataDir, ['boot']);
         assert.equal(booted.status, 0, booted.output);
@@ -88,4 +88,31 @@ test('[UC-BACKUP-003] boot sem marcador não mexe em nada nem registra queda', (
     assert.deepEqual(booted.body.state.students, prepared.body.state.students);
     assert.equal(booted.body.state.teclas, prepared.body.state.teclas);
     assert.deepEqual(booted.body.state.auditoria, []);
+});
+
+// Queda depois de o marcador sair e antes de as pastas anteriores serem apagadas (revisão
+// do H4b): a restauração terminou e vale. Antes, a pasta de preparo com a "anterior"
+// ficava para sempre ao lado de data/uploads, data/alunos e content (o marcador já tinha
+// saído e a limpeza do boot só a devolvia quando o destino faltava).
+test('[UC-BACKUP-003] queda logo depois do fim da restauração: o boot mantém o restaurado e apaga as pastas anteriores', () => {
+    const dataDir = fs.mkdtempSync(path.join(tempRoot, 'fim-'));
+    const prepared = run(dataDir, ['preparar']);
+    assert.equal(prepared.status, 0, prepared.output);
+
+    const crashed = run(dataDir, ['restaurar', prepared.body.zip], { ICLASS_TEST_RESTORE_CRASH_AT: 'fim' });
+    assert.equal(crashed.signal, 'SIGKILL', crashed.output);
+    assert.equal(fs.existsSync(path.join(dataDir, 'data', '.restauracao', 'desfazer', 'marcador.json')), false, 'o marcador já tinha saído');
+    const leftovers = [dataDir, path.join(dataDir, 'data')].flatMap(dir => fs.readdirSync(dir).filter(name => name.startsWith('.iclass-restauracao-')));
+    assert.ok(leftovers.length > 0, 'a queda deixou as pastas anteriores');
+
+    const booted = run(dataDir, ['boot']);
+    assert.equal(booted.status, 0, booted.output);
+    const after = booted.body.state;
+    assert.deepEqual(after.students, ['do-backup@queda.local'], 'a restauração vale');
+    assert.equal(after.teclas, 3);
+    assert.deepEqual(after.uploads, ['do-backup.pdf']);
+    assert.deepEqual(after.arquivados, ['curso_2024']);
+    assert.equal(after.marcador, false);
+    assert.deepEqual(after.sobrasDeTroca, [], 'as pastas anteriores saíram no boot');
+    assert.deepEqual(after.auditoria, [], 'nada foi desfeito');
 });

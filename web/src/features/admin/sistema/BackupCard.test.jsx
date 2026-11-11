@@ -170,6 +170,17 @@ describe('BackupCard', () => {
     expect(within(dialog).getByRole('table', { name: 'No backup e hoje' })).toHaveTextContent('Auditoriamantida e somada à do backup')
   })
 
+  it('[UC-BACKUP-004] a linha do destino externo mostra ao administrador onde fica a cópia; ao professor, não', () => {
+    render(<BackupCard isAdmin />)
+    const lines = screen.getByText('No destino externo').closest('div')
+    expect(lines).toHaveTextContent('Em E:\\Backups\\IClass-SALA1')
+    cleanup()
+    // O status do professor vem sem o caminho (destino e pasta vazios).
+    setData({ statusData: status({ destino: '', pasta: '' }) })
+    render(<BackupCard isAdmin={false} />)
+    expect(screen.getByText('No destino externo').closest('div')).not.toHaveTextContent('IClass-SALA1')
+  })
+
   it('[UC-BACKUP-001] professor vê a situação e faz o backup, sem baixar, restaurar nem mexer no destino', () => {
     render(<BackupCard isAdmin={false} />)
     expect(screen.getByRole('button', { name: 'Fazer backup agora' })).toBeVisible()

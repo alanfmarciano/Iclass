@@ -357,7 +357,7 @@ async function prepareServer() {
     }
     serverLifecycle.setBootPhase('restoring');
     // Restauração de backup interrompida no meio (o processo caiu durante o applyRestore;
-    // decisões §12): o marcador em data/.restauracao-desfazer está lá, e tudo volta ao que
+    // decisões §12): o marcador em data/.restauracao/desfazer está lá, e tudo volta ao que
     // era antes dela (banco, teclas, pastas e cursos arquivados), com o registro na
     // auditoria e no crash.log. Antes de tudo o que lê a memória (sessões, provas).
     await require('./utils/backup.js').recoverInterruptedRestore();
@@ -467,6 +467,12 @@ async function prepareServer() {
     // os vencidos (1 h) saem de hora em hora, com a pasta da prévia.
     const backupUtil = require('./utils/backup.js');
     backupUtil.cleanWorkDirs();
+    // Segunda passada das sobras do backup (H4b): o .parcial de uma queda logo antes deste
+    // boot (com menos de 1 min, que a primeira deixou por poder ser de outra gravação) sai
+    // um pouco depois, sem esperar o próximo backup.
+    serverLifecycle.registerTimer('backup-leftovers', setTimeout(() => {
+        try { backupUtil.cleanStaleLeftovers(); } catch (err) { logCrash('limpeza das sobras do backup', err); }
+    }, backupUtil.BOOT_LEFTOVER_RECHECK_MS));
     serverLifecycle.registerTimer('restore-tokens', setInterval(() => backupUtil.sweepRestoreTokens(), 3600000));
 
     // Backup automático (H4b, OPS-03): conferido no boot e de hora em hora. Está devido

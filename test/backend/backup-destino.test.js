@@ -669,3 +669,148 @@ test('[UC-BACKUP-005] servidor de verdade desligado (SIGTERM) no meio do "Fazer 
         proc.killAll();
     }
 });
+
+// ------------------------------------------------------------------ revisão do H4b (rodada 2)
+
+test('[UC-BACKUP-004] corpo que não é objeto no POST /backup/config é 400, sem mudar o destino', async () => {
+    await resetState({ destino: path.resolve(externalRoot) });
+    for (const body of [[], [{ destino: '' }]]) {
+        const res = await as()('post', '/api/admin/backup/config').send(body);
+        assert.equal(res.status, 400, JSON.stringify(body));
+        assert.equal(res.body.success, false);
+        assert.equal(res.body.field, 'destino');
+    }
+    assert.equal(db.memory.config.settings.backup.destino, path.resolve(externalRoot));
+    assert.equal(auditOf('backup_config_changed').length, 0);
+});
+
+test('[UC-BACKUP-005] desligamento no meio da cópia externa: o backup deste computador vale (200, auditoria) e a cópia externa fica para o próximo', async () => {
+    await resetState();
+    await as()('post', '/api/admin/backup/config').send({ destino: externalRoot }).expect(200);
+    const original = archive.saveBackupZip;
+    archive.saveBackupZip = async options => {
+        // A cópia local é a de verdade; a do destino é interrompida pelo desligamento.
+        if (options.variante === 'completo') throw archive.backupAbortedError();
+        return original(options);
+    };
+    let res;
+    try {
+        res = await as()('post', '/api/admin/backup/server').send({});
+    } finally {
+        archive.saveBackupZip = original;
+    }
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.success, true);
+    assert.ok(fs.existsSync(path.join(runtimePaths.BACKUPS_DIR, res.body.fileName)), 'o backup local ficou');
+    assert.equal(res.body.externo, null);
+    assert.match(res.body.externoErro, /interrompida porque o servidor está sendo desligado/);
+    const created = auditOf('backup_server_created');
+    assert.equal(created.length, 1, 'o backup criado vai para a auditoria');
+    assert.equal(created[0].details.file, res.body.fileName);
+    assert.equal(store.readState().local.arquivo, res.body.fileName);
+    assert.equal(store.readState().ultimaFalha || null, null, 'interrupção não é falha do destino');
+});
+
+test('[UC-BACKUP-006] senha errada demais no bilhete de download: 429 com o texto do download (o login da conta também espera)', async () => {
+    await resetState();
+    const loginGuard = require('../../backend/utils/loginGuard.js');
+    const passwordLogin = require('../../backend/utils/passwordLogin.js');
+    try {
+        const ask = password => as()('post', '/api/admin/backup/download-ticket').send({ tipo: 'dados', password });
+        for (let attempt = 0; attempt < 5; attempt += 1) assert.equal((await ask('errada')).status, 400);
+        const waiting = await ask(PASSWORD);
+        assert.equal(waiting.status, 429, JSON.stringify(waiting.body));
+        assert.equal(waiting.body.success, false);
+        assert.equal(waiting.body.field, 'password');
+        assert.equal(waiting.body.loginDelayed, true);
+        assert.ok(waiting.body.retryAfterSeconds >= 1);
+        assert.match(waiting.body.error, /para baixar o backup/);
+        assert.match(waiting.body.error, /login desta conta também espera/);
+    } finally {
+        loginGuard.resetForTests();
+        passwordLogin.resetForTests();
+    }
+});
+
+test('[UC-BACKUP-003] desligamento durante a restauração pela tela: 503 retryable, nada muda e vai para o histórico', async () => {
+    await resetState();
+    const made = await as()('post', '/api/admin/backup/server').send({});
+    assert.equal(made.status, 200);
+    db.memory.students.push({ name: 'Depois', email: 'depois@h4b.local', status: 'Ativo', classes: [] });
+    await db.save();
+    const preview = await as()('post', '/api/admin/backup/restore/preview').send({ local: 'servidor', nome: made.body.fileName });
+    assert.equal(preview.status, 200, preview.body.error);
+
+    // A restauração para na cópia do banco do backup de segurança até o desligamento chegar.
+    const original = db.snapshotTo;
+    let release;
+    const reached = new Promise(resolve => {
+        db.snapshotTo = async (...args) => {
+            resolve();
+            await new Promise(done => { release = done; });
+            return original.apply(db, args);
+        };
+    });
+    let res;
+    try {
+        const pending = as()('post', '/api/admin/backup/restore').send({ token: preview.body.token, confirm: 'RESTAURAR' }).then(r => r);
+        await reached;
+        const settling = backup.settleForShutdown({ waitMs: 20, abortWaitMs: 20, restoreAbortWaitMs: 5000 });
+        await new Promise(resolve => setTimeout(resolve, 40));
+        release();
+        assert.equal((await settling).finished, true);
+        res = await pending;
+    } finally {
+        db.snapshotTo = original;
+    }
+    assert.equal(res.status, 503, JSON.stringify(res.body));
+    assert.equal(res.body.retryable, true);
+    assert.match(res.body.error, /servidor está sendo desligado; nada foi alterado/);
+    assert.ok(db.memory.students.some(item => item.email === 'depois@h4b.local'), 'nada foi restaurado');
+    assert.equal(fs.readdirSync(runtimePaths.BACKUPS_DIR).some(name => /^seguranca-restauracao_.*\.parcial$/.test(name)), false, 'o backup de segurança pela metade saiu');
+    const failed = auditOf('backup_restore_failed');
+    assert.equal(failed.length, 1);
+    assert.match(failed[0].details.error, /desligado/);
+});
+
+test('[UC-BACKUP-005] .parcial de uma queda logo antes do boot sai na segunda passada (pouco depois do boot), sem tocar no backup em andamento', async () => {
+    await resetState();
+    const dir = runtimePaths.BACKUPS_DIR;
+    const recent = path.join(dir, `manual_dados_${stamp(Date.now() - 20000)}.zip.parcial`);
+    fs.writeFileSync(recent, 'pela metade');
+    const twentySeconds = new Date(Date.now() - 20000);
+    fs.utimesSync(recent, twentySeconds, twentySeconds);
+    backup.cleanWorkDirs();
+    assert.equal(fs.existsSync(recent), true, 'na primeira passada ainda pode ser de outra gravação');
+
+    // A segunda passada roda BOOT_LEFTOVER_RECHECK_MS depois do boot: o arquivo já está
+    // parado há mais de 1 min.
+    const later = new Date(Date.now() - backup.BOOT_LEFTOVER_RECHECK_MS);
+    fs.utimesSync(recent, later, later);
+    // O .parcial do backup em andamento neste processo fica, mesmo parado (pendrive lento).
+    const original = archive.saveBackupZip;
+    let release;
+    let activePartial = null;
+    archive.saveBackupZip = async options => {
+        activePartial = path.join(options.dir, `${options.name}.parcial`);
+        fs.writeFileSync(activePartial, 'gravando');
+        fs.utimesSync(activePartial, later, later);
+        await new Promise(resolve => { release = resolve; });
+        fs.rmSync(activePartial, { force: true });
+        return original(options);
+    };
+    try {
+        const job = backup.runBackupJob({ origem: 'manual' });
+        while (!activePartial) await new Promise(resolve => setTimeout(resolve, 5));
+        assert.equal(backup.cleanStaleLeftovers(), 1);
+        assert.equal(fs.existsSync(recent), false);
+        assert.equal(fs.existsSync(activePartial), true, 'o backup em andamento não perde o arquivo');
+        release();
+        await job;
+    } finally {
+        archive.saveBackupZip = original;
+    }
+    assert.ok(backup.BOOT_LEFTOVER_RECHECK_MS > 60000);
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'backend', 'server.js'), 'utf8');
+    assert.match(source, /registerTimer\('backup-leftovers', setTimeout\([\s\S]*?cleanStaleLeftovers\(\)[\s\S]*?BOOT_LEFTOVER_RECHECK_MS\)\)/);
+});

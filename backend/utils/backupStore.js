@@ -161,7 +161,7 @@ function pruneEditBackups(dir = backupsDir(), keep = EDIT_BACKUPS_KEPT) {
 
 // Sobras de gravação interrompida (<nome>.parcial e os .tmp do .sha256 e do estado) com
 // mais de olderThanMs. Só arquivos de backup ou do estado: o resto da pasta não é tocado.
-function cleanLeftovers(dir, { olderThanMs = LEFTOVER_MAX_AGE_MS, now = Date.now() } = {}) {
+function cleanLeftovers(dir, { olderThanMs = LEFTOVER_MAX_AGE_MS, now = Date.now(), skip = null } = {}) {
     const removed = [];
     readNames(dir).forEach(name => {
         if (!LEFTOVER_NAME.test(name)) return;
@@ -169,6 +169,8 @@ function cleanLeftovers(dir, { olderThanMs = LEFTOVER_MAX_AGE_MS, now = Date.now
         const owner = base.endsWith(SIDECAR_SUFFIX) ? base.slice(0, -SIDECAR_SUFFIX.length) : base;
         if (!isBackupName(owner) && owner !== STATE_FILE) return;
         const file = path.join(dir, name);
+        // skip: arquivos (caminho completo) que estão sendo gravados agora neste processo.
+        if (skip && skip.has(file)) return;
         try {
             const stat = fs.statSync(file);
             if (!stat.isFile() || now - stat.mtimeMs < olderThanMs) return;

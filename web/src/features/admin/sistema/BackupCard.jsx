@@ -161,6 +161,8 @@ function StatusLines({ status }) {
       <div className="min-w-0 rounded-lg border border-border p-3">
         <dt className="text-subtle">No destino externo</dt>
         <dd className="mt-0.5 text-text break-words">{!status.configurado ? 'Não configurado' : externo?.ultimoSucesso ? `${when(externo.ultimoSucesso)}${externo.bytes ? ` · ${formatBackupBytes(externo.bytes)}` : ''}` : 'Nenhuma cópia ainda'}</dd>
+        {/* Onde fica a cópia: só o administrador recebe o caminho (para o professor, pasta vem vazia). */}
+        {status.configurado && status.pasta && <dd className="mt-0.5 text-subtle break-all">Em {status.pasta}</dd>}
       </div>
       {status.adiadoPorProva && (
         <p className="sm:col-span-2 flex items-start gap-1.5 text-muted"><Clock3 size={13} className="mt-0.5 shrink-0" aria-hidden="true" />Backup automático adiado: há prova em andamento. Ele roda quando a prova acabar (ou, se o último passar de 48 horas, mesmo com a prova).</p>

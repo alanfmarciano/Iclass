@@ -42,9 +42,14 @@ const DB_SIDE_FILES = ['-wal', '-shm', '-journal'];
 const QUARANTINE_DIR = path.join(DATA_DIR, 'quarentena');
 const CLI_WORK_DIR = path.join(DATA_DIR, '.restauracao');
 // Marcador de restauração interrompida (backup.js recoverInterruptedRestore): o próximo
-// boot do servidor desfaz a restauração que caiu no meio.
-const UNDO_DIR = path.join(DATA_DIR, '.restauracao-desfazer');
-const INTERRUPTED_RESTORE_NOTE = 'Há uma restauração pela tela Sistema interrompida no meio (data/.restauracao-desfazer); o IClass a desfaz ao ligar.';
+// boot do servidor desfaz a restauração que caiu no meio. Fica em .restauracao/desfazer;
+// com o arquivo "concluida" ao lado, não há nada a desfazer.
+const UNDO_DIR = path.join(CLI_WORK_DIR, 'desfazer');
+const INTERRUPTED_RESTORE_NOTE = 'Há uma restauração pela tela Sistema interrompida no meio (data/.restauracao/desfazer); o IClass a desfaz ao ligar.';
+
+function undoPending() {
+    return fs.existsSync(path.join(UNDO_DIR, 'marcador.json')) && !fs.existsSync(path.join(UNDO_DIR, 'concluida'));
+}
 
 class CliError extends Error {
     constructor(message, exitCode = EXIT.FAILED) {
@@ -204,7 +209,7 @@ async function commandCreate(options) {
     // pendrive); sem destino ou com ele desconectado, data/backups.
     let dir = options.destino ? path.resolve(options.destino) : BACKUPS_DIR;
     const managed = !options.destino;
-    if (fs.existsSync(UNDO_DIR)) say(`${INTERRUPTED_RESTORE_NOTE} Este backup sai com os dados como estão agora, pela metade; prefira ligar e desligar o IClass uma vez antes.`);
+    if (undoPending()) say(`${INTERRUPTED_RESTORE_NOTE} Este backup sai com os dados como estão agora, pela metade; prefira ligar e desligar o IClass uma vez antes.`);
     if (!options.destino) {
         const external = (await backupFolders()).find(folder => folder.local === 'externo');
         if (external && external.accessible) dir = external.dir;
@@ -441,7 +446,7 @@ async function commandRestore(target, options) {
             }
             // Restauração pela tela interrompida: esta a substitui. O marcador vai para a
             // quarentena (senão o boot "desfaria" esta restauração com o banco de antes).
-            if (fs.existsSync(UNDO_DIR)) {
+            if (undoPending()) {
                 const destination = path.join(quarantine, 'restauracao-interrompida');
                 await moveWithFallback(UNDO_DIR, destination);
                 moved.push({ from: UNDO_DIR, to: destination });

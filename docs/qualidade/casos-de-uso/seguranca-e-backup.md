@@ -42,9 +42,9 @@ Com o banco danificado o servidor não sobe (código 3), não grava no arquivo e
 ## UC-BACKUP-003 — Recusar backup alterado, cortado ou malicioso
 
 - Estado: automatizado
-- Testes: `backup-restauracao.test.js`, `database-persistence.test.js`
+- Testes: `backup-restauracao.test.js`, `backup-restauracao-queda.test.js`, `backup-restauracao-marcador.test.js`, `backup-destino.test.js`, `database-persistence.test.js`
 
-ZIP com soma do banco diferente da do manifesto, entrada com CRC errado, arquivo cortado, entrada que descompacta mais do que declara, link simbólico, caminho para fora da pasta ou coleção com estrutura errada é recusado com a mensagem em português antes de mudar qualquer coisa.
+ZIP com soma do banco diferente da do manifesto, entrada com CRC errado, arquivo cortado, entrada que descompacta mais do que declara, link simbólico, caminho para fora da pasta ou coleção com estrutura errada é recusado com a mensagem em português antes de mudar qualquer coisa. Restauração interrompida (queda do processo ou desligamento do servidor no meio) volta tudo ao que era antes dela; a que terminou nunca é desfeita no boot seguinte.
 
 ## UC-BACKUP-004 — Backup diário com cópia fora do computador
 
@@ -58,12 +58,12 @@ O administrador escolhe na tela Sistema (cartão Backup) a pasta do destino exte
 - Estado: automatizado
 - Testes: `backup-destino.test.js`
 
-Cada grupo guarda os mais recentes: automático 14 neste computador e o número escolhido no destino (1 a 90, padrão 14), manual 20, segurança 5, antes de limpar o estado de prova 10, antes de resetar a sala 10, e 30 `.bak` por apostila ou avaliação editada. Os JSON antigos contam no grupo, o mais novo nunca sai e arquivo fora do padrão de nome do IClass nunca é apagado. Desligar o servidor no meio de um backup espera alguns segundos, interrompe a gravação e apaga o `.parcial`; sobras `.parcial` antigas saem no boot.
+Cada grupo guarda os mais recentes: automático 14 neste computador e o número escolhido no destino (1 a 90, padrão 14), manual 20, segurança 5, antes de limpar o estado de prova 10, antes de resetar a sala 10, e 30 `.bak` por apostila ou avaliação editada. Os JSON antigos contam no grupo, o mais novo nunca sai e arquivo fora do padrão de nome do IClass nunca é apagado. Desligar o servidor no meio de um backup espera alguns segundos, interrompe a gravação e apaga o `.parcial`; sobras `.parcial` antigas saem no boot, e as de uma queda logo antes do boot saem pouco mais de um minuto depois. Se o desligamento chega durante a cópia para o destino externo, o backup deste computador já gravado vale.
 
 ## UC-BACKUP-006 — Lista, download com a senha de novo e restaurar da lista
 
 - Estado: automatizado
 - Testes: `backup-destino.test.js`, `BackupCard.test.jsx` e `SistemaPage.test.jsx`
 
-O cartão Backup lista os backups deste computador e do destino externo. Baixar qualquer backup (da lista, completo, só os dados ou o JSON) pede a senha do administrador de novo, e a tela diz em uma linha o motivo (o backup traz os dados pessoais de todos os alunos); a senha errada fica no diálogo e conta no atraso da conta, o bilhete vale uma vez, por 2 minutos, para aquele arquivo, e o download vai para a Auditoria. Nome com caminho ou fora do padrão é recusado. "Restaurar" num item da lista confere o `.sha256` ao lado e abre a mesma prévia do arquivo enviado; o backup escolhido continua na lista depois. Na prévia, a linha da Auditoria diz que a de hoje é mantida e somada à do backup.
+O cartão Backup lista os backups deste computador e do destino externo. Baixar qualquer backup (da lista, completo, só os dados ou o JSON) pede a senha do administrador de novo, e a tela diz em uma linha o motivo (o backup traz os dados pessoais de todos os alunos); a senha errada fica no diálogo e conta no atraso da conta, o bilhete vale uma vez, por 2 minutos, para aquele arquivo, e o download vai para a Auditoria. Errar a senha demais faz esperar, com o texto do download (o login da conta espera o mesmo tempo). Nome com caminho ou fora do padrão é recusado. "Restaurar" num item da lista confere o `.sha256` ao lado e abre a mesma prévia do arquivo enviado; o backup escolhido continua na lista depois. Na prévia, a linha da Auditoria diz que a de hoje é mantida e somada à do backup.
 
