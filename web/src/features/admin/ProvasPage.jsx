@@ -31,6 +31,11 @@ import {
 } from './examTools'
 
 const EXAM_TOKEN_LENGTH = 5
+// Tema da prova e categoria do banco de questões: até 500 caracteres, o teto do servidor
+// para a categoria (a questão salva no banco leva o tema como categoria; decisões §12,
+// sobra do H9b). A contagem aparece a partir de 450.
+const THEME_MAX_CHARS = 500
+const THEME_COUNTER_FROM = 450
 const EXAM_TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 const DEFAULT_WAITING_ROOM_MINUTES = 10
 const DEFAULT_MAX_ATTEMPTS = 1
@@ -735,7 +740,7 @@ export default function ProvasPage() {
   async function saveQuestionToBank(question) {
     try {
       const response = await api.post('/api/admin/question-bank/create', {
-        category: editor.theme || activeModule?.name || 'Geral',
+        category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),
         questionText: question.text,
         alternatives: question.alternatives,
         correctAnswer: question.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
@@ -1161,7 +1166,7 @@ export default function ProvasPage() {
           <div className="space-y-5">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <Input label="Título da prova" value={editor.title} onChange={(event) => setEditor({ ...editor, title: event.target.value })} />
-              <Input label="Tema" value={editor.theme} onChange={(event) => setEditor({ ...editor, theme: event.target.value })} />
+              <Input label="Tema" value={editor.theme} maxLength={THEME_MAX_CHARS} counterFrom={THEME_COUNTER_FROM} onChange={(event) => setEditor({ ...editor, theme: event.target.value })} />
               <Select label="Aplicar alterações em" value={editor.scope || 'class'} onChange={(event) => setEditor({ ...editor, scope: event.target.value })}>
                 <option value="class">Somente esta turma ({className})</option>
                 <option value="course">Todas as turmas do curso</option>
@@ -1213,7 +1218,7 @@ export default function ProvasPage() {
       <Modal open={bankOpen} onClose={() => { setBankOpen(false); setBankEditor(null) }} title="Banco de questões" description="Importe uma questão ou edite o acervo reutilizável." size="lg">
         {bankEditor ? (
           <div className="space-y-3">
-            <Input label="Categoria" value={bankEditor.category || ''} onChange={(event) => setBankEditor({ ...bankEditor, category: event.target.value })} />
+            <Input label="Categoria" value={bankEditor.category || ''} maxLength={THEME_MAX_CHARS} counterFrom={THEME_COUNTER_FROM} onChange={(event) => setBankEditor({ ...bankEditor, category: event.target.value })} />
             <textarea value={bankEditor.questionText || ''} onChange={(event) => setBankEditor({ ...bankEditor, questionText: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" />
             {(bankEditor.alternatives || []).map((alternative, index) => (
               <div key={index} className="flex items-center gap-2">

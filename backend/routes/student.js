@@ -72,7 +72,7 @@ const {
 } = require('../utils/passwordChange.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const { KEY_PATTERN, body, bool, dict, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
-const { LEGACY_ANNOTATIONS_ERROR, LEGACY_NOTES_ERROR, applyAnnotationWrite, applyNoteWrite, noteForScreen, studentMap } = require('../utils/studentNotes.js');
+const { annotationsForScreen, applyAnnotationWrite, applyNoteWrite, noteForScreen, studentMap } = require('../utils/studentNotes.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
     createSubmissionFromAttempt,
@@ -2301,12 +2301,16 @@ router.post('/api/student/notes/save', validateStudentSession, STUDENT_SCHEMAS.n
     const email = req.studentEmail;
     if (!moduleKey) return res.status(400).json({ error: 'Dados insuficientes' });
     if (!db.memory.notes || typeof db.memory.notes !== 'object') db.memory.notes = {};
-    // Caderno guardado em outro formato (texto ou lista no lugar do mapa): fica como está.
+    // Caderno guardado em outro formato (texto ou lista no lugar do mapa): o servidor
+    // converte (o conteúdo vira a nota "anotacoes-anteriores", sem perder nada) e grava
+    // normalmente (decisões §12, sobra do H9b; antes era 409 legacy_format).
     const { map: notes, legacy } = studentMap(db.memory.notes, email);
-    if (legacy) return res.status(409).json({ success: false, code: 'legacy_format', error: LEGACY_NOTES_ERROR, field: 'moduleKey' });
     const existed = Object.prototype.hasOwnProperty.call(db.memory.notes, email);
+    const hadKey = Object.prototype.hasOwnProperty.call(notes, moduleKey);
     const result = applyNoteWrite(notes, moduleKey, note);
     if (!result.ok) return res.status(400).json({ success: false, error: result.error, field: result.field });
+    // Apagar o que não existe num caderno antigo não grava a conversão.
+    if (legacy && result.deleted && !hadKey) return res.json({ success: true });
     if (Object.keys(notes).length) db.memory.notes[email] = notes;
     else if (existed) delete db.memory.notes[email];
     db.save({ only: ['notes', 'authSessions'] });
@@ -2346,16 +2350,16 @@ router.post('/api/student/annotation', validateStudentSession, STUDENT_SCHEMAS.a
     const lowerEmail = email.toLowerCase();
     if (!db.memory.annotations || typeof db.memory.annotations !== 'object') db.memory.annotations = {};
     // Anotações guardadas em outro formato (texto ou lista no lugar do mapa, do aluno ou da
-    // unidade): nada é apagado nem trocado; a gravação recebe 409.
-    const { map: annotations, legacy } = studentMap(db.memory.annotations, lowerEmail);
-    if (legacy) return res.status(409).json({ success: false, code: 'legacy_format', error: LEGACY_ANNOTATIONS_ERROR, field: 'key' });
+    // unidade): o servidor converte sem perder nada e grava normalmente (decisões §12,
+    // sobra do H9b; antes era 409 legacy_format). Recusa ou apagar o que não existe não
+    // grava a conversão.
+    const { map: annotations, legacy } = studentMap(db.memory.annotations, lowerEmail, { kind: 'annotations' });
     const existed = Object.prototype.hasOwnProperty.call(db.memory.annotations, lowerEmail);
+    const before = legacy ? null : JSON.stringify(annotations);
     const result = applyAnnotationWrite(annotations, key, paragraphId, { note, highlightedText });
-    if (!result.ok) {
-        const refusal = { success: false, error: result.error, field: result.field };
-        if (result.code) refusal.code = result.code;
-        return res.status(result.status || 400).json(refusal);
-    }
+    if (!result.ok) return res.status(400).json({ success: false, error: result.error, field: result.field });
+    if (legacy && result.deleted) return res.json({ success: true });
+    if (!legacy && result.deleted && before === JSON.stringify(annotations)) return res.json({ success: true });
     if (Object.keys(annotations).length) db.memory.annotations[lowerEmail] = annotations;
     else if (existed) delete db.memory.annotations[lowerEmail];
     
@@ -2373,10 +2377,12 @@ router.get('/api/student/annotations', validateStudentSession, (req, res) => {
     const lowerEmail = email.toLowerCase();
     // Só chaves próprias (como em notes/get): '__proto__' ou 'constructor' na query
     // devolviam o que vem de Object.prototype.
+    // Mapa do aluno ou unidade num formato antigo: convertidos na leitura, sem regravar;
+    // note e highlightedText sempre texto (decisões §12, sobra do H9b).
     const own = (map, name) => !!map && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, name);
-    const studentAnns = own(db.memory.annotations, lowerEmail) ? db.memory.annotations[lowerEmail] : {};
+    const studentAnns = studentMap(db.memory.annotations, lowerEmail, { kind: 'annotations' }).map;
     const unit = typeof key === 'string' && own(studentAnns, key) ? studentAnns[key] : null;
-    res.json({ success: true, annotations: unit && typeof unit === 'object' ? unit : {} });
+    res.json({ success: true, annotations: annotationsForScreen(unit) });
 });
 
 // ==========================================

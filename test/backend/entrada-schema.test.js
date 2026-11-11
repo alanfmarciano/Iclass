@@ -354,7 +354,7 @@ test('[UC-CADERNO-001] anotações: trecho destacado guardado com 1.000, nota at
     delete db.memory.annotations[STUDENT_EMAIL];
 });
 
-test('[UC-CADERNO-001] anotações antigas: acima de 5.000 só diminuem e as guardadas em outro formato nunca são trocadas', async () => {
+test('[UC-CADERNO-001] anotações antigas: acima de 5.000 só diminuem e as guardadas em outro formato são convertidas sem perder nada', async () => {
     // Anotação gravada antes do teto, com 6.000 caracteres: pode ser editada sem crescer.
     db.memory.annotations[STUDENT_EMAIL] = { Apostila_A: { 'p-1': { highlightedText: 'h', note: 'n'.repeat(6000), timestamp: 'x' } } };
     assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: 'h', note: 'n'.repeat(5500) })).status, 200, 'diminuir passa');
@@ -362,33 +362,54 @@ test('[UC-CADERNO-001] anotações antigas: acima de 5.000 só diminuem e as gua
     assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_A['p-1'].note.length, 5500, 'nada se perde na recusa');
     assertRefused(await annotate('Apostila_A', 'p-2', { highlightedText: 'h', note: 'n'.repeat(5001) }), 'note'); // parágrafo novo segue o teto
 
-    // Unidade guardada como texto (banco mexido à mão): 409 e o dado fica.
+    // Formato antigo (decisões §12, sobra do H9b): antes 409 legacy_format; agora o servidor
+    // converte na leitura e na gravação (texto vira uma entrada do mapa, lista vira texto
+    // JSON legível) e grava normalmente.
+    const listAnnotations = key => request(app).get('/api/student/annotations').set('x-session-token', STUDENT_TOKEN).query({ key });
     db.memory.annotations[STUDENT_EMAIL] = { Apostila_X: 'texto-legado', Apostila_L: ['a'] };
-    for (const key of ['Apostila_X', 'Apostila_L']) {
-        const refused = await annotate(key, 'p-1', { highlightedText: 'h', note: 'nova' });
-        assert.equal(refused.status, 409, JSON.stringify(refused.body));
-        assert.equal(refused.body.success, false);
-        assert.equal(refused.body.code, 'legacy_format');
-        assert.equal(refused.body.field, 'key');
-        assert.match(refused.body.error, /Nada foi alterado/);
-        assert.equal((await annotate(key, 'p-1', { highlightedText: null, note: null })).status, 200, 'apagar o que não existe não muda nada');
-    }
-    assert.deepEqual(db.memory.annotations[STUDENT_EMAIL], { Apostila_X: 'texto-legado', Apostila_L: ['a'] });
-    assert.equal((await annotate('Apostila_N', 'p-1', { highlightedText: 'h', note: 'n' })).status, 200, 'as outras unidades continuam');
+    // Leitura: convertida, sem regravar.
+    const readX = await listAnnotations('Apostila_X').expect(200);
+    assert.deepEqual(readX.body.annotations, { 'anotacao-anterior': { highlightedText: '', note: 'texto-legado', timestamp: null } });
+    assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_X, 'texto-legado', 'ler não regrava');
+    // Apagar o que não existe não muda nada.
+    assert.equal((await annotate('Apostila_X', 'p-1', { highlightedText: null, note: null })).status, 200);
     assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_X, 'texto-legado');
+    for (const key of ['Apostila_X', 'Apostila_L']) {
+        const saved = await annotate(key, 'p-1', { highlightedText: 'h', note: 'nova' });
+        assert.equal(saved.status, 200, JSON.stringify(saved.body));
+        assert.equal(db.memory.annotations[STUDENT_EMAIL][key]['p-1'].note, 'nova');
+    }
+    assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_X['anotacao-anterior'].note, 'texto-legado', 'o texto antigo fica');
+    assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_L['anotacao-anterior'].note, JSON.stringify(['a'], null, 2));
+    assert.equal((await annotate('Apostila_N', 'p-1', { highlightedText: 'h', note: 'n' })).status, 200, 'as outras unidades continuam');
 
-    // O mapa do aluno inteiro em outro formato: 409 na anotação e no caderno, sem trocar.
+    // O mapa do aluno inteiro em outro formato: convertido na anotação e no caderno.
     db.memory.annotations[STUDENT_EMAIL] = 'mapa-legado';
-    assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: 'h', note: 'n' })).status, 409);
-    assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: null, note: null })).status, 409);
-    assert.equal(db.memory.annotations[STUDENT_EMAIL], 'mapa-legado');
+    assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: null, note: null })).status, 200);
+    assert.equal(db.memory.annotations[STUDENT_EMAIL], 'mapa-legado', 'apagar o que não existe não converte');
+    assert.equal((await listAnnotations('anotacoes-anteriores').expect(200)).body.annotations['anotacao-anterior'].note, 'mapa-legado');
+    assert.equal((await annotate('Apostila_A', 'p-1', { highlightedText: 'h', note: 'n' })).status, 200);
+    assert.equal(db.memory.annotations[STUDENT_EMAIL].Apostila_A['p-1'].note, 'n');
+    assert.equal(db.memory.annotations[STUDENT_EMAIL]['anotacoes-anteriores']['anotacao-anterior'].note, 'mapa-legado');
     db.memory.notes[STUDENT_EMAIL] = 'caderno-legado';
-    const note = await saveNote('apostila_TI_1', 'oi');
-    assert.equal(note.status, 409, JSON.stringify(note.body));
-    assert.equal(note.body.code, 'legacy_format');
-    assert.equal((await saveNote('apostila_TI_1', '')).status, 409);
-    assert.equal(db.memory.notes[STUDENT_EMAIL], 'caderno-legado');
     assert.equal((await getNote('0')).body.note, '', 'não lê letra do texto antigo como nota');
+    assert.equal((await getNote('anotacoes-anteriores')).body.note, 'caderno-legado', 'o texto antigo é lido como nota');
+    assert.equal((await saveNote('apostila_TI_1', '')).status, 200);
+    assert.equal(db.memory.notes[STUDENT_EMAIL], 'caderno-legado', 'apagar o que não existe não converte');
+    const note = await saveNote('apostila_TI_1', 'oi');
+    assert.equal(note.status, 200, JSON.stringify(note.body));
+    assert.deepEqual(db.memory.notes[STUDENT_EMAIL], { 'anotacoes-anteriores': 'caderno-legado', apostila_TI_1: 'oi' });
+    db.memory.notes[STUDENT_EMAIL] = [{ titulo: 'x' }];
+    assert.equal((await saveNote('apostila_TI_1', 'oi')).status, 200);
+    assert.equal(db.memory.notes[STUDENT_EMAIL]['anotacoes-anteriores'], JSON.stringify([{ titulo: 'x' }], null, 2));
+
+    // A leitura das anotações devolve sempre texto (como o notes/get), sem "[object Object]".
+    db.memory.annotations[STUDENT_EMAIL] = { Apostila_O: { p1: { highlightedText: { trecho: 'a' }, note: 42, timestamp: 't' }, p2: 'solta', p3: { note: null } } };
+    const read = (await listAnnotations('Apostila_O').expect(200)).body.annotations;
+    assert.deepEqual(read.p1, { highlightedText: '{"trecho":"a"}', note: '42', timestamp: 't' });
+    assert.deepEqual(read.p2, { highlightedText: '', note: 'solta', timestamp: null });
+    assert.deepEqual(read.p3, { highlightedText: '', note: '' });
+    assert.equal(typeof db.memory.annotations[STUDENT_EMAIL].Apostila_O.p1.note, 'number', 'ler não regrava');
     delete db.memory.notes[STUDENT_EMAIL];
     delete db.memory.annotations[STUDENT_EMAIL];
 });

@@ -167,9 +167,13 @@ const adminTextField = (max, label) => str({ max, nullable: true, label });
 // conferido por extractInstitutional e rejectInvalidBranding).
 const schoolInfoField = () => shape({}, { nullable: true, label: 'dados da escola' });
 const schoolBrandingField = () => shape({}, { nullable: true, label: 'identidade visual' });
+// Categoria do banco: a tela manda o tema da prova (ou o nome da unidade). O teto é o
+// mesmo do campo Tema do editor (500, com contador): o schema nunca recusa o que a tela
+// deixa digitar (decisões §12, sobra do H9b; antes eram 100).
+const QUESTION_CATEGORY_MAX_CHARS = 500;
 const questionBankFields = () => ({
     key: adminIdField('questão'),
-    category: adminTextField(100, 'categoria'),
+    category: adminTextField(QUESTION_CATEGORY_MAX_CHARS, 'categoria'),
     curriculumKey: adminTextField(100, 'componente curricular'),
     type: adminTextField(40, 'tipo'),
     questionText: adminTextField(10000, 'texto da questão'),

@@ -10,9 +10,9 @@ vi.mock('../../lib/api', () => ({ api: apiMock }))
 vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { email: 'admin@escola.local', accountRole: 'admin' } }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => workspace.current }))
 const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }))
-const prefsMock = vi.hoisted(() => ({ current: {} }))
+const prefsMock = vi.hoisted(() => ({ current: {}, setPref: null }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => toastMock }))
-vi.mock('../../context/PreferencesProvider', () => ({ usePreferences: () => ({ pref: (key, fallback) => (prefsMock.current[key] !== undefined ? prefsMock.current[key] : fallback), setPref: vi.fn() }) }))
+vi.mock('../../context/PreferencesProvider', () => ({ usePreferences: () => ({ pref: (key, fallback) => (prefsMock.current[key] !== undefined ? prefsMock.current[key] : fallback), setPref: (...args) => prefsMock.setPref(...args) }) }))
 
 import ForumPage from './ForumPage'
 
@@ -20,6 +20,7 @@ const comment = (id, text) => ({ id, key: 'apostila_1', text, studentName: 'Ana'
 
 beforeEach(() => {
   prefsMock.current = {}
+  prefsMock.setPref = vi.fn().mockResolvedValue(true)
   Object.values(toastMock).forEach((fn) => fn.mockReset())
   apiMock.get.mockReset()
   apiMock.post.mockReset()
@@ -84,5 +85,37 @@ describe('[UC-ERRO-003] Fórum do instrutor: modelo de resposta e edição respe
     await act(async () => {})
     expect(apiMock.post).toHaveBeenCalledWith('/api/forum/reply/edit', expect.objectContaining({ commentId: 'c1', replyId: 'r1', text: 'e'.repeat(5000) }))
     promptSpy.mockRestore()
+  })
+})
+
+// Decisões §12 (sobra do H9b): o modelo de resposta recusado pelo servidor (limite de
+// 64 KB das preferências, sessão vencida...) não apaga o que o professor digitou.
+describe('[UC-ERRO-003] Fórum do instrutor: modelo de resposta recusado não limpa o formulário', () => {
+  async function openTemplates() {
+    apiMock.post.mockImplementation((url) => (url === '/api/admin/forum/all' ? Promise.resolve({ comments: [] }) : Promise.resolve({ success: true })))
+    render(<MemoryRouter><ForumPage /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Respostas rápidas' }))
+    fireEvent.change(screen.getByLabelText('Título'), { target: { value: 'Prazo' } })
+    fireEvent.change(screen.getByLabelText('Texto'), { target: { value: 'A prova fecha às 22 h.' } })
+  }
+
+  it('recusado: título e texto ficam no formulário', async () => {
+    prefsMock.setPref = vi.fn().mockResolvedValue(false)
+    await openTemplates()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Adicionar modelo' })) })
+    expect(prefsMock.setPref).toHaveBeenCalledWith('forum.templates', [expect.objectContaining({ title: 'Prazo', text: 'A prova fecha às 22 h.' })])
+    expect(screen.getByLabelText('Título')).toHaveValue('Prazo')
+    expect(screen.getByLabelText('Texto')).toHaveValue('A prova fecha às 22 h.')
+  })
+
+  it('gravado: o formulário se limpa depois do sucesso', async () => {
+    let release
+    prefsMock.setPref = vi.fn(() => new Promise((resolve) => { release = resolve }))
+    await openTemplates()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Adicionar modelo' })) })
+    expect(screen.getByLabelText('Título')).toHaveValue('Prazo')
+    await act(async () => { release(true) })
+    expect(screen.getByLabelText('Título')).toHaveValue('')
+    expect(screen.getByLabelText('Texto')).toHaveValue('')
   })
 })

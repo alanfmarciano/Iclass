@@ -349,13 +349,25 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
     assert.ok(unlock.status < 500 && unlock.body.field === undefined, JSON.stringify(unlock.body));
 
     // ProvasPage: salvar questão no banco (alternativas do editor, com isCorrect) e editar.
-    screen('features/admin/ProvasPage.jsx', "category: editor.theme || activeModule?.name || 'Geral',");
+    screen('features/admin/ProvasPage.jsx', "category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),");
+    // O Tema e a Categoria deixam digitar 500 caracteres (decisões §12, sobra do H9b).
+    screen('features/admin/ProvasPage.jsx', 'const THEME_MAX_CHARS = 500');
+    screen('features/admin/ProvasPage.jsx', '<Input label="Tema" value={editor.theme} maxLength={THEME_MAX_CHARS}');
+    screen('features/admin/ProvasPage.jsx', "<Input label=\"Categoria\" value={bankEditor.category || ''} maxLength={THEME_MAX_CHARS}");
     screen('features/admin/ProvasPage.jsx', "sourceExamKey: editor.key || null,");
     const alternatives = ['A', 'B', 'C', 'D'].map((letter, index) => ({ letter, text: `Alternativa ${letter} com acento é`, isCorrect: index === 2 }));
     const bank = ok(await asInstructor('/api/admin/question-bank/create').send({ category: 'Fundamentos de TI', questionText: 'Qual componente guarda a BIOS?\n\nEscolha uma.', alternatives, correctAnswer: 'C', sourceExamKey: null }), 'banco criar');
     const key = bank.body.question.key;
     screen('features/admin/ProvasPage.jsx', "api.post('/api/admin/question-bank/update', { key: bankEditor.key, category: bankEditor.category, questionText: bankEditor.questionText, alternatives: bankEditor.alternatives,");
     ok(await asInstructor('/api/admin/question-bank/update').send({ key, category: bank.body.question.category, questionText: bank.body.question.questionText, alternatives: bank.body.question.alternatives, correctAnswer: 'C' }), 'banco editar');
+    // Tema com o máximo da tela (500) vira a categoria: aceito; 501 é recusado com o campo.
+    const longTheme = 'T'.repeat(500);
+    const longBank = ok(await asInstructor('/api/admin/question-bank/create').send({ category: longTheme, questionText: 'Qual?', alternatives, correctAnswer: 'C', sourceExamKey: null }), 'banco com tema de 500');
+    assert.equal(longBank.body.question.category, longTheme);
+    ok(await asInstructor('/api/admin/question-bank/update').send({ key: longBank.body.question.key, category: longTheme, questionText: 'Qual?', alternatives, correctAnswer: 'C' }), 'banco editar com 500');
+    const tooLong = await asInstructor('/api/admin/question-bank/create').send({ category: 'T'.repeat(501), questionText: 'Qual?', alternatives, correctAnswer: 'C' });
+    assert.equal(tooLong.status, 400);
+    assert.equal(tooLong.body.field, 'category');
 });
 
 // ------------------------------------------------------------------ públicas e saída

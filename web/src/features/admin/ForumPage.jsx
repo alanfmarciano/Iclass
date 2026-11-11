@@ -182,10 +182,14 @@ export default function ForumPage() {
     setReply((r) => ({ ...r, [commentId]: joined.text }))
     if (joined.cut) toast.warning(`O modelo foi cortado para a resposta caber em ${formatCount(FORUM_TEXT_MAX_CHARS)} caracteres.`)
   }
-  function addTemplate() {
+  // O formulário só se limpa depois que o servidor grava o modelo: recusado (limite de
+  // 64 KB, sessão vencida...), o texto digitado fica para o professor ajustar (decisões
+  // §12, sobra do H9b).
+  async function addTemplate() {
     if (!tplForm.title.trim() || !tplForm.text.trim()) return toast.error('Preencha título e texto')
-    setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: tplForm.title.trim(), text: tplForm.text.trim() }])
-    setTplForm({ title: '', text: '' })
+    const form = tplForm
+    const saved = await setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: form.title.trim(), text: form.text.trim() }])
+    if (saved) setTplForm((current) => (current === form ? { title: '', text: '' } : current))
   }
   function deleteTemplate(id) { setPref('forum.templates', templates.filter((t) => t.id !== id)) }
   async function restoreItem(t) { try { await api.post('/api/admin/forum/restore', { ...t, courseId: activeCourseId, studentClass: activeClassName }); toast.success('Restaurado'); load() } catch (e) { toast.error(e.message) } }
