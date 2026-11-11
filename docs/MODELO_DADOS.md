@@ -124,6 +124,8 @@ Fase 2, H1-b (DES-02, CONF-06). As teclas do Modo Prova Rigoroso não ficam em `
 
 - `content/` guarda apostilas e avaliações em Markdown.
 - `data/database.db` é o estado real da aplicação — **não editar à mão, não versionar**.
+- **`config.settings.backup`** (fase 2, H4b; seção protegida, fora do `POST /api/admin/settings` e mantida na restauração): `{ destino, guardarExterno }`. `destino` é o caminho absoluto da pasta externa (vazio: só neste computador); os backups vão para `<destino>/IClass-<computador>/`. `guardarExterno` (1 a 90, padrão 14) é quantos automáticos ficam no destino. Banco sem a seção lê o padrão `{ destino: '', guardarExterno: 14 }` (`backupSettings()` em `utils/settings.js`).
+- **`data/backups/estado.json`** (fase 2, H4b; fora do banco e do backup, gravado por arquivo temporário e `rename`): `{ local:{ ultimoSucesso, origem, arquivo, bytes, sha256 }, externo:{ destino, pasta, ultimoSucesso, origem, arquivo, bytes, sha256, configuradoEm }, ultimaFalha:{ em, etapa ('local'|'externo'|'verificacao'), alvo, mensagem, origem, destino }, adiadoPorProva:{ desde, ultimaConferencia, aplicacoes } | null }`. Arquivo ausente ou ilegível vale `{}`: o último backup local sai então do `automatico_*` mais novo da pasta. Os backups em si seguem o nome `<grupo>[_<variante>]_<carimbo>.(zip|json)` com um `.sha256` ao lado (`<sha256>  <nome>`, o formato do `sha256sum`).
 - Testes devem usar diretórios temporários via as envs acima.
 
 ## Senhas

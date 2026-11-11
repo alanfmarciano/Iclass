@@ -574,8 +574,15 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         });
     });
 
+    // O caminho do destino externo do backup (settings.backup.destino, H4b) é só do
+    // administrador, como em GET /api/admin/backup/status: o professor vê que há um
+    // destino, não onde.
+    const settingsForAccount = (settings, account) => (isProfessorAccount(account) && settings && settings.backup && settings.backup.destino
+        ? { ...settings, backup: { ...settings.backup, destino: '' } }
+        : settings);
+
     router.get('/api/admin/settings', (req, res) => {
-        validateAdmin(req, res, () => res.json(settingsUtil.getSettings()));
+        validateAdmin(req, res, (config, account) => res.json(settingsForAccount(settingsUtil.getSettings(), account)));
     });
 
     // Configurações gerais: cada chave que mudou vai para a auditoria (settings_updated,
@@ -601,7 +608,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 });
             }
             await db.save();
-            res.json({ success: true, settings: db.memory.config.settings });
+            res.json({ success: true, settings: settingsForAccount(db.memory.config.settings, account) });
         });
     });
 

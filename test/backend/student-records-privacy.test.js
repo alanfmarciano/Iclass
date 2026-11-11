@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const sqlite3 = require('sqlite3');
 const request = require('supertest');
+const { ticketUrl } = require('./fixtures/backupDownload.js');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-g6-records-test-'));
 process.env.ICLASS_DATA_DIR = tempRoot;
@@ -182,7 +183,7 @@ test('[UC-BACKUP-001] professor com "Executar manutenção" só gera cópia no s
     assert.equal(server.status, 200, server.body && server.body.error);
     assert.match(server.body.fileName, /manual/);
 
-    const adminData = await request(app).get('/api/admin/backup/data').set('x-admin-session', adminToken);
+    const adminData = await request(app).get(await ticketUrl(app, adminToken, 'x', '/api/admin/backup/data')).set('x-admin-session', adminToken);
     assert.equal(adminData.status, 200);
     // Professor sem a permissão nem chega à rota.
     db.memory.admins[1].additionalPermissions = [];

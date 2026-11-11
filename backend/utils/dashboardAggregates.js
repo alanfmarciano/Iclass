@@ -156,6 +156,8 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // alunos do escopo que pediram nova senha e alunos com o login em espera por senhas
 // erradas; contas de instrutor em espera e alertas de muitas senhas erradas vindas do
 // mesmo IP, esses dois só para administrador.
+// backup (H4b, OPS-03): { falha, atrasado, externoAtrasado, semDestino } de
+// utils/backup.js backupAlerts, só para administrador com system.manage.
 // ---------------------------------------------------------------------------
 function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }, extras = {}) {
     const emails = emailSet(students);
@@ -292,6 +294,59 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // erradas e alertas por IP.
     securityQueueItems(extras && extras.security).forEach(item => items.push(item));
 
+    // 9. Backup (H4b, OPS-03): falha, atraso, cópia externa atrasada e destino externo não
+    // configurado. Só administrador (a rota manda null para os outros).
+    backupQueueItems(extras && extras.backup).forEach(item => items.push(item));
+
+    return items;
+}
+
+function plural(count, one, many) {
+    return `${count} ${count === 1 ? one : many}`;
+}
+
+// Itens do backup. count: dias desde o último sucesso (mínimo 1). Falha e atraso não se
+// adiam (adiavel: false); "sem destino" adia 24 h, como os outros.
+function backupQueueItems(backup) {
+    if (!backup || typeof backup !== 'object') return [];
+    const items = [];
+    const common = { href: '/sistema', permissao: 'system.manage' };
+    if (backup.falha) {
+        const externo = backup.falha.alvo === 'externo';
+        const message = String(backup.falha.mensagem || '').trim();
+        items.push({
+            id: 'backup_falhou', tipo: 'backup_falhou',
+            titulo: externo ? 'A cópia externa do backup falhou' : 'O backup falhou',
+            detalhe: `${message || 'Veja o motivo no cartão Backup'} · Sistema → Backup`,
+            count: Math.max(1, Number(backup.falha.dias) || 1), tone: 'danger', adiavel: false, ...common,
+        });
+    }
+    if (backup.atrasado) {
+        const dias = Math.max(1, Number(backup.atrasado.dias) || 1);
+        items.push({
+            id: 'backup_atrasado', tipo: 'backup_atrasado',
+            titulo: 'Backup atrasado',
+            detalhe: `${backup.atrasado.ultimoSucesso ? `Último backup há ${plural(dias, 'dia', 'dias')}` : 'Nenhum backup feito ainda'} · Sistema → Backup → Fazer backup agora`,
+            count: dias, tone: 'danger', adiavel: false, ...common,
+        });
+    }
+    if (backup.externoAtrasado) {
+        const dias = Math.max(1, Number(backup.externoAtrasado.dias) || 1);
+        items.push({
+            id: 'backup_externo_atrasado', tipo: 'backup_externo_atrasado',
+            titulo: 'Cópia externa do backup atrasada',
+            detalhe: `${backup.externoAtrasado.ultimoSucesso ? `Última cópia no destino externo há ${plural(dias, 'dia', 'dias')}` : 'Nenhuma cópia no destino externo ainda'}; confira o pendrive ou a pasta · Sistema → Backup`,
+            count: dias, tone: 'warning', ...common,
+        });
+    }
+    if (backup.semDestino) {
+        items.push({
+            id: 'backup_sem_destino', tipo: 'backup_sem_destino',
+            titulo: 'Backup só neste computador',
+            detalhe: 'Escolha um pendrive, HD externo ou pasta de rede para uma cópia fora daqui · Sistema → Backup',
+            count: Math.max(1, Number(backup.semDestino.dias) || 1), tone: 'warning', ...common,
+        });
+    }
     return items;
 }
 

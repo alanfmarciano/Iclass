@@ -132,6 +132,9 @@ const ACTION_LABELS = Object.freeze({
     backup_downloaded: 'Backup baixado',
     backup_restored: 'Backup restaurado',
     backup_restore_failed: 'Restauração de backup recusada ou com falha',
+    backup_auto_created: 'Backup automático feito',
+    backup_auto_failed: 'Backup automático falhou',
+    backup_config_changed: 'Destino do backup alterado',
     // Privacidade (LGPD)
     privacy_accept: 'Termos e Política de Privacidade aceitos',
     legal_publish: 'Documento legal publicado',

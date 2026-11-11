@@ -46,3 +46,24 @@ Com o banco danificado o servidor não sobe (código 3), não grava no arquivo e
 
 ZIP com soma do banco diferente da do manifesto, entrada com CRC errado, arquivo cortado, entrada que descompacta mais do que declara, link simbólico, caminho para fora da pasta ou coleção com estrutura errada é recusado com a mensagem em português antes de mudar qualquer coisa.
 
+## UC-BACKUP-004 — Backup diário com cópia fora do computador
+
+- Estado: automatizado
+- Testes: `backup-destino.test.js`, `backup-cli.test.js` e `BackupCard.test.jsx`
+
+O administrador escolhe na tela Sistema (cartão Backup) a pasta do destino externo: um pendrive, HD externo ou pasta de rede, com o caminho completo. O IClass só aceita pasta que existe, fora da pasta do IClass, e testa a gravação na hora (cria `<destino>/IClass-<computador>`, grava e apaga um arquivo de teste); a resposta diz o espaço livre e avisa quando a pasta fica no mesmo disco. A tela lembra que o backup traz dados pessoais de alunos e senhas protegidas. Com o servidor ligado, o backup automático roda no boot e de hora em hora quando o último tem 20 horas ou mais: o ZIP dos dados em `data/backups` e o completo (com a biblioteca) no destino, da mesma cópia do banco, cada um com o `.sha256`. Com prova em andamento ele espera, até o último passar de 48 horas. O resultado fica em `data/backups/estado.json` e na Auditoria (ator "sistema"). Pendrive desconectado não impede o backup local: a falha aparece em vermelho no cartão e no "Precisa de você" do administrador; atraso de mais de 26 horas e destino não escolhido também aparecem lá (o professor não vê esses itens). "Fazer backup agora" faz o mesmo na hora, e o `backup-cli.js criar` grava no destino externo quando ele está conectado.
+
+## UC-BACKUP-005 — Retenção dos backups e nada pela metade
+
+- Estado: automatizado
+- Testes: `backup-destino.test.js`
+
+Cada grupo guarda os mais recentes: automático 14 neste computador e o número escolhido no destino (1 a 90, padrão 14), manual 20, segurança 5, antes de limpar o estado de prova 10, antes de resetar a sala 10, e 30 `.bak` por apostila ou avaliação editada. Os JSON antigos contam no grupo, o mais novo nunca sai e arquivo fora do padrão de nome do IClass nunca é apagado. Desligar o servidor no meio de um backup espera alguns segundos, interrompe a gravação e apaga o `.parcial`; sobras `.parcial` antigas saem no boot.
+
+## UC-BACKUP-006 — Lista, download com a senha de novo e restaurar da lista
+
+- Estado: automatizado
+- Testes: `backup-destino.test.js`, `BackupCard.test.jsx` e `SistemaPage.test.jsx`
+
+O cartão Backup lista os backups deste computador e do destino externo. Baixar qualquer backup (da lista, completo, só os dados ou o JSON) pede a senha do administrador de novo, e a tela diz em uma linha o motivo (o backup traz os dados pessoais de todos os alunos); a senha errada fica no diálogo e conta no atraso da conta, o bilhete vale uma vez, por 2 minutos, para aquele arquivo, e o download vai para a Auditoria. Nome com caminho ou fora do padrão é recusado. "Restaurar" num item da lista confere o `.sha256` ao lado e abre a mesma prévia do arquivo enviado; o backup escolhido continua na lista depois. Na prévia, a linha da Auditoria diz que a de hoje é mantida e somada à do backup.
+

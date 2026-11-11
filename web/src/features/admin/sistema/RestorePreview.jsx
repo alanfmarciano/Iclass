@@ -111,7 +111,7 @@ export function RestorePreview({ preview, busy = false, onCancel, onConfirm, net
             <tbody className="divide-y divide-border">
               {rows.map((row) => (
                 <tr key={row.colecao}>
-                  <th scope="row" className="py-1 pr-2 text-left font-normal break-words">{row.rotulo}</th>
+                  <th scope="row" className="py-1 pr-2 text-left font-normal break-words">{row.rotulo}{row.nota && <span className="block text-subtle">{row.nota}</span>}</th>
                   <td className="py-1 px-2 text-right tabular-nums">{count(row.backup)}</td>
                   <td className="py-1 pl-2 text-right tabular-nums">{count(row.atual)}</td>
                 </tr>

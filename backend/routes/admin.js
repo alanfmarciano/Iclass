@@ -3,6 +3,7 @@ const router = express.Router();
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
+const { logError } = require('../utils/errorLog.js');
 const {
     DB_STUDENTS_FILE,
     DB_SUBMISSIONS_FILE,
@@ -3946,6 +3947,8 @@ function makeBackup(key, content, isJson = false) {
     const ext = isJson ? '.json' : '.md';
     const backupPath = path.join(backupDir, `${key}_${timestamp}${ext}.bak`);
     fs.writeFileSync(backupPath, content, 'utf8');
+    // Ficam as 30 mais recentes de cada arquivo (H4b, CONF-11); antes eram ilimitadas.
+    try { require('../utils/backupStore.js').pruneEditBackups(backupDir); } catch (e) { logError('retenção dos .bak', e); }
 }
 
 
@@ -5290,6 +5293,21 @@ async function _storageQueueBlock(matchedAdmin) {
     return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
 }
 
+// Bloco do backup na fila (H4b, OPS-03): só para administrador com "Executar
+// manutenção" (o professor não vê alertas de backup; baixar e restaurar são do
+// administrador). Desligado em TEST_MODE, onde o backup automático também não roda
+// (demonstração e testes usam dados descartáveis).
+function _backupQueueBlock(matchedAdmin, now = Date.now()) {
+    if (process.env.TEST_MODE === '1') return null;
+    if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
+    try {
+        return require('../utils/backup.js').backupAlerts({ now });
+    } catch (error) {
+        logError('fila: situação do backup', error);
+        return null;
+    }
+}
+
 // Bloco de segurança da fila (H5b; SEG-06, decisão 6 do Alan), já no escopo de quem vê:
 // - alunos da lista (os do escopo) que pediram nova senha ou estão com o login em espera
 //   por senhas erradas (utils/loginGuard.js, só na memória);
@@ -5336,11 +5354,13 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
-        }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }) });
+        }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
         items = items.filter(item => {
+            // Item que não se adia (backup falhou ou atrasado, H4b): fica até resolver.
+            if (item.adiavel === false) return true;
             const ts = Number(snoozed[item.id]);
             return !(Number.isFinite(ts) && now - ts < 86400000);
         });

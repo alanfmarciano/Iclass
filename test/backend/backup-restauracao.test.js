@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const request = require('supertest');
+const { ticketUrl } = require('./fixtures/backupDownload.js');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-backup-h4a-test-'));
 process.env.ICLASS_DATA_DIR = path.join(tempRoot, 'data');
@@ -188,7 +189,8 @@ test('[UC-BACKUP-003] "Baixar só os dados": ZIP formato 2 sem a biblioteca, com
     await db.keystrokes.append([keystroke('d1')]);
     fs.mkdirSync(runtimePaths.UPLOADS_DIR, { recursive: true });
     fs.writeFileSync(path.join(runtimePaths.UPLOADS_DIR, 'grande.pdf'), '%PDF-grande');
-    const res = await as()('get', '/api/admin/backup/full?variante=dados').buffer(true).parse((response, callback) => {
+    // Baixar pede a senha de novo (H4b, SEG-15): o bilhete vai no ?ticket=.
+    const res = await as()('get', await ticketUrl(app, TOKENS[ADMIN], 'segura-h4a', '/api/admin/backup/full?variante=dados')).buffer(true).parse((response, callback) => {
         const chunks = [];
         response.on('data', chunk => chunks.push(chunk));
         response.on('end', () => callback(null, Buffer.concat(chunks)));
@@ -202,7 +204,7 @@ test('[UC-BACKUP-003] "Baixar só os dados": ZIP formato 2 sem a biblioteca, com
     assert.equal(zip.getEntries().some(entry => entry.entryName.startsWith('data/uploads/')), false);
     assert.equal(manifest.banco.tabelas.exam_keystroke_events, 1);
     // O JSON de dados também leva as teclas (antes saía sem elas).
-    const json = await as()('get', '/api/admin/backup/data');
+    const json = await as()('get', await ticketUrl(app, TOKENS[ADMIN], 'segura-h4a', '/api/admin/backup/data'));
     assert.equal(json.status, 200);
     assert.deepEqual(json.body.data.examKeystrokes.map(row => row.id), ['d1']);
 });

@@ -10,6 +10,9 @@ const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
 const backupAudit = require('../utils/backupAudit.js');
 const { recordAudit } = require('../utils/audit.js');
+const backupStore = require('../utils/backupStore.js');
+const settingsUtil = require('../utils/settings.js');
+const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 
 // uploadErrorMessage e isUploadRequestError vêm de admin.js: o envio recusado (multer,
 // formulário cortado) responde 400 em português; o resto é falha do disco (500 com código).
@@ -175,25 +178,220 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             legacyApplications: details.legacyApplications === true,
             applicationsDiscarded: Number(details.applicationsDiscarded) || 0,
             applicationsRebuilt: Number(details.applicationsRebuilt) || 0,
+            // H4b: backup automático (ator 'sistema'), destino externo e download da lista.
+            variante: details.variante || '',
+            local: details.local || '',
+            externo: details.externo || '',
+            externoErro: details.externoErro || '',
+            etapa: details.etapa || '',
+            destino: typeof details.destino === 'string' ? details.destino : '',
         };
     }
 
-    // Cópias manuais no servidor: ficam as 20 mais recentes (antes eram ilimitadas). Desde
-    // o H4a é o ZIP formato 2 dos dados (manual_dados_<carimbo>.zip), gerado sem travar o
-    // servidor; os .json manuais antigos contam juntos na retenção.
-    const MANUAL_BACKUPS_KEPT = 20;
+    // "Fazer backup agora" (H4b, OPS-03): o mesmo serviço do automático, com origem
+    // 'manual': o ZIP dos dados em data/backups (manual_dados_<carimbo>.zip, ficam os 20
+    // mais recentes) e, com o destino externo configurado, o completo na pasta deste
+    // computador no destino (a falha do externo não desfaz o local: externoErro).
+    // Professor com "Executar manutenção" também pode: o arquivo fica no servidor.
+    const MANUAL_BACKUPS_KEPT = backupStore.RETENTION_RULES.find(rule => rule.grupo === 'manual').local;
 
     router.post('/api/admin/backup/server', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            let file;
+            let result;
             try {
-                file = await backupUtil.runAutomaticBackup({ prefix: 'manual', keep: MANUAL_BACKUPS_KEPT });
+                result = await backupUtil.runBackupJob({ origem: 'manual' });
             } catch (error) {
+                // Interrompido pelo desligamento do servidor (o .parcial já saiu): não é erro
+                // interno; 503 retryable, para a tela pedir que tente quando o IClass voltar.
+                if (error && error.code === 'ICLASS_BACKUP_ABORTED') {
+                    return res.status(503).json({ success: false, error: 'O backup foi interrompido porque o servidor está sendo desligado. Tente de novo quando o IClass voltar.', retryable: true });
+                }
                 return sendRouteError(error, req, res, 'Falha ao gerar a cópia de segurança no servidor.');
             }
-            recordBackupAudit(req, matchedAdmin, 'backup_server_created', { file: path.basename(file), format: 'zip' });
+            recordBackupAudit(req, matchedAdmin, 'backup_server_created', {
+                file: result.local.name,
+                format: 'zip',
+                variante: 'dados',
+                ...(result.externo ? { externo: result.externo.name } : {}),
+                ...(result.externoErro ? { externoErro: result.externoErro.slice(0, 300) } : {}),
+            });
             await db.save();
-            res.json({ success: true, fileName: path.basename(file), createdAt: Date.now(), kept: MANUAL_BACKUPS_KEPT });
+            res.json({
+                success: true,
+                fileName: result.local.name,
+                createdAt: Date.now(),
+                kept: MANUAL_BACKUPS_KEPT,
+                externo: result.externo ? { fileName: result.externo.name, pasta: result.externo.pasta } : null,
+                externoErro: result.externoErro || null,
+            });
+        });
+    });
+
+    // Situação do backup (H4b): último local, último externo, falha aberta, adiamento por
+    // prova e o destino. Para quem tem "Executar manutenção"; o caminho do destino só vai
+    // para o administrador (o professor vê que há um destino, não onde).
+    router.get('/api/admin/backup/status', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const status = backupUtil.backupStatus();
+            if (isProfessorAccount(matchedAdmin)) {
+                return res.json({ success: true, ...status, destino: '', pasta: '', ultimaFalha: status.ultimaFalha ? { ...status.ultimaFalha, destino: '' } : null });
+            }
+            res.json({ success: true, ...status });
+        });
+    });
+
+    // Destino externo (H4b): pasta absoluta que existe, fora da pasta do IClass; o IClass
+    // grava em <destino>/IClass-<computador>. Só o administrador. '' desliga a cópia
+    // externa. A sugestão vem do backup_path.txt do launcher, quando há.
+    const DATA_WARNING = 'O backup traz dados pessoais de alunos e senhas protegidas; guarde o pendrive ou a pasta em local seguro.';
+
+    router.get('/api/admin/backup/config', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
+            const current = settingsUtil.backupSettings();
+            res.json({
+                success: true,
+                destino: current.destino,
+                pasta: current.destino ? backupStore.externalDir(current.destino) : '',
+                guardarExterno: current.guardarExterno,
+                limites: { guardarExterno: { min: settingsUtil.BACKUP_KEEP_EXTERNAL_MIN, max: settingsUtil.BACKUP_KEEP_EXTERNAL_MAX } },
+                sugestao: current.destino ? '' : backupStore.launcherPathSuggestion(),
+                aviso: DATA_WARNING,
+            });
+        });
+    });
+
+    router.post('/api/admin/backup/config', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
+            const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+            const before = settingsUtil.backupSettings();
+            if (body.destino !== undefined && typeof body.destino !== 'string') {
+                return res.status(400).json({ success: false, error: 'Informe a pasta do destino como texto.', field: 'destino' });
+            }
+            let keep = before.guardarExterno;
+            if (body.guardarExterno !== undefined && body.guardarExterno !== null && body.guardarExterno !== '') {
+                const value = Number(body.guardarExterno);
+                if (!Number.isInteger(value) || value < settingsUtil.BACKUP_KEEP_EXTERNAL_MIN || value > settingsUtil.BACKUP_KEEP_EXTERNAL_MAX) {
+                    return res.status(400).json({ success: false, error: `Guardar no destino: de ${settingsUtil.BACKUP_KEEP_EXTERNAL_MIN} a ${settingsUtil.BACKUP_KEEP_EXTERNAL_MAX} backups.`, field: 'guardarExterno' });
+                }
+                keep = value;
+            }
+            let checked = { destino: before.destino, pasta: before.destino ? backupStore.externalDir(before.destino) : '', livreBytes: null, mesmoDisco: false };
+            if (body.destino !== undefined) {
+                try {
+                    checked = await backupStore.checkDestination(body.destino);
+                } catch (error) {
+                    if (error && error.status === 400) return res.status(400).json({ success: false, error: publicErrorMessage(error, req), field: error.field || 'destino' });
+                    return sendRouteError(error, req, res, 'Falha ao conferir a pasta do destino.');
+                }
+            }
+            if (!db.memory.config) db.memory.config = {};
+            const stored = db.memory.config.settings && typeof db.memory.config.settings === 'object' ? db.memory.config.settings : {};
+            const next = { destino: checked.destino, guardarExterno: keep };
+            db.memory.config.settings = { ...stored, backup: next };
+            if (checked.destino) await backupUtil.noteDestinationConfigured(checked.destino).catch(e => logError('backup: gravação do estado', e));
+            if (before.destino !== next.destino || before.guardarExterno !== next.guardarExterno) {
+                recordBackupAudit(req, matchedAdmin, 'backup_config_changed', {
+                    destino: next.destino,
+                    antes: { destino: before.destino, guardarExterno: before.guardarExterno },
+                    guardarExterno: next.guardarExterno,
+                });
+            }
+            await db.save();
+            res.json({
+                success: true,
+                destino: next.destino,
+                pasta: checked.pasta,
+                guardarExterno: next.guardarExterno,
+                livreBytes: checked.livreBytes,
+                mesmoDisco: checked.mesmoDisco === true,
+                aviso: DATA_WARNING,
+            });
+        });
+    });
+
+    // Backups guardados (H4b): os do servidor (data/backups) e os da pasta deste
+    // computador no destino externo, o mais novo primeiro. Só o administrador; listar não
+    // pede a senha (baixar pede).
+    router.get('/api/admin/backup/list', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
+            const { itens, destino, pasta } = backupUtil.listStoredBackups();
+            let externoAcessivel = false;
+            try { externoAcessivel = !!pasta && fs.statSync(pasta).isDirectory(); } catch (e) { externoAcessivel = false; }
+            res.json({ success: true, itens, destino, pasta, externoAcessivel });
+        });
+    });
+
+    // --- senha de novo para baixar (H4b, decisões §3 SEG-15) -------------------------
+    // Baixar um backup (completo, só os dados, o JSON ou um arquivo da lista) pede a senha
+    // do administrador de novo: o arquivo leva os dados pessoais de todos os alunos e os
+    // hashes das senhas, e uma sessão esquecida aberta no computador da sala não baixa a
+    // escola inteira. A senha é conferida pelo attemptPasswordLogin (o único caminho que
+    // confere senha: scrypt assíncrono, teto por IP e atraso da conta, finalidade
+    // 'backup_download'); a resposta é um bilhete de uso único, preso à conta e ao
+    // arquivo, que vale 2 min e vai no ?ticket= do download.
+    const DOWNLOAD_TICKET_TTL_MS = 2 * 60 * 1000;
+    const DOWNLOAD_TICKETS_MAX = 200;
+    const downloadTickets = new Map();
+    const PASSWORD_REQUIRED_MESSAGE = 'Para baixar um backup, confirme de novo a senha do administrador.';
+    const DOWNLOAD_KINDS = new Set(['completo', 'dados', 'json', 'arquivo']);
+
+    function ticketTarget(kind, local, nome) {
+        return kind === 'arquivo' ? `arquivo:${local}:${nome}` : kind;
+    }
+
+    function pruneTickets(now = Date.now()) {
+        for (const [key, ticket] of downloadTickets) if (ticket.expiresAt <= now) downloadTickets.delete(key);
+        while (downloadTickets.size > DOWNLOAD_TICKETS_MAX) downloadTickets.delete(downloadTickets.keys().next().value);
+    }
+
+    // Confere o bilhete sem gastar (peek) ou gastando. Devolve true ou responde 403.
+    function checkTicket(req, res, matchedAdmin, target, { consume = false } = {}) {
+        const raw = typeof req.query.ticket === 'string' ? req.query.ticket.trim() : '';
+        pruneTickets();
+        const ticket = raw ? downloadTickets.get(raw) : null;
+        const email = String((matchedAdmin && matchedAdmin.email) || '').toLowerCase();
+        if (!ticket || ticket.email !== email || ticket.target !== target) {
+            res.status(403).json({ success: false, passwordRequired: true, error: raw ? 'A confirmação da senha expirou ou não vale para este arquivo. Confirme de novo para baixar.' : PASSWORD_REQUIRED_MESSAGE });
+            return false;
+        }
+        if (consume) downloadTickets.delete(raw);
+        return true;
+    }
+
+    router.post('/api/admin/backup/download-ticket', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
+            const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+            const kind = typeof body.tipo === 'string' ? body.tipo.trim().toLowerCase() : '';
+            if (!DOWNLOAD_KINDS.has(kind)) {
+                return res.status(400).json({ success: false, error: 'Tipo de download desconhecido (completo, dados, json ou arquivo).', field: 'tipo' });
+            }
+            const local = typeof body.local === 'string' ? body.local.trim() : '';
+            const nome = typeof body.nome === 'string' ? body.nome.trim() : '';
+            if (kind === 'arquivo' && !backupUtil.resolveStoredBackup(local, nome)) {
+                return res.status(400).json({ success: false, error: 'Backup não encontrado na lista. Atualize a lista e tente de novo.', field: 'nome' });
+            }
+            const password = typeof body.password === 'string' ? body.password : '';
+            if (!password.trim()) return res.status(400).json({ success: false, error: 'Informe a senha do administrador.', field: 'password' });
+            const check = await attemptPasswordLogin({ kind: 'admin', email: matchedAdmin.email, password, req, purpose: 'backup_download' });
+            if (!check.ok && check.status === 429) return res.status(429).json(check.body);
+            if (!check.ok && check.passwordChanged) {
+                return res.status(409).json({ success: false, error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
+            }
+            // Senha errada: 400 (não 401), para a tela não tratar como sessão encerrada.
+            if (!check.ok) return res.status(400).json({ success: false, error: check.status === 400 ? 'Informe a senha do administrador.' : 'Senha incorreta.', field: 'password', ...(check.body && check.body.loginDelayed ? { loginDelayed: true, retryAfterSeconds: check.body.retryAfterSeconds } : {}) });
+            if (check.account !== matchedAdmin) {
+                return res.status(409).json({ success: false, error: 'A senha desta conta acabou de ser alterada. Confira e tente de novo.' });
+            }
+            if (check.rehashed) await db.save().catch(() => {});
+            pruneTickets();
+            const ticket = crypto.randomBytes(24).toString('hex');
+            const expiresAt = Date.now() + DOWNLOAD_TICKET_TTL_MS;
+            downloadTickets.set(ticket, { email: String(matchedAdmin.email || '').toLowerCase(), target: ticketTarget(kind, local, nome), expiresAt });
+            res.json({ success: true, ticket, expiraEm: new Date(expiresAt).toISOString() });
         });
     });
 
@@ -213,6 +411,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     router.get('/api/admin/backup/data', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             if (rejectProfessor(res, matchedAdmin)) return;
+            if (!checkTicket(req, res, matchedAdmin, 'json', { consume: true })) return;
             let snapshot;
             try {
                 await db.save();
@@ -235,8 +434,15 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     router.get('/api/admin/backup/full', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             if (rejectProfessor(res, matchedAdmin)) return;
-            const variante = String(req.query.variante || '').trim().toLowerCase() === 'dados' ? 'dados' : 'completo';
+            // Sem variante: completo. Variante desconhecida: 400 (antes virava completo calado).
+            const rawVariant = String(req.query.variante || '').trim().toLowerCase();
+            if (rawVariant && rawVariant !== 'dados' && rawVariant !== 'completo') {
+                return res.status(400).json({ success: false, error: 'Variante do backup desconhecida: use completo ou dados.', field: 'variante' });
+            }
+            const variante = rawVariant === 'dados' ? 'dados' : 'completo';
+            if (!checkTicket(req, res, matchedAdmin, variante)) return;
             if (backupUtil.backupInProgress()) return res.status(409).json({ error: backupUtil.BACKUP_BUSY_MESSAGE });
+            checkTicket(req, res, matchedAdmin, variante, { consume: true });
             recordBackupAudit(req, matchedAdmin, 'backup_downloaded', { format: 'zip', variante });
             await db.save();
             const stamp = new Date().toISOString().slice(0, 10);
@@ -258,6 +464,46 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 logError('erro interno', error, { req, details: { contexto: 'Falha ao gerar backup completo (ZIP cortado no meio do envio).' } });
                 res.destroy(error);
             }
+        });
+    });
+
+    // Download de um backup da lista (H4b): ?local=servidor|externo&nome=<arquivo>&ticket=.
+    // O nome precisa seguir o padrão dos backups do IClass e estar na pasta (nada de
+    // caminho: '../x.zip' é 400). Vai para a auditoria como backup_downloaded.
+    router.get('/api/admin/backup/file', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (rejectProfessor(res, matchedAdmin)) return;
+            const local = typeof req.query.local === 'string' ? req.query.local.trim() : '';
+            const nome = typeof req.query.nome === 'string' ? req.query.nome.trim() : '';
+            if (local !== 'servidor' && local !== 'externo') {
+                return res.status(400).json({ success: false, error: 'Informe de onde é o backup (servidor ou externo).', field: 'local' });
+            }
+            if (!backupStore.isBackupName(nome)) {
+                return res.status(400).json({ success: false, error: 'Nome de backup inválido.', field: 'nome' });
+            }
+            const file = backupUtil.resolveStoredBackup(local, nome);
+            if (!file) return res.status(404).json({ success: false, error: 'Backup não encontrado. Atualize a lista e tente de novo.' });
+            if (!checkTicket(req, res, matchedAdmin, ticketTarget('arquivo', local, nome), { consume: true })) return;
+            let stat;
+            try {
+                stat = await fs.promises.stat(file);
+            } catch (error) {
+                return res.status(404).json({ success: false, error: 'Backup não encontrado. Atualize a lista e tente de novo.' });
+            }
+            const info = backupStore.parseBackupName(nome);
+            recordBackupAudit(req, matchedAdmin, 'backup_downloaded', { file: nome, local, format: info && info.formato === 'json' ? 'json' : 'zip', ...(info && info.variante ? { variante: info.variante } : {}) });
+            await db.save();
+            res.setHeader('Content-Type', /\.json$/i.test(nome) ? 'application/json; charset=utf-8' : 'application/zip');
+            res.setHeader('Content-Length', String(stat.size));
+            res.setHeader('Content-Disposition', `attachment; filename="${nome}"`);
+            const stream = fs.createReadStream(file);
+            stream.on('error', error => {
+                if (!res.headersSent) return sendInternalError(error, req, res, 'Falha ao ler o backup no disco.');
+                logError('erro interno', error, { req, details: { contexto: 'Falha ao ler o backup no disco (download cortado no meio).' } });
+                res.destroy(error);
+            });
+            stream.pipe(res);
+            res.on('close', () => stream.destroy());
         });
     });
 
@@ -435,6 +681,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         validateAdmin(req, res, async (config, matchedAdmin) => {
             if (await refuseProfessorRestore(req, res, matchedAdmin)) return;
             if (backupUtil.backupInProgress()) return res.status(409).json({ error: backupUtil.BACKUP_BUSY_MESSAGE });
+            if (!req.is('multipart/form-data')) return previewStoredBackup(req, res, matchedAdmin);
             const upload = await receiveBackupUpload(req, res, matchedAdmin, 'previa');
             if (!upload) return;
             try {
@@ -451,6 +698,42 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             }
         });
     });
+
+    // Prévia de um backup da lista (H4b): JSON { local, nome }. O arquivo é conferido pela
+    // soma .sha256 ao lado (quando há) e extraído numa pasta só da prévia; o original fica
+    // onde está (não é apagado como o enviado) e não sai pela retenção durante a
+    // restauração.
+    async function previewStoredBackup(req, res, matchedAdmin) {
+        const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+        const local = typeof body.local === 'string' ? body.local.trim() : '';
+        const nome = typeof body.nome === 'string' ? body.nome.trim() : '';
+        const refuse = async (status, error, field) => {
+            recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...(nome ? { file: nome.slice(0, 200) } : {}), ...(local ? { local } : {}), etapa: 'previa', error });
+            await db.save().catch(() => {});
+            return res.status(status).json({ success: false, error, ...(field ? { field } : {}) });
+        };
+        if (!local && !nome) return refuse(400, 'Envie o arquivo de backup (.json ou .zip) ou escolha um da lista.', 'file');
+        if (local !== 'servidor' && local !== 'externo') return refuse(400, 'Informe de onde é o backup (servidor ou externo).', 'local');
+        if (!backupStore.isBackupName(nome)) return refuse(400, 'Nome de backup inválido.', 'nome');
+        const file = backupUtil.resolveStoredBackup(local, nome);
+        if (!file) return refuse(404, 'Backup não encontrado. Atualize a lista e tente de novo.');
+        let size = 0;
+        try {
+            size = (await fs.promises.stat(file)).size;
+            const checksum = await backupStore.verifyChecksum(file);
+            if (checksum === 'diferente') return refuse(400, 'O arquivo não confere com a soma de verificação (.sha256) ao lado dele: pode estar danificado ou incompleto. Escolha outro backup.');
+            const { prepared, preview } = await backupUtil.prepareRestore(file, { originalName: nome, keepSource: true });
+            prepared.uploadSize = size;
+            prepared.sourceName = nome;
+            const { token, expiraEm } = backupUtil.createRestoreToken(prepared, matchedAdmin.email);
+            res.json({ success: true, token, expiraEm, arquivo: nome, local, ...preview });
+        } catch (error) {
+            const shownError = publicErrorMessage(error, req);
+            recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { file: nome, local, size, etapa: 'previa', error: shownError.slice(0, 300) });
+            await db.save().catch(() => {});
+            return sendRouteError(error, req, res, 'Falha ao conferir o backup escolhido.');
+        }
+    }
 
     // Restaurar. Dois caminhos:
     // - JSON { token, confirm: 'RESTAURAR', replaceAccounts }: o backup que a prévia

@@ -4,6 +4,10 @@
 //
 //   node backend/scripts/backup-cli.js listar
 //   node backend/scripts/backup-cli.js criar [--dados] [--destino <pasta>]
+//
+// listar mostra os de data/backups e os da pasta deste computador no destino externo
+// configurado na tela Sistema (H4b); criar grava, sem --destino, nessa pasta do destino
+// externo (ou em data/backups, sem destino ou com ele desconectado).
 //   node backend/scripts/backup-cli.js verificar <arquivo.zip>
 //   node backend/scripts/backup-cli.js restaurar (<arquivo.zip> | --ultimo) [--sim]
 //
@@ -28,6 +32,7 @@ const runtimePaths = require('../runtimePaths.js');
 const archive = require('../utils/backupArchive.js');
 const schema = require('../utils/backupSchema.js');
 const dbFile = require('../utils/dbFile.js');
+const store = require('../utils/backupStore.js');
 
 const EXIT = { OK: 0, FAILED: 1, SERVER_RUNNING: 2 };
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -109,17 +114,59 @@ async function listBackups(dir = BACKUPS_DIR) {
     return items.sort((a, b) => (Date.parse(b.geradoEm) || b.mtimeMs) - (Date.parse(a.geradoEm) || a.mtimeMs));
 }
 
-async function commandList() {
-    const items = await listBackups();
-    if (!items.length) {
-        say(`Nenhum backup em ${BACKUPS_DIR}.`);
-        return EXIT.OK;
+// Destino externo configurado na tela Sistema (settings.backup.destino), lido do banco
+// parado só para leitura; sem banco legível, o do estado.json (último externo gravado).
+async function configuredDestination() {
+    if (fs.existsSync(DB_FILE)) {
+        let connection = null;
+        try {
+            connection = await dbFile.openDatabaseFile(DB_FILE, { readOnly: true });
+            const row = await dbFile.getOn(connection, "SELECT value FROM config WHERE key = 'app_config'");
+            const config = row && row.value ? JSON.parse(row.value) : null;
+            const destino = config && config.settings && config.settings.backup && typeof config.settings.backup.destino === 'string' ? config.settings.backup.destino.trim() : '';
+            if (destino) return destino;
+        } catch (e) {
+            // Banco ilegível: cai no estado.json.
+        } finally {
+            if (connection) await dbFile.closeDatabaseFile(connection).catch(() => {});
+        }
     }
-    say(`Backups em ${BACKUPS_DIR} (o mais recente primeiro):`);
-    items.forEach((item, index) => {
-        const kind = item.formato2 ? `formato 2, ${item.variante === 'completo' ? 'completo' : 'só os dados'}` : 'formato antigo (restaure pela tela Sistema)';
-        say(`  ${String(index + 1).padStart(2)}. ${item.name}  ${formatDate(item.geradoEm)}  ${formatBytes(item.bytes)}  [${kind}]`);
-    });
+    const state = store.readState();
+    return state.externo && typeof state.externo.destino === 'string' ? state.externo.destino : '';
+}
+
+// Pastas onde os backups ficam: data/backups e a pasta deste computador no destino
+// externo (quando configurado e acessível agora).
+async function backupFolders() {
+    const folders = [{ label: 'neste computador', dir: BACKUPS_DIR, local: 'servidor' }];
+    const destino = await configuredDestination();
+    if (destino) {
+        const dir = store.externalDir(destino);
+        let accessible = false;
+        try { accessible = fs.statSync(destino).isDirectory(); } catch (e) { accessible = false; }
+        folders.push({ label: 'no destino externo', dir, local: 'externo', destino, accessible });
+    }
+    return folders;
+}
+
+async function commandList() {
+    const folders = await backupFolders();
+    for (const folder of folders) {
+        if (folder.local === 'externo' && !folder.accessible) {
+            say(`Destino externo ${folder.destino}: não está acessível agora (pendrive ou HD desconectado?).`);
+            continue;
+        }
+        const items = await listBackups(folder.dir);
+        if (!items.length) {
+            say(`Nenhum backup em ${folder.dir}.`);
+            continue;
+        }
+        say(`Backups ${folder.label}, em ${folder.dir} (o mais recente primeiro):`);
+        items.forEach((item, index) => {
+            const kind = item.formato2 ? `formato 2, ${item.variante === 'completo' ? 'completo' : 'só os dados'}` : 'formato antigo (restaure pela tela Sistema)';
+            say(`  ${String(index + 1).padStart(2)}. ${item.name}  ${formatDate(item.geradoEm)}  ${formatBytes(item.bytes)}  [${kind}]`);
+        });
+    }
     return EXIT.OK;
 }
 
@@ -145,13 +192,24 @@ async function commandCreate(options) {
     // backup com o IClass ligado é o "Fazer backup agora" da tela Sistema.
     await ensureServerStopped();
     const variante = options.dados ? 'dados' : 'completo';
-    const dir = path.resolve(options.destino || BACKUPS_DIR);
+    // Sem --destino: a pasta deste computador no destino externo da tela Sistema (o
+    // pendrive); sem destino ou com ele desconectado, data/backups.
+    let dir = options.destino ? path.resolve(options.destino) : BACKUPS_DIR;
+    const managed = !options.destino;
+    if (!options.destino) {
+        const external = (await backupFolders()).find(folder => folder.local === 'externo');
+        if (external && external.accessible) dir = external.dir;
+        else if (external) say(`O destino externo ${external.destino} não está acessível; o backup vai para ${BACKUPS_DIR}.`);
+    }
     await fs.promises.mkdir(CLI_WORK_DIR, { recursive: true });
     const workDir = await fs.promises.mkdtemp(path.join(CLI_WORK_DIR, 'cli-criar-'));
     try {
         const dbInfo = await snapshotDatabase(path.join(workDir, 'database.db'));
         const now = new Date();
         const saved = await archive.saveBackupZip({ dir, name: archive.backupFileName('manual', variante, now), dbInfo, variante, origem: 'cli', now });
+        // Retenção do grupo manual (20) só nas pastas do IClass, nunca numa pasta escolhida
+        // no --destino.
+        if (managed) store.applyRetention(dir, { scope: dir === BACKUPS_DIR ? 'local' : 'externo', protect: [saved.name] });
         say(`Backup criado: ${saved.file} (${formatBytes(saved.bytes)}).`);
         say(`Soma de verificação (SHA-256): ${saved.sha256}`);
         return EXIT.OK;
@@ -302,10 +360,16 @@ async function askConfirmation() {
     return String(answer || '').trim().toUpperCase() === 'RESTAURAR';
 }
 
+// O mais recente entre data/backups e o destino externo acessível.
 async function latestBackup() {
-    const latest = (await listBackups()).find(item => item.formato2);
-    if (!latest) throw new CliError(`Nenhum backup ZIP formato 2 em ${BACKUPS_DIR}.`);
-    return latest.file;
+    const candidates = [];
+    for (const folder of await backupFolders()) {
+        if (folder.local === 'externo' && !folder.accessible) continue;
+        candidates.push(...(await listBackups(folder.dir)).filter(item => item.formato2));
+    }
+    candidates.sort((a, b) => (Date.parse(b.geradoEm) || b.mtimeMs) - (Date.parse(a.geradoEm) || a.mtimeMs));
+    if (!candidates.length) throw new CliError(`Nenhum backup ZIP formato 2 em ${BACKUPS_DIR} nem no destino externo.`);
+    return candidates[0].file;
 }
 
 // Ganchos pós-restauração no banco que acabou de entrar (processo filho com a pasta de

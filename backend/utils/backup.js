@@ -13,6 +13,9 @@ const { logError } = require('./errorLog.js');
 const archive = require('./backupArchive.js');
 const schema = require('./backupSchema.js');
 const dbFile = require('./dbFile.js');
+const store = require('./backupStore.js');
+const settingsUtil = require('./settings.js');
+const { recordAudit } = require('./audit.js');
 const { KEYSTROKE_TABLE, LEGACY_KEYSTROKE_TABLE } = require('./keystrokeStore.js');
 
 const { backupRefusal } = schema;
@@ -107,6 +110,9 @@ function getZipLib() { try { return require('adm-zip'); } catch (e) { return nul
 // Um backup por vez (H4a): gerar (automático, manual, segurança, download) e restaurar
 // usam a mesma trava em memória. Pedido com outro em andamento recebe 409.
 // ---------------------------------------------------------------------------
+// O trabalho em andamento guarda também o AbortController (o desligamento interrompe a
+// gravação de um ZIP) e os .parcial que ele está gravando, para o desligamento e a saída
+// do processo apagarem o que ficaria pela metade (sobra da J3, decisões §12).
 let activeJob = null;
 
 function backupBusyError() {
@@ -115,16 +121,66 @@ function backupBusyError() {
 
 async function withBackupLock(kind, fn) {
     if (activeJob) throw backupBusyError();
-    activeJob = { kind, startedAt: Date.now() };
-    try {
-        return await fn();
-    } finally {
-        activeJob = null;
-    }
+    const job = { kind, startedAt: Date.now(), controller: new AbortController(), partials: new Set() };
+    activeJob = job;
+    job.done = (async () => {
+        try {
+            return await fn(job);
+        } finally {
+            if (activeJob === job) activeJob = null;
+        }
+    })();
+    return job.done;
 }
 
 function backupInProgress() {
-    return activeJob ? { ...activeJob } : null;
+    return activeJob ? { kind: activeJob.kind, startedAt: activeJob.startedAt } : null;
+}
+
+// Grava um ZIP formato 2 dentro do trabalho atual: o .parcial fica anotado enquanto é
+// gravado e o AbortController do trabalho pode interrompê-lo.
+async function saveZipInJob(job, options) {
+    const partial = path.join(options.dir, `${options.name}.parcial`);
+    if (job) job.partials.add(partial);
+    try {
+        return await archive.saveBackupZip({ ...options, signal: job ? job.controller.signal : null });
+    } finally {
+        if (job) job.partials.delete(partial);
+    }
+}
+
+// Apaga, sem esperar, os .parcial do trabalho em andamento (saída do processo).
+function removeActivePartialsSync() {
+    if (!activeJob) return [];
+    const removed = [];
+    activeJob.partials.forEach(file => {
+        try { fs.rmSync(file, { force: true }); removed.push(file); } catch (e) { /* saindo */ }
+    });
+    return removed;
+}
+
+// O processo vai sair (desligamento, Reiniciar, erro fatal, process.exit em qualquer
+// ponto): o ZIP pela metade não fica em data/backups nem no pendrive.
+process.once('exit', removeActivePartialsSync);
+
+// Desligamento do servidor (server.js performShutdown): espera o backup em andamento por
+// até waitMs; se ainda não terminou, interrompe a gravação do ZIP (a restauração não é
+// interrompida: ela já volta tudo sozinha se falhar no meio) e espera mais abortWaitMs.
+// Os .parcial que sobrarem saem na hora. Devolve { waited, aborted, finished }.
+async function settleForShutdown({ waitMs = 4000, abortWaitMs = 1500 } = {}) {
+    const job = activeJob;
+    if (!job) return { waited: false, aborted: false, finished: true };
+    const settled = job.done.then(() => true, () => true);
+    const within = ms => Promise.race([settled, new Promise(resolve => setTimeout(() => resolve(false), ms).unref())]);
+    if (await within(waitMs)) return { waited: true, aborted: false, finished: true };
+    let aborted = false;
+    if (job.kind !== 'restore') {
+        job.controller.abort();
+        aborted = true;
+    }
+    const finished = await within(abortWaitMs);
+    removeActivePartialsSync();
+    return { waited: true, aborted, finished };
 }
 
 // ---------------------------------------------------------------------------
@@ -203,11 +259,23 @@ async function newWorkDir(base = WORK_DIR) {
 // banco em .backup-trabalho e os envios e prévias em .restauracao (os tokens de prévia
 // ficam na memória e não sobrevivem ao reinício). Também volta uma pasta que ficou só
 // como "anterior" numa troca interrompida no meio (recoverInterruptedSwaps).
+// Os .parcial de um backup interrompido (processo parado no meio, kill, falta de luz)
+// saem também, em data/backups e na pasta deste computador no destino externo (sobra da
+// J3, decisões §12): os parados há mais de 1 min (um .parcial que ainda cresce é de outra
+// gravação, como a backup-cli).
+const BOOT_LEFTOVER_AGE_MS = 60 * 1000;
+
 function cleanWorkDirs() {
     [WORK_DIR, RESTORE_DIR].forEach(dir => {
         try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { logError('limpeza da pasta de trabalho do backup', e); }
     });
     recoverInterruptedSwaps();
+    backupDirs().forEach(dir => {
+        try {
+            const removed = store.cleanLeftovers(dir, { olderThanMs: BOOT_LEFTOVER_AGE_MS });
+            if (removed.length) console.warn(`⚠️ Backup interrompido: ${removed.length} arquivo(s) pela metade removido(s) de ${dir}.`);
+        } catch (e) { logError('limpeza dos backups interrompidos', e); }
+    });
 }
 
 // Gera um backup formato 2 em `dir` (padrão data/backups) com o nome
@@ -221,7 +289,7 @@ async function createBackup({ origem = 'manual', variante = 'dados', dir = BACKU
         try {
             const now = new Date();
             const dbInfo = await db.snapshotTo(path.join(workDir, 'database.db'));
-            const saved = await archive.saveBackupZip({ dir, name: archive.backupFileName(origem, variante, now), dbInfo, variante, origem, now });
+            const saved = await saveZipInJob(activeJob, { dir, name: archive.backupFileName(origem, variante, now), dbInfo, variante, origem, now });
             if (keepDbCopy) {
                 keep = true;
                 return { ...saved, dbCopy: dbInfo.file, workDir };
@@ -242,7 +310,7 @@ async function streamFullZip(output, { variante = 'completo', origem = 'download
         const workDir = await newWorkDir();
         try {
             const dbInfo = await db.snapshotTo(path.join(workDir, 'database.db'));
-            return await archive.writeBackupZip(output, { dbInfo, variante, origem });
+            return await archive.writeBackupZip(output, { dbInfo, variante, origem, signal: activeJob ? activeJob.controller.signal : null });
         } finally {
             await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
         }
@@ -297,11 +365,324 @@ function lastAutomaticBackupAt(prefix = 'automatico') {
     return times.length ? Math.max(...times) : null;
 }
 
+// ---------------------------------------------------------------------------
+// Backup diário: local e destino externo (H4b: OPS-03, CONF-11)
+// ---------------------------------------------------------------------------
+// Uma execução tira UMA cópia do banco (VACUUM INTO) e grava dois ZIPs com ela:
+// - local: variante dados em data/backups (<origem>_dados_<carimbo>.zip);
+// - externo, se configurado (settings.backup.destino): variante completo, com a biblioteca
+//   (data/uploads), em <destino>/IClass-<computador>/<origem>_completo_<carimbo>.zip.
+//   Antes de gravar, o espaço livre do destino precisa caber o banco e as pastas mais
+//   uma folga; sem espaço, a etapa falha com alerta e nada além da retenção normal é
+//   apagado.
+// A falha de uma etapa fica em data/backups/estado.json (ultimaFalha, com a etapa:
+// 'local', 'externo' ou 'verificacao'), aparece no cartão Backup e no "Precisa de você"
+// do administrador. A falha do externo não desfaz o local.
+const AUTO_DUE_MS = 20 * 3600000;
+const AUTO_DEFER_MAX_MS = 48 * 3600000;
+const EXTERNAL_FREE_MARGIN_BYTES = 64 * 1024 * 1024;
+const ALERT_LATE_MS = 26 * 3600000;
+const ALERT_GRACE_UPTIME_MS = 15 * 60000;
+
+function backupDirs() {
+    const dirs = [BACKUPS_DIR];
+    const { destino } = settingsUtil.backupSettings();
+    if (destino) dirs.push(store.externalDir(destino));
+    return dirs;
+}
+
+function stageError(etapa, cause) {
+    const err = cause instanceof Error ? cause : new Error(String(cause));
+    if (!err.backupEtapa) err.backupEtapa = err.backupStage === 'verificacao' ? 'verificacao' : etapa;
+    return err;
+}
+
+function megabytes(bytes) {
+    return Math.max(1, Math.ceil((Number(bytes) || 0) / (1024 * 1024)));
+}
+
+function savedInfo(saved, extra = {}) {
+    return { arquivo: saved.name, bytes: saved.bytes, sha256: saved.sha256, ...extra };
+}
+
+// Mensagem da falha para a tela e para o estado (sem caminho interno nem pilha).
+function failureMessage(err) {
+    if (!err) return 'Falha desconhecida.';
+    if (err.status && err.status < 500) return String(err.message || '').slice(0, 300);
+    const code = err.code ? ` (${err.code})` : '';
+    if (err.code === 'ENOSPC') return 'O disco ficou sem espaço durante a gravação do backup.';
+    if (['EACCES', 'EPERM', 'EROFS'].includes(err.code)) return `Sem permissão para gravar o backup${code}.`;
+    if (['ENOENT', 'ENOTDIR', 'ENODEV', 'EIO', 'ENXIO'].includes(err.code)) return `A pasta do backup não está acessível${code}.`;
+    return `${String(err.message || 'Falha ao gravar o backup.').slice(0, 240)}${err.message && err.code && !String(err.message).includes(err.code) ? code : ''}`;
+}
+
+async function recordFailure(etapa, err, { origem, destino = '', now = new Date() } = {}) {
+    const alvo = etapa === 'externo' || (etapa === 'verificacao' && err && err.backupAlvo === 'externo') ? 'externo' : 'local';
+    await store.updateState(state => ({
+        ...state,
+        ultimaFalha: { em: now.toISOString(), etapa, alvo, mensagem: failureMessage(err), origem, destino: alvo === 'externo' ? destino : '' },
+    })).catch(e => logError('backup: gravação do estado', e));
+}
+
+// Cópia externa (variante completo) com a cópia do banco já tirada. Devolve o item salvo.
+async function writeExternalCopy(job, { dbInfo, origem, now, settings }) {
+    const destino = settings.destino;
+    try {
+        const stat = await fs.promises.stat(destino);
+        if (!stat.isDirectory()) throw new Error('não é pasta');
+    } catch (e) {
+        throw Object.assign(new Error(`O destino externo não está acessível (pendrive ou HD desconectado, ou pasta removida): ${destino}.`), { status: 400 });
+    }
+    const dir = store.externalDir(destino);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const needed = await archive.estimateBackupBytes('completo', dbInfo.bytes) + EXTERNAL_FREE_MARGIN_BYTES;
+    const free = await store.freeBytesAt(dir);
+    if (free !== null && free < needed) {
+        throw Object.assign(new Error(`Espaço insuficiente no destino externo: são necessários cerca de ${megabytes(needed)} MB e há ${Math.floor(free / 1048576)} MB livres. Nenhum backup antigo foi apagado por isso; libere espaço ou diminua "Guardar no destino".`), { status: 400, code: 'ENOSPC_DESTINO' });
+    }
+    try {
+        const saved = await saveZipInJob(job, { dir, name: archive.backupFileName(origem, 'completo', now), dbInfo, variante: 'completo', origem, now, checkDbCrc: false });
+        return { saved, dir };
+    } catch (err) {
+        if (err && err.backupStage === 'verificacao') err.backupAlvo = 'externo';
+        throw err;
+    }
+}
+
+// Execução do backup (automático ou "Fazer backup agora"). Devolve { local, externo,
+// externoErro } (externoErro: a mensagem quando só a cópia externa falhou). Rejeita
+// quando a parte local falha (ou com 409 se outro backup está em andamento).
+async function runBackupJob({ origem = 'automatico', now = new Date() } = {}) {
+    return withBackupLock(origem, async job => {
+        const settings = settingsUtil.backupSettings();
+        const workDir = await newWorkDir();
+        try {
+            let dbInfo;
+            let local;
+            try {
+                dbInfo = await db.snapshotTo(path.join(workDir, 'database.db'));
+                local = await saveZipInJob(job, { dir: BACKUPS_DIR, name: archive.backupFileName(origem, 'dados', now), dbInfo, variante: 'dados', origem, now });
+            } catch (err) {
+                const failed = stageError('local', err);
+                if (failed.code !== 'ICLASS_BACKUP_ABORTED') await recordFailure(failed.backupEtapa, failed, { origem, now });
+                throw failed;
+            }
+            await store.updateState(state => ({
+                ...state,
+                local: { ultimoSucesso: now.toISOString(), origem, ...savedInfo(local) },
+                adiadoPorProva: null,
+            })).catch(e => logError('backup: gravação do estado', e));
+            store.applyRetention(BACKUPS_DIR, { scope: 'local', protect: [local.name] });
+            store.pruneEditBackups(BACKUPS_DIR);
+            store.cleanLeftovers(BACKUPS_DIR);
+            const result = { local: { file: local.file, name: local.name, bytes: local.bytes, sha256: local.sha256 }, externo: null, externoErro: null };
+            if (settings.destino) {
+                try {
+                    const { saved, dir } = await writeExternalCopy(job, { dbInfo, origem, now, settings });
+                    await store.updateState(state => ({
+                        ...state,
+                        externo: { ...(state.externo || {}), destino: settings.destino, pasta: dir, ultimoSucesso: now.toISOString(), origem, ...savedInfo(saved) },
+                    })).catch(e => logError('backup: gravação do estado', e));
+                    store.applyRetention(dir, { scope: 'externo', guardarExterno: settings.guardarExterno, protect: [saved.name] });
+                    store.cleanLeftovers(dir);
+                    result.externo = { file: saved.file, name: saved.name, bytes: saved.bytes, sha256: saved.sha256, pasta: dir };
+                } catch (err) {
+                    if (err && err.code === 'ICLASS_BACKUP_ABORTED') throw err;
+                    const failed = stageError('externo', err);
+                    await recordFailure(failed.backupEtapa, failed, { origem, destino: settings.destino, now });
+                    if (!(failed.status && failed.status < 500)) logError('backup: cópia no destino externo', failed);
+                    result.externoErro = failureMessage(failed);
+                    result.externoEtapa = failed.backupEtapa;
+                }
+            }
+            return result;
+        } finally {
+            await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+}
+
+// Backup automático, conferido no boot e de hora em hora (server.js). Está devido quando
+// o último backup local bem-sucedido tem 20 h ou mais (o servidor ligado de manhã faz o
+// backup no boot, antes da aula). Com prova em andamento (aplicação aguardando, em
+// andamento ou pausada) fica para depois, a menos que o último tenha mais de 48 h: o
+// VACUUM INTO segura a fila de gravação por até 1 a 2 s num banco grande. O resultado vai
+// para a auditoria (backup_auto_created / backup_auto_failed, ator 'sistema').
+// Devolve { ran, reason, result?, error? }.
+async function runAutomaticIfDue({ now = Date.now() } = {}) {
+    if (activeJob) return { ran: false, reason: 'busy' };
+    const last = store.lastLocalSuccessMs();
+    const age = last ? now - last : Infinity;
+    if (age < AUTO_DUE_MS) return { ran: false, reason: 'recent' };
+    const active = activeApplicationsNow();
+    if (active.length && age <= AUTO_DEFER_MAX_MS) {
+        await store.updateState(state => ({
+            ...state,
+            adiadoPorProva: {
+                desde: (state.adiadoPorProva && state.adiadoPorProva.desde) || new Date(now).toISOString(),
+                ultimaConferencia: new Date(now).toISOString(),
+                aplicacoes: active.length,
+            },
+        })).catch(e => logError('backup: gravação do estado', e));
+        return { ran: false, reason: 'exam' };
+    }
+    let result;
+    try {
+        result = await runBackupJob({ origem: 'automatico', now: new Date(now) });
+    } catch (err) {
+        if (err && (err.code === 'ICLASS_BACKUP_BUSY' || err.code === 'ICLASS_BACKUP_ABORTED')) return { ran: false, reason: err.code === 'ICLASS_BACKUP_BUSY' ? 'busy' : 'aborted' };
+        logError('backup automático', err);
+        recordAudit(db.memory, { actor: 'sistema', action: 'backup_auto_failed', category: 'backup', details: { etapa: err.backupEtapa || 'local', error: failureMessage(err) } });
+        await db.save({ detached: true }).catch(() => {});
+        return { ran: false, reason: 'failed', error: err };
+    }
+    recordAudit(db.memory, {
+        actor: 'sistema',
+        action: 'backup_auto_created',
+        category: 'backup',
+        details: { file: result.local.name, bytes: result.local.bytes, ...(result.externo ? { externo: result.externo.name } : {}) },
+    });
+    if (result.externoErro) {
+        recordAudit(db.memory, { actor: 'sistema', action: 'backup_auto_failed', category: 'backup', details: { etapa: result.externoEtapa || 'externo', error: result.externoErro } });
+    }
+    await db.save({ detached: true }).catch(() => {});
+    return { ran: true, reason: 'due', result };
+}
+
+function isoOrNull(ms) {
+    return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
+}
+
+// Falha que ainda vale (sem sucesso do mesmo alvo depois dela). A do externo só conta
+// enquanto o destino for o mesmo da falha.
+function openFailure(state, settings, lastLocalMs) {
+    const failure = state.ultimaFalha;
+    const at = failure ? Date.parse(String(failure.em || '')) : NaN;
+    if (!failure || !Number.isFinite(at)) return null;
+    if (failure.alvo === 'externo') {
+        if (!settings.destino || failure.destino !== settings.destino) return null;
+        const okAt = Date.parse(String((state.externo && state.externo.destino === settings.destino && state.externo.ultimoSucesso) || ''));
+        return Number.isFinite(okAt) && okAt >= at ? null : failure;
+    }
+    return lastLocalMs && lastLocalMs >= at ? null : failure;
+}
+
+// Status do backup para o cartão (GET /api/admin/backup/status) e para a fila.
+function backupStatus({ now = Date.now() } = {}) {
+    const state = store.readState();
+    const settings = settingsUtil.backupSettings();
+    const lastLocalMs = store.lastLocalSuccessMs(state);
+    const localState = state.local && state.local.ultimoSucesso ? state.local : null;
+    const externalState = settings.destino && state.externo && state.externo.destino === settings.destino ? state.externo : null;
+    let accessible = false;
+    try { accessible = !!settings.destino && fs.statSync(settings.destino).isDirectory(); } catch (e) { accessible = false; }
+    const active = activeApplicationsNow();
+    const deferred = active.length > 0 && !!state.adiadoPorProva;
+    return {
+        configurado: !!settings.destino,
+        destino: settings.destino,
+        pasta: settings.destino ? store.externalDir(settings.destino) : '',
+        guardarExterno: settings.guardarExterno,
+        local: {
+            ultimoSucesso: isoOrNull(lastLocalMs),
+            arquivo: localState ? localState.arquivo || null : null,
+            bytes: localState ? Number(localState.bytes) || null : null,
+            origem: localState ? localState.origem || null : null,
+        },
+        externo: settings.destino ? {
+            ultimoSucesso: externalState && externalState.ultimoSucesso ? externalState.ultimoSucesso : null,
+            arquivo: externalState ? externalState.arquivo || null : null,
+            bytes: externalState ? Number(externalState.bytes) || null : null,
+            acessivel: accessible,
+            mesmoDisco: accessible ? store.sameDevice(settings.destino, DATA_DIR) : false,
+            configuradoEm: externalState && externalState.configuradoEm ? externalState.configuradoEm : ((state.externo && state.externo.destino === settings.destino && state.externo.configuradoEm) || null),
+        } : null,
+        ultimaFalha: openFailure(state, settings, lastLocalMs),
+        adiadoPorProva: deferred ? { ...state.adiadoPorProva, aplicacoes: active.length } : null,
+        emAndamento: backupInProgress(),
+        proximoAutomatico: lastLocalMs ? new Date(lastLocalMs + AUTO_DUE_MS).toISOString() : null,
+        agora: new Date(now).toISOString(),
+    };
+}
+
+function daysSince(ms, now) {
+    if (!ms) return 1;
+    return Math.max(1, Math.floor((now - ms) / 86400000));
+}
+
+// Alertas do "Precisa de você" (só administrador; quem chama filtra):
+// - falha: a última falha sem sucesso do mesmo alvo depois dela;
+// - atrasado: último backup local há mais de 26 h, servidor no ar há mais de 15 min e sem
+//   prova adiando (ou com o último há mais de 48 h);
+// - externoAtrasado: destino configurado e último externo (ou a configuração do destino)
+//   há mais de 26 h, com as mesmas carências;
+// - semDestino: nenhum destino externo configurado.
+// count de cada um: dias desde o último sucesso (mínimo 1).
+function backupAlerts({ now = Date.now(), uptimeMs = process.uptime() * 1000 } = {}) {
+    const status = backupStatus({ now });
+    const lastLocalMs = Date.parse(String(status.local.ultimoSucesso || '')) || null;
+    const examRunning = activeApplicationsNow().length > 0;
+    const settled = uptimeMs > ALERT_GRACE_UPTIME_MS;
+    const alerts = { falha: null, atrasado: null, externoAtrasado: null, semDestino: null };
+    if (status.ultimaFalha) {
+        const okMs = status.ultimaFalha.alvo === 'externo' ? Date.parse(String((status.externo && status.externo.ultimoSucesso) || '')) || null : lastLocalMs;
+        alerts.falha = { ...status.ultimaFalha, dias: daysSince(okMs, now) };
+    }
+    const localAge = lastLocalMs ? now - lastLocalMs : Infinity;
+    const localFailing = alerts.falha && alerts.falha.alvo !== 'externo';
+    if (!localFailing && settled && localAge > ALERT_LATE_MS && (!examRunning || localAge > AUTO_DEFER_MAX_MS)) {
+        alerts.atrasado = { ultimoSucesso: status.local.ultimoSucesso, dias: daysSince(lastLocalMs, now) };
+    }
+    if (status.configurado) {
+        const extMs = Date.parse(String(status.externo.ultimoSucesso || '')) || null;
+        const since = extMs || Date.parse(String(status.externo.configuradoEm || '')) || null;
+        const externalFailing = alerts.falha && alerts.falha.alvo === 'externo';
+        if (!externalFailing && settled && since && now - since > ALERT_LATE_MS && (!examRunning || now - since > AUTO_DEFER_MAX_MS)) {
+            alerts.externoAtrasado = { ultimoSucesso: status.externo.ultimoSucesso, dias: daysSince(extMs || since, now) };
+        }
+    } else {
+        alerts.semDestino = { dias: daysSince(lastLocalMs, now) };
+    }
+    return alerts;
+}
+
+// Destino externo novo (POST /api/admin/backup/config): o estado guarda quando ele foi
+// configurado, para o alerta "cópia externa atrasada" contar a partir daí.
+async function noteDestinationConfigured(destino, { now = Date.now() } = {}) {
+    await store.updateState(state => {
+        const previous = state.externo && state.externo.destino === destino ? state.externo : {};
+        return { ...state, externo: destino ? { ...previous, destino, pasta: store.externalDir(destino), configuradoEm: previous.configuradoEm || new Date(now).toISOString() } : (state.externo || null) };
+    });
+}
+
+// Backups guardados: os de data/backups ('servidor') e os da pasta deste computador no
+// destino externo ('externo'), o mais novo primeiro.
+function listStoredBackups() {
+    const settings = settingsUtil.backupSettings();
+    const servidor = store.listBackupDir(BACKUPS_DIR, 'servidor');
+    const pasta = settings.destino ? store.externalDir(settings.destino) : '';
+    const externo = pasta ? store.listBackupDir(pasta, 'externo') : [];
+    const itens = [...servidor, ...externo].sort((a, b) => (a.criadoEm < b.criadoEm ? 1 : a.criadoEm > b.criadoEm ? -1 : 0));
+    return { itens, destino: settings.destino, pasta };
+}
+
+// Caminho do backup pedido pela lista ({ local: 'servidor'|'externo', nome }), ou null.
+function resolveStoredBackup(local, nome) {
+    if (local === 'servidor') return store.resolveBackupFile(BACKUPS_DIR, nome);
+    if (local === 'externo') {
+        const { destino } = settingsUtil.backupSettings();
+        return destino ? store.resolveBackupFile(store.externalDir(destino), nome) : null;
+    }
+    return null;
+}
+
 // Backup de segurança antes de uma ação destrutiva (limpar estado de prova, resetar sala):
 // ZIP formato 2 dos dados, gerado sem travar o servidor. Rejeita se não deu para gravar;
 // a rota responde 503 e não apaga nada.
 async function createSafetyBackup(prefix) {
     const saved = await createBackup({ origem: prefix, variante: 'dados' });
+    // Retenção do grupo (antes-limpeza-prova e antes-resetar-sala: 10), H4b (CONF-11).
+    store.applyRetention(BACKUPS_DIR, { scope: 'local', protect: [saved.name] });
     return saved;
 }
 
@@ -722,7 +1103,9 @@ function buildPreview(prepared, snapshot) {
         const backup = entry.kind === 'store'
             ? (prepared.keystrokesInBackup === undefined ? countValue(entry, data[entry.collection]) : prepared.keystrokesInBackup)
             : countValue(entry, data[entry.collection]);
-        return { colecao: entry.collection, rotulo: collectionLabel(entry.collection), backup, atual: currentCount(entry) };
+        // Coleção juntada na restauração (auditoria, documentos legais): a de hoje não sai
+        // (decisões §12, sobra do H4a: a linha dizia só os números).
+        return { colecao: entry.collection, rotulo: collectionLabel(entry.collection), backup, atual: currentCount(entry), ...(entry.restore === 'merge' ? { nota: 'mantida e somada à do backup' } : {}) };
     });
     const ficaraoVazias = contagens.filter(item => {
         const entry = BACKUP_TABLES.find(table => table.collection === item.colecao);
@@ -818,10 +1201,13 @@ function countStagedFiles(stagingRoot, prefixes) {
 // dele em DATA_DIR/.restauracao, sem mudar nada nos dados. O arquivo enviado sai daqui
 // (apagado ou movido para a pasta da prévia). Devolve { prepared, preview }; quem chama
 // guarda prepared (token) e apaga a pasta quando terminar (discardPrepared).
-async function prepareRestore(uploadedFile, { originalName = '' } = {}) {
+// keepSource: o arquivo é um backup guardado (lista do servidor ou do destino externo) e
+// fica onde está; só a cópia extraída vai para a pasta da prévia.
+async function prepareRestore(uploadedFile, { originalName = '', keepSource = false } = {}) {
     const id = crypto.randomBytes(12).toString('hex');
     const stagingDir = path.join(RESTORE_DIR, id);
     const prepared = { id, stagingDir, originalName: String(originalName || '').slice(0, 200), warnings: [] };
+    const discardSource = () => (keepSource ? Promise.resolve() : fs.promises.rm(uploadedFile, { force: true }));
     try {
         await fs.promises.mkdir(stagingDir, { recursive: true });
         const head = await fileHead(uploadedFile, 4);
@@ -829,7 +1215,7 @@ async function prepareRestore(uploadedFile, { originalName = '' } = {}) {
         let snapshot;
         if (isZip) {
             const extracted = await archive.extractBackupZip(uploadedFile, path.join(stagingDir, 'arquivo'));
-            await fs.promises.rm(uploadedFile, { force: true });
+            await discardSource();
             prepared.stagingRoot = path.join(stagingDir, 'arquivo');
             prepared.formato = extracted.layout;
             if (extracted.layout === 'zip-2') {
@@ -861,7 +1247,8 @@ async function prepareRestore(uploadedFile, { originalName = '' } = {}) {
         } else {
             prepared.formato = 'json';
             prepared.jsonFile = path.join(stagingDir, archive.LEGACY_DATA_ENTRY);
-            await fs.promises.rename(uploadedFile, prepared.jsonFile);
+            if (keepSource) await fs.promises.copyFile(uploadedFile, prepared.jsonFile);
+            else await fs.promises.rename(uploadedFile, prepared.jsonFile);
             prepared.inclui = [];
             prepared.variante = 'dados';
         }
@@ -877,7 +1264,7 @@ async function prepareRestore(uploadedFile, { originalName = '' } = {}) {
         };
         return { prepared, preview: buildPreview(prepared, snapshot) };
     } catch (error) {
-        await fs.promises.rm(uploadedFile, { force: true }).catch(() => {});
+        await discardSource().catch(() => {});
         await fs.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
         throw error;
     }
@@ -914,6 +1301,9 @@ async function applyPreparedRestore(prepared, { replaceAccounts = false, acceptL
             } catch (err) {
                 throw safetyBackupError(err);
             }
+            // Retenção do grupo de segurança (5, contando os seguranca-completa antigos); o
+            // backup que está sendo restaurado (da lista) não sai agora.
+            store.applyRetention(BACKUPS_DIR, { scope: 'local', protect: [safety.name, prepared.sourceName] });
             try {
                 const isDb = prepared.formato === 'zip-2';
                 const summary = await applyRestore({
@@ -1180,6 +1570,9 @@ module.exports = {
     RESTORE_DIR, WORK_DIR, RESTORE_TOKEN_TTL_MS, hasLegacyApplications,
     buildDataSnapshot, buildFullDataSnapshot, validateDataSnapshot, restoreDataSnapshot,
     runAutomaticBackup, lastAutomaticBackupAt, createBackup, createSafetyBackup, pruneBackups, backupInProgress,
+    runBackupJob, runAutomaticIfDue, backupStatus, backupAlerts, listStoredBackups, resolveStoredBackup,
+    noteDestinationConfigured, settleForShutdown, removeActivePartialsSync, failureMessage,
+    AUTO_DUE_MS, AUTO_DEFER_MAX_MS, ALERT_LATE_MS, ALERT_GRACE_UPTIME_MS,
     buildFullZipBuffer, streamFullZip, restoreFromFile, prepareRestore, applyPreparedRestore, discardPrepared,
     createRestoreToken, takeRestoreToken, sweepRestoreTokens, cleanWorkDirs, getZipLib,
     fileLooksLikeBackup, mergeRowsByKey,

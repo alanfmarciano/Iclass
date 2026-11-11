@@ -464,21 +464,29 @@ async function prepareServer() {
     backupUtil.cleanWorkDirs();
     serverLifecycle.registerTimer('restore-tokens', setInterval(() => backupUtil.sweepRestoreTokens(), 3600000));
 
-    // Backup automático diário dos dados em data/backups (automatico_dados_<carimbo>.zip,
-    // formato 2 com o histórico de digitação; guarda os 14 mais recentes, contando os JSON
-    // antigos). Checa a cada hora se o último tem mais de 24h, então sobrevive a reinícios
-    // do servidor. Gerado sem travar o servidor (VACUUM INTO na fila de gravação); com outro
-    // backup em andamento, fica para a hora seguinte. Desligado em TEST_MODE (demonstração e
-    // testes usam dados descartáveis).
+    // Backup automático (H4b, OPS-03): conferido no boot e de hora em hora. Está devido
+    // quando o último backup local bem-sucedido tem 20 h ou mais (o servidor ligado de
+    // manhã faz o backup antes da aula). Grava o ZIP dos dados em data/backups
+    // (automatico_dados_<carimbo>.zip, ficam 14) e, com o destino externo configurado na
+    // tela Sistema, o completo em <destino>/IClass-<computador> (ficam "Guardar no
+    // destino"), os dois da mesma cópia do banco (VACUUM INTO na fila de gravação). Com
+    // prova em andamento fica para depois, salvo quando o último passou de 48 h. O
+    // resultado vai para data/backups/estado.json e para a auditoria (ator 'sistema').
+    // Desligado em TEST_MODE (demonstração e testes usam dados descartáveis).
     if (process.env.TEST_MODE !== '1') {
         const backupIfDue = async () => {
             try {
-                const last = backupUtil.lastAutomaticBackupAt();
-                if (last && Date.now() - last < 24 * 3600000) return;
-                const file = await backupUtil.runAutomaticBackup();
-                console.log('💾 Backup automático criado: ' + path.basename(file));
+                const outcome = await backupUtil.runAutomaticIfDue();
+                if (outcome.ran) {
+                    const { local, externo, externoErro } = outcome.result;
+                    console.log('💾 Backup automático criado: ' + local.name + (externo ? ` (cópia externa: ${externo.name})` : ''));
+                    if (externoErro) console.warn('⚠️ Backup automático: a cópia externa falhou: ' + externoErro);
+                } else if (outcome.reason === 'exam') {
+                    console.log('💾 Backup automático adiado: há prova em andamento.');
+                } else if (outcome.reason === 'failed') {
+                    console.error('⚠️ Backup automático falhou: ' + backupUtil.failureMessage(outcome.error));
+                }
             } catch (e) {
-                if (e && e.code === 'ICLASS_BACKUP_BUSY') return;
                 logCrash('backup automático', e);
             }
         };
@@ -796,6 +804,15 @@ async function performShutdown({ restart = false, reason = 'stop' } = {}) {
     }
     console.log(SHUTDOWN_MESSAGES[reason] || SHUTDOWN_MESSAGES.stop);
     try { await closeHttpServer(serverInstance); } catch (err) { logCrash('desligamento (porta)', err); }
+    // Backup em andamento (H4b, decisões §12): espera um pouco; se não terminar, a
+    // gravação do ZIP é interrompida e o .parcial sai (nada pela metade no pendrive nem em
+    // data/backups). Cabe no teto de 10 s do desligamento.
+    try {
+        const settled = await require('./utils/backup.js').settleForShutdown(reason === 'fatal' ? { waitMs: 1000, abortWaitMs: 1000 } : { waitMs: 4000, abortWaitMs: 1500 });
+        if (settled.aborted) console.warn('⚠️ Backup em andamento interrompido pelo desligamento; o arquivo pela metade foi apagado.');
+    } catch (err) {
+        logCrash('desligamento (backup em andamento)', err);
+    }
     try {
         await (reason === 'fatal' ? withTimeout(db.close(), FATAL_SHUTDOWN_SAVE_MS) : db.close());
     } catch (err) {

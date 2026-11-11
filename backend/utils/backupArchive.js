@@ -107,7 +107,9 @@ function hostLabel() {
 // Grava o ZIP formato 2 em `output` (stream de arquivo ou a resposta HTTP). dbInfo é o
 // resultado do db.snapshotTo (ou da backup-cli): { file, bytes, sha256, tabelas }.
 // Resolve com { sha256, bytes, manifest } quando o último byte saiu.
-async function writeBackupZip(output, { dbInfo, variante = 'completo', origem = 'manual', now = new Date() }) {
+// signal (AbortSignal, opcional): o desligamento do servidor interrompe o ZIP no meio
+// (quem chama apaga o .parcial); a promessa rejeita com code 'ICLASS_BACKUP_ABORTED'.
+async function writeBackupZip(output, { dbInfo, variante = 'completo', origem = 'manual', now = new Date(), signal = null }) {
     if (variante !== 'dados' && variante !== 'completo') throw new TypeError(`Variante de backup desconhecida: ${variante}`);
     const archiver = require('archiver');
     const excluded = excludedDirs();
@@ -147,6 +149,9 @@ async function writeBackupZip(output, { dbInfo, variante = 'completo', origem = 
             if (settled) return;
             settled = true;
             archive.abort();
+            // Arquivo em gravação (o .parcial): fechado aqui, para quem chama conseguir
+            // apagá-lo (no Windows, arquivo aberto não sai). A resposta HTTP fica com a rota.
+            if (output instanceof fs.WriteStream) output.destroy();
             reject(error);
         };
         archive.on('warning', error => {
@@ -157,6 +162,11 @@ async function writeBackupZip(output, { dbInfo, variante = 'completo', origem = 
         });
         archive.on('error', fail);
         output.once('error', fail);
+        if (signal) {
+            const onAbort = () => fail(backupAbortedError());
+            if (signal.aborted) return onAbort();
+            signal.addEventListener('abort', onAbort, { once: true });
+        }
         const done = () => { if (!settled) { settled = true; resolve(); } };
         output.once('finish', done);
         // Saída fechada antes do último byte (o navegador desistiu do download): falha, não
@@ -178,6 +188,22 @@ async function writeBackupZip(output, { dbInfo, variante = 'completo', origem = 
     return { sha256: hash.digest('hex'), bytes, manifest };
 }
 
+function backupAbortedError() {
+    return Object.assign(new Error('O backup foi interrompido porque o servidor está sendo desligado.'), { code: 'ICLASS_BACKUP_ABORTED' });
+}
+
+// Bytes aproximados de um backup da variante (banco + pastas), para conferir o espaço
+// livre do destino antes de gravar (H4b). O ZIP costuma ser menor (deflate).
+async function estimateBackupBytes(variante, dbBytes = 0) {
+    const excluded = excludedDirs();
+    let total = Number(dbBytes) || 0;
+    for (const source of folderSources()) {
+        if (source.completoOnly && variante !== 'completo') continue;
+        (await listFolderFiles(source.dir, excluded)).forEach(file => { total += file.size; });
+    }
+    return total;
+}
+
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -195,6 +221,16 @@ async function renameWithRetry(from, to) {
     }
 }
 
+// Espera o arquivo em gravação fechar (até 2 s) antes de apagá-lo.
+function closeStream(stream) {
+    if (!stream || stream.closed) return Promise.resolve();
+    return new Promise(resolve => {
+        const timer = setTimeout(resolve, 2000);
+        stream.once('close', () => { clearTimeout(timer); resolve(); });
+        stream.destroy();
+    });
+}
+
 async function fsyncFile(file) {
     const handle = await fs.promises.open(file, 'r+');
     try { await handle.sync(); } finally { await handle.close(); }
@@ -210,24 +246,37 @@ async function writeFileAtomic(file, text) {
 // Grava o ZIP em <pasta>/<nome>: primeiro <nome>.parcial (fsync e rename), depois o
 // <nome>.sha256 no formato do sha256sum e, por fim, a conferência do diretório central
 // (manifesto e banco presentes; checkDbCrc: CRC do banco relido). Devolve
-// { file, name, bytes, sha256, manifest }.
-async function saveBackupZip({ dir, name, dbInfo, variante, origem, now = new Date(), checkDbCrc = true }) {
+// { file, name, bytes, sha256, manifest }. Falha da conferência (err.backupStage
+// 'verificacao') apaga o ZIP e o .sha256: um backup que não confere não fica como se
+// valesse (antes ficava, e a retenção podia apagar os bons por causa dele). Interrompido
+// (signal) ou com falha na gravação: o .parcial sai.
+async function saveBackupZip({ dir, name, dbInfo, variante, origem, now = new Date(), checkDbCrc = true, signal = null }) {
     await fs.promises.mkdir(dir, { recursive: true });
     const finalFile = path.join(dir, name);
     const partial = `${finalFile}.parcial`;
     await fs.promises.rm(partial, { force: true });
+    let result;
+    let output = null;
     try {
-        const output = fs.createWriteStream(partial);
-        const result = await writeBackupZip(output, { dbInfo, variante, origem, now });
+        output = fs.createWriteStream(partial);
+        result = await writeBackupZip(output, { dbInfo, variante, origem, now, signal });
         await fsyncFile(partial);
+        if (signal && signal.aborted) throw backupAbortedError();
         await renameWithRetry(partial, finalFile);
         await writeFileAtomic(`${finalFile}.sha256`, `${result.sha256}  ${name}\n`);
-        await verifyBackupZip(finalFile, { checkDbCrc });
-        return { file: finalFile, name, bytes: result.bytes, sha256: result.sha256, manifest: result.manifest };
     } catch (err) {
+        await closeStream(output);
         await fs.promises.rm(partial, { force: true }).catch(() => {});
         throw err;
     }
+    try {
+        await verifyBackupZip(finalFile, { checkDbCrc });
+    } catch (err) {
+        await fs.promises.rm(finalFile, { force: true }).catch(() => {});
+        await fs.promises.rm(`${finalFile}.sha256`, { force: true }).catch(() => {});
+        throw Object.assign(err instanceof Error ? err : new Error(String(err)), { backupStage: 'verificacao' });
+    }
+    return { file: finalFile, name, bytes: result.bytes, sha256: result.sha256, manifest: result.manifest };
 }
 
 // CRC-32 e bytes reais de uma entrada, conferidos enquanto ela é lida.
@@ -446,7 +495,9 @@ module.exports = {
     MAX_TOTAL_BYTES,
     backupFileName,
     backupStamp,
+    backupAbortedError,
     classifyEntries,
+    estimateBackupBytes,
     excludedDirs,
     extractBackupZip,
     folderSources,

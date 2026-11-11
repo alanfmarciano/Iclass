@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, Clock3, FileQuestion, HardDrive, History, Inbox, KeyRound, Lock, ShieldAlert, UserPlus, Wifi } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Clock3, DatabaseBackup, FileQuestion, HardDrive, HardDriveUpload, History, Inbox, KeyRound, Lock, ShieldAlert, Usb, UserPlus, Wifi } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { EmptyLine } from '../../../components/ui/EmptyLine'
 
@@ -8,6 +8,8 @@ const ICONE = {
   compactar_banco: HardDrive,
   // Contas e acesso (H5b): pedidos de nova senha, login com atraso, alerta por endereço.
   senhas_pedidas: KeyRound, login_tentativas: ShieldAlert, login_ip_alerta: Wifi,
+  // Backup (H4b): falhou, atrasado, cópia externa atrasada, destino externo não escolhido.
+  backup_falhou: DatabaseBackup, backup_atrasado: DatabaseBackup, backup_externo_atrasado: HardDriveUpload, backup_sem_destino: Usb,
 }
 const TONE_ICO = {
   danger: 'bg-danger-soft text-danger', warning: 'bg-warning-soft text-warning',
@@ -32,7 +34,8 @@ function QueueRow({ item, onOpen, onSnooze }) {
         <span className={cn('flex-none text-[19px] font-semibold tabular-nums tracking-[-0.02em]', TONE_N[item.tone] || TONE_N.neutral)}>{item.count}</span>
         <ArrowRight size={14} className="flex-none text-subtle" aria-hidden="true" />
       </button>
-      {onSnooze && (
+      {/* Item que não se adia (backup falhou ou atrasado, H4b): sem o "adiar 24h". */}
+      {onSnooze && item.adiavel !== false && (
         <button onClick={() => onSnooze(item)} title="Adiar por 24 horas" aria-label={`Adiar "${item.titulo}" por 24 horas`}
           className="flex-none rounded-md px-1.5 py-1 text-[11px] text-subtle opacity-0 transition-opacity hover:bg-surface hover:text-text focus-visible:opacity-100 group-hover:opacity-100">
           adiar 24h

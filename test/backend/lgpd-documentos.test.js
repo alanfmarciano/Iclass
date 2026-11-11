@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const request = require('supertest');
+const { ticketUrl } = require('./fixtures/backupDownload.js');
 const sqlite3 = require('sqlite3');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-lgpd-documentos-'));
@@ -411,7 +412,7 @@ test('[UC-LGPD-005] restaurar backup junta os documentos por id; o de versão an
     const published = JSON.stringify(db.memory.legalDocuments.find(item => item.id === 'termos_v1'));
 
     // Backup novo traz a coleção: vai no JSON do backup.
-    const backup = await as('admin')(request(app).get('/api/admin/backup/data'));
+    const backup = await as('admin')(request(app).get(await ticketUrl(app, tokens.admin, 'x', '/api/admin/backup/data')));
     assert.equal(backup.status, 200);
     const snapshot = JSON.parse(backup.text);
     assert.deepEqual(snapshot.data.legalDocuments.map(item => item.id), ['termos_v1']);

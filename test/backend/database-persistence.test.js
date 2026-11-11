@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { ticketUrl } = require('./fixtures/backupDownload.js');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -281,7 +282,7 @@ test('routers extraídos preservam contratos administrativos', async () => {
     const trash = await request(app).get('/api/admin/trash').set('x-admin-session', 'admin-token').expect(200);
     assert.equal(Array.isArray(trash.body), true);
     await request(app).get('/api/admin/archived-courses').set('x-admin-session', 'admin-token').expect(200);
-    await request(app).get('/api/admin/backup/data').set('x-admin-session', 'admin-token').expect(200).expect('Content-Type', /application\/json/).expect('Content-Disposition', /iclass-backup-dados_/);
+    await request(app).get(await ticketUrl(app, 'admin-token', 'senha-administrativa', '/api/admin/backup/data')).set('x-admin-session', 'admin-token').expect(200).expect('Content-Type', /application\/json/).expect('Content-Disposition', /iclass-backup-dados_/);
 
     const config = await request(app).post('/api/admin/config').set('x-admin-session', 'admin-token').send({}).expect(200);
     assert.match(config.body.serverUrl, /^http:\/\//);

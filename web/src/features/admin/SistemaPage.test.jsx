@@ -431,15 +431,28 @@ describe('Sistema · restaurar backup (prévia com token, H4a)', () => {
     const offline = 'Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'
     const networkError = () => Object.assign(new Error(offline), { status: 0, network: true })
     mocks.downloadFile.mockResolvedValueOnce('iclass-backup-dados.zip').mockRejectedValueOnce(networkError())
-    mocks.post.mockImplementation((url) => (url === '/api/admin/backup/restore/preview' ? Promise.reject(networkError()) : Promise.resolve({ success: true })))
+    let ticket = 0
+    mocks.post.mockImplementation((url) => {
+      if (url === '/api/admin/backup/restore/preview') return Promise.reject(networkError())
+      if (url === '/api/admin/backup/download-ticket') { ticket += 1; return Promise.resolve({ success: true, ticket: `bilhete-${ticket}` }) }
+      return Promise.resolve({ success: true })
+    })
     const user = userEvent.setup()
     const { container } = render(<SistemaPage />)
-    // Os dois downloads são o ZIP formato 2 (com o histórico de digitação).
-    await user.click(screen.getByRole('button', { name: 'Baixar só os dados (ZIP)' }))
-    expect(mocks.downloadFile).toHaveBeenCalledWith('/api/admin/backup/full?variante=dados', 'iclass-backup-dados.zip')
+    // Os dois downloads são o ZIP formato 2 (com o histórico de digitação); baixar pede a
+    // senha do administrador de novo (H4b, SEG-15) e o bilhete vai no ?ticket=.
+    const downloadWithPassword = async (button) => {
+      await user.click(screen.getByRole('button', { name: button }))
+      const dialog = await screen.findByRole('dialog', { name: 'Confirme a senha para baixar' })
+      await user.type(within(dialog).getByLabelText('Senha do administrador'), 'segredo{Enter}')
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Confirme a senha para baixar' })).not.toBeInTheDocument())
+    }
+    await downloadWithPassword('Baixar só os dados (ZIP)')
+    expect(mocks.post).toHaveBeenCalledWith('/api/admin/backup/download-ticket', { tipo: 'dados', password: 'segredo' }, { timeoutMs: 0 })
+    await waitFor(() => expect(mocks.downloadFile).toHaveBeenCalledWith('/api/admin/backup/full?variante=dados&ticket=bilhete-1', 'iclass-backup-dados.zip'))
     expect(mocks.toast.error).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Baixar completo (ZIP)' }))
-    expect(mocks.downloadFile).toHaveBeenLastCalledWith('/api/admin/backup/full?variante=completo', 'iclass-backup-completo.zip')
+    await downloadWithPassword('Baixar completo (ZIP)')
+    await waitFor(() => expect(mocks.downloadFile).toHaveBeenLastCalledWith('/api/admin/backup/full?variante=completo&ticket=bilhete-2', 'iclass-backup-completo.zip'))
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith(offline))
 
     await user.upload(container.querySelector('input[type="file"]'), new File(['{}'], 'backup.json', { type: 'application/json' }))

@@ -196,3 +196,38 @@ db.init().then(async () => { require('fs').writeFileSync(process.argv[1], backup
     assert.match(broken.stderr, /corrompido ou incompleto/);
     assert.equal(/at .*\.js:\d+/.test(broken.stderr), false, 'erro esperado sem pilha');
 });
+
+test('[UC-BACKUP-004] criar sem --destino grava na pasta deste computador no destino externo da tela Sistema; listar mostra as duas pastas', async () => {
+    const dataDir = makeDataDir('destino-externo');
+    const pendrive = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-backup-cli-pendrive-'));
+    try {
+        withDatabase(dataDir, `db.memory.config.settings = { ...(db.memory.config.settings || {}), backup: { destino: ${JSON.stringify(pendrive)}, guardarExterno: 14 } };`);
+        const port = await proc.freePort();
+        const created = runCli(dataDir, port, ['criar', '--dados']);
+        assert.equal(created.code, 0, created.output);
+        const store = require('../../backend/utils/backupStore.js');
+        const external = store.externalDir(pendrive);
+        const [zip] = fs.readdirSync(external).filter(name => name.endsWith('.zip'));
+        assert.match(zip, /^manual_dados_.+\.zip$/);
+        assert.ok(fs.existsSync(path.join(external, `${zip}.sha256`)));
+        assert.deepEqual(zipsIn(dataDir), [], 'sem --destino e com o destino acessível, o backup vai para o pendrive');
+
+        const local = runCli(dataDir, port, ['criar', '--dados', '--destino', path.join(dataDir, 'backups')]);
+        assert.equal(local.code, 0, local.output);
+        const listed = runCli(dataDir, port, ['listar']);
+        assert.equal(listed.code, 0, listed.output);
+        assert.match(listed.stdout, /Backups neste computador/);
+        assert.match(listed.stdout, new RegExp(`Backups no destino externo, em ${external.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+        assert.match(listed.stdout, new RegExp(zip.replace(/\./g, '\\.')));
+
+        // Pendrive desconectado: criar cai em data/backups e listar avisa.
+        fs.rmSync(pendrive, { recursive: true, force: true });
+        const fallback = runCli(dataDir, port, ['criar', '--dados']);
+        assert.equal(fallback.code, 0, fallback.output);
+        assert.match(fallback.stdout, /não está acessível/);
+        assert.equal(zipsIn(dataDir).length, 2);
+        assert.match(runCli(dataDir, port, ['listar']).stdout, /não está acessível agora/);
+    } finally {
+        fs.rmSync(pendrive, { recursive: true, force: true });
+    }
+});
