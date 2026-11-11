@@ -137,6 +137,7 @@ const ACTION_LABELS = Object.freeze({
     legal_publish: 'Documento legal publicado',
     dpo_changed: 'Encarregado de dados (LGPD) alterado',
     retention_purge: 'Registros antigos apagados pelo prazo de guarda',
+    retention_settings_changed: 'Prazos de retenção alterados',
     lgpd_export: 'Dados pessoais exportados',
     // Provas (formato próprio, gravado fora de recordAudit)
     exam_application_finished: 'Aplicação de prova encerrada',

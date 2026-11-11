@@ -36,7 +36,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `branding` | objeto | identidade white-label global |
 | `schools` | array | escolas/instituições (white-label, compartilháveis) |
 | `submissions` | array | submissões de prova |
-| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável) |
+| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável); `keystrokeMode` (`eventos`\|`tudo`\|`nada`, H8b; ausente nas de antes vale `eventos`), copiado também para a configuração online da turma |
 | `questionBank` | array | banco de questões reutilizáveis |
 | `evaluations` | objeto | avaliações |
 | `courseStructure` | array | estrutura legada (**em obsolescência**, migrada para `courses[].structure`) |
@@ -45,7 +45,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `forum` | array | dúvidas/fórum por unidade |
 | `progress` | objeto | progresso por aluno/unidade |
 | `uploads` | objeto | metadados de arquivos enviados |
-| `config` | objeto | configuração global; `releasedItems` |
+| `config` | objeto | configuração global; `releasedItems`; `retentionLastRun` `{ at, trigger: 'automatic'\|'manual', by, counts: { keystrokes, proctoringLogs, loginLogs, trash? }, remaining }` (última limpeza da retenção, H8b) |
 | `admins` | array | administradores/professores (RBAC) |
 | `sessions` | objeto | sessões de aluno: `email` → `{ tokenHash, createdAt, lastSeen, lastActivityAt, ip, origin? }`; `tokenHash` = sha256 do token, que fica só no navegador (`utils/authSessions.js`). `lastSeen` é a presença ("online"). Gravadas na tabela `auth_sessions` ([abaixo](#sessões-gravadas-auth_sessions)). `{ lastSeen }` sozinho (semente de demonstração do `TEST_MODE`) é só presença: não autentica e não é gravado. |
 | `adminSessions` | objeto | sessões de instrutor: `'h:' + sha256(token)` → `{ email, createdAt, lastSeen, lastActivityAt, origin? }`. `origin` só aparece quando não é `login` (`setup` no acesso rápido local). Gravadas na tabela `auth_sessions`. |
@@ -108,6 +108,10 @@ Fase 2, H1-b (DES-02, CONF-06). As teclas do Modo Prova Rigoroso não ficam em `
 - **Maiúsculas**: prova e turma são comparadas sem diferenciar maiúsculas só nas letras A-Z (igual ao `COLLATE NOCASE` e ao `lower()` do SQLite).
 - **Migração do banco antigo**: até a fase 1 as teclas ficavam como JSON na tabela chave-valor `exam_keystrokes`. No boot, `migrateLegacy` leva as linhas para a tabela nova numa transação única, com a fila de gravação parada (o console mostra `Migrando histórico de digitação (N registros)...` e o tempo gasto); a chave antiga vira o `id` e o e-mail vai em minúsculas. É idempotente: a migrada sai da tabela antiga e um segundo boot não acha nada. Linha com JSON ilegível ou sem aluno e prova fica na tabela antiga (aviso no console), que continua sendo criada.
 - **Cópia de outro banco** (`copyFromAttached`, para a restauração do ZIP formato 2 do H4): lê a tabela nova e, num banco antigo, a tabela `exam_keystrokes` do arquivo anexado.
+
+## Retenção (`settings.retention`, H8b)
+
+Fase 2, H8b (SEG-13). Em `config.settings`: `retention: { proctoringDays, loginLogsDays, reviewedAt, reviewedBy }`, com 0 = não apagar (padrão; o banco antigo sem o bloco vale 0). O prazo da lixeira continua em `settings.trash.retentionDays`. `reviewedAt` (ISO) e `reviewedBy` (e-mail) marcam a primeira revisão pelo administrador; sem eles a tela mostra o aviso de prazos não revisados. Só `POST /api/admin/lgpd/retention` grava o bloco (`retention` está em `PROTECTED_SETTINGS_SECTIONS`). A limpeza (`utils/retention.js`) remove teclas por `db.keystrokes.deleteWhere({ applicationIds, before, max })` (`null` em `applicationIds` são as teclas sem aplicação) e conta por `db.keystrokes.countWhere`; `proctoringLogs` e `loginLogs` saem de `db.memory`; a lixeira, por `storage.purgeTrash`. Nada além disso é apagado por prazo.
 
 ## Diretórios em disco (`runtimePaths.js`)
 

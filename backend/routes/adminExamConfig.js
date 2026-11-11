@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
+const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption } = require('../utils/keystrokePolicy.js');
 const {
     questionNumber,
     regradeSubmission,
@@ -102,6 +103,8 @@ function buildPreparedOnlineExamConfig(historyEntry, previousConfig = {}, applic
         activeHistoryId: historyEntry.id,
         accessToken: tokenEnabled ? ensureExamToken(applicationOptions.accessToken || historyEntry.accessToken) : null,
         maxAttempts,
+        // Registro do teclado (H8b): a rota confere a escolha antes (parseKeystrokeModeOption).
+        keystrokeMode: normalizeKeystrokeMode(parseKeystrokeModeOption(applicationOptions).value),
         versionSnapshots,
         preparedAt: updatedAt,
         updatedAt,
@@ -383,7 +386,9 @@ function createAdminExamConfigRouter() {
                 examKey: req.query.examKey,
             }).filter(application => matchedAdmin?.role !== 'professor'
                 || (matchedAdmin.assignedClasses || []).some(item =>
-                    item && item.courseId === application.courseId && item.className === application.studentClass));
+                    item && item.courseId === application.courseId && item.className === application.studentClass))
+                // Aplicação de antes do H8b, sem o campo, aparece como 'eventos' (cópia; o banco não muda).
+                .map(application => ({ ...application, keystrokeMode: keystrokeModeOf(application) }));
             res.json({ success: true, applications });
         });
     });
@@ -392,7 +397,7 @@ function createAdminExamConfigRouter() {
         validateAdmin(req, res, () => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
-            res.json({ success: true, application });
+            res.json({ success: true, application: { ...application, keystrokeMode: keystrokeModeOf(application) } });
         });
     });
 
@@ -488,6 +493,8 @@ function createAdminExamConfigRouter() {
                 ? options.maxAttempts
                 : (Object.prototype.hasOwnProperty.call(historyEntry, 'maxAttempts') ? historyEntry.maxAttempts : DEFAULT_MAX_ATTEMPTS));
             if (!parsedMaxAttempts.valid) return res.status(400).json({ error: 'Tentativas deve ser um número entre 1 e 10.' });
+            const keystrokeChoice = parseKeystrokeModeOption(options);
+            if (!keystrokeChoice.valid) return res.status(400).json({ success: false, error: keystrokeChoice.error, field: 'keystrokeMode' });
             // Uma aplicação em andamento nunca é encerrada por outra preparação: o
             // professor decide no Monitor o que fazer com as respostas (AVA-04).
             const running = activeExamApplication(db.memory, { studentClass: cls.name, courseId: cls.courseId, examKey });
@@ -990,6 +997,10 @@ function createAdminExamConfigRouter() {
                             : (Object.prototype.hasOwnProperty.call(historyEntry, 'maxAttempts') ? historyEntry.maxAttempts : DEFAULT_MAX_ATTEMPTS));
                         if (!parsedMaxAttempts.valid) {
                             return res.status(400).json({ error: 'Tentativas deve ser um número entre 1 e 10.' });
+                        }
+                        const keystrokeChoice = parseKeystrokeModeOption(applicationOptions);
+                        if (!keystrokeChoice.valid) {
+                            return res.status(400).json({ success: false, error: keystrokeChoice.error, field: 'keystrokeMode' });
                         }
                         const prepared = prepareApplicationFromHistory(cls, itemKey, historyEntry, applicationOptions || {}, req);
                         affectedApplication = prepared.application;

@@ -25,6 +25,7 @@ import { serverOutageNotices, withLiveOutagePauses } from './serverOutage'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
+import { keystrokeColumnLabel, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -445,6 +446,8 @@ export default function MonitorPage() {
   // outro navegador trocou o token, o painel deixa de mostrar o guardado nesta aba.
   const liveApplication = useMemo(() => (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId) || null, [activeApplicationsRequest.data, applicationId])
   const tokenIssuedAt = (liveApplication || selectedApplication)?.accessTokenIssuedAt || ''
+  // Registro do teclado da aplicação (H8b): a coluna diz o que mostra ('nada': desligado).
+  const keystrokeMode = normalizeKeystrokeMode((liveApplication || selectedApplication)?.keystrokeMode)
   // Queda do servidor com a prova correndo (H3b): o aviso (uma linha por queda) e as
   // pausas da queda vêm da lista consultada a cada 5 s, porque a compensação acontece
   // no servidor.
@@ -1219,7 +1222,7 @@ export default function MonitorPage() {
           <Card className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-muted border-b border-border bg-surface-2">
-                <th className="px-4 py-3 font-semibold">Aluno</th><th className="px-4 py-3 font-semibold">IP</th><th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 font-semibold">Versão</th><th className="px-4 py-3 font-semibold">Tempo</th><th className="px-4 py-3 font-semibold">Progresso</th><th className="px-4 py-3 font-semibold">Digitação</th><th className="px-4 py-3 font-semibold">Foco</th><th className="px-4 py-3 font-semibold">Ações</th>
+                <th className="px-4 py-3 font-semibold">Aluno</th><th className="px-4 py-3 font-semibold">IP</th><th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 font-semibold">Versão</th><th className="px-4 py-3 font-semibold">Tempo</th><th className="px-4 py-3 font-semibold">Progresso</th><th className="px-4 py-3 font-semibold">{keystrokeColumnLabel(keystrokeMode)}</th><th className="px-4 py-3 font-semibold">Foco</th><th className="px-4 py-3 font-semibold">Ações</th>
               </tr></thead>
               <tbody>
                 {rows.map((r, i) => {
@@ -1242,15 +1245,15 @@ export default function MonitorPage() {
                       <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
                       <td className="px-4 py-3 font-mono text-muted">{r.progress || '-'}</td>
                       <td className="px-4 py-3">
-                        <button
+                        {keystrokeMode === 'nada' ? <span className="text-xs text-subtle">Desligado</span> : <button
                           className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
                           onClick={() => openKeystrokeWatch(r)}
-                          title="Ver digitação ao vivo"
+                          title={keystrokeMode === 'tudo' ? 'Ver digitação ao vivo' : 'Ver atalhos ao vivo'}
                         >
                           <Keyboard size={13} />
                           <span className="font-mono">{r.keystrokeCount || 0}</span>
                           {r.suspiciousCount > 0 && <Badge tone="danger">{r.suspiciousCount}</Badge>}
-                        </button>
+                        </button>}
                       </td>
                       <td className="px-4 py-3">
                         {r.focusLocked ? (

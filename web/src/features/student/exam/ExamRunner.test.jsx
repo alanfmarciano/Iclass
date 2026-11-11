@@ -41,7 +41,12 @@ function attemptQuestions() {
   return [{ originalNumber: 1, text: 'Quanto é 1 + 1?', alternatives: [{ letter: 'A', text: 'Dois' }, { letter: 'B', text: 'Três' }, { letter: 'C', text: 'Onze' }] }]
 }
 
-function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null } = {}) {
+// Registro do teclado da aplicação (H8b) quando o teste não diz: sem o campo (vale
+// 'eventos', como numa aplicação de antes desta versão). Os testes do envio em lotes
+// usam 'tudo', porque digitam teclas comuns.
+const syncDefaults = { keystrokeMode: undefined, proctoringRetentionDays: undefined }
+
+function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null, keystrokeMode = syncDefaults.keystrokeMode, proctoringRetentionDays = syncDefaults.proctoringRetentionDays } = {}) {
   return {
     success: true,
     onlineExamConfigs: {
@@ -53,8 +58,10 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
         durationMinutes: 30,
         timerMode: 'per_attempt',
         maxAttempts: 1,
+        ...(keystrokeMode !== undefined ? { keystrokeMode } : {}),
       },
     },
+    ...(proctoringRetentionDays !== undefined ? { proctoringRetentionDays } : {}),
     // As questões chegam só da tentativa iniciada (sigilo da prova, G3), fora da
     // configuração da turma.
     questions: startedAt ? attemptQuestions() : null,
@@ -1172,6 +1179,10 @@ function keystrokeBatches() {
 }
 
 describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincronização por vez', () => {
+  // Aplicação que registra toda a digitação (keystrokeMode 'tudo', H8b): estes testes
+  // são do envio em lotes; o filtro de cada modo fica em UC-LGPD-009.
+  beforeEach(() => { syncDefaults.keystrokeMode = 'tudo' })
+  afterEach(() => { syncDefaults.keystrokeMode = undefined })
   it('digitação acumulada sai em lotes de até 500, um envio por vez e logo um depois do outro, sem perder nem repetir teclas', async () => {
     apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
     let inFlight = 0
@@ -1628,5 +1639,97 @@ describe('[UC-DESEMPENHO-002] ExamRunner: digitação em lotes e uma sincroniza�
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('[UC-LGPD-009] ExamRunner: registro do teclado conforme a aplicação', () => {
+  function copyEvent(target = document) {
+    const event = new Event('copy', { bubbles: true, cancelable: true })
+    act(() => { target.dispatchEvent(event) })
+    return event
+  }
+  function keystrokeEvents() {
+    return postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events)
+  }
+
+  it('aplicação sem o campo (padrão "eventos"): digitação comum não sai; atalhos e cópia saem, e o bloqueio continua', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockResolvedValue({ success: true })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(25)
+    expect(keystrokeBatches()).toHaveLength(0)
+    const ctrlC = new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', ctrlKey: true, bubbles: true, cancelable: true })
+    act(() => { window.dispatchEvent(ctrlC) })
+    expect(ctrlC.defaultPrevented).toBe(true)
+    const copy = copyEvent()
+    expect(copy.defaultPrevented).toBe(true)
+    await waitFor(() => expect(keystrokeEvents().map((event) => event.kind)).toEqual(['shortcut', 'clipboard']))
+    expect(keystrokeEvents().map((event) => event.seq)).toEqual([1, 2])
+  })
+
+  it('"nada": nenhuma tecla sai, mas copiar e imprimir continuam bloqueados', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600, keystrokeMode: 'nada' }))
+    apiMock.post.mockResolvedValue({ success: true })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    typeKeys(30)
+    const print = new KeyboardEvent('keydown', { key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true, cancelable: true })
+    act(() => { window.dispatchEvent(print) })
+    expect(print.defaultPrevented).toBe(true)
+    expect(copyEvent().defaultPrevented).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(keystrokeBatches()).toHaveLength(0)
+  })
+
+  it('"tudo": o que se digita no "Reportar problema" nunca é registrado; nas questões, sim', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600, keystrokeMode: 'tudo' }))
+    apiMock.post.mockResolvedValue({ success: true })
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    await user.click(screen.getByRole('button', { name: 'Reportar problema nesta questão' }))
+    const detail = await screen.findByLabelText('Detalhe (opcional)')
+    act(() => {
+      for (let index = 0; index < 25; index += 1) detail.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', code: 'KeyX', bubbles: true }))
+      detail.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true, cancelable: true }))
+    })
+    expect(copyEvent(detail).defaultPrevented).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(keystrokeBatches()).toHaveLength(0)
+    // Fora do campo, a tela da prova registra toda a digitação.
+    typeKeys(20)
+    await waitFor(() => expect(keystrokeEvents()).toHaveLength(20))
+    expect(keystrokeEvents().every((event) => event.key === 'a' && event.kind === 'char')).toBe(true)
+  })
+
+  it('as instruções dizem o que é registrado e por quanto tempo', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null, keystrokeMode: 'eventos', proctoringRetentionDays: 180 }))
+    renderRunner()
+    const notice = await screen.findByTestId('keystroke-notice')
+    expect(notice).toHaveTextContent('só os atalhos suspeitos (copiar, colar, recortar, menu do botão direito, troca de janela) são registrados')
+    expect(notice).toHaveTextContent('O que você digita não é registrado.')
+    expect(notice).toHaveTextContent('apagados 180 dias depois do encerramento da prova')
+    expect(screen.queryByText(/a digitação são monitorados/)).not.toBeInTheDocument()
+  })
+
+  it('instruções de "tudo" sem prazo de guarda', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null, keystrokeMode: 'tudo' }))
+    renderRunner()
+    const notice = await screen.findByTestId('keystroke-notice')
+    expect(notice).toHaveTextContent('as teclas digitadas na tela da prova')
+    expect(notice).toHaveTextContent('"Reportar problema" não é registrado')
+    expect(notice).toHaveTextContent('ficam guardados até a escola apagá-los')
+  })
+
+  it('instruções de "nada"', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null, keystrokeMode: 'nada', proctoringRetentionDays: 30 }))
+    renderRunner()
+    const none = await screen.findByTestId('keystroke-notice')
+    expect(none).toHaveTextContent('Nesta prova o teclado não é registrado.')
+    expect(none).toHaveTextContent('As saídas da tela são apagadas 30 dias depois')
   })
 })

@@ -801,9 +801,11 @@ test('[UC-ERRO-001] lote de teclas acima de 512 KB recebe 413 também com sessã
     // envia o resto em seguida, então a exceção de 10 MB do lote de teclas saiu e o limite
     // volta a ser o de 512 KB de todo pedido do aluno.
     restoreSeed();
+    // Atalhos (Ctrl+C): o registro padrão das provas (H8b, 'eventos') só guarda atalhos,
+    // cópia e menu do botão direito, então o lote de 500 é todo de atalhos.
     const keystroke = (index) => ({
-        seq: index + 1, clientTs: Date.now(), key: 'a', code: 'KeyA', mods: '', kind: 'char', question: null,
-        blocked: false, suspicious: false, padding: 'x'.repeat(60),
+        seq: index + 1, clientTs: Date.now(), key: 'c', code: 'KeyC', mods: 'Ctrl', kind: 'shortcut', question: null,
+        blocked: false, suspicious: true, padding: 'x'.repeat(60),
     });
     const base = { email: DEMO_ACCOUNTS.student.email, studentClass: '1DES', courseId: 'curso_legacy_01', examKey: 'Avaliacao_FUTEC_5' };
     // ~4.000 eventos (> 512 KB): o buffer inteiro de uma queda longa de rede, como o

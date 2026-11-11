@@ -43,6 +43,28 @@ Os dados do cadastro entram como texto literal: toda pontuação leva a barra do
 - Fica nos dados da escola (`school.info.dpoName`, `dpoEmail`, `dpoPhone`), mas é gravado só pela página Privacidade (LGPD), com registro na auditoria. Editar a escola em Escolas não o troca.
 - Como faz parte do cadastro das escolas, restaurar um backup volta o encarregado ao que estava no backup (as escolas são substituídas pelas do backup). Depois de restaurar, confira a aba Controlador e encarregado.
 
+## Retenção dos registros técnicos
+
+- Fica em Sistema → Retenção. Só o administrador muda; o professor vê os prazos com o cartão desligado.
+- Vem desligada (0 = não apagar). Até o administrador salvar os prazos uma vez, o cartão mostra o aviso "Prazos de retenção ainda não definidos". "Usar prazos recomendados" preenche 180 dias para o monitoramento da prova, 365 para os registros de acesso e 30 para a lixeira; nada muda antes de salvar.
+- Mínimos: 30 dias para o monitoramento (dá tempo de rever uma prova contestada), 180 para os acessos (Marco Civil da Internet, art. 15) e 1 para a lixeira. Um prazo menor sobe para o mínimo e a tela avisa. Máximo de 3.650 dias.
+- O que pode ser apagado: as teclas e as saídas de tela de aplicações encerradas há mais que o prazo, os registros de acesso antigos e os itens vencidos da lixeira de arquivos. Nunca são apagados por prazo: cadastro do aluno, notas, entregas, frequência, auditoria, observações e mensagens.
+- As 14 cópias de segurança automáticas guardam os dados como estavam no dia de cada cópia: um registro apagado pela retenção ainda fica nelas por até 14 dias, até a cópia ser trocada.
+- A prévia mostra quanto a próxima limpeza apagaria com os prazos da tela. "Limpar agora" pede a palavra APAGAR. A limpeza nunca roda com prova em espera, em andamento ou pausada.
+- Com algum prazo ligado, o IClass confere de hora em hora e limpa uma vez por dia, no máximo 20 mil de cada tipo por vez (o resto fica para a hora seguinte). Toda limpeza entra na auditoria (`retention_purge`) e mudar os prazos também (`retention_settings_changed`).
+- Os prazos aparecem nos Termos e na Política (`{{prazo_monitoramento}}`, `{{prazo_acessos}}`, `{{prazo_lixeira}}`) e nas instruções da prova.
+
+## Registro do teclado na prova
+
+- O professor escolhe, ao preparar cada aplicação, o que o teclado registra:
+  - "Só atalhos suspeitos" (padrão): copiar, colar, recortar, menu do botão direito, troca de janela e as tentativas de atalho que a prova bloqueia;
+  - "Toda a digitação": todas as teclas da tela da prova;
+  - "Não registrar o teclado".
+- Aplicação de antes desta versão vale como "Só atalhos suspeitos".
+- O que o aluno escreve em "Reportar problema" nunca é registrado, em nenhum modo.
+- O bloqueio dos atalhos (copiar, imprimir, buscar) e o registro das saídas da tela continuam iguais em todos os modos.
+- As instruções da prova dizem ao aluno o que é registrado e por quanto tempo fica guardado. O servidor filtra de novo, então um navegador com a versão antiga da prova também segue o modo.
+
 ## Backup
 
 - Os documentos vão no backup. Restaurar junta pelo id: o que foi publicado depois do backup continua, e um backup antigo, sem os documentos, não apaga nada.

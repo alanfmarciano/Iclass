@@ -98,6 +98,7 @@ const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
 const { recordAudit } = require('../utils/audit.js');
+const { keystrokeModeOf } = require('../utils/keystrokePolicy.js');
 const {
     attemptContextForStudent,
     collectiveTimeOverForNewAttempt,
@@ -410,6 +411,7 @@ const STUDENT_APPLICATION_FIELDS = [
     'questionCount',
     'tokenEnabled',
     'globalTimeAdjustment',
+    'keystrokeMode',
     'createdAt',
     'startedAt',
     'finishedAt',
@@ -433,6 +435,7 @@ function applicationForStudent(application, cls, studentEmail) {
     STUDENT_APPLICATION_FIELDS.forEach(field => {
         if (application[field] !== undefined) safeApplication[field] = application[field];
     });
+    safeApplication.keystrokeMode = keystrokeModeOf(application);
     const course = getCourseForClass(cls);
     return {
         ...safeApplication,
@@ -718,6 +721,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             attemptOutcome,
             timeOver,
             localCopyKey,
+            // Prazo de guarda do monitoramento da prova (settings.retention, H8b), para as
+            // instruções: 0 = sem prazo automático (até a escola apagar).
+            proctoringRetentionDays: examKey ? settingsUtil.retentionSettings().proctoringDays : 0,
             examTitle: examKey ? studentApplicationLabel({ examKey }, cls) : null,
             accessibilityExtraMinutes: examKey && cls.onlineExamConfigs?.[examKey]?.timerEnabled !== false
                 ? accessibilityExtraMinutes(email, cls.onlineExamConfigs?.[examKey]?.durationMinutes)

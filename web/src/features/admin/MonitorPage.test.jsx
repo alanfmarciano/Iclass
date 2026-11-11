@@ -165,3 +165,44 @@ describe('MonitorPage · servidor fora do ar durante a prova (H3b, CONF-03)', ()
     expect(screen.queryByText('Servidor fora do ar durante a prova.')).not.toBeInTheDocument()
   })
 })
+
+describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', logs: [], keystrokeCount: 3, suspiciousCount: 3 }
+  function renderWith(keystrokeMode) {
+    const list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, ...(keystrokeMode ? { keystrokeMode } : {}) } : item))
+    mocks.liveApplications = list
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications: list }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+  beforeEach(() => { vi.clearAllMocks() })
+  afterEach(() => { cleanup(); mocks.liveApplications = null })
+
+  it('aplicação sem o campo (padrão) mostra "Atalhos"', async () => {
+    renderWith(undefined)
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Atalhos' })).toBeTruthy()
+    expect(screen.getByTitle('Ver atalhos ao vivo')).toBeTruthy()
+  })
+
+  it('"tudo" mostra "Digitação"; "nada" mostra "Teclado" com "Desligado", sem a janela ao vivo', async () => {
+    renderWith('tudo')
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Digitação' })).toBeTruthy()
+    expect(screen.getByTitle('Ver digitação ao vivo')).toBeTruthy()
+    cleanup()
+    renderWith('nada')
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Teclado' })).toBeTruthy()
+    expect(screen.getByText('Desligado')).toBeTruthy()
+    expect(screen.queryByTitle(/ao vivo/)).toBeNull()
+  })
+})

@@ -11,6 +11,12 @@
 // GET  /api/admin/lgpd/acceptance          quantos alunos o primeiro acesso ainda vai
 //                                          pedir: aceite, data de nascimento, responsável (H8a-2)
 // POST /api/admin/lgpd/dpo                 grava o encarregado de uma escola (ou de todas)
+// GET  /api/admin/lgpd/retention           prazos de retenção, volume, prévia e última
+//                                          limpeza (H8b, SEG-13)
+// GET  /api/admin/lgpd/retention/preview?proctoringDays=&loginLogsDays=&trashDays=
+//                                          o que a limpeza apagaria com outros prazos
+// POST /api/admin/lgpd/retention           grava os três prazos (retention_settings_changed)
+// POST /api/admin/lgpd/retention/run       limpa agora (APAGAR); 409 com prova aberta
 //
 // Só o administrador: a regra /lgpd de ADMIN_API_PERMISSION_RULES pede students.security,
 // que é exclusiva dele, e cada rota confere de novo. Publicar e trocar o encarregado
@@ -29,9 +35,14 @@ const legal = require('../utils/legalDocuments.js');
 const { INSTITUTIONAL_KEYS } = require('../utils/branding.js');
 const legalAcceptance = require('../utils/legalAcceptance.js');
 const { todayIso } = require('../utils/birthDate.js');
+const settingsUtil = require('../utils/settings.js');
+const storage = require('../utils/storage.js');
+const retention = require('../utils/retention.js');
 
 const PERMISSION = 'students.security';
 const PUBLISH_WORD = 'PUBLICAR';
+const PURGE_WORD = 'APAGAR';
+const ACTIVE_EXAM_MESSAGE = 'Há prova em andamento; a limpeza roda quando ela terminar.';
 
 function queryText(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -130,6 +141,60 @@ function controllerView(school) {
         institution[key] = typeof info[key] === 'string' ? info[key] : '';
     });
     return { ...legal.schoolSummary(school), institution, dpo: legal.dpoOf(school) };
+}
+
+// Retenção (H8b, SEG-13; decisão 4 do Alan): só registros técnicos têm prazo, e só
+// quando o administrador liga (utils/retention.js). A lixeira entra pelo prazo que já
+// existia (trash.retentionDays), agora gravado só por aqui.
+function trashForRetention() {
+    return {
+        count: (days, now) => storage.trashRetentionCounts(days, now).expired,
+        purge: days => storage.purgeTrash(days),
+    };
+}
+
+function retentionVolume() {
+    return {
+        keystrokes: Number(db.keystrokes.total()) || 0,
+        proctoringLogs: Array.isArray(db.memory.proctoringLogs) ? db.memory.proctoringLogs.length : 0,
+        loginLogs: Array.isArray(db.memory.loginLogs) ? db.memory.loginLogs.length : 0,
+        trash: storage.trashRetentionCounts(0).total,
+    };
+}
+
+async function retentionPreview(values) {
+    const plan = await retention.planRetention(db.memory, values, Date.now(), { keystrokes: db.keystrokes, trash: trashForRetention() });
+    return { values: plan.values, counts: plan.counts };
+}
+
+async function retentionPayload() {
+    const settings = settingsUtil.retentionSettings();
+    return {
+        success: true,
+        settings,
+        limits: retention.RETENTION_LIMITS,
+        recommended: retention.RECOMMENDED_RETENTION,
+        reviewed: !!settings.reviewedAt,
+        lastRun: retention.lastRetentionRun(db.memory),
+        activeApplications: retention.activeApplicationCount(db.memory),
+        volume: retentionVolume(),
+        preview: await retentionPreview(settings),
+    };
+}
+
+// Prazo recusado (RetentionInputError, texto fixo em português): 400 com o campo.
+function sendRetentionInputError(res, validationError) {
+    if (!(validationError instanceof retention.RetentionInputError)) throw validationError;
+    return res.status(400).json({ success: false, error: validationError.message, field: validationError.field });
+}
+
+// Texto de cada prazo que subiu para o mínimo ao gravar (1 a 29 dias vira 30, ...).
+function adjustedNotes(values, adjusted) {
+    return adjusted.map(field => ({
+        field,
+        value: values[field],
+        message: `O prazo de ${retention.RETENTION_LIMITS[field].label} subiu para ${values[field]} dias, o mínimo.`,
+    }));
 }
 
 function createAdminPrivacyRouter() {
@@ -266,6 +331,94 @@ function createAdminPrivacyRouter() {
             });
             if (changed.length) db.save();
             res.json({ success: true, changed: changed.length, schools: schools.map(controllerView) });
+        });
+    });
+
+    router.get('/api/admin/lgpd/retention', (req, res) => {
+        validateAdminPermission(req, res, PERMISSION, async () => {
+            res.json(await retentionPayload());
+        });
+    });
+
+    router.get('/api/admin/lgpd/retention/preview', (req, res) => {
+        validateAdminPermission(req, res, PERMISSION, async () => {
+            let parsed;
+            try {
+                parsed = retention.parseRetentionInput(req.query || {}, { current: settingsUtil.retentionSettings(), partial: true });
+            } catch (error) {
+                return sendRetentionInputError(res, error);
+            }
+            const preview = await retentionPreview(parsed.values);
+            res.json({ success: true, ...preview, adjusted: adjustedNotes(parsed.values, parsed.adjusted) });
+        });
+    });
+
+    router.post('/api/admin/lgpd/retention', (req, res) => {
+        validateAdminPermission(req, res, PERMISSION, async (config, matchedAdmin) => {
+            let parsed;
+            try {
+                parsed = retention.parseRetentionInput(req.body || {});
+            } catch (error) {
+                return sendRetentionInputError(res, error);
+            }
+            const before = settingsUtil.retentionSettings();
+            const { values } = parsed;
+            if (!db.memory.config) db.memory.config = {};
+            const settings = db.memory.config.settings && typeof db.memory.config.settings === 'object' ? db.memory.config.settings : {};
+            const storedRetention = settings.retention && typeof settings.retention === 'object' && !Array.isArray(settings.retention) ? settings.retention : {};
+            const storedTrash = settings.trash && typeof settings.trash === 'object' && !Array.isArray(settings.trash) ? settings.trash : {};
+            db.memory.config.settings = {
+                ...settings,
+                retention: {
+                    ...storedRetention,
+                    proctoringDays: values.proctoringDays,
+                    loginLogsDays: values.loginLogsDays,
+                    reviewedAt: new Date().toISOString(),
+                    reviewedBy: (matchedAdmin && matchedAdmin.email) || null,
+                },
+                trash: { ...storedTrash, retentionDays: values.trashDays },
+            };
+            const pick = source => ({ proctoringDays: source.proctoringDays, loginLogsDays: source.loginLogsDays, trashDays: source.trashDays });
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'retention_settings_changed',
+                category: 'privacy',
+                before: pick(before),
+                after: pick(values),
+                details: { adjusted: parsed.adjusted, firstReview: !before.reviewedAt },
+            });
+            await db.save();
+            res.json({ ...(await retentionPayload()), adjusted: adjustedNotes(values, parsed.adjusted) });
+        });
+    });
+
+    router.post('/api/admin/lgpd/retention/run', (req, res) => {
+        validateAdminPermission(req, res, PERMISSION, async (config, matchedAdmin) => {
+            const body = req.body || {};
+            if (typeof body.confirm !== 'string' || body.confirm.trim().toUpperCase() !== PURGE_WORD) {
+                return res.status(400).json({ success: false, error: `Digite ${PURGE_WORD} para confirmar a limpeza.`, field: 'confirm' });
+            }
+            const result = await retention.runRetention({
+                memory: db.memory,
+                keystrokes: db.keystrokes,
+                trash: trashForRetention(),
+                settings: settingsUtil.retentionSettings(),
+                trigger: 'manual',
+                actor: matchedAdmin,
+                req,
+                save: () => db.save(),
+            });
+            if (!result.ran) {
+                if (result.reason === 'active_application') {
+                    return res.status(409).json({ success: false, code: 'active_application', error: ACTIVE_EXAM_MESSAGE, activeApplications: result.activeApplications });
+                }
+                if (result.reason === 'no_deadline') {
+                    return res.status(409).json({ success: false, code: 'no_deadline', error: 'Nenhum prazo de retenção está ligado. Defina os prazos e salve antes de limpar.' });
+                }
+                return res.status(409).json({ success: false, code: 'busy', error: 'Já há uma limpeza em andamento. Aguarde alguns instantes.' });
+            }
+            res.json({ ...(await retentionPayload()), counts: result.counts, remaining: result.remaining });
         });
     });
 

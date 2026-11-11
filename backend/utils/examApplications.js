@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { normalizeMaxAttempts } = require('./examAttempts.js');
+const { keystrokeModeOf } = require('./keystrokePolicy.js');
 
 const APPLICATION_STATUSES = Object.freeze([
     'draft',
@@ -113,6 +114,9 @@ function createExamApplication({
         studentVersions: clone(config.studentVersions || {}),
         annulledQuestions: clone(Array.isArray(config.annulledQuestions) ? config.annulledQuestions : []),
         questionReports: clone(Array.isArray(config.questionReports) ? config.questionReports : []),
+        // Registro do teclado escolhido ao preparar (H8b, CRIT-04): 'eventos' (padrão),
+        // 'tudo' ou 'nada'. Não muda depois de preparada (utils/keystrokePolicy.js).
+        keystrokeMode: keystrokeModeOf(config),
         createdAt: timestamp,
         preparedAt: timestamp,
         startedAt: normalizedStatus === 'running' ? timestamp : null,
@@ -151,6 +155,7 @@ function applicationToOnlineConfig(application, previousConfig = {}) {
         accessTokenHash: application.accessTokenHash || null,
         tokenEnabled: application.tokenEnabled === true,
         maxAttempts: application.maxAttempts,
+        keystrokeMode: keystrokeModeOf(application),
         preparedAt: application.preparedAt || application.createdAt,
         updatedAt: application.contentVersion || application.updatedAt,
     };

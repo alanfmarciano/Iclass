@@ -472,6 +472,31 @@ async function prepareServer() {
         };
         backupIfDue();
         serverLifecycle.registerTimer('backup', setInterval(backupIfDue, 3600000));
+
+        // Retenção dos registros técnicos (H8b, SEG-13): de hora em hora, só com algum
+        // prazo ligado pelo administrador, sem prova aberta e com a última limpeza de mais
+        // de 23 h (ou que deixou sobra). Apaga no máximo 20 mil por coleção a cada vez
+        // (utils/retention.js). A lixeira continua no sweepTrash de 6 h.
+        const retention = require('./utils/retention.js');
+        const retentionIfDue = async () => {
+            try {
+                const result = await retention.runRetention({
+                    memory: db.memory,
+                    keystrokes: db.keystrokes,
+                    settings: settingsUtil.retentionSettings(),
+                    trigger: 'automatic',
+                    save: () => db.save({ detached: true }),
+                });
+                if (result.ran) {
+                    const c = result.counts;
+                    const removed = c.keystrokes + c.proctoringLogs + c.loginLogs;
+                    if (removed) console.log('🧹 Retenção: ' + c.keystrokes + ' tecla(s), ' + c.proctoringLogs + ' saída(s) de tela e ' + c.loginLogs + ' registro(s) de acesso antigos apagados.');
+                }
+            } catch (e) { if (!e || e.code !== 'ICLASS_DB_WRITE') logCrash('retenção dos registros', e); }
+        };
+        // Primeira conferência 10 min depois do boot (o boot e a primeira prova vêm antes).
+        serverLifecycle.registerTimer('retention-first', setTimeout(retentionIfDue, 10 * 60000));
+        serverLifecycle.registerTimer('retention', setInterval(retentionIfDue, 3600000));
     }
     return { outage, sessions };
 }

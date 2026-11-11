@@ -17,6 +17,7 @@ import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPerm
 import { SaudeCard } from './sistema/SaudeCard'
 import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { RedeCard } from './sistema/RedeCard'
+import { RetencaoCard } from './sistema/RetencaoCard'
 import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
 
 // Texto do diálogo Reiniciar (H3c). Sem "Ninguém precisa entrar de novo" até a frente do H3.
@@ -45,13 +46,15 @@ function SettingsCard() {
 
   async function save() {
     setBusy(true)
-    try { const r = await api.post('/api/admin/settings', cfg); setCfg(r.settings); toast.success('Configurações salvas'); refetch() }
+    // O prazo da lixeira saiu daqui para o cartão Retenção de dados (H8b): não vai no
+    // pedido, para não desfazer o que foi salvo lá com a tela aberta.
+    try { const { trash, retention, ...patch } = cfg; const r = await api.post('/api/admin/settings', patch); setCfg(r.settings); toast.success('Configurações salvas'); refetch() }
     catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
 
   return (
     <Card>
-      <CardHeader title={<span className="inline-flex items-center gap-2"><Settings2 size={16} /> Configurações</span>} subtitle="Regionais, sessão, upload, presença, lixeira e manutenção" />
+      <CardHeader title={<span className="inline-flex items-center gap-2"><Settings2 size={16} /> Configurações</span>} subtitle="Regionais, sessão, upload, presença e manutenção" />
       <CardBody className="space-y-6">
         <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-wider text-subtle">Regionais</p>
@@ -93,11 +96,6 @@ function SettingsCard() {
             <Field label="Janela — início" hint="Opcional: limita ainda mais o horário. Vazio = só a grade da turma."><input type="time" value={cfg.attendance.windowStart} onChange={(e) => set(['attendance', 'windowStart'], e.target.value)} className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm" /></Field>
             <Field label="Janela — fim"><input type="time" value={cfg.attendance.windowEnd} onChange={(e) => set(['attendance', 'windowEnd'], e.target.value)} className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm" /></Field>
           </div>
-        </section>
-
-        <section className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-subtle">Lixeira</p>
-          <Field label="Reter itens excluídos por" hint="0 = manter para sempre."><Num value={cfg.trash.retentionDays} onChange={(v) => set(['trash', 'retentionDays'], v)} min={0} max={3650} suffix="dias" /></Field>
         </section>
 
         <section className="space-y-3">
@@ -408,6 +406,8 @@ export default function SistemaPage() {
       <RedeCard canManage={canManage} isAdmin={auth?.accountRole !== 'professor'} />
 
       {canManage && <SettingsCard />}
+
+      {canManage && <RetencaoCard isAdmin={auth?.accountRole !== 'professor'} />}
 
       {canManage && <TrashCard />}
 

@@ -27,6 +27,7 @@ import {
   writeExamDraft,
 } from '../../../lib/examDrafts'
 import { fmtGrade } from '../../../lib/grades'
+import { keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
@@ -161,6 +162,10 @@ export default function ExamRunner() {
 
   const [phase, setPhase] = useState('loading')
   const [cfg, setCfg] = useState(null)
+  // Registro do teclado desta aplicação (H8b) e o prazo de guarda do monitoramento, para
+  // as instruções. O ref é o que o keydown lê (sem refazer os ouvintes a cada sync).
+  const keystrokeModeRef = useRef('eventos')
+  const [proctoringRetentionDays, setProctoringRetentionDays] = useState(0)
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
   const [assignedVersion, setAssignedVersion] = useState('A')
@@ -613,13 +618,19 @@ export default function ExamRunner() {
   // Captura do histórico de digitação + bloqueio de atalhos perigosos (só na fase ativa).
   useEffect(() => {
     if (phase !== 'active') return
+    // Registro do teclado (H8b, CRIT-04): o bloqueio acima vale sempre; o que entra no
+    // buffer segue o modo da aplicação (keystrokePolicy.js), e nada do que se digita no
+    // "Reportar problema" (campo de texto fora das alternativas) é registrado.
+    const record = (e, entry) => {
+      if (!shouldRecordKeystroke(keystrokeModeRef.current, e.target, entry)) return false
+      keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), ...entry })
+      return true
+    }
     const onKeyDown = (e) => {
       const cls = classifyCombo(e)
       const isChar = e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey
       if (cls && cls.block) e.preventDefault()
-      keyBufferRef.current.push({
-        seq: ++keySeqRef.current,
-        clientTs: Date.now(),
+      const recorded = record(e, {
         key: e.key,
         code: e.code,
         mods: modsOf(e),
@@ -628,18 +639,16 @@ export default function ExamRunner() {
         blocked: !!(cls && cls.block),
         suspicious: !!cls,
       })
-      if (keyBufferRef.current.length >= KEYSTROKE_FLUSH_SIZE) flushKeystrokes()
+      if (recorded && keyBufferRef.current.length >= KEYSTROKE_FLUSH_SIZE) flushKeystrokes()
     }
     const onCopy = (e) => {
       e.preventDefault()
-      keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), key: 'copy', code: 'copy', mods: '', kind: 'clipboard', question: null, blocked: true, suspicious: true })
-      flushKeystrokes()
+      if (record(e, { key: 'copy', code: 'copy', mods: '', kind: 'clipboard', question: null, blocked: true, suspicious: true })) flushKeystrokes()
     }
     const onCut = onCopy
     const onContext = (e) => {
       e.preventDefault()
-      keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), key: 'contextmenu', code: 'contextmenu', mods: '', kind: 'contextmenu', question: null, blocked: true, suspicious: true })
-      flushKeystrokes()
+      if (record(e, { key: 'contextmenu', code: 'contextmenu', mods: '', kind: 'contextmenu', question: null, blocked: true, suspicious: true })) flushKeystrokes()
     }
     window.addEventListener('keydown', onKeyDown, true)
     document.addEventListener('copy', onCopy, true)
@@ -804,6 +813,8 @@ export default function ExamRunner() {
         if (keyBufferRef.current.length) scheduleKeystrokeRetry()
       }
       setCfg(c)
+      keystrokeModeRef.current = normalizeKeystrokeMode(c.keystrokeMode)
+      setProctoringRetentionDays(Number(r.proctoringRetentionDays) || 0)
       setExamConfigVersion(r.examConfigVersion || null)
       setExtraMinutes(Number(r.accessibilityExtraMinutes) || 0)
       if (r.examTitle) setExamTitle(r.examTitle)
@@ -1382,7 +1393,7 @@ export default function ExamRunner() {
           {noFullscreen
             ? <li>Este aparelho não permite <strong>tela cheia</strong>: a prova abre sem ela e o professor é avisado. Sair da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>
             : <li>A prova roda em <strong>tela cheia</strong>. Sair da tela cheia, da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>}
-          <li>Durante a prova, os atalhos de teclado e a digitação são monitorados para garantir a integridade da avaliação.</li>
+          <li data-testid="keystroke-notice">{keystrokeNotice(cfg?.keystrokeMode, proctoringRetentionDays)}</li>
           <li>Durante a prova, o menu do portal fica indisponível. Sair da prova (pelo botão Sair ou pelo voltar do navegador) pede confirmação, fica registrado para o professor e bloqueia a prova até a liberação dele.</li>
           <li>Depois de sair, você retorna à mesma tentativa, com as respostas salvas, enquanto houver tempo e a aplicação estiver aberta.</li>
           <li>Revise as respostas antes de confirmar o envio final.</li>
@@ -1569,7 +1580,7 @@ export default function ExamRunner() {
               </Button>
             </div>
             {/* Abaixo de 360 px as alternativas usam a largura toda do cartão. */}
-            <div className="space-y-2 pl-9 max-[359px]:pl-0">
+            <div className="space-y-2 pl-9 max-[359px]:pl-0" data-exam-answer="">
               {/* O aluno vê a letra da posição (A, B, C... nesta versão) e a resposta guarda o
                   identificador da alternativa; a letra original nunca chega aqui (AVA-05). */}
               {q.alternatives.map((alt) => {

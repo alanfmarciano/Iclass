@@ -19,6 +19,7 @@ import { FinishApplicationModal } from './FinishApplicationModal'
 import { rememberApplicationToken } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { ExamApplicationDetail } from './ExamApplicationDetail'
+import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
 import '../../styles/provas-board.css'
 import {
   buildExamVersions,
@@ -72,6 +73,20 @@ const DEFAULT_FORM = {
   printVersions: 1,
   timerEnabled: true,
   timerMode: 'per_attempt',
+  keystrokeMode: DEFAULT_KEYSTROKE_MODE,
+}
+
+// Campo "Registro do teclado" das duas telas de preparar (H8b, CRIT-04): vale para a
+// aplicação inteira e não muda depois de preparada.
+function KeystrokeModeSelect({ value, onChange }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <Select label="Registro do teclado" value={value || DEFAULT_KEYSTROKE_MODE} onChange={(e) => onChange(e.target.value)}>
+        {KEYSTROKE_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </Select>
+      <span className="text-xs text-subtle">{keystrokeModeDescription(value)}</span>
+    </div>
+  )
 }
 
 function statusTone(status) {
@@ -419,6 +434,7 @@ export default function ProvasPage() {
             tokenEnabled: form.tokenEnabled === true,
             accessToken: form.tokenEnabled ? form.accessToken : null,
             maxAttempts: parsedMaxAttempts.value,
+            keystrokeMode: form.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
           },
         })
         rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -470,6 +486,7 @@ export default function ProvasPage() {
       maxAttempts: Object.prototype.hasOwnProperty.call(entry, 'maxAttempts')
         ? (entry.maxAttempts == null ? '' : String(entry.maxAttempts))
         : String(DEFAULT_MAX_ATTEMPTS),
+      keystrokeMode: DEFAULT_KEYSTROKE_MODE,
     })
   }
 
@@ -496,6 +513,7 @@ export default function ProvasPage() {
           tokenEnabled: applyHistory.tokenEnabled === true,
           accessToken: applyHistory.tokenEnabled ? applyHistory.accessToken : null,
           maxAttempts: parsedMaxAttempts.value,
+          keystrokeMode: applyHistory.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
         },
       })
       rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -978,6 +996,9 @@ export default function ProvasPage() {
                           <div className="col-span-2">
                             <Input label="Tentativas permitidas" type="number" min="1" max="10" step="1" placeholder="Ilimitadas" value={form.maxAttempts} onChange={(e) => setForm({ ...form, maxAttempts: e.target.value })} helper="Padrão: 1 tentativa. Deixe em branco para não limitar." />
                           </div>
+                          <div className="col-span-2">
+                            <KeystrokeModeSelect value={form.keystrokeMode} onChange={(keystrokeMode) => setForm({ ...form, keystrokeMode })} />
+                          </div>
                           {form.tokenEnabled && <div className="col-span-2 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
                             <Input
                               label="Token de acesso"
@@ -1250,6 +1271,9 @@ export default function ProvasPage() {
               </Select>
               <div className="sm:col-span-2">
                 <Input label="Tentativas permitidas" type="number" min="1" max="10" step="1" placeholder="Ilimitadas" value={applyHistory.maxAttempts} onChange={(e) => setApplyHistory({ ...applyHistory, maxAttempts: e.target.value })} helper="Padrão: 1 tentativa. Deixe em branco para não limitar." />
+              </div>
+              <div className="sm:col-span-2">
+                <KeystrokeModeSelect value={applyHistory.keystrokeMode} onChange={(keystrokeMode) => setApplyHistory({ ...applyHistory, keystrokeMode })} />
               </div>
               {applyHistory.tokenEnabled && <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
                 <Input label="Token de acesso" value={applyHistory.accessToken} maxLength={5} autoComplete="off" spellCheck={false} className="font-mono text-base font-semibold tracking-[0.2em]" helper="Obrigatório · 5 letras" onChange={(e) => setApplyHistory({ ...applyHistory, accessToken: normalizeTokenInput(e.target.value) })} />
