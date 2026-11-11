@@ -31,6 +31,8 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 | Troca de senha | Exige senha atual (fora da troca obrigatória da senha temporária do launcher); o aluno sempre informa a atual | `routes/adminAccounts.js`, `routes/student.js` |
 | Política de senha | Toda senha nova digitada: 8 caracteres (aluno) ou 10 (instrutor), sem senha comum nem dado pessoal; senha temporária gerada pelo servidor | `utils/passwordPolicy.js` |
 | Troca obrigatória | Senha criada ou redefinida pelo professor e senha fraca no login: 403 `passwordChangeRequired` até a troca, nunca no meio de uma prova (nem com a prova aberta na turma, para quem ainda não abriu a tentativa e dentro da janela da prova: uma aplicação esquecida aberta não adia a troca para sempre); o `TEST_MODE` ignora a regra | `utils/passwordChange.js`, `middlewares.js` |
+| Cabeçalhos de segurança | Toda resposta (páginas, API, `/assets` e a tela "iniciando" do boot) sai com CSP (`script-src 'self'`, sem script inline nem `eval`; `style-src` com `'unsafe-inline'` para os atributos `style` e o `<style>` das impressões; imagens e vídeos de fora por `http:`/`https:`; `frame-src` só o próprio IClass, YouTube e Vimeo; `frame-ancestors 'self'`; `object-src 'none'`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN` (a prévia de PDF da biblioteca é um iframe do próprio IClass) e `Referrer-Policy: strict-origin-when-cross-origin` (o caminho e o `?access=` não saem para sites de fora), sem `X-Powered-By`. Arquivos de `/uploads` e `/imagens` trocam a CSP por uma sandbox própria (`default-src 'none'; sandbox`). Sem HSTS: os alunos usam http no mesmo endereço; com o HTTPS (H6c), HSTS só na conexão https, nunca na http | `utils/securityHeaders.js`, `server.js` |
+| Dependências | `npm run test:audit` (também no `npm run check`): `npm audit --omit=dev --audit-level=high` no servidor e em `web/`; reprova só com alta ou crítica; sem rede avisa e passa. Dependabot semanal para `/` e `/web` | `test/audit-deps.js`, `.github/dependabot.yml` |
 | Seed/reset | Só sob `TEST_MODE=1` | `routes/testmode.js` |
 | Integridade de build | Servidor recusa iniciar com build ausente/divergente | `utils/buildIntegrity.js` |
 
@@ -41,9 +43,18 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 - Nunca sirva arquivo por concatenação de path — use `safePath`.
 - Nunca coloque senha em query string ou em resposta. A única exceção é a senha temporária gerada pelo servidor (`temporaryPassword`), devolvida uma vez ao professor que criou ou redefiniu a conta; ela nunca vai para a auditoria.
 - Sanitize qualquer HTML derivado de Markdown (`marked` + `dompurify`).
+- Nada de `<script>` inline, `onclick=`/`onload=` em HTML gerado nem `eval`: a CSP bloqueia. Janela de impressão (`window.open('')`) recebe só HTML e CSS; quem chama `win.print()` é a janela de origem (ex.: `openExamPrintWindow` em `ProvasPage.jsx`, `openPrintWindow` em `examTools.js`).
+- Embed novo de outro site (outro player de vídeo, por exemplo) precisa entrar no `frame-src` de `utils/securityHeaders.js`, com o teste `security-headers.test.js`.
 - Ao exportar dados tabulares, passe pelos utilitários de escape.
 
 ## Histórico de correções
+
+### 2026-11-11 — cabeçalhos e dependências (fase 2, H5d)
+
+- CSP, `nosniff`, `X-Frame-Options: SAMEORIGIN` e `Referrer-Policy` em toda resposta, sem `X-Powered-By: Express`; arquivos enviados mantêm a sandbox própria. Antes páginas e API saíam sem nenhum desses cabeçalhos. (SEG-16)
+- A impressão da prova do aluno não leva mais `<script>` dentro da janela (seria bloqueado pela CSP): a página chama `print()` de fora, como as impressões do professor. A prévia da biblioteca embute só PDF enviado ao IClass; PDF de outro site abre em nova aba. (SEG-16)
+- Pacotes atualizados dentro da mesma versão maior (só o `adm-zip` passa de 0.5 para 0.6): `adm-zip` 0.6.1, `multer` 2.5.0, `proxy-addr`, `qs`, `tar`, `undici`, `brace-expansion`, `dompurify` 3.4.17 e `react-router-dom` 6.30.6. O `npm audit` de produção fica sem alta e crítica; sobram moderadas que só fecham com versão maior (`archiver` 8, `react-router` 7). (SEG-17, ENG-07)
+- `npm run test:audit` no `npm run check` e Dependabot semanal. (SEG-17, ENG-07)
 
 ### 2026-11-10 — Termos e Privacidade (fase 2, H8a-1)
 
@@ -105,6 +116,8 @@ Correções aplicadas (backup pré-correção registrado em `data/backups/`):
 
 - ~~Endpoints GET pós-login sem sessão na área de material/leitura~~: corrigido em 2026-10-16 (ver acima).
 - `localStorage` → cookie HttpOnly e modularização de `admin.js`: mudanças arquiteturais fora do escopo daquele passe.
+- Token de sessão em `localStorage` e `?access=` nos links de arquivo (SEG-16): continuam nesta fase; o cookie HttpOnly com anti-CSRF e o link assinado de vida curta ficam para depois do HTTPS (H6c). A CSP e o `Referrer-Policy` reduzem o risco até lá.
+- Moderadas do `npm audit` de produção que pedem versão maior (`archiver` 7 → 8 no backup completo; `react-router` 6 → 7 na interface) e as do ambiente de desenvolvimento (`vitest`): atualização própria, com teste das telas e do backup.
 
 > O registro detalhado original está arquivado em [`docs/arquivo/CORRECOES_SEGURANCA_2026-07-14.md`](./arquivo/CORRECOES_SEGURANCA_2026-07-14.md).
 

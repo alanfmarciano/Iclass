@@ -1,0 +1,16 @@
+# Atualizações de dependências (H5d, SEG-17, ENG-07): o Dependabot abre um pull request
+# por semana para cada pacote com versão nova no servidor (/) e na interface (/web).
+# Os alertas de segurança do repositório são ligados pelo dono em Settings → Code
+# security. Antes de juntar: npm run check (inclui npm run test:audit).
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

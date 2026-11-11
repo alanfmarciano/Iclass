@@ -231,8 +231,31 @@ export function buildExamPrintHtml(detail, questions, answerByNumber) {
     ${questoesHtml}
     <h2>Gabarito &middot; resumo</h2>
     <table><thead><tr><th>Questão</th><th>Sua resposta</th><th>Correta</th><th>Status</th></tr></thead><tbody>${resumoRows}</tbody></table>
-    <script>window.onload=function(){setTimeout(function(){window.print()},150)}</script>
   </body></html>`
+}
+
+// Abre a janela de impressão da prova e chama win.print() daqui, da janela de origem,
+// como as impressões do professor (examTools, boletim, grade). Sem <script> no HTML: a
+// janela about:blank herda a CSP do IClass (script-src 'self', H5d), que bloqueia script
+// inline, e a impressão não abriria. Devolve false se o navegador bloqueou o pop-up.
+export function openExamPrintWindow(html, openWindow = (...args) => window.open(...args)) {
+  const win = openWindow('', '_blank')
+  if (!win) return false
+  win.document.open()
+  win.document.write(html)
+  win.document.close()
+  let printed = false
+  const printNow = () => {
+    if (printed) return
+    printed = true
+    setTimeout(() => {
+      try { win.focus(); win.print() } catch { /* janela fechada antes de imprimir */ }
+    }, 300)
+  }
+  // O load de um documento escrito com document.write pode já ter acontecido no close().
+  if (win.document.readyState === 'complete') printNow()
+  else win.addEventListener('load', printNow, { once: true })
+  return true
 }
 
 // Visualizacao completa da prova: enunciado, alternativas, resposta do aluno,
@@ -246,12 +269,7 @@ function FullExamView({ detail, questions, answers }) {
   }, [answers])
 
   const handleDownload = () => {
-    const html = buildExamPrintHtml(detail, questions, answerByNumber)
-    const win = window.open('', '_blank')
-    if (!win) return
-    win.document.open()
-    win.document.write(html)
-    win.document.close()
+    openExamPrintWindow(buildExamPrintHtml(detail, questions, answerByNumber))
   }
 
   return (

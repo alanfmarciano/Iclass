@@ -23,6 +23,7 @@ const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/sta
 const serverLifecycle = require('./utils/serverLifecycle.js');
 const { SYNCED_FOLDER_WARNING } = require('./utils/syncedFolder.js');
 const { createNetworkPolicy } = require('./utils/networkPolicy.js');
+const { securityHeaders } = require('./utils/securityHeaders.js');
 
 // Registro de falhas do servidor: o único é utils/errorLog.js (data/crash.log, 5 MB), e o
 // stack inteiro também vai para o console (janela do launcher). Os tratadores de exceção
@@ -77,6 +78,11 @@ app.use(cors({
         } catch { return cb(null, false); }
     },
 }));
+// 3) Cabeçalhos de segurança em toda resposta (H5d, SEG-16): CSP, nosniff,
+// X-Frame-Options e Referrer-Policy (utils/securityHeaders.js), sem o X-Powered-By do
+// Express, que só anunciava a versão do servidor.
+app.disable('x-powered-by');
+app.use(securityHeaders());
 // Versão do build servido em toda resposta da API (inclusive 401 e erros): o navegador
 // com o bundle de antes de uma atualização recarrega sozinho (utils/buildIntegrity.js).
 app.use('/api', (req, res, next) => {
@@ -530,6 +536,8 @@ function createBootApp() {
     const boot = express();
     boot.disable('x-powered-by');
     boot.use(assignRequestId);
+    // Mesmos cabeçalhos de segurança do app (H5d): a página "iniciando" também é do IClass.
+    boot.use(securityHeaders());
     boot.use('/assets', serveBuildAssets(runtimePaths.WEB_DIST_DIR));
     // A rota de controle do launcher vale também durante o boot: parar ou reiniciar um
     // servidor que ainda carrega o banco sem precisar do taskkill.

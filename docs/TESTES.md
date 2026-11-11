@@ -18,7 +18,8 @@ npm run test:web       # vitest run (dentro de web/)
 npm run test:e2e       # playwright test
 npm run build          # gera web/dist com as versões .gz/.br (obrigatório antes do e2e/start)
 npm run check:bundle   # orçamento do pacote da interface (não roda no build)
-npm run check          # test:docs + test:backend + test:web + build + check:bundle + test:e2e (verificação completa)
+npm run check          # test:docs + test:backend + test:web + build + check:bundle + test:audit + test:e2e (verificação completa)
+npm run test:audit     # npm audit de produção no servidor e em web/ (reprova só com alta ou crítica; sem rede, avisa e passa)
 npm run test:perf      # desempenho do banco com um ano de dados (fora do check; pesado)
 ```
 

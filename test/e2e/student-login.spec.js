@@ -5,7 +5,10 @@ async function expectNoWcagViolations(page, context) {
     // O tema vem da identidade visual (themeMode "auto") depois do primeiro paint;
     // auditar antes disso media as cores do tema escuro inicial.
     await page.waitForLoadState('networkidle');
-    if (!(await page.evaluate(() => !!window.axe))) await page.addScriptTag({ content: axeSource });
+    // O axe entra pelo evaluate do Playwright, e não por um <script> inline
+    // (addScriptTag): a CSP do IClass (script-src 'self', H5d) recusa script inline, e a
+    // auditoria precisa rodar com a CSP de verdade ligada.
+    if (!(await page.evaluate(() => !!window.axe))) await page.evaluate(axeSource);
     const results = await page.evaluate(async () => window.axe.run(document, {
         runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] },
     }));
