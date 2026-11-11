@@ -43,12 +43,21 @@ const QUARANTINE_DIR = path.join(DATA_DIR, 'quarentena');
 const CLI_WORK_DIR = path.join(DATA_DIR, '.restauracao');
 // Marcador de restauração interrompida (backup.js recoverInterruptedRestore): o próximo
 // boot do servidor desfaz a restauração que caiu no meio. Fica em .restauracao/desfazer;
-// com o arquivo "concluida" ao lado, não há nada a desfazer.
+// com o arquivo "concluida" ao lado, ou com o estado 'concluida' dentro do marcador, não há
+// nada a desfazer.
 const UNDO_DIR = path.join(CLI_WORK_DIR, 'desfazer');
 const INTERRUPTED_RESTORE_NOTE = 'Há uma restauração pela tela Sistema interrompida no meio (data/.restauracao/desfazer); o IClass a desfaz ao ligar.';
+// Decisões §12 (sobra do H4b): o mesmo texto da tela Sistema (backup.js).
+const RESTORE_UNDO_PENDING_MESSAGE = 'Uma restauração anterior foi interrompida e ainda não foi desfeita. Feche e abra o IClass de novo para terminar de desfazer antes de restaurar outro backup.';
 
 function undoPending() {
-    return fs.existsSync(path.join(UNDO_DIR, 'marcador.json')) && !fs.existsSync(path.join(UNDO_DIR, 'concluida'));
+    const markerFile = path.join(UNDO_DIR, 'marcador.json');
+    if (!fs.existsSync(markerFile) || fs.existsSync(path.join(UNDO_DIR, 'concluida'))) return false;
+    try {
+        return JSON.parse(fs.readFileSync(markerFile, 'utf8')).estado !== 'concluida';
+    } catch (e) {
+        return true;
+    }
 }
 
 class CliError extends Error {
@@ -407,6 +416,9 @@ function runAfterRestoreHooks(previousDb) {
 async function commandRestore(target, options) {
     if (!target && !options.ultimo) throw new CliError('Informe o arquivo ou --ultimo: node backend/scripts/backup-cli.js restaurar <arquivo.zip>');
     await ensureServerStopped();
+    // Restauração pela tela ainda a desfazer: esta apagaria o que o boot usa para desfazê-la
+    // (o marcador e a cópia do banco de antes). Nada muda.
+    if (undoPending()) throw new CliError(RESTORE_UNDO_PENDING_MESSAGE);
     const file = path.resolve(target === '--ultimo' || options.ultimo ? await latestBackup() : target);
     const stagingDir = await newStagingDir('restaurar');
     try {
@@ -444,13 +456,14 @@ async function commandRestore(target, options) {
                 await moveWithFallback(source, destination);
                 moved.push({ from: source, to: destination });
             }
-            // Restauração pela tela interrompida: esta a substitui. O marcador vai para a
-            // quarentena (senão o boot "desfaria" esta restauração com o banco de antes).
-            if (undoPending()) {
-                const destination = path.join(quarantine, 'restauracao-interrompida');
+            // Sobra de uma restauração pela tela que terminou (marcador 'concluida' que não
+            // saiu): vai para a quarentena junto com o banco de antes, senão o boot anotaria
+            // na Auditoria deste banco uma restauração que é do outro. A interrompida (a
+            // desfazer) já foi recusada acima.
+            if (fs.existsSync(UNDO_DIR) && !undoPending()) {
+                const destination = path.join(quarantine, 'restauracao-anterior');
                 await moveWithFallback(UNDO_DIR, destination);
                 moved.push({ from: UNDO_DIR, to: destination });
-                say(INTERRUPTED_RESTORE_NOTE.replace('o IClass a desfaz ao ligar', 'esta restauração a substitui'));
             }
             // 2. Os arquivos do backup no lugar.
             await moveWithFallback(verified.dbPath, DB_FILE);

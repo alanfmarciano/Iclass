@@ -54,6 +54,7 @@ async function snapshotState() {
         marcador: fs.existsSync(backup.UNDO_DIR),
         sobrasDeTroca: swapLeftovers,
         auditoria: (db.memory.auditLogs || []).filter(entry => entry.action === 'backup_restore_interrupted').map(entry => ({ actor: entry.actor, details: entry.details })),
+        restaurados: (db.memory.auditLogs || []).filter(entry => entry.action === 'backup_restored').map(entry => ({ actor: entry.actor, ip: entry.ip, details: entry.details })),
         network: ((db.memory.config.settings || {}).network || {}).adminAccess || null,
     };
 }
@@ -83,7 +84,20 @@ async function snapshotState() {
     if (mode === 'restaurar') {
         await db.init();
         const { prepared } = await backup.prepareRestore(process.argv[3], { originalName: path.basename(process.argv[3]), keepSource: true });
-        await backup.applyPreparedRestore(prepared, {});
+        // Como a rota (adminRecovery.js restoreRecorder): o backup_restored entra antes de
+        // o marcador sair.
+        const fileInfo = { file: path.basename(process.argv[3]), size: 1 };
+        const admin = { email: 'admin@queda.local', role: 'admin' };
+        await backup.applyPreparedRestore(prepared, {
+            registro: { actor: admin, ip: '192.168.0.9', device: 'teste', details: fileInfo },
+            onApplied: async (summary, { restoreId }) => {
+                require('../../../backend/utils/audit.js').recordAudit(db.memory, {
+                    req: { ip: '192.168.0.9', headers: {} }, actor: admin, action: 'backup_restored', category: 'backup',
+                    details: { ...fileInfo, formato: summary.formato, safetyBackup: summary.safetyBackup, restoreId },
+                });
+                await db.save();
+            },
+        });
         const state = await snapshotState();
         await db.close();
         process.stdout.write(`@@${JSON.stringify({ restored: true, state })}`);
@@ -99,6 +113,6 @@ async function snapshotState() {
     }
     throw new Error(`modo desconhecido: ${mode}`);
 })().catch(err => {
-    process.stdout.write(`@@${JSON.stringify({ failed: true, message: err && err.message, stack: err && err.stack })}`);
+    process.stdout.write(`@@${JSON.stringify({ failed: true, code: err && err.code, status: err && err.status, message: err && err.message, stack: err && err.stack })}`);
     process.exit(1);
 });

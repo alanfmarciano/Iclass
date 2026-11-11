@@ -42,9 +42,9 @@ Com o banco danificado o servidor não sobe (código 3), não grava no arquivo e
 ## UC-BACKUP-003 — Recusar backup alterado, cortado ou malicioso
 
 - Estado: automatizado
-- Testes: `backup-restauracao.test.js`, `backup-restauracao-queda.test.js`, `backup-restauracao-marcador.test.js`, `backup-destino.test.js`, `database-persistence.test.js`
+- Testes: `backup-restauracao.test.js`, `backup-restauracao-queda.test.js`, `backup-restauracao-marcador.test.js`, `backup-destino.test.js`, `backup-cli.test.js`, `database-persistence.test.js`
 
-ZIP com soma do banco diferente da do manifesto, entrada com CRC errado, arquivo cortado, entrada que descompacta mais do que declara, link simbólico, caminho para fora da pasta ou coleção com estrutura errada é recusado com a mensagem em português antes de mudar qualquer coisa. Restauração interrompida (queda do processo ou desligamento do servidor no meio) volta tudo ao que era antes dela; a que terminou nunca é desfeita no boot seguinte.
+ZIP com soma do banco diferente da do manifesto, entrada com CRC errado, arquivo cortado, entrada que descompacta mais do que declara, link simbólico, caminho para fora da pasta ou coleção com estrutura errada é recusado com a mensagem em português antes de mudar qualquer coisa. Restauração interrompida (queda do processo ou desligamento do servidor no meio) volta tudo ao que era antes dela; a que terminou nunca é desfeita no boot seguinte. Com uma restauração interrompida ainda a desfazer, outra restauração (pela tela ou pela backup-cli) é recusada com "Uma restauração anterior foi interrompida e ainda não foi desfeita. Feche e abra o IClass de novo para terminar de desfazer antes de restaurar outro backup.". A restauração entra na Auditoria antes de o marcador sair; se o servidor cair nesse instante, o boot não desfaz nada e completa o registro com a observação "registrado ao reiniciar".
 
 ## UC-BACKUP-004 — Backup diário com cópia fora do computador
 

@@ -1069,9 +1069,30 @@ const UNDO_MARKER = path.join(UNDO_DIR, 'marcador.json');
 // preso por antivírus ou indexador no Windows): com ele, o boot não desfaz a restauração.
 const UNDO_DONE = path.join(UNDO_DIR, 'concluida');
 
-// Há uma restauração a desfazer (marcador presente e sem o "concluída").
+// Marcador lido do disco: null sem marcador ou ilegível.
+function readUndoMarker() {
+    try { return JSON.parse(fs.readFileSync(UNDO_MARKER, 'utf8')); } catch (e) { return null; }
+}
+
+// Há uma restauração a desfazer: marcador presente, sem o "concluida" ao lado e sem o
+// estado 'concluida' dentro (a restauração terminou e só falta tirar o marcador).
 function undoPending() {
-    return fs.existsSync(UNDO_MARKER) && !fs.existsSync(UNDO_DONE);
+    if (!fs.existsSync(UNDO_MARKER) || fs.existsSync(UNDO_DONE)) return false;
+    const marker = readUndoMarker();
+    return !(marker && marker.estado === 'concluida');
+}
+
+// Decisões §12 (sobra do H4b): uma restauração nova com outra ainda a desfazer apagaria o
+// marcador e o antes.db da anterior (beginUndoMarker começa limpando a pasta), e o boot
+// não teria mais como desfazê-la. A prévia, a restauração e a backup-cli recusam.
+const RESTORE_UNDO_PENDING_MESSAGE = 'Uma restauração anterior foi interrompida e ainda não foi desfeita. Feche e abra o IClass de novo para terminar de desfazer antes de restaurar outro backup.';
+
+function restoreUndoPendingError() {
+    return Object.assign(new Error(RESTORE_UNDO_PENDING_MESSAGE), { status: 409, code: 'restore_undo_pending' });
+}
+
+function refuseIfUndoPending() {
+    if (undoPending()) throw restoreUndoPendingError();
 }
 
 function writeUndoMarker(marker) {
@@ -1167,6 +1188,7 @@ async function recoverInterruptedRestore() {
         logError('restauração interrompida: marcador ilegível', err);
         return null;
     }
+    if (marker && marker.estado === 'concluida') return finishConcludedRestore(marker);
     const failures = [];
     const step = (what, fn) => {
         try { fn(); } catch (err) { failures.push(what); logError(`restauração interrompida: ${what}`, err); }
@@ -1233,6 +1255,38 @@ async function recoverInterruptedRestore() {
     return summary;
 }
 
+// Marcador com estado 'concluida' (decisões §12): a restauração terminou, e o processo caiu
+// antes de o marcador sair. Nada é desfeito. Se o backup_restored não chegou à auditoria
+// (a queda foi antes do db.save do registro), ele entra agora com o que o marcador
+// guardou (quem restaurou, o arquivo, o backup de segurança) e a observação "registrado
+// ao reiniciar". As pastas "anteriores" saem depois, no recoverInterruptedSwaps.
+async function finishConcludedRestore(marker) {
+    const registro = marker.registro && typeof marker.registro === 'object' ? marker.registro : null;
+    const already = (db.memory.auditLogs || []).some(entry => entry && entry.action === 'backup_restored'
+        && entry.details && entry.details.restoreId === marker.id);
+    let registrado = false;
+    if (registro && !already) {
+        recordAudit(db.memory, {
+            req: { ip: String(registro.ip || ''), headers: { 'user-agent': String(registro.device || '') } },
+            actor: registro.actor && registro.actor.email ? registro.actor : 'sistema',
+            action: 'backup_restored',
+            category: 'backup',
+            details: { ...(registro.details || {}), restoreId: marker.id, observacao: 'registrado ao reiniciar' },
+        }, { timestamp: Date.parse(marker.concluidaEm || '') || Date.now() });
+        try {
+            await db.save();
+            registrado = true;
+        } catch (err) {
+            // Fica o marcador: o próximo boot tenta registrar de novo.
+            logError('restauração concluída: gravação do registro na auditoria', err);
+            return { concluida: true, registrado: false };
+        }
+        console.warn('⚠️ A última restauração de backup terminou, mas o servidor parou antes de anotá-la na Auditoria; o registro entrou agora.');
+    }
+    clearUndoMarker();
+    return { concluida: true, registrado };
+}
+
 // --- aplicação --------------------------------------------------------------
 
 // Restauração em si, com o que já foi conferido: as pastas do backup (troca e cursos
@@ -1242,7 +1296,11 @@ async function recoverInterruptedRestore() {
 // - stagingRoot + inclui: pastas extraídas que substituem as atuais;
 // - contentMd: os .md do JSON (só acrescentam ou trocam arquivos);
 // - keystrokes: { mode: 'copy', file } (formato 2) ou { mode: 'import', rows } (JSON).
-async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [], mergeArchives = false, contentMd = null, keystrokes, replaceAccounts = false, rollbackDb = null }) {
+// - registro + onApplied (decisões §12): com tudo gravado, o marcador passa ao estado
+//   'concluida' guardando o registro (quem restaurou e o arquivo) e onApplied(resumo,
+//   { restoreId }) grava o backup_restored na auditoria; só depois o marcador sai. Uma
+//   queda entre os dois não desfaz a restauração, e o boot completa o registro.
+async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [], mergeArchives = false, contentMd = null, keystrokes, replaceAccounts = false, rollbackDb = null, registro = null, onApplied = null }) {
     const previous = memorySnapshot();
     const id = crypto.randomBytes(6).toString('hex');
     const swaps = [];
@@ -1299,15 +1357,36 @@ async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [],
         const applications = await applySnapshot(snapshot, { replaceAccounts });
         await imported;
         crashPointForTests('banco');
+        const summary = withApplications(snapshotSummary(snapshot, format), applications);
+        // Restauração gravada: daqui em diante o boot não desfaz mais nada. O registro da
+        // auditoria entra antes de o marcador sair (decisões §12).
+        undo.note(marker => {
+            marker.estado = 'concluida';
+            marker.concluidaEm = new Date().toISOString();
+            marker.registro = registro ? {
+                ...registro,
+                details: { ...(registro.details || {}), format: summary.format, exportedAt: summary.exportedAt, collections: summary.collections },
+            } : null;
+        });
+        crashPointForTests('concluida');
+        if (onApplied) {
+            try {
+                await onApplied(summary, { restoreId: id });
+            } catch (err) {
+                logError('restauração: registro na auditoria', err);
+            }
+        }
+        crashPointForTests('registro');
         // Tudo gravado: o marcador sai antes de as pastas anteriores serem apagadas (uma
         // queda depois daqui deixa só a "anterior" guardada ao lado, sem desfazer nada, e o
         // boot seguinte a apaga: recoverInterruptedSwaps). Se o marcador não saiu, as
-        // anteriores ficam: o boot vai desfazer, e precisa delas.
+        // anteriores ficam para o boot: o marcador já diz 'concluida', e o boot só termina
+        // a limpeza (não desfaz).
         const definitive = clearUndoMarker();
         crashPointForTests('fim');
         if (definitive) for (const swap of swaps) await finishSwap(swap);
-        else console.error('⛔ A restauração terminou, mas o marcador em data/.restauracao/desfazer não pôde ser apagado; o próximo início do IClass vai desfazê-la. Veja o registro de erros do servidor.');
-        return withApplications(snapshotSummary(snapshot, format), applications);
+        else console.error('⛔ A restauração terminou, mas o marcador em data/.restauracao/desfazer não pôde ser apagado; o próximo início do IClass termina a limpeza. Veja o registro de erros do servidor.');
+        return summary;
     } catch (error) {
         let undone = true;
         for (const file of writtenMd) {
@@ -1333,6 +1412,7 @@ async function applyRestore({ snapshot, format, stagingRoot = null, inclui = [],
 async function restoreDataSnapshot(snapshot, { replaceAccounts = false } = {}) {
     validateDataSnapshot(snapshot);
     if (replaceAccounts) validateRestoredAccounts(snapshot);
+    refuseIfUndoPending();
     return withBackupLock('restore', async () => {
         const workDir = await newWorkDir();
         try {
@@ -1508,6 +1588,10 @@ function countStagedFiles(stagingRoot, prefixes) {
 // keepSource: o arquivo é um backup guardado (lista do servidor ou do destino externo) e
 // fica onde está; só a cópia extraída vai para a pasta da prévia.
 async function prepareRestore(uploadedFile, { originalName = '', keepSource = false } = {}) {
+    if (undoPending()) {
+        if (!keepSource) await fs.promises.rm(uploadedFile, { force: true }).catch(() => {});
+        throw restoreUndoPendingError();
+    }
     const id = crypto.randomBytes(12).toString('hex');
     const stagingDir = path.join(RESTORE_DIR, id);
     const prepared = { id, stagingDir, originalName: String(originalName || '').slice(0, 200), warnings: [] };
@@ -1587,8 +1671,12 @@ function safetyBackupError(cause) {
 // (seguranca-restauracao_<variante>_*.zip, com data/uploads quando o backup traz a
 // biblioteca; se ele falhar, nada muda) e aplica. A pasta da prévia sai no fim, com ou
 // sem sucesso.
-async function applyPreparedRestore(prepared, { replaceAccounts = false, acceptLegacy = false } = {}) {
+// registro: { actor, ip, device, details } de quem pediu, para o backup_restored;
+// onApplied(resultado, { restoreId }): grava o backup_restored antes de o marcador sair
+// (applyRestore). Restauração anterior ainda a desfazer: 409 restore_undo_pending.
+async function applyPreparedRestore(prepared, { replaceAccounts = false, acceptLegacy = false, registro = null, onApplied = null } = {}) {
     try {
+        refuseIfUndoPending();
         return await withBackupLock('restore', async () => {
             const { snapshot } = await loadPreparedSnapshot(prepared);
             validateDataSnapshot(snapshot);
@@ -1624,6 +1712,10 @@ async function applyPreparedRestore(prepared, { replaceAccounts = false, acceptL
                         : { mode: 'import', rows: Array.isArray(snapshot.data.examKeystrokes) ? snapshot.data.examKeystrokes : [] },
                     replaceAccounts,
                     rollbackDb: safety.dbCopy,
+                    registro: registro ? { ...registro, details: { ...(registro.details || {}), replaceAccounts, formato: prepared.formato, safetyBackup: safety.name } } : null,
+                    onApplied: onApplied
+                        ? (applied, extra) => onApplied({ ok: true, replaceAccounts, safetyBackup: safety.name, formato: prepared.formato, ...applied }, extra)
+                        : null,
                 });
                 return { ok: true, replaceAccounts, safetyBackup: safety.name, formato: prepared.formato, ...summary };
             } finally {
@@ -1636,10 +1728,10 @@ async function applyPreparedRestore(prepared, { replaceAccounts = false, acceptL
 }
 
 // Envio único (o contrato de antes: arquivo, confirm e acceptLegacy no mesmo pedido).
-async function restoreFromFile(absPath, originalName, { replaceAccounts = false, acceptLegacy = false } = {}) {
+async function restoreFromFile(absPath, originalName, { replaceAccounts = false, acceptLegacy = false, registro = null, onApplied = null } = {}) {
     if (activeJob) throw backupBusyError();
     const { prepared } = await prepareRestore(absPath, { originalName });
-    return applyPreparedRestore(prepared, { replaceAccounts, acceptLegacy });
+    return applyPreparedRestore(prepared, { replaceAccounts, acceptLegacy, registro, onApplied });
 }
 
 // --- tokens da prévia -------------------------------------------------------
@@ -1878,7 +1970,7 @@ module.exports = {
     runAutomaticBackup, lastAutomaticBackupAt, createBackup, createSafetyBackup, pruneBackups, backupInProgress,
     runBackupJob, runAutomaticIfDue, backupStatus, backupAlerts, listStoredBackups, resolveStoredBackup,
     noteDestinationConfigured, settleForShutdown, removeActivePartialsSync, failureMessage, recoverInterruptedRestore, UNDO_DIR, UNDO_MARKER,
-    clearUndoMarker, cleanStaleLeftovers, BOOT_LEFTOVER_RECHECK_MS, RESTORE_ABORTED_MESSAGE, EXTERNAL_ABORTED_MESSAGE,
+    clearUndoMarker, undoPending, RESTORE_UNDO_PENDING_MESSAGE, cleanStaleLeftovers, BOOT_LEFTOVER_RECHECK_MS, RESTORE_ABORTED_MESSAGE, EXTERNAL_ABORTED_MESSAGE,
     AUTO_DUE_MS, AUTO_DEFER_MAX_MS, ALERT_LATE_MS, ALERT_GRACE_UPTIME_MS,
     buildFullZipBuffer, streamFullZip, restoreFromFile, prepareRestore, applyPreparedRestore, discardPrepared,
     createRestoreToken, takeRestoreToken, sweepRestoreTokens, cleanWorkDirs, getZipLib,

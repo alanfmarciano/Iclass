@@ -103,14 +103,14 @@ test('[UC-BACKUP-002] restaurar --ultimo com o servidor parado: banco e content 
         db.memory.config.settings.network = { adminAccess: 'rede' };
     `);
     fs.writeFileSync(path.join(dataDir, 'content', 'Apostila_CLI.md'), '# editada depois');
-    // Restauração pela tela interrompida no meio (marcador do backup.js): a da CLI a
-    // substitui, e o marcador vai para a quarentena (senão o boot seguinte "desfaria" esta).
+    // Sobra de uma restauração pela tela que terminou (marcador 'concluida' que não saiu):
+    // vai para a quarentena com o banco de antes (senão o boot anotaria a restauração da
+    // tela na Auditoria do banco restaurado pela CLI).
     fs.mkdirSync(path.join(dataDir, '.restauracao', 'desfazer'), { recursive: true });
-    fs.writeFileSync(path.join(dataDir, '.restauracao', 'desfazer', 'marcador.json'), JSON.stringify({ id: 'x', banco: null, pastas: [], conteudo: [], cursos: [] }));
+    fs.writeFileSync(path.join(dataDir, '.restauracao', 'desfazer', 'marcador.json'), JSON.stringify({ id: 'x', estado: 'concluida', banco: null, pastas: [], conteudo: [], cursos: [] }));
 
     const restored = runCli(dataDir, port, ['restaurar', '--ultimo', '--sim']);
     assert.equal(restored.code, 0, restored.output);
-    assert.match(restored.stdout, /restauração pela tela Sistema interrompida/);
     assert.equal(fs.existsSync(path.join(dataDir, '.restauracao', 'desfazer')), false);
     assert.match(restored.stdout, /Backup restaurado/);
     assert.match(restored.stdout, /opção \[S\] do launcher/);
@@ -124,9 +124,31 @@ test('[UC-BACKUP-002] restaurar --ultimo com o servidor parado: banco e content 
     const quarantine = fs.readdirSync(path.join(dataDir, 'quarentena'));
     assert.equal(quarantine.length, 1);
     assert.match(quarantine[0], /^antes-restauracao_/);
-    assert.ok(fs.existsSync(path.join(dataDir, 'quarentena', quarantine[0], 'restauracao-interrompida', 'marcador.json')));
+    assert.ok(fs.existsSync(path.join(dataDir, 'quarentena', quarantine[0], 'restauracao-anterior', 'marcador.json')));
     assert.ok(fs.existsSync(path.join(dataDir, 'quarentena', quarantine[0], 'data', 'database.db')), 'o banco de antes não é apagado');
     assert.equal(fs.readFileSync(path.join(dataDir, 'quarentena', quarantine[0], 'content', 'Apostila_CLI.md'), 'utf8'), '# editada depois');
+});
+
+// Decisões §12 (sobra do H4b): antes, a CLI substituía a restauração pela tela que tinha
+// sido interrompida e não desfeita, levando o marcador e o antes.db para a quarentena; o
+// boot não tinha mais como desfazê-la. Agora recusa, com o texto da tela, e nada muda.
+test('[UC-BACKUP-002] restaurar com uma restauração pela tela ainda a desfazer recusa e não mexe em nada', async () => {
+    const dataDir = makeDataDir('desfazer-pendente');
+    const port = await proc.freePort();
+    assert.equal(runCli(dataDir, port, ['criar']).code, 0);
+    const marker = path.join(dataDir, '.restauracao', 'desfazer', 'marcador.json');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(marker), 'antes.db'), 'cópia do banco de antes');
+    fs.writeFileSync(marker, JSON.stringify({ id: 'x', banco: 'antes.db', pastas: [], conteudo: [], cursos: [] }));
+    const dbBefore = fs.readFileSync(path.join(dataDir, 'database.db'));
+
+    const refused = runCli(dataDir, port, ['restaurar', '--ultimo', '--sim']);
+    assert.equal(refused.code, 1, refused.output);
+    assert.match(refused.stderr, /Uma restauração anterior foi interrompida e ainda não foi desfeita\. Feche e abra o IClass de novo para terminar de desfazer antes de restaurar outro backup\./);
+    assert.ok(fs.existsSync(marker), 'o marcador fica para o boot');
+    assert.ok(fs.existsSync(path.join(path.dirname(marker), 'antes.db')), 'a cópia do banco de antes fica');
+    assert.ok(fs.readFileSync(path.join(dataDir, 'database.db')).equals(dbBefore), 'o banco não mudou');
+    assert.equal(fs.existsSync(path.join(dataDir, 'quarentena')), false);
 });
 
 test('[UC-BACKUP-002] restaurar sem --sim pede RESTAURAR; com o servidor ligado criar e restaurar saem com 2 e nada muda', async () => {

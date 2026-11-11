@@ -662,9 +662,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         return true;
     }
 
-    // Registro e resposta da restauração que deu certo (os dois caminhos: token da prévia e
-    // envio único).
-    async function finishRestore(req, res, matchedAdmin, summary, fileInfo) {
+    // O que a restauração que deu certo leva ao registro e à resposta.
+    function restoredInfo(summary) {
         // A trilha de auditoria do backup foi juntada com a atual (mergeAuditTrails em
         // utils/backup.js): o histórico de backup e tudo o que foi feito depois do backup
         // continuam no registro. Contas do backup que não existem aqui e ficaram de fora
@@ -675,17 +674,48 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         const legacyInfo = summary.legacyApplications
             ? { legacyApplications: true, applicationsDiscarded: summary.applicationsDiscarded || 0, applicationsRebuilt: summary.applicationsRebuilt || 0 }
             : {};
-        recordBackupAudit(req, matchedAdmin, 'backup_restored', {
-            ...fileInfo,
-            replaceAccounts,
-            format: summary.format, formato: summary.formato, exportedAt: summary.exportedAt, collections: summary.collections, accountsNotRestored,
-            safetyBackup: summary.safetyBackup,
-            ...legacyInfo,
-        });
-        await db.save();
+        return { replaceAccounts, accountsNotRestored, legacyInfo };
+    }
+
+    // Registro e resposta da restauração que deu certo (os dois caminhos: token da prévia e
+    // envio único). O backup_restored entra antes de o marcador da restauração sair
+    // (decisões §12): applyRestore chama onApplied com tudo gravado; uma queda logo depois
+    // não deixa a restauração sem registro (o boot completa com o que o marcador guardou).
+    function restoreRecorder(req, matchedAdmin, fileInfo) {
+        const registro = {
+            actor: { email: matchedAdmin && matchedAdmin.email, role: matchedAdmin && matchedAdmin.role },
+            ip: req.ip || '',
+            device: String((req.headers && req.headers['user-agent']) || '').slice(0, 160),
+            details: { ...fileInfo },
+        };
+        const onApplied = async (summary, { restoreId } = {}) => {
+            const { replaceAccounts, accountsNotRestored, legacyInfo } = restoredInfo(summary);
+            recordBackupAudit(req, matchedAdmin, 'backup_restored', {
+                ...fileInfo,
+                replaceAccounts,
+                format: summary.format, formato: summary.formato, exportedAt: summary.exportedAt, collections: summary.collections, accountsNotRestored,
+                safetyBackup: summary.safetyBackup,
+                ...(restoreId ? { restoreId } : {}),
+                ...legacyInfo,
+            });
+            await db.save();
+        };
+        return { registro, onApplied };
+    }
+
+    function finishRestore(req, res, matchedAdmin, summary) {
+        const { replaceAccounts, accountsNotRestored, legacyInfo } = restoredInfo(summary);
         // networkKept: a regra de rede (quem abre o painel em outros aparelhos) continua a de
         // hoje, não a do backup (decisões §7); a tela diz isso em uma linha.
         res.json({ success: true, replaceAccounts, accountsNotRestored, networkKept: true, safetyBackup: summary.safetyBackup, ...legacyInfo });
+    }
+
+    // Restauração anterior ainda a desfazer (decisões §12): 409 com o código, sem mexer em
+    // nada; fica na Auditoria como tentativa recusada.
+    async function refuseUndoPending(req, res, matchedAdmin, fileInfo = {}) {
+        recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { ...fileInfo, error: backupUtil.RESTORE_UNDO_PENDING_MESSAGE });
+        await db.save().catch(() => {});
+        return res.status(409).json({ success: false, error: backupUtil.RESTORE_UNDO_PENDING_MESSAGE, code: 'restore_undo_pending' });
     }
 
     // Falha da restauração: a falha no meio volta tudo ao estado de antes (applySnapshot
@@ -695,6 +725,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     // salvo: 503 com a mensagem própria (nada mudou). O resto é erro interno: 500 com o
     // código do erro e o stack no crash.log (ENG-04).
     async function failRestore(req, res, matchedAdmin, restoreError, fileInfo) {
+        if (restoreError && restoreError.code === 'restore_undo_pending') return refuseUndoPending(req, res, matchedAdmin, fileInfo);
         if (restoreError && restoreError.legacyBackup) {
             // Nada foi restaurado: a tela mostra o aviso e pede a confirmação.
             return res.status(409).json({ error: backupUtil.LEGACY_BACKUP_WARNING, legacyBackup: true, exportedAt: restoreError.exportedAt });
@@ -723,6 +754,15 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         validateAdmin(req, res, async (config, matchedAdmin) => {
             if (await refuseProfessorRestore(req, res, matchedAdmin)) return;
             if (backupUtil.backupInProgress()) return res.status(409).json({ error: backupUtil.BACKUP_BUSY_MESSAGE });
+            if (backupUtil.undoPending()) {
+                if (req.is('multipart/form-data')) {
+                    const upload = await receiveBackupUpload(req, res, matchedAdmin, 'previa');
+                    if (!upload) return;
+                    discardUpload(upload.path);
+                    return refuseUndoPending(req, res, matchedAdmin, { file: upload.originalName.slice(0, 200), size: upload.size, etapa: 'previa' });
+                }
+                return refuseUndoPending(req, res, matchedAdmin, { etapa: 'previa' });
+            }
             if (!req.is('multipart/form-data')) return previewStoredBackup(req, res, matchedAdmin);
             const upload = await receiveBackupUpload(req, res, matchedAdmin, 'previa');
             if (!upload) return;
@@ -733,6 +773,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 res.json({ success: true, token, expiraEm, arquivo: prepared.originalName, ...preview });
             } catch (error) {
                 discardUpload(upload.path);
+                if (error && error.code === 'restore_undo_pending') return refuseUndoPending(req, res, matchedAdmin, { file: upload.originalName.slice(0, 200), size: upload.size, etapa: 'previa' });
                 const shownError = publicErrorMessage(error, req);
                 recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { file: upload.originalName.slice(0, 200), size: upload.size, etapa: 'previa', error: shownError.slice(0, 300) });
                 await db.save().catch(() => {});
@@ -770,6 +811,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             const { token, expiraEm } = backupUtil.createRestoreToken(prepared, matchedAdmin.email);
             res.json({ success: true, token, expiraEm, arquivo: nome, local, ...preview });
         } catch (error) {
+            if (error && error.code === 'restore_undo_pending') return refuseUndoPending(req, res, matchedAdmin, { file: nome, local, size, etapa: 'previa' });
             const shownError = publicErrorMessage(error, req);
             recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { file: nome, local, size, etapa: 'previa', error: shownError.slice(0, 300) });
             await db.save().catch(() => {});
@@ -799,9 +841,9 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             const acceptLegacy = flag(req.body.acceptLegacy);
             const fileInfo = { file: upload.originalName.slice(0, 200), size: upload.size, replaceAccounts };
             try {
-                const summary = await backupUtil.restoreFromFile(upload.path, upload.originalName, { replaceAccounts, acceptLegacy });
+                const summary = await backupUtil.restoreFromFile(upload.path, upload.originalName, { replaceAccounts, acceptLegacy, ...restoreRecorder(req, matchedAdmin, fileInfo) });
                 discardUpload(upload.path);
-                return finishRestore(req, res, matchedAdmin, { replaceAccounts, ...summary }, fileInfo);
+                return finishRestore(req, res, matchedAdmin, { replaceAccounts, ...summary });
             } catch (restoreError) {
                 discardUpload(upload.path);
                 return failRestore(req, res, matchedAdmin, restoreError, fileInfo);
@@ -824,6 +866,9 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             return res.status(400).json({ error: 'Confirme digitando RESTAURAR.' });
         }
         if (backupUtil.backupInProgress()) return res.status(409).json({ error: backupUtil.BACKUP_BUSY_MESSAGE });
+        // O token continua valendo: depois de fechar e abrir o IClass, a prévia some (fica só
+        // na memória), mas nada foi apagado.
+        if (backupUtil.undoPending()) return refuseUndoPending(req, res, matchedAdmin);
         const taken = backupUtil.takeRestoreToken(body.token, matchedAdmin.email);
         if (!taken.prepared) {
             recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { error: taken.error });
@@ -834,8 +879,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         const fileInfo = { file: String(prepared.originalName || '').slice(0, 200), size: Number(prepared.uploadSize) || 0, replaceAccounts };
         try {
             // A prévia já mostrou o aviso do backup de versão anterior.
-            const summary = await backupUtil.applyPreparedRestore(prepared, { replaceAccounts, acceptLegacy: true });
-            return finishRestore(req, res, matchedAdmin, summary, fileInfo);
+            const summary = await backupUtil.applyPreparedRestore(prepared, { replaceAccounts, acceptLegacy: true, ...restoreRecorder(req, matchedAdmin, fileInfo) });
+            return finishRestore(req, res, matchedAdmin, summary);
         } catch (restoreError) {
             return failRestore(req, res, matchedAdmin, restoreError, fileInfo);
         }

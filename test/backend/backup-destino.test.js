@@ -553,6 +553,60 @@ test('[UC-BACKUP-006] restaurar um backup da lista: prévia pelo nome confere o 
     assert.equal(db.memory.students.some(item => item.email === 'depois@h4b.local'), false, 'voltou ao backup');
     assert.ok(fs.existsSync(file), 'o backup da lista não é apagado ao restaurar');
     assert.ok(fs.readdirSync(runtimePaths.BACKUPS_DIR).some(name => /^seguranca-restauracao_dados_/.test(name)));
+    // O backup_restored entrou antes de o marcador sair (decisões §12), com o id da
+    // restauração, e o marcador não ficou.
+    const [restoredEntry] = auditOf('backup_restored');
+    assert.ok(restoredEntry, 'restauração na auditoria');
+    assert.equal(restoredEntry.actor, ADMIN);
+    assert.match(restoredEntry.details.restoreId, /^[0-9a-f]{12}$/);
+    assert.equal(restoredEntry.details.observacao, undefined);
+    assert.equal(restoredEntry.details.file, nome);
+    assert.equal(fs.existsSync(backup.UNDO_MARKER), false);
+});
+
+// Decisões §12 (sobra do H4b): uma restauração nova apagaria o marcador e o antes.db da
+// que foi interrompida e ainda não foi desfeita. A prévia (enviada ou da lista) e a
+// restauração (token e envio único) recusam com 409 restore_undo_pending.
+test('[UC-BACKUP-006] restauração anterior ainda a desfazer: prévia e restauração respondem 409 restore_undo_pending e não mexem no marcador', async () => {
+    await resetState();
+    const made = await as()('post', '/api/admin/backup/server').send({});
+    const nome = made.body.fileName;
+    const preview = await as()('post', '/api/admin/backup/restore/preview').send({ local: 'servidor', nome });
+    assert.equal(preview.status, 200, preview.body.error);
+
+    fs.mkdirSync(backup.UNDO_DIR, { recursive: true });
+    fs.writeFileSync(path.join(backup.UNDO_DIR, 'antes.db'), 'cópia do banco de antes');
+    const marker = JSON.stringify({ id: 'pendente', iniciadoEm: new Date().toISOString(), banco: 'antes.db', pastas: [], conteudo: [], cursos: [], teclas: true });
+    fs.writeFileSync(backup.UNDO_MARKER, marker);
+    const text = 'Uma restauração anterior foi interrompida e ainda não foi desfeita. Feche e abra o IClass de novo para terminar de desfazer antes de restaurar outro backup.';
+    try {
+        const zip = fs.readFileSync(path.join(runtimePaths.BACKUPS_DIR, nome));
+        const answers = [
+            await as()('post', '/api/admin/backup/restore/preview').send({ local: 'servidor', nome }),
+            await as()('post', '/api/admin/backup/restore/preview').attach('file', zip, 'backup.zip'),
+            await as()('post', '/api/admin/backup/restore').send({ token: preview.body.token, confirm: 'RESTAURAR' }),
+            await as()('post', '/api/admin/backup/restore').field('confirm', 'RESTAURAR').attach('file', zip, 'backup.zip'),
+        ];
+        answers.forEach((res, index) => {
+            assert.equal(res.status, 409, `pedido ${index}: ${JSON.stringify(res.body)}`);
+            assert.deepEqual(res.body, { success: false, error: text, code: 'restore_undo_pending' });
+        });
+        assert.equal(fs.readFileSync(backup.UNDO_MARKER, 'utf8'), marker, 'o marcador ficou como estava');
+        assert.ok(fs.existsSync(path.join(backup.UNDO_DIR, 'antes.db')));
+        assert.equal(auditOf('backup_restored').length, 0);
+        assert.ok(auditOf('backup_restore_failed').filter(entry => entry.details.error === text).length >= 4);
+        // Utilitários também recusam (programático e a prévia já feita).
+        await assert.rejects(backup.restoreDataSnapshot(backup.buildDataSnapshot()), error => error.code === 'restore_undo_pending' && error.status === 409);
+        // Marcador 'concluida' (a restauração terminou, só falta tirar o marcador) não é
+        // restauração a desfazer.
+        fs.writeFileSync(backup.UNDO_MARKER, JSON.stringify({ ...JSON.parse(marker), estado: 'concluida' }));
+        assert.equal(backup.undoPending(), false);
+    } finally {
+        fs.rmSync(backup.UNDO_DIR, { recursive: true, force: true });
+    }
+    // O token da prévia não foi gasto pela recusa: a restauração funciona depois.
+    const restored = await as()('post', '/api/admin/backup/restore').send({ token: preview.body.token, confirm: 'RESTAURAR' });
+    assert.equal(restored.status, 200, restored.body.error);
 });
 
 test('[UC-BACKUP-004] mensagem de falha guardada e mostrada não leva o texto cru do erro nem caminho (contrato H9a)', () => {

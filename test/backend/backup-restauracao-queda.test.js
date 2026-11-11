@@ -76,6 +76,8 @@ for (const point of ['marcador', 'pasta', 'cursos', 'teclas', 'banco']) {
         assert.equal(again.body.state.teclas, 3);
         assert.deepEqual(again.body.state.arquivados, ['curso_2024']);
         assert.equal(again.body.state.marcador, false);
+        assert.equal(again.body.state.restaurados.length, 1, 'a restauração de novo entrou na Auditoria');
+        assert.equal(again.body.state.restaurados[0].details.observacao, undefined);
     });
 }
 
@@ -115,4 +117,76 @@ test('[UC-BACKUP-003] queda logo depois do fim da restauração: o boot mantém 
     assert.equal(after.marcador, false);
     assert.deepEqual(after.sobrasDeTroca, [], 'as pastas anteriores saíram no boot');
     assert.deepEqual(after.auditoria, [], 'nada foi desfeito');
+});
+
+// Decisões §12 (sobra do H4b): antes, uma queda entre o fim da restauração (marcador já
+// fora) e o registro na auditoria deixava a restauração sem backup_restored. Agora o
+// marcador passa ao estado 'concluida' com o registro guardado, o backup_restored entra, e
+// só depois o marcador sai. No boot, 'concluida' não desfaz nada; sem o registro na
+// auditoria, ele entra com a observação "registrado ao reiniciar".
+for (const [point, registeredBefore] of [['concluida', false], ['registro', true]]) {
+    test(`[UC-BACKUP-003] queda com a restauração já gravada (${point}): o boot não desfaz e a Auditoria tem um backup_restored só`, () => {
+        const dataDir = fs.mkdtempSync(path.join(tempRoot, `${point}-`));
+        const prepared = run(dataDir, ['preparar']);
+        assert.equal(prepared.status, 0, prepared.output);
+
+        const crashed = run(dataDir, ['restaurar', prepared.body.zip], { ICLASS_TEST_RESTORE_CRASH_AT: point });
+        assert.equal(crashed.signal, 'SIGKILL', crashed.output);
+        const markerFile = path.join(dataDir, 'data', '.restauracao', 'desfazer', 'marcador.json');
+        const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'));
+        assert.equal(marker.estado, 'concluida');
+        assert.equal(marker.registro.actor.email, 'admin@queda.local');
+
+        const booted = run(dataDir, ['boot']);
+        assert.equal(booted.status, 0, booted.output);
+        const after = booted.body.state;
+        assert.deepEqual(after.students, ['do-backup@queda.local'], 'a restauração vale');
+        assert.equal(after.teclas, 3);
+        assert.deepEqual(after.uploads, ['do-backup.pdf']);
+        assert.equal(after.marcador, false, 'o marcador saiu');
+        assert.deepEqual(after.sobrasDeTroca, [], 'as pastas anteriores saíram');
+        assert.deepEqual(after.auditoria, [], 'nada foi desfeito');
+        assert.equal(after.restaurados.length, 1, JSON.stringify(after.restaurados));
+        const [entry] = after.restaurados;
+        assert.equal(entry.actor, 'admin@queda.local');
+        assert.equal(entry.ip, '192.168.0.9');
+        assert.equal(entry.details.restoreId, marker.id);
+        assert.match(entry.details.safetyBackup, /^seguranca-restauracao_/);
+        if (registeredBefore) {
+            assert.equal(entry.details.observacao, undefined, 'o registro já tinha entrado: o boot não repete');
+        } else {
+            assert.equal(entry.details.observacao, 'registrado ao reiniciar');
+            assert.equal(entry.details.file, path.basename(prepared.body.zip));
+            assert.match(booted.output, /anotá-la na Auditoria; o registro entrou agora/);
+        }
+    });
+}
+
+// Decisões §12 (sobra do H4b): antes, uma restauração nova com outra ainda a desfazer
+// começava apagando a pasta do marcador (com o antes.db), e o boot não tinha mais como
+// desfazer a primeira. Agora a prévia e a restauração recusam com 409
+// restore_undo_pending, e nada muda.
+test('[UC-BACKUP-003] restauração nova com outra interrompida ainda a desfazer: recusa com restore_undo_pending e o boot ainda desfaz a primeira', () => {
+    const dataDir = fs.mkdtempSync(path.join(tempRoot, 'pendente-'));
+    const prepared = run(dataDir, ['preparar']);
+    assert.equal(prepared.status, 0, prepared.output);
+    const before = prepared.body.state;
+    const crashed = run(dataDir, ['restaurar', prepared.body.zip], { ICLASS_TEST_RESTORE_CRASH_AT: 'teclas' });
+    assert.equal(crashed.signal, 'SIGKILL', crashed.output);
+    const undoDir = path.join(dataDir, 'data', '.restauracao', 'desfazer');
+    const markerBefore = fs.readFileSync(path.join(undoDir, 'marcador.json'), 'utf8');
+
+    const refused = run(dataDir, ['restaurar', prepared.body.zip]);
+    assert.equal(refused.status, 1, refused.output);
+    assert.equal(refused.body.code, 'restore_undo_pending');
+    assert.equal(refused.body.status, 409);
+    assert.equal(refused.body.message, 'Uma restauração anterior foi interrompida e ainda não foi desfeita. Feche e abra o IClass de novo para terminar de desfazer antes de restaurar outro backup.');
+    assert.equal(fs.readFileSync(path.join(undoDir, 'marcador.json'), 'utf8'), markerBefore, 'o marcador ficou como estava');
+    assert.ok(fs.existsSync(path.join(undoDir, 'antes.db')), 'a cópia do banco de antes ficou');
+
+    const booted = run(dataDir, ['boot']);
+    assert.equal(booted.status, 0, booted.output);
+    assert.deepEqual(booted.body.state.students, before.students, 'o boot ainda desfez a primeira');
+    assert.equal(booted.body.state.teclas, before.teclas);
+    assert.equal(booted.body.state.auditoria.length, 1);
 });
