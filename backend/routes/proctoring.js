@@ -27,6 +27,7 @@ const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../uti
 const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
 const { FIELD_LIMITS: KEYSTROKE_FIELD_LIMITS } = require('../utils/keystrokeStore.js');
 const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
+const { filterKeystrokeEvents, keystrokeModeOf } = require('../utils/keystrokePolicy.js');
 
 // Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
@@ -304,12 +305,18 @@ router.post('/api/student/log-keystrokes', validateStudentSession, PROCTORING_SC
         const application = applicationForClass(cls, normalizedExamKey, requestedApplication.value);
         if (requestedApplication.value && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
+        // Registro do teclado da aplicação (H8b, CRIT-04): 'eventos' (padrão, e também
+        // sem aplicação ou em aplicação de antes desta versão) só guarda atalhos, cópia e
+        // menu do botão direito; 'nada' não guarda nada; 'tudo' guarda tudo. Vale antes
+        // dos cortes de campo e mesmo com o código antigo da prova no navegador.
+        const allowedEvents = filterKeystrokeEvents(keystrokeModeOf(application), events.slice(0, KEYSTROKE_BATCH_MAX));
+
         // Cortes de campo de cada evento (os de antes) e números como inteiros seguros:
         // um campo grande não se multiplica pelos 500 eventos do lote.
         const serverTs = Date.now();
         const courseText = typeof courseId === 'string' ? courseId.trim().slice(0, KEYSTROKE_FIELD_LIMITS.courseId) : '';
         const rows = [];
-        for (const ev of events.slice(0, KEYSTROKE_BATCH_MAX)) {
+        for (const ev of allowedEvents) {
             if (!ev || typeof ev !== 'object' || Array.isArray(ev)) continue;
             rows.push({
                 id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
@@ -332,7 +339,8 @@ router.post('/api/student/log-keystrokes', validateStudentSession, PROCTORING_SC
             });
         }
 
-        // Sem evento válido, nada é gravado. Com eventos, a resposta sai depois do COMMIT
+        // Sem evento válido (ou nenhum que o modo da aplicação guarde), nada é gravado e o
+        // ciclo de gravação nem é pedido. Com eventos, a resposta sai depois do COMMIT
         // (503 retryable se a gravação falhar).
         if (rows.length) db.keystrokes.append(rows);
         // Eventos além dos 500 do lote não são gravados: a resposta diz quantos (H9b).

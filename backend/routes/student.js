@@ -36,7 +36,8 @@ const {
     sendInternalError
 } = require('../middlewares.js');
 const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
-const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_VERSION } = require('../utils/security.js');
+const { recordLoginLog } = require('../utils/security.js');
+const legalAcceptance = require('../utils/legalAcceptance.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
@@ -99,6 +100,7 @@ const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
 const { recordAudit } = require('../utils/audit.js');
+const { keystrokeModeOf } = require('../utils/keystrokePolicy.js');
 const {
     attemptContextForStudent,
     collectiveTimeOverForNewAttempt,
@@ -542,6 +544,7 @@ const STUDENT_APPLICATION_FIELDS = [
     'questionCount',
     'tokenEnabled',
     'globalTimeAdjustment',
+    'keystrokeMode',
     'createdAt',
     'startedAt',
     'finishedAt',
@@ -565,6 +568,7 @@ function applicationForStudent(application, cls, studentEmail) {
     STUDENT_APPLICATION_FIELDS.forEach(field => {
         if (application[field] !== undefined) safeApplication[field] = application[field];
     });
+    safeApplication.keystrokeMode = keystrokeModeOf(application);
     const course = getCourseForClass(cls);
     return {
         ...safeApplication,
@@ -850,6 +854,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             attemptOutcome,
             timeOver,
             localCopyKey,
+            // Prazo de guarda do monitoramento da prova (settings.retention, H8b), para as
+            // instruções: 0 = sem prazo automático (até a escola apagar).
+            proctoringRetentionDays: examKey ? settingsUtil.retentionSettings().proctoringDays : 0,
             examTitle: examKey ? studentApplicationLabel({ examKey }, cls) : null,
             accessibilityExtraMinutes: examKey && cls.onlineExamConfigs?.[examKey]?.timerEnabled !== false
                 ? accessibilityExtraMinutes(email, cls.onlineExamConfigs?.[examKey]?.durationMinutes)
@@ -872,8 +879,12 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
     const { password, studentClass, courseId } = req.body;
     const fields = extractStudentFields(req.body);
 
-    if (!fields.name || !fields.email || !password || !studentClass || !courseId) {
-        return res.status(400).json({ error: 'Dados incompletos.' });
+    // Formato dos 400 combinado entre os grupos: { success: false, error, field } (o campo
+    // que falta primeiro, na ordem da tela).
+    const missingField = [['name', fields.name], ['email', fields.email], ['password', password], ['courseId', courseId], ['studentClass', studentClass]]
+        .find(([, value]) => !value);
+    if (missingField) {
+        return res.status(400).json({ success: false, error: 'Dados incompletos.', field: missingField[0] });
     }
     // Política de senha (H5a, SEG-06): a senha "1" era aceita. O autocadastro nunca pede
     // a troca no primeiro acesso: quem escolheu a senha foi o próprio aluno.
@@ -885,7 +896,7 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
     const classes = readJSON(DB_CLASSES_FILE);
     const matchedClass = classes.find(c => c.name === studentClass && c.courseId === courseId && c.registrationEnabled);
     if (!matchedClass) {
-        return res.status(400).json({ error: 'A turma selecionada não existe ou não está liberada para cadastro.' });
+        return res.status(400).json({ success: false, error: 'A turma selecionada não existe ou não está liberada para cadastro.', field: 'studentClass' });
     }
 
     const period = matchedClass.period || 'Tarde';
@@ -903,11 +914,23 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
     };
     const validation = validateStudentFields(selfFields, students, null);
     if (!validation.ok) {
-        return res.status(400).json({ error: validation.error, field: validation.field });
+        return res.status(400).json({ success: false, error: validation.error, field: validation.field });
     }
 
     if (!req.body.acceptedTerms) {
-        return res.status(400).json({ error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.' });
+        return res.status(400).json({ success: false, error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.', field: 'acceptedTerms' });
+    }
+    // Primeiro acesso (H8a-2; SEG-08, SEG-09): data de nascimento obrigatória; menor de 18
+    // anos informa o responsável (nome e telefone ou e-mail); o aceite vale para os
+    // documentos atuais. A tela manda os ids dos documentos que mostrou: se a escola
+    // publicou outra versão no meio, 409 para o aluno ler a nova. Sem os ids (tela antiga
+    // ainda no navegador), vale o documento atual.
+    let registration;
+    try {
+        registration = legalAcceptance.checkRegistration(db.memory, req.body, { courseId });
+    } catch (error) {
+        if (!(error instanceof legalAcceptance.PrivacyAcceptError)) throw error;
+        return res.status(error.status).json(legalAcceptance.privacyErrorBody(error));
     }
 
     // Hash com o scrypt assíncrono (DES-07). Durante a espera outro cadastro pode ter
@@ -916,7 +939,7 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
     const currentStudents = readJSON(DB_STUDENTS_FILE);
     const recheck = validateStudentFields(selfFields, currentStudents, null);
     if (!recheck.ok) {
-        return res.status(400).json({ error: recheck.error, field: recheck.field });
+        return res.status(400).json({ success: false, error: recheck.error, field: recheck.field });
     }
 
     const enrollmentRequest = {
@@ -936,8 +959,11 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
         nomeSocial: fields.nomeSocial || '',
         email: fields.email,
         phone: fields.phone || '',
-        guardianPhone: (fields.guardian && fields.guardian.phone) || '',
-        guardian: fields.guardian || null,
+        guardianPhone: (registration.guardian && registration.guardian.phone) || (fields.guardian && fields.guardian.phone) || '',
+        guardian: registration.guardian
+            ? { ...(fields.guardian || {}), ...registration.guardian, observacao: (fields.guardian && fields.guardian.observacao) || '' }
+            : (fields.guardian || null),
+        birthDate: registration.birthDate,
         matricula: '',
         unidade: '',
         status: DEFAULT_STATUS,
@@ -949,12 +975,29 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
         loginTime: null,
         recoveryRequested: false,
         passwordChangedAt: new Date().toISOString(),
-        termsAcceptance: buildAcceptance(DEFAULT_TERMS_VERSION, req),
-        privacyAcceptance: buildAcceptance(DEFAULT_PRIVACY_VERSION, req),
+        // Aceite do documento exato (H8a-2): { documentId, version, schoolId, at, ip,
+        // device }. Antes do H8a-2 gravava só { version: '1.0' }.
+        termsAcceptance: legalAcceptance.buildDocumentAcceptance(registration.terms, registration.school, req),
+        privacyAcceptance: legalAcceptance.buildDocumentAcceptance(registration.privacy, registration.school, req),
         createdAt: Date.now(),
         updatedAt: Date.now()
     };
     currentStudents.push(studentObj);
+    recordAudit(db.memory, {
+        req,
+        // Sem sessão no cadastro: o papel vem da conta passada (o aluno, como no portão).
+        actor: { email: studentObj.email, role: 'aluno' },
+        action: 'privacy_accept',
+        category: 'privacy',
+        studentEmail: studentObj.email,
+        courseId,
+        details: legalAcceptance.acceptAuditDetails([registration.terms, registration.privacy], {
+            source: 'cadastro',
+            schoolId: registration.school ? registration.school.id : null,
+            isMinor: registration.isMinor,
+            guardianInformed: !!registration.guardian,
+        }),
+    });
     writeJSON(DB_STUDENTS_FILE, currentStudents);
 
     res.json({ success: true, enrollmentRequest });

@@ -1,10 +1,8 @@
-// Fase 2 — Utilitários de segurança/LGPD: parsing de user-agent, logs de login e aceites.
+// Fase 2 — Utilitários de segurança/LGPD: parsing de user-agent e logs de login.
+// O aceite dos Termos e da Política (antes buildAcceptance, com a versão '1.0' fixa)
+// passou para utils/legalAcceptance.js no H8a-2, com o documentId do texto aceito.
 
 const crypto = require('crypto');
-
-// Versões atuais dos termos e da política. Podem ser sobrescritas via config.
-const DEFAULT_TERMS_VERSION = '1.0';
-const DEFAULT_PRIVACY_VERSION = '1.0';
 
 function getClientIp(req) {
     try {
@@ -141,21 +139,7 @@ function cancelLoginLogSave() {
     lastLoginLogSaveAt = 0;
 }
 
-// Monta um objeto de aceite (termos ou política) com versão/data/IP/device.
-function buildAcceptance(version, req) {
-    const ua = (req && req.headers && req.headers['user-agent']) || '';
-    const { browser, os, device } = parseUserAgent(ua);
-    return {
-        version: version || DEFAULT_TERMS_VERSION,
-        at: Date.now(),
-        ip: getClientIp(req),
-        device: `${device} · ${os} · ${browser}`,
-    };
-}
-
 module.exports = {
-    DEFAULT_TERMS_VERSION,
-    DEFAULT_PRIVACY_VERSION,
     getClientIp,
     parseUserAgent,
     recordLoginLog,
@@ -163,5 +147,4 @@ module.exports = {
     loginLogSavePending,
     cancelLoginLogSave,
     LOGIN_LOG_SAVE_INTERVAL_MS,
-    buildAcceptance,
 };

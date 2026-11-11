@@ -51,7 +51,17 @@ const {
     studentInClass,
     normalizeClassEntriesForStorage,
     isClosedStudentStatus,
+    isAnonymizedStudent,
+    applyStudentStatus,
+    cleanStatusReason,
+    STATUS_REASON_MAX,
+    lastStatusChangeIndex,
+    studentStatusSince,
 } = require('../utils/students.js');
+
+// Recusas do cadastro anonimizado (H7c).
+const ANONYMIZED_EDIT_REFUSAL = 'Este cadastro foi anonimizado e não pode ser alterado.';
+const ANONYMIZED_STATUS_REFUSAL = 'A situação Anonimizado só é aplicada em Cadastros encerrados.';
 const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecrets } = require('../utils/audit.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
@@ -82,9 +92,6 @@ const {
     scoreFromCounts,
     scoreFromGrade,
     structureExamIndex,
-    anonymizeStudentAuditTrail,
-    anonymizeStudentExamRecords,
-    studentEmailOwnership,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
@@ -144,6 +151,7 @@ const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
 const { createSystemHealthRouter } = require('./systemHealth.js');
 const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
+const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
 const { body, either, list, shape, str } = require('../utils/inputSchema.js');
 
@@ -416,6 +424,8 @@ router.post('/api/admin/reset-password', ADMIN_SCHEMAS.resetPassword, (req, res)
         const findStudent = () => (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
         const target = findStudent();
         if (!target) return res.status(404).json({ error: 'Estudante não encontrado.' });
+        // Cadastro anonimizado (H7c) não volta a ter acesso.
+        if (isAnonymizedStudent(target)) return res.status(409).json({ success: false, code: 'student_anonymized', error: ANONYMIZED_EDIT_REFUSAL });
 
         const mode = typed ? 'typed' : 'generated';
         let temporaryPassword = null;
@@ -517,151 +527,18 @@ router.post('/api/admin/student/unlock-login', (req, res) => {
     });
 });
 
-// Excluir conta do aluno e dados pessoais associados.
-// Vale para todos os e-mails conhecidos do aluno (o atual e os anteriores, pelas trocas
-// de e-mail registradas na auditoria), sempre por campo exato: excluir ana@ não toca
-// joana@. É a única anonimização de aluno: não há anonimização automática no boot.
-// Registro gravado com um e-mail que outro aluno cadastrado usou antes (e-mail antigo
-// reaproveitado) é do outro aluno no período em que o e-mail era dele e fica; e-mail que
-// também é de professor não leva a autoria do professor (studentEmailOwnership).
+// Excluir aluno direto saiu (H7c; FUN-03, decisão 4 do Alan): o aluno é desligado
+// primeiro (bulk-status, "Desligar aluno") e o cadastro encerrado é anonimizado ou
+// apagado de vez caso a caso em Cadastros encerrados (routes/adminStudentRecords.js,
+// utils/studentLifecycle.js). A rota antiga responde 410 e não remove nada, para nenhuma
+// tela ou script esquecido apagar o histórico escolar.
 router.post('/api/admin/delete-student', (req, res) => {
-    validateAdmin(req, res, async () => {
-        const { email } = req.body || {};
-        if (typeof email !== 'string' || email.trim() === '') {
-            return res.status(400).json({ error: 'E-mail do estudante não informado.' });
-        }
-
-        const normalizedEmail = email.trim().toLowerCase();
-        const students = readJSON(DB_STUDENTS_FILE);
-        const studentObjToDelete = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
-
-        if (!studentObjToDelete) {
-            return res.status(404).json({ error: 'Estudante não encontrado.' });
-        }
-
-        // Antes de tirar o aluno do cadastro: a linha do tempo dos e-mails usa todos os alunos.
-        const { emails, owns } = studentEmailOwnership(db.memory, normalizedEmail);
-        // Registro do aluno: e-mail dele na data do registro (sem data: o e-mail atual).
-        // Nos campos que a troca de e-mail renomeia ('renamed'), o e-mail atual é sempre
-        // dele, mesmo em registro com data da época em que o e-mail era de outro aluno.
-        const ownedRecord = (item, value, kind = 'student') => !!item && owns(value, item, kind);
-        const studentFiles = (db.memory.attendance || [])
-            .filter(item => ownedRecord(item, item.studentEmail, 'renamed'))
-            .map(item => item.justificativa && item.justificativa.arquivo)
-            .filter(Boolean);
-
-        db.memory.students = students.filter(s => !s.email || s.email.toLowerCase() !== normalizedEmail);
-        db.memory.submissions = readJSON(DB_SUBMISSIONS_FILE).filter(s => !(s && s.student && ownedRecord(s, s.student.email, 'renamed')));
-
-        emails.forEach(known => {
-            if (!owns(known, null, 'renamed')) return;
-            ['progress', 'notes', 'annotations'].forEach(collection => {
-                if (db.memory[collection]) delete db.memory[collection][known];
-            });
-            // A sessão sai pelo authSessions (e da tabela auth_sessions na gravação).
-            revokeStudentSession(db.memory, known);
+    validateAdmin(req, res, () => {
+        res.status(410).json({
+            success: false,
+            code: 'student_delete_replaced',
+            error: 'A exclusão direta foi substituída. Desligue o aluno e use Cadastros encerrados.',
         });
-        // O log de auditoria é mantido como histórico, mas sem ligação com o aluno: as
-        // entradas perdem o e-mail, o nome e a matrícula e as cópias das notas na lixeira
-        // ficam só com prova e nota (para a estatística).
-        anonymizeStudentAuditTrail(db.memory, {
-            emails,
-            owns,
-            names: [studentObjToDelete.name, studentObjToDelete.nomeSocial],
-            matriculas: [studentObjToDelete.matricula],
-        });
-        // Contestações de questão (com o texto livre do aluno), tempo extra e versão da prova.
-        anonymizeStudentExamRecords(db.memory, { emails, owns });
-        // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
-        // certificados, logs de prova e de login). Login de professor com o mesmo e-mail fica.
-        // O log de login não é renomeado na troca de e-mail: vale o dono do e-mail na data.
-        const loginKind = item => (item.role && item.role !== 'student' ? 'anyone' : 'student');
-        ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'loginLogs']
-            .forEach(collection => {
-                if (!Array.isArray(db.memory[collection])) return;
-                db.memory[collection] = db.memory[collection].filter(item => !(item && ownedRecord(item, item.studentEmail || item.email,
-                    collection === 'loginLogs' ? loginKind(item) : 'renamed')));
-            });
-        // Fórum: as respostas dele saem; a dúvida dele sai inteira, a não ser que outra
-        // pessoa tenha respondido: aí fica sem nome, e-mail e texto, com as respostas dos
-        // outros. No histórico da dúvida fica "aluno excluído".
-        const replyKind = item => (item && (item.authorRole === 'Aluno' || item.role === 'Aluno') ? 'student' : 'anyone');
-        if (Array.isArray(db.memory.forum)) {
-            db.memory.forum.forEach(comment => {
-                if (!comment) return;
-                if (Array.isArray(comment.replies)) comment.replies = comment.replies.filter(reply => !(reply && ownedRecord(reply, reply.authorEmail, replyKind(reply))));
-                (Array.isArray(comment.events) ? comment.events : []).forEach(event => {
-                    if (event && ownedRecord({ at: event.at }, event.by, replyKind(event))) { event.by = 'aluno excluído'; event.byName = 'Aluno excluído'; }
-                });
-                if (comment.deletedBy && ownedRecord(comment, comment.deletedBy, 'anyone')) comment.deletedBy = 'aluno excluído';
-            });
-            db.memory.forum = db.memory.forum.filter(comment => {
-                if (!comment || !ownedRecord(comment, comment.studentEmail, 'renamed')) return true;
-                if (!(comment.replies || []).length) return false;
-                comment.studentEmail = '';
-                comment.studentName = 'Aluno excluído';
-                comment.text = 'Texto removido (aluno excluído).';
-                comment.studentAnonymized = true;
-                comment.anonymizedAt = new Date().toISOString();
-                return true;
-            });
-        }
-        // Mensagens da prova e avisos só para ele saem; nos outros, sai das listas de leitura.
-        if (Array.isArray(db.memory.broadcastMessages)) {
-            db.memory.broadcastMessages = db.memory.broadcastMessages.filter(message => !(message && ownedRecord(message, message.targetEmail, 'renamed')));
-            db.memory.broadcastMessages.forEach(message => {
-                ['acknowledgedBy', 'deletedFor'].forEach(field => {
-                    if (message && Array.isArray(message[field])) message[field] = message[field].filter(value => !owns(value, null, 'renamed'));
-                });
-            });
-        }
-        if (Array.isArray(db.memory.announcements)) {
-            db.memory.announcements = db.memory.announcements.filter(item => !(item && item.target === 'aluno' && ownedRecord(item, item.targetValue, 'renamed')));
-            db.memory.announcements.forEach(item => {
-                if (item && Array.isArray(item.readBy)) item.readBy = item.readBy.filter(value => !owns(value, null, 'renamed'));
-            });
-        }
-        Object.keys(db.memory.studentExamState || {}).forEach(key => {
-            const state = db.memory.studentExamState[key];
-            if (state && owns(state.studentEmail, null, 'renamed')) delete db.memory.studentExamState[key];
-        });
-
-        const classes = readJSON(DB_CLASSES_FILE);
-        classes.forEach(cls => {
-            Object.keys((cls && cls.studentReleasedItems) || {}).forEach(key => {
-                if (owns(key, null, 'renamed')) delete cls.studentReleasedItems[key];
-            });
-        });
-        db.memory.classes = classes;
-
-        // Pasta do aluno vai para a lixeira (documentos preservados de forma identificável).
-        // Homônimo sem matrícula usa a mesma pasta (matrícula + nome): aí só os arquivos
-        // ligados à presença do aluno excluído vão para a lixeira; os do outro ficam.
-        try {
-            const folder = fileStore.studentFolderName(studentObjToDelete);
-            const dir = path.join(fileStore.ALUNOS_DIR, folder);
-            const shared = db.memory.students.some(other => fileStore.studentFolderName(other).toLowerCase() === folder.toLowerCase());
-            if (!shared) {
-                if (fs.existsSync(dir)) fileStore.moveDirToTrash(dir);
-            } else {
-                const base = path.resolve(dir);
-                [...new Set(studentFiles)].forEach(rel => {
-                    if (!fileStore.isInsideStudents(rel)) return;
-                    const target = path.resolve(fileStore.absFromData(rel));
-                    if (target.startsWith(base + path.sep) && fs.existsSync(target)) fileStore.moveToTrash(target);
-                });
-            }
-        } catch (e) {}
-
-        db.save();
-        // Histórico de digitação (tabela própria): as teclas dele saem pelo mesmo critério
-        // dos outros registros. A busca vem depois de a sessão dele ter saído (acima): um
-        // lote de teclas já aceito está na fila e é achado também.
-        const keystrokeIds = (await db.keystrokes.findByEmails(emails))
-            .filter(item => ownedRecord(item, item.studentEmail, 'renamed'))
-            .map(item => item.id);
-        if (keystrokeIds.length) db.keystrokes.deleteRows(keystrokeIds);
-        res.json({ success: true, message: 'Estudante removido com sucesso.' });
     });
 });
 
@@ -1568,6 +1445,8 @@ router.post('/api/admin/student/create', (req, res) => {
             matricula: fields.matricula || '',
             phone: fields.phone || '',
             guardianPhone: fields.guardianPhone || '',
+            // Opcional pelo professor (H8a-2); o portão do primeiro acesso pede a quem não tem.
+            birthDate: fields.birthDate || '',
             unidade: fields.unidade || '',
             status: fields.status || DEFAULT_STATUS, // Padrão: Ativo
             guardian: fields.guardian || null,
@@ -1635,6 +1514,17 @@ router.post('/api/admin/student/update', (req, res) => {
         if (studentIndex === -1) {
             return res.status(404).json({ error: 'Estudante não encontrado.' });
         }
+        // Cadastro anonimizado (H7c) não é editado: os dados pessoais não voltam por aqui.
+        if (isAnonymizedStudent(students[studentIndex])) {
+            return res.status(409).json({ success: false, code: 'student_anonymized', error: ANONYMIZED_EDIT_REFUSAL });
+        }
+        // 'Anonimizado' não se aplica por edição: só em Cadastros encerrados.
+        if (fields.status !== undefined && isAnonymizedStudent({ status: fields.status })) {
+            return res.status(400).json({ success: false, error: ANONYMIZED_STATUS_REFUSAL, field: 'status' });
+        }
+        if (req.body.statusReason !== undefined && req.body.statusReason !== null && typeof req.body.statusReason !== 'string') {
+            return res.status(400).json({ success: false, error: 'O motivo da mudança de situação deve ser um texto.', field: 'statusReason' });
+        }
 
         // Validações (e-mail válido/único, matrícula única, telefones, status) ignorando o próprio.
         const validation = validateStudentFields({ ...fields, classes: studentClasses }, students, originalEmailNorm);
@@ -1650,15 +1540,18 @@ router.post('/api/admin/student/update', (req, res) => {
 
         // Auditoria: calcula o que mudou ANTES de aplicar.
         const changes = diffStudentForAudit(before, { ...fields, classes: studentClasses });
+        // Mudança de situação guarda quando, quem e por quê (H7c).
+        const withStatus = applyStudentStatus(before, fields.status || before.status || DEFAULT_STATUS, matchedAdmin, req.body.statusReason);
 
         students[studentIndex] = {
-            ...before,
+            ...withStatus,
             name: fields.name,
             nomeSocial: fields.nomeSocial !== undefined ? fields.nomeSocial : (before.nomeSocial || ''),
             email: newEmailNormalized,
             matricula: fields.matricula !== undefined ? fields.matricula : (before.matricula || ''),
             phone: fields.phone !== undefined ? fields.phone : (before.phone || ''),
             guardianPhone: fields.guardianPhone !== undefined ? fields.guardianPhone : (before.guardianPhone || ''),
+            birthDate: fields.birthDate !== undefined ? fields.birthDate : (before.birthDate || ''),
             unidade: fields.unidade !== undefined ? fields.unidade : (before.unidade || ''),
             status: fields.status || before.status || DEFAULT_STATUS,
             guardian: fields.guardian !== undefined ? fields.guardian : (before.guardian || null),
@@ -1676,7 +1569,8 @@ router.post('/api/admin/student/update', (req, res) => {
                 studentEmail: newEmailNormalized,
                 action: 'update',
                 changes,
-                req
+                req,
+                reason: withStatus !== before ? withStatus.statusReason : undefined,
             });
         }
 
@@ -1814,6 +1708,10 @@ router.post('/api/admin/student/bulk-enroll', (req, res) => {
             const current = Array.isArray(before.classes) && before.classes.length
                 ? before.classes
                 : (before.studentClass ? [before.studentClass] : []);
+            if (isAnonymizedStudent(before)) {
+                skipped.push({ email: before.email, reason: 'Cadastro anonimizado.' });
+                return;
+            }
             if (studentInClass(before, cls.name, cls.courseId)) {
                 skipped.push({ email: before.email, reason: 'Já matriculado nesta turma.' });
                 return;
@@ -1847,14 +1745,28 @@ router.post('/api/admin/student/bulk-enroll', (req, res) => {
     });
 });
 
-// Altera a situação (Ativo, Inativo, ...) de vários alunos de uma vez.
+// Altera a situação (Ativo, Inativo, ...) de vários alunos de uma vez. É também o
+// "Desligar aluno" e o "Reativar" de Cadastros encerrados (H7c): grava quando, quem e o
+// motivo (opcional, até 500 caracteres) no cadastro e na auditoria. Cadastro anonimizado
+// fica de fora ('Cadastro anonimizado'), e 'Anonimizado' não é situação que se aplique aqui.
 router.post('/api/admin/student/bulk-status', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { emails, status } = req.body;
-        const nextStatus = String(status || '').trim();
-        if (!STUDENT_STATUSES.includes(nextStatus)) {
-            return res.status(400).json({ error: `Situação inválida. Use uma de: ${STUDENT_STATUSES.join(', ')}.` });
+        const nextStatus = typeof status === 'string' ? status.trim() : '';
+        if (isAnonymizedStudent({ status: nextStatus })) {
+            return res.status(400).json({ success: false, error: ANONYMIZED_STATUS_REFUSAL, field: 'status' });
         }
+        if (!STUDENT_STATUSES.includes(nextStatus)) {
+            return res.status(400).json({ success: false, error: `Situação inválida. Use uma de: ${STUDENT_STATUSES.join(', ')}.`, field: 'status' });
+        }
+        const rawReason = req.body.reason;
+        if (rawReason !== undefined && rawReason !== null && typeof rawReason !== 'string') {
+            return res.status(400).json({ success: false, error: 'O motivo deve ser um texto.', field: 'reason' });
+        }
+        if (typeof rawReason === 'string' && rawReason.trim().length > STATUS_REASON_MAX) {
+            return res.status(400).json({ success: false, error: `O motivo pode ter no máximo ${STATUS_REASON_MAX} caracteres.`, field: 'reason' });
+        }
+        const reason = cleanStatusReason(rawReason);
 
         const { targets, skipped } = resolveBulkTargets(emails, matchedAdmin);
         if (!targets.length && !skipped.length) {
@@ -1863,14 +1775,19 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
 
         const students = db.memory.students;
         let updated = 0;
+        const now = Date.now();
         targets.forEach(index => {
             const before = students[index];
+            if (isAnonymizedStudent(before)) {
+                skipped.push({ email: before.email, reason: 'Cadastro anonimizado.' });
+                return;
+            }
             if ((before.status || DEFAULT_STATUS) === nextStatus) {
                 skipped.push({ email: before.email, reason: 'Já está nesta situação.' });
                 return;
             }
             const changes = diffStudentForAudit(before, { status: nextStatus });
-            students[index] = { ...before, status: nextStatus, updatedAt: Date.now() };
+            students[index] = applyStudentStatus(before, nextStatus, matchedAdmin, reason, { now });
             if (changes.length) {
                 recordStudentAudit(db.memory, {
                     actor: (matchedAdmin && matchedAdmin.email) || 'admin',
@@ -1878,6 +1795,7 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
                     action: 'bulk_status',
                     changes,
                     req,
+                    reason,
                 });
             }
             updated++;
@@ -2254,11 +2172,24 @@ function _rosterDayRecords(email, date, className, courseId) {
 }
 
 // O aluno entra na chamada desta data? Ativo (ou Bloqueado) sempre. Cadastro encerrado
-// (Inativo, Concluído, Transferido, Evadido) sai das datas novas (H7b): só com registro
-// na data ou em data anterior à mudança de situação (attendanceUtil.closedStudentListedOn).
-function _rosterListsStudent(student, { date, hasRecord, timezone }) {
+// (Inativo, Concluído, Transferido, Evadido, Anonimizado) sai das datas novas (H7b): só
+// com registro na data ou em data anterior à mudança de situação
+// (attendanceUtil.closedStudentListedOn). A data da mudança é o statusChangedAt gravado
+// pelo Desligar aluno (H7c) ou, para quem foi desligado antes da atualização, a última
+// alteração de "Status" do cadastro na auditoria (studentStatusSince): a chamada
+// atrasada de quando ele ainda estava na turma continua possível.
+// sinceOf: _closedSinceResolver() do pedido (o índice da auditoria é montado uma vez só,
+// e só se algum encerrado sem statusChangedAt precisar dele).
+function _closedSinceResolver() {
+    let index = null;
+    return student => studentStatusSince(student, student && student.statusChangedAt ? null : (index || (index = lastStatusChangeIndex(db.memory.auditLogs))));
+}
+
+function _rosterListsStudent(student, { date, hasRecord, timezone, sinceOf }) {
     if (!isClosedStudentStatus(student && student.status)) return true;
-    return attendanceUtil.closedStudentListedOn({ hasRecord, date, statusChangedAt: student.statusChangedAt, timezone });
+    if (hasRecord) return true;
+    const since = (sinceOf || _closedSinceResolver())(student);
+    return attendanceUtil.closedStudentListedOn({ hasRecord, date, statusChangedAt: since, timezone });
 }
 
 // Presença automática (acesso do aluno) para o professor conferir: a do próprio registro
@@ -2313,13 +2244,14 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
         const gradeAulas = _gradeAulasForRoster(cls, course, date);
         const timezone = settingsUtil.getSettings().timezone;
+        const sinceOf = _closedSinceResolver();
 
         const roster = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
             .map(s => {
                 const email = (s.email || '').toLowerCase();
                 const recs = _rosterDayRecords(email, date, className, courseId);
                 // Cadastro encerrado fica fora das datas novas (H7b).
-                if (!_rosterListsStudent(s, { date, hasRecord: recs.length > 0, timezone })) return null;
+                if (!_rosterListsStudent(s, { date, hasRecord: recs.length > 0, timezone, sinceOf })) return null;
                 // O registro que vale no dia (o mesmo da frequência): chamada, manual, login.
                 const rec = attendanceUtil.effectiveDayRecord(recs);
                 // Aulas salvas têm prioridade; senão, monta a partir da grade (padrão presente).
@@ -2399,6 +2331,7 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         const now = Date.now();
         const markedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
         const timezone = settingsUtil.getSettings().timezone;
+        const sinceOf = _closedSinceResolver();
 
         // Lançamentos válidos, um por aluno (repetido no mesmo pedido: vale o último).
         const studentsByEmail = new Map();
@@ -2436,7 +2369,7 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
             // do desligamento) não ganha registro novo. Sem registro na data, também não
             // havia nada para tirar.
             const previous = removedByEmail.get(email) || [];
-            if (!_rosterListsStudent(student, { date, hasRecord: previous.length > 0, timezone })) { skipped++; return; }
+            if (!_rosterListsStudent(student, { date, hasRecord: previous.length > 0, timezone, sinceOf })) { skipped++; return; }
             const aulas = attendanceUtil.sanitizeAulas(entry.aulas);
             const temJustificada = aulas.some(a => a.status === 'justificada');
             const justificativa = temJustificada ? attendanceUtil.sanitizeJustificativa(entry.justificativa) : null;
@@ -3579,6 +3512,7 @@ router.use(createAdminExamConfigRouter());
 router.use(createSystemHealthRouter());
 router.use(createAdminAuditRouter());
 router.use(createAdminPrivacyRouter());
+router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 
 

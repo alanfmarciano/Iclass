@@ -12,6 +12,7 @@ const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
 const { computeAttemptDeadline } = require('./utils/examDeadline.js');
 const { listExamApplications } = require('./utils/examApplications.js');
+const { keystrokeModeOf } = require('./utils/keystrokePolicy.js');
 const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
@@ -353,6 +354,9 @@ const STUDENT_EXAM_CONFIG_FIELDS = [
     'maxAttempts',
     'shuffleQuestions',
     'shuffleAnswers',
+    // Registro do teclado da aplicação (H8b): a prova filtra e as instruções dizem o que
+    // é registrado. Sem o campo (aplicação de antes desta versão) vale 'eventos'.
+    'keystrokeMode',
     'preparedAt',
     'updatedAt',
 ];
@@ -363,6 +367,7 @@ function studentExamConfigSummary(cfg) {
     STUDENT_EXAM_CONFIG_FIELDS.forEach(field => {
         if (cfg[field] !== undefined) summary[field] = cfg[field];
     });
+    summary.keystrokeMode = keystrokeModeOf(cfg);
     summary.requiresToken = !!cfg.accessToken || !!cfg.accessTokenHash || cfg.tokenEnabled === true;
     summary.annulledQuestions = (Array.isArray(cfg.annulledQuestions) ? cfg.annulledQuestions : [])
         .map(item => ({ questionNumber: Number(item && item.questionNumber), mode: item && item.mode ? String(item.mode) : null }))

@@ -30,22 +30,22 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 
 | Coleção | Tipo | Conteúdo |
 |---------|------|----------|
-| `students` | array | alunos (perfil, turmas, credencial; `sessionsInvalidBefore` opcional, ms: a sessão aberta antes dessa hora acaba fora de prova, gravado pelo "Redefinir senha", H5b) |
+| `students` | array | alunos (perfil, turmas, credencial; `sessionsInvalidBefore` opcional, ms: a sessão aberta antes dessa hora acaba fora de prova, gravado pelo "Redefinir senha", H5b; situação com `statusChangedAt` (ms), `statusChangedBy` e `statusReason`, gravados ao mudar a situação, H7c; cadastro anonimizado: `status: 'Anonimizado'`, e-mail `anonimizado-<ref>@anonimizado.invalid`, nome "Aluno anonimizado <REF>", `anonymizedRef`, `anonymizedAt` (ms), `anonymizedBy`, senha vazia e só turmas e datas, H7c. Cadastro antigo sem `statusChangedAt` vale como "data não registrada" ou pela última mudança de "Status" na auditoria; `birthDate` opcional `AAAA-MM-DD`, H8a-2; `termsAcceptance` e `privacyAcceptance` `{ documentId, version, schoolId, at, ip, device }` (modelo do IClass com `version: null`; o formato antigo `{ version: '1.0', at }` continua sendo lido e mostrado como "aceite antigo sem documento"); `legalAcceptances` com os aceites substituídos `{ kind, ...aceite, replacedAt }`, até 50. Cadastro sem `birthDate` continua valendo: o portal pede a data no próximo acesso) |
 | `classes` | array | turmas; `activeExamKey`, `examConfigs`, `onlineExamConfigs`, liberações |
 | `courses` | array | cursos (multi-curso); `structure`, `schoolId`, `status`/`deleted`/`deletedAt` (lixeira), `branding`. O painel grava só `name`, `description`, `schoolId` e `branding` por `/api/admin/courses` (a estrutura vai por `/api/admin/courses/:id/structure`) |
 | `branding` | objeto | identidade white-label global |
 | `schools` | array | escolas/instituições (white-label, compartilháveis) |
 | `submissions` | array | submissões de prova |
-| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável) |
+| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável); `keystrokeMode` (`eventos`\|`tudo`\|`nada`, H8b; ausente nas de antes vale `eventos`), copiado também para a configuração online da turma |
 | `questionBank` | array | banco de questões reutilizáveis |
 | `evaluations` | objeto | avaliações |
 | `courseStructure` | array | estrutura legada (**em obsolescência**, migrada para `courses[].structure`) |
 | `notes` | objeto | caderno do aluno por material (`{ e-mail: { chave: texto } }`; desde o H9b até 50.000 caracteres por chave, 300 chaves e 1.000.000 no total por aluno, e nota vazia apaga a chave; dado antigo acima disso fica como está e só diminui) |
 | `annotations` | objeto | anotações por parágrafo (desde o H9b: nota até 5.000, trecho destacado guardado com até 1.000, 500 parágrafos por unidade, 300 unidades por aluno) |
-| `forum` | array | dúvidas/fórum por unidade |
+| `forum` | array | dúvidas/fórum por unidade (resposta antiga de aluno sem e-mail ganha no boot o e-mail do dono da dúvida e `authorEmailInferred: true`, para não ser contada como dele em "Meus dados") |
 | `progress` | objeto | progresso por aluno/unidade |
 | `uploads` | objeto | metadados de arquivos enviados |
-| `config` | objeto | configuração global; `releasedItems` |
+| `config` | objeto | configuração global; `releasedItems`; `retentionLastRun` `{ at, trigger: 'automatic'\|'manual', by, counts: { keystrokes, proctoringLogs, loginLogs, trash? }, remaining }` (última limpeza da retenção, H8b) |
 | `admins` | array | administradores/professores (RBAC) |
 | `sessions` | objeto | sessões de aluno: `email` → `{ tokenHash, createdAt, lastSeen, lastActivityAt, ip, origin? }`; `tokenHash` = sha256 do token, que fica só no navegador (`utils/authSessions.js`). `lastSeen` é a presença ("online"). Gravadas na tabela `auth_sessions` ([abaixo](#sessões-gravadas-auth_sessions)). `{ lastSeen }` sozinho (semente de demonstração do `TEST_MODE`) é só presença: não autentica e não é gravado. |
 | `adminSessions` | objeto | sessões de instrutor: `'h:' + sha256(token)` → `{ email, createdAt, lastSeen, lastActivityAt, origin? }`. `origin` só aparece quando não é `login` (`setup` no acesso rápido local). Gravadas na tabela `auth_sessions`. |
@@ -109,6 +109,10 @@ Fase 2, H1-b (DES-02, CONF-06). As teclas do Modo Prova Rigoroso não ficam em `
 - **Maiúsculas**: prova e turma são comparadas sem diferenciar maiúsculas só nas letras A-Z (igual ao `COLLATE NOCASE` e ao `lower()` do SQLite).
 - **Migração do banco antigo**: até a fase 1 as teclas ficavam como JSON na tabela chave-valor `exam_keystrokes`. No boot, `migrateLegacy` leva as linhas para a tabela nova numa transação única, com a fila de gravação parada (o console mostra `Migrando histórico de digitação (N registros)...` e o tempo gasto); a chave antiga vira o `id` e o e-mail vai em minúsculas. É idempotente: a migrada sai da tabela antiga e um segundo boot não acha nada. Linha com JSON ilegível ou sem aluno e prova fica na tabela antiga (aviso no console), que continua sendo criada.
 - **Cópia de outro banco** (`copyFromAttached`, para a restauração do ZIP formato 2 do H4): lê a tabela nova e, num banco antigo, a tabela `exam_keystrokes` do arquivo anexado.
+
+## Retenção (`settings.retention`, H8b)
+
+Fase 2, H8b (SEG-13). Em `config.settings`: `retention: { proctoringDays, loginLogsDays, reviewedAt, reviewedBy }`, com 0 = não apagar (padrão; o banco antigo sem o bloco vale 0). O prazo da lixeira continua em `settings.trash.retentionDays`. `reviewedAt` (ISO) e `reviewedBy` (e-mail) marcam a primeira revisão pelo administrador; sem eles a tela mostra o aviso de prazos não revisados. Só `POST /api/admin/lgpd/retention` grava o bloco (`retention` está em `PROTECTED_SETTINGS_SECTIONS`). A limpeza (`utils/retention.js`) remove teclas por `db.keystrokes.deleteWhere({ applicationIds, before, max })` (`null` em `applicationIds` são as teclas sem aplicação) e conta por `db.keystrokes.countWhere`; `proctoringLogs` e `loginLogs` saem de `db.memory`; a lixeira, por `storage.purgeTrash`. Nada além disso é apagado por prazo.
 
 ## Diretórios em disco (`runtimePaths.js`)
 

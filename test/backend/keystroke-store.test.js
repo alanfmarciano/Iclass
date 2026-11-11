@@ -65,10 +65,12 @@ test.before(async () => {
         student.email,
         { token: student.token, lastSeen: Date.now(), createdAt: Date.now(), ip: '127.0.0.1' },
     ]));
-    // Duas aplicações da mesma prova na turma: a de antes (encerrada) e a atual.
+    // Duas aplicações da mesma prova na turma: a de antes (encerrada) e a atual. As duas
+    // registram toda a digitação (keystrokeMode 'tudo', H8b): estes testes são do
+    // armazenamento das teclas; o filtro de cada modo fica em lgpd-teclas.test.js.
     db.memory.examApplications = [
-        { id: 'app-anterior', examKey, studentClass: className, courseId, status: 'finished', createdAt: new Date(Date.now() - 86400000).toISOString() },
-        { id: 'app-atual', examKey, studentClass: className, courseId, status: 'running', createdAt: new Date().toISOString() },
+        { id: 'app-anterior', examKey, studentClass: className, courseId, status: 'finished', keystrokeMode: 'tudo', createdAt: new Date(Date.now() - 86400000).toISOString() },
+        { id: 'app-atual', examKey, studentClass: className, courseId, status: 'running', keystrokeMode: 'tudo', createdAt: new Date().toISOString() },
     ];
     db.memory.studentExamState = {};
     db.memory.submissions = [];
@@ -402,8 +404,9 @@ test('[UC-DIGITACAO-001] teto por aluno e aplicação (ou prova) apaga as teclas
         assert.equal(db.keystrokes.stats({ email: students.bia.email, examKey, applicationId: 'app-anterior' }).total, 10);
         assert.equal(db.keystrokes.stats({ email: students.bia.email, examKey, applicationId: 'app-atual' }).total, 50);
 
-        // Sem aplicação: o teto vale para o aluno na prova (como antes).
-        await sendKeys(students.eva, { events: keys(1, 55) }).expect(200);
+        // Sem aplicação: o teto vale para o aluno na prova (como antes). Sem aplicação o
+        // registro é o padrão (H8b, 'eventos'), que só guarda atalhos.
+        await sendKeys(students.eva, { events: keys(1, 55, { kind: 'shortcut' }) }).expect(200);
         const exam = await liveView(students.eva.email, { limit: 5000 }).expect(200);
         assert.equal(exam.body.total, 50);
         assert.equal(exam.body.events[0].seq, 6);
@@ -479,7 +482,10 @@ test('[UC-DIGITACAO-001] excluir aluno apaga só as teclas dele; trocar o e-mail
     assert.ok(anaBefore > 0);
     assert.equal(await savedFor(students.caio.email), 6);
 
-    await admin('post', '/api/admin/delete-student').send({ email: 'CAIO@teclas.local' }).expect(200);
+    // Apagar de vez (H7c): desligar e depois apagar em Cadastros encerrados; as teclas
+    // saem no mesmo ciclo de gravação da memória, antes da resposta.
+    await admin('post', '/api/admin/student/bulk-status').send({ emails: ['caio@teclas.local'], status: 'Evadido' }).expect(200);
+    await admin('post', '/api/admin/students/purge').send({ email: 'CAIO@teclas.local', confirm: 'APAGAR', reason: 'Pedido da família' }).expect(200);
     assert.equal(await savedFor(students.caio.email), 0, 'apagadas no arquivo antes do 200');
     assert.equal(db.keystrokes.stats({ email: students.caio.email }).total, 0);
     assert.deepEqual(await db.keystrokes.findByEmails([students.caio.email]), []);

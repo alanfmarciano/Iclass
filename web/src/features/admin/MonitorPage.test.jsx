@@ -167,6 +167,9 @@ describe('MonitorPage · servidor fora do ar durante a prova (H3b, CONF-03)', ()
 })
 
 describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
+  // A aplicação do teste não traz keystrokeMode: vale 'eventos' (H8b), e o botão se chama
+  // "Ver atalhos ao vivo". O cursor da digitação ao vivo é o mesmo em qualquer modo.
+  const LIVE_TITLE = /^Ver (digitação|atalhos) ao vivo$/
   const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 3, logs: [], logCount: 0 }
   const renderMonitor = () => render(
     <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
@@ -228,7 +231,7 @@ describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
     })
     renderMonitor()
     await tick(50)
-    fireEvent.click(screen.getByTitle('Ver digitação ao vivo'))
+    fireEvent.click(screen.getByTitle(LIVE_TITLE))
     await tick(50)
     const first = urls('/api/admin/exam-keystrokes/')
     expect(first).toHaveLength(1)
@@ -264,7 +267,7 @@ describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
     })
     renderMonitor()
     await tick(50)
-    fireEvent.click(screen.getAllByTitle('Ver digitação ao vivo')[0])
+    fireEvent.click(screen.getAllByTitle(LIVE_TITLE)[0])
     await tick(50)
     await tick(2050)
     const calls = urls('/api/admin/exam-keystrokes/')
@@ -272,7 +275,7 @@ describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
     // Fecha e abre a digitação de outro aluno: começa de novo, sem cursor.
     fireEvent.click(screen.getByLabelText('Fechar'))
     await tick(10)
-    fireEvent.click(screen.getAllByTitle('Ver digitação ao vivo')[1])
+    fireEvent.click(screen.getAllByTitle(LIVE_TITLE)[1])
     await tick(50)
     const bruno = urls('/api/admin/exam-keystrokes/').filter((url) => url.includes('bruno'))
     expect(bruno).toHaveLength(1)
@@ -303,5 +306,56 @@ describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
       confirm.mockRestore()
       mocks.liveApplications = null
     }
+  })
+})
+
+describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', logs: [], keystrokeCount: 3, suspiciousCount: 3 }
+  function renderWith(keystrokeMode, extra = {}) {
+    const list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, ...(keystrokeMode ? { keystrokeMode } : {}), ...extra } : item))
+    mocks.liveApplications = list
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications: list }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+  beforeEach(() => { vi.clearAllMocks() })
+  afterEach(() => { cleanup(); mocks.liveApplications = null })
+
+  it('aplicação sem o campo (padrão) mostra "Atalhos"', async () => {
+    renderWith(undefined)
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Atalhos' })).toBeTruthy()
+    expect(screen.getByTitle('Ver atalhos ao vivo')).toBeTruthy()
+  })
+
+  it('aplicação de antes desta versão (keystrokeModeLegacy): "Teclado", porque guardou toda a digitação', async () => {
+    renderWith('eventos', { keystrokeModeLegacy: true })
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Teclado' })).toBeTruthy()
+    expect(screen.queryByRole('columnheader', { name: 'Atalhos' })).toBeNull()
+    expect(screen.queryByTitle('Ver atalhos ao vivo')).toBeNull()
+    expect(screen.getByTitle(/^Ver teclado ao vivo \(aplicação de antes desta versão/)).toBeTruthy()
+    expect(screen.queryByText('Desligado')).toBeNull()
+  })
+
+  it('"tudo" mostra "Digitação"; "nada" mostra "Teclado" com "Desligado", sem a janela ao vivo', async () => {
+    renderWith('tudo')
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Digitação' })).toBeTruthy()
+    expect(screen.getByTitle('Ver digitação ao vivo')).toBeTruthy()
+    cleanup()
+    renderWith('nada')
+    await waitFor(() => expect(screen.getByText('Elisa')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Teclado' })).toBeTruthy()
+    expect(screen.getByText('Desligado')).toBeTruthy()
+    expect(screen.queryByTitle(/ao vivo/)).toBeNull()
   })
 })

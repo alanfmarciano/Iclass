@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import PrivacidadePage from './PrivacidadePage'
+import PrivacidadePage, { acceptanceSummaryText } from './PrivacidadePage'
 import { getAdminNavGroups } from '../../components/layout/Sidebar'
 import { canAccessAdminPath } from '../../lib/adminPermissions'
 
@@ -187,5 +187,18 @@ describe('[UC-LGPD-004] Privacidade (LGPD) só para o administrador', () => {
     expect(items({ accountRole: 'professor', additionalPermissions: ['students.security'] })).not.toContain('/lgpd')
     expect(canAccessAdminPath({ accountRole: 'admin' }, '/lgpd')).toBe(true)
     expect(canAccessAdminPath({ accountRole: 'professor' }, '/lgpd')).toBe(false)
+  })
+})
+
+// Fase 2, H8a-2 (SEG-08, SEG-09): a página conta quantos alunos ainda têm o primeiro
+// acesso pendente (GET /api/admin/lgpd/acceptance).
+describe('[UC-LGPD-007] resumo do primeiro acesso na página Privacidade', () => {
+  it('antes de publicar, ninguém precisa aceitar; depois, conta quem falta', () => {
+    expect(acceptanceSummaryText({ published: false, termsPending: 0, privacyPending: 0, birthDateMissing: 3, minorsWithoutGuardian: 0 }))
+      .toBe('Primeiro acesso: nada publicado ainda: ninguém precisa aceitar os documentos; 3 alunos sem data de nascimento. O portal pede o que falta no próximo acesso de cada aluno, sem bloquear o login nem a prova.')
+    expect(acceptanceSummaryText({ published: true, termsPending: 2, privacyPending: 1, birthDateMissing: 0, minorsWithoutGuardian: 1 }))
+      .toBe('Primeiro acesso: 2 alunos ainda não aceitaram a versão publicada; 1 menor de 18 anos sem responsável. O portal pede o que falta no próximo acesso de cada aluno, sem bloquear o login nem a prova.')
+    expect(acceptanceSummaryText({ published: true, termsPending: 0, privacyPending: 0 })).toMatch(/todos os alunos já aceitaram a versão publicada/)
+    expect(acceptanceSummaryText(null)).toBe('')
   })
 })

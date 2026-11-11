@@ -747,7 +747,12 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             }
             if (!db.memory.config) db.memory.config = {};
             const before = settingsUtil.getSettings();
-            db.memory.config.settings = settingsUtil.mergeSettings(req.body || {});
+            // O prazo da lixeira faz parte da retenção (H8b, SEG-13): o administrador grava
+            // em POST /api/admin/lgpd/retention. Aqui o professor não muda (sem erro: o
+            // resto do pedido vale) e o administrador ainda muda, como antes.
+            const patch = { ...(req.body && typeof req.body === 'object' ? req.body : {}) };
+            if (isProfessorAccount(account)) delete patch.trash;
+            db.memory.config.settings = settingsUtil.mergeSettings(patch);
             const changes = settingsChanges(before, settingsUtil.getSettings());
             if (changes.length) {
                 recordAudit(db.memory, {

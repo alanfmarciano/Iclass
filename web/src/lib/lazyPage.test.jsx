@@ -328,13 +328,15 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     const screens = staticImports.filter((specifier) => /^\.\/features\/|^\.\/components\/layout\//.test(specifier))
     expect(screens).toEqual(['./features/LoginPage'])
     const lazyScreens = [...appSource.matchAll(/lazyPage\(\(\) => import\('([^']+)'\)/g)].map((match) => match[1])
-    // 27 telas do instrutor (a Auditoria entrou no H7a-2, a Privacidade (LGPD) no H8a-1 e o
-    // Endereço da sala em tela cheia no H6a), 9 do aluno (com Minha conta, H5a), a prova, a
-    // página pública dos Termos e da Privacidade (H8a-1), o guia público do certificado
-    // (/certificado, H6c) e os 3 layouts.
-    expect(lazyScreens.length).toBe(42)
+    // 28 telas do instrutor (a Auditoria entrou no H7a-2, a Privacidade (LGPD) no H8a-1, o
+    // Endereço da sala em tela cheia no H6a e Cadastros encerrados no H7c), 10 do aluno (com
+    // Minha conta, H5a, e Meus dados, H8c), a prova, a página pública dos Termos e da
+    // Privacidade (H8a-1), o guia público do certificado (/certificado, H6c) e os 3 layouts.
+    expect(lazyScreens.length).toBe(44)
     expect(lazyScreens).toContain('./features/CertificadoPage')
     expect(lazyScreens).toContain('./features/admin/EnderecoSalaPage')
+    expect(lazyScreens).toContain('./features/student/MeusDadosPage')
+    expect(lazyScreens).toContain('./features/admin/CadastrosEncerradosPage')
     expect(lazyScreens).toContain('./features/student/ContaPage')
     expect(lazyScreens).toContain('./features/admin/AuditoriaPage')
     expect(lazyScreens).toContain('./features/admin/PrivacidadePage')
@@ -369,12 +371,14 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     }
     // AppShell, LumenAdminShell, StudentShell (clássico e lumen) e a prova.
     expect(outlets).toBe(5)
-    // Fase 2, H5a: no portal do aluno, a troca de senha obrigatória fica entre o Suspense
-    // e o portão da turma (nos dois layouts); a prova não passa por ela.
+    // Fase 2, H5a e H8a-2 (contrato dos layouts): no portal do aluno, a troca de senha
+    // obrigatória e depois o primeiro acesso (StudentPrivacyGate) ficam entre o Suspense
+    // e o portão da turma (nos dois layouts); a prova não passa por nenhum dos dois.
     for (const line of studentShellSource.split('\n').filter((text) => text.includes('<Outlet'))) {
-      expect(line).toContain('<Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense>')
+      expect(line).toContain('<Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentPrivacyGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPrivacyGate></StudentPasswordChangeGate></Suspense>')
     }
     expect(studentExamShellSource).not.toContain('StudentPasswordChangeGate')
+    expect(studentExamShellSource).not.toContain('StudentPrivacyGate')
     expect(studentExamShellSource).toMatch(/<AppErrorBoundary area="prova" fallback=\{ExamErrorScreen\}><Suspense fallback=\{<PageLoading \/>\}><StudentCourseGate><Outlet \/><\/StudentCourseGate><\/Suspense><\/AppErrorBoundary>/)
     // Fase 2, H9c (ENG-05): todo Outlet tem a área de erro, com a área certa para o
     // registro no servidor e o texto do layout (o menu continua à vista).

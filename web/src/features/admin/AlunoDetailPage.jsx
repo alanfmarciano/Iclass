@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, BookOpen, CheckCircle2, LogIn, FileText } from 'lucide-react'
+import { ArrowLeft, Pencil, BookOpen, CheckCircle2, LogIn, FileText, Download, Printer } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -18,8 +18,11 @@ import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf } from '../../lib/grades'
+import { acceptanceText, birthDateText } from '../../lib/legalAcceptance'
+import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
+import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
 
-const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
+const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
 const initials = (n) => (n || '?').split(' ').map((x) => x[0]).slice(0, 2).join('')
 const moduleOf = (examKey) => String(examKey || '').split('_')[1] || '—'
@@ -95,6 +98,36 @@ export default function AlunoDetailPage() {
   const [auditRows, setAuditRows] = useState([])
   const [filterModule, setFilterModule] = useState('all')
   const [filterSemester, setFilterSemester] = useState('all')
+  const [exporting, setExporting] = useState('')
+
+  // Cópia dos dados pessoais do aluno (H8c reduzido; SEG-14): só o administrador
+  // (students.security). Cada pedido fica na auditoria com a finalidade; a aba Auditoria
+  // é relida em seguida para mostrar o registro.
+  async function exportStudentData(purpose) {
+    if (exporting) return
+    const win = purpose === 'imprimir' ? openPrintWindow() : null
+    if (purpose === 'imprimir' && !win) {
+      toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
+      return
+    }
+    setExporting(purpose)
+    try {
+      const query = new URLSearchParams({ email, finalidade: purpose })
+      const data = await api.get(`/api/admin/lgpd/students/export?${query}`)
+      if (purpose === 'imprimir') {
+        if (!printDataExport(data, win)) toast.error('A janela de impressão foi fechada antes de a cópia ficar pronta.')
+      } else {
+        const name = downloadDataExport(data)
+        toast.success(`Arquivo ${name} salvo na pasta de downloads.`)
+      }
+      api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => {})
+    } catch (e) {
+      if (win && !win.closed) win.close()
+      toast.error(e.message)
+    } finally {
+      setExporting('')
+    }
+  }
 
   const student = useMemo(() => (students || []).find((s) => s.email && s.email.toLowerCase() === email.toLowerCase()), [students, email])
 
@@ -155,7 +188,8 @@ export default function AlunoDetailPage() {
                 <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {student.email}</p>
               </div>
               <Button variant="secondary" icon={FileText} onClick={() => openBoletim()}>Boletim (PDF)</Button>
-              <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>
+              {/* Cadastro anonimizado não se edita (o servidor responde 409): sem Editar. */}
+              {!(isAnonymizedStatus(student.status) || student.anonymizedAt) && <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>}
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -244,6 +278,7 @@ export default function AlunoDetailPage() {
                     <div className="space-y-2 text-sm">
                       <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Telefone</span><span className="text-text">{student.phone || '—'}</span></div>
                       <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Unidade</span><span className="text-text">{student.unidade || '—'}</span></div>
+                      <div className="flex justify-between gap-3 border-b border-border/50 pb-2"><span className="text-muted">Nascimento</span><span className="text-right text-text">{birthDateText(student.birthDate) || 'Não informado'}</span></div>
                       <div className="flex justify-between"><span className="text-muted">Responsável</span><span className="text-text">{student.guardian?.name ? `${student.guardian.name}${student.guardian.parentesco ? ' (' + student.guardian.parentesco + ')' : ''}` : '—'}</span></div>
                     </div>
                   </Card>
@@ -313,8 +348,16 @@ export default function AlunoDetailPage() {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Último login</span><span className="text-text">{fmtDateTime(student.lastLoginAt)}</span></div>
                   <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Último acesso</span><span className="text-text">{fmtDateTime(student.lastSeenAt)}</span></div>
-                  <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Aceite dos Termos</span><span className="text-text">{student.termsAcceptance ? `v${student.termsAcceptance.version} · ${fmtDate(student.termsAcceptance.at)}` : 'pendente'}</span></div>
-                  <div className="flex justify-between"><span className="text-muted">Política de Privacidade</span><span className="text-text">{student.privacyAcceptance ? `v${student.privacyAcceptance.version} · ${fmtDate(student.privacyAcceptance.at)}` : 'pendente'}</span></div>
+                  <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Aceite dos Termos</span><span className="text-text">{acceptanceText(student.termsAcceptance)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted">Política de Privacidade</span><span className="text-text">{acceptanceText(student.privacyAcceptance)}</span></div>
+                </div>
+                <div className="mt-4 border-t border-border/50 pt-4">
+                  <p className="text-sm font-semibold text-text">Dados pessoais (LGPD)</p>
+                  <p className="mt-1 text-xs text-muted">Cópia de tudo o que o IClass guarda sobre este aluno, para atender um pedido dele. Fica registrada na auditoria.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button variant="secondary" icon={Download} loading={exporting === 'baixar'} disabled={!!exporting && exporting !== 'baixar'} onClick={() => exportStudentData('baixar')}>Baixar dados (JSON)</Button>
+                    <Button variant="secondary" icon={Printer} loading={exporting === 'imprimir'} disabled={!!exporting && exporting !== 'imprimir'} onClick={() => exportStudentData('imprimir')}>Imprimir</Button>
+                  </div>
                 </div>
               </Card>
             )}

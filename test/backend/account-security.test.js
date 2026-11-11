@@ -131,7 +131,7 @@ test('[UC-SENHA-001] senha temporária: 10 letras e números sem os que se confu
 // --- Cadastro, criação, edição e redefinição ---------------------------------------
 
 test('[UC-SENHA-001] autocadastro recusa senha fraca e nunca pede a troca no primeiro acesso', async () => {
-    const base = { name: 'Bia Nova', email: 'bia.nova@contas.local', courseId: 'DES', studentClass: '1DES', acceptedTerms: true };
+    const base = { name: 'Bia Nova', email: 'bia.nova@contas.local', courseId: 'DES', studentClass: '1DES', acceptedTerms: true, birthDate: '2000-01-01' };
     for (const password of ['1', '12345678', 'bia.nova@contas.local', 'Bia Nova']) {
         const res = await request(app).post('/api/student/register').send({ ...base, password });
         assert.equal(res.status, 400, `${password}: antes, 200`);
@@ -763,7 +763,7 @@ test('[UC-SENHA-001] a recusa diz o campo do corpo de cada rota e o 400 de stude
     const adminWeak = await request(app).post('/api/admin/change-password').set(headers).send({ currentPassword: ADMIN.password, newPassword: '12345678' });
     assert.deepEqual([adminWeak.status, adminWeak.body.passwordPolicy, adminWeak.body.field], [400, true, 'newPassword']);
     const register = await request(app).post('/api/student/register')
-        .send({ name: 'Eva Prado', email: 'eva.prado@contas.local', courseId: 'DES', studentClass: '1DES', acceptedTerms: true, password: '1' });
+        .send({ name: 'Eva Prado', email: 'eva.prado@contas.local', courseId: 'DES', studentClass: '1DES', acceptedTerms: true, birthDate: '2000-01-01', password: '1' });
     assert.deepEqual([register.status, register.body.field], [400, 'password'], 'o autocadastro manda password');
 
     // Troca de senha do aluno: política e "diferente da atual" apontam para newPassword.

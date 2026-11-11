@@ -137,10 +137,11 @@ const ACTION_LABELS = Object.freeze({
     backup_auto_failed: 'Backup automático falhou',
     backup_config_changed: 'Destino do backup alterado',
     // Privacidade (LGPD)
-    privacy_accept: 'Termos e Política de Privacidade aceitos',
+    privacy_accept: 'Termos de Uso ou Política de Privacidade aceitos',
     legal_publish: 'Documento legal publicado',
     dpo_changed: 'Encarregado de dados (LGPD) alterado',
     retention_purge: 'Registros antigos apagados pelo prazo de guarda',
+    retention_settings_changed: 'Prazos de retenção alterados',
     lgpd_export: 'Dados pessoais exportados',
     // Provas (formato próprio, gravado fora de recordAudit)
     exam_application_finished: 'Aplicação de prova encerrada',
@@ -309,8 +310,9 @@ function resolveActor(actor, req) {
 
 // Papel de quem fez, quando dá para saber: a conta passada ou a do pedido (admin ou
 // professor), o aluno da sessão, ou o próprio sistema. Sem como saber, fica de fora.
+// A conta passada com role 'aluno' vale para o aluno sem sessão ainda (autocadastro).
 function resolveActorRole(actor, req, actorValue) {
-    const accountRole = account => (account && account.role === 'professor' ? 'professor' : 'admin');
+    const accountRole = account => (account && account.role === 'professor' ? 'professor' : account && account.role === 'aluno' ? 'aluno' : 'admin');
     if (actor && typeof actor === 'object' && actor.email && normalizedActor(actor.email) === actorValue) return accountRole(actor);
     if (req && req.adminAccount && req.adminAccount.email && normalizedActor(req.adminAccount.email) === actorValue) return accountRole(req.adminAccount);
     if (req && req.studentEmail && normalizedActor(req.studentEmail) === actorValue) return 'aluno';

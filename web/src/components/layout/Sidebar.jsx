@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode } from 'lucide-react'
+import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
 import { canAccessAdminPath } from '../../lib/adminPermissions'
@@ -37,6 +37,7 @@ const INSTITUTION_GROUPS = [
     { to: '/', icon: LayoutGrid, text: 'Acesso Cursos', end: true, always: true },
     { to: '/turmas', icon: School, text: 'Cursos e turmas' },
     { to: '/diretorio', icon: Users, text: 'Alunos' },
+    { to: '/encerrados', icon: Archive, text: 'Cadastros encerrados', adminOnly: true },
   ] },
   { label: 'Instituição', items: [
     { to: '/escolas', icon: Building2, text: 'Escolas' },

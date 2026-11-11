@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { KeyRound } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { KeyRound, ShieldCheck } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { PageHeader } from '../../components/ui/PageHeader'
@@ -11,7 +12,7 @@ import { useApi } from '../../hooks/useApi'
 // Minha conta (/aluno/conta, H5a; UXA-13): os dados da conta, só para ler (quem muda
 // nome, e-mail e turma é o professor), e o "Alterar senha", que pede a senha atual.
 // A matrícula vem do servidor na hora (GET /api/student/account): ela não fica guardada no
-// navegador com a sessão (H5b, SEG-16).
+// navegador com a sessão (H5b, SEG-16). O cartão do fim leva a "Meus dados" (H8c, SEG-14).
 export default function ContaPage() {
   const { auth } = useAuth()
   const account = useApi(auth.email ? '/api/student/account' : null, [auth.email])
@@ -66,6 +67,14 @@ export default function ContaPage() {
           ) : (
             <Button variant="secondary" icon={KeyRound} onClick={() => setChanging(true)}>Alterar senha</Button>
           )}
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader title="Seus dados pessoais" subtitle="Baixe ou imprima uma cópia do que o IClass guarda sobre você (LGPD)." />
+        <CardBody>
+          <Link to="/aluno/meus-dados" className="inline-flex h-[38px] items-center gap-2 rounded-lg border border-border bg-surface-raised px-4 text-sm font-semibold text-text transition-all duration-300 hover:border-[var(--border-strong)] hover:bg-surface-2">
+            <ShieldCheck aria-hidden="true" size={16} />Ver meus dados
+          </Link>
         </CardBody>
       </Card>
     </div>

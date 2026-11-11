@@ -15,6 +15,7 @@ const DEFAULTS = Object.freeze({
     maintenance: { enabled: false, message: 'Sistema em manutenção. Tente novamente em instantes.' },
     network: { adminAccess: 'rede-sem-https', studentsHttps: false },
     backup: { destino: '', guardarExterno: 14 },
+    retention: { proctoringDays: 0, loginLogsDays: 0, reviewedAt: null, reviewedBy: null },
 });
 
 // Blocos que o POST genérico de configurações (/api/admin/settings) nunca altera: cada
@@ -72,6 +73,32 @@ function backupSettings(stored = storedSettings()) {
     };
 }
 
+// Prazos de guarda dos registros técnicos (settings.retention, H8b: SEG-13, decisão 4 do
+// Alan). Só o administrador grava, por POST /api/admin/lgpd/retention (utils/retention.js
+// confere os limites). 0 = nunca apagar sozinho, que é o padrão e o valor de um banco de
+// antes desta versão (sem o bloco). Só teclas e saídas de tela da prova (proctoringDays) e
+// registros de acesso (loginLogsDays) têm prazo; o da lixeira continua em
+// trash.retentionDays. Notas, frequência, entregas, auditoria e cadastro de aluno nunca
+// são apagados por prazo. Valor gravado estranho (negativo, texto) vale 0.
+const RETENTION_MAX_DAYS = 3650;
+
+function retentionDays(value) {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number > 0 ? Math.min(RETENTION_MAX_DAYS, number) : 0;
+}
+
+function retentionSettings(stored = storedSettings()) {
+    const retention = stored.retention && typeof stored.retention === 'object' && !Array.isArray(stored.retention) ? stored.retention : {};
+    const trash = stored.trash && typeof stored.trash === 'object' && !Array.isArray(stored.trash) ? stored.trash : {};
+    return {
+        proctoringDays: retentionDays(retention.proctoringDays),
+        loginLogsDays: retentionDays(retention.loginLogsDays),
+        trashDays: retentionDays(trash.retentionDays),
+        reviewedAt: typeof retention.reviewedAt === 'string' && retention.reviewedAt ? retention.reviewedAt : null,
+        reviewedBy: typeof retention.reviewedBy === 'string' && retention.reviewedBy ? retention.reviewedBy : null,
+    };
+}
+
 function getSettings() {
     const s = storedSettings();
     return {
@@ -85,6 +112,7 @@ function getSettings() {
         maintenance: { ...DEFAULTS.maintenance, ...(s.maintenance || {}) },
         network: networkSettings(s),
         backup: backupSettings(s),
+        retention: (({ trashDays, ...rest }) => rest)(retentionSettings(s)),
     };
 }
 
@@ -186,6 +214,8 @@ module.exports = {
     backupSettings,
     BACKUP_KEEP_EXTERNAL_MIN,
     BACKUP_KEEP_EXTERNAL_MAX,
+    retentionSettings,
+    RETENTION_MAX_DAYS,
     normalizeAdminAccess,
     isValidTimeZone,
     todayInTz,

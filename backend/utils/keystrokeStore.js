@@ -468,18 +468,29 @@ function createKeystrokeStore({ connection, requestWrite, runExclusive, flush = 
         effects.results.set(op, { deleted });
     }
 
-    async function runDeleteWhere(op, effects) {
+    // Condição de deleteWhere e countWhere: aplicações dadas (withoutApplication = também
+    // as teclas sem aplicação) e/ou gravadas antes de `before`.
+    function filterCondition(op) {
         const where = [];
         const params = [];
         if (op.applicationIds) {
-            where.push(`application_id IN (${placeholders(op.applicationIds.length)})`);
-            params.push(...op.applicationIds);
+            const any = [];
+            if (op.applicationIds.length) {
+                any.push(`application_id IN (${placeholders(op.applicationIds.length)})`);
+                params.push(...op.applicationIds);
+            }
+            if (op.withoutApplication) any.push('application_id IS NULL');
+            where.push(any.length > 1 ? `(${any.join(' OR ')})` : any[0]);
         }
         if (op.before !== null) {
             where.push('server_ts < ?');
             params.push(op.before);
         }
-        const condition = where.join(' AND ');
+        return { condition: where.join(' AND '), params };
+    }
+
+    async function runDeleteWhere(op, effects) {
+        const { condition, params } = filterCondition(op);
         await addUnitsFrom(effects, `SELECT DISTINCT application_id, student_email FROM ${KEYSTROKE_TABLE} WHERE ${condition}`, params);
         const limited = op.max !== null
             ? `row_id IN (SELECT row_id FROM ${KEYSTROKE_TABLE} WHERE ${condition} ORDER BY server_ts, row_id LIMIT ?)`
@@ -695,19 +706,40 @@ function createKeystrokeStore({ connection, requestWrite, runExclusive, flush = 
         return enqueue({ type: 'deleteIds', ids: list, weight: list.length });
     }
 
+    // Filtro de deleteWhere e countWhere, conferido. Em applicationIds, null quer dizer
+    // "sem aplicação" (teclas de prova sem aplicação, de antes das aplicações): a
+    // retenção do H8b apaga essas pela própria data, junto com as de aplicação que não
+    // existe mais.
+    function parseFilter(name, { applicationIds, before, max } = {}) {
+        const list = applicationIds === undefined || applicationIds === null ? null : (Array.isArray(applicationIds) ? applicationIds : [applicationIds]);
+        const ids = list ? uniqueIds(list) : null;
+        const withoutApplication = !!list && list.some(id => id === null);
+        if (ids && ids.length > MAX_FILTER_IDS) throw new TypeError(`keystrokes.${name}: no máximo ${MAX_FILTER_IDS} aplicações por chamada.`);
+        const limitBefore = before === undefined || before === null ? null : Number(before);
+        if (limitBefore !== null && !Number.isFinite(limitBefore)) throw new TypeError(`keystrokes.${name}: "before" precisa ser uma data em milissegundos.`);
+        const limitMax = max === undefined || max === null ? null : Math.floor(Number(max));
+        if (limitMax !== null && !(limitMax >= 0)) throw new TypeError(`keystrokes.${name}: "max" precisa ser um número positivo.`);
+        if (!ids && limitBefore === null) throw new TypeError(`keystrokes.${name}: informe applicationIds ou before.`);
+        const empty = (!!ids && !ids.length && !withoutApplication) || limitMax === 0;
+        return { applicationIds: ids, withoutApplication, before: limitBefore, max: limitMax, empty };
+    }
+
     // Retenção (H8): apaga as teclas das aplicações dadas e/ou gravadas antes de `before`
     // (ms), das mais antigas para as mais novas, no máximo `max`. Sem aplicação e sem
     // data é recusado (nunca apaga tudo por engano). Resolve com { deleted }.
-    function deleteWhere({ applicationIds, before, max } = {}) {
-        const ids = applicationIds === undefined || applicationIds === null ? null : uniqueIds(applicationIds);
-        if (ids && ids.length > MAX_FILTER_IDS) throw new TypeError(`keystrokes.deleteWhere: no máximo ${MAX_FILTER_IDS} aplicações por chamada.`);
-        const limitBefore = before === undefined || before === null ? null : Number(before);
-        if (limitBefore !== null && !Number.isFinite(limitBefore)) throw new TypeError('keystrokes.deleteWhere: "before" precisa ser uma data em milissegundos.');
-        const limitMax = max === undefined || max === null ? null : Math.floor(Number(max));
-        if (limitMax !== null && !(limitMax >= 0)) throw new TypeError('keystrokes.deleteWhere: "max" precisa ser um número positivo.');
-        if (!ids && limitBefore === null) throw new TypeError('keystrokes.deleteWhere: informe applicationIds ou before.');
-        if ((ids && !ids.length) || limitMax === 0) return Promise.resolve({ deleted: 0 });
-        return enqueue({ type: 'deleteWhere', applicationIds: ids, before: limitBefore, max: limitMax, weight: 1 });
+    function deleteWhere(filter = {}) {
+        const op = parseFilter('deleteWhere', filter);
+        if (op.empty) return Promise.resolve({ deleted: 0 });
+        return enqueue({ type: 'deleteWhere', applicationIds: op.applicationIds, withoutApplication: op.withoutApplication, before: op.before, max: op.max, weight: 1 });
+    }
+
+    // Quantas teclas gravadas casam com o filtro de deleteWhere (sem max): a prévia da
+    // retenção (H8b). Não conta o que ainda está na fila.
+    async function countWhere(filter = {}) {
+        const op = parseFilter('countWhere', { ...filter, max: null });
+        if (op.empty) return 0;
+        const { condition, params } = filterCondition(op);
+        return Number((await sqlGet(`SELECT COUNT(*) AS n FROM ${KEYSTROKE_TABLE} WHERE ${condition}`, params)).n) || 0;
     }
 
     // Troca de e-mail do aluno: as teclas acompanham. Resolve com { renamed }.
@@ -791,6 +823,7 @@ function createKeystrokeStore({ connection, requestWrite, runExclusive, flush = 
             findByEmails,
             deleteRows,
             deleteWhere,
+            countWhere,
             renameEmail,
             exportRows,
             importRows,

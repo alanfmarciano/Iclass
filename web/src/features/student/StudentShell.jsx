@@ -1,12 +1,13 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
 import { api } from '../../lib/api'
 import { StudentCourseGate } from './StudentCourseGate'
 import { StudentPasswordChangeGate } from './StudentPasswordChangeGate'
+import { StudentPrivacyGate } from './StudentPrivacyGate'
 import { useBranding } from '../../context/BrandingProvider'
 import { LumenShell } from '../../components/layout/LumenShell'
 import { StudentExamAvailability } from './StudentExamAvailability'
@@ -24,6 +25,7 @@ const NAV = [
   { to: '/aluno/avisos', icon: Megaphone, text: 'Avisos' },
   { to: '/aluno/calendario', icon: CalendarDays, text: 'Calendário' },
   { to: '/aluno/conta', icon: UserRound, text: 'Minha conta' },
+  { to: '/aluno/meus-dados', icon: ShieldCheck, text: 'Meus dados' },
 ]
 // A tela da prova chega sob demanda (lib/lazyPage.js). Dois segundos depois de o portal
 // abrir, o navegador já busca o arquivo dela, uma vez: quando o professor libera a
@@ -102,7 +104,7 @@ export function StudentShell() {
           onLogout={() => { logout(); nav('/login') }}
           notifications={notifications}
         >
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentPrivacyGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPrivacyGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
         </LumenShell>
         {examAvailability}
       </>
@@ -162,7 +164,7 @@ export function StudentShell() {
           {notifications}
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">
-          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
+          <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentPrivacyGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPrivacyGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
         </main>
       </div>
       {examAvailability}

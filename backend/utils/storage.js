@@ -228,10 +228,22 @@ function purgeTrash(days) {
     return n;
 }
 
+// Quantos itens estão na lixeira e quantos o purgeTrash(days) apagaria agora (prévia da
+// retenção, H8b). Só lê o índice: não confere o disco nem soma tamanhos.
+function trashRetentionCounts(days, now = Date.now()) {
+    const raw = readIndex();
+    const idx = Array.isArray(raw) ? raw.filter(e => e && typeof e === 'object') : [];
+    const cutoff = days && days > 0 ? now - days * 86400000 : null;
+    return {
+        total: idx.length,
+        expired: cutoff === null ? 0 : idx.filter(e => (e.deletedAt || 0) < cutoff).length,
+    };
+}
+
 module.exports = {
     DATA, ALUNOS_DIR, LIXEIRA_DIR, UPLOADS_DIR,
     safeName, studentFolderName, studentDir, storeStudentFile,
-    moveToTrash, moveDirToTrash, purgeTrash, listTrash, restoreTrash, deleteTrashItem, emptyTrash,
+    moveToTrash, moveDirToTrash, purgeTrash, trashRetentionCounts, listTrash, restoreTrash, deleteTrashItem, emptyTrash,
     isAdminOnlyTrashEntry, getTrashEntry,
     relFromData, absFromData, isInsideStudents, ensureDir,
 };

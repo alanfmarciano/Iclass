@@ -8,7 +8,11 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
   printBoletim: vi.fn(() => true),
+  downloadDataExport: vi.fn(() => 'dados-bia_x.local-2026-11-10.json'),
+  openPrintWindow: vi.fn(),
+  printDataExport: vi.fn(() => true),
   auth: { accountRole: 'admin' },
+  students: null,
 }))
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: vi.fn() } }))
@@ -18,10 +22,11 @@ vi.mock('../../hooks/useAdminWorkspace', () => ({
   useAdminWorkspace: () => ({ courseId: 'OUTRO', courseName: 'Outro curso', className: 'X' }),
 }))
 vi.mock('./boletimPrint', () => ({ printBoletim: mocks.printBoletim }))
+vi.mock('../../lib/dataExportPrint', () => ({ downloadDataExport: mocks.downloadDataExport, openPrintWindow: mocks.openPrintWindow, printDataExport: mocks.printDataExport }))
 vi.mock('../../components/ui/MonthCalendar', () => ({ MonthCalendar: () => null }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: () => ({
-    data: [{ name: 'Bia', email: 'bia@x.local', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }, { name: '2RED', courseId: 'RED' }] }],
+    data: mocks.students || [{ name: 'Bia', email: 'bia@x.local', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }, { name: '2RED', courseId: 'RED' }] }],
     loading: false,
     error: null,
     refetch: vi.fn(),
@@ -30,6 +35,7 @@ vi.mock('../../hooks/useApi', () => ({
 
 beforeEach(() => {
   mocks.auth = { accountRole: 'admin' }
+  mocks.students = null
   mocks.get.mockImplementation(async (path) => {
     if (path.startsWith('/api/admin/course-summaries')) return [{ id: 'DES', name: 'Técnico em Desenvolvimento' }, { id: 'RED', name: 'Técnico em Redes' }]
     if (path.startsWith('/api/admin/student/report')) return { student: { name: 'Bia' }, modules: [] }
@@ -230,5 +236,76 @@ describe('Ficha do aluno · aba Auditoria', () => {
     expect(screen.getAllByText('Certificado emitido')).toHaveLength(2)
     expect(screen.getByRole('option', { name: 'Certificado emitido' })).toBeInTheDocument()
     expect(screen.queryByText('(vazio)')).not.toBeInTheDocument()
+  })
+})
+
+describe('[UC-ENCERRADOS-002] Ficha do aluno anonimizado', () => {
+  it('não oferece Editar (o cadastro anonimizado não se edita); o aluno comum oferece', async () => {
+    mocks.students = [{ name: 'Aluno anonimizado AAAAAA', email: 'anonimizado-aaa@anonimizado.invalid', status: 'Anonimizado', anonymizedAt: 1794341832487, classes: [{ name: '1DES', courseId: 'DES' }] }]
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/alunos/anonimizado-aaa%40anonimizado.invalid']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('button', { name: 'Boletim (PDF)' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument()
+    unmount()
+    mocks.students = null
+    render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('button', { name: 'Editar' })).toBeInTheDocument()
+  })
+})
+
+describe('[UC-LGPD-011] Ficha do aluno · cópia dos dados pessoais', () => {
+  const EXPORT = { type: 'iclass-dados-pessoais', audience: 'admin', generatedAt: '2026-11-10T13:00:00Z', profile: { email: 'bia@x.local' } }
+  function renderDetail() {
+    return render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+  function withExport() {
+    const fallback = mocks.get.getMockImplementation()
+    mocks.get.mockImplementation(async (path) => (path.startsWith('/api/admin/lgpd/students/export') ? EXPORT : fallback(path)))
+  }
+
+  it('administrador baixa a cópia pela aba Segurança, com a finalidade, e a auditoria é relida', async () => {
+    const user = userEvent.setup()
+    withExport()
+    renderDetail()
+    await user.click(screen.getByRole('button', { name: 'Segurança' }))
+    await user.click(screen.getByRole('button', { name: 'Baixar dados (JSON)' }))
+    await waitFor(() => expect(mocks.downloadDataExport).toHaveBeenCalledWith(EXPORT))
+    expect(mocks.get).toHaveBeenCalledWith('/api/admin/lgpd/students/export?email=bia%40x.local&finalidade=baixar')
+    expect(mocks.toast.success).toHaveBeenCalledWith(expect.stringContaining('dados-bia_x.local-2026-11-10.json'))
+    await waitFor(() => expect(mocks.get.mock.calls.filter(([path]) => String(path).startsWith('/api/admin/student/audit'))).toHaveLength(2))
+  })
+
+  it('imprimir abre a janela no clique e escreve nela a cópia recebida', async () => {
+    const user = userEvent.setup()
+    const win = { closed: false, close: vi.fn() }
+    mocks.openPrintWindow.mockReturnValue(win)
+    withExport()
+    renderDetail()
+    await user.click(screen.getByRole('button', { name: 'Segurança' }))
+    await user.click(screen.getByRole('button', { name: 'Imprimir' }))
+    await waitFor(() => expect(mocks.printDataExport).toHaveBeenCalledWith(EXPORT, win))
+    expect(mocks.get).toHaveBeenCalledWith('/api/admin/lgpd/students/export?email=bia%40x.local&finalidade=imprimir')
+  })
+
+  it('janela bloqueada: avisa e não pede a cópia (nada vai para a auditoria)', async () => {
+    const user = userEvent.setup()
+    mocks.openPrintWindow.mockReturnValue(null)
+    withExport()
+    renderDetail()
+    await user.click(screen.getByRole('button', { name: 'Segurança' }))
+    await user.click(screen.getByRole('button', { name: 'Imprimir' }))
+    expect(mocks.toast.error).toHaveBeenCalledWith(expect.stringContaining('bloqueou a janela'))
+    expect(mocks.get.mock.calls.some(([path]) => String(path).startsWith('/api/admin/lgpd/students/export'))).toBe(false)
   })
 })

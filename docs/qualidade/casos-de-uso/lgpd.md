@@ -35,8 +35,34 @@ A página e as rotas `/api/admin/lgpd/*` são só do administrador (`students.se
 
 O backup leva os documentos. A restauração junta pelo id: o que foi publicado depois do backup continua, e o backup de uma versão anterior do IClass (sem os documentos) não apaga nada.
 
+## UC-LGPD-006 — Cadastrar-se com a data de nascimento e o aceite do documento
+
+- Estado: automatizado
+- Testes: `lgpd-primeiro-acesso.test.js`, `LoginPage.test.jsx`
+
+O autocadastro pede a data de nascimento e, para menor de 18 anos, o nome e um telefone ou e-mail do responsável. O aceite guarda o id exato do documento que a tela mostrou (o modelo, antes da publicação). Se a escola publicou outra versão com a tela aberta, o cadastro é recusado e a tela pede o aceite da versão nova. O login tem os links dos Termos e da Política.
+
+## UC-LGPD-007 — Completar o primeiro acesso no portal
+
+- Estado: automatizado
+- Testes: `lgpd-primeiro-acesso.test.js`, `StudentPrivacyGate.test.jsx`, `StudentExamAvailability.classes.test.jsx`, `legalAcceptance.test.js`, `PrivacidadePage.test.jsx`, `lazyPage.test.jsx`
+
+No portal, o aluno vê "Antes de continuar" só com o que falta: a data de nascimento, o responsável do menor e, depois da publicação, o aceite da versão publicada. O login não é bloqueado (política "ciência"), a prova não passa por essa tela (a faixa "Prova disponível" aparece por cima dela, também para o aluno em duas turmas que ainda não escolheu a turma) e, em demonstração, ela não aparece. A Auditoria só registra "Termos de Uso ou Política de Privacidade aceitos" quando o aluno aceitou um documento; anonimizar tira o IP e o aparelho das entradas que ele mesmo gravou. Uma publicação nova pede aceite novo; o anterior fica no histórico. O professor informa a data no cadastro; a ficha mostra a idade e o texto do aceite; a página Privacidade conta os pendentes.
+
+## UC-LGPD-010 — Baixar ou imprimir os meus dados
+
+- Estado: automatizado
+- Testes: `lgpd-meus-dados.test.js`, `dataExportPrint.test.js`, `MeusDadosPage.test.jsx`
+
+No portal, "Meus dados" (também pelo cartão em Minha conta) baixa um arquivo JSON com os dados pessoais do aluno ou abre a versão para imprimir. Entram o cadastro, as turmas, os aceites, as notas já publicadas (a nota em revisão aparece só como "em revisão"), a frequência, os certificados, as observações compartilhadas com ele, as dúvidas do fórum, os acessos ao portal e o que a prova registrou (saídas da tela e teclas). Não entram as questões e o gabarito, os dados de outros alunos, quem escreveu cada observação nem as anotações internas da equipe. São até 5 cópias por hora, e cada cópia fica na Auditoria.
+
+## UC-LGPD-011 — Exportar os dados de um aluno (administrador)
+
+- Estado: automatizado
+- Testes: `lgpd-meus-dados.test.js`, `dataExportPrint.test.js`, `AlunoDetailPage.test.jsx`, `admin-rbac-catalog.test.js`
+
+Na ficha do aluno, aba Segurança, o administrador baixa ou imprime a cópia completa para atender um pedido do aluno: além do que o aluno vê, a nota em revisão, as observações com o autor, a observação de acessibilidade, os e-mails antigos e a auditoria do aluno. Senhas, tokens e dados de outros alunos nunca entram. Cada exportação fica na Auditoria com quem gerou e a finalidade. O professor não tem esse botão (o servidor responde 403).
+
 ## O que vem depois
 
-- Aceite com o id do documento no cadastro e no primeiro acesso (portão), data de nascimento e responsável do menor, links no login: H8a-2.
-- Prazos de retenção e modo do teclado na prova: H8b. Os marcadores `{{prazo_monitoramento}}` e `{{prazo_acessos}}` passam a mostrar os prazos quando eles existirem.
-- "Meus dados" e exportação do administrador: H8c.
+- Registro dos pedidos do titular (correção, exclusão, revogação) com prazo e resposta: fica para depois do H8c reduzido.

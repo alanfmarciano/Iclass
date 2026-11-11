@@ -46,6 +46,7 @@ const PrivacidadePage = lazyPage(() => import('./features/admin/PrivacidadePage'
 // Endereço da sala em tela cheia, fora do AppShell (H6a); a página traz a própria área
 // de erro (AppErrorBoundary), para o pacote inicial não crescer.
 const EnderecoSalaPage = lazyPage(() => import('./features/admin/EnderecoSalaPage'))
+const CadastrosEncerradosPage = lazyPage(() => import('./features/admin/CadastrosEncerradosPage'))
 // Públicas (sem login): Termos de Uso e Política de Privacidade (H8a-1).
 const LegalDocumentPage = lazyPage(() => import('./features/LegalDocumentPage'))
 // Pública (sem login): guia de instalação do certificado da conexão segura (H6c, OPS-08).
@@ -61,6 +62,7 @@ const AvisosStudentPage = lazyPage(() => import('./features/student/AvisosPage')
 const CalendarioStudentPage = lazyPage(() => import('./features/student/CalendarioPage'))
 const BibliotecaStudentPage = lazyPage(() => import('./features/student/BibliotecaPage'))
 const ContaStudentPage = lazyPage(() => import('./features/student/ContaPage'))
+const MeusDadosStudentPage = lazyPage(() => import('./features/student/MeusDadosPage'))
 
 function RequireRole({ role, children }) {
   const { auth, authReady } = useAuth()
@@ -143,6 +145,7 @@ export default function App() {
         <Route path="sistema" element={<RequireAdminPath path="/sistema"><SistemaPage /></RequireAdminPath>} />
         <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="lgpd" element={<RequireAdministrator><RequireAdminPath path="/lgpd"><PrivacidadePage /></RequireAdminPath></RequireAdministrator>} />
+        <Route path="encerrados" element={<RequireAdministrator><RequireAdminPath path="/encerrados"><CadastrosEncerradosPage /></RequireAdminPath></RequireAdministrator>} />
       </Route>
 
       {/* Endereço da sala para projetar no quadro (H6a): tela cheia, sem o menu do painel. */}
@@ -163,6 +166,7 @@ export default function App() {
         <Route path="calendario" element={<CalendarioStudentPage />} />
         <Route path="biblioteca" element={<BibliotecaStudentPage />} />
         <Route path="conta" element={<ContaStudentPage />} />
+        <Route path="meus-dados" element={<MeusDadosStudentPage />} />
       </Route>
 
       {/* Termos e Privacidade: abertos a qualquer um, com ou sem login (H8a-1). */}

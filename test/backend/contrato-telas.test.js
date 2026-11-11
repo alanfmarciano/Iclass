@@ -227,7 +227,11 @@ test('[UC-ERRO-003] contrato da tela da prova: start-attempt, autosave, teclas (
     // do botão direito montam.
     screen('features/student/exam/ExamRunner.jsx', 'const base = { email, studentClass, courseId, examKey, applicationId, attemptId }');
     screen('features/student/exam/ExamRunner.jsx', 'const payload = { ...base, events }');
-    screen('features/student/exam/ExamRunner.jsx', "keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), key: 'copy', code: 'copy', mods: '', kind: 'clipboard', question: null, blocked: true, suspicious: true })");
+    // O registro passa pelo modo do teclado da aplicação (H8b, record() no ExamRunner);
+    // com 'tudo' o servidor guarda o lote inteiro, que é o que este contrato confere.
+    screen('features/student/exam/ExamRunner.jsx', "keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), ...entry })");
+    screen('features/student/exam/ExamRunner.jsx', "record(e, { key: 'copy', code: 'copy', mods: '', kind: 'clipboard', question: null, blocked: true, suspicious: true })");
+    application.keystrokeMode = 'tudo';
     const now = Date.now();
     const events = Array.from({ length: 498 }, (_, index) => ({
         seq: index + 1, clientTs: now + index, key: index % 7 ? 'a' : 'Enter', code: index % 7 ? 'KeyA' : 'Enter',
@@ -359,10 +363,14 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
 test('[UC-ERRO-003] contrato das telas públicas: cadastro (com e sem responsável), recuperação, troca de senha do professor e Sair', async () => {
     // LoginPage: cadastro com o formulário inteiro; guardian só quando algo foi preenchido.
     screen('features/LoginPage.jsx', "const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }");
-    screen('features/LoginPage.jsx', 'name, nomeSocial, email, password, phone, courseId, studentClass, guardian: hasGuardian ? guardian : undefined, acceptedTerms,');
+    // Desde o H8a-2 a tela manda a data de nascimento (obrigatória) e o id dos documentos
+    // que mostrou (sem nada publicado, undefined, que o JSON não leva).
+    screen('features/LoginPage.jsx', 'name, nomeSocial, email, password, phone, courseId, studentClass, birthDate,');
+    screen('features/LoginPage.jsx', 'guardian: hasGuardian ? guardian : undefined,');
+    screen('features/LoginPage.jsx', 'termsDocumentId: legalDocs?.terms?.documentId || undefined,');
     const register = body => request(app).post('/api/student/register').send(body);
-    ok(await register({ name: 'Joana Lima', nomeSocial: '', email: 'joana.lima@teste.local', password: 'senha da Joana', phone: '', courseId: COURSE_ID, studentClass: CLASS_NAME, acceptedTerms: true }), 'cadastro sem responsável');
-    ok(await register({ name: 'Pedro Menor', nomeSocial: 'Pê', email: 'pedro.menor@teste.local', password: 'senha do Pedro', phone: '(11) 98888-7777', courseId: COURSE_ID, studentClass: CLASS_NAME, guardian: { name: 'Maria Responsável', phone: '(11) 97777-6666', email: '', parentesco: 'Mãe' }, acceptedTerms: true }), 'cadastro com responsável');
+    ok(await register({ name: 'Joana Lima', nomeSocial: '', email: 'joana.lima@teste.local', password: 'senha da Joana', phone: '', courseId: COURSE_ID, studentClass: CLASS_NAME, birthDate: '2000-03-15', acceptedTerms: true }), 'cadastro sem responsável');
+    ok(await register({ name: 'Pedro Menor', nomeSocial: 'Pê', email: 'pedro.menor@teste.local', password: 'senha do Pedro', phone: '(11) 98888-7777', courseId: COURSE_ID, studentClass: CLASS_NAME, birthDate: '2012-05-10', guardian: { name: 'Maria Responsável', phone: '(11) 97777-6666', email: '', parentesco: 'Mãe' }, acceptedTerms: true }), 'cadastro com responsável');
 
     screen('features/LoginPage.jsx', "api.post('/api/student/recover', { email }, { auth: false })");
     ok(await request(app).post('/api/student/recover').send({ email: 'joana.lima@teste.local' }), 'recuperação');

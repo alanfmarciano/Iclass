@@ -56,6 +56,11 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 - A impressão da prova do aluno não leva mais `<script>` dentro da janela (seria bloqueado pela CSP): a página chama `print()` de fora, como as impressões do professor. A prévia da biblioteca embute só PDF enviado ao IClass; PDF de outro site abre em nova aba. (SEG-16)
 - Pacotes atualizados dentro da mesma versão maior (só o `adm-zip` passa de 0.5 para 0.6): `adm-zip` 0.6.1, `multer` 2.5.0, `proxy-addr`, `qs`, `tar`, `undici`, `brace-expansion`, `dompurify` 3.4.17 e `react-router-dom` 6.30.6. O `npm audit` de produção fica sem alta e crítica; sobram moderadas que só fecham com versão maior (`archiver` 8, `react-router` 7). (SEG-17, ENG-07)
 - `npm run test:audit` no `npm run check` e Dependabot semanal. (SEG-17, ENG-07)
+### 2026-11-11 — primeiro acesso do aluno (fase 2, H8a-2)
+
+- O aceite dos Termos e da Política passa a guardar o id exato do documento aceito (com a escola, a data, o IP e o aparelho), no autocadastro e no portal, e só é pedido depois que o administrador publica o texto. Cada publicação nova pede um aceite novo, e o anterior fica no histórico; cada aceite vai para a auditoria (`privacy_accept`). (SEG-08, OPS-12)
+- Data de nascimento no cadastro e, para menor de 18 anos, nome e contato do responsável, pedidos a todos no próximo acesso sem bloquear o login (política "ciência", decisão P4). A rota da prova não passa pelo portão, e a faixa "Prova disponível" aparece por cima dele, também para o aluno em mais de uma turma que ainda não escolheu a turma. (SEG-09)
+- Anonimizar o aluno tira o IP e o aparelho das entradas de auditoria que ele mesmo gravou (aceite, data de nascimento, responsável). (SEG-09)
 
 ### 2026-11-10 — Termos e Privacidade (fase 2, H8a-1)
 
