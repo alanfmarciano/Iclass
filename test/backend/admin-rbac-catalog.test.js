@@ -38,6 +38,12 @@ test('rotas extraídas ficam nos módulos administrativos dedicados', () => {
         assert.equal(adminSource.includes(`'${route}'`), false, `${route} ainda está no router monolítico`);
         assert.equal(archiveSource.includes(`'${route}'`), true, `${route} não foi extraída para adminArchive`);
     });
+    // Endereço da sala (H6a): network-info saiu de common.js e room-address nasceu ali.
+    const commonSource = fs.readFileSync(path.join(routesDir, 'common.js'), 'utf8');
+    ['/api/admin/network-info', '/api/admin/room-address'].forEach(route => {
+        assert.equal(commonSource.includes(`'${route}'`), false, `${route} ainda está em common.js`);
+        assert.equal(systemSource.includes(`'${route}'`), true, `${route} não está em adminSystem`);
+    });
     ['/api/admin/config', '/api/admin/flush-exam-state', '/api/admin/server/restart', '/api/admin/reset', '/api/admin/settings'].forEach(route => {
         assert.equal(adminSource.includes(`'${route}'`), false, `${route} ainda está no router monolítico`);
         assert.equal(systemSource.includes(`'${route}'`), true, `${route} não foi extraída para adminSystem`);

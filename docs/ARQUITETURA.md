@@ -87,7 +87,7 @@ O `db.health()` e o `db.ping()` (`database.js`, H3b) dão o estado da gravação
 | `adminArchive.js` | arquivamento de cursos |
 | `adminExamConfig.js` | configuração e aplicação de provas |
 | `adminRecovery.js` | recuperação/restore |
-| `adminSystem.js` | configuração de sistema, IP, flush de estado |
+| `adminSystem.js` | configuração de sistema, endereços da rede (`network-info`) e endereço da sala com QR (`room-address`, H6a), flush de estado |
 | `proctoring.js` | monitoramento antifraude da prova |
 | `setupMode.js` | modo de setup/acesso rápido local |
 | `testmode.js` | seed/reset apenas sob `TEST_MODE=1` |

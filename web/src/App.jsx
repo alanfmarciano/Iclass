@@ -43,6 +43,9 @@ const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
 const SistemaPage = lazyPage(() => import('./features/admin/SistemaPage'))
 const AuditoriaPage = lazyPage(() => import('./features/admin/AuditoriaPage'))
 const PrivacidadePage = lazyPage(() => import('./features/admin/PrivacidadePage'))
+// Endereço da sala em tela cheia, fora do AppShell (H6a); a página traz a própria área
+// de erro (AppErrorBoundary), para o pacote inicial não crescer.
+const EnderecoSalaPage = lazyPage(() => import('./features/admin/EnderecoSalaPage'))
 // Públicas (sem login): Termos de Uso e Política de Privacidade (H8a-1).
 const LegalDocumentPage = lazyPage(() => import('./features/LegalDocumentPage'))
 // Aluno
@@ -139,6 +142,9 @@ export default function App() {
         <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="lgpd" element={<RequireAdministrator><RequireAdminPath path="/lgpd"><PrivacidadePage /></RequireAdminPath></RequireAdministrator>} />
       </Route>
+
+      {/* Endereço da sala para projetar no quadro (H6a): tela cheia, sem o menu do painel. */}
+      <Route path="/endereco" element={<RequireRole role="admin"><RequireAdminPath path="/endereco"><EnderecoSalaPage /></RequireAdminPath></RequireRole>} />
 
       {/* Aluno */}
       {/* Prova online em layout próprio, sem o menu, o sino e os links do portal (AVA-12). */}

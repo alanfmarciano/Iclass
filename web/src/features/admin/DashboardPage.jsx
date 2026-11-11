@@ -3,6 +3,7 @@ import { AlertTriangle, ClipboardCheck, Download, Minus, Plus } from 'lucide-rea
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Button } from '../../components/ui/Button'
 import { PageHeader } from '../../components/ui/PageHeader'
+import { RoomAddressButton } from './RoomAddress'
 import { SectionLabel } from '../../components/ui/SectionLabel'
 import { Skeleton } from '../../components/ui/Skeleton'
 import { useApi } from '../../hooks/useApi'
@@ -147,6 +148,7 @@ export default function DashboardPage() {
       )}
 
       <PageHeader title="Dashboard" subtitle={contexto}>
+        <RoomAddressButton />
         <Button variant="secondary" icon={Download} onClick={exportCsv}>Exportar</Button>
         <Button icon={ClipboardCheck} onClick={() => nav('/chamada')}>Lançar chamada</Button>
       </PageHeader>

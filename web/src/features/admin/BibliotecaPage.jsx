@@ -11,6 +11,8 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
+import { copyText } from '../../lib/clipboard'
+import { ManualCopyModal } from '../../components/ui/ManualCopyModal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 
 const ICON = { image: ImageIcon, pdf: FileText, video: Film, link: Globe, zip: FileArchive, doc: FileText, sheet: FileText, other: File }
@@ -37,6 +39,7 @@ export default function BibliotecaPage() {
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState('')
+  const [manualCopy, setManualCopy] = useState('')
   const [scope, setScope] = useState('class')
 
   const affectedClasses = useMemo(() => {
@@ -84,7 +87,12 @@ export default function BibliotecaPage() {
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
 
-  async function copy(u) { try { await navigator.clipboard.writeText(u); setCopied(u); setTimeout(() => setCopied(''), 1500) } catch { toast.error('Não foi possível copiar') } }
+  // Copiar com plano B (H6a): pelo IP da rede (http) o navegador não libera a API de
+  // copiar; sem nenhum jeito, o endereço aparece selecionado para o Ctrl+C.
+  async function copy(u) {
+    if (await copyText(u) === 'copied') { setCopied(u); setTimeout(() => setCopied(''), 1500) }
+    else setManualCopy(u)
+  }
 
   async function remove(e) {
     if (scope === 'course' && !confirm(`A exclusão será aplicada em: ${affectedClasses.join(', ') || 'todas as turmas do curso'}. Deseja continuar?`)) return
@@ -178,6 +186,7 @@ export default function BibliotecaPage() {
           </div>
         )}
       </PageState>
+      <ManualCopyModal open={!!manualCopy} text={manualCopy} label="URL do material" onClose={() => setManualCopy('')} />
     </div>
   )
 }

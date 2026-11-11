@@ -10,7 +10,7 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { localIpAddresses, studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, assignRequestId } = require('./middlewares.js');
+const { studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, assignRequestId } = require('./middlewares.js');
 const { crashLogPath, logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
@@ -22,7 +22,8 @@ const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
 const serverLifecycle = require('./utils/serverLifecycle.js');
 const { SYNCED_FOLDER_WARNING } = require('./utils/syncedFolder.js');
-const { createNetworkPolicy } = require('./utils/networkPolicy.js');
+const { createNetworkPolicy, studentsHttpsEnabled } = require('./utils/networkPolicy.js');
+const { consoleLines, createAddressWatcher, WATCH_INTERVAL_MS: NETWORK_WATCH_INTERVAL_MS } = require('./utils/networkAddresses.js');
 const { securityHeaders } = require('./utils/securityHeaders.js');
 
 // Registro de falhas do servidor: o único é utils/errorLog.js (data/crash.log, 5 MB), e o
@@ -671,20 +672,28 @@ function printBanner(port) {
     const localhostUrl = `http://localhost:${port}`;
     console.log(` -> ${link(localhostUrl + quickHash, localhostUrl)}`);
     if (quickHash) console.log(`    (clique abre o login com acesso rápido)`);
-    console.log(`\nPara os alunos acessarem pelo celular ou outros PCs na mesma rede WiFi:`);
-
-    localIpAddresses.forEach(ip => {
-        const isVBox = ip.name.toLowerCase().includes('virtualbox') || ip.address.startsWith('192.168.56.');
-        const url = link(`http://${ip.address}:${port}`);
-        if (isVBox) {
-            console.log(` -> ${url}  (⚠️ Ignorar: Rede VirtualBox)`);
-        } else {
-            console.log(` -> ${url}  (✅ Recomendado: ${ip.name})`);
-        }
-    });
-
+    // Endereços para os alunos, outros adaptadores, onde o painel abre e o firewall
+    // (H6a): relidos agora, não no carregamento do módulo (utils/networkAddresses.js).
+    console.log('');
+    consoleLines({
+        port,
+        scheme: studentsHttpsEnabled() ? 'https' : 'http',
+        adminAccess: settingsUtil.networkSettings().adminAccess,
+        link: url => link(url),
+    }).forEach(line => console.log(line));
     console.log(`===========================================`);
-    console.log(`⚠️ IMPORTANTE: Lembre-se de liberar a porta ${port} no Firewall do Windows, se necessário!`);
+}
+
+// Vigia da rede (H6a): a cada 30 s confere se o endereço recomendado ou os IPs da máquina
+// mudaram (notebook que trocou de Wi-Fi, roteador que deu outro IP) e avisa no console.
+// A tela Sistema, o QR e /endereco já releem a cada pedido.
+// Com TEST_MODE=1, ICLASS_TEST_NETWORK_WATCH_MS encurta o intervalo (conferência ao vivo).
+function startNetworkWatcher(port) {
+    const testInterval = process.env.TEST_MODE === '1' ? Number(process.env.ICLASS_TEST_NETWORK_WATCH_MS) : 0;
+    const intervalMs = testInterval > 0 ? Math.max(200, testInterval) : NETWORK_WATCH_INTERVAL_MS;
+    const watcher = createAddressWatcher({ port, scheme: () => (studentsHttpsEnabled() ? 'https' : 'http') });
+    serverLifecycle.registerTimer('network-watch', setInterval(() => watcher.check(), intervalMs));
+    return watcher;
 }
 
 // Reiniciar sem o supervisor: o próprio servidor dispara o novo processo antes de sair
@@ -899,6 +908,7 @@ async function startServer({ port = PORT, host = '0.0.0.0' } = {}) {
     const resumed = restored || {};
     serverLifecycle.markReady({ sessionsRestored: { students: resumed.students || 0, admins: resumed.admins || 0, dropped: resumed.dropped || 0 } });
     printBanner(actualPort);
+    startNetworkWatcher(actualPort);
     if (serverLifecycle.isSupervised()) console.log('🔁 Reinício automático ligado (supervisor).');
     sendToSupervisor({ type: 'ready', instanceId: SERVER_INSTANCE_ID, port: actualPort, pid: process.pid });
     return serverInstance;

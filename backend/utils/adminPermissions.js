@@ -114,6 +114,8 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/accounts\/(create|update|delete|unlock-login)$/, permission: 'accounts.manage' },
     { methods: ['POST'], pattern: /^\/teacher-assignments$/, permission: 'accounts.manage' },
     { methods: ['GET'], pattern: /^\/network-info$/, permission: 'page.system' },
+    // Endereço da sala e QR code (H6a): o professor projeta pelo Dashboard e pelo Monitor.
+    { methods: ['GET'], pattern: /^\/room-address$/, permission: ['page.dashboard', 'page.monitor'] },
     // Cartão "Saúde do servidor" da tela Sistema (H3c).
     { methods: ['GET'], pattern: /^\/system\/health$/, permission: 'page.system' },
     // Cartão Armazenamento e Compactar (H1-c); compactar é só do administrador (a rota

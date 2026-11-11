@@ -96,6 +96,13 @@ function httpsUrlFor() {
     return null;
 }
 
+// Os alunos entram pela conexão segura (settings.network.studentsHttps)? Ainda não: a
+// opção entra com o H6c, desligada por padrão. Enquanto for false, o endereço da sala e o
+// QR (H6a, utils/networkAddresses.js) usam http://IP:porta.
+function studentsHttpsEnabled() {
+    return false;
+}
+
 // Tokens que a entrega de arquivos (server.js, sendControlledFile) aceitaria como sessão
 // de professor fora do x-admin-session: x-session-token e cada ?access= do pedido.
 function otherSessionTokens(req) {
@@ -182,7 +189,7 @@ function connectionInfo(req, options = {}) {
         adminAccessMode: mode,
         insecureAdmin: decision.allowed && decision.insecure,
         tlsAvailable: httpsAvailable(),
-        studentsHttps: false,
+        studentsHttps: studentsHttpsEnabled(),
         httpsUrl,
     };
 }
@@ -216,4 +223,5 @@ module.exports = {
     isInstructorRequest,
     isThisComputerRequest,
     normalizeAddress,
+    studentsHttpsEnabled,
 };

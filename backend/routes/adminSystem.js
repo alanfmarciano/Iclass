@@ -11,7 +11,6 @@ const {
     adminCanAccessClass,
     findClassByNameAndCourse,
     getCourseItemKeys,
-    localIpAddresses,
     getReleasedItemsForClass,
     isProfessorAccount,
     sendHandledFailure,
@@ -19,7 +18,9 @@ const {
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
-const { connectionInfo, httpsAvailable } = require('../utils/networkPolicy.js');
+const { connectionInfo, httpsAvailable, studentsHttpsEnabled } = require('../utils/networkPolicy.js');
+const { networkAddresses } = require('../utils/networkAddresses.js');
+const { encodeQr } = require('../utils/qrCode.js');
 const { saveServerBackup } = require('../utils/backup.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
@@ -168,6 +169,68 @@ function settingsChanges(before, after) {
 function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     const router = express.Router();
 
+    // Porta que os alunos usam: a do servidor que está escutando (startServer guarda em
+    // app.set('serverInstance')); sem ele (testes com supertest), a configurada.
+    function listeningPort(req) {
+        const server = req.app && req.app.get('serverInstance');
+        const address = server && typeof server.address === 'function' ? server.address() : null;
+        return address && typeof address === 'object' && address.port ? address.port : Number(port) || 3000;
+    }
+
+    // Endereços desta máquina (utils/networkAddresses.js, relidos a cada 2 s), com o
+    // esquema que os alunos usam: http enquanto a conexão segura para os alunos estiver
+    // desligada (studentsHttps, padrão; H6c).
+    function studentAddresses(req) {
+        return networkAddresses({ port: listeningPort(req), scheme: studentsHttpsEnabled() ? 'https' : 'http' });
+    }
+
+    // Cartão Rede da tela Sistema (H6a, OPS-10): todos os adaptadores, cada um com o
+    // endereço completo (esquema, IP e porta) e o tipo ('rede', 'virtual', 'link-local'),
+    // e o recomendado para os alunos. hostname (nome fixo, H6d) e https (conexão segura,
+    // H6c) já vêm no formato final, desligados nesta versão.
+    router.get('/api/admin/network-info', (req, res) => {
+        validateAdmin(req, res, () => {
+            const snapshot = studentAddresses(req);
+            res.json({
+                port: snapshot.port,
+                recommended: snapshot.recommended,
+                addresses: snapshot.addresses,
+                hostname: null,
+                https: { available: httpsAvailable(), studentsHttps: studentsHttpsEnabled() },
+                adminAccess: settingsUtil.networkSettings().adminAccess,
+            });
+        });
+    });
+
+    // Endereço da sala (H6a, OPS-10): o endereço que os alunos digitam e o QR code dele,
+    // para o botão "Endereço da sala" do Dashboard e do Monitor e a página /endereco
+    // (projetada no quadro). O professor vê (page.dashboard ou page.monitor). O QR codifica
+    // sempre studentUrl; sem rede nenhuma, os dois vêm null e a tela explica.
+    let lastQr = { url: null, qr: null };
+    function qrFor(url) {
+        if (lastQr.url !== url) lastQr = { url, qr: encodeQr(url) };
+        return lastQr.qr;
+    }
+    router.get('/api/admin/room-address', (req, res) => {
+        validateAdmin(req, res, () => {
+            const snapshot = studentAddresses(req);
+            const recommended = snapshot.recommended;
+            const studentUrl = recommended ? recommended.url : null;
+            const qr = studentUrl ? qrFor(studentUrl) : null;
+            res.json({
+                success: true,
+                studentUrl,
+                port: snapshot.port,
+                adapter: recommended ? { name: recommended.name, address: recommended.address, kind: recommended.kind } : null,
+                nameUrl: null,
+                hostnameInUse: null,
+                mdnsState: 'desligado',
+                studentsHttps: snapshot.scheme === 'https',
+                qr: qr ? { version: qr.version, size: qr.size, rows: qr.rows } : null,
+            });
+        });
+    });
+
     // Cartão Armazenamento da tela Sistema: tamanho do banco e do -wal, espaço
     // recuperável, linhas por coleção, teclas, gravação completa, p95 de gravação, último
     // erro, aviso de OneDrive (db.storageStatus(), fonte única) e se dá para compactar.
@@ -261,13 +324,12 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     router.post('/api/admin/config', (req, res) => {
         validateAdmin(req, res, config => {
             const { studentClass, studentEmail, courseId } = req.body;
-            const preferredIp = localIpAddresses.find(ip => !ip.name.toLowerCase().includes('virtualbox') && !ip.address.startsWith('192.168.56.'))
-                || localIpAddresses[0]
-                || { address: 'localhost' };
+            // O mesmo endereço recomendado do cartão Rede e do QR da sala (H6a).
+            const snapshot = studentAddresses(req);
             const responseData = {
                 activeExamKey: config.activeExamKey,
                 releasedItems: config.releasedItems || {},
-                serverUrl: `http://${preferredIp.address}:${port}`,
+                serverUrl: snapshot.recommended ? snapshot.recommended.url : `${snapshot.scheme}://localhost:${snapshot.port}`,
             };
 
             if (studentClass) {

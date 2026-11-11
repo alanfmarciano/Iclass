@@ -50,25 +50,8 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const DB_CLASSES_FILE = path.join(DATA_DIR, 'db_classes.json');
 const DB_ADMINS_FILE = path.join(DATA_DIR, 'db_admins.json');
 
-// Armazena todos os IPs da rede local
-let localIpAddresses = [];
-function detectIP() {
-    const os = require('os');
-    const interfaces = os.networkInterfaces();
-    for (let devName in interfaces) {
-        let iface = interfaces[devName];
-        for (let i = 0; i < iface.length; i++) {
-            let alias = iface[i];
-            if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
-                localIpAddresses.push({ name: devName, address: alias.address });
-            }
-        }
-    }
-    if (localIpAddresses.length === 0) {
-        localIpAddresses.push({ name: 'localhost', address: 'localhost' });
-    }
-}
-detectIP();
+// Os endereços da rede local saíram daqui (o detectIP lia os adaptadores uma vez só, ao
+// subir): agora são relidos a cada pedido em utils/networkAddresses.js (H6a, OPS-10).
 
 function normalizeIp(ip) {
     if (!ip) return '';
@@ -1404,7 +1387,6 @@ module.exports = {
     CONFIG_FILE,
     DB_CLASSES_FILE,
     DB_ADMINS_FILE,
-    localIpAddresses,
     normalizeIp,
     validateStudentSession,
     resolveRequester,

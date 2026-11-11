@@ -19,7 +19,6 @@ const {
 } = require('../utils/contentAccess.js');
 const {
     sanitizeEvaluationForStudent,
-    localIpAddresses,
     validateAdmin,
     validateAdminPermission,
     validateAnySession,
@@ -267,11 +266,6 @@ router.get('/:key.md', async (req, res, next) => {
             return res.status(404).type('text/plain').send('');
         }
     });
-});
-
-// Retorna os IPs da rede local
-router.get('/api/admin/network-info', (req, res) => {
-    res.json(localIpAddresses);
 });
 
 const { extractBranding, resolveEffectiveBranding, validateBrandingPatch } = require('../utils/branding.js');

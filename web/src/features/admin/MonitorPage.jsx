@@ -10,6 +10,7 @@ import { Textarea } from '../../components/ui/Textarea'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/PageHeader'
+import { RoomAddressButton } from './RoomAddress'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { fmtGrade } from '../../lib/grades'
@@ -948,7 +949,7 @@ export default function MonitorPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <PageHeader title="Monitor Online" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`} />
+      <PageHeader title="Monitor Online" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`}><RoomAddressButton /></PageHeader>
       {activeApplications.length > 0 && (
         <section className="border-y border-success/45 bg-success-soft/20" aria-labelledby="active-monitor-applications-title">
           <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
