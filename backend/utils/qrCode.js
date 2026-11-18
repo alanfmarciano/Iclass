@@ -22,8 +22,10 @@
 // Recorte usado pelo IClass: só o modo byte (UTF-8), só a correção M (aguenta ~15% do
 // código riscado ou fora de foco, o bastante para a tela projetada) e as versões 1 a 10
 // (até 213 bytes; o endereço da sala tem uns 30). Sem "aumentar a correção" quando sobra
-// espaço: o resultado é o mesmo de segno 1.6 com error='m', boost_error=False e
-// mode='byte' (test/backend/qr-code.test.js compara com matrizes geradas por ele).
+// espaço: com a mesma máscara, o resultado é o mesmo da "QRCode for JavaScript" de
+// Kazuhiko Arase (a que vem dentro do npm, em qrcode-terminal 0.12) com correção M e modo
+// 8bit; test/backend/qr-code.test.js compara com as matrizes geradas por ela
+// (fixtures/gerar-qr-code-matrizes.js) e ainda lê o código de volta com um leitor próprio.
 //
 // encodeQr(text, { mask }) → { version, mask, size, rows }, com rows[y][x] = '1' para
 // módulo escuro e '0' para claro, sem a margem (quem desenha põe 4 módulos claros em

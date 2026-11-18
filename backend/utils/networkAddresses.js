@@ -13,8 +13,13 @@
 //   um endereço). Só é recomendado se for o único;
 // - 'rede': os demais.
 //
-// O recomendado para os alunos, em ordem: 'rede' com IP privado e nome de Wi-Fi/Ethernet;
-// qualquer 'rede' privado; qualquer 'rede'; um virtual; por último o link-local.
+// O recomendado para os alunos, em ordem: 'rede' com IP privado e nome de Wi-Fi/Ethernet
+// (os adaptadores físicos); qualquer 'rede' privado; qualquer 'rede'; um virtual (VPN,
+// TAP, vEthernet, WSL, Hyper-V...); por último o link-local. Dentro de cada degrau, o
+// 192.168.x vem antes dos outros IPs privados (decisões §12, sobra do H6a): é a faixa dos
+// roteadores Wi-Fi de sala, e os 10.x/172.x de um notebook costumam ser de VPN da
+// secretaria ou de adaptador que o Windows não diz que é virtual. No resto, vale a ordem
+// do sistema.
 //
 // O endereço que os alunos digitam é sempre esquema + IP + porta (http://IP:3000): sem a
 // porta o celular cai na 80 e a página não abre. Enquanto a conexão segura para os alunos
@@ -32,7 +37,10 @@ const CACHE_MS = 2000;
 // serverLifecycle pelo startServer).
 const WATCH_INTERVAL_MS = 30000;
 
-const VIRTUAL_NAME = /virtualbox|vbox|vmware|vmnet|hyper-v|vethernet|wsl|docker|^br-|^veth|^virbr|tailscale|zerotier|hamachi|wireguard|^wg\d|(?:^|[^a-z])(?:tap|tun|utun)(?:\d|[^a-z]|$)|vpn|npcap|bluetooth|loopback pseudo/i;
+// Nomes de adaptador virtual, VPN ou ponte, como o Windows (nome da conexão em Conexões de
+// Rede) e o Linux/macOS os mostram. Os clientes de VPN de empresa (Forti, Cisco
+// AnyConnect, GlobalProtect, NordLynx, Radmin) entram como 'virtual': o aluno não alcança.
+const VIRTUAL_NAME = /virtualbox|vbox|vmware|vmnet|hyper-v|vethernet|wsl|docker|^br-|^veth|^virbr|tailscale|zerotier|hamachi|wireguard|^wg\d|(?:^|[^a-z])(?:tap|tun|utun)(?:\d|[^a-z]|$)|vpn|forti|anyconnect|globalprotect|pangp|nordlynx|radmin|parallels|npcap|bluetooth|loopback pseudo/i;
 const PHYSICAL_NAME = /wi-?fi|wlan|wireless|sem fio|ethernet|^eth|^en[a-z]?\d|conex[aã]o local|local area connection/i;
 
 // "Conexão Local* 10" / "Local Area Connection* 2" (com asterisco) é o adaptador do
@@ -111,12 +119,19 @@ function readAdapters(now = Date.now()) {
     return list;
 }
 
+// 192.168.x primeiro, sem mudar a ordem do sistema entre os demais.
+function homeRangeFirst(list) {
+    const home = item => /^192\.168\./.test(item.address);
+    return [...list.filter(home), ...list.filter(item => !home(item))];
+}
+
 function pickRecommended(adapters) {
     const rede = adapters.filter(item => item.kind === 'rede');
-    return rede.find(item => item.private && isPhysicalName(item.name))
-        || rede.find(item => item.private)
+    const first = list => homeRangeFirst(list)[0];
+    return first(rede.filter(item => item.private && isPhysicalName(item.name)))
+        || first(rede.filter(item => item.private))
         || rede[0]
-        || adapters.find(item => item.kind === 'virtual')
+        || first(adapters.filter(item => item.kind === 'virtual'))
         || adapters.find(item => item.kind === 'link-local')
         || null;
 }
@@ -237,9 +252,12 @@ function snapshotKey(snapshot) {
     });
 }
 
-// Vigia da troca de rede: compara o retrato a cada chamada de check() e avisa no console
-// quando o recomendado ou o conjunto de IPs mudou. onChange(atual, anterior) é o gancho
-// para quem precisar refazer algo com o endereço novo (certificado do H6c, mDNS do H6d).
+// Vigia da troca de rede: compara o retrato a cada chamada de check(). onChange(atual,
+// anterior) roda quando o recomendado ou o conjunto de IPs mudou: é o gancho para quem
+// precisar refazer algo com os endereços novos (certificado do H6c, mDNS do H6d). O aviso
+// no console sai só quando o endereço recomendado para os alunos muda (decisões §12,
+// sobra do H6a): uma VPN ou o adaptador do WSL que liga e desliga mexe no conjunto de IPs
+// sem mudar o que os alunos digitam, e o aviso a cada 30 s só confundia o professor.
 // Quando só o esquema muda (conexão segura dos alunos ligada ou desligada em Sistema →
 // Rede, H6c), o console diz o endereço novo dos alunos, sem chamar onChange.
 function createAddressWatcher({ port, scheme = 'http', log = console.log, onChange } = {}) {
@@ -267,9 +285,11 @@ function createAddressWatcher({ port, scheme = 'http', log = console.log, onChan
             previousKey = key;
             const novo = current.recommended ? current.recommended.url : 'sem rede';
             const antes = before.recommended ? before.recommended.url : 'sem rede';
-            try {
-                log(`🔄 Endereço da rede mudou: ${novo} (antes: ${antes}). Para os alunos: ${current.recommended ? current.recommended.url : 'conecte o computador ao Wi-Fi da sala'}`);
-            } catch (error) { /* console indisponível não para o vigia */ }
+            if (novo !== antes) {
+                try {
+                    log(`🔄 Endereço da rede mudou: ${novo} (antes: ${antes}). Para os alunos: ${current.recommended ? current.recommended.url : 'conecte o computador ao Wi-Fi da sala'}`);
+                } catch (error) { /* console indisponível não para o vigia */ }
+            }
             if (typeof onChange === 'function') {
                 try { onChange(current, before); } catch (error) { /* gancho com falha não para o vigia */ }
             }

@@ -8,6 +8,12 @@ const WIDTHS = {
   xl: 'max-w-6xl',
 }
 
+// Modais abertos, na ordem em que abriram (decisões §12, sobra do H6a): com um modal sobre
+// outro (o "Copiar" do endereço da sala abre o ManualCopyModal por cima do Endereço da
+// sala), Esc e Tab valem só para o de cima. Antes, cada modal ouvia o teclado da janela,
+// e um Esc fechava os dois de uma vez.
+const openModals = []
+
 export function Modal({ open, onClose, title, description, children, footer, size = 'md' }) {
   const dialogRef = useRef(null)
   const previousFocusRef = useRef(null)
@@ -30,7 +36,10 @@ export function Modal({ open, onClose, title, description, children, footer, siz
       if (dialog && dialog.contains(document.activeElement)) return
       ;(focusable()[0] || dialog)?.focus()
     })
+    const token = {}
+    openModals.push(token)
     const onKey = (e) => {
+      if (openModals[openModals.length - 1] !== token) return
       if (e.key === 'Escape') { e.preventDefault(); onCloseRef.current?.(); return }
       if (e.key !== 'Tab') return
       const items = focusable()
@@ -43,6 +52,8 @@ export function Modal({ open, onClose, title, description, children, footer, siz
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
+      const index = openModals.indexOf(token)
+      if (index >= 0) openModals.splice(index, 1)
       previousFocusRef.current?.focus?.()
     }
   }, [open])

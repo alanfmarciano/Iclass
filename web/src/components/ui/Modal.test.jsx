@@ -88,4 +88,31 @@ describe('Modal', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(opener).toHaveFocus()
   })
+
+  // Decisões §12 (sobra do H6a): com um modal aberto por cima de outro (o "Copiar" do
+  // endereço da sala abre o ManualCopyModal sobre o Endereço da sala), o Esc fechava os
+  // dois de uma vez, porque cada um ouvia o teclado da janela.
+  it('Esc fecha só o modal de cima; o seguinte fecha o de baixo', async () => {
+    function Stacked() {
+      const [outer, setOuter] = useState(false)
+      const [inner, setInner] = useState(false)
+      return <>
+        <button onClick={() => setOuter(true)}>Abrir sala</button>
+        <Modal open={outer} onClose={() => setOuter(false)} title="Endereço da sala">
+          <button onClick={() => setInner(true)}>Copiar</button>
+          <Modal open={inner} onClose={() => setInner(false)} title="Copie o endereço"><input aria-label="Endereço" readOnly value="http://192.168.0.10:3000" /></Modal>
+        </Modal>
+      </>
+    }
+    const user = userEvent.setup()
+    render(<Stacked />)
+    await user.click(screen.getByRole('button', { name: 'Abrir sala' }))
+    await user.click(screen.getByRole('button', { name: 'Copiar' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(2)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(screen.getByRole('dialog', { name: 'Endereço da sala' })).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
 });

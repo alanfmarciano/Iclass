@@ -102,6 +102,34 @@ test('[UC-REDE-002] ordem do recomendado: privado com nome de Wi-Fi/Ethernet, pr
     assert.deepEqual(offline.addresses, []);
 });
 
+// Decisões §12 (sobra do H6a): no notebook do professor com Windows, a VPN da
+// secretaria, o vEthernet do WSL/Hyper-V e o adaptador TAP aparecem como "Ethernet N" ou
+// com o nome do cliente de VPN; o físico com 192.168.x é o do roteador da sala.
+test('[UC-REDE-002] Windows: físico antes de VPN/TAP/vEthernet/WSL/Hyper-V, e 192.168.x antes dos outros privados', () => {
+    const cases = [
+        // Wi-Fi 10.x (rede da secretaria) e Ethernet 192.168.x (roteador da sala): o 192.168.
+        [{ 'Wi-Fi': [{ family: 'IPv4', address: '10.20.0.15' }], Ethernet: [{ family: 'IPv4', address: '192.168.1.30' }] }, '192.168.1.30'],
+        // Cliente de VPN (Forti, AnyConnect, GlobalProtect, NordLynx) com IP privado não ganha do Wi-Fi.
+        [{ 'FortiClient SSLVPN': [{ family: 'IPv4', address: '10.212.134.200' }], 'Wi-Fi': [{ family: 'IPv4', address: '172.16.0.20' }] }, '172.16.0.20'],
+        [{ 'Cisco AnyConnect Secure Mobility Client': [{ family: 'IPv4', address: '192.168.200.5' }], 'Wi-Fi 2': [{ family: 'IPv4', address: '10.0.0.8' }] }, '10.0.0.8'],
+        [{ 'PANGP Virtual Ethernet Adapter': [{ family: 'IPv4', address: '192.168.77.2' }], Ethernet: [{ family: 'IPv4', address: '10.1.1.1' }] }, '10.1.1.1'],
+        [{ 'NordLynx': [{ family: 'IPv4', address: '10.5.0.2' }], 'Wi-Fi': [{ family: 'IPv4', address: '192.168.0.12' }] }, '192.168.0.12'],
+        // TAP do OpenVPN, Hyper-V e WSL depois de qualquer físico.
+        [{ 'OpenVPN TAP-Windows6': [{ family: 'IPv4', address: '192.168.10.2' }], 'vEthernet (Default Switch)': [{ family: 'IPv4', address: '192.168.112.1' }], 'vEthernet (WSL)': [{ family: 'IPv4', address: '172.28.0.1' }], 'Ethernet 2': [{ family: 'IPv4', address: '172.31.9.9' }] }, '172.31.9.9'],
+        // Só virtuais: o 192.168 deles primeiro.
+        [{ 'vEthernet (WSL)': [{ family: 'IPv4', address: '172.28.0.1' }], 'vEthernet (Default Switch)': [{ family: 'IPv4', address: '192.168.112.1' }] }, '192.168.112.1'],
+        // Dois físicos 192.168: vale a ordem do sistema.
+        [{ 'Wi-Fi': [{ family: 'IPv4', address: '192.168.0.10' }], Ethernet: [{ family: 'IPv4', address: '192.168.2.10' }] }, '192.168.0.10'],
+    ];
+    cases.forEach(([list, expected]) => {
+        networkAddresses.setInterfaceProvider(() => list);
+        assert.equal(networkAddresses.networkAddresses({ port: 3000 }).recommended.address, expected, JSON.stringify(list));
+    });
+    assert.equal(networkAddresses.classifyAdapter('FortiClient SSLVPN', '10.212.134.200'), 'virtual');
+    assert.equal(networkAddresses.classifyAdapter('PANGP Virtual Ethernet Adapter', '192.168.77.2'), 'virtual');
+    assert.equal(networkAddresses.classifyAdapter('Ethernet 2', '172.31.9.9'), 'rede');
+});
+
 test('[UC-REDE-002] os adaptadores são relidos depois de 2 s (o IP do boot não fica congelado)', () => {
     const t0 = 1_000_000;
     networkAddresses.networkAddresses({ port: 3000, now: t0 });
@@ -233,6 +261,32 @@ test('[UC-REDE-002] vigia da rede: avisa no console quando o endereço muda, uma
     networkAddresses.setInterfaceProvider(provider);
     assert.equal(watcher.check(), true);
     assert.match(logs[1], /mudou: sem rede \(antes: http:\/\/192\.168\.1\.50:3000\)/);
+});
+
+// Decisões §12 (sobra do H6a): a VPN ou o WSL que liga e desliga muda o conjunto de IPs
+// sem mudar o endereço dos alunos. Antes, o console dizia "Endereço da rede mudou" com o
+// mesmo endereço antes e depois. O gancho (certificado do H6c) continua sendo chamado.
+test('[UC-REDE-002] vigia da rede: IP de VPN ou WSL que aparece e some não avisa no console, mas refaz o certificado', () => {
+    const logs = [];
+    const changes = [];
+    const watcher = networkAddresses.createAddressWatcher({ port: 3000, log: line => logs.push(line), onChange: now => changes.push(now.addresses.map(item => item.address).sort().join(',')) });
+    assert.equal(watcher.check(), false);
+    interfaces = { ...SALA, 'FortiClient SSLVPN': [{ family: 'IPv4', address: '10.212.134.200', internal: false }] };
+    networkAddresses.setInterfaceProvider(provider);
+    assert.equal(watcher.check(), true, 'o conjunto de IPs mudou');
+    assert.equal(changes.length, 1);
+    assert.ok(changes[0].includes('10.212.134.200'));
+    assert.deepEqual(logs, [], 'o endereço dos alunos continua o mesmo: sem aviso');
+    interfaces = SALA;
+    networkAddresses.setInterfaceProvider(provider);
+    assert.equal(watcher.check(), true);
+    assert.equal(changes.length, 2);
+    assert.deepEqual(logs, []);
+    interfaces = { 'Wi-Fi': [{ family: 'IPv4', address: '192.168.1.50', internal: false }] };
+    networkAddresses.setInterfaceProvider(provider);
+    assert.equal(watcher.check(), true);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /Endereço da rede mudou: http:\/\/192\.168\.1\.50:3000 \(antes: http:\/\/192\.168\.0\.10:3000\)/);
 });
 
 test('[UC-REDE-005] vigia da rede: ligar o https dos alunos troca o esquema sem contar como rede nova', () => {
