@@ -876,7 +876,15 @@ export default function MonitorPage() {
 
   function studentLabel(email) {
     const row = rows.find((item) => item.email === email)
-    return row?.name || email
+    return row?.name || displayEmail(email)
+  }
+
+  // Destino da mensagem individual no histórico: nome e e-mail, com 'sem e-mail' no lugar
+  // do endereço interno do aluno sem e-mail (C1 / P4-S3).
+  function messageTargetLabel(message) {
+    const name = message.targetName || rows.find((item) => item.email === message.targetEmail)?.name || ''
+    const shown = displayEmail(message.targetEmail)
+    return name ? `${name} (${shown})` : shown
   }
 
   async function loadMessageHistory() {
@@ -1515,7 +1523,7 @@ export default function MonitorPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-text whitespace-pre-wrap">{m.messageText}</p>
                     <p className="text-xs text-subtle mt-1">
-                      {m.targetEmail ? `Aluno: ${m.targetEmail}` : 'Turma toda'} - {m.createdAt ? new Date(m.createdAt).toLocaleString('pt-BR') : new Date(Number(m.timestamp || Date.now())).toLocaleString('pt-BR')}
+                      {m.targetEmail ? `Aluno: ${messageTargetLabel(m)}` : 'Turma toda'} - {m.createdAt ? new Date(m.createdAt).toLocaleString('pt-BR') : new Date(Number(m.timestamp || Date.now())).toLocaleString('pt-BR')}
                     </p>
                   </div>
                   <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deleteMessageHistory(m.id)}>Excluir</Button>

@@ -9,7 +9,7 @@
 //   AFTER_RESTORE_HOOKS em database.js, na tela Sistema e na backup-cli): as de memória
 //   que faltam ao backup.
 //
-// Cada linha: { id, nome, tipo, run }.
+// Cada linha: { id, nome, tipo, run, dependencias? }.
 // - id: 'AAAA-MM-<grupo>-<nome>' (ex.: '2026-11-p4-ids-alunos'), texto estável, nunca um
 //   número (dois ramos em paralelo não disputam o mesmo número);
 // - nome: o que a migração faz, em português (aparece no console e no erro);
@@ -21,6 +21,9 @@
 // - tipo 'sql': run(sql) para as tabelas próprias (kind 'store', fora da memória), com
 //   sql.run(texto, parâmetros), sql.get e sql.all numa transação dentro da fila de
 //   gravação. Só roda no boot (depois de restaurar, fica para o boot seguinte).
+// - dependencias (opcional): as funções de outros módulos que o run chama (e as
+//   constantes, em { nome: valor }). Entram no hash da linha: mudar uma delas muda o
+//   efeito da migração tanto quanto mudar o run, e o teste de imutabilidade reprova.
 //
 // Regras (shared_contracts da fase 3):
 // - linha que já está no main é IMUTÁVEL: efeito novo é uma linha nova com id novo. O teste
@@ -59,6 +62,10 @@ const MIGRATIONS = Object.freeze([
         run(memory, ctx) {
             return studentIdentity.ensureStudentIds(memory, ctx);
         },
+        // O código de ensureStudentIds e de tudo que ele chama entra no hash: depois de
+        // publicada, mudar ensureStudentIds exige uma linha nova (e a normalização de todo
+        // boot abaixo continua chamando a versão atual).
+        dependencias: studentIdentity.ENSURE_STUDENT_IDS_DEPENDENCIES,
     }),
 ]);
 

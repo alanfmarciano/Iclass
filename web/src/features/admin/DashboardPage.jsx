@@ -17,7 +17,7 @@ import { DisciplineFrequency } from './dashboard/DisciplineFrequency'
 import { WeekAgenda } from './dashboard/WeekAgenda'
 import { DataQualityNote } from './dashboard/DataQualityNote'
 import { csvCell } from '../../lib/csv'
-import { displayEmail } from '../../lib/studentProfile'
+import { displayEmail, studentRouteKey } from '../../lib/studentProfile'
 import { snoozedWith } from './dashboard/snooze'
 import { compareOrdinal } from '../../lib/textSearch'
 
@@ -140,7 +140,8 @@ export default function DashboardPage() {
   }
 
   const disc = trends.data?.disciplinas
-  const openStudent = (email) => nav('/alunos/' + encodeURIComponent(email))
+  // Ficha pelo id estável do aluno (C1 / P4-S3); sem id, o e-mail, que a ficha troca pelo id.
+  const openStudent = (student) => nav('/alunos/' + studentRouteKey(student))
 
   return (
     <div className="mx-auto max-w-[1320px] space-y-6">

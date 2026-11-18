@@ -144,6 +144,24 @@ function ensureStudentIds(memory, ctx = {}) {
     return changed;
 }
 
+// O código de que o efeito de ensureStudentIds depende, na ordem: entra no hash da migração
+// '2026-11-p4-ids-alunos' (migrationHash, dependencias), que é imutável depois de
+// publicada. O teste de imutabilidade confere que toda função deste módulo chamada por
+// ensureStudentIds (direta ou indiretamente) e toda constante usada estão aqui. O
+// handler.relink de cada coleção fica de fora de propósito: coleção nova registra o seu.
+const ENSURE_STUDENT_IDS_DEPENDENCIES = Object.freeze([
+    ensureStudentIds,
+    list,
+    isStudentId,
+    hasStoredId,
+    newStudentId,
+    previousIdsMap,
+    studentIdsByEmail,
+    Object.freeze({ STUDENT_ID_PREFIX, STUDENT_ID_PATTERN }),
+    normalizeEmail,
+    studentData.relinkStudentData,
+]);
+
 // ------------------------------------------------------------ busca
 function findStudentById(memory, id) {
     const wanted = typeof id === 'string' ? id.trim() : '';
@@ -251,6 +269,7 @@ function maskPlaceholderEmailsDeep(value, depth = 0) {
 
 module.exports = {
     STUDENT_ID_PATTERN,
+    ENSURE_STUDENT_IDS_DEPENDENCIES,
     PLACEHOLDER_DOMAIN,
     NO_EMAIL_LABEL,
     isStudentId,

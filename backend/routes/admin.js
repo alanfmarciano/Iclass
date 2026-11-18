@@ -4492,7 +4492,16 @@ router.get('/api/admin/message-history', (req, res) => {
             .filter(m => !examKey || !m.examKey || String(m.examKey) === examKey)
             .filter(m => !applicationId || m.applicationId === applicationId)
             .filter(m => !targetEmail || !m.targetEmail || String(m.targetEmail).toLowerCase() === targetEmail)
-            .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+            .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+            // Nome de quem recebeu a mensagem individual (C1 / P4-S3): o histórico do
+            // Monitor mostra o aluno pelo nome, e o aluno sem e-mail aparece como 'sem
+            // e-mail', nunca pelo endereço interno.
+            .map(m => {
+                if (!m.targetEmail) return m;
+                const target = studentIdentity.findStudentByEmail(db.memory, m.targetEmail);
+                const targetName = target ? ((target.nomeSocial && String(target.nomeSocial).trim()) || target.name || '') : '';
+                return { ...m, targetName };
+            });
         res.json({ success: true, messages });
     });
 });
@@ -5364,6 +5373,8 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
         // filtro de curso, então sem ele o custo seria alunos × (presenças + submissões).
         const index = buildOverviewIndex(db.memory);
         const overview = list.map(st => ({
+            // id estável (C1 / P4-S3): o Dashboard abre a ficha por /alunos/<id>.
+            id: st.id || null,
             email: st.email,
             name: (st.nomeSocial && st.nomeSocial.trim()) || st.name || st.email,
             className: studentClass || scn(st)[0] || '',

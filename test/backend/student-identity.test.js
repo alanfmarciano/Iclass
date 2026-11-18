@@ -534,6 +534,12 @@ test.describe('rotas', () => {
         const flagged = list.body.filter(item => item.matriculaRepetida).map(item => item.email).sort();
         assert.deepEqual(flagged, ['bia@ident.local', 'caio@ident.local']);
         assert.ok(list.body.every(item => typeof item.id === 'string' && item.id));
+
+        // O resumo do Dashboard traz o id: a tela abre a ficha por /alunos/<id>, sem o
+        // e-mail (interno, no aluno sem e-mail) na barra de endereço.
+        const overview = await request(app).get('/api/admin/dashboard/students-overview?courseId=DES&studentClass=1DES').set('x-admin-session', token).expect(200);
+        const ana = overview.body.find(item => item.email === 'ana@ident.local');
+        assert.equal(ana && ana.id, 'alu_00000000000000a1');
     });
     test('[UC-IDENT-002] login por matrícula: inexistente e repetida gastam a mesma conferência de senha (scrypt) da senha errada', async () => {
         const original = db.verifyPasswordAsync;
@@ -600,5 +606,25 @@ test.describe('rotas', () => {
         }).expect(200);
         assert.equal(db.memory.students.find(item => item.id === 'alu_00000000000000b1').email, 'aluno-alu_00000000000000b1@sem-email.invalid');
         await studentLogin('r8').expect(200);
+    });
+
+    test('[UC-IDENT-003] histórico de mensagens do Monitor: a mensagem individual traz o nome de quem recebeu (targetName), e a tela mostra "sem e-mail" no lugar do endereço interno', async () => {
+        const token = await adminToken(PROF);
+        const created = await request(app).post('/api/admin/student/create').set('x-admin-session', token).send({
+            name: 'Hugo Sem Email', semEmail: true, matricula: 'SE-02', classes: [{ name: '1DES', courseId: 'DES' }],
+        }).expect(200);
+        const placeholder = `aluno-${created.body.id}@sem-email.invalid`;
+        db.memory.broadcastMessages = [
+            { id: 'msg-1', studentClass: '1DES', courseId: 'DES', examKey: 'P1', applicationId: 'app_1', messageText: 'Para o Hugo', targetEmail: placeholder, timestamp: 2 },
+            { id: 'msg-2', studentClass: '1DES', courseId: 'DES', examKey: 'P1', applicationId: 'app_1', messageText: 'Para a Ana', targetEmail: 'ana@ident.local', timestamp: 1 },
+            { id: 'msg-3', studentClass: '1DES', courseId: 'DES', examKey: 'P1', applicationId: 'app_1', messageText: 'Para todos', targetEmail: null, timestamp: 0 },
+        ];
+        const res = await request(app).get('/api/admin/message-history?studentClass=1DES&courseId=DES&examKey=P1&applicationId=app_1').set('x-admin-session', token).expect(200);
+        const byId = Object.fromEntries(res.body.messages.map(message => [message.id, message]));
+        assert.equal(byId['msg-1'].targetName, 'Hugo Sem Email');
+        assert.equal(byId['msg-2'].targetName, 'ana');
+        assert.equal('targetName' in byId['msg-3'], false);
+        // O registro guardado não ganha o campo (só a resposta).
+        assert.equal('targetName' in db.memory.broadcastMessages[0], false);
     });
 });
