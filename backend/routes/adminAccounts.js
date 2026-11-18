@@ -81,14 +81,22 @@ function requireAdminManager(res, requester) {
 // Papéis do catálogo (backend/utils/adminRoles.js, FUN-13): admin, professor, monitor
 // (Professor auxiliar), secretaria e coordenacao.
 const ADMIN_ACCOUNT_ROLES = new Set(ADMIN_ROLE_IDS);
-const ROLE_CHOICES_TEXT = ROLE_CATALOG.map(role => `${role.id} (${role.rotulo})`).join(', ');
+// Papel oculto (hoje o professor auxiliar, que ainda lê nota: papel-monitor-pendencia.test.js)
+// fica fora da criação de conta também pela API, não só na tela: não aparece na lista do
+// erro e não é aceito como papel novo. A conta que já tem o papel (gravada antes ou vinda
+// de backup) continua editável sem trocar de papel.
+const HIDDEN_ACCOUNT_ROLES = new Map(ROLE_CATALOG.filter(role => role.oculto).map(role => [role.id, role]));
+const ROLE_CHOICES_TEXT = ROLE_CATALOG.filter(role => !role.oculto).map(role => `${role.id} (${role.rotulo})`).join(', ');
 
-function parseAdminAccountRole(value, fallback = 'admin') {
+function parseAdminAccountRole(value, fallback = 'admin', currentRole = null) {
     if (value === undefined || value === null || String(value).trim() === '') {
         return { ok: true, role: fallback };
     }
     const role = String(value).trim().toLowerCase();
     if (!ADMIN_ACCOUNT_ROLES.has(role)) return { ok: false, error: `Papel inválido. Use um destes: ${ROLE_CHOICES_TEXT}.` };
+    if (HIDDEN_ACCOUNT_ROLES.has(role) && role !== currentRole) {
+        return { ok: false, error: `O papel ${HIDDEN_ACCOUNT_ROLES.get(role).rotulo} ainda não está disponível. Use um destes: ${ROLE_CHOICES_TEXT}.` };
+    }
     return { ok: true, role };
 }
 
@@ -394,7 +402,7 @@ function createAdminAccountsRouter() {
 
             const nextName = req.body.name === undefined ? (account.name || '') : String(req.body.name).trim();
             if (!nextName) return res.status(400).json({ error: 'Nome da conta não pode ficar vazio.' });
-            const parsedRole = parseAdminAccountRole(req.body.role, storedAccountRole(account));
+            const parsedRole = parseAdminAccountRole(req.body.role, storedAccountRole(account), storedAccountRole(account));
             if (!parsedRole.ok) return res.status(400).json({ error: parsedRole.error });
             const parsedClasses = parseAssignedClasses(req.body.assignedClasses);
             if (!parsedClasses.ok) return res.status(400).json({ error: parsedClasses.error });

@@ -393,7 +393,9 @@ test('[UC-PAPEIS-001] professor auxiliar não muda nota na prova ao vivo (anular
         assert.equal(getEffectiveAdminPermissions({ role: 'monitor', additionalPermissions: [permission] }).has(permission), false, `extra ${permission}`);
     });
     assert.equal(catalog.concediveis.includes('page.materials'), false);
-    const refused = await as('admin', request(app).post('/api/admin/accounts/create')).send({ name: 'Aux', email: 'aux@papeis.local', password: 'Senha-forte-2026-x', requirePasswordChange: false, role: 'monitor', assignedClasses: [{ courseId: COURSE_A, className: '1A' }], additionalPermissions: ['page.materials'] });
+    // O papel está oculto (não se cria conta nova com ele); a conta que já o tem é editada
+    // e continua sem receber conteúdo como extra.
+    const refused = await as('admin', request(app).post('/api/admin/accounts/update')).send({ email: ACCOUNTS.monitor.email, role: 'monitor', assignedClasses: [{ courseId: COURSE_A, className: '1A' }], additionalPermissions: ['page.materials'] });
     assert.equal(refused.status, 400);
     assert.match(refused.body.error, /não concedível ao papel Professor auxiliar: page\.materials/);
 });
@@ -740,14 +742,29 @@ test('[UC-PAPEIS-005] contas: cria cada papel com o escopo dele, recusa papel e 
     const coord = await create({ name: 'Coordenação', email: 'nova.coord@papeis.local', role: 'coordenacao', assignedSchoolIds: [SCHOOL_A], additionalPermissions: ['page.exams'] });
     assert.equal(coord.status, 200, JSON.stringify(coord.body));
     assert.deepEqual(db.memory.admins.find(item => item.email === 'nova.coord@papeis.local').additionalPermissions, ['page.exams']);
+    // Professor auxiliar: papel oculto enquanto lê nota (papel-monitor-pendencia.test.js).
+    // A API recusa criar conta com ele e trocar outra conta para ele; a conta que já tem o
+    // papel continua editável com o escopo de turmas.
     const mon = await create({ name: 'Auxiliar', email: 'novo.mon@papeis.local', role: 'monitor', assignedClasses: [{ courseId: COURSE_A, className: '1A' }] });
-    assert.equal(mon.status, 200, JSON.stringify(mon.body));
-    assert.deepEqual(db.memory.admins.find(item => item.email === 'novo.mon@papeis.local').assignedClasses, [{ courseId: COURSE_A, className: '1A' }]);
+    assert.equal(mon.status, 400, JSON.stringify(mon.body));
+    assert.match(mon.body.error, /O papel Professor auxiliar ainda não está disponível/);
+    assert.doesNotMatch(mon.body.error, /monitor \(/, 'a lista de papéis do erro não mostra o oculto');
+    assert.equal(db.memory.admins.some(item => item.email === 'novo.mon@papeis.local'), false);
+    const toMonitor = await as('admin', request(app).post('/api/admin/accounts/update')).send({ email: 'nova.coord@papeis.local', role: 'monitor', assignedClasses: [{ courseId: COURSE_A, className: '1A' }] });
+    assert.equal(toMonitor.status, 400, JSON.stringify(toMonitor.body));
+    assert.equal(db.memory.admins.find(item => item.email === 'nova.coord@papeis.local').role, 'coordenacao');
+    const keepMonitor = await as('admin', request(app).post('/api/admin/accounts/update')).send({ email: ACCOUNTS.monitor.email, role: 'monitor', assignedClasses: [{ courseId: COURSE_B, className: '1B' }] });
+    assert.equal(keepMonitor.status, 200, JSON.stringify(keepMonitor.body));
+    assert.deepEqual([account('monitor').role, account('monitor').assignedClasses], ['monitor', [{ courseId: COURSE_B, className: '1B' }]]);
+    const monitorNoRole = await as('admin', request(app).post('/api/admin/accounts/update')).send({ email: ACCOUNTS.monitor.email, name: 'Auxiliar antigo' });
+    assert.equal(monitorNoRole.status, 200, JSON.stringify(monitorNoRole.body));
+    assert.equal(account('monitor').role, 'monitor');
 
     const invalid = await create({ name: 'X', email: 'x@papeis.local', role: 'diretor' });
     assert.equal(invalid.status, 400);
     assert.match(invalid.body.error, /Papel inválido/);
     assert.match(invalid.body.error, /secretaria \(Secretaria\)/);
+    assert.doesNotMatch(invalid.body.error, /monitor/);
     const notGrantable = await create({ name: 'Y', email: 'y@papeis.local', role: 'secretaria', additionalPermissions: ['system.manage'] });
     assert.equal(notGrantable.status, 400);
     assert.match(notGrantable.body.error, /não concedível ao papel Secretaria: system\.manage/);
