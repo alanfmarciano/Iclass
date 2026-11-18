@@ -6,7 +6,7 @@ Padrão visual e de interação da interface. Referência detalhada por tela em 
 
 Use **somente** o design system existente em `web/src/components/ui/`. Não crie novos primitivos nem importe bibliotecas de UI.
 
-Primitivos disponíveis: `Card`, `Button`, `Badge`, `Modal`, `Tabs`, `Table`, `Select`, `Switch`, `Input`, `Textarea`, `EmptyState`, `PageState`, `PageHeader`, `StatCard`, `Skeleton`, `Timeline`, `ProgressRing`, `MiniLineChart`, `MonthCalendar`, `ThemeToggle`.
+Primitivos disponíveis: `Card`, `Button`, `Badge`, `Modal`, `Tabs`, `Table`, `Select`, `Switch`, `Input`, `Textarea`, `TypedConfirm`, `EmptyState`, `PageState`, `PageHeader`, `StatCard`, `Skeleton`, `Timeline`, `ProgressRing`, `MiniLineChart`, `MonthCalendar`, `ThemeToggle`.
 
 ## Linguagem visual (padrão travado)
 
@@ -33,6 +33,7 @@ Componha classes com o helper `cn()` (`web/src/lib/cn.js`).
 ## Componentes semânticos
 
 - **Badge**: `success` (aprovado/ok), `warning` (atenção/reprovado leve), `danger` (bloqueio/erro), `info` (informativo/em andamento), `neutral` (inativo/indefinido).
+- **Confirmação digitada** (ação sem volta: limpar, resetar, restaurar, reiniciar, compactar, anonimizar, apagar): sempre `TypedConfirm` (`components/ui/TypedConfirm.jsx`), com a palavra em maiúsculas (`RESETAR`, `RESTAURAR`...). O botão da ação fica desligado até `typedConfirmMatches(texto, palavra)`, Enter no campo confirma, e o servidor confere a palavra de novo.
 - **Toasts** via `useToast()`: `toast.success(...)`, `toast.info(...)`, e sempre `toast.error(e.message)` para erro de API.
 - **Estados de página**: envolver conteúdo dependente de fetch inicial em `PageState` (padrão de `student/ProvasPage.jsx`); usar `Skeleton` no carregamento e `EmptyState` no vazio.
 

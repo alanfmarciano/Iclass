@@ -4,17 +4,17 @@ const { test, expect } = require('@playwright/test');
 // tela lia isso como zero. A prova era enviada sozinha ("Tempo esgotado") assim que o
 // aluno clicava em Iniciar ou reabria a tela. Com prazo, o envio automático no fim do
 // tempo continua igual.
-const ADMIN_LOGIN = { Authorization: 'admin@teste.local:teste' };
 const CLASS = '1DES';
 const COURSE = 'curso_legacy_01';
 const EXAM = 'Avaliacao_FUTEC_5';
 
-// Uma conferência de senha por teste (whoami) e depois a sessão: cada chamada com
-// e-mail:senha conta no limite de logins por minuto e derrubava o spec seguinte (429).
+// Sessão de administrador pelo POST /api/session/admin-login: o cabeçalho com e-mail e
+// senha não autentica mais (H6b/SEG-03). Uma sessão por teste: cada login conta no limite
+// de tentativas por minuto e derrubava o spec seguinte (429).
 async function adminSession(request) {
-    const who = await request.get('/api/admin/whoami', { headers: ADMIN_LOGIN });
-    expect(who.status()).toBe(200);
-    return { 'x-admin-session': (await who.json()).sessionToken };
+    const response = await request.post('/api/session/admin-login', { data: { email: 'admin@teste.local', password: 'teste' } });
+    expect(response.status(), 'login do administrador').toBe(200);
+    return { 'x-admin-session': (await response.json()).sessionToken };
 }
 
 async function startApplication(request, admin, { label, timerEnabled, durationMinutes = 40, maxAttempts = 1 }) {

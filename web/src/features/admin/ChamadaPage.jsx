@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ClipboardCheck, Download, Check, X, Clock, LogOut, FileText, Paperclip, Users,
-  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi,
+  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi, UserX,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -41,16 +41,6 @@ const EXIGE_DOC = new Set(['atestado', 'declaracao'])
 const dispName = (r) => (r.nomeSocial && r.nomeSocial.trim()) || r.name || r.email
 const emptyJust = () => ({ tipo: 'atestado', de: '', ate: '', abonado: false, texto: '', arquivo: '', arquivoNome: '' })
 const hhmmToMin = (v) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(v || '') ? (+v.slice(0, 2)) * 60 + (+v.slice(3, 5)) : null)
-function authHeaders() {
-  try {
-    const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}
-    const h = {}
-    if (a.adminSession) h['x-admin-session'] = a.adminSession
-    else if (a.adminAuth) h['Authorization'] = a.adminAuth
-    return h
-  } catch { return {} }
-}
-
 // Estado de UI de um aluno a partir das aulas salvas.
 function deriveUi(aulas) {
   const base = { st: 'p', arrOrdem: null, arrHora: '', early: false, lvOrdem: null, lvHora: '' }
@@ -186,9 +176,9 @@ export default function ChamadaPage() {
     if (!file) return
     const fd = new FormData(); fd.append('file', file); fd.append('studentEmail', email)
     try {
-      const res = await fetch('/api/admin/attendance/justification-upload', { method: 'POST', headers: authHeaders(), body: fd })
-      const data = await res.json().catch(() => null)
-      if (!res.ok) throw new Error((data && data.error) || 'Falha no upload')
+      // Pelo cliente da API: só a sessão do instrutor (a senha nunca vai junto), sem prazo
+      // e, sem rede, a mensagem em português (fase 2, H9c).
+      const data = await api.post('/api/admin/attendance/justification-upload', fd)
       patch(email, (cur) => ({ ...cur, just: { ...(cur.just || emptyJust()), arquivo: data.file, arquivoNome: data.name } }))
       toast.success('Comprovante anexado')
     } catch (e) { toast.error(e.message) }
@@ -440,6 +430,16 @@ export default function ChamadaPage() {
                             {s.origin === 'login' && (
                               <span title="Registro criado pelo acesso do aluno ao sistema. Confira antes de concluir a chamada.">
                                 <Tag tone="info" Icon={Wifi}>Automática{s.acessoAutomatico?.hora ? ` · acesso às ${s.acessoAutomatico.hora}` : ''}{s.acessoAutomatico?.ip ? ` · IP ${s.acessoAutomatico.ip}` : ''}</Tag>
+                              </span>
+                            )}
+                            {s.origin !== 'login' && s.acessoAutomatico && (
+                              <span title={`O aluno entrou no sistema neste dia${s.acessoAutomatico.ip ? ` (IP ${s.acessoAutomatico.ip})` : ''}. A chamada substituiu a presença automática.`}>
+                                <Tag tone="info" Icon={Wifi}>Entrou no sistema{s.acessoAutomatico.hora ? ` às ${s.acessoAutomatico.hora}` : ''}</Tag>
+                              </span>
+                            )}
+                            {s.encerrado && (
+                              <span title="Cadastro encerrado: só aparece na chamada de uma data em que já tem registro ou que é anterior ao desligamento.">
+                                <Tag tone="warning" Icon={UserX}>{s.situacao || 'Cadastro encerrado'}</Tag>
                               </span>
                             )}
                           </div>

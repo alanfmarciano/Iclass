@@ -57,3 +57,24 @@ describe('Chamada com presença automática', () => {
     expect(await screen.findByText('Rascunho salvo')).toBeInTheDocument()
   })
 })
+
+describe('Chamada com presença em versões (H7b)', () => {
+  it('[UC-PRESENCA-004] depois que a chamada substitui a presença automática, a tela ainda mostra a hora do acesso', async () => {
+    const chamada = aluno('diego@x.local', {
+      origin: 'chamada', salvo: true,
+      acessoAutomatico: { hora: '07:58', ip: '10.0.0.7', via: 'sessão aberta' },
+    })
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster') ? rosterWith([chamada]) : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Entrou no sistema às 07:58')).toBeInTheDocument()
+    expect(screen.queryByText(/^Automática/)).not.toBeInTheDocument()
+  })
+
+  it('[UC-PRESENCA-004] aluno com cadastro encerrado que aparece na data mostra a situação', async () => {
+    const encerrado = aluno('carla@x.local', { origin: 'chamada', salvo: true, encerrado: true, situacao: 'Transferido' })
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster') ? rosterWith([encerrado, aluno('ana@x.local')]) : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Transferido')).toBeInTheDocument()
+    expect(screen.getAllByText('Transferido')).toHaveLength(1)
+  })
+})

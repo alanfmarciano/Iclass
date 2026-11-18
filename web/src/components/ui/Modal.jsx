@@ -8,20 +8,38 @@ const WIDTHS = {
   xl: 'max-w-6xl',
 }
 
+// Modais abertos, na ordem em que abriram (decisões §12, sobra do H6a): com um modal sobre
+// outro (o "Copiar" do endereço da sala abre o ManualCopyModal por cima do Endereço da
+// sala), Esc e Tab valem só para o de cima. Antes, cada modal ouvia o teclado da janela,
+// e um Esc fechava os dois de uma vez.
+const openModals = []
+
 export function Modal({ open, onClose, title, description, children, footer, size = 'md' }) {
   const dialogRef = useRef(null)
   const previousFocusRef = useRef(null)
   const onCloseRef = useRef(onClose)
   const titleId = useId()
   const descriptionId = useId()
+  const wasOpenRef = useRef(false)
+  // O foco de quem abriu é lido ao abrir, ainda na renderização: o campo com autoFocus
+  // dentro do diálogo já recebe o foco antes dos efeitos rodarem.
+  if (open && !wasOpenRef.current && typeof document !== 'undefined') previousFocusRef.current = document.activeElement
+  wasOpenRef.current = open
   useEffect(() => { onCloseRef.current = onClose }, [onClose])
   useEffect(() => {
     if (!open) return
-    previousFocusRef.current = document.activeElement
     const dialog = dialogRef.current
     const focusable = () => Array.from(dialog?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])
-    requestAnimationFrame(() => (focusable()[0] || dialog)?.focus())
+    // Campo com autoFocus dentro do diálogo (ex.: TypedConfirm) já tem o foco: não o
+    // troca pelo primeiro botão (o X), senão o que se digita logo depois de abrir se perde.
+    requestAnimationFrame(() => {
+      if (dialog && dialog.contains(document.activeElement)) return
+      ;(focusable()[0] || dialog)?.focus()
+    })
+    const token = {}
+    openModals.push(token)
     const onKey = (e) => {
+      if (openModals[openModals.length - 1] !== token) return
       if (e.key === 'Escape') { e.preventDefault(); onCloseRef.current?.(); return }
       if (e.key !== 'Tab') return
       const items = focusable()
@@ -34,6 +52,8 @@ export function Modal({ open, onClose, title, description, children, footer, siz
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
+      const index = openModals.indexOf(token)
+      if (index >= 0) openModals.splice(index, 1)
       previousFocusRef.current?.focus?.()
     }
   }, [open])

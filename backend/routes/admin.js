@@ -3,6 +3,7 @@ const router = express.Router();
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
+const { logError } = require('../utils/errorLog.js');
 const {
     DB_STUDENTS_FILE,
     DB_SUBMISSIONS_FILE,
@@ -16,6 +17,7 @@ const {
     getCourseItemKeys,
     isProfessorAccount,
     adminAllowedCourseIds,
+    adminAssignedSchoolIds,
     adminCanAccessCourse,
     adminCanAccessClass,
     adminCanAccessItem,
@@ -25,7 +27,11 @@ const {
     filterSchoolsForAdmin,
     adminCanAccessStudent,
     isCourseExamKey,
-    accessibilityExtraMinutes
+    accessibilityExtraMinutes,
+    guarded,
+    sendInternalError,
+    sendRouteError,
+    validateAdminPermission
 } = require('../middlewares.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
@@ -44,7 +50,21 @@ const {
     classEntryName,
     studentInClass,
     normalizeClassEntriesForStorage,
+    isClosedStudentStatus,
+    isAnonymizedStudent,
+    applyStudentStatus,
+    cleanStatusReason,
+    STATUS_REASON_MAX,
+    lastStatusChangeIndex,
+    studentStatusSince,
 } = require('../utils/students.js');
+
+// Recusas do cadastro anonimizado (H7c).
+const ANONYMIZED_EDIT_REFUSAL = 'Este cadastro foi anonimizado e não pode ser alterado.';
+const ANONYMIZED_STATUS_REFUSAL = 'A situação Anonimizado só é aplicada em Cadastros encerrados.';
+const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecrets } = require('../utils/audit.js');
+const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -65,17 +85,17 @@ const {
     parseCountInput,
     parseGradeInput,
     recordGradeAudit,
+    gradeChangeReason,
     safeFilePart,
     scopeLabel,
     scopeSubmissionsToContext,
     scoreFromCounts,
     scoreFromGrade,
     structureExamIndex,
-    anonymizeStudentAuditTrail,
-    anonymizeStudentExamRecords,
-    studentEmailOwnership,
 } = require('../utils/gradebook.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
+const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
+const loginGuard = require('../utils/loginGuard.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -83,8 +103,10 @@ const {
     examStateKey,
     findExamApplication,
     findOpenAttemptState,
+    openAttemptFromEntries,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
+const { collectMonitorActivity, monitorKeystrokeEmail } = require('../utils/monitorActivity.js');
 const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
@@ -96,18 +118,23 @@ function rejectInvalidBranding(res, body) {
     return true;
 }
 
+// Turmas, cursos e conteúdo: atalho para recordAudit (utils/audit.js). A categoria sai
+// do nome da ação (class_* e course_* em 'academic', content_* em 'content', como na
+// leitura das entradas antigas). Continua gravando type/actorEmail/target/at, que as
+// entradas antigas já tinham, e before/after viram uma cópia (antes a turma ia por
+// referência e a entrada mudava junto com a turma).
 function recordAcademicAudit(req, actor, type, target, before, after) {
-    if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-    db.memory.auditLogs.push({
-        id: `audit_academic_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-        type,
-        actorEmail: actor && actor.email,
-        target,
+    const timestamp = Date.now();
+    const scope = target && typeof target === 'object' ? target : {};
+    recordAudit(db.memory, {
+        req,
+        actor,
+        action: type,
+        courseId: scope.courseId || undefined,
+        studentClass: scope.className || undefined,
         before: before || null,
         after: after || null,
-        at: Date.now(),
-        ip: req.ip || req.socket && req.socket.remoteAddress || '',
-    });
+    }, { timestamp, legacy: { type, actorEmail: actor && actor.email, target, at: timestamp } });
 }
 const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
@@ -121,6 +148,70 @@ const { createAdminArchiveRouter } = require('./adminArchive.js');
 const { createAdminSystemRouter } = require('./adminSystem.js');
 const { createAdminAccountsRouter } = require('./adminAccounts.js');
 const { createAdminExamConfigRouter } = require('./adminExamConfig.js');
+const { createSystemHealthRouter } = require('./systemHealth.js');
+const { createAdminAuditRouter } = require('./adminAudit.js');
+const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
+const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
+const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
+const { body, either, list, shape, str } = require('../utils/inputSchema.js');
+
+// Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
+// H9b: ENG-03, ENG-04): só tipo e tamanho (utils/inputSchema.js), escritos a partir do
+// que as telas mandam. A sessão e a permissão já foram conferidas antes (adminRbacGuard);
+// a presença de cada campo continua com a rota, com as mensagens de antes. As outras
+// rotas do professor ficam para a fase 4 (scope_cuts do H9).
+const adminEmailField = (label = 'e-mail') => str({ max: 254, nullable: true, label });
+const adminIdField = (label) => str({ max: 100, nullable: true, label });
+const adminTextField = (max, label) => str({ max, nullable: true, label });
+// Dados institucionais e identidade visual da escola: objetos simples (cada campo é
+// conferido por extractInstitutional e rejectInvalidBranding).
+const schoolInfoField = () => shape({}, { nullable: true, label: 'dados da escola' });
+const schoolBrandingField = () => shape({}, { nullable: true, label: 'identidade visual' });
+// Categoria do banco: a tela manda o tema da prova (ou o nome da unidade). O teto é o
+// mesmo do campo Tema do editor (500, com contador): o schema nunca recusa o que a tela
+// deixa digitar (decisões §12, sobra do H9b; antes eram 100).
+const QUESTION_CATEGORY_MAX_CHARS = 500;
+const questionBankFields = () => ({
+    key: adminIdField('questão'),
+    category: adminTextField(QUESTION_CATEGORY_MAX_CHARS, 'categoria'),
+    curriculumKey: adminTextField(100, 'componente curricular'),
+    type: adminTextField(40, 'tipo'),
+    questionText: adminTextField(10000, 'texto da questão'),
+    alternatives: list(either([str({ max: 2000 }), shape({})], { label: 'alternativas' }), { max: 10, nullable: true, label: 'alternativas' }),
+    correctAnswer: adminTextField(10, 'resposta correta'),
+    sourceExamKey: adminTextField(200, 'prova de origem'),
+    examKey: adminTextField(200, 'prova'),
+});
+const ADMIN_SCHEMAS = {
+    resetPassword: body({ email: adminEmailField(), newPassword: str({ max: 200, trim: false, nullable: true, label: 'nova senha' }) }),
+    examStudent: body({
+        studentEmail: adminEmailField('e-mail do aluno'),
+        studentClass: adminTextField(200, 'turma'),
+        courseId: adminIdField('curso'),
+        examKey: adminTextField(200, 'prova'),
+        applicationId: adminIdField('aplicação'),
+        version: adminTextField(10, 'versão'),
+    }),
+    schoolCreate: body({ name: adminTextField(200, 'nome da escola'), info: schoolInfoField(), branding: schoolBrandingField() }),
+    schoolUpdate: body({ id: adminIdField('escola'), name: adminTextField(200, 'nome da escola'), info: schoolInfoField(), branding: schoolBrandingField() }),
+    schoolDelete: body({ id: adminIdField('escola') }),
+    certificateIssue: body({ email: adminEmailField(), courseName: adminTextField(200, 'curso'), courseId: adminIdField('curso') }),
+    observationCreate: body({
+        email: adminEmailField(),
+        category: adminTextField(100, 'categoria'),
+        visibility: adminTextField(100, 'visibilidade'),
+        text: adminTextField(5000, 'observação'),
+    }),
+    // A edição tem o mesmo teto da criação (sem ele, o texto de 5.000 do create passava
+    // por aqui sem limite).
+    observationUpdate: body({
+        id: adminIdField('observação'),
+        category: adminTextField(100, 'categoria'),
+        visibility: adminTextField(100, 'visibilidade'),
+        text: adminTextField(5000, 'observação'),
+    }),
+    questionBank: body(questionBankFields()),
+};
 const {
     addExtraUnit,
     courseClasses: contentCourseClasses,
@@ -308,165 +399,150 @@ router.post('/api/admin/enrollment-requests/:id/reject', (req, res) => {
 
 
 
-// Redefinir senha do aluno
-router.post('/api/admin/reset-password', (req, res) => {
-    validateAdmin(req, res, () => {
-        const { email, newPassword } = req.body;
-        if (!email || !newPassword || newPassword.trim() === '') {
-            return res.status(400).json({ error: 'E-mail ou nova senha inválidos.' });
+// Texto da resposta do "Redefinir senha" e da criação (a tela mostra o mesmo).
+function resetPasswordMessage(changeRequired, deferred) {
+    if (!changeRequired) return 'Senha redefinida.';
+    if (deferred) return 'Senha redefinida. O aluno está fazendo uma prova agora: ele vai escolher uma senha nova no primeiro acesso depois da prova.';
+    return 'Senha redefinida. No próximo acesso o aluno vai escolher uma senha nova.';
+}
+
+// Redefinir senha do aluno (H5a; UXA-13, SEG-06).
+// - newPassword vazio ou ausente: o servidor gera uma senha temporária (xxxxx-xxxxx) e a
+//   devolve só nesta resposta (temporaryPassword), para o professor entregar ao aluno;
+// - newPassword digitado: passa pela política de senha (a senha "a" era aceita);
+// - nos dois casos o aluno troca a senha no próximo acesso (mustChangePassword, decisão
+//   P3 do Alan), o pedido de "Esqueci a senha" é atendido e o reset fica na auditoria
+//   (student_password_reset, nunca com a senha). Antes não ficava registro nenhum;
+// - a resposta diz o que vale de fato: com TEST_MODE a troca não é pedida
+//   (mustChangePassword false) e, com o aluno em prova agora, ela fica para o primeiro
+//   acesso depois da prova (passwordChangeDeferred), em vez de prometer a troca já.
+// O escopo continua o de sempre: page.students e aluno visível ao professor (guarda).
+router.post('/api/admin/reset-password', ADMIN_SCHEMAS.resetPassword, (req, res) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
+        const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        const typed = typeof req.body.newPassword === 'string' ? req.body.newPassword.trim() : '';
+        if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail do aluno.', field: 'email' });
+        if (req.body.newPassword !== undefined && req.body.newPassword !== null && typeof req.body.newPassword !== 'string') {
+            return res.status(400).json({ success: false, error: 'Nova senha inválida.', field: 'newPassword' });
+        }
+        const findStudent = () => (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+        const target = findStudent();
+        if (!target) return res.status(404).json({ error: 'Estudante não encontrado.' });
+        // Cadastro anonimizado (H7c) não volta a ter acesso.
+        if (isAnonymizedStudent(target)) return res.status(409).json({ success: false, code: 'student_anonymized', error: ANONYMIZED_EDIT_REFUSAL });
+
+        const mode = typed ? 'typed' : 'generated';
+        let temporaryPassword = null;
+        if (typed) {
+            const policy = validateNewPassword(typed, {
+                kind: 'student', email: target.email, name: target.name, nomeSocial: target.nomeSocial, matricula: target.matricula,
+            });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'newPassword'));
+        } else {
+            temporaryPassword = generateTemporaryPassword();
         }
 
-        const students = readJSON(DB_STUDENTS_FILE);
-        const student = students.find(s => s.email && s.email.toLowerCase() === email.trim().toLowerCase());
+        // Hash com o scrypt assíncrono (DES-07); a busca e a gravação acontecem depois da
+        // espera, sem nada mudar no meio.
+        const passwordHash = await db.hashPasswordAsync(typed || temporaryPassword);
+        const student = findStudent();
+        if (!student) return res.status(404).json({ error: 'Estudante não encontrado.' });
 
-        if (!student) {
-            return res.status(404).json({ error: 'Estudante não encontrado.' });
-        }
-
-        student.password = db.hashPassword(newPassword.trim());
+        const now = Date.now();
+        student.password = passwordHash;
         student.recoveryRequested = false; // Limpa a solicitação de redefinição
-        writeJSON(DB_STUDENTS_FILE, students);
+        student.passwordChangedAt = new Date(now).toISOString();
+        requirePasswordChange(student, 'reset');
+        student.updatedAt = now;
+        // Quem estava logado com a senha antiga sai (H5b, SEG-10): antes o aparelho onde o
+        // aluno estava (ou quem tinha a senha antiga) continuava entrando até 8 h. Com uma
+        // tentativa aberta agora, a sessão termina a prova e acaba no primeiro pedido
+        // depois dela (sessionsInvalidBefore, conferido em validateStudentSession). Só a
+        // tentativa aberta conta: a prova da turma que o aluno ainda não abriu não segura a
+        // sessão antiga (ele entra de novo com a senha nova, e a troca dela fica para
+        // depois da prova pela regra do H5a). O atraso de login por senhas erradas também
+        // é liberado: o aluno entra na hora com a senha nova.
+        student.sessionsInvalidBefore = now;
+        const attemptOpen = studentHasOpenAttempt(db.memory, student.email, now);
+        const inExamNow = studentHasExamInProgress(db.memory, student.email, student, now);
+        // O aparelho de antes recebe 401 { reason: 'password_reset' } no pedido seguinte
+        // (e não o "sessão expirada" genérico).
+        const sessionEnded = !attemptOpen && revokeStudentSession(db.memory, student.email, { reason: 'password_reset', now });
+        loginGuard.clear(loginGuard.accountKey('student', student.email));
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'student_password_reset',
+            category: 'security',
+            studentEmail: student.email,
+            details: { mode, mustChangePassword: true },
+        }, { timestamp: now });
+        await db.save();
 
-        res.json({ success: true, message: 'Senha redefinida com sucesso!' });
+        // Com TEST_MODE (demonstração) a troca não é pedida, e com o aluno em prova ela
+        // fica para depois: a resposta diz o que vale.
+        const changeRequired = passwordChangeRuleActive();
+        const deferred = changeRequired && inExamNow;
+        res.json({
+            success: true,
+            message: resetPasswordMessage(changeRequired, deferred),
+            mustChangePassword: changeRequired,
+            passwordChangeDeferred: deferred,
+            sessionEnded,
+            ...(temporaryPassword ? { temporaryPassword } : {}),
+        });
     });
 });
 
-// Excluir conta do aluno e dados pessoais associados.
-// Vale para todos os e-mails conhecidos do aluno (o atual e os anteriores, pelas trocas
-// de e-mail registradas na auditoria), sempre por campo exato: excluir ana@ não toca
-// joana@. É a única anonimização de aluno: não há anonimização automática no boot.
-// Registro gravado com um e-mail que outro aluno cadastrado usou antes (e-mail antigo
-// reaproveitado) é do outro aluno no período em que o e-mail era dele e fica; e-mail que
-// também é de professor não leva a autoria do professor (studentEmailOwnership).
+// Liberar login do aluno (H5b; SEG-06, decisão 6 do Alan): depois de muitas senhas
+// erradas a conta espera antes de tentar de novo (utils/loginGuard.js); o professor libera
+// na hora, sem mexer na senha. Mesmo escopo do "Redefinir senha": page.students e aluno
+// visível ao professor (validateProfessorRequestScope pelo e-mail do corpo). Fica na
+// auditoria (student_login_unlocked).
+router.post('/api/admin/student/unlock-login', (req, res) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
+        const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail do aluno.', field: 'email' });
+        const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === email);
+        if (!student) return res.status(404).json({ error: 'Estudante não encontrado.' });
+        const key = loginGuard.accountKey('student', email);
+        // Só a conta que chegou ao atraso (5 senhas erradas ou mais) é liberada e vai para a
+        // auditoria. Com 1 a 4 falhas não há bloqueio: a resposta diz isso e nada muda
+        // (antes, o contador era apagado e a auditoria ganhava um desbloqueio vazio; sobra do
+        // H5b, J2).
+        const before = loginGuard.protectionFor(key);
+        const released = before ? loginGuard.clear(key) : false;
+        if (released) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'student_login_unlocked',
+                category: 'account',
+                studentEmail: student.email,
+                details: { failures: before.failures, retryAt: before.retryAt },
+            });
+            await db.save();
+        }
+        res.json({
+            success: true,
+            unlocked: released,
+            message: released ? 'Login liberado. O aluno já pode entrar.' : 'Este aluno não estava com o login em espera.',
+        });
+    });
+});
+
+// Excluir aluno direto saiu (H7c; FUN-03, decisão 4 do Alan): o aluno é desligado
+// primeiro (bulk-status, "Desligar aluno") e o cadastro encerrado é anonimizado ou
+// apagado de vez caso a caso em Cadastros encerrados (routes/adminStudentRecords.js,
+// utils/studentLifecycle.js). A rota antiga responde 410 e não remove nada, para nenhuma
+// tela ou script esquecido apagar o histórico escolar.
 router.post('/api/admin/delete-student', (req, res) => {
     validateAdmin(req, res, () => {
-        const { email } = req.body || {};
-        if (typeof email !== 'string' || email.trim() === '') {
-            return res.status(400).json({ error: 'E-mail do estudante não informado.' });
-        }
-
-        const normalizedEmail = email.trim().toLowerCase();
-        const students = readJSON(DB_STUDENTS_FILE);
-        const studentObjToDelete = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
-
-        if (!studentObjToDelete) {
-            return res.status(404).json({ error: 'Estudante não encontrado.' });
-        }
-
-        // Antes de tirar o aluno do cadastro: a linha do tempo dos e-mails usa todos os alunos.
-        const { emails, owns } = studentEmailOwnership(db.memory, normalizedEmail);
-        // Registro do aluno: e-mail dele na data do registro (sem data: o e-mail atual).
-        // Nos campos que a troca de e-mail renomeia ('renamed'), o e-mail atual é sempre
-        // dele, mesmo em registro com data da época em que o e-mail era de outro aluno.
-        const ownedRecord = (item, value, kind = 'student') => !!item && owns(value, item, kind);
-        const studentFiles = (db.memory.attendance || [])
-            .filter(item => ownedRecord(item, item.studentEmail, 'renamed'))
-            .map(item => item.justificativa && item.justificativa.arquivo)
-            .filter(Boolean);
-
-        db.memory.students = students.filter(s => !s.email || s.email.toLowerCase() !== normalizedEmail);
-        db.memory.submissions = readJSON(DB_SUBMISSIONS_FILE).filter(s => !(s && s.student && ownedRecord(s, s.student.email, 'renamed')));
-
-        emails.forEach(known => {
-            if (!owns(known, null, 'renamed')) return;
-            ['progress', 'notes', 'annotations', 'sessions'].forEach(collection => {
-                if (db.memory[collection]) delete db.memory[collection][known];
-            });
+        res.status(410).json({
+            success: false,
+            code: 'student_delete_replaced',
+            error: 'A exclusão direta foi substituída. Desligue o aluno e use Cadastros encerrados.',
         });
-        // O log de auditoria é mantido como histórico, mas sem ligação com o aluno: as
-        // entradas perdem o e-mail, o nome e a matrícula e as cópias das notas na lixeira
-        // ficam só com prova e nota (para a estatística).
-        anonymizeStudentAuditTrail(db.memory, {
-            emails,
-            owns,
-            names: [studentObjToDelete.name, studentObjToDelete.nomeSocial],
-            matriculas: [studentObjToDelete.matricula],
-        });
-        // Contestações de questão (com o texto livre do aluno), tempo extra e versão da prova.
-        anonymizeStudentExamRecords(db.memory, { emails, owns });
-        // Dados pessoais restantes indexados pelo e-mail (presença, acessos, observações,
-        // certificados, logs de prova e de login). Login de professor com o mesmo e-mail fica.
-        // O log de login não é renomeado na troca de e-mail: vale o dono do e-mail na data.
-        const loginKind = item => (item.role && item.role !== 'student' ? 'anyone' : 'student');
-        ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'loginLogs']
-            .forEach(collection => {
-                if (!Array.isArray(db.memory[collection])) return;
-                db.memory[collection] = db.memory[collection].filter(item => !(item && ownedRecord(item, item.studentEmail || item.email,
-                    collection === 'loginLogs' ? loginKind(item) : 'renamed')));
-            });
-        // Fórum: as respostas dele saem; a dúvida dele sai inteira, a não ser que outra
-        // pessoa tenha respondido: aí fica sem nome, e-mail e texto, com as respostas dos
-        // outros. No histórico da dúvida fica "aluno excluído".
-        const replyKind = item => (item && (item.authorRole === 'Aluno' || item.role === 'Aluno') ? 'student' : 'anyone');
-        if (Array.isArray(db.memory.forum)) {
-            db.memory.forum.forEach(comment => {
-                if (!comment) return;
-                if (Array.isArray(comment.replies)) comment.replies = comment.replies.filter(reply => !(reply && ownedRecord(reply, reply.authorEmail, replyKind(reply))));
-                (Array.isArray(comment.events) ? comment.events : []).forEach(event => {
-                    if (event && ownedRecord({ at: event.at }, event.by, replyKind(event))) { event.by = 'aluno excluído'; event.byName = 'Aluno excluído'; }
-                });
-                if (comment.deletedBy && ownedRecord(comment, comment.deletedBy, 'anyone')) comment.deletedBy = 'aluno excluído';
-            });
-            db.memory.forum = db.memory.forum.filter(comment => {
-                if (!comment || !ownedRecord(comment, comment.studentEmail, 'renamed')) return true;
-                if (!(comment.replies || []).length) return false;
-                comment.studentEmail = '';
-                comment.studentName = 'Aluno excluído';
-                comment.text = 'Texto removido (aluno excluído).';
-                comment.studentAnonymized = true;
-                comment.anonymizedAt = new Date().toISOString();
-                return true;
-            });
-        }
-        // Mensagens da prova e avisos só para ele saem; nos outros, sai das listas de leitura.
-        if (Array.isArray(db.memory.broadcastMessages)) {
-            db.memory.broadcastMessages = db.memory.broadcastMessages.filter(message => !(message && ownedRecord(message, message.targetEmail, 'renamed')));
-            db.memory.broadcastMessages.forEach(message => {
-                ['acknowledgedBy', 'deletedFor'].forEach(field => {
-                    if (message && Array.isArray(message[field])) message[field] = message[field].filter(value => !owns(value, null, 'renamed'));
-                });
-            });
-        }
-        if (Array.isArray(db.memory.announcements)) {
-            db.memory.announcements = db.memory.announcements.filter(item => !(item && item.target === 'aluno' && ownedRecord(item, item.targetValue, 'renamed')));
-            db.memory.announcements.forEach(item => {
-                if (item && Array.isArray(item.readBy)) item.readBy = item.readBy.filter(value => !owns(value, null, 'renamed'));
-            });
-        }
-        Object.keys(db.memory.studentExamState || {}).forEach(key => {
-            const state = db.memory.studentExamState[key];
-            if (state && owns(state.studentEmail, null, 'renamed')) delete db.memory.studentExamState[key];
-        });
-
-        const classes = readJSON(DB_CLASSES_FILE);
-        classes.forEach(cls => {
-            Object.keys((cls && cls.studentReleasedItems) || {}).forEach(key => {
-                if (owns(key, null, 'renamed')) delete cls.studentReleasedItems[key];
-            });
-        });
-        db.memory.classes = classes;
-
-        // Pasta do aluno vai para a lixeira (documentos preservados de forma identificável).
-        // Homônimo sem matrícula usa a mesma pasta (matrícula + nome): aí só os arquivos
-        // ligados à presença do aluno excluído vão para a lixeira; os do outro ficam.
-        try {
-            const folder = fileStore.studentFolderName(studentObjToDelete);
-            const dir = path.join(fileStore.ALUNOS_DIR, folder);
-            const shared = db.memory.students.some(other => fileStore.studentFolderName(other).toLowerCase() === folder.toLowerCase());
-            if (!shared) {
-                if (fs.existsSync(dir)) fileStore.moveDirToTrash(dir);
-            } else {
-                const base = path.resolve(dir);
-                [...new Set(studentFiles)].forEach(rel => {
-                    if (!fileStore.isInsideStudents(rel)) return;
-                    const target = path.resolve(fileStore.absFromData(rel));
-                    if (target.startsWith(base + path.sep) && fs.existsSync(target)) fileStore.moveToTrash(target);
-                });
-            }
-        } catch (e) {}
-
-        db.save();
-        res.json({ success: true, message: 'Estudante removido com sucesso.' });
     });
 });
 
@@ -478,8 +554,16 @@ router.get('/api/admin/submissions', (req, res) => {
         const studentClass = String(req.query.studentClass || '').trim();
         // Mesmo recorte do boletim e da planilha: registro antigo sem curso entra
         // só no curso da matrícula do aluno naquela turma.
+        const applicationId = String(req.query.applicationId || '').trim();
         const scoped = scopeSubmissionsToContext(filterSubmissionsForAdmin(submissions, matchedAdmin), gradeScope(courseId, studentClass));
-        res.json(enrichSubmissionsWithAttemptResult(scoped));
+        // O resultado consolidado (melhor nota, média...) é calculado sobre o grupo inteiro
+        // do escopo; só depois a lista fica com as entregas da aplicação pedida ("Liberar
+        // notas" do Monitor). Sem examSnapshot (DES-13): nenhuma tela lê as questões da
+        // lista, e a revisão (/submissions/:id/review) lê o snapshot no servidor. Era o
+        // grosso da resposta (13,2 MB por turma num ano de dados, 1,96 MB sem ele).
+        const enriched = enrichSubmissionsWithAttemptResult(scoped)
+            .filter(item => !applicationId || String(item.applicationId || '') === applicationId);
+        res.json(enriched.map(({ examSnapshot, ...rest }) => rest));
     });
 });
 
@@ -505,6 +589,12 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
         if (group.length === 0) return res.status(404).json({ error: 'Tentativas não encontradas.' });
         const groupResult = () => enrichSubmissionsWithAttemptResult(group.map(groups.resolved));
         const before = groupResult().find(item => String(item.id) === String(target.id));
+        if (!['archive', 'restore', 'select', 'policy'].includes(action)) return res.status(400).json({ error: 'Ação de resultado inválida.' });
+        if (action === 'policy' && !VALID_POLICIES.has(policy)) return res.status(400).json({ error: 'Regra de cálculo inválida.' });
+        // Grupo com alguma tentativa já publicada: o aluno já viu a nota, então mudar a
+        // composição pede o motivo (CONF-09). Conferido antes de mexer em qualquer coisa.
+        const motive = gradeChangeReason(req.body, { required: group.some(item => item.gradePublished === true) });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
 
         if (action === 'archive') {
             target.resultStatus = 'archived';
@@ -553,6 +643,7 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
             field: 'Composição da nota',
             oldValue: `${title}: ${consolidated(before)} (regra: ${policyLabel(before?.aggregationPolicy)})`,
             newValue: `${title}: ${consolidated(after)} · ${actionLabel}`,
+            reason: motive.reason,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
         res.json({ success: true, submissions: refreshed });
@@ -646,11 +737,13 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
             .filter(Boolean);
 
         // Histórico da nota: auditoria desta entrega (lançamento, publicação,
-        // composição) e recorreções por anulação/troca de questão (scoreHistory).
+        // composição) e recorreções por anulação/troca de questão (scoreHistory). O motivo
+        // de mudar nota já publicada (H7a-2) vem junto: o professor não vê a tela
+        // Auditoria, mas vê aqui o porquê de cada mudança.
         const history = [
             ...(db.memory.auditLogs || [])
                 .filter(entry => entry && entry.submissionId != null && String(entry.submissionId) === String(submission.id))
-                .map(entry => ({ id: entry.id, at: entry.timestamp, actor: entry.actor, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue })),
+                .map(entry => ({ id: entry.id, at: entry.timestamp, actor: entry.actor, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue, reason: entry.reason || '' })),
             ...(Array.isArray(submission.scoreHistory) ? submission.scoreHistory : [])
                 .filter(entry => !entry.auditId)
                 .map((entry, index) => ({ id: `score_${index}`, at: Date.parse(entry.at) || entry.at, actor: entry.by || 'sistema', field: 'Nota recalculada', oldValue: formatGradeBR(entry.from), newValue: `${formatGradeBR(entry.to)}${entry.reason ? ` · ${entry.reason}` : ''}` })),
@@ -683,6 +776,11 @@ router.post('/api/admin/submissions/publish', (req, res) => {
         if (ids.size === 0) return res.status(400).json({ error: 'Selecione ao menos uma nota.' });
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const allowedIds = new Set(filterSubmissionsForAdmin(submissions, matchedAdmin).map(item => String(item.id)));
+        // Ocultar uma nota que o aluno já viu pede o motivo (CONF-09); publicar não. A
+        // conferência vem antes de qualquer mudança: sem o motivo, nenhuma nota muda.
+        const hidesPublished = !published && submissions.some(item => ids.has(String(item.id)) && allowedIds.has(String(item.id)) && item.gradePublished === true);
+        const motive = gradeChangeReason(req.body, { required: hidesPublished });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
         let updated = 0;
         let skippedInvalid = 0;
         submissions.forEach(item => {
@@ -703,6 +801,7 @@ router.post('/api/admin/submissions/publish', (req, res) => {
                     field: 'Publicação da nota',
                     oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
                     newValue: published ? 'publicada para o aluno' : 'oculta do aluno',
+                    reason: motive.reason,
                 });
             }
         });
@@ -736,6 +835,9 @@ router.post('/api/admin/submissions/delete', (req, res) => {
             ));
         }
         if (removed.length === 0) return res.status(404).json({ error: 'Tentativa não encontrada.' });
+        // Excluir uma nota que o aluno já viu pede o motivo (CONF-09), antes de excluir.
+        const motive = gradeChangeReason(req.body, { required: removed.some(item => item.gradePublished === true) });
+        if (!motive.ok) return res.status(motive.status).json(motive.body);
 
         const removedSet = new Set(removed);
         removed.forEach(item => {
@@ -748,6 +850,7 @@ router.post('/api/admin/submissions/delete', (req, res) => {
                 oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
                 newValue: 'registro excluído',
                 details: { deletedSubmission: item },
+                reason: motive.reason,
             });
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions.filter(item => !removedSet.has(item)));
@@ -755,19 +858,54 @@ router.post('/api/admin/submissions/delete', (req, res) => {
     });
 });
 
-// Lixeira de notas (AVA-08): exclusões (grade_delete) com a cópia do registro que
-// ainda não voltaram. "Voltou" = existe um grade_restore apontando para aquela
-// exclusão (a auditoria nunca é reescrita) ou a entrega já está de novo na lista.
-function deletedGradeEntries() {
-    const logs = db.memory.auditLogs || [];
-    const restored = new Set(logs
-        .filter(entry => entry && entry.action === 'grade_restore' && entry.details && entry.details.fromAuditId)
-        .map(entry => String(entry.details.fromAuditId)));
+// Lixeira de notas (AVA-08, FUN-03): uma nota está na lixeira quando a entrega não existe
+// mais (nenhuma entrega atual com aquele id) e há pelo menos uma exclusão (grade_delete
+// com a cópia do registro). De cada entrega aparece só a exclusão mais recente. A
+// restauração de backup junta a trilha (mergeAuditTrails), e a entrega pode ter voltado
+// com o backup (sai da lixeira sozinha), ter sido excluída de novo (uma linha só, a
+// última) ou ter sumido de novo com o backup depois de restaurada da lixeira (volta
+// para a lixeira).
+// O grade_restore só conta quando nenhuma restauração de backup veio depois dele: a nota
+// que voltou da lixeira e depois saiu das notas por outro caminho (curso arquivado, aluno
+// excluído, tentativa reaberta) não reaparece na lixeira com a cópia velha, como antes do
+// merge. Restaurar essa cópia sobrepunha a versão guardada no curso arquivado.
+function gradeTrashIndex() {
     const current = new Set((db.memory.submissions || []).map(item => String(item && item.id)));
-    return logs.filter(entry => entry && entry.action === 'grade_delete'
-        && entry.details && entry.details.deletedSubmission && entry.details.deletedSubmission.id != null
-        && !restored.has(String(entry.id))
-        && !current.has(String(entry.details.deletedSubmission.id)));
+    const latest = new Map();
+    const restoredAt = new Map();
+    let lastBackupRestore = -Infinity;
+    (db.memory.auditLogs || []).forEach(entry => {
+        if (!entry || typeof entry !== 'object') return;
+        const action = entry.action || entry.type;
+        const time = auditTimestamp(entry.timestamp !== undefined && entry.timestamp !== null ? entry.timestamp : entry.at);
+        if (action === 'backup_restored') {
+            lastBackupRestore = Math.max(lastBackupRestore, time);
+            return;
+        }
+        if (action === 'grade_restore' && entry.details && entry.details.fromAuditId) {
+            const key = String(entry.details.fromAuditId);
+            restoredAt.set(key, Math.max(restoredAt.has(key) ? restoredAt.get(key) : -Infinity, time));
+            return;
+        }
+        if (action !== 'grade_delete' || !entry.details || !entry.details.deletedSubmission) return;
+        const copyId = entry.details.deletedSubmission.id;
+        if (copyId === undefined || copyId === null || current.has(String(copyId))) return;
+        const previous = latest.get(String(copyId));
+        // Mesma hora: vale a que veio depois na trilha.
+        if (!previous || time >= previous.time) latest.set(String(copyId), { entry, time });
+    });
+    const visible = [];
+    const leftByOtherPath = new Set();
+    latest.forEach(({ entry }) => {
+        const restoredTime = restoredAt.get(String(entry.id));
+        if (restoredTime === undefined || lastBackupRestore >= restoredTime) visible.push(entry);
+        else leftByOtherPath.add(String(entry.id));
+    });
+    return { visible, latest, leftByOtherPath };
+}
+
+function deletedGradeEntries() {
+    return gradeTrashIndex().visible;
 }
 
 function registeredStudentByEmail(email) {
@@ -836,8 +974,19 @@ router.post('/api/admin/submissions/restore', (req, res) => {
         if (!entry || filterSubmissionsForAdmin([copy], matchedAdmin).length === 0) {
             return res.status(404).json({ error: 'Nota excluída não encontrada.' });
         }
-        if (!deletedGradeEntries().some(item => item.id === entry.id)) {
-            return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+        const trash = gradeTrashIndex();
+        if (!trash.visible.some(item => item.id === entry.id)) {
+            const copyId = String(entry.details.deletedSubmission.id);
+            if ((db.memory.submissions || []).some(item => String(item && item.id) === copyId)) {
+                return res.status(409).json({ error: 'Esta nota já foi restaurada.' });
+            }
+            // Já voltou da lixeira e saiu das notas depois por outro caminho (curso arquivado,
+            // aluno excluído): a cópia da exclusão é mais velha que a nota que saiu.
+            if (trash.leftByOtherPath.has(String(entry.id))) {
+                return res.status(409).json({ error: 'Esta nota já voltou da lixeira antes e depois saiu das notas por outro caminho (por exemplo, curso arquivado ou aluno excluído). Ela não está mais na lixeira.' });
+            }
+            // A mesma entrega foi excluída de novo depois: a lixeira mostra só a exclusão mais recente.
+            return res.status(409).json({ error: 'Esta nota foi excluída de novo depois. Atualize a lista de notas excluídas e restaure de lá.' });
         }
         if (copy.anonymized === true) return res.status(409).json({ error: 'O aluno foi excluído e a nota ficou sem identificação; ela não pode voltar.' });
         const student = registeredStudentByEmail(copy.student?.email || copy.studentEmail);
@@ -1215,13 +1364,20 @@ router.get('/api/admin/students', (req, res) => {
         const students = readJSON(DB_STUDENTS_FILE);
         const now = Date.now();
         const enrichedStudents = students.map(s => {
-            // As sessões são objetos { lastSeen, ip, token }. Também damos suporte ao
-            // formato legado (timestamp puro). A chave é sempre o e-mail em minúsculas.
-            const session = s.email ? db.memory.sessions[s.email.toLowerCase()] : null;
+            // Só a presença (lastSeen): a sessão é { tokenHash, createdAt, lastSeen,
+            // lastActivityAt, ip } (utils/authSessions.js, sem o token cru), ou só
+            // { lastSeen } na semente do TEST_MODE. Também valem os formatos legados
+            // { token, lastSeen } e timestamp puro. Lida pelo authSessions (chave própria,
+            // e-mail em minúsculas).
+            const session = s.email ? studentSessionByEmail(db.memory, s.email) : null;
             const lastSeen = sessionLastSeen(session);
             const isOnline = isStudentSessionOnline(session, now);
-            const { password, ...safeStudent } = s;
-            return { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
+            const { password, sessionsInvalidBefore, ...safeStudent } = s;
+            const enriched = { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
+            // Atraso de login por senhas erradas (H5b): o selo e o "Liberar login" em Alunos.
+            const loginProtection = s.email ? loginGuard.protectionFor(loginGuard.accountKey('student', s.email), now) : null;
+            if (loginProtection) enriched.loginProtection = loginProtection;
+            return enriched;
         });
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
@@ -1233,18 +1389,37 @@ router.get('/api/admin/students', (req, res) => {
 
 // Criação manual de aluno pelo instrutor
 router.post('/api/admin/student/create', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const { studentPassword, studentClass, classes } = req.body;
-
         // Suporte retroativo ou novo array. Turmas em objeto viram { name, courseId, period }
         // e `studentClass` guarda só o nome (DES-03).
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
 
         const fields = extractStudentFields(req.body);
 
-        if (!fields.name || !fields.email || !studentPassword || studentClasses.length === 0) {
-            return res.status(400).json({ error: 'Dados incompletos. Informe nome, e-mail, senha e ao menos uma turma.' });
+        if (!fields.name || !fields.email || studentClasses.length === 0) {
+            const field = !fields.name ? 'name' : (!fields.email ? 'email' : 'classes');
+            return res.status(400).json({ success: false, error: 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.', field });
         }
+        // Senha inicial (H5a; UXA-13, SEG-06): em branco, o servidor gera uma temporária e a
+        // devolve só nesta resposta; digitada, passa pela política. A caixa "Pedir troca no
+        // primeiro acesso" (requirePasswordChange) vem marcada; sem o campo (tela antiga),
+        // vale marcada.
+        if (studentPassword !== undefined && studentPassword !== null && typeof studentPassword !== 'string') {
+            return res.status(400).json({ success: false, error: 'Senha inicial inválida.', field: 'studentPassword' });
+        }
+        const typedPassword = typeof studentPassword === 'string' ? studentPassword.trim() : '';
+        if (typedPassword) {
+            const policy = validateNewPassword(typedPassword, {
+                kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial, matricula: fields.matricula,
+            });
+            if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'studentPassword'));
+        }
+        const temporaryPassword = typedPassword ? null : generateTemporaryPassword();
+        const askPasswordChange = req.body.requirePasswordChange !== false;
+        // Hash com o scrypt assíncrono (DES-07) antes da conferência de e-mail repetido e da
+        // gravação, que rodam depois da espera, de uma vez.
+        const passwordHash = await db.hashPasswordAsync(typedPassword || temporaryPassword);
 
         const allClasses = db.memory.classes;
         const requestedCourseId = String(req.body.courseId || '').trim();
@@ -1255,7 +1430,7 @@ router.post('/api/admin/student/create', (req, res) => {
             const classCourse = (c && typeof c === 'object' && c.courseId) || requestedCourseId;
             const matchedClass = allClasses.find(cls => cls.name === className && (!classCourse || String(cls.courseId) === String(classCourse)));
             if (!matchedClass) {
-                return res.status(400).json({ error: `A turma ${className} não está pré-cadastrada no sistema.` });
+                return res.status(400).json({ success: false, error: `A turma ${className} não está pré-cadastrada no sistema.`, field: 'classes' });
             }
         }
 
@@ -1264,7 +1439,7 @@ router.post('/api/admin/student/create', (req, res) => {
         // Validações de campos (e-mail válido/único, matrícula única, telefones, status)
         const validation = validateStudentFields(fields, students, null);
         if (!validation.ok) {
-            return res.status(400).json({ error: validation.error });
+            return res.status(400).json({ success: false, error: validation.error, field: validation.field });
         }
 
         const newStudent = {
@@ -1274,20 +1449,24 @@ router.post('/api/admin/student/create', (req, res) => {
             matricula: fields.matricula || '',
             phone: fields.phone || '',
             guardianPhone: fields.guardianPhone || '',
+            // Opcional pelo professor (H8a-2); o portão do primeiro acesso pede a quem não tem.
+            birthDate: fields.birthDate || '',
             unidade: fields.unidade || '',
             status: fields.status || DEFAULT_STATUS, // Padrão: Ativo
             guardian: fields.guardian || null,
             // Dados de acessibilidade/saúde: só o administrador grava (SEG-04).
             accessibility: isProfessorAccount(matchedAdmin) ? null : (fields.accessibility || null),
-            password: db.hashPassword(String(studentPassword).trim()),
+            password: passwordHash,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade com submissões legadas (sempre o nome)
             period: fields.period || 'Tarde',
             loginTime: null,
             recoveryRequested: false,
+            passwordChangedAt: new Date().toISOString(),
             createdAt: Date.now(),
             updatedAt: Date.now()
         };
+        if (askPasswordChange) requirePasswordChange(newStudent, 'created');
         students.push(newStudent);
 
         recordStudentAudit(db.memory, {
@@ -1298,15 +1477,32 @@ router.post('/api/admin/student/create', (req, res) => {
             req
         });
 
-        db.save();
-        res.json({ success: true });
+        await db.save();
+        // O que vale no primeiro acesso: a caixa desmarcada ou TEST_MODE (demonstração)
+        // não pedem a troca; a tela escolhe o texto do aviso por aqui.
+        // Aluno novo numa turma com prova agora: a troca fica para o primeiro acesso depois
+        // dela (passwordChangeDeferred), como no "Redefinir senha".
+        const mustChange = askPasswordChange && passwordChangeRuleActive();
+        res.json({
+            success: true,
+            mustChangePassword: mustChange,
+            passwordChangeDeferred: mustChange && studentHasExamInProgress(db.memory, newStudent.email, newStudent),
+            ...(temporaryPassword ? { temporaryPassword } : {}),
+        });
     });
 });
 
 // Atualização de cadastro de aluno pelo instrutor
 router.post('/api/admin/student/update', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const { originalEmail, password, studentClass, classes } = req.body;
+        // A senha nunca muda por aqui (H5a, SEG-06): antes esta rota gravava a senha
+        // digitada sem a política e até um hash vindo do navegador (isHashed). Trocar a
+        // senha é pelo "Redefinir senha" (reset-password), com auditoria e troca no
+        // próximo acesso. Campo vazio (telas antigas mandavam password: '') é ignorado.
+        if (password !== undefined && password !== null && password !== '') {
+            return res.status(400).json({ success: false, error: 'Para trocar a senha, use Redefinir senha.', field: 'password' });
+        }
 
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
         const fields = extractStudentFields(req.body);
@@ -1322,11 +1518,22 @@ router.post('/api/admin/student/update', (req, res) => {
         if (studentIndex === -1) {
             return res.status(404).json({ error: 'Estudante não encontrado.' });
         }
+        // Cadastro anonimizado (H7c) não é editado: os dados pessoais não voltam por aqui.
+        if (isAnonymizedStudent(students[studentIndex])) {
+            return res.status(409).json({ success: false, code: 'student_anonymized', error: ANONYMIZED_EDIT_REFUSAL });
+        }
+        // 'Anonimizado' não se aplica por edição: só em Cadastros encerrados.
+        if (fields.status !== undefined && isAnonymizedStudent({ status: fields.status })) {
+            return res.status(400).json({ success: false, error: ANONYMIZED_STATUS_REFUSAL, field: 'status' });
+        }
+        if (req.body.statusReason !== undefined && req.body.statusReason !== null && typeof req.body.statusReason !== 'string') {
+            return res.status(400).json({ success: false, error: 'O motivo da mudança de situação deve ser um texto.', field: 'statusReason' });
+        }
 
         // Validações (e-mail válido/único, matrícula única, telefones, status) ignorando o próprio.
         const validation = validateStudentFields({ ...fields, classes: studentClasses }, students, originalEmailNorm);
         if (!validation.ok) {
-            return res.status(400).json({ error: validation.error });
+            return res.status(400).json({ success: false, error: validation.error, field: validation.field });
         }
 
         const before = students[studentIndex];
@@ -1337,22 +1544,23 @@ router.post('/api/admin/student/update', (req, res) => {
 
         // Auditoria: calcula o que mudou ANTES de aplicar.
         const changes = diffStudentForAudit(before, { ...fields, classes: studentClasses });
+        // Mudança de situação guarda quando, quem e por quê (H7c).
+        const withStatus = applyStudentStatus(before, fields.status || before.status || DEFAULT_STATUS, matchedAdmin, req.body.statusReason);
 
         students[studentIndex] = {
-            ...before,
+            ...withStatus,
             name: fields.name,
             nomeSocial: fields.nomeSocial !== undefined ? fields.nomeSocial : (before.nomeSocial || ''),
             email: newEmailNormalized,
             matricula: fields.matricula !== undefined ? fields.matricula : (before.matricula || ''),
             phone: fields.phone !== undefined ? fields.phone : (before.phone || ''),
             guardianPhone: fields.guardianPhone !== undefined ? fields.guardianPhone : (before.guardianPhone || ''),
+            birthDate: fields.birthDate !== undefined ? fields.birthDate : (before.birthDate || ''),
             unidade: fields.unidade !== undefined ? fields.unidade : (before.unidade || ''),
             status: fields.status || before.status || DEFAULT_STATUS,
             guardian: fields.guardian !== undefined ? fields.guardian : (before.guardian || null),
             accessibility: fields.accessibility !== undefined ? fields.accessibility : (before.accessibility || null),
-            password: password
-                ? (db.isHashed(password) ? password : db.hashPassword(String(password).trim()))
-                : before.password,
+            password: before.password,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade (sempre o nome)
             period: fields.period || before.period,
@@ -1365,7 +1573,8 @@ router.post('/api/admin/student/update', (req, res) => {
                 studentEmail: newEmailNormalized,
                 action: 'update',
                 changes,
-                req
+                req,
+                reason: withStatus !== before ? withStatus.statusReason : undefined,
             });
         }
 
@@ -1408,8 +1617,10 @@ function renameStudentEmailEverywhere(oldEmail, newEmail) {
             delete map[oldEmail];
         }
     });
-    if (memory.sessions) delete memory.sessions[oldEmail];
-    ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'examKeystrokes', 'forum', 'auditLogs']
+    revokeStudentSession(memory, oldEmail);
+    // Histórico de digitação (tabela própria): renomeado no mesmo ciclo da gravação.
+    db.keystrokes.renameEmail(oldEmail, newEmail);
+    ['attendance', 'moduleAccess', 'pedagogicalObservations', 'certificates', 'proctoringLogs', 'forum', 'auditLogs']
         .forEach(collection => (memory[collection] || []).forEach(item => { if (item && same(item.studentEmail)) item.studentEmail = newEmail; }));
     // Notas na lixeira: a cópia guardada na auditoria acompanha o novo e-mail, senão a
     // nota excluída aparece como "aluno fora do cadastro" e não pode ser restaurada.
@@ -1501,6 +1712,10 @@ router.post('/api/admin/student/bulk-enroll', (req, res) => {
             const current = Array.isArray(before.classes) && before.classes.length
                 ? before.classes
                 : (before.studentClass ? [before.studentClass] : []);
+            if (isAnonymizedStudent(before)) {
+                skipped.push({ email: before.email, reason: 'Cadastro anonimizado.' });
+                return;
+            }
             if (studentInClass(before, cls.name, cls.courseId)) {
                 skipped.push({ email: before.email, reason: 'Já matriculado nesta turma.' });
                 return;
@@ -1534,14 +1749,28 @@ router.post('/api/admin/student/bulk-enroll', (req, res) => {
     });
 });
 
-// Altera a situação (Ativo, Inativo, ...) de vários alunos de uma vez.
+// Altera a situação (Ativo, Inativo, ...) de vários alunos de uma vez. É também o
+// "Desligar aluno" e o "Reativar" de Cadastros encerrados (H7c): grava quando, quem e o
+// motivo (opcional, até 500 caracteres) no cadastro e na auditoria. Cadastro anonimizado
+// fica de fora ('Cadastro anonimizado'), e 'Anonimizado' não é situação que se aplique aqui.
 router.post('/api/admin/student/bulk-status', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { emails, status } = req.body;
-        const nextStatus = String(status || '').trim();
-        if (!STUDENT_STATUSES.includes(nextStatus)) {
-            return res.status(400).json({ error: `Situação inválida. Use uma de: ${STUDENT_STATUSES.join(', ')}.` });
+        const nextStatus = typeof status === 'string' ? status.trim() : '';
+        if (isAnonymizedStudent({ status: nextStatus })) {
+            return res.status(400).json({ success: false, error: ANONYMIZED_STATUS_REFUSAL, field: 'status' });
         }
+        if (!STUDENT_STATUSES.includes(nextStatus)) {
+            return res.status(400).json({ success: false, error: `Situação inválida. Use uma de: ${STUDENT_STATUSES.join(', ')}.`, field: 'status' });
+        }
+        const rawReason = req.body.reason;
+        if (rawReason !== undefined && rawReason !== null && typeof rawReason !== 'string') {
+            return res.status(400).json({ success: false, error: 'O motivo deve ser um texto.', field: 'reason' });
+        }
+        if (typeof rawReason === 'string' && rawReason.trim().length > STATUS_REASON_MAX) {
+            return res.status(400).json({ success: false, error: `O motivo pode ter no máximo ${STATUS_REASON_MAX} caracteres.`, field: 'reason' });
+        }
+        const reason = cleanStatusReason(rawReason);
 
         const { targets, skipped } = resolveBulkTargets(emails, matchedAdmin);
         if (!targets.length && !skipped.length) {
@@ -1550,14 +1779,19 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
 
         const students = db.memory.students;
         let updated = 0;
+        const now = Date.now();
         targets.forEach(index => {
             const before = students[index];
+            if (isAnonymizedStudent(before)) {
+                skipped.push({ email: before.email, reason: 'Cadastro anonimizado.' });
+                return;
+            }
             if ((before.status || DEFAULT_STATUS) === nextStatus) {
                 skipped.push({ email: before.email, reason: 'Já está nesta situação.' });
                 return;
             }
             const changes = diffStudentForAudit(before, { status: nextStatus });
-            students[index] = { ...before, status: nextStatus, updatedAt: Date.now() };
+            students[index] = applyStudentStatus(before, nextStatus, matchedAdmin, reason, { now });
             if (changes.length) {
                 recordStudentAudit(db.memory, {
                     actor: (matchedAdmin && matchedAdmin.email) || 'admin',
@@ -1565,6 +1799,7 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
                     action: 'bulk_status',
                     changes,
                     req,
+                    reason,
                 });
             }
             updated++;
@@ -1575,14 +1810,22 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
     });
 });
 
-// Histórico de auditoria de um aluno (alterações no perfil) — somente admin.
+// Histórico de auditoria de um aluno (aba Auditoria da ficha) — somente admin
+// (audit.view, decisão P5: o professor recebe 403 e a aba some para ele). As entradas
+// saem lidas por normalizeAuditEntry, como na tela Auditoria, com o rótulo da ação
+// (label): as antigas que guardavam o aluno só em details também aparecem, a hora em
+// texto ordena certo, e a que não é campo do cadastro, como o "Redefinir senha" (H5a),
+// aparece na ficha pelo rótulo. Como lá, os valores passam de novo pela limpeza de
+// segredos (entrada antiga vinda de backup).
 router.get('/api/admin/student/audit', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdminPermission(req, res, 'audit.view', () => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        const logs = (db.memory.auditLogs || [])
-            .filter(l => l.studentEmail === email)
-            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        const logs = (Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [])
+            .map(normalizeAuditEntry)
+            .filter(entry => entry && entry.studentEmail === email)
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+            .map(auditEntryWithoutSecrets);
         res.json(logs);
     });
 });
@@ -1636,7 +1879,7 @@ router.get('/api/admin/student/observations', (req, res) => {
     });
 });
 
-router.post('/api/admin/student/observations/create', (req, res) => {
+router.post('/api/admin/student/observations/create', ADMIN_SCHEMAS.observationCreate, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.body.email || '').trim().toLowerCase();
         const category = (req.body.category || '').trim();
@@ -1665,7 +1908,7 @@ router.post('/api/admin/student/observations/create', (req, res) => {
     });
 });
 
-router.post('/api/admin/student/observations/update', (req, res) => {
+router.post('/api/admin/student/observations/update', ADMIN_SCHEMAS.observationUpdate, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const { id } = req.body;
         const list = db.memory.pedagogicalObservations || [];
@@ -1841,6 +2084,11 @@ function isValidIsoDate(value) {
 }
 
 // Marcar presença manualmente (Fase 4). Valida e-mail, data e matrícula (CONF-14).
+// Toda marcação fica na auditoria (attendance_marked, H7b) com os registros que o dia
+// já tinha e o novo; a marcação não apaga nada (a chamada do dia, se houver, continua
+// valendo na frequência por cima da manual, e a entrada diz isso). Cadastro encerrado
+// só recebe marcação numa data em que a chamada ainda o mostra (com registro, ou antes
+// do desligamento), a mesma regra da chamada (H7b).
 router.post('/api/admin/student/attendance/mark', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const body = req.body || {};
@@ -1875,8 +2123,17 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
         const gradeAulas = attendanceUtil.gradeForDate(cls, date);
         const aulas = (gradeAulas.length ? gradeAulas : [{ ordem: 1, inicio: '', disciplinaId: '' }])
             .map(a => ({ ordem: a.ordem, disciplinaId: a.disciplinaId || '', inicio: a.inicio || '', status: 'presente', hora: '' }));
-        db.memory.attendance.push({
-            id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        const now = Date.now();
+        // Registros do aluno naquele dia que a chamada da turma mostra.
+        const previous = _rosterDayRecords(email, date, studentClass, courseId);
+        if (!_rosterListsStudent(student, { date, hasRecord: previous.length > 0, timezone: settingsUtil.getSettings().timezone })) {
+            return res.status(409).json({
+                code: 'student_closed',
+                error: `O cadastro deste aluno está encerrado (${String(student.status || '').trim()}). A presença só pode ser marcada numa data em que ele ainda estava na turma.`,
+            });
+        }
+        const record = {
+            id: 'att_' + now + '_' + Math.random().toString(36).slice(2, 8),
             studentEmail: email,
             studentClass,
             courseId,
@@ -1885,7 +2142,13 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
             aulas,
             justificativa: null,
             markedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
-            timestamp: Date.now(),
+            timestamp: now,
+        };
+        db.memory.attendance.push(record);
+        attendanceUtil.recordAttendanceAudit(db.memory, {
+            req, actor: matchedAdmin, action: 'attendance_marked',
+            studentEmail: email, courseId, studentClass, date,
+            before: previous, after: record, timestamp: now,
         });
         db.save();
         res.json({ success: true, date });
@@ -1896,6 +2159,55 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
 // ===================== CHAMADA POR TURMA (presença em massa) =====================
 // Status válidos. Ausência (ausente/justificado) NÃO conta como presença nas métricas.
 const ATT_STATUS = ['presente', 'ausente', 'atrasado', 'justificado'];
+
+// O registro é do aluno naquela turma e data, do jeito que a chamada mostra? Registro sem
+// curso ou sem turma, de versões antigas (ou de turma sem curso), também conta. É o mesmo
+// filtro para mostrar (roster), para substituir (bulk) e para a marcação individual:
+// assim o registro antigo que a chamada mostra sai quando ela é regravada, em vez de
+// ficar ao lado do novo e contar duas vezes na frequência.
+function _isRosterDayRecord(a, email, date, className, courseId) {
+    return !!a && a.studentEmail === email && a.date === date
+        && (!courseId || !a.courseId || String(a.courseId) === courseId)
+        && (!a.studentClass || a.studentClass === className);
+}
+
+function _rosterDayRecords(email, date, className, courseId) {
+    return (db.memory.attendance || []).filter(a => _isRosterDayRecord(a, email, date, className, courseId));
+}
+
+// O aluno entra na chamada desta data? Ativo (ou Bloqueado) sempre. Cadastro encerrado
+// (Inativo, Concluído, Transferido, Evadido, Anonimizado) sai das datas novas (H7b): só
+// com registro na data ou em data anterior à mudança de situação
+// (attendanceUtil.closedStudentListedOn). A data da mudança é o statusChangedAt gravado
+// pelo Desligar aluno (H7c) ou, para quem foi desligado antes da atualização, a última
+// alteração de "Status" do cadastro na auditoria (studentStatusSince): a chamada
+// atrasada de quando ele ainda estava na turma continua possível.
+// sinceOf: _closedSinceResolver() do pedido (o índice da auditoria é montado uma vez só,
+// e só se algum encerrado sem statusChangedAt precisar dele).
+function _closedSinceResolver() {
+    let index = null;
+    return student => studentStatusSince(student, student && student.statusChangedAt ? null : (index || (index = lastStatusChangeIndex(db.memory.auditLogs))));
+}
+
+function _rosterListsStudent(student, { date, hasRecord, timezone, sinceOf }) {
+    if (!isClosedStudentStatus(student && student.status)) return true;
+    if (hasRecord) return true;
+    const since = (sinceOf || _closedSinceResolver())(student);
+    return attendanceUtil.closedStudentListedOn({ hasRecord, date, statusChangedAt: since, timezone });
+}
+
+// Presença automática (acesso do aluno) para o professor conferir: a do próprio registro
+// do login, a guardada (loginAccess) na chamada que o substituiu ou a de um registro do
+// login que continua ao lado de uma marcação individual.
+function _rosterLoginAccess(rec, recs = []) {
+    if (!rec) return null;
+    const via = source => (source === 'heartbeat' ? 'sessão aberta' : 'login');
+    if (rec.loginAccess && typeof rec.loginAccess === 'object') {
+        return { hora: rec.loginAccess.horaAcesso || '', ip: rec.loginAccess.ip || '', via: via(rec.loginAccess.source) };
+    }
+    const login = rec.origin === 'login' ? rec : recs.find(a => a && a.origin === 'login');
+    return login ? { hora: login.horaAcesso || '', ip: login.ip || '', via: via(login.source) } : null;
+}
 
 function _studentInClass(student, className, courseId) {
     const cn = String(className || '').trim();
@@ -1935,14 +2247,17 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
         const gradeAulas = _gradeAulasForRoster(cls, course, date);
+        const timezone = settingsUtil.getSettings().timezone;
+        const sinceOf = _closedSinceResolver();
 
         const roster = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
             .map(s => {
                 const email = (s.email || '').toLowerCase();
-                const recs = (db.memory.attendance || []).filter(a => a.studentEmail === email && a.date === date
-                    && (!courseId || !a.courseId || String(a.courseId) === courseId)
-                    && (!a.studentClass || a.studentClass === className));
-                const rec = recs.find(a => a.origin === 'chamada') || recs.find(a => a.origin !== 'chamada') || null;
+                const recs = _rosterDayRecords(email, date, className, courseId);
+                // Cadastro encerrado fica fora das datas novas (H7b).
+                if (!_rosterListsStudent(s, { date, hasRecord: recs.length > 0, timezone, sinceOf })) return null;
+                // O registro que vale no dia (o mesmo da frequência): chamada, manual, login.
+                const rec = attendanceUtil.effectiveDayRecord(recs);
                 // Aulas salvas têm prioridade; senão, monta a partir da grade (padrão presente).
                 let aulas;
                 if (rec && Array.isArray(rec.aulas) && rec.aulas.length) {
@@ -1964,11 +2279,14 @@ router.get('/api/admin/attendance/roster', (req, res) => {
                     nomeSocial: s.nomeSocial || '',
                     matricula: s.matricula || '',
                     origin: rec ? (rec.origin || '') : '',
+                    // Situação do cadastro: o encerrado só aparece aqui com registro na data
+                    // (ou em data anterior ao desligamento), e a tela mostra a situação.
+                    situacao: s.status || DEFAULT_STATUS,
+                    encerrado: isClosedStudentStatus(s.status),
                     // Presença automática (acesso do aluno): hora, IP e origem para o
-                    // professor conferir antes de concluir a chamada (CRIT-02).
-                    acessoAutomatico: rec && rec.origin === 'login'
-                        ? { hora: rec.horaAcesso || '', ip: rec.ip || '', via: rec.source === 'heartbeat' ? 'sessão aberta' : 'login' }
-                        : null,
+                    // professor conferir antes de concluir a chamada (CRIT-02). Depois que
+                    // a chamada substitui o registro do login, vem do loginAccess guardado.
+                    acessoAutomatico: _rosterLoginAccess(rec, recs),
                     salvo: !!rec,
                     concluida: !!(rec && rec.concluida),
                     aulas,
@@ -1979,6 +2297,7 @@ router.get('/api/admin/attendance/roster', (req, res) => {
                     emRisco: freq != null && freq < cfg.limiarRiscoPct,
                 };
             })
+            .filter(Boolean)
             .sort((a, b) => (a.nomeSocial || a.name).localeCompare(b.nomeSocial || b.name, 'pt-BR'));
         res.json({
             studentClass: className, courseId, date,
@@ -1992,6 +2311,16 @@ router.get('/api/admin/attendance/roster', (req, res) => {
 });
 
 // Salva a chamada de uma turma numa data (upsert por aluno/data) — por aula.
+// Cada gravação substitui o registro do dia de cada aluno por um novo (id novo), como
+// sempre; a tela manda a turma inteira a cada autosave. O que se perdia vai para a
+// auditoria (H7b): quando a situação muda depois da conclusão, sobre a presença
+// automática ou a marcação individual, por outra pessoa ou mais de 15 min depois da
+// versão de referência, fica uma entrada attendance_changed com antes e depois
+// (attendanceUtil.shouldAuditAttendanceChange). O rascunho do mesmo professor (autosave
+// a cada 2 s) não vira entrada. A hora da primeira conclusão (concludedAt), o acesso do
+// login substituído (loginAccess) e a versão de referência (baseVersion: de onde, de
+// quem e de quando é a situação) passam de versão em versão, para o autosave que
+// regrava o aluno sem mudar nada não apagar a origem da situação.
 router.post('/api/admin/attendance/bulk', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.body.studentClass || '').trim();
@@ -2003,22 +2332,54 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         const concluida = req.body.concluida === true;
         if (!className || !courseId || !date || !entries) return res.status(400).json({ error: 'Curso, turma, data e lançamentos são obrigatórios.' });
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
+        const now = Date.now();
+        const markedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
+        const timezone = settingsUtil.getSettings().timezone;
+        const sinceOf = _closedSinceResolver();
 
-        let saved = 0;
+        // Lançamentos válidos, um por aluno (repetido no mesmo pedido: vale o último).
+        const studentsByEmail = new Map();
+        (db.memory.students || []).forEach(s => { if (s && s.email) studentsByEmail.set(String(s.email).toLowerCase(), s); });
+        const pending = new Map();
         entries.forEach(entry => {
             const email = String(entry && entry.email || '').trim().toLowerCase();
             if (!email) return;
-            const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+            const student = studentsByEmail.get(email);
             if (!student || !_studentInClass(student, className, courseId)) return;
+            pending.delete(email);
+            pending.set(email, { entry, student });
+        });
+
+        // Uma passada pela presença: sai o registro daquele dia que a chamada desta turma
+        // mostra para cada aluno lançado (inclusive o do login automático e o antigo sem
+        // curso ou sem turma), guardado para a auditoria.
+        const removedByEmail = new Map();
+        const kept = [];
+        db.memory.attendance.forEach(a => {
+            const email = a && a.studentEmail;
+            if (email && pending.has(email) && _isRosterDayRecord(a, email, date, className, courseId)) {
+                if (!removedByEmail.has(email)) removedByEmail.set(email, []);
+                removedByEmail.get(email).push(a);
+                return;
+            }
+            kept.push(a);
+        });
+
+        const added = [];
+        let saved = 0;
+        let skipped = 0;
+        pending.forEach(({ entry, student }, email) => {
+            // Cadastro encerrado que a chamada desta data não mostra (página aberta antes
+            // do desligamento) não ganha registro novo. Sem registro na data, também não
+            // havia nada para tirar.
+            const previous = removedByEmail.get(email) || [];
+            if (!_rosterListsStudent(student, { date, hasRecord: previous.length > 0, timezone, sinceOf })) { skipped++; return; }
             const aulas = attendanceUtil.sanitizeAulas(entry.aulas);
             const temJustificada = aulas.some(a => a.status === 'justificada');
             const justificativa = temJustificada ? attendanceUtil.sanitizeJustificativa(entry.justificativa) : null;
             const observacao = String((entry && entry.observacao) || '').slice(0, 500);
-            // Remove qualquer registro daquele dia (inclusive login automático) e grava o da chamada.
-            db.memory.attendance = db.memory.attendance.filter(a => !(a.studentEmail === email && a.date === date
-                && String(a.courseId || '') === courseId && a.studentClass === className));
-            db.memory.attendance.push({
-                id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+            const record = {
+                id: 'att_' + now + '_' + Math.random().toString(36).slice(2, 8),
                 studentEmail: email,
                 studentClass: className,
                 courseId: courseId || (student.classes && student.classes[0] && student.classes[0].courseId) || '',
@@ -2028,13 +2389,26 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
                 aulas,
                 justificativa,
                 observacao,
-                markedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
-                timestamp: Date.now(),
-            });
+                markedBy,
+                timestamp: now,
+                ...attendanceUtil.attendanceCarryOver(previous, { concluida, now }),
+            };
+            const prev = attendanceUtil.effectiveDayRecord(previous);
+            const audited = attendanceUtil.shouldAuditAttendanceChange(prev, record, markedBy, now);
+            Object.assign(record, attendanceUtil.attendanceBaseVersionFields(prev, record, { audited }));
+            if (audited) {
+                attendanceUtil.recordAttendanceAudit(db.memory, {
+                    req, actor: matchedAdmin, action: 'attendance_changed',
+                    studentEmail: email, courseId: record.courseId, studentClass: className, date,
+                    before: previous, after: record, timestamp: now,
+                });
+            }
+            added.push(record);
             saved++;
         });
+        db.memory.attendance = kept.concat(added);
         db.save();
-        res.json({ success: true, saved, concluida });
+        res.json({ success: true, saved, skipped, concluida });
     });
 });
 
@@ -2227,10 +2601,28 @@ router.post('/api/admin/announcements/delete', (req, res) => {
         }
         const before = db.memory.announcements.length;
         db.memory.announcements = db.memory.announcements.filter(a => a.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'announcement_deleted',
+            category: 'academic',
+            courseId: ann.courseId || undefined,
+            studentClass: ann.studentClass || undefined,
+            studentEmail: ann.target === 'aluno' && ann.targetValue ? ann.targetValue : undefined,
+            details: { deleted: deletedItemCopy(ann) },
+        });
         db.save();
         res.json({ success: true, removed: before - db.memory.announcements.length });
     });
 });
+
+// Cópia do item excluído para a auditoria (details.deleted, SEG-07): com ela dá para
+// refazer à mão um aviso, um evento do calendário ou uma questão excluídos (FUN-03),
+// sem uma lixeira para cada tipo. A lista de quem leu o aviso vira só a contagem.
+function deletedItemCopy(item) {
+    const { readBy, ...rest } = item || {};
+    return Array.isArray(readBy) ? { ...rest, readCount: readBy.length } : rest;
+}
 
 // ===================== CALENDARIO DO CURSO =====================
 const CALENDAR_TYPES = ['aula', 'prova', 'entrega', 'aviso', 'reuniao', 'outro'];
@@ -2326,6 +2718,15 @@ router.post('/api/admin/announcements/calendar/delete', (req, res) => {
         if (!item) return res.status(404).json({ error: 'Evento não encontrado.' });
         if (!_annInScope(item, matchedAdmin)) return res.status(403).json({ error: 'Evento fora do seu escopo.' });
         db.memory.announcements = db.memory.announcements.filter(entry => entry.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'calendar_event_deleted',
+            category: 'academic',
+            courseId: item.courseId || undefined,
+            studentClass: item.target === 'turma' && item.targetValue ? item.targetValue : undefined,
+            details: { deleted: deletedItemCopy(item) },
+        });
         db.save();
         res.json({ success: true });
     });
@@ -2333,7 +2734,7 @@ router.post('/api/admin/announcements/calendar/delete', (req, res) => {
 
 
 // Emitir certificado (Fase 4)
-router.post('/api/admin/student/certificates/issue', (req, res) => {
+router.post('/api/admin/student/certificates/issue', ADMIN_SCHEMAS.certificateIssue, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.body.email || '').trim().toLowerCase();
         const courseName = (req.body.courseName || '').trim();
@@ -2351,6 +2752,15 @@ router.post('/api/admin/student/certificates/issue', (req, res) => {
             issuedBy: (matchedAdmin && matchedAdmin.email) || 'admin',
         };
         db.memory.certificates.push(cert);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'certificate_issued',
+            category: 'academic',
+            studentEmail: email,
+            courseId: cert.courseId || undefined,
+            details: { certificateId: cert.id, code: cert.code, courseName: cert.courseName },
+        });
         db.save();
         res.json({ success: true, certificate: cert });
     });
@@ -2358,12 +2768,25 @@ router.post('/api/admin/student/certificates/issue', (req, res) => {
 
 // Cancelar certificado (Fase 4)
 router.post('/api/admin/student/certificates/revoke', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { id } = req.body;
         const cert = (db.memory.certificates || []).find(c => c.id === id);
         if (!cert) return res.status(404).json({ error: 'Certificado não encontrado.' });
+        const previousStatus = cert.status || 'Emitido';
         cert.status = 'Cancelado';
         cert.revokedAt = Date.now();
+        cert.revokedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'certificate_revoked',
+            category: 'academic',
+            studentEmail: cert.studentEmail || undefined,
+            courseId: cert.courseId || undefined,
+            before: { status: previousStatus },
+            after: { status: cert.status },
+            details: { certificateId: cert.id, code: cert.code, courseName: cert.courseName },
+        });
         db.save();
         res.json({ success: true });
     });
@@ -2678,7 +3101,7 @@ router.put('/api/admin/material/:key', (req, res) => {
                 resetOverridesForCourseItem(courseId, 'materials', key);
             }
         } catch (error) {
-            return res.status(error.status || 400).json({ error: error.message });
+            return sendRouteError(error, req, res, 'Falha ao gravar arquivo no disco.');
         }
 
         // Valida se o nome do arquivo é seguro
@@ -2702,8 +3125,9 @@ router.put('/api/admin/material/:key', (req, res) => {
             const resolved = courseId ? effectiveStructure(courseId, studentClass) : null;
             res.json({ success: true, key, scope, affectedClasses, structure: resolved?.structure });
         } catch (e) {
-            console.error("Erro ao salvar material:", e);
-            res.status(500).json({ error: 'Falha ao gravar arquivo no disco.' });
+            // Disco cheio, arquivo preso por outro programa ou pasta no lugar do .md: o
+            // professor recebe o código do erro e o stack fica no crash.log (ENG-04).
+            return sendInternalError(e, req, res, 'Falha ao gravar arquivo no disco.');
         }
     });
 });
@@ -2778,8 +3202,7 @@ router.post('/api/admin/material/create', (req, res) => {
             db.save();
             res.json({ success: true, apostilaKey, avaliacaoKey, scope, affectedClasses, structure: effectiveStructure(courseId, studentClass)?.structure || structure });
         } catch(e) {
-            console.error("Erro ao criar nova apostila:", e);
-            res.status(500).json({ error: 'Falha ao criar arquivos no servidor.' });
+            return sendInternalError(e, req, res, 'Falha ao criar arquivos no servidor.');
         }
     });
 });
@@ -2844,7 +3267,7 @@ router.post('/api/admin/evaluation', (req, res) => {
         if (!module) return res.status(404).json({ error: 'Módulo não encontrado.' });
         let normalized;
         try { normalized = normalizeEvaluationPayload(req.body); }
-        catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+        catch (error) { return sendRouteError(error, req, res); }
         const slug = normalized.title.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '').slice(0, 48) || 'Nova';
         let key = `Avaliacao_${slug}_${Date.now().toString(36)}`;
         while (db.memory.evaluations[key]) key += '_2';
@@ -2918,7 +3341,7 @@ router.put('/api/admin/evaluation/:key', (req, res) => {
                     affectedClasses = [studentClass];
                     ensureOverrides(findContentClass(courseId, studentClass)).unitNames[baseKey] = String(evaluationData.title || '').trim();
                 } catch (error) {
-                    return res.status(error.status || 400).json({ error: error.message });
+                    return sendRouteError(error, req, res);
                 }
             } else {
                 baseKey = resolveBaseKey(courseId, studentClass, 'evaluations', requestedKey);
@@ -2929,7 +3352,7 @@ router.put('/api/admin/evaluation/:key', (req, res) => {
         }
         let normalized;
         try { normalized = normalizeEvaluationPayload(evaluationData); }
-        catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+        catch (error) { return sendRouteError(error, req, res); }
 
         // Backup
         if (db.memory.evaluations[key]) {
@@ -3048,6 +3471,28 @@ function uploadErrorMessage(err) {
     return `Erro no upload: ${detail}`;
 }
 
+// Erro do próprio envio: recusa do multer (tipo, tamanho, campos) ou formulário que o
+// pedido estragou (cortado no meio, conexão caída, cabeçalho multipart inválido; as
+// mensagens são as do busboy e do multer). O resto é falha do servidor ao gravar o
+// arquivo recebido (disco cheio, pasta de envios sem permissão ou presa por outro
+// programa no Windows).
+const UPLOAD_REQUEST_ERROR = /^(Unexpected end of (form|file)|Malformed |Multipart: |Unsupported content type|Missing Content-Type|Request (aborted|closed|error)$|aborted$)/;
+function isUploadRequestError(err) {
+    if (!err) return false;
+    if (err instanceof multer.MulterError || err.name === 'MulterError') return true;
+    if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED') return true;
+    return UPLOAD_REQUEST_ERROR.test(String(err.message || ''));
+}
+
+// Resposta ao erro do multer: o envio recusado responde 400 em português; a falha do
+// disco responde o 500 com o código do erro e o stack no crash.log. Antes ela virava 400
+// "Erro no upload: o arquivo não pôde ser recebido.", sem código e sem registro, e o
+// professor e o suporte ficavam sem saber que o disco encheu (ENG-04).
+function sendUploadError(err, req, res) {
+    if (isUploadRequestError(err)) return res.status(400).json({ error: uploadErrorMessage(err) });
+    return sendInternalError(err, req, res, 'Falha ao gravar no disco o arquivo enviado.');
+}
+
 // `discard`: apaga o arquivo recusado em vez de mandá-lo para a lixeira (arquivo de
 // backup leva o banco inteiro e não pode reaparecer pela lixeira, SEG-X1).
 function rejectInvalidUpload(req, res, { discard = false } = {}) {
@@ -3055,24 +3500,31 @@ function rejectInvalidUpload(req, res, { discard = false } = {}) {
     if (result.valid) return false;
     try {
         if (discard) fs.rmSync(req.file.path, { force: true });
-        else fileStore.moveToTrash(req.file.path);
+        else fileStore.moveToTrash(req.file.path, { originalName: req.file.originalname });
     } catch (e) {}
     res.status(400).json({ error: result.reason });
     return true;
 }
 
-router.use(createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage, uploadDir }));
+router.use(createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uploadErrorMessage, isUploadRequestError, uploadDir }));
 router.use(createAdminArchiveRouter({ studentClassNames }));
 router.use(createAdminSystemRouter());
 router.use(createAdminAccountsRouter());
 router.use(createAdminExamConfigRouter());
+// Saúde do servidor (/api/health, /api/admin/system/health) e a rota de controle do
+// launcher (/api/system/control), H3c.
+router.use(createSystemHealthRouter());
+router.use(createAdminAuditRouter());
+router.use(createAdminPrivacyRouter());
+router.use(createAdminStudentRecordsRouter());
+router.use(createAdminCoursesRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
 router.post('/api/admin/attendance/justification-upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        uploadForRequest().single('file')(req, res, async (err) => {
-            if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
+        uploadForRequest().single('file')(req, res, guarded(req, res, async (err) => {
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
             const requestedCourseId = String(req.body.courseId || '').trim();
@@ -3093,7 +3545,7 @@ router.post('/api/admin/attendance/justification-upload', (req, res) => {
             if (req.file.size > _stA.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(tempPath); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _stA.upload.maxSizeMb + ' MB.' }); }
             const rel = fileStore.storeStudentFile(student, 'atestados', req.file.originalname, tempPath);
             res.json({ success: true, file: rel, name: req.file.originalname });
-        });
+        }));
     });
 });
 
@@ -3170,14 +3622,14 @@ router.get('/api/admin/library', (req, res) => {
 
 router.post('/api/admin/library/upload', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        uploadForRequest().single('file')(req, res, (err) => {
-            if (err) return res.status(400).json({ error: uploadErrorMessage(err) });
+        uploadForRequest().single('file')(req, res, guarded(req, res, (err) => {
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             if (rejectInvalidUpload(req, res)) return;
             const ext = path.extname(req.file.originalname).toLowerCase();
             const _st = settingsUtil.getSettings();
             // Envio recusado da biblioteca: na lixeira, fica visível para quem enviou.
-            const refusedMeta = { deletedBy: matchedAdmin && matchedAdmin.email };
+            const refusedMeta = { deletedBy: matchedAdmin && matchedAdmin.email, originalName: req.file.originalname };
             if (req.file.size > _st.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _st.upload.maxSizeMb + ' MB.' }); }
             if (!_st.upload.allowedTypes.includes(settingsUtil.extCategory(ext))) { fileStore.moveToTrash(path.join(uploadDir, req.file.filename), refusedMeta); return res.status(400).json({ error: 'Tipo de arquivo não permitido nas configurações.' }); }
             let tags = [];
@@ -3207,7 +3659,7 @@ router.post('/api/admin/library/upload', (req, res) => {
             recordAcademicAudit(req, matchedAdmin, 'content_library_created', { courseId: entry.courseId, className: entry.studentClass, id: entry.id, scope: entry.studentClass ? 'class' : 'course' }, null, { affectedClasses });
             db.save();
             res.json({ success: true, entry, affectedClasses });
-        });
+        }));
     });
 });
 
@@ -3314,12 +3766,12 @@ router.post('/api/admin/library/delete', (req, res) => {
             });
         } else if (scope === 'class') {
             db.memory.library = (db.memory.library || []).filter(x => x.id !== id);
-            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename), { courseId, studentClass, deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
+            try { if (!e.sourceLibraryId && e.kind !== 'link' && e.filename) fileStore.moveToTrash(path.join(uploadDir, e.filename), { courseId, studentClass, deletedBy: matchedAdmin && matchedAdmin.email, originalName: e.name || e.originalName }); } catch (err) {}
         } else {
             const sourceId = e.sourceLibraryId || e.id;
             const base = (db.memory.library || []).find(item => item.id === sourceId) || e;
             db.memory.library = (db.memory.library || []).filter(item => item.id !== sourceId && item.sourceLibraryId !== sourceId);
-            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename), { courseId: base.courseId || courseId, studentClass: base.studentClass || '', deletedBy: matchedAdmin && matchedAdmin.email }); } catch (err) {}
+            try { if (base.kind !== 'link' && base.filename) fileStore.moveToTrash(path.join(uploadDir, base.filename), { courseId: base.courseId || courseId, studentClass: base.studentClass || '', deletedBy: matchedAdmin && matchedAdmin.email, originalName: base.name || base.originalName }); } catch (err) {}
         }
         const affectedClasses = scope === 'class' ? [studentClass] : contentCourseClasses(courseId).map(cls => cls.name);
         recordAcademicAudit(req, matchedAdmin, 'content_library_deleted', { courseId, className: studentClass, id, scope }, null, { affectedClasses });
@@ -3356,10 +3808,8 @@ function getFilesForApostila(key) {
 
 router.post('/api/admin/upload', (req, res) => {
     validateAdmin(req, res, () => {
-        uploadForRequest().single('file')(req, res, (err) => {
-            if (err) {
-                return res.status(400).json({ error: 'Erro ao fazer upload do arquivo: ' + err.message });
-            }
+        uploadForRequest().single('file')(req, res, guarded(req, res, (err) => {
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) {
                 return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
             }
@@ -3398,16 +3848,14 @@ router.post('/api/admin/upload', (req, res) => {
             } else {
                 res.status(404).json({ error: 'Apostila não encontrada.' });
             }
-        });
+        }));
     });
 });
 
 router.post('/api/admin/upload-image', (req, res) => {
     validateAdmin(req, res, () => {
-        uploadForRequest().single('image')(req, res, (err) => {
-            if (err) {
-                return res.status(400).json({ error: 'Erro ao fazer upload da imagem: ' + err.message });
-            }
+        uploadForRequest().single('image')(req, res, guarded(req, res, (err) => {
+            if (err) return sendUploadError(err, req, res);
             if (!req.file) {
                 return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
             }
@@ -3420,7 +3868,7 @@ router.post('/api/admin/upload-image', (req, res) => {
             const relativePath = '/uploads/' + filename;
             
             res.json({ success: true, url: relativePath });
-        });
+        }));
     });
 });
 
@@ -3492,6 +3940,8 @@ function makeBackup(key, content, isJson = false) {
     const ext = isJson ? '.json' : '.md';
     const backupPath = path.join(backupDir, `${key}_${timestamp}${ext}.bak`);
     fs.writeFileSync(backupPath, content, 'utf8');
+    // Ficam as 30 mais recentes de cada arquivo (H4b, CONF-11); antes eram ilimitadas.
+    try { require('../utils/backupStore.js').pruneEditBackups(backupDir); } catch (e) { logError('retenção dos .bak', e); }
 }
 
 
@@ -3543,7 +3993,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             try {
                 plan = planControlAction(db.memory, application, action);
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) db.save();
@@ -3569,7 +4019,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
                     adjustmentSeconds: req.body.adjustmentSeconds,
                 });
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, currentConfig);
             const active = ACTIVE_APPLICATION_STATUSES.has(application.status);
@@ -3771,7 +4221,7 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
 });
 
 // 3. Atribui uma versão específica de prova (A, B, C...) a um aluno em tempo real
-router.post('/api/admin/assign-student-version', (req, res) => {
+router.post('/api/admin/assign-student-version', ADMIN_SCHEMAS.examStudent, (req, res) => {
     validateAdmin(req, res, () => {
         const { studentEmail, examKey, applicationId, version } = req.body;
         if (!studentEmail || !examKey || !version) {
@@ -3818,7 +4268,7 @@ router.post('/api/admin/assign-student-version', (req, res) => {
 });
 
 // 3.1. Desbloqueia a tela de um aluno travada por perda de foco
-router.post('/api/admin/unlock-student-focus', (req, res) => {
+router.post('/api/admin/unlock-student-focus', ADMIN_SCHEMAS.examStudent, (req, res) => {
     validateAdmin(req, res, (config, currentAdmin) => {
         const { studentEmail, studentClass, courseId, examKey, applicationId } = req.body;
         if (!studentEmail || !examKey) {
@@ -3861,7 +4311,8 @@ router.post('/api/admin/unlock-student-focus', (req, res) => {
             details: `Tela desbloqueada pelo instrutor${currentAdmin && currentAdmin.email ? ` (${currentAdmin.email})` : ''}`
         });
 
-        db.save();
+        // Rota quente do Monitor (H1-c, DES-01): o estado destravado e o log novo.
+        db.save({ only: ['studentExamState', 'proctoringLogs'] });
         const { localCopyKey, ...unlockedState } = db.memory.studentExamState[key];
         res.json({ success: true, state: unlockedState });
     });
@@ -3893,20 +4344,32 @@ router.post('/api/admin/send-broadcast-message', (req, res) => {
         };
         db.memory.broadcastMessages.push(message);
 
-        db.save();
+        // Rota quente do Monitor (H1-c, DES-01): só a mensagem nova.
+        db.save({ only: ['broadcastMessages'] });
         res.json({ success: true, message });
     });
 });
 
+// Mensagem da turma (ou de um aluno dela) que a conta pode ver ou apagar (SEG-11): o
+// professor só as das turmas dele; mensagem sem curso vale pela turma, quando o nome
+// dela é único (adminCanAccessClass); com nome repetido em dois cursos, fica escondida.
+function adminCanAccessMessage(account, message) {
+    if (!isProfessorAccount(account)) return true;
+    return !!message && adminCanAccessClass(account, message.studentClass, message.courseId);
+}
+
 router.get('/api/admin/message-history', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const studentClass = (req.query.studentClass || '').trim();
         const courseId = (req.query.courseId || '').trim();
         const examKey = (req.query.examKey || '').trim();
         const applicationId = (req.query.applicationId || '').trim();
         const targetEmail = (req.query.targetEmail || '').trim().toLowerCase();
+        // Sem turma no pedido, o professor recebia as mensagens de todas as turmas,
+        // inclusive as privadas para um aluno de outra turma.
         const messages = (db.memory.broadcastMessages || [])
             .filter(m => !m.adminDeleted)
+            .filter(m => adminCanAccessMessage(matchedAdmin, m))
             .filter(m => !studentClass || String(m.studentClass || '').toLowerCase() === studentClass.toLowerCase())
             .filter(m => !courseId || !m.courseId || String(m.courseId) === courseId)
             .filter(m => !examKey || !m.examKey || String(m.examKey) === examKey)
@@ -3917,17 +4380,38 @@ router.get('/api/admin/message-history', (req, res) => {
     });
 });
 
+// Apagar do histórico do Monitor: uma mensagem (messageId) ou as de uma turma
+// (studentClass, com curso, prova e aplicação opcionais). Sem nenhum dos dois, o corpo
+// vazio apagava as mensagens de todas as turmas (SEG-11); agora é recusado para todos,
+// inclusive o administrador. O professor nunca apaga mensagem fora das turmas dele.
 router.post('/api/admin/message-history/delete', (req, res) => {
-    validateAdmin(req, res, () => {
-        const { messageId, studentClass, courseId, examKey, applicationId } = req.body || {};
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const body = req.body || {};
+        const text = value => (typeof value === 'string' ? value.trim() : '');
+        const messageId = text(body.messageId);
+        const studentClass = text(body.studentClass);
+        const courseId = text(body.courseId);
+        const examKey = text(body.examKey);
+        const applicationId = text(body.applicationId);
+        if (!messageId && !studentClass) {
+            return res.status(400).json({ success: false, error: 'Informe a mensagem ou a turma.', field: 'studentClass' });
+        }
+        if (messageId) {
+            const target = (db.memory.broadcastMessages || []).find(m => m && m.id === messageId);
+            if (target && !adminCanAccessMessage(matchedAdmin, target)) {
+                return res.status(403).json({ success: false, error: 'Você não tem acesso a esta mensagem.' });
+            }
+        }
         let count = 0;
         (db.memory.broadcastMessages || []).forEach(m => {
+            if (!m) return;
             const match = messageId
                 ? m.id === messageId
-                : (!studentClass || String(m.studentClass || '').toLowerCase() === String(studentClass).trim().toLowerCase())
-                    && (!courseId || !m.courseId || String(m.courseId) === String(courseId))
-                    && (!examKey || !m.examKey || String(m.examKey) === String(examKey))
-                    && (!applicationId || m.applicationId === applicationId);
+                : String(m.studentClass || '').toLowerCase() === studentClass.toLowerCase()
+                    && (!courseId || !m.courseId || String(m.courseId) === courseId)
+                    && (!examKey || !m.examKey || String(m.examKey) === examKey)
+                    && (!applicationId || m.applicationId === applicationId)
+                    && adminCanAccessMessage(matchedAdmin, m);
             if (match && !m.adminDeleted) {
                 m.adminDeleted = true;
                 m.adminDeletedAt = new Date().toISOString();
@@ -3958,6 +4442,10 @@ function discardedAttemptEmails(application) {
 }
 
 // 5. Retorna o status de monitoramento em tempo real de todos os estudantes
+//    Cada linha leva só os MONITOR_ROW_LOG_LIMIT últimos eventos de foco (`logs`) e o total
+//    (`logCount`): a resposta é consultada a cada 3 s e antes levava o histórico inteiro de
+//    cada aluno (DES-04, DES-13).
+const MONITOR_ROW_LOG_LIMIT = 10;
 router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
     validateAdmin(req, res, () => {
         const studentClass = req.params.class.trim();
@@ -3985,10 +4473,15 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         const monitorMaxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? currentConfig.maxAttempts);
         const perAttemptTimer = (application?.timerMode || currentConfig.timerMode) === 'per_attempt';
 
+        // Entregas, logs de foco, tentativas e teclas lidos uma vez só e agrupados por
+        // e-mail (DES-04), DEPOIS da varredura dos prazos acima. Antes cada aluno percorria
+        // o histórico inteiro da escola.
+        const activity = collectMonitorActivity(db.memory, { application, examKey, keystrokes: db.keystrokes });
+
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
             const openAttempt = application
-                ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
+                ? openAttemptFromEntries(activity.attemptsByEmail.get(email))
                 : null;
             // Com aplicação, a linha lê só as tentativas dela: o estado avulso da interface
             // antiga (sem aplicação) vale apenas quando a prova não tem aplicação.
@@ -4001,16 +4494,12 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 individualTimeAdjustment: 0
             };
 
-            const session = db.memory.sessions[email];
+            const session = studentSessionByEmail(db.memory, email);
             const isOnline = isStudentSessionOnline(session);
             
             // Entregas do aluno nesta aplicação; a mais recente é a que o professor vê
             // quando ele não está fazendo outra tentativa.
-            const deliveries = db.memory.submissions.filter(sub =>
-                (sub.studentEmail ? sub.studentEmail.toLowerCase() : ((sub.student && sub.student.email) ? sub.student.email.toLowerCase() : '')) === email && 
-                sub.examKey && sub.examKey.toLowerCase() === examKey.toLowerCase() &&
-                (application ? sub.applicationId === application.id : true)
-            ).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+            const deliveries = activity.deliveriesByEmail.get(email) || [];
             const latestDelivery = deliveries[0];
             // Tentativa ATUAL (maxAttempts > 1): quem entregou a tentativa 1 e já começou a
             // 2 aparece com a 2 (situação, progresso, tempo e trava), não como "Finalizou".
@@ -4028,27 +4517,19 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 ? (Number(submission.attemptNumber) || deliveredAttempts || 1)
                 : (Number(state.attemptNumber) || (openAttempt ? deliveredAttempts + 1 : null));
 
-            const studentLogs = db.memory.proctoringLogs.filter(l =>
-                l.studentEmail.toLowerCase() === email &&
-                l.examKey.toLowerCase() === examKey.toLowerCase() &&
-                (application ? l.applicationId === application.id : true)
-            );
+            const studentLogs = activity.logsByEmail.get(email) || [];
             // "Saiu da aba" e o histórico curto do foco são da tentativa atual quando o
             // aluno está em outra tentativa (os eventos das anteriores ficam na lista completa).
             const currentAttemptLogs = attemptInProgress && state.attemptId
                 ? studentLogs.filter(l => !l.attemptId || l.attemptId === state.attemptId)
                 : studentLogs;
 
-            const studentKeystrokes = (db.memory.examKeystrokes || []).filter(k =>
-                k.studentEmail.toLowerCase() === email &&
-                k.examKey.toLowerCase() === examKey.toLowerCase() &&
-                (application ? k.applicationId === application.id : true)
-            );
-            const keystrokeCount = studentKeystrokes.length;
-            const suspiciousCount = studentKeystrokes.filter(k => k.suspicious || k.blocked).length;
-            const lastKeystrokeAt = keystrokeCount
-                ? Math.max(...studentKeystrokes.map(k => Number(k.serverTs) || 0))
-                : null;
+            // Teclas pelos contadores do histórico de digitação (db.keystrokes.statsEntries),
+            // sem percorrer as teclas: aluno e prova e, com aplicação, só as dela.
+            const keystrokeStats = activity.keystrokesByEmail.get(monitorKeystrokeEmail(email));
+            const keystrokeCount = keystrokeStats ? keystrokeStats.count : 0;
+            const suspiciousCount = keystrokeStats ? keystrokeStats.suspicious : 0;
+            const lastKeystrokeAt = keystrokeCount ? keystrokeStats.lastAt : null;
 
             let status = 'absent';
             if (submission) {
@@ -4162,7 +4643,12 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 restoredAfterDiscard: !!submission?.restoredAfterDiscard,
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
                 fullscreenUnsupported: currentAttemptLogs.some(log => log.eventType === 'fullscreen_unsupported'),
-                logs: studentLogs,
+                // Só os últimos eventos de foco (a linha mostra os 2 últimos); o histórico
+                // completo vem com a digitação ao vivo (exam-keystrokes, `logs`). logCount
+                // diz quantos há. O status 'blur' e o fullscreenUnsupported acima já foram
+                // calculados sobre a lista completa.
+                logs: studentLogs.slice(-MONITOR_ROW_LOG_LIMIT),
+                logCount: studentLogs.length,
                 keystrokeCount,
                 suspiciousCount,
                 lastKeystrokeAt
@@ -4513,16 +4999,30 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
 });
 
 // 8. Banco centralizado de questões reutilizáveis
+// A tela mostra category, curriculumKey, type e questionText como texto: um item antigo
+// gravado pela API com um objeto ali (antes do schema do H9b) derrubava Provas e Monitor
+// com a tela de erro. Só a resposta é normalizada; o banco não é regravado.
+function questionBankItemForScreen(question) {
+    const text = (value, fallback) => (typeof value === 'string' ? value : fallback);
+    return {
+        ...question,
+        category: text(question.category, 'Geral'),
+        curriculumKey: text(question.curriculumKey, ''),
+        type: text(question.type, 'multiple_choice'),
+        questionText: text(question.questionText, ''),
+    };
+}
+
 router.get('/api/admin/question-bank', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const questions = isProfessorAccount(matchedAdmin)
-            ? (db.memory.questionBank || []).filter(question => !question.sourceExamKey || adminCanAccessItem(matchedAdmin, question.sourceExamKey))
-            : (db.memory.questionBank || []);
-        res.json({ success: true, questions });
+            ? (db.memory.questionBank || []).filter(question => question && (!question.sourceExamKey || adminCanAccessItem(matchedAdmin, question.sourceExamKey)))
+            : (db.memory.questionBank || []).filter(Boolean);
+        res.json({ success: true, questions: questions.map(questionBankItemForScreen) });
     });
 });
 
-router.post('/api/admin/question-bank/create', (req, res) => {
+router.post('/api/admin/question-bank/create', ADMIN_SCHEMAS.questionBank, (req, res) => {
     validateAdmin(req, res, () => {
         const { category, type, questionText, alternatives, correctAnswer, sourceExamKey, curriculumKey } = req.body;
         if (!questionText || String(questionText).trim() === '') {
@@ -4535,7 +5035,7 @@ router.post('/api/admin/question-bank/create', (req, res) => {
                 questions: [{ text: questionText, alternatives, correctAnswer }],
             }).questions[0];
         } catch (error) {
-            return res.status(error.status || 400).json({ error: error.message });
+            return sendRouteError(error, req, res);
         }
         const item = {
             key: 'qb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
@@ -4550,13 +5050,13 @@ router.post('/api/admin/question-bank/create', (req, res) => {
         };
         db.memory.questionBank.push(item);
         db.save();
-        res.json({ success: true, question: item });
+        res.json({ success: true, question: questionBankItemForScreen(item) });
     });
 });
 
-router.post('/api/admin/question-bank/update', (req, res) => {
+router.post('/api/admin/question-bank/update', ADMIN_SCHEMAS.questionBank, (req, res) => {
     validateAdmin(req, res, () => {
-        const item = (db.memory.questionBank || []).find(question => question.key === req.body.key);
+        const item = (db.memory.questionBank || []).find(question => question && question.key === req.body.key);
         if (!item) return res.status(404).json({ error: 'Questão não encontrada no banco.' });
         let normalizedQuestion;
         try {
@@ -4569,7 +5069,7 @@ router.post('/api/admin/question-bank/update', (req, res) => {
                 }],
             }).questions[0];
         } catch (error) {
-            return res.status(error.status || 400).json({ error: error.message });
+            return sendRouteError(error, req, res);
         }
         item.questionText = normalizedQuestion.text;
         item.alternatives = normalizedQuestion.alternatives;
@@ -4578,11 +5078,13 @@ router.post('/api/admin/question-bank/update', (req, res) => {
         if (req.body.curriculumKey !== undefined) item.curriculumKey = String(req.body.curriculumKey || '');
         item.updatedAt = new Date().toISOString();
         db.save();
-        res.json({ success: true, question: item });
+        // Item antigo com curriculumKey ou type de outro tipo volta como texto (o guardado
+        // fica como estava, igual ao GET).
+        res.json({ success: true, question: questionBankItemForScreen(item) });
     });
 });
 
-router.post('/api/admin/question-bank/import-evaluation', (req, res) => {
+router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.questionBank, (req, res) => {
     validateAdmin(req, res, () => {
         const { examKey, category, curriculumKey } = req.body;
         if (!examKey) return res.status(400).json({ error: 'examKey é obrigatório.' });
@@ -4593,9 +5095,9 @@ router.post('/api/admin/question-bank/import-evaluation', (req, res) => {
             return res.status(404).json({ error: 'Avaliação não encontrada ou sem questões estruturadas.' });
         }
 
-        const existingKeys = new Set((db.memory.questionBank || []).map(q => `${q.sourceExamKey}:${q.originalNumber}`));
+        const existingKeys = new Set((db.memory.questionBank || []).filter(Boolean).map(q => `${q.sourceExamKey}:${q.originalNumber}`));
         const imported = [];
-        questions.forEach(question => {
+        questions.filter(Boolean).forEach(question => {
             const originalNumber = Number(question.originalNumber || question.number || 0);
             const dedupeKey = `${examKey}:${originalNumber}`;
             if (existingKeys.has(dedupeKey)) return;
@@ -4616,27 +5118,42 @@ router.post('/api/admin/question-bank/import-evaluation', (req, res) => {
         });
 
         db.save();
-        res.json({ success: true, importedCount: imported.length, questions: imported });
+        res.json({ success: true, importedCount: imported.length, questions: imported.map(questionBankItemForScreen) });
     });
 });
 
 router.post('/api/admin/question-bank/delete', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { key } = req.body;
         if (!key) return res.status(400).json({ error: 'key é obrigatório.' });
+        // Um item null na lista (dado antigo) fica como está, sem derrubar a exclusão.
         const before = db.memory.questionBank.length;
-        db.memory.questionBank = db.memory.questionBank.filter(q => q.key !== key);
+        const removed = db.memory.questionBank.filter(q => q && q.key === key);
+        db.memory.questionBank = db.memory.questionBank.filter(q => !q || q.key !== key);
+        removed.forEach(question => recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'question_deleted',
+            category: 'academic',
+            examKey: question.sourceExamKey || undefined,
+            details: { deleted: deletedItemCopy(question) },
+        }));
         db.save();
         res.json({ success: true, deleted: before - db.memory.questionBank.length });
     });
 });
 
 // ---- Escolas / Instituições (Fase I.1) ----
+// O que a auditoria guarda de uma escola: identificação e dados institucionais (a
+// identidade visual fica de fora: a logo pode ser uma imagem inteira).
+function schoolAuditView(school) {
+    return { id: school.id, name: school.name || '', info: school.info || {} };
+}
 router.get('/api/admin/schools', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => { res.json(filterSchoolsForAdmin(db.memory.schools || [], matchedAdmin)); });
 });
-router.post('/api/admin/schools/create', (req, res) => {
-    validateAdmin(req, res, () => {
+router.post('/api/admin/schools/create', ADMIN_SCHEMAS.schoolCreate, (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const name = (req.body.name || '').trim();
         if (!name) return res.status(400).json({ error: 'Nome da escola é obrigatório.' });
         if (rejectInvalidBranding(res, req.body.branding || {})) return;
@@ -4649,26 +5166,50 @@ router.post('/api/admin/schools/create', (req, res) => {
             createdAt: Date.now(),
         };
         db.memory.schools.push(school);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'school_created',
+            category: 'academic',
+            after: schoolAuditView(school),
+        });
         db.save();
         res.json({ success: true, school });
     });
 });
-router.post('/api/admin/schools/update', (req, res) => {
-    validateAdmin(req, res, () => {
+router.post('/api/admin/schools/update', ADMIN_SCHEMAS.schoolUpdate, (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const school = (db.memory.schools || []).find(s => s.id === id);
         if (!school) return res.status(404).json({ error: 'Escola não encontrada.' });
         if (req.body.branding !== undefined && rejectInvalidBranding(res, req.body.branding)) return;
+        const before = schoolAuditView(school);
+        const previousBranding = { ...(school.branding || {}) };
         if (req.body.name !== undefined) school.name = String(req.body.name).trim();
         if (req.body.info !== undefined) school.info = { ...(school.info || {}), ...extractInstitutional(req.body.info) };
         if (req.body.branding !== undefined) school.branding = { ...(school.branding || {}), ...extractBranding(req.body.branding) };
         school.updatedAt = Date.now();
+        const after = schoolAuditView(school);
+        // Identidade visual: só os nomes do que mudou (a logo pode ser uma imagem inteira).
+        const brandingKeys = Object.keys({ ...previousBranding, ...(school.branding || {}) })
+            .filter(key => JSON.stringify(previousBranding[key]) !== JSON.stringify((school.branding || {})[key]));
+        if (JSON.stringify(before) !== JSON.stringify(after) || brandingKeys.length) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'school_updated',
+                category: 'academic',
+                before,
+                after,
+                details: brandingKeys.length ? { brandingKeys } : undefined,
+            });
+        }
         db.save();
         res.json({ success: true, school });
     });
 });
-router.post('/api/admin/schools/delete', (req, res) => {
-    validateAdmin(req, res, () => {
+router.post('/api/admin/schools/delete', ADMIN_SCHEMAS.schoolDelete, (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const id = (req.body.id || '').trim();
         const schools = db.memory.schools || [];
         if (schools.length <= 1) return res.status(400).json({ error: 'Não é possível excluir a única escola.' });
@@ -4677,6 +5218,13 @@ router.post('/api/admin/schools/delete', (req, res) => {
         const inUse = (db.memory.courses || []).some(c => c.schoolId === id && !c.deleted);
         if (inUse) return res.status(400).json({ error: 'Escola em uso por cursos. Mova os cursos antes de excluir.' });
         db.memory.schools = schools.filter(s => s.id !== id);
+        recordAudit(db.memory, {
+            req,
+            actor: matchedAdmin,
+            action: 'school_deleted',
+            category: 'academic',
+            before: schoolAuditView(school),
+        });
         db.save();
         res.json({ success: true });
     });
@@ -4742,10 +5290,72 @@ router.get('/api/admin/dashboard/now', (req, res) => {
     });
 });
 
+// "Compactar o banco" no "Precisa de você" (H1-c; decisões da fase 2, §3): só para
+// administrador (compactar é só dele) e quando o espaço livre dentro do arquivo passa de
+// 25% (db.storageStatus().compactSuggested). Vale para a escola toda, não para a turma.
+// O espaço livre é renovado aqui quando tem mais de 1 min (db.freshStorageStatus, limite
+// de frequência): antes a fila usava o valor guardado, e o item só aparecia depois de
+// alguém abrir o cartão Armazenamento (sobra do H1-c na J2).
+async function _storageQueueBlock(matchedAdmin) {
+    if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
+    const status = await db.freshStorageStatus();
+    if (!status.compactSuggested) return null;
+    return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
+}
+
+// Bloco do backup na fila (H4b, OPS-03): só para administrador com "Executar
+// manutenção" (o professor não vê alertas de backup; baixar e restaurar são do
+// administrador). Desligado em TEST_MODE, onde o backup automático também não roda
+// (demonstração e testes usam dados descartáveis).
+function _backupQueueBlock(matchedAdmin, now = Date.now()) {
+    if (process.env.TEST_MODE === '1') return null;
+    if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
+    try {
+        return require('../utils/backup.js').backupAlerts({ now });
+    } catch (error) {
+        logError('fila: situação do backup', error);
+        return null;
+    }
+}
+
+// Bloco de segurança da fila (H5b; SEG-06, decisão 6 do Alan), já no escopo de quem vê:
+// - alunos da lista (os do escopo) que pediram nova senha ou estão com o login em espera
+//   por senhas erradas (utils/loginGuard.js, só na memória);
+// - só para administrador (adminOnly): contas de instrutor em espera e os alertas de
+//   muitas senhas erradas vindas do mesmo IP nas últimas 24 h (loginLogs, status 'alert').
+const IP_ALERT_QUEUE_MS = 24 * 60 * 60 * 1000;
+
+function _securityQueueBlock(matchedAdmin, students, { adminOnly = true, now = Date.now() } = {}) {
+    const list = Array.isArray(students) ? students : [];
+    // waiting*: as da lista que ainda esperam agora (retryAt no futuro). O item da fila
+    // fala em espera só para elas, como o selo (sobra do H5b, J2).
+    const waitingNow = (kind, email) => {
+        const protection = loginGuard.protectionFor(loginGuard.accountKey(kind, email), now);
+        return !!(protection && Number(protection.retryAt) > now);
+    };
+    const delayedEmails = list.filter(student => student && student.email && loginGuard.protectionFor(loginGuard.accountKey('student', student.email), now)).map(student => String(student.email).toLowerCase());
+    const block = {
+        recoveryEmails: list.filter(student => student && student.email && student.recoveryRequested === true).map(student => String(student.email).toLowerCase()),
+        delayedEmails,
+        waitingEmails: delayedEmails.filter(email => waitingNow('student', email)),
+    };
+    if (!adminOnly || !canAccessAdminPermission(matchedAdmin, 'page.accounts')) return block;
+    const instructorEmails = new Set((db.memory.admins || []).filter(item => item && item.email).map(item => String(item.email).toLowerCase()));
+    block.delayedAccounts = loginGuard.protectedEmails('admin', now).filter(email => instructorEmails.has(email));
+    block.waitingAccounts = block.delayedAccounts.filter(email => waitingNow('admin', email));
+    const seen = new Set();
+    block.ipAlerts = (Array.isArray(db.memory.loginLogs) ? db.memory.loginLogs : [])
+        .filter(entry => entry && entry.status === 'alert' && entry.ip && now - (Number(entry.lastAt || entry.timestamp) || 0) <= IP_ALERT_QUEUE_MS)
+        .sort((a, b) => (Number(b.lastAt || b.timestamp) || 0) - (Number(a.lastAt || a.timestamp) || 0))
+        .filter(entry => (seen.has(entry.ip) ? false : (seen.add(entry.ip), true)))
+        .map(entry => ({ ip: entry.ip, count: Number(entry.count) || 0, at: Number(entry.lastAt || entry.timestamp) || null }));
+    return block;
+}
+
 // Fila "Precisa de você": pendências com destino clicável. Respeita o snooze de
 // 24h persistido em preferences (dashboard.snoozed) e esconde matrículas de professor.
 router.get('/api/admin/dashboard/queue', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    validateAdmin(req, res, async (config, matchedAdmin) => {
         const scope = _dashboardScope(req, matchedAdmin);
         const now = Date.now();
         // 'page.accounts' é permissão exclusiva de administrador pleno — é o
@@ -4754,11 +5364,13 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
-        });
+        }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
         items = items.filter(item => {
+            // Item que não se adia (backup falhou ou atrasado, H4b): fica até resolver.
+            if (item.adiavel === false) return true;
             const ts = Number(snoozed[item.id]);
             return !(Number.isFinite(ts) && now - ts < 86400000);
         });
@@ -4824,10 +5436,11 @@ router.get('/api/admin/notifications', (req, res) => {
             const studentClass = String(scope.studentClass || (scope.cls && scope.cls.name) || '');
             // Matrículas pendentes são contadas pela turma pedida (o aluno pendente ainda
             // não está em `students` da turma).
+            // No sino, só o que é da turma (os alertas da escola ficam na fila do painel).
             const queue = computeQueue({
                 memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
                 today, now, canSeeMatriculas: false,
-            });
+            }, { security: _securityQueueBlock(matchedAdmin, scope.students, { adminOnly: false, now }) });
             if (canSeeMatriculas && scope.cls) {
                 const pending = _pendingEnrollmentsForClass(scope.cls);
                 if (pending.count) {
@@ -4892,18 +5505,49 @@ router.get('/api/admin/dashboard/trends', (req, res) => {
 
 
 // Duplicar (clonar) curso para outra escola: copia independente de estrutura e conteudo.
+// Professor (SEG-12): a origem precisa estar no escopo dele (o caminho também é conferido
+// em validateProfessorRequestScope) e a escola de destino precisa estar atribuída a ele,
+// como ao criar curso: a cópia (com as turmas copiadas) nasce fora do escopo de quem só
+// tem turma ou curso atribuído, e ele não veria nem cuidaria do que acabou de criar.
 router.post('/api/admin/courses/:id/clone', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         if (!canAccessAdminPermission(matchedAdmin, 'course.manage')) {
             return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
         }
-        const src = (db.memory.courses || []).find(c => c.id === req.params.id);
+        const src = (db.memory.courses || []).find(c => c && c.id === req.params.id);
         if (!src) return res.status(404).json({ error: 'Curso de origem não encontrado.' });
-        const newId = String(req.body.newId || '').trim().toUpperCase();
-        const newName = String(req.body.newName || '').trim();
-        const schoolId = req.body.schoolId || src.schoolId || 'escola_default';
-        if (!newId || !newName) return res.status(400).json({ error: 'Informe ID e nome do novo curso.' });
-        if ((db.memory.courses || []).some(c => c.id === newId)) return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
+        if (!adminCanAccessCourse(matchedAdmin, src.id)) {
+            return res.status(403).json({ error: 'O curso solicitado não pertence às turmas atribuídas a esta conta.' });
+        }
+        const body = req.body || {};
+        if (typeof body.newId !== 'string' || !body.newId.trim()) {
+            return res.status(400).json({ success: false, error: 'Informe o código e o nome do novo curso.', field: 'newId' });
+        }
+        if (typeof body.newName !== 'string' || !body.newName.trim()) {
+            return res.status(400).json({ success: false, error: 'Informe o código e o nome do novo curso.', field: 'newName' });
+        }
+        const newId = body.newId.trim().toUpperCase();
+        // O código entra no nome dos arquivos copiados (<chave>_<código>.md): só letras,
+        // números, '-' e '_' (antes, '../' no código gravava fora da pasta de conteúdo).
+        const idError = courseIdError(newId);
+        if (idError) return res.status(400).json({ success: false, error: idError, field: 'newId' });
+        const parsedName = parseCourseName(body.newName);
+        if (parsedName.error) return res.status(400).json({ success: false, error: parsedName.error, field: 'newName' });
+        const newName = parsedName.value;
+        if (body.schoolId !== undefined && body.schoolId !== null && typeof body.schoolId !== 'string') {
+            return res.status(400).json({ success: false, error: 'Escola inválida.', field: 'schoolId' });
+        }
+        const requestedSchoolId = typeof body.schoolId === 'string' ? body.schoolId.trim() : '';
+        const schoolId = requestedSchoolId || src.schoolId || 'escola_default';
+        if (isProfessorAccount(matchedAdmin) && !adminAssignedSchoolIds(matchedAdmin).includes(String(schoolId))) {
+            return res.status(403).json({ success: false, error: 'Você só pode duplicar curso para uma escola atribuída à sua conta.', field: 'schoolId' });
+        }
+        if (requestedSchoolId && requestedSchoolId !== String(src.schoolId || '') && !schoolExists(requestedSchoolId)) {
+            return res.status(400).json({ success: false, error: 'Escola não encontrada.', field: 'schoolId' });
+        }
+        if ((db.memory.courses || []).some(c => c && c.id === newId)) {
+            return res.status(400).json({ success: false, error: 'Já existe um curso com esse código.', field: 'newId' });
+        }
 
         function copyContentFile(oldKey, newKey) {
             const oldP = path.join(runtimePaths.CONTENT_DIR, `${oldKey}.md`);
@@ -5003,7 +5647,7 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
             return cloned;
         });
         db.memory.classes.push(...clonedClasses);
-        recordAcademicAudit(req, matchedAdmin, 'course_cloned', { courseId: src.id }, null, { newCourseId: newId, clonedClasses: clonedClasses.map(cls => cls.name) });
+        recordAcademicAudit(req, matchedAdmin, 'course_cloned', { courseId: src.id }, null, { newCourseId: newId, schoolId, clonedClasses: clonedClasses.map(cls => cls.name) });
         db.save();
         res.json({ success: true, course: newCourse, classes: clonedClasses });
     });

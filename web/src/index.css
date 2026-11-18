@@ -5,6 +5,9 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+/* Faixa de conexão com o servidor (ServerConnectionBanner): enquanto ela está à vista, a
+   tela desce a altura dela, em vez de ficar escondida por baixo (cabeçalho da prova). */
+#root { padding-top: var(--connection-banner-h, 0px); }
 html { background: var(--bg); }
 body {
   margin: 0;

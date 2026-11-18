@@ -9,7 +9,10 @@ async function loginAdmin(page) {
 
 async function loginAdminAndEnterWorkspace(page) {
     await loginAdmin(page);
+    // A escolha de curso e turma aparece depois que a lista de cursos chega: espera ela
+    // ou o menu da turma antes de decidir (olhar uma vez só dependia do tempo do login).
     const gate = page.getByRole('heading', { name: 'Selecione o curso e a turma' });
+    await expect(gate.or(page.getByRole('link', { name: 'Chamada', exact: true }))).toBeVisible({ timeout: 15000 });
     if (await gate.isVisible().catch(() => false)) {
         await page.getByRole('button', { name: /Entrar em .+, turma/ }).first().click();
     }

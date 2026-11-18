@@ -19,6 +19,7 @@ import { FinishApplicationModal } from './FinishApplicationModal'
 import { rememberApplicationToken } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { ExamApplicationDetail } from './ExamApplicationDetail'
+import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
 import '../../styles/provas-board.css'
 import {
   buildExamVersions,
@@ -30,6 +31,11 @@ import {
 } from './examTools'
 
 const EXAM_TOKEN_LENGTH = 5
+// Tema da prova e categoria do banco de questões: até 500 caracteres, o teto do servidor
+// para a categoria (a questão salva no banco leva o tema como categoria; decisões §12,
+// sobra do H9b). A contagem aparece a partir de 450.
+const THEME_MAX_CHARS = 500
+const THEME_COUNTER_FROM = 450
 const EXAM_TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 const DEFAULT_WAITING_ROOM_MINUTES = 10
 const DEFAULT_MAX_ATTEMPTS = 1
@@ -72,6 +78,20 @@ const DEFAULT_FORM = {
   printVersions: 1,
   timerEnabled: true,
   timerMode: 'per_attempt',
+  keystrokeMode: DEFAULT_KEYSTROKE_MODE,
+}
+
+// Campo "Registro do teclado" das duas telas de preparar (H8b, CRIT-04): vale para a
+// aplicação inteira e não muda depois de preparada.
+function KeystrokeModeSelect({ value, onChange }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <Select label="Registro do teclado" value={value || DEFAULT_KEYSTROKE_MODE} onChange={(e) => onChange(e.target.value)}>
+        {KEYSTROKE_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </Select>
+      <span className="text-xs text-subtle">{keystrokeModeDescription(value)}</span>
+    </div>
+  )
 }
 
 function statusTone(status) {
@@ -419,6 +439,7 @@ export default function ProvasPage() {
             tokenEnabled: form.tokenEnabled === true,
             accessToken: form.tokenEnabled ? form.accessToken : null,
             maxAttempts: parsedMaxAttempts.value,
+            keystrokeMode: form.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
           },
         })
         rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -470,6 +491,7 @@ export default function ProvasPage() {
       maxAttempts: Object.prototype.hasOwnProperty.call(entry, 'maxAttempts')
         ? (entry.maxAttempts == null ? '' : String(entry.maxAttempts))
         : String(DEFAULT_MAX_ATTEMPTS),
+      keystrokeMode: DEFAULT_KEYSTROKE_MODE,
     })
   }
 
@@ -496,6 +518,7 @@ export default function ProvasPage() {
           tokenEnabled: applyHistory.tokenEnabled === true,
           accessToken: applyHistory.tokenEnabled ? applyHistory.accessToken : null,
           maxAttempts: parsedMaxAttempts.value,
+          keystrokeMode: applyHistory.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
         },
       })
       rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -717,7 +740,7 @@ export default function ProvasPage() {
   async function saveQuestionToBank(question) {
     try {
       const response = await api.post('/api/admin/question-bank/create', {
-        category: editor.theme || activeModule?.name || 'Geral',
+        category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),
         questionText: question.text,
         alternatives: question.alternatives,
         correctAnswer: question.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
@@ -978,6 +1001,9 @@ export default function ProvasPage() {
                           <div className="col-span-2">
                             <Input label="Tentativas permitidas" type="number" min="1" max="10" step="1" placeholder="Ilimitadas" value={form.maxAttempts} onChange={(e) => setForm({ ...form, maxAttempts: e.target.value })} helper="Padrão: 1 tentativa. Deixe em branco para não limitar." />
                           </div>
+                          <div className="col-span-2">
+                            <KeystrokeModeSelect value={form.keystrokeMode} onChange={(keystrokeMode) => setForm({ ...form, keystrokeMode })} />
+                          </div>
                           {form.tokenEnabled && <div className="col-span-2 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
                             <Input
                               label="Token de acesso"
@@ -1140,7 +1166,7 @@ export default function ProvasPage() {
           <div className="space-y-5">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <Input label="Título da prova" value={editor.title} onChange={(event) => setEditor({ ...editor, title: event.target.value })} />
-              <Input label="Tema" value={editor.theme} onChange={(event) => setEditor({ ...editor, theme: event.target.value })} />
+              <Input label="Tema" value={editor.theme} maxLength={THEME_MAX_CHARS} counterFrom={THEME_COUNTER_FROM} onChange={(event) => setEditor({ ...editor, theme: event.target.value })} />
               <Select label="Aplicar alterações em" value={editor.scope || 'class'} onChange={(event) => setEditor({ ...editor, scope: event.target.value })}>
                 <option value="class">Somente esta turma ({className})</option>
                 <option value="course">Todas as turmas do curso</option>
@@ -1192,7 +1218,7 @@ export default function ProvasPage() {
       <Modal open={bankOpen} onClose={() => { setBankOpen(false); setBankEditor(null) }} title="Banco de questões" description="Importe uma questão ou edite o acervo reutilizável." size="lg">
         {bankEditor ? (
           <div className="space-y-3">
-            <Input label="Categoria" value={bankEditor.category || ''} onChange={(event) => setBankEditor({ ...bankEditor, category: event.target.value })} />
+            <Input label="Categoria" value={bankEditor.category || ''} maxLength={THEME_MAX_CHARS} counterFrom={THEME_COUNTER_FROM} onChange={(event) => setBankEditor({ ...bankEditor, category: event.target.value })} />
             <textarea value={bankEditor.questionText || ''} onChange={(event) => setBankEditor({ ...bankEditor, questionText: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" />
             {(bankEditor.alternatives || []).map((alternative, index) => (
               <div key={index} className="flex items-center gap-2">
@@ -1250,6 +1276,9 @@ export default function ProvasPage() {
               </Select>
               <div className="sm:col-span-2">
                 <Input label="Tentativas permitidas" type="number" min="1" max="10" step="1" placeholder="Ilimitadas" value={applyHistory.maxAttempts} onChange={(e) => setApplyHistory({ ...applyHistory, maxAttempts: e.target.value })} helper="Padrão: 1 tentativa. Deixe em branco para não limitar." />
+              </div>
+              <div className="sm:col-span-2">
+                <KeystrokeModeSelect value={applyHistory.keystrokeMode} onChange={(keystrokeMode) => setApplyHistory({ ...applyHistory, keystrokeMode })} />
               </div>
               {applyHistory.tokenEnabled && <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
                 <Input label="Token de acesso" value={applyHistory.accessToken} maxLength={5} autoComplete="off" spellCheck={false} className="font-mono text-base font-semibold tracking-[0.2em]" helper="Obrigatório · 5 letras" onChange={(e) => setApplyHistory({ ...applyHistory, accessToken: normalizeTokenInput(e.target.value) })} />

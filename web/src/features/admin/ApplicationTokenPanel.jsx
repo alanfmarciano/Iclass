@@ -4,6 +4,7 @@ import { Button } from '../../components/ui/Button'
 import { Modal } from '../../components/ui/Modal'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
+import { useCopyText } from '../../components/ui/ManualCopyModal'
 
 function tokenStorageKey(applicationId) { return `exam-token:${applicationId}` }
 function tokenIssuedStorageKey(applicationId) { return `exam-token-issued:${applicationId}` }
@@ -46,6 +47,7 @@ export function staleTokenMessage(canRegenerate, closed) {
 // deixa de aparecer (o professor não dita um token recusado).
 export function ApplicationTokenPanel({ applicationId, requiresToken, closed, legacyToken = '', tokenIssuedAt = '' }) {
   const toast = useToast()
+  const { copy: copyToken, manualCopy } = useCopyText()
   const [, setRefresh] = useState(0)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -59,8 +61,8 @@ export function ApplicationTokenPanel({ applicationId, requiresToken, closed, le
 
   async function copy() {
     if (!token) return toast.info('O token está desativado nesta prova')
-    try { await navigator.clipboard.writeText(token); toast.success('Token copiado') }
-    catch { toast.error('Não foi possível copiar') }
+    // Com plano B (H6a): pelo IP da rede (http) o navegador não libera a API de copiar.
+    await copyToken(token, { success: 'Token copiado', label: 'Token de acesso' })
   }
 
   async function regenerate() {
@@ -96,6 +98,7 @@ export function ApplicationTokenPanel({ applicationId, requiresToken, closed, le
         footer={<><Button variant="ghost" onClick={() => setConfirmOpen(false)} disabled={busy}>Cancelar</Button><Button loading={busy} icon={RefreshCw} onClick={regenerate}>Gerar novo token</Button></>}>
         <p className="text-sm text-muted">A aplicação continua como está: nada é encerrado e nenhuma resposta é perdida.</p>
       </Modal>
+      {manualCopy}
     </div>
   )
 }

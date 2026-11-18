@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { normalizeMaxAttempts } = require('./examAttempts.js');
+const { keystrokeModeOf } = require('./keystrokePolicy.js');
 
 const APPLICATION_STATUSES = Object.freeze([
     'draft',
@@ -113,6 +114,9 @@ function createExamApplication({
         studentVersions: clone(config.studentVersions || {}),
         annulledQuestions: clone(Array.isArray(config.annulledQuestions) ? config.annulledQuestions : []),
         questionReports: clone(Array.isArray(config.questionReports) ? config.questionReports : []),
+        // Registro do teclado escolhido ao preparar (H8b, CRIT-04): 'eventos' (padrão),
+        // 'tudo' ou 'nada'. Não muda depois de preparada (utils/keystrokePolicy.js).
+        keystrokeMode: keystrokeModeOf(config),
         createdAt: timestamp,
         preparedAt: timestamp,
         startedAt: normalizedStatus === 'running' ? timestamp : null,
@@ -151,6 +155,7 @@ function applicationToOnlineConfig(application, previousConfig = {}) {
         accessTokenHash: application.accessTokenHash || null,
         tokenEnabled: application.tokenEnabled === true,
         maxAttempts: application.maxAttempts,
+        keystrokeMode: keystrokeModeOf(application),
         preparedAt: application.preparedAt || application.createdAt,
         updatedAt: application.contentVersion || application.updatedAt,
     };
@@ -206,11 +211,24 @@ function attemptStatesForApplication(studentExamState, { applicationId, studentE
 // servidor finalizá-la: ela nunca é recriada nem sobrescrita por uma nova.
 const CLOSED_ATTEMPT_STATUSES = new Set(['submitted', 'invalidated']);
 
-function findOpenAttemptState(studentExamState, scope = {}) {
-    const match = attemptStatesForApplication(studentExamState, scope)
-        .find(([, state]) => !CLOSED_ATTEMPT_STATUSES.has(state.status));
+// Primeira tentativa em aberto de uma lista [chave, estado][] já ordenada por
+// attemptNumber decrescente (attemptStatesForApplication, ou o agrupamento do Monitor em
+// uma passada, utils/monitorActivity.js): { key, state } ou null.
+function openAttemptFromEntries(entries) {
+    const match = (Array.isArray(entries) ? entries : [])
+        .find(([, state]) => state && !CLOSED_ATTEMPT_STATUSES.has(state.status));
     return match ? { key: match[0], state: match[1] } : null;
 }
+
+function findOpenAttemptState(studentExamState, scope = {}) {
+    return openAttemptFromEntries(attemptStatesForApplication(studentExamState, scope));
+}
+
+// Pausa fechada que o próprio servidor grava pelo tempo em que ficou fora do ar durante
+// a prova (H3b, utils/serverLifecycle.js): { pausedAt, resumedAt, reason }. Conta no prazo
+// como qualquer pausa; o código que só lê pausedAt/resumedAt (versões anteriores
+// inclusive) chega ao mesmo prazo.
+const SERVER_OUTAGE_PAUSE_REASON = 'server_outage';
 
 // Pausas da aplicação ({ pausedAt, resumedAt }). Pausar congela o cronômetro: o
 // prazo de cada tentativa é empurrado pelo tempo em que a aplicação ficou pausada.
@@ -414,6 +432,7 @@ module.exports = {
     ACTIVE_APPLICATION_STATUSES,
     APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
+    SERVER_OUTAGE_PAUSE_REASON,
     applicationPauses,
     applicationToOnlineConfig,
     attemptStatesForApplication,
@@ -431,6 +450,7 @@ module.exports = {
     normalizeLegacyStudentAdjustments,
     normalizeTimerMode,
     openApplicationPause,
+    openAttemptFromEntries,
     resolveExamApplication,
     transitionExamApplication,
 };

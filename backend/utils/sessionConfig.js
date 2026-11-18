@@ -18,4 +18,9 @@ const ABSOLUTE_TTL_MS = 8 * 60 * 60 * 1000; // 8 horas
 // compartilhada de referencia para o backend.
 const IDLE_TTL_MS = 60 * 60 * 1000; // 60 minutos
 
-module.exports = { SERVER_INSTANCE_ID, ABSOLUTE_TTL_MS, IDLE_TTL_MS };
+// Retomada das sessões depois de um reinício (utils/authSessions.js restoreSessions):
+// só volta quem ficou fora do ar até este tempo. Servidor desligado entre turnos
+// (mais que isso) continua exigindo novo login de todos.
+const SESSION_RESUME_MAX_DOWNTIME_MS = 60 * 60 * 1000; // 60 minutos
+
+module.exports = { SERVER_INSTANCE_ID, ABSOLUTE_TTL_MS, IDLE_TTL_MS, SESSION_RESUME_MAX_DOWNTIME_MS };

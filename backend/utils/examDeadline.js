@@ -9,6 +9,7 @@ const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js'
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
+    SERVER_OUTAGE_PAUSE_REASON,
     examStateKey,
     extendDeadlineByPauses,
     findExamApplication,
@@ -69,9 +70,37 @@ function attemptStateForReopen(state) {
     return snapshot;
 }
 
+// Antes de cada conta de prazo o servidor confere se ficou parado desde a última
+// verificação (notebook suspenso, processo congelado): o tempo parado vira pausa das
+// aplicações em andamento antes de alguém ser finalizado ou ter o envio recusado
+// (H3b, CONF-03: detectGap em utils/serverLifecycle.js). Depois de uma suspensão, um
+// pedido do aluno que estava na fila pode chegar antes do timer da verificação; por isso
+// ela roda aqui, no ponto por onde passam a varredura do fim do tempo, a sincronização,
+// o envio e o Monitor. Só o startServer liga (setDeadlineCheck); sem ela (testes que
+// montam só o createApp) a conta é a mesma de antes.
+let deadlineCheck = null;
+let deadlineCheckRunning = false;
+
+function setDeadlineCheck(fn) {
+    deadlineCheck = typeof fn === 'function' ? fn : null;
+}
+
+function runDeadlineCheck() {
+    if (!deadlineCheck || deadlineCheckRunning) return;
+    deadlineCheckRunning = true;
+    try {
+        deadlineCheck();
+    } catch (e) {
+        // A verificação nunca impede a conta do prazo.
+    } finally {
+        deadlineCheckRunning = false;
+    }
+}
+
 // Prazo efetivo da tentativa: início + duração + ajustes (turma, aluno e tempo de
 // acessibilidade) + pausas da aplicação. É a mesma conta em todas as rotas.
 function computeAttemptDeadline({ application = null, onlineConfig = null, state, now = Date.now() } = {}) {
+    runDeadlineCheck();
     const startedAt = Number(state?.startedAt);
     if (!(startedAt > 0)) return null;
     const source = application || onlineConfig || {};
@@ -83,6 +112,20 @@ function computeAttemptDeadline({ application = null, onlineConfig = null, state
         + Number(state.accessibilityExtraMinutes || 0);
     const base = startedAt + Math.max(0, duration + adjustment) * 60000;
     return application ? extendDeadlineByPauses(application, startedAt, base, now) : base;
+}
+
+// O prazo da tentativa só está à frente por causa do tempo devolvido de uma queda do
+// servidor (H3b): sem as pausas 'server_outage', o envio automático chegaria dentro da
+// tolerância do fim do tempo. O 409 do envio automático antecipado leva então
+// reason 'server_outage', e a tela do aluno diz que o tempo foi devolvido em vez de "o
+// professor deu mais tempo".
+function extendedByServerOutage(state, application, now = Date.now()) {
+    const pauses = Array.isArray(application?.pauses) ? application.pauses : [];
+    const isOutage = pause => !!pause && pause.reason === SERVER_OUTAGE_PAUSE_REASON;
+    if (!pauses.some(isOutage)) return false;
+    const withoutOutages = { ...application, pauses: pauses.filter(pause => !isOutage(pause)) };
+    const deadlineAt = computeAttemptDeadline({ application: withoutOutages, state, now });
+    return deadlineAt != null && now - deadlineAt >= -AUTO_SUBMIT_EARLY_TOLERANCE_MS;
 }
 
 function attemptOverdueMs(state, application, now = Date.now()) {
@@ -614,6 +657,7 @@ module.exports = {
     computeAttemptDeadline,
     countAnswers,
     deliveredWithoutAttemptsLeft,
+    extendedByServerOutage,
     finalizeAttemptState,
     isAttemptPastDeadline,
     lateSubmitDecision,
@@ -621,5 +665,6 @@ module.exports = {
     reopenDeadlineDeliveries,
     replaceServerFinalization,
     restoreReopenedDelivery,
+    setDeadlineCheck,
     settleExpiredAttempts,
 };

@@ -13,12 +13,96 @@ const DEFAULTS = Object.freeze({
     attendance: { autoOnLogin: true, windowStart: '', windowEnd: '' },
     trash: { retentionDays: 0 },
     maintenance: { enabled: false, message: 'Sistema em manutenção. Tente novamente em instantes.' },
+    network: { adminAccess: 'rede-sem-https', studentsHttps: false },
+    backup: { destino: '', guardarExterno: 14 },
+    retention: { proctoringDays: 0, loginLogsDays: 0, reviewedAt: null, reviewedBy: null },
 });
 
-function getSettings() {
-    const s = (db.memory.config && db.memory.config.settings) || {};
+// Blocos que o POST genérico de configurações (/api/admin/settings) nunca altera: cada
+// um só é gravado pela própria rota, com validação e auditoria (backup do H4, rede do
+// H6 em /api/admin/network-settings, retenção do H8). mergeSettings devolve o bloco
+// gravado como está, inclusive campos que esta versão ainda não conhece.
+const PROTECTED_SETTINGS_SECTIONS = Object.freeze(['backup', 'network', 'retention']);
+
+// Painel do professor em outros aparelhos (settings.network.adminAccess, SEG-03):
+// - 'rede-sem-https' (padrão; também quando o campo não existe, como no banco de antes
+//   desta versão): abre em qualquer aparelho da rede, como antes, e a tela avisa que a
+//   senha passa pela rede sem proteção quando não é o computador do IClass;
+// - 'local': só no computador onde o IClass está ligado;
+// - 'rede': outros aparelhos só pela conexão segura (https, H6c). A rota de rede só
+//   aceita essa escolha com a conexão segura funcionando.
+// Valor gravado desconhecido vale o padrão: ninguém fica trancado fora do painel.
+//
+// Alunos pela conexão segura (settings.network.studentsHttps, H6c): false por padrão (e
+// no banco antigo). Ligado, o aluno que abre o IClass por http em outro aparelho vai
+// para o endereço https, e o QR da sala passa a ser https. Só true liga.
+const ADMIN_ACCESS_MODES = Object.freeze(['rede-sem-https', 'local', 'rede']);
+
+function normalizeAdminAccess(value) {
+    return ADMIN_ACCESS_MODES.includes(value) ? value : DEFAULTS.network.adminAccess;
+}
+
+function storedSettings() {
+    const s = db.memory.config && db.memory.config.settings;
+    return s && typeof s === 'object' ? s : {};
+}
+
+function networkSettings(stored = storedSettings()) {
+    const network = stored.network && typeof stored.network === 'object' ? stored.network : {};
+    return { adminAccess: normalizeAdminAccess(network.adminAccess), studentsHttps: network.studentsHttps === true };
+}
+
+// Destino externo do backup (settings.backup, H4b, OPS-03): a pasta fora do computador
+// (pendrive, HD externo ou pasta de rede) onde o backup completo diário é copiado, e
+// quantos backups automáticos ficam lá (1 a 90). Gravado só por POST
+// /api/admin/backup/config, que confere a pasta e testa a gravação; a restauração de um
+// backup nunca o troca (gancho 'protectedConfig'). Banco de antes desta versão (sem o
+// bloco) ou valor estranho: sem destino e 14.
+const BACKUP_KEEP_EXTERNAL_MIN = 1;
+const BACKUP_KEEP_EXTERNAL_MAX = 90;
+
+function backupSettings(stored = storedSettings()) {
+    const backup = stored.backup && typeof stored.backup === 'object' && !Array.isArray(stored.backup) ? stored.backup : {};
+    const destino = typeof backup.destino === 'string' ? backup.destino.trim() : '';
+    const keep = Math.floor(Number(backup.guardarExterno));
     return {
-        timezone: s.timezone || DEFAULTS.timezone,
+        destino,
+        guardarExterno: Number.isFinite(keep) && keep >= BACKUP_KEEP_EXTERNAL_MIN
+            ? Math.min(BACKUP_KEEP_EXTERNAL_MAX, keep)
+            : DEFAULTS.backup.guardarExterno,
+    };
+}
+
+// Prazos de guarda dos registros técnicos (settings.retention, H8b: SEG-13, decisão 4 do
+// Alan). Só o administrador grava, por POST /api/admin/lgpd/retention (utils/retention.js
+// confere os limites). 0 = nunca apagar sozinho, que é o padrão e o valor de um banco de
+// antes desta versão (sem o bloco). Só teclas e saídas de tela da prova (proctoringDays) e
+// registros de acesso (loginLogsDays) têm prazo; o da lixeira continua em
+// trash.retentionDays. Notas, frequência, entregas, auditoria e cadastro de aluno nunca
+// são apagados por prazo. Valor gravado estranho (negativo, texto) vale 0.
+const RETENTION_MAX_DAYS = 3650;
+
+function retentionDays(value) {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number > 0 ? Math.min(RETENTION_MAX_DAYS, number) : 0;
+}
+
+function retentionSettings(stored = storedSettings()) {
+    const retention = stored.retention && typeof stored.retention === 'object' && !Array.isArray(stored.retention) ? stored.retention : {};
+    const trash = stored.trash && typeof stored.trash === 'object' && !Array.isArray(stored.trash) ? stored.trash : {};
+    return {
+        proctoringDays: retentionDays(retention.proctoringDays),
+        loginLogsDays: retentionDays(retention.loginLogsDays),
+        trashDays: retentionDays(trash.retentionDays),
+        reviewedAt: typeof retention.reviewedAt === 'string' && retention.reviewedAt ? retention.reviewedAt : null,
+        reviewedBy: typeof retention.reviewedBy === 'string' && retention.reviewedBy ? retention.reviewedBy : null,
+    };
+}
+
+function getSettings() {
+    const s = storedSettings();
+    return {
+        timezone: isValidTimeZone(s.timezone) ? s.timezone : DEFAULTS.timezone,
         locale: DEFAULTS.locale,
         dateFormat: DEFAULTS.dateFormat,
         session: { ...DEFAULTS.session, ...(s.session || {}) },
@@ -26,6 +110,9 @@ function getSettings() {
         attendance: { ...DEFAULTS.attendance, ...(s.attendance || {}) },
         trash: { ...DEFAULTS.trash, ...(s.trash || {}) },
         maintenance: { ...DEFAULTS.maintenance, ...(s.maintenance || {}) },
+        network: networkSettings(s),
+        backup: backupSettings(s),
+        retention: (({ trashDays, ...rest }) => rest)(retentionSettings(s)),
     };
 }
 
@@ -35,7 +122,7 @@ function mergeSettings(patch) {
     const p = patch || {};
     const clampNum = (v, def, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def; };
     const next = {
-        timezone: typeof p.timezone === 'string' && p.timezone.trim() ? p.timezone.trim() : cur.timezone,
+        timezone: typeof p.timezone === 'string' && isValidTimeZone(p.timezone.trim()) ? p.timezone.trim() : cur.timezone,
         locale: DEFAULTS.locale,
         dateFormat: DEFAULTS.dateFormat,
         session: {
@@ -57,6 +144,11 @@ function mergeSettings(patch) {
             message: typeof (p.maintenance && p.maintenance.message) === 'string' ? String(p.maintenance.message).slice(0, 300) : cur.maintenance.message,
         },
     };
+    // Blocos protegidos: o que está gravado continua, e o que veio no pedido é ignorado.
+    const stored = storedSettings();
+    PROTECTED_SETTINGS_SECTIONS.forEach(section => {
+        if (stored[section] !== undefined) next[section] = stored[section];
+    });
     return next;
 }
 
@@ -84,6 +176,22 @@ function withinAttendanceWindow(settings) {
     return t >= a.windowStart || t <= a.windowEnd;
 }
 
+// Fuso que o Intl conhece. Um nome que ele recusa ('Brasil/Hora', vindo pela API, de um
+// banco ou de um backup antigo) fazia cada data formatada com ele quebrar (a tela
+// Auditoria respondia 500) ou cair no UTC: getSettings devolve o padrão no lugar e
+// mergeSettings mantém o fuso de antes. A resposta fica guardada (poucos nomes por vez).
+const timeZoneChecks = new Map();
+function isValidTimeZone(value) {
+    if (typeof value !== 'string' || !value.trim()) return false;
+    if (!timeZoneChecks.has(value)) {
+        let valid = false;
+        try { new Intl.DateTimeFormat('en-US', { timeZone: value }); valid = true; } catch (e) { valid = false; }
+        if (timeZoneChecks.size >= 64) timeZoneChecks.clear();
+        timeZoneChecks.set(value, valid);
+    }
+    return timeZoneChecks.get(value);
+}
+
 // Extensão -> categoria (para regra de tipos de upload permitidos).
 function extCategory(ext) {
     ext = String(ext || '').toLowerCase();
@@ -96,4 +204,23 @@ function extCategory(ext) {
     return 'other';
 }
 
-module.exports = { DEFAULTS, getSettings, mergeSettings, todayInTz, today, nowHHMM, withinAttendanceWindow, extCategory };
+module.exports = {
+    DEFAULTS,
+    PROTECTED_SETTINGS_SECTIONS,
+    ADMIN_ACCESS_MODES,
+    getSettings,
+    mergeSettings,
+    networkSettings,
+    backupSettings,
+    BACKUP_KEEP_EXTERNAL_MIN,
+    BACKUP_KEEP_EXTERNAL_MAX,
+    retentionSettings,
+    RETENTION_MAX_DAYS,
+    normalizeAdminAccess,
+    isValidTimeZone,
+    todayInTz,
+    today,
+    nowHHMM,
+    withinAttendanceWindow,
+    extCategory,
+};

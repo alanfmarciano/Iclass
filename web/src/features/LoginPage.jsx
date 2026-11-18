@@ -1,22 +1,39 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, GraduationCap, KeyRound, Layers3, LogIn, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
+import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, ExternalLink, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, RefreshCw, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { useAuth } from '../context/AuthProvider'
 import { useToast } from '../context/ToastProvider'
 import { api } from '../lib/api'
+import { passwordHint } from '../lib/passwordPolicy'
 import { useBranding } from '../context/BrandingProvider'
+import { InsecureConnectionNotice } from '../components/ui/InsecureConnectionNotice'
+import { adminAccessRefusalText, CERTIFICATE_GUIDE_PATH, LOCAL_ONLY_TEXT, secureAdminLoginUrl } from '../lib/adminAccess'
+import { useConnectionInfo } from '../hooks/useConnectionInfo'
+import { DOCUMENTS_CHANGED_MESSAGE, MINOR_GUARDIAN_MESSAGE, guardianComplete, isMinorBirthDate, todayIso } from '../lib/legalAcceptance'
 
 const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }
+// Links dos Termos e da Política (H8a-2): abrem em nova aba, com o curso escolhido no
+// cadastro (os marcadores do texto usam os dados da escola dele).
+function legalHref(path, courseId) {
+  return courseId ? `${path}?courseId=${encodeURIComponent(courseId)}` : path
+}
+function LegalLink({ path, courseId, children }) {
+  return <a href={legalHref(path, courseId)} target="_blank" rel="noopener noreferrer" className="font-medium text-text underline">{children}</a>
+}
 const LOCAL_QUICK_KEY = 'iclass-local-quick-token'
+export const RECOVER_SENT_TEXT = 'Pedido enviado. Avise o professor: ele vai gerar uma senha temporária para você. No próximo acesso, entre com ela e escolha uma senha nova.'
 export default function LoginPage() {
   const [mode, setMode] = useState(() => {
     if (typeof window === 'undefined') return 'student'
     return new URLSearchParams(window.location.search).get('mode') === 'admin' ? 'admin' : 'student'
   }) // 'student' | 'admin'
-  const [studentAction, setStudentAction] = useState('login') // login | register | recover
+  const [studentAction, setStudentActionState] = useState('login') // login | register | recover
+  // Pedido de nova senha enviado (UXA-13): a tela diz o próximo passo no lugar do formulário.
+  const [recoverSent, setRecoverSent] = useState(false)
+  const setStudentAction = (action) => { setRecoverSent(false); setStudentActionState(action) }
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
@@ -25,12 +42,26 @@ export default function LoginPage() {
   const [guardian, setGuardian] = useState(emptyGuardian)
   const [showGuardian, setShowGuardian] = useState(false)
   const [acceptedTerms, setAcceptedTerms] = useState(false)
+  // Data de nascimento (H8a-2, SEG-09): obrigatória no autocadastro; para menor de 18
+  // anos, o responsável também.
+  const [birthDate, setBirthDate] = useState('')
+  // Documentos que a tela mostra no aceite (GET /api/legal/documents): os ids vão no
+  // cadastro, e o servidor responde 409 se a escola publicou outra versão no meio.
+  const [legalDocs, setLegalDocs] = useState(null)
+  const [legalDocsAttempt, setLegalDocsAttempt] = useState(0)
   const [courseValue, setCourseValue] = useState('')
   const [classValue, setClassValue] = useState('')
   const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(false)
+  // Login com atraso por senha errada (H5b; SEG-06, 429 { loginDelayed }): o aviso fica na
+  // tela, e não só no toast, para quem chamar o professor saber o que dizer.
+  const [delayNotice, setDelayNotice] = useState(null)
   const [quickLoginBusy, setQuickLoginBusy] = useState(null)
   const [demoEnabled, setDemoEnabled] = useState(false)
+  // Como o servidor trata o painel do professor neste aparelho (GET /api/connection, SEG-03),
+  // relido quando a tela volta a ficar visível, ao abrir a aba do instrutor e no
+  // "Verificar de novo": o administrador pode liberar o aparelho com esta tela aberta.
+  const { connection, checking: checkingConnection, refresh: refreshConnection, override: overrideConnection } = useConnectionInfo()
   const [localQuickToken, setLocalQuickToken] = useState(() => {
     if (typeof sessionStorage === 'undefined') return ''
     try { return sessionStorage.getItem(LOCAL_QUICK_KEY) || '' } catch { return '' }
@@ -78,11 +109,45 @@ export default function LoginPage() {
       const r = sessionStorage.getItem('iclass-logout-reason')
       if (r) {
         sessionStorage.removeItem('iclass-logout-reason')
+        let serverMessage = ''
+        try { serverMessage = sessionStorage.getItem('iclass-logout-message') || ''; sessionStorage.removeItem('iclass-logout-message') } catch {}
+        if (r === 'admin-network') {
+          // Painel recusado neste aparelho com a sessão aberta: volta na aba do instrutor,
+          // com o aviso da tela e o motivo do servidor.
+          setMode('admin')
+          toast.error(serverMessage || LOCAL_ONLY_TEXT)
+          return
+        }
+        // Sessão encerrada por uma ação no servidor (lib/sessionRevoked.js): o texto vem dele.
+        if (r === 'logout') return
+        if (r === 'password_reset' || r === 'password_changed') {
+          toast.info(serverMessage || 'A senha desta conta foi alterada. Entre de novo com a senha nova.')
+          return
+        }
+        if (r === 'replaced') {
+          toast.info(serverMessage || 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.')
+          return
+        }
         const msg = r === 'idle' ? 'Sua sessão expirou por inatividade. Faça login novamente.' : r === 'restart' ? 'O servidor foi reiniciado. Faça login novamente.' : 'Sua sessão expirou. Faça login novamente.'
         toast.info(msg)
       }
     } catch {}
   }, [])
+
+  const registering = mode === 'student' && studentAction === 'register'
+  useEffect(() => {
+    if (!registering) return undefined
+    let active = true
+    const query = courseValue ? `?courseId=${encodeURIComponent(courseValue)}` : ''
+    api.get(`/api/legal/documents${query}`, { auth: false })
+      .then((data) => { if (active) setLegalDocs(data) })
+      .catch(() => { if (active) setLegalDocs(null) })
+    return () => { active = false }
+  }, [registering, courseValue, legalDocsAttempt])
+
+  // Menor de 18 anos: a seção do responsável abre sozinha e passa a ser obrigatória.
+  const minorRegistration = registering && isMinorBirthDate(birthDate)
+  useEffect(() => { if (minorRegistration) setShowGuardian(true) }, [minorRegistration])
 
   useEffect(() => {
     api.get('/api/classes', { auth: false }).then((r) => setClasses(Array.isArray(r) ? r : (r.classes || []))).catch(() => setClasses([]))
@@ -93,32 +158,75 @@ export default function LoginPage() {
     api.get('/api/test-mode', { auth: false }).then((r) => setDemoEnabled(r?.enabled === true)).catch(() => setDemoEnabled(false))
   }, [])
 
+  // Recusa do painel vinda de um 403 (o administrador mudou a regra com a tela aberta):
+  // atualiza o aviso da aba do instrutor sem esperar outra consulta.
+  function noteRefusal(err) {
+    const adminAccess = err?.status === 403 && err?.data?.adminAccess
+    if (!adminAccess) return
+    const patch = { adminAccess, adminAccessError: err.data.error || '', insecureAdmin: false }
+    if (err.data.httpsUrl !== undefined) patch.httpsUrl = err.data.httpsUrl
+    overrideConnection((current) => ({ ...(current || {}), ...patch }))
+  }
+
+  // Alunos pela conexão segura (Sistema → Rede, H6c): a tela foi aberta por http antes da
+  // troca, e o servidor recusa o login, o cadastro e o pedido de senha por http com a
+  // resposta de estado do contrato 9, { adminAccess: 'https-required', httpsUrl }. Vai
+  // para a mesma tela no endereço seguro.
+  function goSecureForStudent(err) {
+    const httpsUrl = err?.status === 403 && err?.data?.adminAccess === 'https-required' ? err.data.httpsUrl : ''
+    if (typeof httpsUrl !== 'string' || !/^https:\/\//.test(httpsUrl)) return false
+    window.location.assign(`${httpsUrl.replace(/\/+$/, '')}/login`)
+    return true
+  }
+
   async function submit(e) {
-    e.preventDefault(); setLoading(true)
+    e.preventDefault(); setLoading(true); setDelayNotice(null)
     try {
       if (mode === 'admin') {
-        await loginAdmin(email, password); nav('/')
+        try { await loginAdmin(email, password) } catch (err) { noteRefusal(err); throw err }
+        nav('/')
       } else if (studentAction === 'register') {
+        if (!birthDate) { toast.error('Informe a data de nascimento.'); setLoading(false); return }
+        if (minorRegistration && !guardianComplete(guardian)) { setShowGuardian(true); toast.error(MINOR_GUARDIAN_MESSAGE); setLoading(false); return }
         if (!acceptedTerms) { toast.error('Aceite os Termos de Uso e a Política de Privacidade'); setLoading(false); return }
         const courseId = courseValue
         const studentClass = classValue
         const hasGuardian = guardian.name || guardian.phone || guardian.email || guardian.parentesco
-        await api.post('/api/student/register', {
-          name, nomeSocial, email, password, phone, courseId, studentClass,
-          guardian: hasGuardian ? guardian : undefined,
-          acceptedTerms,
-        }, { auth: false })
+        try {
+          await api.post('/api/student/register', {
+            name, nomeSocial, email, password, phone, courseId, studentClass, birthDate,
+            guardian: hasGuardian ? guardian : undefined,
+            acceptedTerms,
+            termsDocumentId: legalDocs?.terms?.documentId || undefined,
+            privacyDocumentId: legalDocs?.privacy?.documentId || undefined,
+          }, { auth: false })
+        } catch (err) {
+          // A escola publicou outra versão enquanto a tela estava aberta: busca a nova e
+          // pede o aceite de novo.
+          if (err?.status === 409 && err?.data?.code === 'documents_changed') {
+            setAcceptedTerms(false)
+            setLegalDocsAttempt((value) => value + 1)
+            throw Object.assign(new Error(err.data.error || DOCUMENTS_CHANGED_MESSAGE), { status: 409 })
+          }
+          throw err
+        }
         await loginStudent(email, password)
         toast.success('Solicitação de matrícula enviada')
         nav('/aluno')
       } else if (studentAction === 'recover') {
         await api.post('/api/student/recover', { email }, { auth: false })
-        toast.success('Solicitação enviada ao instrutor')
-        setStudentAction('login')
+        setRecoverSent(true)
       } else {
         await loginStudent(email, password); nav('/aluno')
       }
-    } catch (err) { toast.error(err.message || 'Falha no login') } finally { setLoading(false) }
+    } catch (err) {
+      if (mode === 'student' && goSecureForStudent(err)) { toast.info(err.message || 'Abra o endereço seguro para entrar.'); return }
+      // Login em espera: o aviso fixo acima do botão já mostra o texto; o toast repetido
+      // cobria o botão "Entrar" no celular.
+      const delayed = err?.status === 429 && err?.data?.loginDelayed
+      if (delayed) setDelayNotice({ mode, text: err.message })
+      if (!delayed || !(mode === 'admin' || studentAction === 'login')) toast.error(err.message || 'Falha no login')
+    } finally { setLoading(false) }
   }
 
   async function quickLogin(kind) {
@@ -135,7 +243,7 @@ export default function LoginPage() {
         nav('/aluno')
       } else {
         const account = kind === 'admin' ? accounts.admin : accounts.professor
-        await loginAdmin(account.email, account.password)
+        try { await loginAdmin(account.email, account.password) } catch (err) { noteRefusal(err); throw err }
         nav('/')
       }
     } catch (err) {
@@ -150,6 +258,12 @@ export default function LoginPage() {
   }
 
   const isRegister = mode === 'student' && studentAction === 'register'
+  // Painel do professor recusado neste aparelho ('local' ou 'rede' sem conexão segura).
+  const adminRefusal = connection && connection.adminAccess && connection.adminAccess !== 'ok'
+    ? adminAccessRefusalText(connection.adminAccess, connection.adminAccessError, connection.httpsUrl)
+    : ''
+  // 'rede' com a conexão segura funcionando: o botão leva ao login no endereço https.
+  const secureLoginUrl = adminRefusal && connection.adminAccess === 'https-required' ? secureAdminLoginUrl(connection.httpsUrl) : ''
   const activeCourses = Array.from(new Map((classes || []).map((c) => [c.courseId, c.courseName])).entries()).map(([id, name]) => ({ id, name }))
   const courseClasses = (classes || []).filter((c) => c.courseId === courseValue)
   const setG = (patch) => setGuardian((g) => ({ ...g, ...patch }))
@@ -219,17 +333,20 @@ export default function LoginPage() {
             <div className="mb-4">
               <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{localQuickToken ? 'Acesso rápido local' : 'Acesso rápido de demonstração'}</p>
               <div className="grid grid-cols-3 gap-2">
-                <Button type="button" variant="secondary" icon={ShieldCheck} loading={quickLoginBusy === 'admin'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('admin')} className="px-2 text-xs">Administrador</Button>
-                <Button type="button" variant="secondary" icon={GraduationCap} loading={quickLoginBusy === 'professor'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('professor')} className="px-2 text-xs">Professor</Button>
+                <Button type="button" variant="secondary" icon={ShieldCheck} loading={quickLoginBusy === 'admin'} disabled={quickLoginBusy !== null || !!adminRefusal} onClick={() => quickLogin('admin')} className="px-2 text-xs">Administrador</Button>
+                <Button type="button" variant="secondary" icon={GraduationCap} loading={quickLoginBusy === 'professor'} disabled={quickLoginBusy !== null || !!adminRefusal} onClick={() => quickLogin('professor')} className="px-2 text-xs">Professor</Button>
                 <Button type="button" variant="secondary" icon={User} loading={quickLoginBusy === 'student'} disabled={quickLoginBusy !== null} onClick={() => quickLogin('student')} className="px-2 text-xs">Aluno</Button>
               </div>
+              {adminRefusal && (
+                <p data-testid="quick-admin-refused" className="mt-2 text-xs text-muted">Administrador e Professor não entram neste aparelho: o painel do professor não abre aqui (veja a aba Instrutor).</p>
+              )}
             </div>
           )}
 
           <div className="glass-panel rounded-[24px] p-5 shadow-lg sm:p-7">
             <div className="flex rounded-xl border border-border bg-surface-2 p-1 text-sm">
               <button onClick={() => { setMode('student'); setStudentAction('login') }} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'student' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Aluno</button>
-              <button onClick={() => setMode('admin')} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'admin' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Instrutor</button>
+              <button onClick={() => { setMode('admin'); refreshConnection() }} className={`flex-1 rounded-lg py-2.5 font-semibold ${mode === 'admin' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Instrutor</button>
             </div>
             {mode === 'student' && (
               <div className="mt-3 flex rounded-xl bg-surface-2 p-1 text-xs">
@@ -238,7 +355,36 @@ export default function LoginPage() {
                 <button type="button" onClick={() => setStudentAction('recover')} className={`flex-1 rounded-lg py-2 font-semibold ${studentAction === 'recover' ? 'bg-surface text-text shadow-sm' : 'text-text hover:text-text'}`}>Senha</button>
               </div>
             )}
-            <form onSubmit={submit} className="mt-5 max-h-[58vh] space-y-4 overflow-auto pr-1">
+            {mode === 'admin' && adminRefusal && (
+              <div role="alert" data-testid="admin-access-refused" className="mt-4 flex items-start gap-2.5 rounded-lg border border-danger bg-danger-soft px-4 py-3 text-sm text-text">
+                <MonitorX aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-danger" />
+                <div className="min-w-0 space-y-2">
+                  <p>{adminRefusal}</p>
+                  {secureLoginUrl && (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      <a href={secureLoginUrl} data-testid="open-secure-address" className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-sm font-semibold text-primary-fg hover:opacity-90">
+                        <ExternalLink aria-hidden="true" size={15} /> Abrir endereço seguro
+                      </a>
+                      <a href={CERTIFICATE_GUIDE_PATH} data-testid="certificate-guide-link" className="text-sm font-semibold text-text underline">Como instalar o certificado</a>
+                    </div>
+                  )}
+                  <Button type="button" variant="secondary" size="sm" icon={RefreshCw} loading={checkingConnection} onClick={() => refreshConnection({ force: true })}>Verificar de novo</Button>
+                </div>
+              </div>
+            )}
+            {mode === 'admin' && !adminRefusal && <InsecureConnectionNotice connection={connection} className="mt-4" />}
+            {mode === 'student' && studentAction === 'recover' && recoverSent ? (
+              <div role="status" data-testid="recover-sent" className="mt-5 space-y-4">
+                <div className="flex items-start gap-2.5 rounded-lg border border-border bg-surface-2 px-4 py-3 text-sm text-text">
+                  <KeyRound aria-hidden="true" size={18} className="mt-0.5 shrink-0 text-primary" />
+                  <p>{RECOVER_SENT_TEXT}</p>
+                </div>
+                <Button type="button" size="lg" variant="secondary" icon={LogIn} className="w-full" onClick={() => setStudentAction('login')}>Voltar para o login</Button>
+              </div>
+            ) : (
+            // Sem altura máxima nem rolagem própria (UXA-13): o cadastro inteiro rola com a
+            // página, e o botão Criar conta não fica escondido numa caixa rolável no celular.
+            <form onSubmit={submit} className="mt-5 space-y-4">
             {isRegister && (
               <>
                 <Input id="ln" label="Nome completo" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -247,7 +393,8 @@ export default function LoginPage() {
             )}
             <Input id="le" label="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={mode === 'admin' ? 'admin@exemplo.com' : 'voce@exemplo.com'} required />
             {!(mode === 'student' && studentAction === 'recover') && (
-              <Input id="lp" label="Senha" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <Input id="lp" label="Senha" type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} value={password} onChange={(e) => setPassword(e.target.value)} required
+                helper={isRegister ? passwordHint('student') : undefined} />
             )}
             {isRegister && (
               <Input id="lph" label="Telefone (opcional)" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 90000-0000" />
@@ -271,14 +418,18 @@ export default function LoginPage() {
               </div>
             )}
             {isRegister && (
+              <Input id="lbd" label="Data de nascimento" type="date" min="1900-01-01" max={todayIso()} value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required
+                helper={minorRegistration ? 'Menor de 18 anos: informe também o responsável, logo abaixo.' : undefined} />
+            )}
+            {isRegister && (
               <div className="rounded-xl border border-border bg-surface-2/30">
                 <button type="button" onClick={() => setShowGuardian((v) => !v)} className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium text-text">
-                  <span>Responsável (opcional)</span>
+                  <span>{minorRegistration ? 'Responsável (obrigatório para menores de 18 anos)' : 'Responsável (opcional)'}</span>
                   <ChevronDown size={16} className={`transition-transform ${showGuardian ? 'rotate-180' : ''}`} />
                 </button>
                 {showGuardian && (
                   <div className="p-3 pt-0 space-y-3">
-                    <p className="text-xs text-subtle">Preencha se você for menor de idade ou a instituição exigir.</p>
+                    <p className="text-xs text-subtle">{minorRegistration ? MINOR_GUARDIAN_MESSAGE : 'Preencha se você for menor de idade ou a instituição exigir.'}</p>
                     <Input id="lgn" label="Nome do responsável" value={guardian.name} onChange={(e) => setG({ name: e.target.value })} />
                     <Input id="lgp" label="Telefone do responsável" value={guardian.phone} onChange={(e) => setG({ phone: e.target.value })} placeholder="(11) 90000-0000" />
                     <Input id="lge" label="E-mail do responsável" type="email" value={guardian.email} onChange={(e) => setG({ email: e.target.value })} />
@@ -290,16 +441,25 @@ export default function LoginPage() {
             {isRegister && (
               <label className="flex items-start gap-2 text-xs text-muted">
                 <input type="checkbox" checked={acceptedTerms} onChange={(e) => setAcceptedTerms(e.target.checked)} required className="mt-0.5" />
-                <span>Li e aceito os <span className="text-text font-medium">Termos de Uso</span> e a <span className="text-text font-medium">Política de Privacidade</span>.</span>
+                <span>Li e aceito os <LegalLink path="/termos" courseId={courseValue}>Termos de Uso</LegalLink> e li a <LegalLink path="/privacidade" courseId={courseValue}>Política de Privacidade</LegalLink>.</span>
               </label>
             )}
-            <Button type="submit" size="lg" icon={mode === 'admin' || studentAction === 'login' ? LogIn : studentAction === 'register' ? UserPlus : KeyRound} loading={loading} className="w-full">
+            {delayNotice && delayNotice.mode === mode && (mode === 'admin' || studentAction === 'login') && (
+              <p role="status" data-testid="login-delayed" className="rounded-lg border border-warning bg-warning-soft px-4 py-3 text-sm text-text">{delayNotice.text}</p>
+            )}
+            <Button type="submit" size="lg" icon={mode === 'admin' || studentAction === 'login' ? LogIn : studentAction === 'register' ? UserPlus : KeyRound} loading={loading} disabled={mode === 'admin' && !!adminRefusal} className="w-full">
               {mode === 'admin' ? 'Entrar como instrutor' : studentAction === 'register' ? 'Criar conta' : studentAction === 'recover' ? 'Solicitar nova senha' : 'Entrar como aluno'}
               {!loading && <ArrowRight size={16} className="ml-auto" />}
             </Button>
           </form>
+            )}
         </div>
           <p className="mt-5 flex items-center justify-center gap-2 text-center text-xs text-subtle"><ShieldCheck size={13} /> Ambiente protegido · acesso pela rede da instituição</p>
+          <p className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-center text-xs text-muted" data-testid="login-legal-links">
+            <LegalLink path="/termos" courseId={isRegister ? courseValue : ''}>Termos de Uso</LegalLink>
+            <span aria-hidden="true">·</span>
+            <LegalLink path="/privacidade" courseId={isRegister ? courseValue : ''}>Política de Privacidade</LegalLink>
+          </p>
         </section>
       </main>
     </div>

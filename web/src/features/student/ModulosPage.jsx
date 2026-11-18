@@ -12,6 +12,7 @@ import { markdownToHtml } from '../../lib/contentMarkdown'
 import { useApi } from '../../hooks/useApi'
 import { useToast } from '../../context/ToastProvider'
 import { useStudent } from './useStudent'
+import { ANNOTATION_NOTE_MAX_CHARS, FORUM_TEXT_MAX_CHARS, NOTE_COUNTER_FROM, NOTE_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
 
 function parseDataJs(source) {
   const text = String(source || '').trim().replace(/^const\s+courseData\s*=\s*/, '').replace(/;?\s*$/, '')
@@ -240,12 +241,12 @@ export default function ModulosPage() {
         <div className="space-y-4">
           <Card>
             <CardHeader title="Caderno desta unidade" action={<Button size="sm" icon={Save} loading={saving} onClick={saveNote}>Salvar</Button>} />
-            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} className="min-h-[180px]" placeholder="Suas anotações..." /></CardBody>
+            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX_CHARS} counterFrom={NOTE_COUNTER_FROM} className="min-h-[180px]" placeholder="Suas anotações..." /></CardBody>
           </Card>
           <Card>
             <CardHeader title="Fórum da unidade" />
             <CardBody className="space-y-3">
-              <Textarea id="unit-comment" value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="Escreva sua dúvida..." />
+              <Textarea id="unit-comment" value={commentText} onChange={(e) => setCommentText(e.target.value)} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Escreva sua dúvida..." />
               <Button size="sm" icon={MessageSquare} onClick={postComment}>Postar</Button>
               {comments.map((c) => (
                 <div key={c.id} className="rounded-md border border-border p-3 text-sm">
@@ -263,7 +264,7 @@ export default function ModulosPage() {
                     </div>
                   ))}
                   <div className="mt-2 flex gap-2">
-                    <input value={replyDrafts[c.id] || ''} onChange={(e) => setReplyDrafts((d) => ({ ...d, [c.id]: e.target.value }))} placeholder="Responder..." className="min-w-0 flex-1 h-8 px-2 rounded-md bg-surface border border-border text-text text-xs" />
+                    <input value={replyDrafts[c.id] || ''} onChange={(e) => setReplyDrafts((d) => ({ ...d, [c.id]: e.target.value }))} maxLength={FORUM_TEXT_MAX_CHARS} placeholder="Responder..." className="min-w-0 flex-1 h-8 px-2 rounded-md bg-surface border border-border text-text text-xs" />
                     <Button size="sm" variant="secondary" icon={Reply} onClick={() => postReply(c.id)}>Responder</Button>
                   </div>
                 </div>
@@ -274,7 +275,7 @@ export default function ModulosPage() {
       </div>
 
       <Modal open={!!annotation} onClose={() => setAnnotation(null)} title="Anotação do parágrafo" description={annotation?.highlightedText?.slice(0, 120)}>
-        <Textarea id="ann" value={annotation?.note || ''} onChange={(e) => setAnnotation((a) => ({ ...a, note: e.target.value }))} className="min-h-[140px]" />
+        <Textarea id="ann" value={annotation?.note || ''} onChange={(e) => setAnnotation((a) => ({ ...a, note: e.target.value }))} maxLength={ANNOTATION_NOTE_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} className="min-h-[140px]" />
         <div className="mt-3 flex justify-end gap-2">
           <Button variant="destructive" icon={Trash2} onClick={deleteAnnotation}>Excluir</Button>
           <Button icon={NotebookPen} onClick={saveAnnotation}>Salvar</Button>

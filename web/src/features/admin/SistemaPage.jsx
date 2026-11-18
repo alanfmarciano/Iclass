@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react'
-import { RefreshCw, Trash2, Wifi, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText, Database, Download, Upload } from 'lucide-react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { RefreshCw, Trash2, AlertTriangle, Save, Settings2, RotateCcw, FolderOpen, FileText } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { Modal } from '../../components/ui/Modal'
+import { TypedConfirm, typedConfirmMatches } from '../../components/ui/TypedConfirm'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Badge } from '../../components/ui/Badge'
 import { useApi } from '../../hooks/useApi'
@@ -13,6 +14,17 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { SaudeCard } from './sistema/SaudeCard'
+import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
+import { RedeCard } from './sistema/RedeCard'
+import { BackupCard, BackupHistory, NETWORK_KEPT_NOTE, legacyRestoreNote } from './sistema/BackupCard'
+import { RetencaoCard } from './sistema/RetencaoCard'
+import { readServerHealth, waitForServerRestart, RESTART_WAIT_MS } from './sistema/serverRestart'
+
+// Texto do diálogo Reiniciar (H3c). "Ninguém precisa entrar de novo" voltou com a frente
+// do H3 (decisões §9): o servidor retoma as sessões gravadas e o navegador, ao ver o
+// servidor novo, confere a sessão (AuthProvider) em vez de mandar todos para o login.
+export const RESTART_DESCRIPTION = 'O IClass fica fora do ar por alguns segundos e volta sozinho. Ninguém precisa entrar de novo.'
 
 const TIMEZONES = ['America/Sao_Paulo', 'America/Manaus', 'America/Belem', 'America/Fortaleza', 'America/Recife', 'America/Bahia', 'America/Cuiaba', 'America/Campo_Grande', 'America/Rio_Branco', 'America/Noronha', 'UTC']
 const UPLOAD_TYPES = [['pdf', 'PDF'], ['image', 'Imagem'], ['video', 'Vídeo'], ['doc', 'Documento'], ['sheet', 'Planilha'], ['zip', 'Compactado'], ['other', 'Outros']]
@@ -37,13 +49,15 @@ function SettingsCard() {
 
   async function save() {
     setBusy(true)
-    try { const r = await api.post('/api/admin/settings', cfg); setCfg(r.settings); toast.success('Configurações salvas'); refetch() }
+    // O prazo da lixeira saiu daqui para o cartão Retenção de dados (H8b): não vai no
+    // pedido, para não desfazer o que foi salvo lá com a tela aberta.
+    try { const { trash, retention, ...patch } = cfg; const r = await api.post('/api/admin/settings', patch); setCfg(r.settings); toast.success('Configurações salvas'); refetch() }
     catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
 
   return (
     <Card>
-      <CardHeader title={<span className="inline-flex items-center gap-2"><Settings2 size={16} /> Configurações</span>} subtitle="Regionais, sessão, upload, presença, lixeira e manutenção" />
+      <CardHeader title={<span className="inline-flex items-center gap-2"><Settings2 size={16} /> Configurações</span>} subtitle="Regionais, sessão, upload, presença e manutenção" />
       <CardBody className="space-y-6">
         <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-wider text-subtle">Regionais</p>
@@ -88,11 +102,6 @@ function SettingsCard() {
         </section>
 
         <section className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-subtle">Lixeira</p>
-          <Field label="Reter itens excluídos por" hint="0 = manter para sempre."><Num value={cfg.trash.retentionDays} onChange={(v) => set(['trash', 'retentionDays'], v)} min={0} max={3650} suffix="dias" /></Field>
-        </section>
-
-        <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-wider text-subtle">Modo manutenção</p>
           <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={cfg.maintenance.enabled} onChange={(e) => set(['maintenance', 'enabled'], e.target.checked)} /> Bloquear o acesso dos alunos (o painel do instrutor continua funcionando)</label>
           <Input id="mnt-msg" label="Mensagem exibida ao aluno" value={cfg.maintenance.message} onChange={(e) => set(['maintenance', 'message'], e.target.value)} />
@@ -125,7 +134,7 @@ function TrashCard() {
           <div key={e.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
             <span className="w-8 h-8 rounded-md bg-surface-2 text-muted grid place-items-center shrink-0">{e.isDir ? <FolderOpen size={15} /> : <FileText size={15} />}</span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-text truncate">{e.name}{e.isDir ? ' (pasta)' : ''}</p>
+              <p className="text-sm font-medium text-text truncate">{e.originalName || e.name}{e.isDir ? ' (pasta)' : ''}</p>
               <p className="text-xs text-subtle truncate">de {e.originalRel} · excluído {_when(e.deletedAt)}{e.size ? ' · ' + _human(e.size) : ''}</p>
             </div>
             <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restore(e.id)}>Restaurar</Button>
@@ -137,153 +146,9 @@ function TrashCard() {
   )
 }
 
-function _bkAuth() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
-
-const BACKUP_ACTION_LABEL = {
-  backup_restored: 'Restauração concluída',
-  backup_restore_failed: 'Restauração com falha',
-  backup_server_created: 'Cópia gerada no servidor',
-  backup_downloaded: 'Backup baixado',
-}
-
-// Restauração de backup de versão anterior (sem as aplicações de prova): o que
-// aconteceu com as aplicações, no histórico e no aviso de sucesso.
-export function legacyRestoreNote({ applicationsDiscarded = 0, applicationsRebuilt = 0 } = {}) {
-  const discarded = Number(applicationsDiscarded) || 0
-  const rebuilt = Number(applicationsRebuilt) || 0
-  return `Backup de versão anterior: as aplicações de prova foram refeitas a partir das turmas do backup (${discarded === 1 ? '1 aplicação atual descartada' : `${discarded} aplicações atuais descartadas`}, ${rebuilt === 1 ? '1 refeita' : `${rebuilt} refeitas`}).`
-}
-
-// Histórico de backup (só o administrador vê): restaurações, falhas, cópias e downloads.
-export function BackupHistory({ entries }) {
-  if (!entries) return null
-  return (
-    <div className="space-y-2">
-      <p className="text-sm font-semibold text-text">Histórico de backup</p>
-      {entries.length === 0 ? <p className="text-xs text-muted">Nenhum registro ainda.</p> : (
-        <ul className="divide-y divide-border rounded-lg border border-border" aria-label="Histórico de backup">
-          {entries.slice(0, 10).map((entry) => (
-            <li key={entry.id || `${entry.action}-${entry.timestamp}`} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2 text-xs">
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-text">
-                  {BACKUP_ACTION_LABEL[entry.action] || 'Backup'}
-                  {entry.action === 'backup_downloaded' && entry.format ? ` (${entry.format.toUpperCase()})` : ''}
-                  {entry.file ? <span className="font-normal text-muted"> · {entry.file}</span> : null}
-                </p>
-                {entry.error && <p className="text-danger">{entry.error}</p>}
-                {entry.legacyApplications && <p className="text-muted">{legacyRestoreNote(entry)}</p>}
-                <p className="text-subtle">{entry.timestamp ? new Date(entry.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {entry.actor || '—'}{entry.ip ? ` · IP ${entry.ip}` : ''}</p>
-              </div>
-              {entry.action === 'backup_restore_failed' ? <Badge tone="danger">Falhou</Badge> : entry.action === 'backup_restored' ? <Badge tone="success">Restaurado</Badge> : null}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-// Baixar e restaurar backup é só do administrador: o arquivo leva todos os alunos e
-// os hashes de senha das contas (SEG-X1). Professor com "Executar manutenção" só gera
-// a cópia de segurança, que fica guardada no servidor.
-function BackupCard({ isAdmin }) {
-  const toast = useToast()
-  const history = useApi(isAdmin ? '/api/admin/backup/history' : null, [isAdmin])
-  const [file, setFile] = useState(null)
-  const [confirmTxt, setConfirmTxt] = useState('')
-  const [replaceAccounts, setReplaceAccounts] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [serverBusy, setServerBusy] = useState(false)
-  // Backup de versão anterior: o servidor não restaura sem antes a tela mostrar o que
-  // acontece com as aplicações de prova (409 legacyBackup) e o administrador confirmar.
-  const [legacyWarning, setLegacyWarning] = useState(null)
-  async function serverBackup() {
-    setServerBusy(true)
-    try {
-      const r = await api.post('/api/admin/backup/server', {})
-      toast.success(`Cópia de segurança gerada no servidor (${r.fileName}). Ficam as ${r.kept || 20} cópias manuais mais recentes.`)
-      if (isAdmin) history.refetch(true)
-    } catch (e) { toast.error(e.message) } finally { setServerBusy(false) }
-  }
-  async function download(kind) {
-    try {
-      const res = await fetch('/api/admin/backup/' + kind, { headers: _bkAuth() })
-      if (!res.ok) { const d = await res.json().catch(() => null); throw new Error((d && d.error) || 'Falha ao gerar backup') }
-      const blob = await res.blob()
-      const cd = res.headers.get('Content-Disposition') || ''
-      const m = cd.match(/filename="([^"]+)"/)
-      const name = m ? m[1] : (kind === 'full' ? 'iclass-backup.zip' : 'iclass-backup.json')
-      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url)
-      history.refetch(true)
-    } catch (e) { toast.error(e.message) }
-  }
-  async function restore({ acceptLegacy = false } = {}) {
-    if (!file) return toast.error('Escolha o arquivo de backup')
-    if (confirmTxt.trim().toUpperCase() !== 'RESTAURAR') return toast.error('Digite RESTAURAR para confirmar')
-    if (!acceptLegacy && !window.confirm(replaceAccounts
-      ? 'Isto substitui TODOS os dados atuais, inclusive as contas de acesso. Um backup de segurança será criado antes. Continuar?'
-      : 'Isto substitui TODOS os dados atuais (as contas de acesso continuam as de hoje). Um backup de segurança será criado antes. Continuar?')) return
-    const fd = new FormData(); fd.append('file', file); fd.append('confirm', confirmTxt); fd.append('replaceAccounts', replaceAccounts ? '1' : '0')
-    if (acceptLegacy) fd.append('acceptLegacy', '1')
-    setLegacyWarning(null)
-    setBusy(true)
-    try {
-      const res = await fetch('/api/admin/backup/restore', { method: 'POST', headers: _bkAuth(), body: fd })
-      const d = await res.json().catch(() => null)
-      if (res.status === 409 && d?.legacyBackup) {
-        setLegacyWarning({ message: d.error, exportedAt: d.exportedAt || '' })
-        return
-      }
-      if (!res.ok) throw new Error((d && d.error) || 'Falha ao restaurar')
-      const skipped = Number(d && d.accountsNotRestored) || 0
-      const legacy = d?.legacyApplications ? ` ${legacyRestoreNote(d)}` : ''
-      toast.success(skipped > 0
-        ? `Backup restaurado. ${skipped === 1 ? 'Uma conta de acesso do backup não existe aqui e não foi restaurada' : `${skipped} contas de acesso do backup não existem aqui e não foram restauradas`}; para trazê-las, restaure de novo marcando "Substituir também as contas de acesso".${legacy}`
-        : `Backup restaurado. Recarregue a página para ver os dados.${legacy}`)
-      setFile(null); setConfirmTxt(''); setReplaceAccounts(false)
-    } catch (e) {
-      toast.error(e.message)
-      // A falha fica no histórico (a restauração bem-sucedida encerra as sessões).
-      history.refetch(true)
-    } finally { setBusy(false) }
-  }
-  return (
-    <Card>
-      <CardHeader title={<span className="inline-flex items-center gap-2"><Database size={16} /> Backup geral</span>} subtitle={isAdmin ? 'Gere, baixe ou restaure o sistema a partir de um arquivo' : 'Gere uma cópia de segurança guardada no servidor'} />
-      <CardBody className="space-y-4">
-        <div className="flex flex-wrap gap-3">
-          <Button variant="secondary" icon={Save} loading={serverBusy} onClick={serverBackup}>Gerar cópia no servidor</Button>
-          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('data')}>Baixar dados (JSON)</Button>}
-          {isAdmin && <Button variant="secondary" icon={Download} onClick={() => download('full')}>Baixar completo (ZIP)</Button>}
-        </div>
-        {!isAdmin && <p className="text-xs text-muted">Baixar e restaurar backup é exclusivo do administrador, porque o arquivo traz os dados de todos os alunos e as senhas protegidas das contas.</p>}
-        {isAdmin && <div className="p-4 rounded-lg border border-danger/40 bg-danger-soft space-y-3">
-          <p className="text-sm font-semibold text-text">Restaurar de um arquivo</p>
-          <p className="text-xs text-muted">Substitui TODOS os dados atuais. Um backup de segurança é criado automaticamente antes. As contas de acesso (administradores e professores) continuam as de hoje, a menos que você marque a opção abaixo. Numa instalação nova (troca de computador), marque a opção para trazer os professores do backup.</p>
-          <input type="file" accept=".json,.zip" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-surface-2 file:text-text file:font-medium" />
-          <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={replaceAccounts} onChange={(e) => setReplaceAccounts(e.target.checked)} /> Substituir também as contas de acesso pelas do backup</label>
-          <div className="flex flex-wrap items-center gap-3">
-            <Input id="bk-confirm" value={confirmTxt} onChange={(e) => setConfirmTxt(e.target.value)} placeholder="Digite RESTAURAR" />
-            <Button variant="destructive" icon={Upload} loading={busy} onClick={() => restore()}>Restaurar</Button>
-          </div>
-        </div>}
-        {isAdmin && <BackupHistory entries={history.data?.entries} />}
-        <Modal
-          open={!!legacyWarning}
-          onClose={() => !busy && setLegacyWarning(null)}
-          title="Backup de uma versão anterior"
-          description={legacyWarning?.exportedAt ? `Gerado em ${new Date(legacyWarning.exportedAt).toLocaleString('pt-BR')}` : undefined}
-          footer={<><Button variant="ghost" onClick={() => setLegacyWarning(null)} disabled={busy}>Cancelar</Button><Button variant="destructive" icon={Upload} loading={busy} onClick={() => restore({ acceptLegacy: true })}>Restaurar mesmo assim</Button></>}
-        >
-          <div className="flex items-start gap-2 text-sm text-text">
-            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
-            <p>{legacyWarning?.message}</p>
-          </div>
-        </Modal>
-      </CardBody>
-    </Card>
-  )
-}
+// Cartão Backup (H4b): web/src/features/admin/sistema/BackupCard.jsx. O histórico, a nota
+// da regra de rede e a da restauração de versão anterior continuam exportados daqui.
+export { BackupHistory, NETWORK_KEPT_NOTE, legacyRestoreNote }
 
 const APPLICATION_STATUS = { prepared: 'Preparada', waiting: 'Sala de espera', running: 'Em andamento', paused: 'Pausada', finished: 'Finalizada', cancelled: 'Cancelada' }
 function _plural(n, one, many) { return `${n} ${n === 1 ? one : many}` }
@@ -306,21 +171,9 @@ export function maintenanceClassOptions(classes, courses, current) {
   return options
 }
 
-// Confirmação digitada no padrão do app (RESETAR, RESTAURAR...): o botão só funciona
-// com a palavra certa, e o servidor confere de novo.
-function TypedConfirm({ id, word, value, onChange }) {
-  return (
-    <div className="space-y-2">
-      <p className="text-sm text-muted">Digite <b className="text-text font-mono">{word}</b> para confirmar.</p>
-      <Input id={id} aria-label={`Digite ${word} para confirmar`} value={value} onChange={(e) => onChange(e.target.value)} placeholder={word} autoComplete="off" />
-    </div>
-  )
-}
-
 export default function SistemaPage() {
   const { auth } = useAuth()
   const workspace = useAdminWorkspace()
-  const { data: net } = useApi('/api/admin/network-info')
   const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.SYSTEM_MANAGE)
   const { data: classList } = useApi(canManage ? '/api/admin/classes' : null)
   const { data: courseList } = useApi(canManage ? '/api/courses' : null)
@@ -340,9 +193,12 @@ export default function SistemaPage() {
   const [confirmText, setConfirmText] = useState('')
   const [flushApplication, setFlushApplication] = useState('')
   const [busy, setBusy] = useState(false)
+  // Reinício pedido: 'Reiniciando…' até o /api/health mostrar o servidor novo (H3c).
+  const [restarting, setRestarting] = useState(false)
+  const [healthKey, setHealthKey] = useState(0)
+  const unmountedRef = useRef(false)
+  useEffect(() => () => { unmountedRef.current = true }, [])
   const toast = useToast()
-  const ips = (net && (net.addresses || net.ips || net)) || []
-  const list = Array.isArray(ips) ? ips : []
 
   async function loadPreview(applicationId = '') {
     setPreviewError(null)
@@ -362,22 +218,33 @@ export default function SistemaPage() {
 
   async function restart() {
     setBusy(true)
-    try { await api.post('/api/admin/server/restart', { confirm: 'REINICIAR' }); toast.info('Servidor reiniciando…'); setDialog(null) }
-    catch (e) { toast.error(e.message) } finally { setBusy(false) }
+    const before = await readServerHealth()
+    try {
+      await api.post('/api/admin/server/restart', { confirm: 'REINICIAR' })
+    } catch (e) {
+      toast.error(e.message); setBusy(false); return
+    }
+    setBusy(false); setDialog(null); setRestarting(true)
+    toast.info('Reiniciando…')
+    const result = await waitForServerRestart({ previousInstanceId: before?.instanceId || null, isCancelled: () => unmountedRef.current })
+    if (unmountedRef.current) return
+    setRestarting(false)
+    if (result.ok) { toast.success('Servidor reiniciado.'); setHealthKey((k) => k + 1) }
+    else toast.error(`O servidor não voltou em ${RESTART_WAIT_MS / 1000} s. Veja a janela do IClass.`)
   }
   async function flush() {
-    if (confirmText.trim().toUpperCase() !== 'LIMPAR') return toast.error('Digite LIMPAR para confirmar')
+    if (!typedConfirmMatches(confirmText, 'LIMPAR')) return toast.error('Digite LIMPAR para confirmar')
     setBusy(true)
     try {
-      const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() })
+      const r = await api.post('/api/admin/flush-exam-state', { studentClass: className, courseId, applicationId: flushApplication || undefined, confirm: confirmText.trim().toUpperCase() }, { timeoutMs: 0 })
       toast.success(r?.message || 'Estado de prova limpo'); setDialog(null); setConfirmText('')
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
   async function reset() {
-    if (confirmText.trim().toUpperCase() !== 'RESETAR') return toast.error('Digite RESETAR para confirmar')
+    if (!typedConfirmMatches(confirmText, 'RESETAR')) return toast.error('Digite RESETAR para confirmar')
     setBusy(true)
     try {
-      const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() })
+      const r = await api.post('/api/admin/reset', { studentClass: className, courseId, confirm: confirmText.trim().toUpperCase() }, { timeoutMs: 0 })
       toast.success(r?.message || 'Sala resetada'); setDialog(null); setConfirmText('')
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
@@ -393,25 +260,19 @@ export default function SistemaPage() {
     <div className="max-w-4xl mx-auto space-y-6">
       <PageHeader title="Sistema" subtitle="Rede, configurações e manutenção." />
 
-      <Card>
-        <CardHeader title="Rede local" subtitle="Endereços para os alunos acessarem" />
-        <CardBody className="space-y-2">
-          {list.length === 0 && <p className="text-sm text-muted flex items-center gap-2"><Wifi size={16} /> Endereços aparecem quando o servidor estiver rodando.</p>}
-          {list.map((ip, i) => (
-            <div key={i} className="flex items-center gap-2 text-sm">
-              <Wifi size={15} className="text-info" />
-              <code className="font-mono text-text">{ip.address || ip}</code>
-              {ip.name && <Badge tone="neutral">{ip.name}</Badge>}
-            </div>
-          ))}
-        </CardBody>
-      </Card>
+      <SaudeCard refreshKey={healthKey} />
+
+      <RedeCard canManage={canManage} isAdmin={auth?.accountRole !== 'professor'} />
 
       {canManage && <SettingsCard />}
+
+      {canManage && <RetencaoCard isAdmin={auth?.accountRole !== 'professor'} />}
 
       {canManage && <TrashCard />}
 
       {canManage && <BackupCard isAdmin={auth?.accountRole !== 'professor'} />}
+
+      {canManage && <ArmazenamentoCard />}
 
       {canManage && <Card>
         <CardHeader title="Manutenção" subtitle="Limpar o estado de prova e resetar a sala valem só para a turma escolhida aqui." />
@@ -424,9 +285,10 @@ export default function SistemaPage() {
             </Select>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button variant="secondary" icon={RefreshCw} onClick={() => openDialog('restart')}>Reiniciar servidor</Button>
+            <Button variant="secondary" icon={RefreshCw} loading={restarting} disabled={restarting} onClick={() => openDialog('restart')}>{restarting ? 'Reiniciando…' : 'Reiniciar servidor'}</Button>
             <Button variant="secondary" icon={Trash2} disabled={noClass} title={noClass ? 'Escolha a turma acima' : undefined} onClick={() => openDialog('flush')}>Limpar estado de prova</Button>
           </div>
+          {restarting && <p className="text-sm text-info" role="status">Reiniciando… a tela volta sozinha quando o servidor responder (até {RESTART_WAIT_MS / 1000} s).</p>}
           {noClass && <p className="text-xs text-subtle">Escolha a turma acima para limpar o estado de prova ou resetar a sala. Reiniciar o servidor vale para todas as turmas.</p>}
         </CardBody>
       </Card>}
@@ -444,7 +306,10 @@ export default function SistemaPage() {
 
       {!canManage && <Badge tone="neutral">Ações de manutenção não liberadas para esta conta.</Badge>}
 
-      <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description="Todos os alunos e professores conectados perdem a conexão por alguns segundos."
+      {/* "Ninguém precisa entrar de novo" (decisões §9): o servidor retoma as sessões
+          gravadas (H3a-2) e, desde a frente do H3, o AuthProvider confere a sessão quando vê
+          o servidor novo (troca de instanceId) em vez de mandar todos para o login. */}
+      <Modal open={dialog === 'restart'} onClose={closeDialog} title="Reiniciar servidor" description={RESTART_DESCRIPTION}
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} onClick={restart}>Reiniciar agora</Button></>}>
         {previewError && <p className="text-sm text-danger">{previewError}</p>}
         {restartActive.length > 0 ? (
@@ -453,13 +318,14 @@ export default function SistemaPage() {
             <ul className="text-sm text-text list-disc pl-5 space-y-1">
               {restartActive.map((a) => <li key={a.id}>{a.studentClass} · {_appLabel(a)}{a.outsideScope && <span className="text-muted"> (turma de outro professor)</span>}</li>)}
             </ul>
-            <p className="text-xs text-muted">O reinício derruba todos os alunos do servidor, de todas as turmas. As respostas já salvas ficam guardadas, mas os alunos precisam entrar de novo depois do reinício.</p>
+            <p className="text-xs text-muted">O reinício vale para o servidor inteiro, com as provas de todas as turmas.</p>
           </div>
         ) : <p className="text-sm text-muted">{preview ? 'Nenhuma prova em andamento agora.' : 'Conferindo as provas em andamento…'}</p>}
+        <p className="text-sm text-muted mt-3">Quem estiver fazendo prova pode continuar respondendo: as respostas são enviadas quando a conexão voltar e o tempo parado é devolvido automaticamente (até 15 minutos).</p>
       </Modal>
 
       <Modal open={dialog === 'flush'} onClose={closeDialog} title={`Limpar estado de prova · turma ${classLabel}`} description="Apaga só o estado de tentativas e as mensagens de prova da turma escolhida."
-        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!flushPlan || flushBlocked || flushEmpty || confirmText.trim().toUpperCase() !== 'LIMPAR'} onClick={flush}>Limpar estado</Button></>}>
+        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!flushPlan || flushBlocked || flushEmpty || !typedConfirmMatches(confirmText, 'LIMPAR')} onClick={flush}>Limpar estado</Button></>}>
         <div className="space-y-4">
           <Select label="Aplicação" value={flushApplication} onChange={(e) => { setFlushApplication(e.target.value); loadPreview(e.target.value) }}>
             <option value="">Todas as provas desta turma</option>
@@ -479,12 +345,12 @@ export default function SistemaPage() {
               </>}
             </div>
           )}
-          {flushPlan && !flushBlocked && !flushEmpty && <TypedConfirm id="flush-confirm" word="LIMPAR" value={confirmText} onChange={setConfirmText} />}
+          {flushPlan && !flushBlocked && !flushEmpty && <TypedConfirm id="flush-confirm" word="LIMPAR" value={confirmText} onChange={setConfirmText} disabled={busy} onConfirm={flush} />}
         </div>
       </Modal>
 
       <Modal open={dialog === 'reset'} onClose={closeDialog} title={`Resetar sala · turma ${classLabel}`} description="Um backup dos dados (com as aplicações de prova) é salvo antes do reset."
-        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!resetPlan || confirmText.trim().toUpperCase() !== 'RESETAR'} onClick={reset}>Confirmar reset</Button></>}>
+        footer={<><Button variant="ghost" onClick={closeDialog}>Cancelar</Button><Button variant="destructive" loading={busy} disabled={!resetPlan || !typedConfirmMatches(confirmText, 'RESETAR')} onClick={reset}>Confirmar reset</Button></>}>
         <div className="space-y-4">
           {previewError && <p className="text-sm text-danger">{previewError}</p>}
           {!resetPlan && !previewError && <p className="text-sm text-muted">Conferindo a turma…</p>}
@@ -504,7 +370,7 @@ export default function SistemaPage() {
               <p className="text-xs text-warning">Desfazer exige restaurar esse backup, e a restauração volta todas as turmas ao momento do reset: entregas, notas e mudanças feitas depois, em qualquer turma, se perdem.</p>
             </div>
           )}
-          {resetPlan && <TypedConfirm id="reset-confirm" word="RESETAR" value={confirmText} onChange={setConfirmText} />}
+          {resetPlan && <TypedConfirm id="reset-confirm" word="RESETAR" value={confirmText} onChange={setConfirmText} disabled={busy} onConfirm={reset} />}
         </div>
       </Modal>
     </div>

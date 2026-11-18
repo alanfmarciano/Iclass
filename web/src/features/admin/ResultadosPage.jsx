@@ -7,7 +7,7 @@ import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
-import { Modal, ConfirmDialog } from '../../components/ui/Modal'
+import { Modal } from '../../components/ui/Modal'
 import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
@@ -21,6 +21,7 @@ import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { deliveryLabel } from './attemptDelivery'
 import { OriginalLetter, reviewLettersNote } from './reviewLetters'
+import { GradeReasonDialog, isReasonRequiredError } from './GradeReasonDialog'
 
 function useCountUp(value, durationMs = 900) {
   const [display, setDisplay] = useState(0)
@@ -64,6 +65,15 @@ const RESULT_POLICIES = [
   { value: 'average', label: 'Média das consideradas' },
   { value: 'selected', label: 'Tentativa escolhida' },
 ]
+
+// Diálogo do motivo para cada ação na composição da nota (nota já publicada).
+const RESULT_ACTION_TEXT = {
+  policy: { title: 'Mudar a regra de cálculo?', confirm: 'Mudar a regra' },
+  select: { title: 'Usar esta tentativa para a nota?', confirm: 'Usar esta nota' },
+  archive: { title: 'Desconsiderar esta tentativa?', confirm: 'Desconsiderar' },
+  restore: { title: 'Reconsiderar esta tentativa?', confirm: 'Reconsiderar' },
+}
+const PUBLISHED_NOTE = 'Esta nota já foi publicada para o aluno: a mudança fica na auditoria e no histórico da nota, com o motivo.'
 
 const MODULE_ACCENTS = ['#d9776b', '#6fa294', '#6f88b0', '#c6a35b', '#9b7fa6', '#c07c9e']
 
@@ -222,6 +232,9 @@ export default function ResultadosPage() {
   const [view, setView] = useState('alunos')
   const [deletedOpen, setDeletedOpen] = useState(false)
   const [auditApplicationId, setAuditApplicationId] = useState(null)
+  // Confirmação com motivo (publicar, ocultar e composição da nota): { title, description,
+  // note, confirmLabel, danger, reason, onConfirm }.
+  const [reasonAsk, setReasonAsk] = useState(null)
   const toast = useToast()
 
   const courseClasses = useMemo(() => (classes || []).filter((c) => c.courseId === activeCourseId && c.name === activeClassName), [classes, activeCourseId, activeClassName])
@@ -474,30 +487,62 @@ export default function ResultadosPage() {
     setManual((m) => ({ ...m, answers: { ...m.answers, [rowKey]: letter } }))
   }
 
-  async function remove() {
-    try {
-      await api.post('/api/admin/submissions/delete', {
-        id: del.id,
-        studentEmail: del.studentEmail || del.email || del.student?.email,
-        examKey: del.examKey,
-      })
-      toast.success('Entrega excluída. Ela pode ser restaurada em "Notas excluídas".')
-      setDel(null)
-      if (submissionId) navigate(selectedStudentPath)
-      else await refetch()
-    } catch (e) { toast.error(e.message) }
+  // Excluir: nota publicada pede o motivo (o diálogo confere antes; o servidor também).
+  // Toda recusa volta para o diálogo, que continua aberto: a de falta de motivo passa a
+  // exigi-lo; as outras aparecem no aviso do diálogo (antes só num toast, com o diálogo
+  // aberto por trás sem dizer nada).
+  async function remove(reason) {
+    await api.post('/api/admin/submissions/delete', {
+      id: del.id,
+      studentEmail: del.studentEmail || del.email || del.student?.email,
+      examKey: del.examKey,
+      ...(reason ? { reason } : {}),
+    })
+    toast.success('Entrega excluída. Ela pode ser restaurada em "Notas excluídas".')
+    setDel(null)
+    if (submissionId) navigate(selectedStudentPath)
+    else await refetch()
   }
 
-  async function controlAttempt(submission, action, policy) {
+  async function sendResultControl(submission, action, policy, reason) {
     setResultActionId(`${submission.id}:${action}`)
     try {
-      await api.post('/api/admin/submissions/result-control', { submissionId: submission.id, action, policy })
+      await api.post('/api/admin/submissions/result-control', { submissionId: submission.id, action, policy, ...(reason ? { reason } : {}) })
       toast.success(action === 'archive' ? 'Tentativa desconsiderada' : action === 'restore' ? 'Tentativa reconsiderada' : action === 'select' ? 'Tentativa escolhida para a nota' : 'Regra de cálculo atualizada')
       await refetch()
-    } catch (error) {
-      toast.error(error.message || 'Não foi possível atualizar a tentativa')
     } finally {
       setResultActionId(null)
+    }
+  }
+
+  function askResultControlReason(submission, action, policy) {
+    const text = RESULT_ACTION_TEXT[action] || RESULT_ACTION_TEXT.policy
+    const policyLabel = action === 'policy' ? RESULT_POLICIES.find((option) => option.value === policy)?.label : ''
+    setReasonAsk({
+      title: text.title,
+      description: policyLabel ? `Nova regra: ${policyLabel}.` : `Tentativa ${submission.displayAttempt || submission.attemptNumber || ''} · nota ${fmtGrade(submission.score)}.`,
+      note: PUBLISHED_NOTE,
+      confirmLabel: text.confirm,
+      reason: 'required',
+      onConfirm: async (reason) => {
+        await sendResultControl(submission, action, policy, reason)
+        setReasonAsk(null)
+      },
+    })
+  }
+
+  // group: as tentativas do mesmo aluno na prova (a regra vale para o grupo inteiro).
+  // Com nota publicada no grupo, o motivo é pedido antes de mandar.
+  async function controlAttempt(submission, action, policy, group = [submission]) {
+    if (group.some((item) => item?.gradePublished === true)) {
+      askResultControlReason(submission, action, policy)
+      return
+    }
+    try {
+      await sendResultControl(submission, action, policy)
+    } catch (error) {
+      if (isReasonRequiredError(error)) askResultControlReason(submission, action, policy)
+      else toast.error(error.message || 'Não foi possível atualizar a tentativa')
     }
   }
 
@@ -553,21 +598,29 @@ export default function ResultadosPage() {
     }
   }
 
-  async function publishGrades(items, published) {
+  // Publicar pede só a confirmação; ocultar nota que o aluno já viu pede o motivo.
+  function publishGrades(items, published) {
     const ids = items.map((item) => item.id).filter((id) => id !== undefined && id !== null)
     if (ids.length === 0) return toast.error('Nenhuma nota selecionada')
-    if (!window.confirm(`${published ? 'Publicar' : 'Ocultar'} ${ids.length} nota(s) para os alunos?`)) return
-    try {
-      const result = await api.post('/api/admin/submissions/publish', { ids, published })
-      toast.success(published ? 'Notas publicadas' : 'Notas ocultadas')
-      if (result?.skippedInvalid) toast.error(`${result.skippedInvalid} nota(s) inválida(s) não foram publicadas. Exclua e lance de novo.`)
-      if (submissionId) navigate(selectedStudentPath)
-      else {
-        setDetail(null)
-        setReview(null)
-        await refetch()
-      }
-    } catch (e) { toast.error(e.message) }
+    const hidesPublished = !published && items.some((item) => item.gradePublished === true)
+    setReasonAsk({
+      title: `${published ? 'Publicar' : 'Ocultar'} ${ids.length} nota(s) para os alunos?`,
+      note: hidesPublished ? 'Os alunos deixam de ver estas notas. A mudança fica na auditoria e no histórico de cada nota, com o motivo.' : 'Os alunos passam a ver estas notas no portal.',
+      confirmLabel: published ? 'Publicar' : 'Ocultar',
+      reason: published ? 'none' : hidesPublished ? 'required' : 'optional',
+      onConfirm: async (reason) => {
+        const result = await api.post('/api/admin/submissions/publish', { ids, published, ...(reason ? { reason } : {}) })
+        setReasonAsk(null)
+        toast.success(published ? 'Notas publicadas' : 'Notas ocultadas')
+        if (result?.skippedInvalid) toast.error(`${result.skippedInvalid} nota(s) inválida(s) não foram publicadas. Exclua e lance de novo.`)
+        if (submissionId) navigate(selectedStudentPath)
+        else {
+          setDetail(null)
+          setReview(null)
+          await refetch()
+        }
+      },
+    })
   }
 
   // Download autenticado (window.open não enviava a sessão e abria "Acesso não autorizado.").
@@ -675,7 +728,7 @@ export default function ResultadosPage() {
             )}
             <span className="rb-polsel">
               <span className="rb-pollab">Regra</span>
-              <select className="rb-sel" value={policy} disabled={busy} onClick={(e) => e.stopPropagation()} onChange={(event) => controlAttempt(attempts[0], 'policy', event.target.value)} aria-label={`Regra de cálculo de ${exam.examName || exam.examKey}`}>
+              <select className="rb-sel" value={policy} disabled={busy} onClick={(e) => e.stopPropagation()} onChange={(event) => controlAttempt(attempts[0], 'policy', event.target.value, attempts)} aria-label={`Regra de cálculo de ${exam.examName || exam.examKey}`}>
                 {RESULT_POLICIES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </span>
@@ -699,12 +752,12 @@ export default function ResultadosPage() {
                     <span className={`rb-as ${gradeBandClass(submission.score)}`}>{fmtNota(submission.score)}</span>
                     <div className="rb-acts">
                       {!archived && (
-                        <button type="button" className="rb-btn pri" disabled={busy} title="Fixar esta tentativa como a nota" onClick={() => controlAttempt(submission, 'select')}><Target size={13} /><span>Usar esta nota</span></button>
+                        <button type="button" className="rb-btn pri" disabled={busy} title="Fixar esta tentativa como a nota" onClick={() => controlAttempt(submission, 'select', undefined, attempts)}><Target size={13} /><span>Usar esta nota</span></button>
                       )}
                       <button type="button" className="rb-btn" title="Ver a prova corrigida" onClick={() => openSubmissionReview(submission)}><Eye size={13} /><span>Ver prova</span></button>
                       {archived
-                        ? <button type="button" className="rb-btn ok" disabled={busy} title="Voltar a tentativa ao cálculo" onClick={() => controlAttempt(submission, 'restore')}><RotateCcw size={13} /><span>Reconsiderar</span></button>
-                        : <button type="button" className="rb-btn warn" disabled={busy} title="Tirar a tentativa do cálculo (não apaga)" onClick={() => controlAttempt(submission, 'archive')}><EyeOff size={13} /><span>Desconsiderar</span></button>}
+                        ? <button type="button" className="rb-btn ok" disabled={busy} title="Voltar a tentativa ao cálculo" onClick={() => controlAttempt(submission, 'restore', undefined, attempts)}><RotateCcw size={13} /><span>Reconsiderar</span></button>
+                        : <button type="button" className="rb-btn warn" disabled={busy} title="Tirar a tentativa do cálculo (não apaga)" onClick={() => controlAttempt(submission, 'archive', undefined, attempts)}><EyeOff size={13} /><span>Desconsiderar</span></button>}
                     </div>
                   </div>
                 )
@@ -1091,6 +1144,7 @@ export default function ResultadosPage() {
                         {entry.oldValue && <><span className="text-subtle line-through">{entry.oldValue}</span>{' → '}</>}
                         <span className="text-text">{entry.newValue}</span>
                       </p>
+                      {entry.reason && <p className="mt-0.5 text-xs text-text"><span className="text-subtle">Motivo: </span>{entry.reason}</p>}
                       <p className="mt-0.5 text-xs text-subtle">por {entry.actor}</p>
                     </li>
                   ))}
@@ -1186,9 +1240,13 @@ export default function ResultadosPage() {
         </div>
       </Modal>
 
-      <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir registro"
+      <GradeReasonDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir registro"
         title="Excluir esta entrega?" description={`${del?.studentName || del?.studentEmail || del?.student?.email} - ${del?.examKey} · nota ${fmtGrade(del?.score)}.`}
-        note={'A entrega sai de Resultados e vai para "Notas excluídas", de onde pode ser restaurada.'} />
+        note={'A entrega sai de Resultados e vai para "Notas excluídas", de onde pode ser restaurada.'}
+        reason={del?.gradePublished === true ? 'required' : 'optional'} />
+      <GradeReasonDialog open={!!reasonAsk} onClose={() => setReasonAsk(null)} onConfirm={(reason) => reasonAsk.onConfirm(reason)}
+        title={reasonAsk?.title} description={reasonAsk?.description} note={reasonAsk?.note} confirmLabel={reasonAsk?.confirmLabel}
+        danger={!!reasonAsk?.danger} reason={reasonAsk?.reason || 'optional'} />
       <DeletedGradesModal open={deletedOpen} onClose={() => setDeletedOpen(false)} courseId={activeCourseId} studentClass={activeClassName} onRestored={refetch} />
       <ApplicationAuditModal open={!!auditApplicationId} onClose={() => setAuditApplicationId(null)} applicationId={auditApplicationId} />
     </div>

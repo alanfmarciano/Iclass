@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
+const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
 const {
     questionNumber,
     regradeSubmission,
@@ -39,6 +40,7 @@ const {
     getReleasedItemsForClass,
     isCourseItemKey,
     isCourseExamKey,
+    sendRouteError,
 } = require('../middlewares.js');
 
 const VERSION_LABELS = ['A', 'B', 'C', 'D'];
@@ -101,6 +103,8 @@ function buildPreparedOnlineExamConfig(historyEntry, previousConfig = {}, applic
         activeHistoryId: historyEntry.id,
         accessToken: tokenEnabled ? ensureExamToken(applicationOptions.accessToken || historyEntry.accessToken) : null,
         maxAttempts,
+        // Registro do teclado (H8b): a rota confere a escolha antes (parseKeystrokeModeOption).
+        keystrokeMode: normalizeKeystrokeMode(parseKeystrokeModeOption(applicationOptions).value),
         versionSnapshots,
         preparedAt: updatedAt,
         updatedAt,
@@ -110,6 +114,25 @@ function buildPreparedOnlineExamConfig(historyEntry, previousConfig = {}, applic
 async function persistClasses(classes) {
     db.memory.classes = classes;
     await db.save();
+}
+
+// Ações do professor numa aplicação em andamento (Monitor: iniciar, pausar, retomar, +N
+// min, token novo): gravação parcial (rota quente, H1-c, DES-01). Entregas e logs só
+// ganham linhas novas aqui; quando a ação mexe numa entrega que já existia (encerrar com
+// as respostas em andamento, devolver a entrega do fim do tempo no "+N min", entregar
+// tentativa vencida), a rota usa a gravação completa.
+const APPLICATION_ACTION_COLLECTIONS = Object.freeze([
+    'examApplications',
+    'classes',
+    'studentExamState',
+    'submissions',
+    'auditLogs',
+    'proctoringLogs',
+    'broadcastMessages',
+]);
+
+function saveApplicationAction({ full = false } = {}) {
+    return full ? db.save() : db.save({ only: [...APPLICATION_ACTION_COLLECTIONS] });
 }
 
 function adminActor(req) {
@@ -352,6 +375,14 @@ function applicationForAdminRequest(applicationId) {
     return { application, cls };
 }
 
+// Aplicação sem versionSnapshots e questionReports, com openReportCount (view=summary).
+function applicationSummary(application) {
+    const { versionSnapshots, questionReports, ...summary } = application || {};
+    summary.openReportCount = (Array.isArray(questionReports) ? questionReports : [])
+        .filter(report => report && report.status === 'open').length;
+    return summary;
+}
+
 function createAdminExamConfigRouter() {
     const router = express.Router();
 
@@ -363,7 +394,18 @@ function createAdminExamConfigRouter() {
                 examKey: req.query.examKey,
             }).filter(application => matchedAdmin?.role !== 'professor'
                 || (matchedAdmin.assignedClasses || []).some(item =>
-                    item && item.courseId === application.courseId && item.className === application.studentClass));
+                    item && item.courseId === application.courseId && item.className === application.studentClass))
+                // Aplicação de antes do H8b, sem o campo, aparece como 'eventos' (cópia; o banco não
+                // muda), com keystrokeModeLegacy: o que ela já guardou é a digitação completa.
+                .map(withKeystrokeMode);
+            // view=summary (Monitor, consultado a cada 5 s): sem as versões da prova
+            // (versionSnapshots, com o gabarito) e sem as contestações (questionReports),
+            // que nenhuma tela de polling lê e eram o grosso da resposta (DES-04, DES-13);
+            // openReportCount diz quantas contestações estão em aberto. Sem view, nada muda.
+            // O modo do teclado (H8b) continua no resumo: o Monitor rotula a coluna por ele.
+            if (String(req.query.view || '') === 'summary') {
+                return res.json({ success: true, applications: applications.map(applicationSummary) });
+            }
             res.json({ success: true, applications });
         });
     });
@@ -372,7 +414,7 @@ function createAdminExamConfigRouter() {
         validateAdmin(req, res, () => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
-            res.json({ success: true, application });
+            res.json({ success: true, application: withKeystrokeMode(application) });
         });
     });
 
@@ -444,7 +486,7 @@ function createAdminExamConfigRouter() {
             }
             // O token nunca vai para a auditoria: só o registro de que foi trocado.
             recordExamAudit('exam_application_token_regenerated', application, actor, { status: application.status });
-            await db.save();
+            await saveApplicationAction();
             res.json({ success: true, accessToken, accessTokenIssuedAt: application.accessTokenIssuedAt, applicationId: application.id });
         });
     });
@@ -468,6 +510,8 @@ function createAdminExamConfigRouter() {
                 ? options.maxAttempts
                 : (Object.prototype.hasOwnProperty.call(historyEntry, 'maxAttempts') ? historyEntry.maxAttempts : DEFAULT_MAX_ATTEMPTS));
             if (!parsedMaxAttempts.valid) return res.status(400).json({ error: 'Tentativas deve ser um número entre 1 e 10.' });
+            const keystrokeChoice = parseKeystrokeModeOption(options);
+            if (!keystrokeChoice.valid) return res.status(400).json({ success: false, error: keystrokeChoice.error, field: 'keystrokeMode' });
             // Uma aplicação em andamento nunca é encerrada por outra preparação: o
             // professor decide no Monitor o que fazer com as respostas (AVA-04).
             const running = activeExamApplication(db.memory, { studentClass: cls.name, courseId: cls.courseId, examKey });
@@ -495,7 +539,7 @@ function createAdminExamConfigRouter() {
             try {
                 plan = planControlAction(db.memory, application, req.body.action);
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) await db.save();
@@ -521,7 +565,7 @@ function createAdminExamConfigRouter() {
                     adjustmentSeconds: req.body.adjustmentSeconds,
                 });
             } catch (error) {
-                return res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             if (!cls.releasedItems) cls.releasedItems = {};
@@ -530,7 +574,9 @@ function createAdminExamConfigRouter() {
             cls.releasedItems[application.examKey] = active;
             cls.activeExamKey = active ? application.examKey : (cls.activeExamKey === application.examKey ? null : cls.activeExamKey);
             cls.activeApplicationId = active ? application.id : (cls.activeApplicationId === application.id ? null : cls.activeApplicationId);
-            await persistClasses(db.memory.classes || []);
+            // Encerrar com tentativas em andamento resolve entregas (algumas já existiam):
+            // gravação completa. As outras transições, parcial.
+            await saveApplicationAction({ full: !!plan.resolve });
             res.json({ success: true, application, config: cls.onlineExamConfigs[application.examKey], finish: processedFinish });
         });
     });
@@ -578,7 +624,9 @@ function createAdminExamConfigRouter() {
                 : null;
             application.updatedAt = new Date().toISOString();
             application.updatedBy = adminActor(req);
-            await db.save();
+            // Tentativa vencida entregue agora ou entrega do fim do tempo devolvida à prova
+            // mexem em entregas: gravação completa. O "+N min" sozinho, parcial.
+            await saveApplicationAction({ full: !!settled.changed || !!(reopened && reopened.reopened.length) });
             // Ajuste da turma: quem voltou para a prova com o tempo extra e quem já tinha
             // entregue e ficou sem ele.
             if (targetEmail) return res.json({ success: true, application, deliveredAtDeadline: 0 });
@@ -598,7 +646,7 @@ function createAdminExamConfigRouter() {
     router.get('/api/admin/question-reports/:class/:examKey', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             try {
-                const { application, cls } = applicationForAdminRequest(req.query.applicationId);
+                const { application } = applicationForAdminRequest(req.query.applicationId);
                 if (application.studentClass.toLowerCase() !== String(req.params.class || '').trim().toLowerCase()
                     || application.examKey !== String(req.params.examKey || '').trim()) {
                     return res.status(404).json({ error: 'Aplicação não encontrada para a turma e prova informadas.' });
@@ -635,10 +683,11 @@ function createAdminExamConfigRouter() {
                     groups,
                     status: application.status,
                     finishSummary: finishSummary(application),
-                    config: cls.onlineExamConfigs?.[application.examKey] || null,
+                    // Sem `config` (DES-04): levava as versões e o gabarito a cada 3 s e
+                    // nenhuma tela o lia.
                 });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -658,7 +707,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, updated });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -700,7 +749,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, question: liveQuestion(application, number), regraded, config: onlineConfig });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -740,7 +789,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, annulment: entry, regraded, config: onlineConfig });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -766,7 +815,7 @@ function createAdminExamConfigRouter() {
                 }
                 const originalNumber = Number(req.body.questionNumber);
                 if (!liveQuestion(application, originalNumber)) return res.status(404).json({ error: 'Questão original não encontrada.' });
-                const bank = (db.memory.questionBank || []).find(question => question.key === req.body.bankQuestionKey);
+                const bank = (db.memory.questionBank || []).find(question => question && question.key === req.body.bankQuestionKey);
                 if (!bank) return res.status(404).json({ error: 'Questão do banco não encontrada.' });
                 const extraMinutes = Math.max(0, Math.min(30, Number(req.body.extraMinutes) || 0));
                 const allNumbers = (application.versionSnapshots || []).flatMap(snapshot =>
@@ -821,7 +870,7 @@ function createAdminExamConfigRouter() {
                 await db.save();
                 res.json({ success: true, replacementNumber, extraMinutes, regraded, config: onlineConfig });
             } catch (error) {
-                res.status(error.status || 400).json({ error: error.message });
+                return sendRouteError(error, req, res);
             }
         });
     });
@@ -966,6 +1015,10 @@ function createAdminExamConfigRouter() {
                             : (Object.prototype.hasOwnProperty.call(historyEntry, 'maxAttempts') ? historyEntry.maxAttempts : DEFAULT_MAX_ATTEMPTS));
                         if (!parsedMaxAttempts.valid) {
                             return res.status(400).json({ error: 'Tentativas deve ser um número entre 1 e 10.' });
+                        }
+                        const keystrokeChoice = parseKeystrokeModeOption(applicationOptions);
+                        if (!keystrokeChoice.valid) {
+                            return res.status(400).json({ success: false, error: keystrokeChoice.error, field: 'keystrokeMode' });
                         }
                         const prepared = prepareApplicationFromHistory(cls, itemKey, historyEntry, applicationOptions || {}, req);
                         affectedApplication = prepared.application;

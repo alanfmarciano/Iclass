@@ -1,8 +1,12 @@
 const crypto = require('crypto');
 const express = require('express');
 const db = require('../database.js');
+const { recordAudit } = require('../utils/audit.js');
 const { issueAdminSession, normalizeIp, SERVER_INSTANCE_ID } = require('../middlewares.js');
 const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
+const { createStudentSession } = require('../utils/authSessions.js');
+const { adminPasswordChangeState } = require('../utils/passwordChange.js');
+const { studentSessionProfile } = require('../utils/studentProfile.js');
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
 
@@ -48,6 +52,13 @@ function normalizeStudentForQuickAccess(student) {
     safeStudent.courses = courses;
     safeStudent.studentClass = classes[0]?.name || '';
     return safeStudent;
+}
+
+// Troca de senha pedida, como no login e no whoami (adminAccounts.js adminSessionPayload):
+// o que vale agora e o motivo, para a tela já mostrar a senha atual quando ela é pedida.
+function passwordChangeFields(admin) {
+    const state = adminPasswordChangeState(admin);
+    return { mustChangePassword: state.required === true, ...(state.required ? { passwordChangeReason: state.reason } : {}) };
 }
 
 function createSetupModeRouter(options = {}) {
@@ -98,18 +109,16 @@ function createSetupModeRouter(options = {}) {
                 return res.status(404).json({ error: `A conta oficial de aluno ${expectedStudent.email} não está cadastrada ou ativa.` });
             }
             const email = String(student.email).trim().toLowerCase();
-            const sessionToken = crypto.randomUUID();
             const clientIp = normalizeIp(remoteAddress);
-            db.memory.sessions = db.memory.sessions || {};
-            db.memory.sessions[email] = {
-                lastSeen: now(), createdAt: now(), ip: clientIp, token: sessionToken,
-            };
+            // Só o hash do token fica no servidor; origin 'setup': a sessão do acesso rápido
+            // local só pode voltar depois de um reinício com o modo setup ligado.
+            const sessionToken = createStudentSession(db.memory, email, { ip: clientIp, now: now(), origin: 'setup' });
             student.lastLoginAt = now();
             student.lastLoginIp = clientIp;
             actorEmail = email;
             response = {
                 sessionType: 'student', role: 'student', email,
-                student: normalizeStudentForQuickAccess(student), sessionToken, instanceId: SERVER_INSTANCE_ID,
+                student: studentSessionProfile(normalizeStudentForQuickAccess(student)), sessionToken, instanceId: SERVER_INSTANCE_ID,
                 localSetupMode: true,
             };
         } else {
@@ -127,15 +136,16 @@ function createSetupModeRouter(options = {}) {
                 assignedCourseIds: Array.isArray(admin.assignedCourseIds) ? admin.assignedCourseIds : [],
                 assignedClasses: Array.isArray(admin.assignedClasses) ? admin.assignedClasses : [],
                 additionalPermissions: Array.isArray(admin.additionalPermissions) ? admin.additionalPermissions : [],
-                mustChangePassword: admin.mustChangePassword === true,
-                sessionToken: issueAdminSession(actorEmail), instanceId: SERVER_INSTANCE_ID, localSetupMode: true,
+                ...passwordChangeFields(admin),
+                sessionToken: issueAdminSession(actorEmail, { origin: 'setup' }), instanceId: SERVER_INSTANCE_ID, localSetupMode: true,
             };
         }
 
-        if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-        db.memory.auditLogs.push({
-            id: `audit_quick_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-            type: 'local_quick_login', profile, actorEmail, at: new Date().toISOString(), ip: remoteAddress,
+        // Mesmo registro de antes (type/profile/actorEmail/at em ISO), pelo recordAudit.
+        const quickAt = Date.now();
+        recordAudit(db.memory, { req, actor: actorEmail, action: 'local_quick_login', category: 'security' }, {
+            timestamp: quickAt,
+            legacy: { type: 'local_quick_login', profile, actorEmail, at: new Date(quickAt).toISOString() },
         });
         await db.save();
         res.json(response);
@@ -156,15 +166,11 @@ function createSetupModeRouter(options = {}) {
         if (!admin) return res.status(503).json({ error: 'Nenhuma conta administradora disponível.' });
 
         consumed = true;
-        const sessionToken = issueAdminSession(admin.email);
-        if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-        db.memory.auditLogs.push({
-            id: `audit_setup_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-            type: 'admin_local_setup_login',
-            actorEmail: admin.email,
-            targetEmail: admin.email,
-            at: new Date().toISOString(),
-            ip: remoteAddress,
+        const sessionToken = issueAdminSession(admin.email, { origin: 'setup' });
+        const setupAt = Date.now();
+        recordAudit(db.memory, { req, actor: admin, action: 'admin_local_setup_login', category: 'security', targetEmail: admin.email }, {
+            timestamp: setupAt,
+            legacy: { type: 'admin_local_setup_login', actorEmail: admin.email, at: new Date(setupAt).toISOString() },
         });
         await db.save();
 
@@ -176,7 +182,7 @@ function createSetupModeRouter(options = {}) {
             assignedCourseIds: Array.isArray(admin.assignedCourseIds) ? admin.assignedCourseIds : [],
             assignedClasses: Array.isArray(admin.assignedClasses) ? admin.assignedClasses : [],
             additionalPermissions: Array.isArray(admin.additionalPermissions) ? admin.additionalPermissions : [],
-            mustChangePassword: admin.mustChangePassword === true,
+            ...passwordChangeFields(admin),
             sessionToken,
             instanceId: SERVER_INSTANCE_ID,
             localSetupMode: true,

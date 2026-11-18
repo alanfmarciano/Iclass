@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { MessagesSquare, Send, Trash2, Star, CircleCheck, RotateCcw, History, Search, Zap, Plus, X, Clock, ChevronDown } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -15,6 +15,8 @@ import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
+import { usePolling } from '../../hooks/usePolling'
+import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM, clampText, formatCount, tooLongMessage } from '../../lib/textLimits'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -64,13 +66,27 @@ export default function ForumPage() {
   const templates = pref('forum.templates', [])
   const lastSeen = pref('forum.lastSeen', null)
 
-  const load = async (silent = false) => {
+  // requestOptions: o que o usePolling manda na consulta periódica (prazo e cabeçalho
+  // de consulta de fundo). Devolve se a resposta chegou (recuo do usePolling).
+  // A resposta que chega depois de trocar de curso ou turma é descartada: antes, a
+  // consulta lenta do curso anterior voltava por cima da lista do curso novo.
+  const workspaceKey = `${activeCourseId || ''}|${activeClassName || ''}`
+  const workspaceKeyRef = useRef(workspaceKey)
+  workspaceKeyRef.current = workspaceKey
+  const load = async (silent = false, requestOptions = undefined) => {
+    const current = () => workspaceKeyRef.current === workspaceKey
     if (!silent) setLoading(true)
     setError(null)
-    try { setData(await api.post('/api/admin/forum/all', { courseId: activeCourseId, studentClass: activeClassName })) } catch (e) { if (!silent) setError(e) } finally { if (!silent) setLoading(false) }
+    try {
+      const next = await api.post('/api/admin/forum/all', { courseId: activeCourseId, studentClass: activeClassName }, requestOptions)
+      if (current()) setData(next)
+      return true
+    } catch (e) { if (!silent && current()) setError(e); return false } finally { if (!silent && current()) setLoading(false) }
   }
   useEffect(() => { load() }, [activeCourseId, activeClassName])
-  useEffect(() => { const id = setInterval(() => load(true), 12000); return () => clearInterval(id) }, [activeCourseId, activeClassName])
+  // A cada 12 s, uma consulta por vez e só com a aba à vista (usePolling); a troca de
+  // curso ou turma recomeça a contagem (a carga acima já consulta na hora).
+  usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 12000, immediate: false, resetKey: workspaceKey })
 
   useEffect(() => {
     if (!activeCourseId) { setCourseKeys(null); return }
@@ -141,6 +157,9 @@ export default function ForumPage() {
   async function editText(target) {
     const text = prompt('Editar texto:', target.text)
     if (!text || text === target.text) return
+    // O prompt do navegador não tem limite: o teto do servidor (5.000) é conferido aqui,
+    // com o motivo na tela, antes de mandar (H9b).
+    if (text.trim().length > FORUM_TEXT_MAX_CHARS) return toast.error(tooLongMessage(text.trim().length, FORUM_TEXT_MAX_CHARS))
     try {
       if (target.replyId) await api.post('/api/forum/reply/edit', { commentId: target.commentId, replyId: target.replyId, courseId: activeCourseId, studentClass: activeClassName, email: auth.email, text })
       else await api.post('/api/forum/comment/edit', { commentId: target.commentId, courseId: activeCourseId, studentClass: activeClassName, email: auth.email, text })
@@ -156,11 +175,21 @@ export default function ForumPage() {
     catch (e) { toast.error(e.message) }
   }
   function markAllRead() { setPref('forum.lastSeen', new Date().toISOString()); toast.success('Marcadas como lidas') }
-  function applyTemplate(commentId, text) { setReply((r) => ({ ...r, [commentId]: (r[commentId] ? r[commentId] + '\n' : '') + text })) }
-  function addTemplate() {
+  // O modelo entra no fim da resposta sem passar do teto do campo (5.000): o que sobrar é
+  // cortado e o professor é avisado (antes o servidor recusava a resposta inteira).
+  function applyTemplate(commentId, text) {
+    const joined = clampText((reply[commentId] ? reply[commentId] + '\n' : '') + text, FORUM_TEXT_MAX_CHARS)
+    setReply((r) => ({ ...r, [commentId]: joined.text }))
+    if (joined.cut) toast.warning(`O modelo foi cortado para a resposta caber em ${formatCount(FORUM_TEXT_MAX_CHARS)} caracteres.`)
+  }
+  // O formulário só se limpa depois que o servidor grava o modelo: recusado (limite de
+  // 64 KB, sessão vencida...), o texto digitado fica para o professor ajustar (decisões
+  // §12, sobra do H9b).
+  async function addTemplate() {
     if (!tplForm.title.trim() || !tplForm.text.trim()) return toast.error('Preencha título e texto')
-    setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: tplForm.title.trim(), text: tplForm.text.trim() }])
-    setTplForm({ title: '', text: '' })
+    const form = tplForm
+    const saved = await setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: form.title.trim(), text: form.text.trim() }])
+    if (saved) setTplForm((current) => (current === form ? { title: '', text: '' } : current))
   }
   function deleteTemplate(id) { setPref('forum.templates', templates.filter((t) => t.id !== id)) }
   async function restoreItem(t) { try { await api.post('/api/admin/forum/restore', { ...t, courseId: activeCourseId, studentClass: activeClassName }); toast.success('Restaurado'); load() } catch (e) { toast.error(e.message) } }
@@ -253,7 +282,7 @@ export default function ForumPage() {
                 </div>
               )}
               <div className="mt-3 flex gap-2">
-                <Textarea id={`reply-${c.id}`} value={reply[c.id] || ''} onChange={(e) => setReply((r) => ({ ...r, [c.id]: e.target.value }))} placeholder="Responder como instrutor..." className="min-h-[70px]" />
+                <Textarea id={`reply-${c.id}`} value={reply[c.id] || ''} onChange={(e) => setReply((r) => ({ ...r, [c.id]: e.target.value }))} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Responder como instrutor..." className="min-h-[70px]" />
                 <div className="flex flex-col gap-2">
                   <Button icon={Send} onClick={() => sendReply(c.id)}>Enviar</Button>
                   <Button variant="secondary" icon={status === 'resolvida' ? RotateCcw : CircleCheck} onClick={() => resolveToggle(c)}>{status === 'resolvida' ? 'Reabrir' : 'Resolver'}</Button>
@@ -333,7 +362,7 @@ export default function ForumPage() {
           ))}
           <div className="pt-3 border-t border-border space-y-2">
             <Input label="Título" value={tplForm.title} onChange={(e) => setTplForm({ ...tplForm, title: e.target.value })} placeholder="Ex.: Prazo da prova" />
-            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} placeholder="Resposta padrão..." className="min-h-[70px]" />
+            <Textarea label="Texto" value={tplForm.text} onChange={(e) => setTplForm({ ...tplForm, text: e.target.value })} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Resposta padrão..." className="min-h-[70px]" />
             <Button icon={Plus} onClick={addTemplate}>Adicionar modelo</Button>
           </div>
         </div>

@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
+const os = require('os');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
 const { normalizeStoredStudentClasses } = require('./utils/students.js');
@@ -16,41 +17,216 @@ const {
 } = require('./utils/examApplications.js');
 const { hashExamToken } = require('./utils/examToken.js');
 const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
+const { createDbWriter, DbWriteError, MEMORY_KINDS } = require('./utils/dbWriter.js');
+const { createKeystrokeStore, KEYSTROKE_COLLECTION, KEYSTROKE_SCHEMA, KEYSTROKE_TABLE, LEGACY_KEYSTROKE_TABLE } = require('./utils/keystrokeStore.js');
+const { currentRequestContext, isSoleApiRequest, trackRequestSave } = require('./utils/persistenceContext.js');
+const { logError } = require('./utils/errorLog.js');
+const { syncedFolderInfo } = require('./utils/syncedFolder.js');
+const { clearRevokedSessionReasons, clearSessions, persistedRevocationRows, persistedSessionRows, revokeAdminSessions, revokeStudentSession, sessionRowBelongsTo } = require('./utils/authSessions.js');
+const dbFile = require('./utils/dbFile.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
     return crypto.createHash('sha256').update(password + salt).digest('hex');
 }
 
+// Senhas: formato `scrypt$<sal base64>$<hash base64>` (64 bytes, parâmetros padrão do
+// Node). Os formatos antigos continuam conferindo: o hash SHA-256 legado (64 caracteres
+// hexadecimais), o texto puro e `scrypt-sha256$` (scrypt sobre o hash legado, gravado
+// pela proteção das senhas antigas do H5a). O login regrava em scrypt$ o que não está nele.
+//
+// As versões síncronas (hashPassword, verifyPassword) param a thread do servidor por
+// cerca de 50 ms a cada senha: ficam só no boot (migração de senhas em texto), nos
+// scripts e no modo de teste. As rotas usam hashPasswordAsync e verifyPasswordAsync, que
+// rodam o scrypt no pool de threads da libuv e deixam o servidor atender os outros
+// pedidos (DES-07: 40 logins juntos paravam o servidor por quase 2 s).
+const SCRYPT_KEY_LENGTH = 64;
+const SCRYPT_PREFIX = 'scrypt$';
+const SCRYPT_SHA256_PREFIX = 'scrypt-sha256$';
+
+// Fila do scrypt assíncrono (DES-07). O pool de threads da libuv atende os pedidos na
+// ordem em que chegam e é dividido com o sqlite3 (cada COMMIT), o fs (express.static,
+// sendFile) e o zlib (compressão das respostas). Sem fila, 40 logins juntos punham 40
+// scrypts na frente de tudo: o servidor não parava, mas qualquer pedido que precisasse
+// do pool (até GET /api/session/status, pelo fs.stat do express.static) esperava a
+// rajada inteira, cerca de 450 ms. Com no máximo SCRYPT_CONCURRENCY senhas ao mesmo
+// tempo, sobram threads (e núcleos) livres para o resto, e a rajada só demora um pouco
+// mais para o último aluno. O tamanho do pool vem de UV_THREADPOOL_SIZE (padrão 4); o
+// launcher do Windows passa a definir a variável na etapa do Windows.
+const THREADPOOL_SIZE = Math.min(1024, Math.max(1, Number.parseInt(process.env.UV_THREADPOOL_SIZE, 10) || 4));
+const CPU_COUNT = Math.max(1, typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length);
+const SCRYPT_CONCURRENCY = Math.max(1, Math.min(THREADPOOL_SIZE - 2, CPU_COUNT - 1));
+let scryptRunning = 0;
+const scryptWaiting = [];
+
+function startNextScrypt() {
+    const next = scryptWaiting.shift();
+    if (next) next();
+}
+
+function scryptAsync(secret, salt, keyLength) {
+    return new Promise((resolve, reject) => {
+        const run = () => {
+            scryptRunning += 1;
+            let settled = false;
+            const done = (err, derived) => {
+                if (settled) return;
+                settled = true;
+                scryptRunning -= 1;
+                startNextScrypt();
+                if (err) reject(err); else resolve(derived);
+            };
+            try {
+                crypto.scrypt(secret, salt, keyLength, done);
+            } catch (err) {
+                done(err);
+            }
+        };
+        if (scryptRunning < SCRYPT_CONCURRENCY) run(); else scryptWaiting.push(run);
+    });
+}
+
+// Estado da fila (testes e diagnóstico).
+function passwordHashQueueStatus() {
+    return { concurrency: SCRYPT_CONCURRENCY, running: scryptRunning, waiting: scryptWaiting.length };
+}
+
+function parseScryptValue(value, prefix) {
+    const parts = value.slice(prefix.length).split('$');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    const salt = Buffer.from(parts[0], 'base64');
+    const expected = Buffer.from(parts[1], 'base64');
+    if (!salt.length || !expected.length) return null;
+    return { salt, expected };
+}
+
+// Como conferir o valor guardado: { scrypt: true, secret, salt, expected } nos formatos
+// com scrypt (secret é o texto que entra no scrypt); { legacy: true } no hash SHA-256;
+// {} no texto puro; null quando o valor com prefixo scrypt está ilegível (nunca confere).
+function passwordCheckPlan(stored, password) {
+    const value = String(stored);
+    if (value.startsWith(SCRYPT_PREFIX)) {
+        const parsed = parseScryptValue(value, SCRYPT_PREFIX);
+        return parsed && { scrypt: true, secret: String(password), ...parsed };
+    }
+    if (value.startsWith(SCRYPT_SHA256_PREFIX)) {
+        const parsed = parseScryptValue(value, SCRYPT_SHA256_PREFIX);
+        return parsed && { scrypt: true, secret: legacyHashPassword(String(password)), ...parsed };
+    }
+    if (/^[0-9a-f]{64}$/i.test(value)) return { legacy: true };
+    return {};
+}
+
+function uncryptedPasswordMatches(plan, stored, password) {
+    if (plan.legacy) return String(stored) === legacyHashPassword(String(password));
+    return String(stored) === String(password);
+}
+
+function scryptMatches(plan, actual) {
+    return plan.expected.length === actual.length && crypto.timingSafeEqual(plan.expected, actual);
+}
+
+function encodeScrypt(salt, derived) {
+    return `${SCRYPT_PREFIX}${salt.toString('base64')}$${derived.toString('base64')}`;
+}
+
 function hashPassword(password) {
     if (!password) return '';
     const salt = crypto.randomBytes(16);
-    const derived = crypto.scryptSync(String(password), salt, 64);
-    return `scrypt$${salt.toString('base64')}$${derived.toString('base64')}`;
+    return encodeScrypt(salt, crypto.scryptSync(String(password), salt, SCRYPT_KEY_LENGTH));
 }
 
 function verifyPassword(stored, password) {
     if (!stored || password == null) return false;
-    const value = String(stored);
-    if (value.startsWith('scrypt$')) {
-        const parts = value.split('$');
-        if (parts.length !== 3) return false;
-        try {
-            const salt = Buffer.from(parts[1], 'base64');
-            const expected = Buffer.from(parts[2], 'base64');
-            const actual = crypto.scryptSync(String(password), salt, expected.length);
-            return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
-        } catch (e) { return false; }
-    }
-    if (/^[0-9a-f]{64}$/i.test(value)) return value === legacyHashPassword(String(password));
-    return value === String(password);
+    const plan = passwordCheckPlan(stored, password);
+    if (!plan) return false;
+    if (!plan.scrypt) return uncryptedPasswordMatches(plan, stored, password);
+    try {
+        return scryptMatches(plan, crypto.scryptSync(plan.secret, plan.salt, plan.expected.length));
+    } catch (e) { return false; }
+}
+
+// Mesmo formato de hashPassword, sem parar a thread do servidor.
+async function hashPasswordAsync(password) {
+    if (!password) return '';
+    const salt = crypto.randomBytes(16);
+    return encodeScrypt(salt, await scryptAsync(String(password), salt, SCRYPT_KEY_LENGTH));
+}
+
+// Mesmo resultado de verifyPassword, sem parar a thread do servidor. Valor ilegível ou
+// falha do scrypt contam como senha errada.
+async function verifyPasswordAsync(stored, password) {
+    if (!stored || password == null) return false;
+    const plan = passwordCheckPlan(stored, password);
+    if (!plan) return false;
+    if (!plan.scrypt) return uncryptedPasswordMatches(plan, stored, password);
+    try {
+        return scryptMatches(plan, await scryptAsync(plan.secret, plan.salt, plan.expected.length));
+    } catch (e) { return false; }
 }
 
 function isHashed(password) {
-    return typeof password === 'string' && (password.startsWith('scrypt$') || /^[0-9a-f]{64}$/i.test(password));
+    return typeof password === 'string'
+        && (password.startsWith(SCRYPT_PREFIX) || password.startsWith(SCRYPT_SHA256_PREFIX) || /^[0-9a-f]{64}$/i.test(password));
 }
 
 function needsPasswordRehash(password) { return typeof password === 'string' && !password.startsWith('scrypt$'); }
+
+// Proteção dos hashes antigos (H5a, SEG-X2). O hash legado é sha256(senha + sal fixo):
+// num backup vazado ele se quebra rápido, e as contas de quem não entra mais (ex-alunos)
+// nunca passavam pelo login, que é onde a senha era regravada. Sem precisar da senha,
+// o valor legado vira 'scrypt-sha256$<sal>$<scrypt(hash legado)>', que verifyPassword
+// confere pela senha digitada (scrypt do sha256 dela); no próximo login a conta passa
+// para scrypt$ (needsPasswordRehash).
+// Roda no boot, antes de o servidor atender, e depois de restaurar um backup. Só toca
+// valores de 64 caracteres hexadecimais: rodar de novo não muda nada (idempotente). O
+// texto puro continua com a migração do boot (hashPassword), como sempre.
+function isLegacyPasswordHash(value) {
+    return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+// Lugares que guardam senha: alunos, contas de instrutor e a senha antiga do config.
+function legacyPasswordHolders(memory) {
+    const holders = [];
+    (Array.isArray(memory && memory.students) ? memory.students : []).forEach(student => {
+        if (student && isLegacyPasswordHash(student.password)) holders.push({ target: student, key: 'password' });
+    });
+    (Array.isArray(memory && memory.admins) ? memory.admins : []).forEach(admin => {
+        if (admin && isLegacyPasswordHash(admin.password)) holders.push({ target: admin, key: 'password' });
+    });
+    const config = memory && memory.config;
+    if (config && typeof config === 'object' && isLegacyPasswordHash(config.adminPassword)) {
+        holders.push({ target: config, key: 'adminPassword' });
+    }
+    return holders;
+}
+
+function countLegacyPasswordHashes(memory = memoryDB) {
+    return legacyPasswordHolders(memory).length;
+}
+
+async function protectLegacyPasswordHash(legacyHex) {
+    const salt = crypto.randomBytes(16);
+    const derived = await scryptAsync(String(legacyHex).toLowerCase(), salt, SCRYPT_KEY_LENGTH);
+    return `${SCRYPT_SHA256_PREFIX}${salt.toString('base64')}$${derived.toString('base64')}`;
+}
+
+// Converte os hashes legados da memória e devolve quantos converteu. Não grava: quem
+// chama faz o db.save(). O scrypt roda no pool de threads, pela mesma fila das senhas
+// (no máximo SCRYPT_CONCURRENCY ao mesmo tempo). Um valor que mudou durante a espera
+// (login que já regravou em scrypt$, troca de senha) fica como está.
+async function upgradeLegacyPasswordHashes(memory = memoryDB) {
+    const holders = legacyPasswordHolders(memory);
+    if (!holders.length) return 0;
+    const results = await Promise.all(holders.map(async holder => {
+        const legacy = holder.target[holder.key];
+        const protectedValue = await protectLegacyPasswordHash(legacy);
+        if (holder.target[holder.key] !== legacy) return false;
+        holder.target[holder.key] = protectedValue;
+        return true;
+    }));
+    return results.filter(Boolean).length;
+}
 
 // Turmas atribuídas sem repetição e numa ordem fixa (curso, depois turma). A ordem
 // não depende mais da ordem em que as turmas foram lidas do banco: depois de restaurar
@@ -134,90 +310,434 @@ const DB_ADMINS_FILE = path.join(DATA_DIR, 'db_admins.json');
 // Conexão com SQLite
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const dbPath = path.join(DATA_DIR, 'database.db');
-const sqliteDb = new sqlite3.Database(dbPath);
-
-let memoryDB = {
-    students: [],
-    classes: [],
-    courses: [], // Novo: multi-cursos
-    branding: {}, // Novo: white-label
-    submissions: [],
-    examApplications: [],
-    notes: {},
-    annotations: {},
-    forum: [],
-    config: { releasedItems: {} },
-    courseStructure: [], // Em breve obsoleto, migrado para courses
-    evaluations: {},
-    progress: {},
-    uploads: {},
-    admins: [],
-    sessions: {}, // Alunos online { "email": last_ping_timestamp }
-    proctoringLogs: [],
-    examKeystrokes: [], // Modo Prova Rigoroso: histórico de digitação por tentativa (telemetria de prova)
-    studentExamState: {}, // chave: studentEmail + '_' + examKey
-    broadcastMessages: [],
-    questionBank: [],
-    auditLogs: [], // Fase 1: auditoria de alterações no perfil do aluno
-    loginLogs: [], // Fase 2: logs de login (segurança/LGPD)
-    pedagogicalObservations: [], // Fase 3: observações pedagógicas controladas
-    attendance: [], // Fase 4: registros de presença
-    certificates: [], // Fase 4: certificados emitidos
-    moduleAccess: [], // Fase 4: histórico de módulos acessados
-    schools: [], // Fase I.1: escolas/instituições (white-label)
-    announcements: [], // Avisos/Comunicados (professor -> turma/curso/aluno)
-    library: [] // Biblioteca de materiais reutilizaveis
-};
-
-let isSaving = false;
-let hasPendingSave = false;
-let saveWaiters = [];
-// Último conteúdo gravado por tabela ({ tabela: Map(chave -> json) }); null força reescrita completa.
-let lastWrittenRows = null;
+// Resultado da abertura do arquivo: sem ele, uma falha ao abrir (pasta no lugar do
+// arquivo, sem permissão) só ia para o log e o init ficava esperando para sempre (os
+// comandos enfileirados numa conexão que não abriu nunca respondem). Com ele, o init
+// rejeita com o código do SQLite (SQLITE_CANTOPEN) e o boot sai com a causa certa (H3c).
+let openConnection = null;
+const connectionOpened = new Promise((resolve, reject) => { openConnection = { resolve, reject }; });
+connectionOpened.catch(() => {});
+const sqliteDb = new sqlite3.Database(dbPath, err => {
+    if (err) {
+        console.error(`⚠️ [BANCO] ${(err && err.message) || err}`);
+        openConnection.reject(err);
+    } else {
+        openConnection.resolve();
+    }
+});
+// Erro de statement sem callback (migração legada) vira evento 'error': sem este
+// ouvinte ele derrubava o processo como uncaughtException (CONF-05).
+sqliteDb.on('error', err => {
+    console.error(`⚠️ [BANCO] ${(err && err.message) || err}`);
+});
 
 function classStorageKey(cls) {
     if (!cls || !cls.name) return '';
     return `${String(cls.courseId || '').trim()}::${String(cls.name).trim()}`;
 }
 
-// Criação de Tabelas se não existirem
-function createTables() {
-    return new Promise((resolve, reject) => {
-        sqliteDb.serialize(() => {
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS students (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS classes (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS courses (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS branding (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS submissions (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS exam_applications (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS notes (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS annotations (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS forum (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS course_structure (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS evaluations (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS progress (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS uploads (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS proctoring_logs (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS exam_keystrokes (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS student_exam_state (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS broadcast_messages (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS question_bank (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS audit_logs (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS login_logs (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS pedagogical_observations (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS attendance (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS certificates (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS module_access (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS schools (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS announcements (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS library (key TEXT PRIMARY KEY, value TEXT)");
-            sqliteDb.run("CREATE TABLE IF NOT EXISTS admins (key TEXT PRIMARY KEY, value TEXT)", (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
+// Registro único das tabelas (contrato da fase 2). Cada coleção da memória e cada tabela
+// de data/database.db aparecem só aqui; dele derivam createTables, a carga do boot, a
+// gravação (utils/dbWriter.js), a lista do backup (utils/backup.js: backup e kind
+// diferente de 'derived') e a restauração. Tabela nova só entra por este registro, com
+// CREATE TABLE IF NOT EXISTS.
+// Campos:
+// - collection: nome em db.memory e no backup; table: nome no SQLite;
+// - kind: 'array' (lista, uma linha por item), 'object' (uma linha por chave),
+//   'singleton' (uma linha de chave fixa), 'store' (tabela própria, fora da memória, com
+//   as colunas e índices de schema e a fila de gravação no módulo dela) ou 'derived'
+//   (linhas calculadas da memória por rows(memory), fora do backup);
+// - key: campo ou função da chave da linha (nos singletons, a chave fixa; nos objetos, a
+//   própria chave do objeto);
+// - append: coleção que só cresce; na gravação parcial só as linhas novas viram texto
+//   (quem altera uma linha antiga dela chama db.save() completo ou passa changed);
+// - backup: vai no backup (padrão true);
+// - restore: 'replace' (o backup substitui), 'merge' (junta com a atual), 'keep' (fica
+//   a atual quando falta no backup) ou 'reset' (volta vazia); padrão 'replace';
+// - legacyTable (só 'store'): a tabela antiga que a migração do boot esvazia; continua
+//   sendo criada (schema) e é desta entrada;
+// - rows (só 'derived'): rows(memory) devolve as linhas [chave, texto JSON]. Com restore
+//   'reset', quem esvazia na memória o que gera as linhas é o gancho da tabela em
+//   AFTER_RESTORE_HOOKS (db.afterRestore), não o laço da restauração.
+function tableEntry(collection, table, kind, key, extra = {}) {
+    return Object.freeze({ collection, table, kind, key, append: false, backup: true, restore: 'replace', ...extra });
+}
+
+const COLLECTION_TABLES = Object.freeze([
+    tableEntry('students', 'students', 'array', 'email'),
+    // Turma é identificada por curso + nome: "TURMA A" pode existir em dois cursos. Com a
+    // chave só pelo nome, uma delas era apagada a cada gravação.
+    tableEntry('classes', 'classes', 'array', classStorageKey),
+    tableEntry('courses', 'courses', 'array', 'id'), // multi-cursos
+    tableEntry('branding', 'branding', 'singleton', 'default', { restore: 'keep', empty: () => ({}) }), // white-label
+    tableEntry('submissions', 'submissions', 'array', 'id', { append: true }),
+    tableEntry('notes', 'notes', 'object', null),
+    tableEntry('annotations', 'annotations', 'object', null),
+    tableEntry('forum', 'forum', 'array', 'id'),
+    tableEntry('config', 'config', 'singleton', 'app_config', { restore: 'keep', empty: () => ({ releasedItems: {} }) }),
+    // Em breve obsoleto, migrado para courses.
+    tableEntry('courseStructure', 'course_structure', 'singleton', 'structure', { restore: 'keep', empty: () => [] }),
+    tableEntry('evaluations', 'evaluations', 'object', null),
+    tableEntry('progress', 'progress', 'object', null),
+    tableEntry('uploads', 'uploads', 'object', null),
+    // Contas de acesso: a restauração só as troca com replaceAccounts (utils/backup.js).
+    tableEntry('admins', 'admins', 'array', 'email'),
+    tableEntry('proctoringLogs', 'proctoring_logs', 'array', 'id', { append: true }),
+    // Modo Prova Rigoroso: histórico de digitação por tentativa (telemetria de prova), em
+    // tabela própria fora da memória (DES-02, CONF-06): todo acesso por db.keystrokes
+    // (utils/keystrokeStore.js). A tabela antiga exam_keystrokes (JSON por tecla) é
+    // migrada no boot. Vai no backup pelo exportRows/importRows do H4a; até lá o backup
+    // continua sem as teclas, como sempre foi (utils/backup.js).
+    tableEntry(KEYSTROKE_COLLECTION, KEYSTROKE_TABLE, 'store', 'id', { legacyTable: LEGACY_KEYSTROKE_TABLE, schema: KEYSTROKE_SCHEMA }),
+    tableEntry('studentExamState', 'student_exam_state', 'object', null), // chave: studentEmail + '_' + examKey
+    tableEntry('broadcastMessages', 'broadcast_messages', 'array', 'id'),
+    tableEntry('questionBank', 'question_bank', 'array', 'key'),
+    // Auditoria: a restauração junta a trilha do backup com a atual (mergeAuditTrails,
+    // utils/audit.js, ligado no applySnapshot de utils/backup.js pelo H7a-2): o que foi
+    // registrado depois do backup fica. O laço genérico por modo do registro ('merge',
+    // 'keep', 'reset') para as outras coleções é do H4a.
+    tableEntry('auditLogs', 'audit_logs', 'array', 'id', { append: true, restore: 'merge' }),
+    tableEntry('loginLogs', 'login_logs', 'array', 'id', { append: true }), // segurança/LGPD
+    tableEntry('pedagogicalObservations', 'pedagogical_observations', 'array', 'id'),
+    tableEntry('attendance', 'attendance', 'array', 'id', { append: true }), // registros de presença
+    tableEntry('certificates', 'certificates', 'array', 'id'),
+    tableEntry('moduleAccess', 'module_access', 'array', 'id', { append: true }), // módulos acessados
+    tableEntry('schools', 'schools', 'array', 'id'), // escolas/instituições (white-label)
+    tableEntry('announcements', 'announcements', 'array', 'id'), // avisos (professor -> turma/curso/aluno)
+    tableEntry('library', 'library', 'array', 'id'), // biblioteca de materiais reutilizáveis
+    // Aplicações de prova: sem elas, restaurar um backup voltava as entregas e a turma,
+    // mas não o status das aplicações.
+    tableEntry('examApplications', 'exam_applications', 'array', 'id'),
+    // Sessões de aluno e de instrutor (H3a-2: CONF-03, UXA-06, DES-08): uma linha por
+    // sessão, chave = sha256 do token e valor { kind, email, createdAt, ip?, origin? }, mais
+    // uma por sessão encerrada há pouco { kind: 'revoked', reason, at } (frente do H3),
+    // calculadas de db.memory.sessions e adminSessions por persistedSessionRows
+    // (utils/authSessions.js). Nunca o token cru, nem lastSeen (a tabela não muda a cada
+    // ping). No boot as linhas lidas ficam como estão até a retomada (server.js
+    // prepareServer: restoreSessions com db.takeBootAuthSessionRows()). Fora do backup; a
+    // restauração de um backup zera todas (todos entram de novo) pelo gancho
+    // 'authSessions' de db.afterRestore.
+    tableEntry('authSessions', 'auth_sessions', 'derived', 'hash', {
+        backup: false,
+        restore: 'reset',
+        rows: authSessionTableRows,
+    }),
+    // Termos de Uso e Política de Privacidade (H8a-1; utils/legalDocuments.js): rascunho
+    // e versões publicadas, que não mudam mais. Fora de config e branding, que são
+    // regravados a cada save. Na restauração, junta por id: restaurar um backup anterior
+    // (ou de versão antiga, sem a coleção) não apaga o texto que os alunos aceitaram.
+    tableEntry('legalDocuments', 'legal_documents', 'array', 'id', { restore: 'merge' }),
+]);
+
+// Tabelas que o registro deixa fora do backup (backup: false): a cópia do banco para o
+// ZIP formato 2 (snapshotTo e a backup-cli) sai com elas vazias. A backup-cli usa a cópia
+// desta lista em utils/backupSchema.js (sem carregar este módulo, que abre o banco); um
+// teste confere que as duas são iguais.
+const TABLES_OUTSIDE_BACKUP = Object.freeze(COLLECTION_TABLES.filter(entry => entry.backup === false).map(entry => entry.table));
+
+const TABLE_BY_COLLECTION = new Map(COLLECTION_TABLES.map(entry => [entry.collection, entry]));
+
+// Linhas das tabelas derivadas lidas no boot (coleção -> Map(chave -> texto JSON)), até
+// quem as calcula retomá-las: até lá elas são gravadas como estão, e uma gravação do
+// próprio init (migração, provas resetadas) não apaga as sessões antes da retomada.
+const pendingBootRows = new Map();
+
+// Linhas de auth_sessions: as do boot ainda não retomadas, os motivos das sessões
+// encerradas há pouco (kind 'revoked', para o token antigo ouvir o motivo também depois de
+// um reinício) e as sessões da memória.
+function authSessionTableRows(memory) {
+    const rows = new Map(pendingBootRows.get('authSessions') || []);
+    persistedRevocationRows().forEach(row => rows.set(row.key, JSON.stringify(row.value)));
+    persistedSessionRows(memory).forEach(row => rows.set(row.key, JSON.stringify(row.value)));
+    return rows;
+}
+
+// Restauração de backup: todos saem, inclusive as sessões do boot ainda não retomadas, e os
+// motivos das sessões encerradas antes saem junto (a tabela fica vazia; o token antigo
+// responde como sessão vencida, que é o que vale depois da restauração).
+function resetAuthSessions(memory) {
+    pendingBootRows.delete('authSessions');
+    clearSessions(memory);
+    clearRevokedSessionReasons();
+}
+
+// Ganchos depois da restauração de um backup (contrato H3 x H4 x H5: "os ganchos
+// pós-restauração ficam em db.afterRestore"). A restauração (utils/backup.js
+// applySnapshot) aplica as coleções pelo modo de cada uma no registro e, antes da
+// gravação, roda estes ganchos na ordem, com a memória já restaurada (runAfterRestore).
+// - 'authSessions' (H3): todos saem, e a gravação esvazia a tabela auth_sessions;
+// - 'legacyPasswordHashes' (H5a, SEG-X2): hashes SHA-256 antigos do backup viram
+//   scrypt-sha256$ antes da gravação, como no boot.
+// Cada item: { name, run(memory) }; run pode devolver promessa. Uma lista só: as trilhas
+// A e B tinham cada uma a sua declaração, juntadas aqui na J2.
+// Restaurar backup não afrouxa o acesso do painel (decisões do coordenador §7, J2): a
+// regra de rede que vale agora (settings.network: adminAccess e, depois do H6c,
+// studentsHttps e o certificado) fica, em vez de voltar ao valor do backup ou ao padrão.
+// Um backup antigo sem o bloco abriria o painel para a rede sem HTTPS em silêncio.
+// context.previousNetwork é o bloco lido antes da restauração (undefined: não havia,
+// vale o padrão); keepNetwork false (a volta exata ao estado de antes, quando a
+// restauração falha no meio) deixa o bloco da cópia de antes como veio.
+function keepCurrentNetworkSettings(memory, context = {}) {
+    if (!context.keepNetwork) return;
+    const config = memory.config && typeof memory.config === 'object' ? memory.config : (memory.config = {});
+    const settings = config.settings && typeof config.settings === 'object' ? config.settings : (config.settings = {});
+    if (context.previousNetwork === undefined) delete settings.network;
+    else settings.network = structuredClone(context.previousNetwork);
+}
+
+function currentNetworkSettings(memory = memoryDB) {
+    const settings = memory.config && memory.config.settings;
+    if (!settings || typeof settings !== 'object' || settings.network === undefined) return undefined;
+    return structuredClone(settings.network);
+}
+
+// Configuração protegida de agora (H4a): settings.backup (a rotina de backup deste
+// computador, que um backup de outro computador não pode trocar) e o segredo que embaralha
+// os identificadores das alternativas da prova (config.examAnswerSecret). Lida antes da
+// restauração e posta de volta pelo gancho 'protectedConfig'.
+function currentProtectedConfig(memory = memoryDB) {
+    const config = memory.config && typeof memory.config === 'object' ? memory.config : {};
+    const settings = config.settings && typeof config.settings === 'object' ? config.settings : {};
+    return {
+        backup: settings.backup === undefined ? undefined : structuredClone(settings.backup),
+        examAnswerSecret: typeof config.examAnswerSecret === 'string' ? config.examAnswerSecret : undefined,
+    };
+}
+
+// settings.backup fica o de agora (como settings.network); o segredo das alternativas
+// volta ao de agora quando o backup não traz um válido (backup antigo ou editado), para as
+// provas em andamento não trocarem os identificadores no meio. keepProtectedConfig false: a
+// volta exata ao estado de antes.
+function keepProtectedConfig(memory, context = {}) {
+    if (!context.keepProtectedConfig) return;
+    const previous = context.previousProtectedConfig || {};
+    const config = memory.config && typeof memory.config === 'object' ? memory.config : (memory.config = {});
+    const settings = config.settings && typeof config.settings === 'object' ? config.settings : (config.settings = {});
+    if (previous.backup === undefined) delete settings.backup;
+    else settings.backup = structuredClone(previous.backup);
+    if ((typeof config.examAnswerSecret !== 'string' || config.examAnswerSecret.length < 32)
+        && typeof previous.examAnswerSecret === 'string' && previous.examAnswerSecret.length >= 32) {
+        config.examAnswerSecret = previous.examAnswerSecret;
+    }
+}
+
+// Ganchos pós-restauração, numa declaração só (trilhas A e B da J2): sessões, senhas
+// antigas, rede e configuração protegida (H4a). Cada gancho recebe a memória já
+// restaurada e o contexto da restauração (utils/backup.js applySnapshot). Valem para
+// todos os formatos: JSON, ZIP formato 1 e ZIP formato 2.
+const AFTER_RESTORE_HOOKS = [
+    { name: 'authSessions', run: resetAuthSessions },
+    { name: 'legacyPasswordHashes', run: memory => upgradeLegacyPasswordHashes(memory) },
+    { name: 'networkSettings', run: keepCurrentNetworkSettings },
+    { name: 'protectedConfig', run: keepProtectedConfig },
+];
+
+async function runAfterRestore(memory = memoryDB, context = {}) {
+    for (const hook of AFTER_RESTORE_HOOKS) await hook.run(memory, context);
+}
+
+// Encerra de vez as sessões de uma conta (kind 'admin' = instrutor, ou 'student'): as da
+// memória e as linhas lidas no boot ainda não retomadas, para a gravação seguinte tirá-las
+// da tabela auth_sessions. Usado na redefinição de senha pelo launcher
+// (scripts/reset-admin-password.js), que roda com o servidor parado: o db.init() do script
+// lê as sessões gravadas e a gravação dele as regravava como estavam; no boot seguinte (até
+// 60 min fora do ar) a sessão de quem motivou a redefinição voltava e, com a troca
+// obrigatória, trocava a senha sem conhecer a temporária. Devolve quantas saíram.
+function revokeAccountSessions({ kind, email } = {}) {
+    if (kind !== 'admin' && kind !== 'student') throw new TypeError('Tipo de sessão inválido.');
+    let removed = kind === 'admin'
+        ? revokeAdminSessions(memoryDB, email)
+        : (revokeStudentSession(memoryDB, email) ? 1 : 0);
+    const pending = pendingBootRows.get('authSessions');
+    if (pending) {
+        for (const [key, value] of [...pending]) {
+            if (!sessionRowBelongsTo({ key, value }, { kind, email })) continue;
+            pending.delete(key);
+            removed += 1;
+        }
+    }
+    return removed;
+}
+
+// As sessões gravadas lidas no boot ([{ key, value }], value em texto JSON), uma vez:
+// devolve e esvazia. Depois disso a tabela segue só a memória (as que não voltaram saem
+// na gravação seguinte).
+function takeBootAuthSessionRows() {
+    const rows = pendingBootRows.get('authSessions');
+    pendingBootRows.delete('authSessions');
+    return rows ? [...rows].map(([key, value]) => ({ key, value })) : [];
+}
+
+// Valor vazio de uma coleção da memória (boot, restauração 'reset').
+function emptyCollectionValue(entry) {
+    if (!entry) return undefined;
+    if (entry.kind === 'array') return [];
+    if (entry.kind === 'object') return {};
+    if (entry.kind === 'singleton') return entry.empty();
+    return undefined;
+}
+
+function createEmptyMemory() {
+    const memory = {};
+    COLLECTION_TABLES.forEach(entry => {
+        if (MEMORY_KINDS.has(entry.kind)) memory[entry.collection] = emptyCollectionValue(entry);
     });
+    // Sessões de aluno e de instrutor (utils/authSessions.js): na memória, gravadas na
+    // tabela auth_sessions (entrada 'derived' acima) e retomadas no boot.
+    clearSessions(memory);
+    return memory;
+}
+
+let memoryDB = createEmptyMemory();
+
+function runSql(sql, params = []) {
+    return new Promise((resolve, reject) => sqliteDb.run(sql, params, err => (err ? reject(err) : resolve())));
+}
+
+// Leituras diretas na conexão, fora da fila de gravação (o SELECT 1 do db.ping, as
+// consultas do store de teclas do Monitor, os PRAGMA do cartão Armazenamento). O VACUUM e
+// o VACUUM INTO recusam rodar com outra instrução em andamento na mesma conexão ("cannot
+// VACUUM - SQL statements in progress"): o backup automático do boot falhava quando o
+// launcher ou o Reiniciar consultavam o /api/health na mesma hora (sobra do H4b na J3,
+// decisões §12). Cada leitura direta conta aqui do pedido até a resposta do sqlite (não
+// até o tempo-limite do ping); vacuumExclusive espera o contador zerar antes do VACUUM.
+let directStatements = 0;
+const directIdleWaiters = new Set();
+
+function beginDirectStatement() {
+    directStatements += 1;
+}
+
+function endDirectStatement() {
+    directStatements = Math.max(0, directStatements - 1);
+    if (directStatements === 0) {
+        for (const resolve of [...directIdleWaiters]) resolve(true);
+        directIdleWaiters.clear();
+    }
+}
+
+// Enquanto um VACUUM espera ou roda (vacuumExclusive), leitura direta nova não começa:
+// espera o fim dele (a fila de gravação já está parada pelo runExclusive). Sem isso, um
+// Monitor consultando sem parar podia nunca deixar o contador zerar.
+let vacuumGate = null;
+
+function trackedStatement(run) {
+    if (vacuumGate) {
+        vacuumGate.promise.then(() => trackedStatement(run));
+        return undefined;
+    }
+    beginDirectStatement();
+    let ended = false;
+    const end = () => { if (!ended) { ended = true; endDirectStatement(); } };
+    try {
+        return run(end);
+    } catch (err) {
+        end();
+        throw err;
+    }
+}
+
+// Espera as leituras diretas em andamento terminarem, com teto (timeoutMs); devolve true
+// quando nenhuma ficou em andamento.
+function waitDirectStatementsIdle(timeoutMs = 2000) {
+    if (directStatements === 0) return Promise.resolve(true);
+    return new Promise(resolve => {
+        const done = value => { clearTimeout(timer); directIdleWaiters.delete(done); resolve(value); };
+        const timer = setTimeout(() => done(directStatements === 0), timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref();
+        directIdleWaiters.add(done);
+    });
+}
+
+function getSql(sql, params = []) {
+    return new Promise((resolve, reject) => trackedStatement(end => sqliteDb.get(sql, params, (err, row) => {
+        end();
+        return err ? reject(err) : resolve(row);
+    })));
+}
+
+function allSql(sql, params = []) {
+    return new Promise((resolve, reject) => trackedStatement(end => sqliteDb.all(sql, params, (err, rows) => {
+        end();
+        return err ? reject(err) : resolve(rows);
+    })));
+}
+
+// Espera por trava do banco (outro programa gravando): ICLASS_DB_BUSY_TIMEOUT_MS ou 5 s.
+const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+function configuredBusyTimeoutMs() {
+    const raw = String(process.env.ICLASS_DB_BUSY_TIMEOUT_MS || '').trim();
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value) || value < 0) return DEFAULT_BUSY_TIMEOUT_MS;
+    return Math.min(Math.round(value), 120000);
+}
+
+const SYNCHRONOUS_NAMES = { 0: 'OFF', 1: 'NORMAL', 2: 'FULL', 3: 'EXTRA' };
+const connectionInfo = { journalMode: null, synchronous: null, busyTimeoutMs: null };
+
+// PRAGMAs da conexão (CONF-05, DES-01), antes de createTables:
+// - busy_timeout: a gravação espera a trava de outro programa em vez de falhar na hora;
+// - WAL: um leitor externo (visualizador do banco, cópia) não bloqueia mais a gravação.
+//   Em pasta de rede ou sincronizada o modo pode não pegar: segue com aviso, e o modo
+//   real fica em storageStatus().journalMode;
+// - synchronous FULL: o "salvo" sobrevive também a queda de energia;
+// - journal_size_limit: o -wal volta a 64 MB depois de um checkpoint.
+async function configureConnection() {
+    const busyTimeoutMs = configuredBusyTimeoutMs();
+    await runSql(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+    let journalMode = null;
+    try {
+        const row = await getSql('PRAGMA journal_mode = WAL');
+        journalMode = String(row ? Object.values(row)[0] : '').toLowerCase();
+    } catch (err) {
+        console.warn(`⚠️ Não foi possível ligar o modo WAL do banco: ${(err && err.message) || err}`);
+    }
+    if (!journalMode) {
+        const row = await getSql('PRAGMA journal_mode').catch(() => null);
+        journalMode = String(row ? Object.values(row)[0] : '').toLowerCase() || null;
+    }
+    if (journalMode !== 'wal') {
+        console.warn(`⚠️ O banco de dados está no modo "${journalMode || 'desconhecido'}" em vez de WAL. A pasta de dados pode estar numa pasta de rede ou sincronizada (OneDrive): mova a pasta do IClass para um disco local.`);
+    }
+    await runSql('PRAGMA synchronous = FULL');
+    await runSql('PRAGMA journal_size_limit = 67108864');
+    const busyRow = await getSql('PRAGMA busy_timeout').catch(() => null);
+    const syncRow = await getSql('PRAGMA synchronous').catch(() => null);
+    connectionInfo.journalMode = journalMode;
+    connectionInfo.busyTimeoutMs = busyRow ? Number(Object.values(busyRow)[0]) : busyTimeoutMs;
+    connectionInfo.synchronous = syncRow ? (SYNCHRONOUS_NAMES[Number(Object.values(syncRow)[0])] || String(Object.values(syncRow)[0])) : null;
+}
+
+// Criação de Tabelas se não existirem: todas pelo registro COLLECTION_TABLES.
+async function createTables() {
+    for (const entry of COLLECTION_TABLES) {
+        const statements = entry.kind === 'store'
+            ? (entry.schema || [])
+            : [`CREATE TABLE IF NOT EXISTS ${entry.table} (key TEXT PRIMARY KEY, value TEXT)`];
+        for (const sql of statements) await runSql(sql);
+    }
+}
+
+// Integridade do arquivo antes de tudo (H4a, OPS-05): PRAGMA quick_check antes dos PRAGMAs
+// e do createTables. Banco danificado (cabeçalho trocado, páginas estragadas: SQLITE_NOTADB,
+// SQLITE_CORRUPT ou resultado diferente de exatamente uma linha 'ok') rejeita com code
+// 'ICLASS_DB_CORRUPT': o boot sai com o código 3, a mensagem cita a backup-cli e o arquivo
+// não é movido nem alterado (nada foi gravado nele ainda, nem o modo WAL). Antes o boot
+// seguia com 28 uncaughtException SQLITE_NOTADB e saía com o código 1, sem orientação.
+// SQLITE_BUSY e SQLITE_CANTOPEN continuam erro comum (o supervisor tenta de novo).
+async function checkDatabaseIntegrity() {
+    await dbFile.quickCheck(sqliteDb, { file: dbPath });
+}
+
+// Integridade, PRAGMAs e tabelas, uma vez: o init e o primeiro ciclo de gravação esperam.
+// Se falhar (disco), a próxima tentativa recomeça.
+let connectionReady = null;
+function ensureConnection() {
+    if (!connectionReady) {
+        connectionReady = connectionOpened.then(checkDatabaseIntegrity).then(configureConnection).then(createTables);
+        connectionReady.catch(() => { connectionReady = null; });
+    }
+    return connectionReady;
 }
 
 // Helper para migrar arquivo JSON legado para tabela SQLite
@@ -231,7 +751,7 @@ function migrateJsonToTable(filePath, tableName, keyField, isArray = true) {
             const data = JSON.parse(raw);
             
             sqliteDb.serialize(() => {
-                sqliteDb.run("BEGIN TRANSACTION");
+                sqliteDb.run("BEGIN IMMEDIATE");
                 
                 if (isArray) {
                     const stmt = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
@@ -267,27 +787,110 @@ function migrateJsonToTable(filePath, tableName, keyField, isArray = true) {
     });
 }
 
-// Carregar dados de tabela SQLite para memória
-function loadTable(tableName, isArray = true) {
-    return new Promise((resolve, reject) => {
-        sqliteDb.all(`SELECT key, value FROM ${tableName}`, (err, rows) => {
-            if (err) return reject(err);
-            
-            if (isArray) {
-                const arr = [];
-                rows.forEach(r => {
-                    try { arr.push(JSON.parse(r.value)); } catch(e){}
-                });
-                resolve(arr);
-            } else {
-                const obj = {};
-                rows.forEach(r => {
-                    try { obj[r.key] = JSON.parse(r.value); } catch(e){}
-                });
-                resolve(obj);
+// Leitura das coleções do registro de um arquivo de banco (H4a): o mesmo caminho do
+// boot e da restauração do backup formato 2 (data/database.db de dentro do ZIP, aberto só
+// para leitura). Devolve:
+// - memory: as coleções da memória ('array', 'object', 'singleton'), já com a migração de
+//   studentClass para classes; singleton sem linha legível fica com o valor padrão;
+// - rawRows: Map(tabela -> Map(chave -> texto JSON)) das linhas legíveis, como foram lidas
+//   (semeadura do motor de gravação no boot);
+// - unreadable: Map(tabela -> [chaves]) das linhas com JSON ilegível (ficam de fora);
+// - absent: Set das coleções que o arquivo não tem (tabela que não existe num banco de
+//   versão antiga, ou singleton sem linha legível). No boot não acontece: o createTables
+//   já criou todas.
+async function readStoredData(connection = sqliteDb) {
+    const existing = new Set(await dbFile.tableNames(connection));
+    const memory = {};
+    const rawRows = new Map();
+    const unreadable = new Map();
+    const absent = new Set();
+    for (const entry of COLLECTION_TABLES) {
+        if (!MEMORY_KINDS.has(entry.kind)) continue;
+        if (!existing.has(entry.table)) {
+            absent.add(entry.collection);
+            memory[entry.collection] = emptyCollectionValue(entry);
+            continue;
+        }
+        const rows = await dbFile.allOn(connection, `SELECT key, value FROM ${entry.table}`);
+        const seed = new Map();
+        const parsed = [];
+        const bad = [];
+        rows.forEach(row => {
+            try {
+                parsed.push([row.key, JSON.parse(row.value)]);
+                seed.set(String(row.key), row.value);
+            } catch (e) {
+                bad.push(String(row.key));
             }
         });
+        rawRows.set(entry.table, seed);
+        unreadable.set(entry.table, bad);
+        if (entry.kind === 'array') {
+            memory[entry.collection] = parsed.map(([, value]) => value);
+        } else if (entry.kind === 'object') {
+            const object = {};
+            parsed.forEach(([key, value]) => { object[key] = value; });
+            memory[entry.collection] = object;
+        } else {
+            const found = parsed.find(([key]) => key === entry.key);
+            if (!found || !found[1]) absent.add(entry.collection);
+            memory[entry.collection] = (found && found[1]) || emptyCollectionValue(entry);
+        }
+    }
+    // Migração de studentClass para classes array (alunos de versões antigas).
+    (Array.isArray(memory.students) ? memory.students : []).forEach(student => {
+        if (student && !student.classes) {
+            student.classes = [];
+            if (student.studentClass) student.classes.push(student.studentClass);
+        }
     });
+    return { memory, rawRows, unreadable, absent };
+}
+
+// Carrega as coleções do registro para a memória e semeia o motor de gravação com o
+// JSON de cada linha exatamente como foi lido (DES-01): a primeira gravação depois do
+// boot escreve só o que mudou, em vez de apagar e reinserir todas as tabelas (26 s num
+// banco de um ano). Linha com JSON ilegível fica no arquivo, fora da memória e do mapa:
+// a gravação nunca a apaga (antes ela sumia no primeiro save). Quando a memória ganha um
+// valor com a mesma chave, o texto original é copiado antes para '<chave>.ilegivel-<data>'
+// (utils/dbWriter.js). É o caso do singleton ilegível (config, branding,
+// courseStructure): o IClass segue com o valor padrão dele, e a primeira gravação guarda
+// a linha original ao lado em vez de sobrescrevê-la (antes as configurações e o segredo
+// das alternativas da prova sumiam sem aviso).
+async function loadRegisteredCollections() {
+    const stored = await readStoredData(sqliteDb);
+    for (const entry of COLLECTION_TABLES) {
+        if (!MEMORY_KINDS.has(entry.kind)) continue;
+        const seed = stored.rawRows.get(entry.table) || new Map();
+        const unreadable = stored.unreadable.get(entry.table) || [];
+        writer.seed(entry.table, seed, unreadable);
+        const singletonUnreadable = entry.kind === 'singleton' && unreadable.includes(String(entry.key));
+        const otherUnreadable = unreadable.length - (singletonUnreadable ? 1 : 0);
+        if (singletonUnreadable) {
+            // logError já põe a linha-resumo no console; o registro fica no crash.log.
+            const message = `A linha "${entry.key}" da tabela ${entry.table} está ilegível: o IClass seguiu com os valores padrão de "${entry.collection}". A linha original fica no arquivo, guardada como "${entry.key}.ilegivel-<data>" na primeira gravação. Para recuperar o que ela tinha, restaure um backup.`;
+            logError('[BANCO] Registro ilegível', { message }, { details: { tabela: entry.table, chave: entry.key } });
+        }
+        if (otherUnreadable) {
+            console.warn(`⚠️ ${otherUnreadable} registro(s) ilegível(is) na tabela ${entry.table} continuam no arquivo, fora da memória (a gravação não os apaga).`);
+        }
+        memoryDB[entry.collection] = stored.memory[entry.collection];
+    }
+}
+
+// Tabelas derivadas (auth_sessions): as linhas como estão no disco semeiam o motor de
+// gravação (a primeira gravação só escreve o que mudou) e ficam guardadas para a retomada
+// (takeBootAuthSessionRows). Linha ilegível também: depois da retomada ela não volta e
+// sai na gravação seguinte (não é dado do usuário).
+async function loadDerivedTables() {
+    for (const entry of COLLECTION_TABLES) {
+        if (entry.kind !== 'derived') continue;
+        const rows = await allSql(`SELECT key, value FROM ${entry.table}`);
+        const seed = new Map(rows.map(row => [String(row.key), row.value]));
+        writer.seed(entry.table, seed);
+        if (seed.size) pendingBootRows.set(entry.collection, new Map(seed));
+        else pendingBootRows.delete(entry.collection);
+    }
 }
 
 function bootstrapAdminPassword() {
@@ -555,7 +1158,11 @@ function migrateLegacyExamApplications(options = {}) {
         if (normalizeLegacyStudentAdjustments(application, memoryDB.studentExamState)) changed = true;
     });
     (memoryDB.classes || []).forEach(cls => {
-        if (!cls.onlineExamConfigs) return;
+        if (!cls || !cls.onlineExamConfigs) return;
+        // A turma reescrita a partir da aplicação (configuração, liberação, prova ativa)
+        // só conta como mudança quando ficou diferente (DES-08): antes ela era reescrita
+        // sem marcar, e a diferença real só ia para o disco na gravação seguinte.
+        const classBefore = JSON.stringify(cls);
         Object.keys(cls.onlineExamConfigs).forEach(examKey => {
             const cfg = cls.onlineExamConfigs[examKey];
             if (!cfg) return;
@@ -649,18 +1256,26 @@ function migrateLegacyExamApplications(options = {}) {
                 cls.activeApplicationId = application.id;
             }
         });
+        if (JSON.stringify(cls) !== classBefore) changed = true;
     });
     return changed;
 }
 
 // Configuração da prova em cada turma conforme a aplicação dela; configuração sem
 // aplicação (versões antigas) volta bloqueada e parada. Usada no boot e ao restaurar um
-// backup de versão anterior. Devolve true quando mudou alguma coisa.
+// backup de versão anterior. Devolve true só quando alguma turma mudou de fato (DES-08):
+// antes toda turma com prova em andamento contava como "resetada", o boot imprimia
+// "Provas online resetadas" e gravava de novo a cada início, mesmo sem mudar nada.
+// Campo que já está no valor de destino não é reescrito (nem ganha um null que não
+// tinha): a linha da turma continua igual à do arquivo.
 function syncOnlineExamConfigsWithApplications() {
     if (!Array.isArray(memoryDB.classes)) return false;
     let resetSomething = false;
     memoryDB.classes.forEach(cls => {
-        if (cls.activeExamKey) { cls.activeExamKey = null; resetSomething = true; }
+        if (!cls || typeof cls !== 'object') return;
+        const before = JSON.stringify(cls);
+        let activeExamKey = null;
+        let activeApplicationId = null;
         if (cls.onlineExamConfigs) {
             Object.keys(cls.onlineExamConfigs).forEach(examKey => {
                 const cfg = cls.onlineExamConfigs[examKey];
@@ -669,26 +1284,34 @@ function syncOnlineExamConfigsWithApplications() {
                 if (application) {
                     cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cfg);
                     if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
-                        cls.activeExamKey = examKey;
-                        cls.activeApplicationId = application.id;
+                        activeExamKey = examKey;
+                        activeApplicationId = application.id;
                     }
                     return;
                 }
-                cfg.onlineActive = false;
-                cfg.status = 'not_applied';
-                cfg.startTime = null;
-                cfg.waitingRoomStartTimestamp = null;
-                resetSomething = true;
+                if (cfg.onlineActive !== false) cfg.onlineActive = false;
+                if (cfg.status !== 'not_applied') cfg.status = 'not_applied';
+                if (cfg.startTime != null) cfg.startTime = null;
+                if (cfg.waitingRoomStartTimestamp != null) cfg.waitingRoomStartTimestamp = null;
             });
+        }
+        // Prova ativa da turma: a última aplicação em andamento; sem nenhuma, a turma fica
+        // sem prova ativa. activeApplicationId continua como estava quando não há
+        // aplicação ativa (como antes).
+        if (activeExamKey) {
+            if (cls.activeExamKey !== activeExamKey) cls.activeExamKey = activeExamKey;
+            if (cls.activeApplicationId !== activeApplicationId) cls.activeApplicationId = activeApplicationId;
+        } else if (cls.activeExamKey) {
+            cls.activeExamKey = null;
         }
         if (cls.releasedItems) {
             Object.keys(cls.releasedItems).forEach(key => {
                 if (key.startsWith('Avaliacao_') && cls.releasedItems[key] === true && !cls.onlineExamConfigs?.[key]?.applicationId) {
                     cls.releasedItems[key] = false;
-                    resetSomething = true;
                 }
             });
         }
+        if (JSON.stringify(cls) !== before) resetSomething = true;
     });
     return resetSomething;
 }
@@ -707,7 +1330,8 @@ function rebuildExamApplicationsFromClasses({ backupAt = null } = {}) {
 }
 
 async function init() {
-    await createTables();
+    // PRAGMAs (busy_timeout, WAL, synchronous) e tabelas do registro.
+    await ensureConnection();
 
     // 1. Executa migrações de arquivos JSON legados se houverem
     await migrateJsonToTable(DB_STUDENTS_FILE, 'students', 'email', true);
@@ -726,67 +1350,28 @@ async function init() {
     if (fs.existsSync(CONFIG_FILE)) {
         try {
             const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
-            sqliteDb.run("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", 'app_config', raw);
+            await runSql("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ['app_config', raw]);
             fs.renameSync(CONFIG_FILE, CONFIG_FILE + '.migrated');
         } catch(e){}
     }
     if (fs.existsSync(DB_COURSE_STRUCTURE_FILE)) {
         try {
             const raw = fs.readFileSync(DB_COURSE_STRUCTURE_FILE, 'utf8');
-            sqliteDb.run("INSERT OR REPLACE INTO course_structure (key, value) VALUES (?, ?)", 'structure', raw);
+            await runSql("INSERT OR REPLACE INTO course_structure (key, value) VALUES (?, ?)", ['structure', raw]);
             fs.renameSync(DB_COURSE_STRUCTURE_FILE, DB_COURSE_STRUCTURE_FILE + '.migrated');
         } catch(e){}
     }
 
-    memoryDB.students = await loadTable('students', true);
-    
-    // Migração de studentClass para classes array
-    memoryDB.students.forEach(student => {
-        if (!student.classes) {
-            student.classes = [];
-            if (student.studentClass) {
-                student.classes.push(student.studentClass);
-            }
-        }
-    });
-    memoryDB.classes = await loadTable('classes', true);
-    memoryDB.courses = await loadTable('courses', true);
-    memoryDB.submissions = await loadTable('submissions', true);
-    memoryDB.examApplications = await loadTable('exam_applications', true);
-    memoryDB.forum = await loadTable('forum', true);
-    memoryDB.admins = await loadTable('admins', true);
-    memoryDB.proctoringLogs = await loadTable('proctoring_logs', true);
-    memoryDB.examKeystrokes = await loadTable('exam_keystrokes', true);
-    memoryDB.studentExamState = await loadTable('student_exam_state', false);
-    memoryDB.broadcastMessages = await loadTable('broadcast_messages', true);
-    memoryDB.questionBank = await loadTable('question_bank', true);
-    memoryDB.auditLogs = await loadTable('audit_logs', true);
-    memoryDB.loginLogs = await loadTable('login_logs', true);
-    memoryDB.pedagogicalObservations = await loadTable('pedagogical_observations', true);
-    memoryDB.attendance = await loadTable('attendance', true);
-    memoryDB.certificates = await loadTable('certificates', true);
-    memoryDB.moduleAccess = await loadTable('module_access', true);
-    memoryDB.schools = await loadTable('schools', true);
-    memoryDB.announcements = await loadTable('announcements', true);
-    memoryDB.library = await loadTable('library', true);
+    // Histórico de digitação: a tabela antiga (JSON por tecla) passa para a tabela própria
+    // numa transação única (idempotente), e os contadores saem de um GROUP BY.
+    await keystrokeStore.migrateLegacy();
+    await keystrokeStore.loadCounters();
 
-    memoryDB.notes = await loadTable('notes', false);
-    memoryDB.annotations = await loadTable('annotations', false);
-    memoryDB.evaluations = await loadTable('evaluations', false);
-    memoryDB.progress = await loadTable('progress', false);
-    memoryDB.uploads = await loadTable('uploads', false);
+    // 2. Carrega todas as coleções do registro (e semeia o motor de gravação).
+    await loadRegisteredCollections();
+    await loadDerivedTables();
 
-    // Carrega Singletons
-    const loadedConfig = await loadTable('config', false);
-    memoryDB.config = loadedConfig['app_config'] || { releasedItems: {} };
-
-    const loadedBranding = await loadTable('branding', false);
-    if (loadedBranding['default']) {
-        memoryDB.branding = loadedBranding['default'];
-    }
-
-    const loadedStructure = await loadTable('course_structure', false);
-    memoryDB.courseStructure = loadedStructure['structure'] || [];
+    // A migração de studentClass para classes já vem do readStoredData.
 
     // 3. Garante defaults se tabelas estruturais estiverem vazias
     populateDefaultsIfEmpty();
@@ -896,6 +1481,13 @@ async function init() {
         memoryDB.config.adminPassword = hashPassword(memoryDB.config.adminPassword);
         needsSave = true;
     }
+    // Hashes SHA-256 antigos viram scrypt-sha256$ antes de o servidor atender (SEG-X2).
+    // O aviso aparece só quando há o que converter (no primeiro boot depois de atualizar).
+    const legacyPasswordCount = countLegacyPasswordHashes(memoryDB);
+    if (legacyPasswordCount > 0) {
+        console.log(`Protegendo ${legacyPasswordCount} senha(s) no formato antigo...`);
+        if (await upgradeLegacyPasswordHashes(memoryDB)) needsSave = true;
+    }
     // Segredo dos identificadores opacos das alternativas da prova (AVA-05). Gerado uma
     // vez e gravado antes de servir: os identificadores não mudam ao reiniciar.
     if (memoryDB.config && typeof memoryDB.config === 'object'
@@ -943,142 +1535,504 @@ async function init() {
         await saveToDisk();
     }
 
+    // Espaço livre do arquivo para o cartão Armazenamento e o "Precisa de você" (H1-c).
+    await refreshStorageStats();
+
     console.log("💾 Banco de dados SQLite inicializado e carregado na memória.");
 }
 
-// Sincroniza dados da memória de volta para o SQLite (Atomic Transactions)
-function saveToDisk() {
-    // Administradores pertencem sempre a todas as turmas, inclusive as criadas ou removidas durante a execução.
-    syncAdminClassAssignments();
-    syncProfessorAssignmentReferences();
-    const completion = new Promise((resolve, reject) => saveWaiters.push({ resolve, reject }));
-    if (isSaving) {
-        hasPendingSave = true;
-        return completion;
+// Histórico de digitação da prova (utils/keystrokeStore.js): a fila dele entra no ciclo
+// do motor de gravação, na mesma transação das coleções.
+const keystrokeStore = createKeystrokeStore({
+    connection: sqliteDb,
+    trackStatement: trackedStatement,
+    requestWrite: result => requestSave(writer.scopeFromOptions({ only: [KEYSTROKE_COLLECTION] }), { result }),
+    runExclusive: fn => writer.runExclusive(fn),
+    flush: () => writer.flush(),
+});
+
+// Motor de gravação (utils/dbWriter.js): fila, diff, transação e regravação.
+const writer = createDbWriter({
+    connection: sqliteDb,
+    tables: COLLECTION_TABLES,
+    getMemory: () => memoryDB,
+    ready: ensureConnection,
+    // Administradores pertencem sempre a todas as turmas, inclusive as criadas ou
+    // removidas durante a execução; professores só às que ainda existem.
+    beforeCycle: () => {
+        const adminsChanged = syncAdminClassAssignments();
+        const professorsChanged = syncProfessorAssignmentReferences();
+        return adminsChanged || professorsChanged;
+    },
+    // A causa (erro do SQLite ou do plano) vai para o log: a pilha dela diz onde falhou,
+    // e a mensagem já começa pelo código (SQLITE_BUSY: database is locked).
+    logFailure: err => {
+        logError('[GRAVAÇÃO] Não foi possível gravar no banco', (err && err.cause) || err);
+    },
+    busyTimeoutMs: () => connectionInfo.busyTimeoutMs,
+    stores: new Map([[KEYSTROKE_COLLECTION, keystrokeStore]]),
+});
+
+// Verificador de gravação parcial (ICLASS_VERIFY_SAVES; ligado no node --test e no e2e):
+// numa gravação parcial feita durante um pedido /api, o que mudou na memória desde o
+// início do pedido (ou desde a gravação anterior dele) e ficou fora de only (ou linha
+// antiga de coleção com append fora de changed) é acusado no console e em
+// db.saveVerifyFailures e entra no ciclo assim mesmo, para o dado não se perder.
+// A verificação é pulada quando outra coisa pode ter mudado a memória no meio: outro
+// pedido /api (utils/persistenceContext.js) ou uma gravação de fora de pedido (timer,
+// como a entrega automática do fim do tempo), que conta em backgroundSaveSeq.
+const saveVerifyFailures = [];
+let backgroundSaveSeq = 0;
+
+function verifyPartialSave(context, scope) {
+    const snapshot = context.snapshot;
+    if (!snapshot || !isSoleApiRequest(context) || snapshot.backgroundSeq !== backgroundSaveSeq) return;
+    writer.uncoveredChanges(snapshot.rows, scope).forEach(problem => {
+        const entry = TABLE_BY_COLLECTION.get(problem.collection);
+        scope.only.add(problem.collection);
+        if (entry && entry.append && problem.existed) {
+            const keys = scope.changed.get(problem.collection) || new Set();
+            keys.add(problem.key);
+            scope.changed.set(problem.collection, keys);
+        }
+        const signature = `${problem.collection}\u0000${problem.key}`;
+        if (context.reported.has(signature)) return;
+        context.reported.add(signature);
+        const failure = {
+            method: context.method,
+            path: context.path,
+            collection: problem.collection,
+            key: problem.key,
+            at: new Date().toISOString(),
+        };
+        saveVerifyFailures.push(failure);
+        console.error(`[VERIFICAÇÃO DE GRAVAÇÃO] ${failure.method} ${failure.path} alterou "${failure.collection}" (chave ${failure.key}) sem incluir em only`);
+    });
+}
+
+if (process.env.NODE_TEST_CONTEXT) {
+    // node --test: uma gravação parcial esquecida reprova o arquivo de teste.
+    process.on('exit', () => {
+        if (!saveVerifyFailures.length) return;
+        console.error(`[VERIFICAÇÃO DE GRAVAÇÃO] ${saveVerifyFailures.length} alteração(ões) fora da gravação parcial:`);
+        saveVerifyFailures.forEach(item => console.error(`  ${item.method} ${item.path}: "${item.collection}" (chave ${item.key})`));
+        process.exitCode = 1;
+    });
+}
+
+// db.save(): gravação completa (compara todas as coleções). É o que todo código novo usa.
+// db.save({ only, changed, detached }): parcial, só nas rotas anotadas (H1-c). Nome
+// desconhecido lança TypeError na hora. Dentro de um pedido, a resposta espera o COMMIT
+// (utils/persistenceContext.js), a não ser com detached: true (presença automática, timers).
+// A promessa rejeita com DbWriteError (code 'ICLASS_DB_WRITE') quando não deu para gravar.
+function saveToDisk(options) {
+    const scope = writer.scopeFromOptions(options);
+    const detached = !!(options && typeof options === 'object' && options.detached === true);
+    return requestSave(scope, { detached });
+}
+
+// Pede o ciclo com o escopo dado (db.save e as escritas de db.keystrokes). result(): o
+// valor com que a promessa resolve depois do COMMIT (as teclas devolvem { inserted } etc.).
+// As escritas de db.keystrokes não passam pelo verificador: não gravam nada da memória,
+// e o que a rota mudou nela segue esperando o db.save() da própria rota (a troca de
+// e-mail renomeia as teclas antes do db.save() completo do fim).
+function requestSave(scope, { detached = false, result = null } = {}) {
+    const adminsChanged = syncAdminClassAssignments();
+    const professorsChanged = syncProfessorAssignmentReferences();
+    if ((adminsChanged || professorsChanged) && !scope.full) scope.only.add('admins');
+    const context = currentRequestContext();
+    if (!context) backgroundSaveSeq += 1;
+    const storeWrite = typeof result === 'function';
+    if (context && !scope.full && !storeWrite) verifyPartialSave(context, scope);
+    let completion = writer.request(scope);
+    if (storeWrite) {
+        completion = completion.then(() => result());
+        // Sem quem espere, a falha não vira unhandledRejection (vai para o crash.log e,
+        // dentro de um pedido, para o 503).
+        completion.catch(() => {});
     }
-    
-    isSaving = true;
-    hasPendingSave = false;
-    
-    setTimeout(() => {
-        const cycleWaiters = saveWaiters.splice(0);
-        sqliteDb.serialize(() => {
-            sqliteDb.run("BEGIN TRANSACTION");
-            
-            // Gravação incremental: cada tabela guarda o JSON da última escrita por chave
-            // e só as linhas que mudaram são gravadas. Antes, cada save apagava e regravava
-            // TODAS as tabelas (inclusive milhares de teclas e logs), o que pesava durante
-            // uma prova com muitos alunos. Na primeira gravação (ou após falha) a tabela
-            // inteira é reescrita para garantir consistência.
-            const writtenThisCycle = {};
-            const writeTable = (tableName, next) => {
-                const previous = lastWrittenRows && lastWrittenRows[tableName];
-                if (!previous) {
-                    sqliteDb.run(`DELETE FROM ${tableName}`);
-                    const insert = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
-                    next.forEach((json, key) => insert.run(key, json));
-                    insert.finalize();
-                } else {
-                    const remove = sqliteDb.prepare(`DELETE FROM ${tableName} WHERE key = ?`);
-                    previous.forEach((_, key) => { if (!next.has(key)) remove.run(key); });
-                    remove.finalize();
-                    const upsert = sqliteDb.prepare(`INSERT OR REPLACE INTO ${tableName} (key, value) VALUES (?, ?)`);
-                    next.forEach((json, key) => { if (previous.get(key) !== json) upsert.run(key, json); });
-                    upsert.finalize();
-                }
-                writtenThisCycle[tableName] = next;
-            };
-
-            const syncArrayTable = (tableName, arr, keyField) => {
-                const next = new Map();
-                (arr || []).forEach((item, idx) => {
-                    if (!item) return;
-                    let keyVal = typeof keyField === 'function' ? keyField(item) : item[keyField];
-                    if (keyVal === undefined || keyVal === null || keyVal === '') {
-                        // NUNCA descarta um registro por falta da chave (era isso que apagava as
-                        // notas: submissões sem 'id' eram puladas). Gera uma chave estável e a
-                        // grava de volta no objeto em memória para mantê-la consistente.
-                        keyVal = `${tableName}_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 8)}`;
-                        if (typeof keyField === 'string') { try { item[keyField] = keyVal; } catch (e) {} }
-                    }
-                    next.set(String(keyVal), JSON.stringify(item));
-                });
-                writeTable(tableName, next);
-            };
-
-            const syncObjectTable = (tableName, obj) => {
-                const next = new Map();
-                for (const key in obj) next.set(String(key), JSON.stringify(obj[key]));
-                writeTable(tableName, next);
-            };
-
-            try {
-                syncArrayTable('students', memoryDB.students, 'email');
-                // Turma é identificada por curso + nome: "TURMA A" pode existir em dois cursos.
-                // Com a chave só pelo nome, uma delas era apagada a cada gravação.
-                syncArrayTable('classes', memoryDB.classes, classStorageKey);
-                syncArrayTable('courses', memoryDB.courses, 'id');
-                syncArrayTable('submissions', memoryDB.submissions, 'id');
-                syncArrayTable('exam_applications', memoryDB.examApplications, 'id');
-                syncArrayTable('forum', memoryDB.forum, 'id');
-                syncArrayTable('admins', memoryDB.admins, 'email');
-                syncArrayTable('proctoring_logs', memoryDB.proctoringLogs, 'id');
-                syncArrayTable('exam_keystrokes', memoryDB.examKeystrokes, 'id');
-                syncArrayTable('broadcast_messages', memoryDB.broadcastMessages, 'id');
-                syncArrayTable('question_bank', memoryDB.questionBank, 'key');
-                syncArrayTable('audit_logs', memoryDB.auditLogs, 'id');
-                syncArrayTable('login_logs', memoryDB.loginLogs, 'id');
-                syncArrayTable('pedagogical_observations', memoryDB.pedagogicalObservations, 'id');
-                syncArrayTable('attendance', memoryDB.attendance, 'id');
-                syncArrayTable('certificates', memoryDB.certificates, 'id');
-                syncArrayTable('module_access', memoryDB.moduleAccess, 'id');
-                syncArrayTable('schools', memoryDB.schools, 'id');
-                syncArrayTable('announcements', memoryDB.announcements, 'id');
-                syncArrayTable('library', memoryDB.library, 'id');
-
-                syncObjectTable('notes', memoryDB.notes);
-                syncObjectTable('annotations', memoryDB.annotations);
-                syncObjectTable('evaluations', memoryDB.evaluations);
-                syncObjectTable('progress', memoryDB.progress);
-                syncObjectTable('uploads', memoryDB.uploads);
-                syncObjectTable('student_exam_state', memoryDB.studentExamState);
-
-                sqliteDb.run("DELETE FROM config");
-                sqliteDb.run("INSERT INTO config (key, value) VALUES (?, ?)", 'app_config', JSON.stringify(memoryDB.config));
-
-                sqliteDb.run("DELETE FROM branding");
-                sqliteDb.run("INSERT INTO branding (key, value) VALUES (?, ?)", 'default', JSON.stringify(memoryDB.branding));
-
-                sqliteDb.run("DELETE FROM course_structure");
-                sqliteDb.run("INSERT INTO course_structure (key, value) VALUES (?, ?)", 'structure', JSON.stringify(memoryDB.courseStructure));
-                
-                sqliteDb.run("COMMIT", (err) => {
-                    if (err) {
-                        console.error("Erro ao comitar alterações no SQLite:", err);
-                    }
-                    // Só confia no diff incremental se o COMMIT deu certo; caso contrário a
-                    // próxima gravação reescreve tudo.
-                    lastWrittenRows = err ? null : writtenThisCycle;
-                    if (err) cycleWaiters.forEach(waiter => waiter.reject(err));
-                    else cycleWaiters.forEach(waiter => waiter.resolve());
-                    isSaving = false;
-                    if (hasPendingSave) {
-                        saveToDisk();
-                    }
-                });
-            } catch (err) {
-                console.error("Falha ao salvar dados no SQLite:", err);
-                lastWrittenRows = null;
-                sqliteDb.run("ROLLBACK");
-                cycleWaiters.forEach(waiter => waiter.reject(err));
-                isSaving = false;
-                if (hasPendingSave) {
-                    saveToDisk();
-                }
-            }
-        });
-    }, 250);
+    if (context) refreshSaveSnapshot(context, scope);
+    // Dentro de um pedido a resposta espera esta gravação; a promessa devolvida sabe se a
+    // rota tratou a falha (utils/persistenceContext.js).
+    if (context && !detached) return trackRequestSave(context, completion);
     return completion;
+}
+
+// Foto da memória no início de um pedido /api, para o verificador.
+function captureSaveSnapshot() {
+    return { rows: writer.snapshotRows(), backgroundSeq: backgroundSaveSeq };
+}
+
+// Depois de uma gravação pedida no pedido, o que ela cobre passa a ser o ponto de
+// partida da foto: uma gravação completa seguida de uma parcial no mesmo pedido não
+// acusa o que a completa já levou.
+function refreshSaveSnapshot(context, scope) {
+    if (!context.snapshot) return;
+    if (scope.full) {
+        context.snapshot = captureSaveSnapshot();
+        return;
+    }
+    const covered = new Set([...scope.only, ...scope.changed.keys()]);
+    writer.snapshotRows(covered).forEach((rows, collection) => context.snapshot.rows.set(collection, rows));
+}
+
+// Espaço do arquivo (H1-c, DES-11, CONF-06): páginas livres (freelist_count × page_size),
+// que ficam no arquivo depois de apagar dados e só voltam ao disco com o VACUUM (botão
+// Compactar do cartão Armazenamento). As PRAGMAs são assíncronas: o valor fica guardado
+// aqui e é renovado no boot, na tela (GET /api/admin/storage), depois da gravação
+// completa da rede de segurança e da compactação. storageStatus() (síncrono) lê o último
+// valor e, com ele mais velho que 1 min, pede uma renovação em segundo plano.
+const STORAGE_STATS_MAX_AGE_MS = 60000;
+// Sugestão de compactar no "Precisa de você" (decisões da fase 2, §3): espaço livre acima
+// de 25% do arquivo. Abaixo de 1 MB livre não vale a pena (banco novo ou pequeno).
+const COMPACT_SUGGEST_RATIO = 0.25;
+const COMPACT_SUGGEST_MIN_FREE_BYTES = 1024 * 1024;
+const fileStats = { pageSize: null, pageCount: null, freelistCount: null, at: null };
+let fileStatsRefresh = null;
+
+function refreshStorageStats() {
+    if (fileStatsRefresh) return fileStatsRefresh;
+    const pending = (async () => {
+        try {
+            await ensureConnection();
+            const number = row => {
+                const value = row ? Number(Object.values(row)[0]) : NaN;
+                return Number.isFinite(value) ? value : null;
+            };
+            const pageSize = number(await getSql('PRAGMA page_size'));
+            const pageCount = number(await getSql('PRAGMA page_count'));
+            const freelistCount = number(await getSql('PRAGMA freelist_count'));
+            Object.assign(fileStats, { pageSize, pageCount, freelistCount, at: new Date().toISOString() });
+        } catch (e) {
+            // Banco fechado ou ocupado: fica o último valor.
+        }
+    })();
+    fileStatsRefresh = pending;
+    pending.then(() => { if (fileStatsRefresh === pending) fileStatsRefresh = null; });
+    return pending;
+}
+
+// Estado do armazenamento com o espaço livre renovado antes quando o último valor passou
+// de maxAgeMs (padrão 1 min; as três PRAGMAs levam milissegundos). Para quem decide pelo
+// freeBytes na hora (o item "Compactar o banco" do "Precisa de você"): storageStatus()
+// sozinho devolve o valor guardado e só renova em segundo plano, e o item dependia de
+// alguém abrir o cartão Armazenamento (H1-c, sobra da J2). O limite de idade é o limite
+// de frequência: a fila consultada a cada 30 s renova no máximo uma vez por minuto.
+async function freshStorageStatus({ maxAgeMs = STORAGE_STATS_MAX_AGE_MS } = {}) {
+    const statsAge = fileStats.at ? Date.now() - Date.parse(fileStats.at) : Infinity;
+    if (statsAge > maxAgeMs && !writer.isClosed()) await refreshStorageStats();
+    return storageStatus();
+}
+
+// Pasta de dados dentro do OneDrive (CONF-05): conferida uma vez, no carregamento.
+const SYNCED_FOLDER = syncedFolderInfo(DATA_DIR);
+
+// Estado do armazenamento (fonte única: cartão Armazenamento do H1-c e /api/health do H3).
+function storageStatus() {
+    const fileSize = file => { try { return fs.statSync(file).size; } catch (e) { return 0; } };
+    const rows = {};
+    COLLECTION_TABLES.forEach(entry => {
+        const value = memoryDB[entry.collection];
+        if (entry.kind === 'array') rows[entry.collection] = Array.isArray(value) ? value.length : 0;
+        else if (entry.kind === 'object') rows[entry.collection] = value && typeof value === 'object' ? Object.keys(value).length : 0;
+        else if (entry.kind === 'singleton') rows[entry.collection] = value === undefined ? 0 : 1;
+    });
+    const status = writer.status();
+    const statsAge = fileStats.at ? Date.now() - Date.parse(fileStats.at) : Infinity;
+    if (statsAge > STORAGE_STATS_MAX_AGE_MS && !writer.isClosed()) refreshStorageStats();
+    const databaseBytes = fileSize(dbPath);
+    const walBytes = fileSize(`${dbPath}-wal`);
+    const freeBytes = fileStats.pageSize !== null && fileStats.freelistCount !== null ? fileStats.pageSize * fileStats.freelistCount : null;
+    // Tamanho do banco para a proporção: o maior entre o arquivo e as páginas que o
+    // SQLite conta (em WAL, o arquivo só cresce depois do checkpoint).
+    const logicalBytes = fileStats.pageSize !== null && fileStats.pageCount !== null ? fileStats.pageSize * fileStats.pageCount : 0;
+    const baseBytes = Math.max(databaseBytes, logicalBytes);
+    return {
+        // Teclas da prova gravadas (tabela própria, pelos contadores).
+        keystrokes: keystrokeStore.api.total(),
+        journalMode: connectionInfo.journalMode,
+        synchronous: connectionInfo.synchronous,
+        busyTimeoutMs: connectionInfo.busyTimeoutMs,
+        databaseBytes,
+        walBytes,
+        // Tamanho do banco que vale para a proporção do espaço recuperável (o maior entre o
+        // arquivo e as páginas do SQLite): o cartão e a fila usam este, não databaseBytes,
+        // que em WAL antes do checkpoint pode ser só a página inicial (4 KB).
+        allocatedBytes: baseBytes,
+        // Espaço recuperável pelo Compactar (null até a primeira leitura das PRAGMAs).
+        freeBytes,
+        freeBytesAt: fileStats.at,
+        compactSuggested: freeBytes !== null && baseBytes > 0
+            && freeBytes >= COMPACT_SUGGEST_MIN_FREE_BYTES
+            && freeBytes > baseBytes * COMPACT_SUGGEST_RATIO,
+        // Pasta de dados dentro do OneDrive: aviso no console e no cartão (CONF-05).
+        inSyncedFolder: SYNCED_FOLDER.inSyncedFolder,
+        syncedFolderProvider: SYNCED_FOLDER.provider,
+        rows,
+        lastFullSaveAt: status.lastFullSaveAt,
+        lastFullSaveMs: status.lastFullSaveMs,
+        commitP95Ms: status.commitP95Ms,
+        lastWriteError: status.lastWriteError,
+        pendingRetry: status.pendingRetry,
+        nextRetryAt: status.nextRetryAt,
+        lastCycle: status.lastCycle,
+        // Falhas seguidas da gravação, tiradas de lastWriteError e da nova tentativa
+        // pendente (H3b, sem contador próprio): 0 depois de um COMMIT; com a falha ainda
+        // pendente, as rodadas de nova tentativa do motor (a primeira falha conta 1). Uma
+        // rajada de pedidos que falha junto conta uma rodada só.
+        consecutiveFailures: status.lastWriteError && status.pendingRetry ? Math.max(1, status.retryAttempt || 0) : 0,
+        saving: status.running,
+        savesSinceBoot: status.cycles,
+        // Houve gravação parcial desde a última completa (a rede de segurança a cobre).
+        partialSinceFullSave: status.partialSinceFullSave,
+    };
+}
+
+// VACUUM / VACUUM INTO dentro do runExclusive (decisões §12, sobra do H4b): espera as
+// leituras diretas em andamento (até 2 s; os pings que chegam agora respondem pelo
+// último resultado, porque a fila está "running") e, se mesmo assim o sqlite responder
+// "SQL statements in progress", tenta de novo até 5 vezes, com 200 ms entre elas.
+// beforeRetry apaga o arquivo parcial do VACUUM INTO antes de cada nova tentativa.
+const VACUUM_BUSY_RETRIES = 5;
+const VACUUM_BUSY_RETRY_MS = 200;
+
+function isStatementsInProgress(err) {
+    return !!err && /SQL statements in progress/i.test(String(err.message || err));
+}
+
+async function vacuumExclusive(run, { beforeRetry = null } = {}) {
+    let open;
+    const gate = { promise: new Promise(resolve => { open = resolve; }) };
+    vacuumGate = gate;
+    try {
+        await waitDirectStatementsIdle(2000);
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                return await run();
+            } catch (err) {
+                if (!isStatementsInProgress(err) || attempt >= VACUUM_BUSY_RETRIES) throw err;
+                await new Promise(resolve => setTimeout(resolve, VACUUM_BUSY_RETRY_MS));
+                await waitDirectStatementsIdle(1000);
+                if (typeof beforeRetry === 'function') beforeRetry();
+            }
+        }
+    } finally {
+        if (vacuumGate === gate) vacuumGate = null;
+        open();
+    }
+}
+
+// Compactar o banco (H1-c, DES-11): VACUUM pela fila (db.runExclusive, nenhuma gravação
+// no meio) e, como o banco está em WAL, o checkpoint com TRUNCATE leva o resultado para o
+// database.db e zera o -wal. As gravações pedidas antes passam primeiro; as pedidas
+// durante esperam. Quem chama confere antes que não há prova em andamento e que há espaço
+// em disco (rota POST /api/admin/storage/compact). Devolve o estado antes e depois.
+// beforeVacuum (opcional): conferência feita dentro do runExclusive, logo antes do
+// VACUUM, quando nenhuma gravação roda e a memória não muda no meio. Devolvendo um erro,
+// a compactação não acontece e a promessa rejeita com ele: a rota confere de novo se uma
+// prova começou enquanto esperava o disco e a fila (sobra do H1-c na J2).
+async function compactDatabase({ beforeVacuum = null } = {}) {
+    await refreshStorageStats();
+    const before = storageStatus();
+    const started = Date.now();
+    await writer.runExclusive(async connection => {
+        const refusal = typeof beforeVacuum === 'function' ? beforeVacuum() : null;
+        if (refusal) throw refusal;
+        // O checkpoint fica dentro da mesma espera: com leituras da conexão em andamento
+        // ele esperava por elas (a consulta do Monitor sem parar o segurava).
+        await vacuumExclusive(async () => {
+            await new Promise((resolve, reject) => connection.exec('VACUUM', err => (err ? reject(err) : resolve())));
+            await new Promise((resolve, reject) => connection.exec('PRAGMA wal_checkpoint(TRUNCATE)', err => (err ? reject(err) : resolve())));
+        });
+    });
+    const ms = Date.now() - started;
+    await refreshStorageStats();
+    return { before, after: storageStatus(), ms };
+}
+
+// Cópia consistente do banco para o backup (H4a: CONF-07, OPS-03), sem o JSON do banco
+// inteiro (que travava o servidor 3 a 6 s num banco de um ano e subia a memória em
+// centenas de MB). Primeiro uma gravação completa (o que está na memória vai para o
+// disco; se ela falhar, a cópia não é feita), depois VACUUM INTO pela fila
+// (db.runExclusive: nenhuma gravação no meio, fora de transação, que o VACUUM recusa).
+// Gravações pedidas durante a cópia esperam e entram logo depois. A cópia sai em modo
+// journal normal (sem -wal), legível sozinha. O destino não pode existir. Na cópia, as
+// tabelas fora do backup (TABLES_OUTSIDE_BACKUP: as sessões) ficam vazias, fora da fila
+// (o arquivo é só da cópia). Depois, numa conexão só de leitura da cópia: quick_check
+// exatamente 'ok', contagem de cada tabela e SHA-256 por stream. Devolve
+// { file, bytes, sha256, tabelas, quickCheck, ms }. A cópia de antes de uma restauração
+// (antes.db) também sai sem as sessões: a restauração, feita ou desfeita, pede que todos
+// entrem de novo.
+async function snapshotTo(file) {
+    const target = path.resolve(String(file || ''));
+    if (!file || fs.existsSync(target)) throw new Error(`O arquivo da cópia do banco já existe ou não foi informado: ${target}`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const started = Date.now();
+    await saveToDisk({ detached: true });
+    await writer.runExclusive(connection => vacuumExclusive(() => new Promise((resolve, reject) => {
+        connection.run('VACUUM INTO ?', [target], err => (err ? reject(err) : resolve()));
+    }), { beforeRetry: () => fs.rmSync(target, { force: true }) }));
+    await dbFile.clearTablesInCopy(target, TABLES_OUTSIDE_BACKUP);
+    const ms = Date.now() - started;
+    const info = await dbFile.inspectDatabaseFile(target);
+    return { ...info, ms };
+}
+
+// Rede de segurança da gravação parcial (H1-c, DES-01): de 10 em 10 min (timer registrado
+// no server.js), se houve gravação parcial desde a última completa, uma gravação completa
+// assim que a fila esvaziar (ou depois de 30 s, na fila mesmo assim). Ela leva ao disco o
+// que uma rota anotada tenha esquecido no only; se encontrar alguma linha para gravar
+// sozinha (sem outro pedido junto no mesmo ciclo), o crash.log diz quais coleções, para
+// corrigir a anotação. Nunca rejeita (a falha de gravação já vai para o crash.log pelo
+// motor, que regrava sozinho).
+// Com prova em andamento (aplicação em ACTIVE_APPLICATION_STATUSES), a gravação completa
+// espera (contrato de processo e timers do H3c): num banco de um ano ela segura a fila por
+// algumas centenas de ms, o que atrasaria o rascunho de 40 alunos. O teto de espera é de
+// 2 h desde o primeiro adiamento, para uma aplicação esquecida aberta não deixar a rede
+// de segurança parada para sempre; ao fim da prova, a próxima rodada (em até 10 min) grava.
+// O adiamento é contado por aplicação (id -> primeiro adiamento com ela aberta) e sai do
+// mapa em toda rodada em que ela não está mais em andamento, inclusive quando não há
+// gravação parcial pendente (a prova terminou com uma gravação completa): sem isso, um
+// adiamento antigo de uma prova já encerrada fazia a gravação completa rodar logo no
+// primeiro tick da prova seguinte, mesmo com as duas provas uma depois da outra.
+const SAFETY_NET_INTERVAL_MS = 10 * 60 * 1000;
+const SAFETY_NET_IDLE_WAIT_MS = 30000;
+const SAFETY_NET_MAX_DEFER_MS = 2 * 60 * 60 * 1000;
+let safetyNetRun = null;
+const safetyNetDeferredSince = new Map();
+
+function activeApplicationIds() {
+    return (memoryDB.examApplications || [])
+        .filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status))
+        .map((item, index) => String(item.id || `sem-id-${index}`));
+}
+
+function countActiveApplications() {
+    return activeApplicationIds().length;
+}
+
+function runSafetyNetSave({ idleWaitMs = SAFETY_NET_IDLE_WAIT_MS, now = Date.now() } = {}) {
+    if (safetyNetRun) return safetyNetRun;
+    // Antes de qualquer saída cedo: aplicação que não está mais em andamento perde o
+    // adiamento (ver o comentário acima).
+    const activeIds = activeApplicationIds();
+    const activeSet = new Set(activeIds);
+    for (const id of [...safetyNetDeferredSince.keys()]) {
+        if (!activeSet.has(id)) safetyNetDeferredSince.delete(id);
+    }
+    if (writer.isClosed() || !writer.status().partialSinceFullSave) return Promise.resolve({ ran: false, rows: 0, found: 0 });
+    const activeApplications = activeIds.length;
+    if (activeApplications > 0) {
+        for (const id of activeSet) {
+            if (!safetyNetDeferredSince.has(id)) safetyNetDeferredSince.set(id, now);
+        }
+        const oldest = Math.min(...safetyNetDeferredSince.values());
+        if (now - oldest < SAFETY_NET_MAX_DEFER_MS) {
+            return Promise.resolve({ ran: false, rows: 0, found: 0, deferred: true, activeApplications });
+        }
+    }
+    // Rodou (sem prova, ou pelo teto): o teto recomeça a contar no próximo adiamento.
+    safetyNetDeferredSince.clear();
+    const pending = (async () => {
+        try {
+            await writer.waitIdle(idleWaitMs);
+            if (writer.isClosed()) return { ran: false, rows: 0, found: 0 };
+            const report = await saveToDisk({ detached: true });
+            const rows = Number(report && report.rows) || 0;
+            const found = report && report.requests === 1 ? rows : 0;
+            if (found > 0) {
+                const collections = Object.entries(report.collections || {})
+                    .map(([collection, count]) => `${collection} (${count})`)
+                    .join(', ');
+                const message = `A gravação completa encontrou ${found} alteração(ões) sem gravação parcial: ${collections}`;
+                // logError já põe a linha-resumo no console.
+                logError('[GRAVAÇÃO] Rede de segurança', { message });
+            }
+            refreshStorageStats();
+            return { ran: true, rows, found, collections: { ...(report && report.collections) } };
+        } catch (err) {
+            return { ran: true, rows: 0, found: 0, error: (err && (err.sqliteCode || err.code)) || 'ERRO' };
+        }
+    })();
+    safetyNetRun = pending;
+    pending.then(() => { if (safetyNetRun === pending) safetyNetRun = null; });
+    return pending;
+}
+
+// Saúde da gravação (H3b, DES-08, CONF-12), para o /api/health e o cartão Saúde do H3c:
+// um recorte de storageStatus(), que continua a fonte única (sem contadores próprios).
+// - lastOkAt/lastDurationMs: o último ciclo que gravou (COMMIT ou nada a gravar);
+// - lastErrorCode/consecutiveFailures: a falha mais recente e as falhas seguidas, de
+//   lastWriteError e pendingRetry (zera no primeiro ciclo que grava);
+// - saving: um ciclo ou tarefa exclusiva rodando agora.
+function health() {
+    const status = storageStatus();
+    return {
+        lastOkAt: status.lastCycle ? status.lastCycle.at : null,
+        lastDurationMs: status.lastCycle ? status.lastCycle.ms : null,
+        lastFullSaveAt: status.lastFullSaveAt,
+        lastErrorCode: status.lastWriteError ? status.lastWriteError.code : null,
+        lastErrorAt: status.lastWriteError ? status.lastWriteError.at : null,
+        consecutiveFailures: status.consecutiveFailures,
+        pendingRetry: status.pendingRetry,
+        savesSinceBoot: status.savesSinceBoot,
+        saving: status.saving,
+        dbFileBytes: status.databaseBytes + status.walBytes,
+    };
+}
+
+// Confere o banco de verdade com um SELECT 1 (H3b), com tempo-limite de 2 s e resultado
+// guardado por 5 s (o /api/health pode ser consultado a cada segundo pelo launcher).
+// Durante uma gravação não consulta: o sqlite3 poria o SELECT na fila atrás do ciclo (de
+// até alguns segundos num banco grande) e o servidor pareceria travado; vale o último
+// resultado (ok null quando ainda não houve nenhum). Nunca rejeita. consecutiveFailures:
+// consultas seguidas que falharam fora de gravação (o H3c dá "com problemas" a partir de 2).
+const PING_TIMEOUT_MS = 2000;
+const PING_CACHE_MS = 5000;
+let lastPing = null;
+let pingFailures = 0;
+let pingInFlight = null;
+
+function pingResult(extra = {}) {
+    const base = lastPing || { ok: null, at: null, ms: null, error: null };
+    return { ...base, consecutiveFailures: pingFailures, ...extra };
+}
+
+function ping({ now = Date.now() } = {}) {
+    if (lastPing && now - Date.parse(lastPing.at) < PING_CACHE_MS) return Promise.resolve(pingResult({ cached: true }));
+    if (writer.status().running || vacuumGate) return Promise.resolve(pingResult({ cached: true, saving: true }));
+    if (pingInFlight) return pingInFlight;
+    const started = Date.now();
+    const pending = new Promise(resolve => {
+        let settled = false;
+        const finish = (ok, error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            pingFailures = ok ? 0 : pingFailures + 1;
+            lastPing = { ok, at: new Date().toISOString(), ms: Date.now() - started, error: error ? String(error) : null };
+            resolve(pingResult({ cached: false }));
+        };
+        const timer = setTimeout(() => finish(false, `sem resposta do banco em ${PING_TIMEOUT_MS / 1000} s`), PING_TIMEOUT_MS);
+        if (typeof timer.unref === 'function') timer.unref();
+        try {
+            // Contado como leitura direta até o sqlite responder (mesmo depois do
+            // tempo-limite do ping): o VACUUM do backup espera por ele.
+            trackedStatement(end => sqliteDb.get('SELECT 1 AS ok', [], (err, row) => {
+                end();
+                if (err) return finish(false, err.code || err.message || err);
+                return finish(!!row && Number(row.ok) === 1, row ? null : 'resposta vazia');
+            }));
+        } catch (err) {
+            finish(false, (err && (err.code || err.message)) || err);
+        }
+    });
+    // A consulta em andamento é liberada depois de responder. Não dentro do finish: com o
+    // banco fechado ou quebrado o sqlite3 pode responder na hora, antes desta atribuição,
+    // e a primeira falha ficaria guardada para sempre (sem contar as seguintes).
+    pingInFlight = pending;
+    pending.then(() => { if (pingInFlight === pending) pingInFlight = null; });
+    return pending;
 }
 
 function defaultAdminEmail() {
@@ -1086,22 +2040,64 @@ function defaultAdminEmail() {
     return first ? String(first.email).toLowerCase() : 'admin@local';
 }
 
-async function close() {
-    await saveToDisk();
-    await new Promise((resolve, reject) => {
-        sqliteDb.close(err => err ? reject(err) : resolve());
-    });
+// Gravação completa, espera da fila e fechamento da conexão (o SQLite aplica e apaga o
+// -wal). Usado no desligamento ordenado do H3c (requestShutdown no server.js: Ctrl+C,
+// SIGTERM, fechar a janela do console, Ctrl+Break, rota de controle e Reiniciar).
+// Depois dele, db.save() rejeita com DbWriteError.
+function close() {
+    return writer.close();
 }
 
 module.exports = {
     init,
     defaultAdminEmail,
     get memory() { return memoryDB; },
+    // Histórico de digitação da prova (tabela própria; utils/keystrokeStore.js).
+    keystrokes: keystrokeStore.api,
+    // Sessões gravadas lidas no boot, para a retomada (server.js prepareServer).
+    takeBootAuthSessionRows,
+    // Encerra as sessões de uma conta, também as do boot ainda não retomadas.
+    revokeAccountSessions,
+    // Ganchos pós-restauração ({ name, run }) e quem os roda (utils/backup.js).
+    afterRestore: AFTER_RESTORE_HOOKS,
+    runAfterRestore,
+    currentNetworkSettings,
+    currentProtectedConfig,
+    COLLECTION_TABLES,
+    TABLES_OUTSIDE_BACKUP,
+    emptyCollectionValue,
+    // Leitura das coleções de um arquivo de banco (boot e backup formato 2) e cópia
+    // consistente pelo VACUUM INTO (H4a).
+    readStoredData,
+    snapshotTo,
+    get dbPath() { return dbPath; },
     save: saveToDisk,
+    // Resolve quando toda gravação pedida até agora terminou (com sucesso ou não).
+    flush: () => writer.flush(),
+    // VACUUM e VACUUM INTO só por aqui: fn(conexão) roda com a fila de gravação parada.
+    runExclusive: fn => writer.runExclusive(fn),
     close,
+    storageStatus,
+    refreshStorageStats,
+    freshStorageStatus,
+    compactDatabase,
+    runSafetyNetSave,
+    SAFETY_NET_INTERVAL_MS,
+    SAFETY_NET_MAX_DEFER_MS,
+    health,
+    ping,
+    captureSaveSnapshot,
+    get saveVerifyFailures() { return saveVerifyFailures; },
+    clearSaveVerifyFailures() { saveVerifyFailures.length = 0; },
+    DbWriteError,
     hashPassword,
     verifyPassword,
+    hashPasswordAsync,
+    verifyPasswordAsync,
+    passwordHashQueueStatus,
     needsPasswordRehash,
+    countLegacyPasswordHashes,
+    upgradeLegacyPasswordHashes,
     allClassAssignments,
     syncAdminClassAssignments,
     rebuildExamApplicationsFromClasses,

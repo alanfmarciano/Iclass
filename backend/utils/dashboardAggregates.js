@@ -9,6 +9,7 @@
 
 const attendanceUtil = require('./attendance.js');
 const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js');
+const { studentSessionByEmail } = require('./authSessions.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -128,11 +129,13 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
         ? { id: futuras[0].id, titulo: evalTitle(memory, futuras[0].examKey), startsAt: Number(futuras[0].startsAt) }
         : null;
 
-    // "0 conectados" precisa de janela e da última leitura — sessions não é
-    // persistido, então zero sem contexto é indistinguível de reboot do servidor.
+    // "0 conectados" precisa de janela e da última leitura: a presença (lastSeen) não é
+    // gravada, e depois de um reinício a sessão retomada aparece offline até o próximo
+    // ping, então zero sem contexto é indistinguível de reboot do servidor. A sessão é
+    // lida pelo authSessions (chave própria, e-mail em minúsculas).
     let count = 0, ultimoAcessoAt = null;
     students.forEach(s => {
-        const sess = (memory.sessions || {})[s.email] || (memory.sessions || {})[lower(s.email)];
+        const sess = studentSessionByEmail(memory, s.email);
         const ts = typeof sess === 'number' ? sess : (sess && (sess.lastSeen || sess.lastPing)) || null;
         if (ts == null) return;
         if (now - ts <= ONLINE_JANELA_MIN * 60000) count++;
@@ -145,8 +148,18 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // ---------------------------------------------------------------------------
 // PRECISA DE VOCÊ — cada item é uma pendência com destino clicável.
 // `canSeeMatriculas` vem da rota (admin pleno); snooze é aplicado na rota.
+// `extras` (contrato da fase 2): blocos montados pela rota, cada um já filtrado pelo
+// escopo de quem vê. storage (H1-c): { freeBytes, allocatedBytes } quando o banco tem
+// espaço a recuperar e quem vê é administrador (db.storageStatus().compactSuggested).
+// security (H5b, SEG-06): { recoveryEmails, delayedEmails, waitingEmails, delayedAccounts,
+// waitingAccounts, ipAlerts } (waiting*: as da lista que ainda esperam agora) —
+// alunos do escopo que pediram nova senha e alunos com o login em espera por senhas
+// erradas; contas de instrutor em espera e alertas de muitas senhas erradas vindas do
+// mesmo IP, esses dois só para administrador.
+// backup (H4b, OPS-03): { falha, atrasado, externoAtrasado, semDestino } de
+// utils/backup.js backupAlerts, só para administrador com system.manage.
 // ---------------------------------------------------------------------------
-function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }) {
+function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }, extras = {}) {
     const emails = emailSet(students);
     const items = [];
 
@@ -260,6 +273,142 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
         });
     }
 
+    // 7. Banco com muito espaço livre dentro do arquivo (mais de 25% depois de apagar
+    // dados): o botão Compactar do cartão Armazenamento devolve esse espaço ao disco.
+    const storage = extras && extras.storage;
+    if (storage && Number(storage.freeBytes) > 0) {
+        const freeMb = Math.max(1, Math.round(Number(storage.freeBytes) / (1024 * 1024)));
+        // O número fica na coluna da direita (count, em MB) e também no texto, para a
+        // linha se ler sozinha: "12 MB sem uso dentro do arquivo do banco (40%) · ...".
+        const allocated = Number(storage.allocatedBytes) || 0;
+        const percent = allocated > 0 ? Math.min(100, Math.round((Number(storage.freeBytes) / allocated) * 100)) : null;
+        items.push({
+            id: 'compactar_banco', tipo: 'compactar_banco',
+            titulo: 'Compactar o banco',
+            detalhe: `${freeMb} MB sem uso dentro do arquivo do banco${percent !== null ? ` (${percent}%)` : ''} · Sistema → Armazenamento`,
+            count: freeMb, tone: 'info', href: '/sistema', permissao: 'system.manage',
+        });
+    }
+
+    // 8. Segurança das contas (H5b): pedidos de nova senha, logins em espera por senhas
+    // erradas e alertas por IP.
+    securityQueueItems(extras && extras.security).forEach(item => items.push(item));
+
+    // 9. Backup (H4b, OPS-03): falha, atraso, cópia externa atrasada e destino externo não
+    // configurado. Só administrador (a rota manda null para os outros).
+    backupQueueItems(extras && extras.backup).forEach(item => items.push(item));
+
+    return items;
+}
+
+function plural(count, one, many) {
+    return `${count} ${count === 1 ? one : many}`;
+}
+
+// Itens do backup. count: dias desde o último sucesso (mínimo 1). Falha e atraso não se
+// adiam (adiavel: false); "sem destino" adia 24 h, como os outros.
+function backupQueueItems(backup) {
+    if (!backup || typeof backup !== 'object') return [];
+    const items = [];
+    const common = { href: '/sistema', permissao: 'system.manage' };
+    if (backup.falha) {
+        const externo = backup.falha.alvo === 'externo';
+        const message = String(backup.falha.mensagem || '').trim();
+        items.push({
+            id: 'backup_falhou', tipo: 'backup_falhou',
+            titulo: externo ? 'A cópia externa do backup falhou' : 'O backup falhou',
+            detalhe: `${message || 'Veja o motivo no cartão Backup'} · Sistema → Backup`,
+            count: Math.max(1, Number(backup.falha.dias) || 1), tone: 'danger', adiavel: false, ...common,
+        });
+    }
+    if (backup.atrasado) {
+        const dias = Math.max(1, Number(backup.atrasado.dias) || 1);
+        items.push({
+            id: 'backup_atrasado', tipo: 'backup_atrasado',
+            titulo: 'Backup atrasado',
+            detalhe: `${backup.atrasado.ultimoSucesso ? `Último backup há ${plural(dias, 'dia', 'dias')}` : 'Nenhum backup feito ainda'} · Sistema → Backup → Fazer backup agora`,
+            count: dias, tone: 'danger', adiavel: false, ...common,
+        });
+    }
+    if (backup.externoAtrasado) {
+        const dias = Math.max(1, Number(backup.externoAtrasado.dias) || 1);
+        items.push({
+            id: 'backup_externo_atrasado', tipo: 'backup_externo_atrasado',
+            titulo: 'Cópia externa do backup atrasada',
+            detalhe: `${backup.externoAtrasado.ultimoSucesso ? `Última cópia no destino externo há ${plural(dias, 'dia', 'dias')}` : 'Nenhuma cópia no destino externo ainda'}; confira o pendrive ou a pasta · Sistema → Backup`,
+            count: dias, tone: 'warning', ...common,
+        });
+    }
+    if (backup.semDestino) {
+        items.push({
+            id: 'backup_sem_destino', tipo: 'backup_sem_destino',
+            titulo: 'Backup só neste computador',
+            detalhe: 'Escolha um pendrive, HD externo ou pasta de rede para uma cópia fora daqui · Sistema → Backup',
+            count: Math.max(1, Number(backup.semDestino.dias) || 1), tone: 'warning', ...common,
+        });
+    }
+    return items;
+}
+
+function countOf(list) {
+    return Array.isArray(list) ? list.length : 0;
+}
+
+// Texto do item de senhas erradas, como o selo (web/src/features/admin/loginProtection.jsx):
+// "o login espera" só enquanto alguma conta da lista ainda espera agora (waiting: as que
+// esperam; sem a lista, de uma rota antiga, vale como antes). Passada a espera, a conta
+// continua na lista até ser liberada ou sair da memória, e a próxima senha errada volta a
+// atrasar: o texto diz isso em vez de prometer uma espera que já acabou (sobra do H5b, J2).
+function loginDelayText(waiting, total) {
+    const waitingCount = Array.isArray(waiting) ? waiting.length : total;
+    if (waitingCount >= total) return 'o login espera antes de tentar de novo';
+    if (waitingCount > 0) return `${waitingCount} ${waitingCount === 1 ? 'espera' : 'esperam'} para tentar de novo; nas outras a espera acabou, mas a próxima senha errada volta a atrasar`;
+    return '5 senhas erradas seguidas ou mais; a espera acabou, mas a próxima senha errada volta a atrasar';
+}
+
+function securityQueueItems(security) {
+    if (!security || typeof security !== 'object') return [];
+    const items = [];
+    const recovery = countOf(security.recoveryEmails);
+    if (recovery) {
+        items.push({
+            id: 'senhas_pedidas', tipo: 'senhas_pedidas',
+            titulo: 'Alunos pediram nova senha',
+            detalhe: 'gere uma senha temporária em Redefinir senha · Alunos',
+            count: recovery, tone: 'warning', href: '/alunos', permissao: 'page.students',
+        });
+    }
+    const delayed = countOf(security.delayedEmails);
+    if (delayed) {
+        items.push({
+            id: 'login_tentativas', tipo: 'login_tentativas',
+            titulo: 'Alunos com muitas senhas erradas',
+            detalhe: `${loginDelayText(security.waitingEmails, delayed)}; libere em Alunos → Liberar login`,
+            count: delayed, tone: 'danger', href: '/alunos', permissao: 'page.students',
+        });
+    }
+    const delayedAccounts = countOf(security.delayedAccounts);
+    if (delayedAccounts) {
+        items.push({
+            id: 'login_tentativas_contas', tipo: 'login_tentativas',
+            titulo: 'Contas de instrutor com muitas senhas erradas',
+            detalhe: `${loginDelayText(security.waitingAccounts, delayedAccounts)}; libere em Contas → Liberar login`,
+            count: delayedAccounts, tone: 'danger', href: '/admins', permissao: 'page.accounts',
+        });
+    }
+    const alerts = Array.isArray(security.ipAlerts) ? security.ipAlerts.filter(alert => alert && alert.ip) : [];
+    if (alerts.length) {
+        const first = alerts[0];
+        items.push({
+            id: 'login_ip_alerta', tipo: 'login_ip_alerta',
+            titulo: 'Muitas senhas erradas vindas do mesmo endereço',
+            detalhe: alerts.length === 1
+                ? `${first.count || 50} tentativas em 10 min do IP ${first.ip} · confira os selos em Alunos`
+                : `${alerts.length} endereços nas últimas 24 h (o último: ${first.ip}) · confira os selos em Alunos`,
+            count: alerts.length, tone: 'danger', href: '/alunos', permissao: 'page.accounts',
+            at: Number(first.at) || null,
+        });
+    }
     return items;
 }
 

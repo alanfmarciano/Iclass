@@ -259,7 +259,7 @@ export default function IdentidadePage() {
     try {
       if (scope === 'system') await api.post('/api/branding', { savedThemes: nextThemes })
       else if (scope === 'school') await api.post('/api/admin/schools/update', { id: schoolId, branding: { savedThemes: nextThemes } })
-      else await api.put(`/api/courses/${encodeURIComponent(courseId)}`, { branding: { savedThemes: nextThemes } })
+      else await api.put(`/api/admin/courses/${encodeURIComponent(courseId)}`, { branding: { savedThemes: nextThemes } })
       cacheTargetBranding({ savedThemes: nextThemes })
       setForm((current) => ({ ...current, savedThemes: nextThemes }))
       return true
@@ -319,7 +319,7 @@ export default function IdentidadePage() {
       } else if (scope === 'school') {
         await api.post('/api/admin/schools/update', { id: schoolId, branding: form })
       } else {
-        await api.put(`/api/courses/${encodeURIComponent(courseId)}`, { branding: form })
+        await api.put(`/api/admin/courses/${encodeURIComponent(courseId)}`, { branding: form })
       }
       cacheTargetBranding(form)
       if (form.primaryColor) document.documentElement.style.setProperty('--primary', form.primaryColor)

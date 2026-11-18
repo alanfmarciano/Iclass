@@ -1,7 +1,9 @@
 const express = require('express');
-const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
+const { DATA_DIR } = require('../runtimePaths.js');
+const { recordAudit } = require('../utils/audit.js');
 const {
     DB_CLASSES_FILE,
     readJSON,
@@ -9,11 +11,20 @@ const {
     adminCanAccessClass,
     findClassByNameAndCourse,
     getCourseItemKeys,
-    localIpAddresses,
     getReleasedItemsForClass,
+    isProfessorAccount,
+    sendHandledFailure,
+    sendInternalError,
+    sendRouteError,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
-const { saveServerBackup } = require('../utils/backup.js');
+const serverLifecycle = require('../utils/serverLifecycle.js');
+const { connectionInfo, httpsAvailable, networkHttpsStatus, studentsHttpsEnabled } = require('../utils/networkPolicy.js');
+const secureConnection = require('../utils/secureConnection.js');
+const { networkAddresses } = require('../utils/networkAddresses.js');
+const { encodeQr } = require('../utils/qrCode.js');
+const { createSafetyBackup } = require('../utils/backup.js');
+const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
 const { finishApplication } = require('../utils/examFinish.js');
 const {
@@ -63,6 +74,8 @@ function classHelpers(cls) {
         isClassStudent: email => emails.has(normalizedEmail(email)),
         courseExamKeys: getCourseItemKeys(cls),
         examTitle: examTitleFor,
+        // Teclas preservadas: pelos contadores do histórico de digitação (tabela própria).
+        keystrokeEntries: () => db.keystrokes.statsEntries(),
     };
 }
 
@@ -79,43 +92,277 @@ function maintenanceScope(req, matchedAdmin, { studentClass, courseId, applicati
     return { cls, application };
 }
 
-// Backup dos dados antes de apagar qualquer coisa: a limpeza pode ser desfeita.
-function safetyBackup(prefix) {
+// Backup dos dados antes de apagar qualquer coisa: a limpeza pode ser desfeita. Desde o
+// H4a é o ZIP formato 2 dos dados (<prefixo>_dados_<carimbo>.zip, com o histórico de
+// digitação), gerado sem travar o servidor (antes o JSON síncrono parava todos por
+// segundos num banco grande). Outro backup em andamento: busy (a rota responde 409).
+async function safetyBackup(prefix) {
     try {
-        return { ok: true, file: path.basename(saveServerBackup(prefix)) };
+        const saved = await createSafetyBackup(prefix);
+        return { ok: true, file: saved.name };
     } catch (error) {
-        console.error(`[MANUTENÇÃO] Falha no backup de segurança (${prefix}):`, error.message);
-        return { ok: false, file: null };
+        if (error && error.code === 'ICLASS_BACKUP_BUSY') return { ok: false, busy: true, file: null, error };
+        // A rota responde 503 com a mensagem própria (sendHandledFailure): o stack vai para o
+        // crash.log com o código do pedido.
+        return { ok: false, file: null, error };
     }
 }
 
+// Manutenção (limpar estado de prova, resetar sala, reiniciar): atalho para recordAudit,
+// na categoria 'system', gravando também type/actorEmail/at como as entradas antigas.
 function recordMaintenanceAudit(req, account, type, cls, details) {
-    if (!Array.isArray(db.memory.auditLogs)) db.memory.auditLogs = [];
-    db.memory.auditLogs.push({
-        id: `audit_maintenance_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-        type,
-        actorEmail: account && account.email,
+    const timestamp = Date.now();
+    recordAudit(db.memory, {
+        req,
+        actor: account,
+        action: type,
+        category: 'system',
         studentClass: cls ? cls.name : null,
         courseId: cls ? cls.courseId || null : null,
         details,
-        at: Date.now(),
-        ip: req.ip || (req.socket && req.socket.remoteAddress) || '',
-    });
+    }, { timestamp, legacy: { type, actorEmail: account && account.email, at: timestamp } });
+}
+
+// Armazenamento (H1-c: CONF-06, DES-11, CONF-05). O VACUUM reescreve o arquivo inteiro
+// e precisa de espaço livre no disco (o arquivo novo é montado antes de o antigo sair):
+// pelo menos o tamanho do banco (com o -wal) mais 10%.
+const COMPACT_DISK_MARGIN = 1.1;
+
+function activeApplicationCount() {
+    return (db.memory.examApplications || []).filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status)).length;
+}
+
+function storageTotalBytes(status) {
+    return (Number(status && status.databaseBytes) || 0) + (Number(status && status.walBytes) || 0);
+}
+
+function formatMegabytes(bytes) {
+    return `${(Math.max(0, Number(bytes) || 0) / (1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+}
+
+// Espaço livre no disco da pasta de dados (null quando o sistema não informa).
+async function diskFreeBytes(dir) {
+    try {
+        const stats = await fs.promises.statfs(dir);
+        const free = Number(stats.bavail) * Number(stats.bsize);
+        return Number.isFinite(free) ? free : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// Chaves das configurações achatadas por ponto ('trash.retentionDays'), com o valor.
+// Lista (tipos de arquivo permitidos) é um valor só.
+function flattenSettings(value, prefix = '', out = {}) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(key => flattenSettings(value[key], prefix ? `${prefix}.${key}` : key, out));
+        return out;
+    }
+    if (prefix) out[prefix] = value;
+    return out;
+}
+
+// O que mudou entre duas versões das configurações: [{ key, before, after }], na ordem
+// das chaves (as de antes primeiro).
+function settingsChanges(before, after) {
+    const flatBefore = flattenSettings(before);
+    const flatAfter = flattenSettings(after);
+    const keys = [...new Set([...Object.keys(flatBefore), ...Object.keys(flatAfter)])];
+    return keys
+        .filter(key => JSON.stringify(flatBefore[key]) !== JSON.stringify(flatAfter[key]))
+        .map(key => ({ key, before: flatBefore[key] === undefined ? null : flatBefore[key], after: flatAfter[key] === undefined ? null : flatAfter[key] }));
 }
 
 function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     const router = express.Router();
 
+    // Porta que os alunos usam: a do servidor que está escutando (startServer guarda em
+    // app.set('serverInstance')); sem ele (testes com supertest), a configurada.
+    function listeningPort(req) {
+        const server = req.app && req.app.get('serverInstance');
+        const address = server && typeof server.address === 'function' ? server.address() : null;
+        return address && typeof address === 'object' && address.port ? address.port : Number(port) || 3000;
+    }
+
+    // Endereços desta máquina (utils/networkAddresses.js, relidos a cada 2 s), com o
+    // esquema que os alunos usam: http enquanto a conexão segura para os alunos estiver
+    // desligada (studentsHttps, padrão), https quando ligada (H6c), e só nos endereços que
+    // estão no certificado (um adaptador virtual continua em http).
+    function studentAddresses(req) {
+        return networkAddresses({
+            port: listeningPort(req),
+            scheme: studentsHttpsEnabled() ? 'https' : 'http',
+            httpsIps: secureConnection.serverIps(),
+        });
+    }
+
+    // Conexão segura (H6c) para a tela: se funciona (ou o motivo), se serve aos outros
+    // aparelhos (networkReady: o IP recomendado está no certificado; senão, networkError
+    // diz por quê e o https vale só neste computador, em localUrl), o endereço seguro, a
+    // impressão digital e as validades da CA e do certificado do servidor.
+    function httpsPayload(port) {
+        const status = secureConnection.status();
+        const network = networkHttpsStatus();
+        return {
+            available: status.available,
+            error: status.available ? null : secureConnection.unavailableText(),
+            networkReady: network.usable,
+            networkError: status.available && !network.usable ? network.reason : null,
+            studentsHttps: studentsHttpsEnabled(),
+            studentsHttpsSetting: settingsUtil.networkSettings().studentsHttps,
+            url: network.usable ? `https://${network.address}:${port}` : null,
+            localUrl: status.available ? `https://localhost:${port}` : null,
+            ca: status.ca,
+            server: status.server,
+        };
+    }
+
+    // Cartão Rede da tela Sistema (H6a, OPS-10): todos os adaptadores, cada um com o
+    // endereço completo (esquema, IP e porta) e o tipo ('rede', 'virtual', 'link-local'),
+    // e o recomendado para os alunos; a conexão segura (H6c) em https. hostname (nome
+    // fixo, H6d) já vem no formato final, desligado nesta versão.
+    router.get('/api/admin/network-info', (req, res) => {
+        validateAdmin(req, res, () => {
+            const snapshot = studentAddresses(req);
+            res.json({
+                port: snapshot.port,
+                recommended: snapshot.recommended,
+                addresses: snapshot.addresses,
+                hostname: null,
+                https: httpsPayload(snapshot.port),
+                adminAccess: settingsUtil.networkSettings().adminAccess,
+            });
+        });
+    });
+
+    // Endereço da sala (H6a, OPS-10): o endereço que os alunos digitam e o QR code dele,
+    // para o botão "Endereço da sala" do Dashboard e do Monitor e a página /endereco
+    // (projetada no quadro). O professor vê (page.dashboard ou page.monitor). O QR codifica
+    // sempre studentUrl; sem rede nenhuma, os dois vêm null e a tela explica.
+    let lastQr = { url: null, qr: null };
+    function qrFor(url) {
+        if (lastQr.url !== url) lastQr = { url, qr: encodeQr(url) };
+        return lastQr.qr;
+    }
+    router.get('/api/admin/room-address', (req, res) => {
+        validateAdmin(req, res, () => {
+            const snapshot = studentAddresses(req);
+            const recommended = snapshot.recommended;
+            const studentUrl = recommended ? recommended.url : null;
+            const qr = studentUrl ? qrFor(studentUrl) : null;
+            res.json({
+                success: true,
+                studentUrl,
+                port: snapshot.port,
+                adapter: recommended ? { name: recommended.name, address: recommended.address, kind: recommended.kind } : null,
+                nameUrl: null,
+                hostnameInUse: null,
+                mdnsState: 'desligado',
+                studentsHttps: snapshot.scheme === 'https',
+                qr: qr ? { version: qr.version, size: qr.size, rows: qr.rows } : null,
+            });
+        });
+    });
+
+    // Cartão Armazenamento da tela Sistema: tamanho do banco e do -wal, espaço
+    // recuperável, linhas por coleção, teclas, gravação completa, p95 de gravação, último
+    // erro, aviso de OneDrive (db.storageStatus(), fonte única) e se dá para compactar.
+    router.get('/api/admin/storage', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            await db.refreshStorageStats();
+            res.json({
+                success: true,
+                storage: db.storageStatus(),
+                activeApplications: activeApplicationCount(),
+                diskFreeBytes: await diskFreeBytes(DATA_DIR),
+                // Compactar é só do administrador (o professor vê o cartão sem o botão).
+                canCompact: !isProfessorAccount(matchedAdmin),
+            });
+        });
+    });
+
+    // Compactar o banco (VACUUM): só administrador, com COMPACTAR digitado, sem prova em
+    // andamento (o VACUUM para a fila de gravação por alguns segundos) e com espaço no
+    // disco. Grava a auditoria 'storage_compacted' com o tamanho antes e depois.
+    router.post('/api/admin/storage/compact', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (isProfessorAccount(matchedAdmin)) {
+                return res.status(403).json({ error: 'Apenas administradores podem compactar o banco.' });
+            }
+            // Só texto: um array ['COMPACTAR'] viraria 'COMPACTAR' no String().
+            const confirm = (req.body || {}).confirm;
+            if (typeof confirm !== 'string' || confirm.trim().toUpperCase() !== 'COMPACTAR') {
+                return res.status(400).json({ error: 'Digite COMPACTAR para confirmar.', confirmationRequired: true });
+            }
+            const active = activeApplicationCount();
+            if (active) {
+                return res.status(409).json({
+                    error: 'Há prova em andamento. Compacte o banco depois que as provas terminarem.',
+                    activeApplications: active,
+                });
+            }
+            await db.refreshStorageStats();
+            const neededBytes = Math.ceil(storageTotalBytes(db.storageStatus()) * COMPACT_DISK_MARGIN);
+            const freeOnDisk = await diskFreeBytes(DATA_DIR);
+            if (freeOnDisk !== null && freeOnDisk < neededBytes) {
+                return res.status(409).json({
+                    error: `Espaço livre em disco insuficiente para compactar: são necessários ${formatMegabytes(neededBytes)} e há ${formatMegabytes(freeOnDisk)}.`,
+                    diskFreeBytes: freeOnDisk,
+                    neededBytes,
+                });
+            }
+            let result;
+            try {
+                // A conferência de prova em andamento de cima vem antes das esperas (PRAGMAs,
+                // espaço em disco, fila de gravação): uma prova iniciada nesse meio-tempo
+                // pararia no VACUUM. Por isso ela é refeita dentro do runExclusive, logo antes
+                // dele (sobra do H1-c na J2).
+                result = await db.compactDatabase({
+                    beforeVacuum: () => {
+                        const activeNow = activeApplicationCount();
+                        return activeNow ? Object.assign(new Error('active_application'), { code: 'ACTIVE_APPLICATION', activeApplications: activeNow }) : null;
+                    },
+                });
+            } catch (error) {
+                if (error && error.code === 'ACTIVE_APPLICATION') {
+                    return res.status(409).json({
+                        error: 'Há prova em andamento. Compacte o banco depois que as provas terminarem.',
+                        activeApplications: error.activeApplications,
+                    });
+                }
+                if (error && (error.code === 'SQLITE_BUSY' || error.code === 'SQLITE_LOCKED')) {
+                    return res.status(409).json({ error: 'O banco está em uso por outro programa agora. Feche o programa que abriu o banco e tente de novo.' });
+                }
+                return sendInternalError(error, req, res, 'compactar o banco');
+            }
+            const antes = storageTotalBytes(result.before);
+            const depois = storageTotalBytes(result.after);
+            // O antes soma o -wal, que o checkpoint zera de qualquer jeito: o espaço vazio
+            // devolvido ao disco é o freeBytes que sumiu do arquivo.
+            const recuperadoBytes = Math.max(0, (Number(result.before.freeBytes) || 0) - (Number(result.after.freeBytes) || 0));
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'storage_compacted',
+                category: 'system',
+                before: { bytes: antes, freeBytes: result.before.freeBytes },
+                after: { bytes: depois, freeBytes: result.after.freeBytes },
+                details: { antes, depois, recuperadoBytes, ms: result.ms },
+            });
+            await db.save();
+            res.json({ success: true, antes, depois, recuperadoBytes, ms: result.ms, storage: db.storageStatus() });
+        });
+    });
+
     router.post('/api/admin/config', (req, res) => {
         validateAdmin(req, res, config => {
             const { studentClass, studentEmail, courseId } = req.body;
-            const preferredIp = localIpAddresses.find(ip => !ip.name.toLowerCase().includes('virtualbox') && !ip.address.startsWith('192.168.56.'))
-                || localIpAddresses[0]
-                || { address: 'localhost' };
+            // O mesmo endereço recomendado do cartão Rede e do QR da sala (H6a).
+            const snapshot = studentAddresses(req);
             const responseData = {
                 activeExamKey: config.activeExamKey,
                 releasedItems: config.releasedItems || {},
-                serverUrl: `http://${preferredIp.address}:${port}`,
+                serverUrl: snapshot.recommended ? snapshot.recommended.url : `${snapshot.scheme}://localhost:${snapshot.port}`,
             };
 
             if (studentClass) {
@@ -205,23 +452,34 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             if (clearedCount === 0) {
                 return res.json({ success: true, clearedCount: 0, message: `Nada para limpar na turma ${cls.name}.` });
             }
-            const backup = safetyBackup('antes-limpeza-prova');
-            if (!backup.ok) return res.status(500).json({ error: 'Não foi possível salvar o backup de segurança; nada foi apagado.' });
-            const removed = applyExamStateFlush(db.memory, plan);
+            const backup = await safetyBackup('antes-limpeza-prova');
+            if (backup.busy) return sendRouteError(backup.error, req, res);
+            if (!backup.ok) return sendHandledFailure(backup.error, req, res, 'Não foi possível salvar o backup de segurança; nada foi apagado.');
+            // O backup roda sem travar o servidor: o plano é refeito com o estado de agora
+            // (uma prova pode ter começado na turma enquanto ele era gravado).
+            const current = planExamStateFlush(db.memory, { cls, application, examKey, studentEmail, ...classHelpers(cls) });
+            if (current.blockedBy.length) {
+                const names = current.blockedBy.map(item => item.examTitle).join(', ');
+                return res.status(409).json({
+                    error: `Há uma aplicação em andamento nesta turma (${names}). Encerre-a pelo Monitor antes de limpar o estado de prova.`,
+                    blockedBy: current.blockedBy,
+                });
+            }
+            const removed = applyExamStateFlush(db.memory, current);
             recordMaintenanceAudit(req, matchedAdmin, 'exam_state_flushed', cls, {
-                applicationId: plan.applicationId,
-                examKey: plan.examKey || (examKey ? String(examKey) : null),
-                studentEmail: plan.studentEmail,
+                applicationId: current.applicationId,
+                examKey: current.examKey || (examKey ? String(examKey) : null),
+                studentEmail: current.studentEmail,
                 ...removed,
-                pendingAnswers: plan.counts.pendingAnswers,
-                preserved: plan.preserved,
+                pendingAnswers: current.counts.pendingAnswers,
+                preserved: current.preserved,
                 backup: backup.file,
             });
             await db.save();
-            console.log(`[FLUSH] Estado de prova limpo na turma ${cls.name}: ${clearedCount} registros removidos.`);
+            console.log(`[FLUSH] Estado de prova limpo na turma ${cls.name}: ${current.counts.examStates + current.counts.messages} registros removidos.`);
             res.json({
                 success: true,
-                clearedCount,
+                clearedCount: current.counts.examStates + current.counts.messages,
                 ...removed,
                 backup: backup.file,
                 message: `Estado de prova limpo na turma ${cls.name}: ${removed.removedStates} estado(s) de tentativa e ${removed.removedMessages} mensagem(ns) removidos. Logs de monitoramento e histórico de digitação foram preservados.`,
@@ -229,43 +487,37 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         });
     });
 
+    // Reiniciar (H3c, CONF-12, OPS-06): o desligamento ordenado único do servidor
+    // (serverLifecycle.requestShutdown), o mesmo dos sinais e do launcher: fecha a porta,
+    // para os timers, grava tudo e fecha o banco (db.close) e marca a parada limpa no
+    // heartbeat. Sob o supervisor o processo sai com 75 e volta na hora; sem ele, o próprio
+    // servidor dispara o novo processo antes de sair. As sessões (H3a-2) e o tempo das
+    // provas (H3b) voltam com ele: ninguém precisa entrar de novo. Antes saía sem db.close
+    // e, fora do Windows, não voltava.
     router.post('/api/admin/server/restart', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            // Reiniciar derruba a conexão de todos os alunos: só com confirmação explícita.
+            // Reiniciar deixa todos sem conexão por alguns segundos: só com confirmação explícita.
             if (String((req.body || {}).confirm || '').trim().toUpperCase() !== 'REINICIAR') {
                 return res.status(400).json({ error: 'Confirme o reinício do servidor.', confirmationRequired: true });
             }
+            // Sem o desligamento registrado (app montado pelos testes, sem o startServer)
+            // não há como voltar: nada é feito.
+            if (!serverLifecycle.hasShutdownHandler()) {
+                return res.status(503).json({ error: 'Reinício indisponível neste modo.' });
+            }
             recordMaintenanceAudit(req, matchedAdmin, 'server_restart_requested', null, {
                 activeApplications: (db.memory.examApplications || []).filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status)).length,
+                supervised: serverLifecycle.isSupervised(),
             });
+            // Falha de gravação aqui não impede o reinício: o db.close do desligamento grava
+            // de novo, e a resposta não vira o 503 de gravação.
             try { await db.save(); } catch (_) {}
-            res.json({ success: true, message: 'Servidor reiniciando...' });
-            const serverInstance = req.app.get('serverInstance');
-
-            const spawnRestart = () => {
-                console.log('Iniciando processo de reinicialização...');
-                const { spawn } = require('child_process');
-                const child = spawn('cmd.exe', ['/c', 'ping 127.0.0.1 -n 3 >nul && node backend/server.js'], {
-                    detached: true,
-                    stdio: 'ignore',
-                    cwd: process.cwd(),
-                    shell: true,
-                });
-                child.unref();
-                process.exit(0);
-            };
-
-            if (serverInstance) {
-                serverInstance.close(() => {
-                    console.log('Porta liberada.');
-                    spawnRestart();
-                });
-            }
-
-            setTimeout(() => {
-                console.log('Forçando reinicialização do servidor por timeout...');
-                spawnRestart();
-            }, 2000);
+            const supervised = serverLifecycle.isSupervised();
+            res.json({ success: true, ok: true, supervised, message: 'Servidor reiniciando...' });
+            // Depois que a resposta saiu (o desligamento fecha as conexões).
+            res.once('finish', () => setImmediate(() => {
+                serverLifecycle.requestShutdown({ restart: true, reason: 'admin_restart' });
+            }));
         });
     });
 
@@ -286,8 +538,9 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             }
             const { cls } = scope;
             const helpers = classHelpers(cls);
-            const backup = safetyBackup('antes-resetar-sala');
-            if (!backup.ok) return res.status(500).json({ error: 'Não foi possível salvar o backup de segurança; nada foi alterado.' });
+            const backup = await safetyBackup('antes-resetar-sala');
+            if (backup.busy) return sendRouteError(backup.error, req, res);
+            if (!backup.ok) return sendHandledFailure(backup.error, req, res, 'Não foi possível salvar o backup de segurança; nada foi alterado.');
 
             const actor = (matchedAdmin && (matchedAdmin.email || matchedAdmin.name)) || 'Administrador';
             const finished = [];
@@ -326,7 +579,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             // Quem também faz prova em andamento em outra turma continua conectado.
             const sessions = classSessionsToDrop(db.memory, cls, helpers.isClassStudent);
             const disconnected = sessions.drop;
-            disconnected.forEach(email => { delete db.memory.sessions[email]; });
+            disconnected.forEach(email => { revokeStudentSession(db.memory, email); });
 
             const submitted = finished.reduce((total, item) => total + item.submitted + item.deliveredAtDeadline, 0);
             recordMaintenanceAudit(req, matchedAdmin, 'class_reset', cls, {
@@ -351,16 +604,174 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
         });
     });
 
-    router.get('/api/admin/settings', (req, res) => {
-        validateAdmin(req, res, () => res.json(settingsUtil.getSettings()));
+    // Rede (SEG-03): quem abre o painel do professor em outros aparelhos (adminAccess) e
+    // se os alunos entram pela conexão segura (studentsHttps, H6c). Só o administrador
+    // troca (o professor recebe 403 mesmo com system.manage), com registro na auditoria.
+    // O POST genérico de configurações nunca mexe neste bloco (PROTECTED_SETTINGS_SECTIONS
+    // em utils/settings.js).
+    function networkSettingsPayload(req) {
+        const connection = connectionInfo(req);
+        const network = networkHttpsStatus();
+        return {
+            ...settingsUtil.networkSettings(),
+            modes: settingsUtil.ADMIN_ACCESS_MODES,
+            httpsAvailable: httpsAvailable(),
+            // Serve aos outros aparelhos (o IP recomendado está no certificado)? É o que
+            // libera 'rede' e studentsHttps; httpsError diz por que não.
+            httpsReady: network.usable,
+            httpsError: network.usable ? null : network.reason,
+            httpsUrl: connection.httpsUrl,
+            thisComputer: connection.thisComputer,
+            secure: connection.secure,
+        };
+    }
+
+    // Provas em andamento (aberta ou pausada), pelo nome, para a recusa de trocar o https
+    // dos alunos: a troca muda o endereço, e quem está com a prova aberta perderia a sessão.
+    function activeApplicationTitles() {
+        return (db.memory.examApplications || [])
+            .filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status))
+            .map(item => {
+                const title = item.title || item.examTitle || examTitleFor(item.examKey);
+                return item.studentClass ? `${title} (${item.studentClass})` : title;
+            });
+    }
+
+    router.get('/api/admin/network-settings', (req, res) => {
+        validateAdmin(req, res, () => res.json(networkSettingsPayload(req)));
     });
 
-    router.post('/api/admin/settings', (req, res) => {
-        validateAdmin(req, res, async () => {
+    router.post('/api/admin/network-settings', (req, res) => {
+        validateAdmin(req, res, async (config, account) => {
+            if (isProfessorAccount(account)) {
+                return res.status(403).json({ error: 'Só o administrador pode mudar as configurações de rede.' });
+            }
+            const body = req.body || {};
+            const hasAccess = body.adminAccess !== undefined;
+            const hasStudents = body.studentsHttps !== undefined;
+            if (!hasAccess && !hasStudents) {
+                return res.status(400).json({ success: false, error: 'Escolha onde o painel do professor pode abrir.', field: 'adminAccess' });
+            }
+            if (hasAccess && (typeof body.adminAccess !== 'string' || !settingsUtil.ADMIN_ACCESS_MODES.includes(body.adminAccess))) {
+                return res.status(400).json({ success: false, error: 'Escolha onde o painel do professor pode abrir.', field: 'adminAccess' });
+            }
+            if (hasStudents && typeof body.studentsHttps !== 'boolean') {
+                return res.status(400).json({ success: false, error: 'Diga se os alunos entram pela conexão segura (sim ou não).', field: 'studentsHttps' });
+            }
+            const before = settingsUtil.networkSettings();
+            const after = {
+                adminAccess: hasAccess ? body.adminAccess : before.adminAccess,
+                studentsHttps: hasStudents ? body.studentsHttps : before.studentsHttps,
+            };
+            // 'rede' e os alunos pelo https só com a conexão segura funcionando para os
+            // outros aparelhos: o certificado existe E tem o IP recomendado. Com a rede da
+            // escola fora das faixas locais, o https por IP não abriria em aparelho nenhum.
+            const network = (hasAccess || hasStudents) ? networkHttpsStatus() : { usable: true };
+            // Com a CA funcionando mas o IP da rede fora do certificado (faixa que não é
+            // local, adaptador virtual), o https existe só neste computador: a recusa diz
+            // isso e onde conferir, em vez de parecer que a conexão segura não existe
+            // (decisões §12, sobra do H6c).
+            const onlyHere = !network.usable && httpsAvailable()
+                ? ' Agora a conexão segura só funciona neste computador (https://localhost). Confira o endereço da rede em Sistema → Rede e escolha de novo quando ele aparecer como endereço seguro.'
+                : '';
+            const why = network.usable ? '' : ` ${network.reason}${onlyHere}`;
+            if (hasAccess && after.adminAccess === 'rede' && before.adminAccess !== 'rede' && !network.usable) {
+                return res.status(409).json({
+                    success: false,
+                    field: 'adminAccess',
+                    error: `A opção "Outros aparelhos só com conexão segura" precisa da conexão segura (https) funcionando para os outros aparelhos da rede.${why} Por enquanto, escolha "Todos os aparelhos da rede" ou "Só o computador do IClass".`,
+                });
+            }
+            if (hasStudents && after.studentsHttps && !before.studentsHttps && !network.usable) {
+                return res.status(409).json({
+                    success: false,
+                    field: 'studentsHttps',
+                    error: `Os alunos só podem entrar pela conexão segura com ela funcionando para os outros aparelhos da rede.${why}`,
+                });
+            }
+            if (after.studentsHttps !== before.studentsHttps) {
+                // A troca muda o endereço dos alunos (http e https não dividem a sessão no
+                // navegador): com prova em andamento, a turma inteira teria de entrar de novo.
+                const active = activeApplicationTitles();
+                if (active.length) {
+                    return res.status(409).json({
+                        success: false,
+                        field: 'studentsHttps',
+                        error: `Há prova em andamento: ${active.join('; ')}. Troque a conexão dos alunos depois que as provas terminarem (ao trocar, quem estiver com o IClass aberto precisa entrar de novo).`,
+                        activeApplications: active,
+                    });
+                }
+            }
+            const changes = ['adminAccess', 'studentsHttps'].filter(key => before[key] !== after[key]);
+            if (!changes.length) {
+                return res.json({ success: true, unchanged: true, network: networkSettingsPayload(req) });
+            }
             if (!db.memory.config) db.memory.config = {};
-            db.memory.config.settings = settingsUtil.mergeSettings(req.body || {});
+            const settings = db.memory.config.settings && typeof db.memory.config.settings === 'object' ? db.memory.config.settings : {};
+            const storedNetwork = settings.network && typeof settings.network === 'object' ? settings.network : {};
+            // Só os campos que mudaram são gravados; o resto do bloco (inclusive campos que
+            // esta versão não conhece) fica como estava.
+            const patch = Object.fromEntries(changes.map(field => [field, after[field]]));
+            db.memory.config.settings = { ...settings, network: { ...storedNetwork, ...patch } };
+            // Uma entrada por campo que mudou (campo, antes e depois), como as da tela.
+            changes.forEach(field => {
+                recordAudit(db.memory, {
+                    req,
+                    actor: account,
+                    action: 'network_settings_changed',
+                    category: 'system',
+                    field,
+                    oldValue: before[field],
+                    newValue: after[field],
+                    before: { [field]: before[field] },
+                    after: { [field]: after[field] },
+                });
+            });
             await db.save();
-            res.json({ success: true, settings: db.memory.config.settings });
+            res.json({ success: true, network: networkSettingsPayload(req) });
+        });
+    });
+
+    // O caminho do destino externo do backup (settings.backup.destino, H4b) é só do
+    // administrador, como em GET /api/admin/backup/status: o professor vê que há um
+    // destino, não onde.
+    const settingsForAccount = (settings, account) => (isProfessorAccount(account) && settings && settings.backup && settings.backup.destino
+        ? { ...settings, backup: { ...settings.backup, destino: '' } }
+        : settings);
+
+    router.get('/api/admin/settings', (req, res) => {
+        validateAdmin(req, res, (config, account) => res.json(settingsForAccount(settingsUtil.getSettings(), account)));
+    });
+
+    // Configurações gerais: cada chave que mudou vai para a auditoria (settings_updated,
+    // SEG-07) com o valor de antes e o de depois. Salvar sem mudar nada não grava entrada.
+    router.post('/api/admin/settings', (req, res) => {
+        validateAdmin(req, res, async (config, account) => {
+            // Fuso que o Intl não conhece não é gravado: cada data feita com ele quebrava.
+            const timezone = req.body && req.body.timezone;
+            if (typeof timezone === 'string' && timezone.trim() && !settingsUtil.isValidTimeZone(timezone.trim())) {
+                return res.status(400).json({ success: false, error: 'Fuso horário desconhecido. Escolha um fuso da lista.', field: 'timezone' });
+            }
+            if (!db.memory.config) db.memory.config = {};
+            const before = settingsUtil.getSettings();
+            // O prazo da lixeira faz parte da retenção (H8b, SEG-13): o administrador grava
+            // em POST /api/admin/lgpd/retention. Aqui o professor não muda (sem erro: o
+            // resto do pedido vale) e o administrador ainda muda, como antes.
+            const patch = { ...(req.body && typeof req.body === 'object' ? req.body : {}) };
+            if (isProfessorAccount(account)) delete patch.trash;
+            db.memory.config.settings = settingsUtil.mergeSettings(patch);
+            const changes = settingsChanges(before, settingsUtil.getSettings());
+            if (changes.length) {
+                recordAudit(db.memory, {
+                    req,
+                    actor: account,
+                    action: 'settings_updated',
+                    category: 'system',
+                    details: { changes },
+                });
+            }
+            await db.save();
+            res.json({ success: true, settings: settingsForAccount(db.memory.config.settings, account) });
         });
     });
 

@@ -4,7 +4,6 @@
 //
 // Escala: o banco guarda `score` de 0 a 100 (como a correção online); as telas,
 // o boletim e as planilhas mostram 0 a 10 com uma casa decimal.
-const crypto = require('crypto');
 const {
     SCORE_MAX,
     attemptGroupKey,
@@ -12,7 +11,7 @@ const {
     normalizeScore,
     roundGrade,
 } = require('./submissionAttempts.js');
-const { getClientIp } = require('./students.js');
+const { recordAudit } = require('./audit.js');
 
 const GRADE_MAX = SCORE_MAX / 10;
 const MANUAL_TYPES = ['impressa', 'manual', 'online'];
@@ -543,32 +542,56 @@ function gradebookCsv(gradebook) {
 
 // ---------------------------------------------------------- auditoria
 // Registro compatível com o painel "Auditoria" da ficha do aluno (field/oldValue/newValue),
-// mais os identificadores da entrega para o histórico da nota em Resultados.
-function recordGradeAudit(memory, { req, actor, submission, action, field = 'Nota', oldValue = '', newValue = '', details = null }) {
+// mais os identificadores da entrega para o histórico da nota em Resultados. Atalho para
+// recordAudit (utils/audit.js), na categoria 'grade', com os mesmos campos de antes (a
+// lixeira de notas lê details.deletedSubmission e submissionId).
+function recordGradeAudit(memory, { req, actor, submission, action, field = 'Nota', oldValue = '', newValue = '', details = null, reason }) {
     if (!memory) return null;
-    if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
-    const now = Date.now();
-    const entry = {
-        id: `audit_grade_${now}_${crypto.randomBytes(4).toString('hex')}`,
+    return recordAudit(memory, {
+        req,
         actor: (actor && (actor.email || actor)) || 'desconhecido',
-        studentEmail: String(submission?.student?.email || submission?.studentEmail || '').trim().toLowerCase(),
         action,
+        category: 'grade',
+        studentEmail: String(submission?.student?.email || submission?.studentEmail || '').trim().toLowerCase(),
         field,
         oldValue: String(oldValue ?? ''),
         newValue: String(newValue ?? ''),
-        timestamp: now,
-        ip: getClientIp(req),
-        device: (req && req.headers && req.headers['user-agent']) || '',
         submissionId: submission?.id != null ? String(submission.id) : null,
         examKey: submission?.examKey || null,
         applicationId: submission?.applicationId || null,
         courseId: submission?.student?.courseId || submission?.courseId || null,
         studentClass: submission?.student?.studentClass || submission?.studentClass || null,
-        category: 'grade',
-    };
-    if (details) entry.details = details;
-    memory.auditLogs.push(entry);
-    return entry;
+        reason: reason || undefined,
+        details: details || undefined,
+    });
+}
+
+// Motivo de uma alteração de nota (CONF-09). Com REQUIRE_REASON_AFTER_PUBLISH ligada
+// (padrão da fase 2), mexer numa nota que o aluno já viu pede o motivo: despublicar ou
+// excluir uma nota publicada, ou mudar a composição (desconsiderar, reconsiderar,
+// escolher tentativa, regra de cálculo) de um grupo com alguma tentativa publicada. Nos
+// outros casos ele é opcional. O texto vai para o campo reason da auditoria.
+const REQUIRE_REASON_AFTER_PUBLISH = true;
+const GRADE_REASON_MIN = 3;
+const GRADE_REASON_MAX = 500;
+const GRADE_REASON_REQUIRED_MESSAGE = 'Informe o motivo: esta nota já foi publicada para o aluno.';
+
+// Lê body.reason. Devolve { ok: true, reason } (texto aparado e cortado em 500, ou '')
+// ou { ok: false, status: 400, body } para a rota responder sem mudar nada.
+// required: a ação mexe numa nota já publicada.
+function gradeChangeReason(body, { required = false } = {}) {
+    const raw = body ? body.reason : undefined;
+    if (raw !== undefined && raw !== null && typeof raw !== 'string') {
+        return { ok: false, status: 400, body: { success: false, error: 'O motivo precisa ser um texto.', field: 'reason' } };
+    }
+    const reason = String(raw || '').trim().slice(0, GRADE_REASON_MAX);
+    if (required && REQUIRE_REASON_AFTER_PUBLISH && reason.length < GRADE_REASON_MIN) {
+        const error = reason
+            ? `O motivo precisa ter pelo menos ${GRADE_REASON_MIN} letras: esta nota já foi publicada para o aluno.`
+            : GRADE_REASON_REQUIRED_MESSAGE;
+        return { ok: false, status: 400, body: { success: false, code: 'reason_required', error, field: 'reason' } };
+    }
+    return { ok: true, reason };
 }
 
 // Aluno excluído (delete-student): o registro de auditoria fica como histórico,
@@ -764,13 +787,13 @@ function deletedCopyEmail(copy) {
     return normalizeEmailValue(student.email || copy.studentEmail);
 }
 
-function anonymizeDeletedCopy(copy, at) {
+function anonymizeDeletedCopy(copy, at, replacement = {}) {
     const student = copy.student && typeof copy.student === 'object' ? copy.student : {};
     const anonymized = { ...copy };
     PERSONAL_SUBMISSION_FIELDS.forEach(field => { delete anonymized[field]; });
     anonymized.student = {
-        name: ANONYMIZED_STUDENT_NAME,
-        email: '',
+        name: replacement.name || ANONYMIZED_STUDENT_NAME,
+        email: replacement.email || '',
         courseId: student.courseId || copy.courseId || null,
         studentClass: student.studentClass || copy.studentClass || '',
     };
@@ -785,8 +808,9 @@ function anonymizeDeletedCopy(copy, at) {
 // saem das entradas do próprio aluno (owned): numa entrada que só cita o e-mail, "Ana"
 // pode ser o começo de "Ana Paula".
 function scrubPersonalKey(key, identity, taken) {
-    let next = identity.emails.has(String(key).trim().toLowerCase()) ? ANONYMIZED_ACTOR : String(key);
-    identity.emailPatterns.forEach(pattern => { next = next.replace(pattern, ANONYMIZED_ACTOR); });
+    const emailText = identity.replacementEmail || ANONYMIZED_ACTOR;
+    let next = identity.emails.has(String(key).trim().toLowerCase()) ? emailText : String(key);
+    identity.emailPatterns.forEach(pattern => { next = next.replace(pattern, emailText); });
     if (next === key) return key;
     let unique = next;
     for (let index = 2; taken.has(unique); index += 1) unique = `${next} (${index})`;
@@ -802,22 +826,46 @@ function isIdentifierOrDateKey(key) {
     return IDENTIFIER_OR_DATE_KEY.test(String(key || ''));
 }
 
+// Texto do qual saiu o nome, o e-mail ou a matrícula (decisões §12, sobra do H7c): sem
+// parênteses ou colchetes vazios ("pediu para sair ()"), sem espaço sobrando, e a
+// preposição contraída antes do pseudônimo ("da Ana" virou "da Aluno anonimizado") passa a
+// "de", "em" ou "por" ("de Aluno anonimizado 1A2B3C"), que serve a qualquer pseudônimo.
+const CONTRACTION_TARGET = { da: 'de', do: 'de', das: 'de', dos: 'de', na: 'em', no: 'em', nas: 'em', nos: 'em', pela: 'por', pelo: 'por', pelas: 'por', pelos: 'por' };
+function tidyScrubbedText(text, replacements = []) {
+    let out = String(text);
+    replacements.map(item => String(item || '').trim()).filter(Boolean).forEach(replacement => {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}])(da|do|das|dos|na|no|nas|nos|pela|pelo|pelas|pelos)\\s+(?=${escapeRegExp(replacement)})`, 'giu'), (match, before, word) => {
+            const target = CONTRACTION_TARGET[word.toLowerCase()];
+            const cased = word[0] === word[0].toUpperCase() ? target[0].toUpperCase() + target.slice(1) : target;
+            return `${before}${cased} `;
+        });
+    });
+    return out
+        .replace(/\(\s*\)|\[\s*\]/g, '')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/[ \t]+([,.;:!?)\]])/g, '$1')
+        .replace(/([(\[])[ \t]+/g, '$1')
+        .trim();
+}
+
 function scrubPersonalText(value, identity, key, owned) {
     if (typeof value === 'string') {
         const trimmed = value.trim();
-        if (identity.emails.has(trimmed.toLowerCase())) return key === 'actor' ? ANONYMIZED_ACTOR : '';
+        // Anonimizar (H7c): o e-mail vira o pseudônimo; apagar de vez: some (no autor,
+        // "aluno excluído").
+        if (identity.emails.has(trimmed.toLowerCase())) return identity.replacementEmail || (key === 'actor' ? ANONYMIZED_ACTOR : '');
         const personal = owned && !isIdentifierOrDateKey(key);
         if (personal && identity.matriculas.has(trimmed)) return '';
         let text = value;
-        identity.emailPatterns.forEach(pattern => { text = text.replace(pattern, ANONYMIZED_ACTOR); });
+        identity.emailPatterns.forEach(pattern => { text = text.replace(pattern, identity.replacementEmail || ANONYMIZED_ACTOR); });
         if (!personal) return text;
         identity.names.forEach(name => {
-            text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), `$1${ANONYMIZED_STUDENT_NAME}`);
+            text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), `$1${identity.replacementName || ANONYMIZED_STUDENT_NAME}`);
         });
         identity.matriculas.forEach(matricula => {
             text = text.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(matricula)}(?=$|[^\\p{L}\\p{N}])`, 'gu'), '$1');
         });
-        return text;
+        return text === value ? text : tidyScrubbedText(text, [identity.replacementName || ANONYMIZED_STUDENT_NAME]);
     }
     if (Array.isArray(value)) return value.map(item => scrubPersonalText(item, identity, key, owned));
     if (value && typeof value === 'object') {
@@ -834,6 +882,21 @@ function scrubPersonalText(value, identity, key, owned) {
 // identity: { emails, names, matriculas, owns } do aluno excluído; emails e owns vêm de
 // studentEmailOwnership (todos os e-mails conhecidos dele e de quem é cada registro).
 // Sem owns, todo registro com um desses e-mails conta como dele.
+// Anonimizar (H7c, utils/studentLifecycle.js): replacementEmail e replacementName (o
+// pseudônimo) entram no lugar do e-mail e do nome, e as entradas do aluno ficam com
+// studentEmail = pseudônimo (a ficha do cadastro anonimizado mostra a trilha dele). As
+// cópias das notas na lixeira continuam anonimizadas e não restauráveis.
+// Campos do cadastro (rótulos de students.js AUDITABLE_FIELDS e das rotas) cujo valor não
+// identifica a pessoa. Lista do que fica: campo novo que não estiver aqui tem o valor
+// apagado na anonimização. "Matrícula" é o número (dado pessoal) na edição do cadastro e
+// o curso e turma na aprovação/recusa da matrícula (enrollment_*).
+const NON_PERSONAL_PROFILE_FIELDS = new Set(['Status', 'Turmas', 'Unidade/instituição', 'Cadastro', 'Observação pedagógica', 'Preferências de acessibilidade']);
+function keepsProfileValues(entry) {
+    const field = String(entry.field || '');
+    if (NON_PERSONAL_PROFILE_FIELDS.has(field)) return true;
+    return field === 'Matrícula' && /^enrollment_/.test(String(entry.action || ''));
+}
+
 function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toISOString() } = {}) {
     if (!memory || !Array.isArray(memory.auditLogs)) return 0;
     const emails = [...new Set((identity.emails || []).map(normalizeEmailValue).filter(Boolean))];
@@ -841,6 +904,8 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
     const owns = typeof identity.owns === 'function'
         ? identity.owns
         : value => emails.includes(normalizeEmailValue(value));
+    const replacementEmail = normalizeEmailValue(identity.replacementEmail);
+    const replacementName = String(identity.replacementName || '').trim();
     const patterns = new Map(emails.map(email => [email, wholeEmailPattern(email)]));
     const names = new Set((identity.names || []).map(name => String(name || '').trim()).filter(name => name.length >= 3));
     const matriculas = new Set((identity.matriculas || []).map(value => String(value || '').trim()).filter(value => value.length >= 3));
@@ -873,20 +938,29 @@ function anonymizeStudentAuditTrail(memory, identity = {}, { at = new Date().toI
         if (!aboutStudent && !entryEmails.length) return;
         let next = { ...entry };
         if (copy && typeof copy === 'object' && copy.anonymized !== true && aboutStudent) {
-            next.details = { ...next.details, deletedSubmission: anonymizeDeletedCopy(copy, at) };
+            next.details = { ...next.details, deletedSubmission: anonymizeDeletedCopy(copy, at, { email: replacementEmail, name: replacementName }) };
         }
-        // Alteração do cadastro (recordStudentAudit): o valor é o próprio dado pessoal.
+        // Alteração do cadastro (recordStudentAudit): o valor de nome, e-mail, telefone,
+        // matrícula (o número), nascimento e afins é o próprio dado pessoal e sai. Os de
+        // situação, turma, curso e matrícula em curso ficam (decisões §12, sobra do H7c);
+        // o nome ou e-mail citado dentro deles sai no scrub abaixo.
         const profileChange = aboutStudent && !next.type && next.category !== 'grade' && !String(next.action || '').startsWith('grade_') && 'field' in next;
-        if (profileChange) { next.oldValue = ''; next.newValue = ''; }
+        if (profileChange && !keepsProfileValues(next)) { next.oldValue = ''; next.newValue = ''; }
         const scrubIdentity = {
             emails: new Set(entryEmails),
             emailPatterns: entryEmails.map(email => patterns.get(email)),
             names: sortedNames,
             matriculas,
+            replacementEmail,
+            replacementName,
         };
         next = scrubPersonalText(next, scrubIdentity, '', aboutStudent || byStudent);
+        // Entrada gravada pelo próprio aluno (aceite dos documentos e data/responsável no
+        // primeiro acesso, H8a-2; troca de senha...): o IP e o aparelho são dele, como na
+        // presença (studentLifecycle.anonymizedAttendance). Os do professor ficam.
+        if (byStudent) { delete next.ip; delete next.device; }
         if (aboutStudent) {
-            next.studentEmail = '';
+            next.studentEmail = replacementEmail;
             next.studentAnonymized = true;
             if (!next.anonymizedAt) next.anonymizedAt = at;
         }
@@ -970,10 +1044,43 @@ function regradedLabel(count) {
     return Number(count) > 0 ? countLabel(count, 'entrega recorrigida', 'entregas recorrigidas') : '';
 }
 
+// Duração em português, para o registro da aplicação: "36 s", "3 min 5 s", "22 min",
+// "1 h 5 min".
+function durationLabel(ms) {
+    const seconds = Math.max(0, Math.round(Number(ms) / 1000) || 0);
+    if (seconds < 60) return `${seconds} s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) {
+        const rest = seconds % 60;
+        return rest && minutes < 10 ? `${minutes} min ${rest} s` : `${minutes} min`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const restMinutes = minutes % 60;
+    return restMinutes ? `${hours} h ${restMinutes} min` : `${hours} h`;
+}
+
+// Por que o servidor ficou fora do ar (utils/serverLifecycle.js).
+const OUTAGE_REASON_LABELS = {
+    restart: 'reinício',
+    crash: 'queda do servidor',
+    suspended: 'computador suspenso ou travado',
+};
+
 function describeExamAudit(entry) {
     const details = entry.details || {};
     const join = (...parts) => parts.filter(Boolean).join(' · ');
     switch (entry.type) {
+        case 'exam_application_server_outage': {
+            const reason = OUTAGE_REASON_LABELS[details.reason];
+            const limit = Number(details.maxMinutes) > 0 ? Number(details.maxMinutes) : 15;
+            return {
+                title: 'Servidor fora do ar durante a prova',
+                detail: `Fora do ar por ${durationLabel(details.durationMs)}${reason ? ` (${reason})` : ''}. `
+                    + (details.compensated === false
+                        ? `Tempo não devolvido (mais de ${limit} min).`
+                        : 'Tempo devolvido a todos.'),
+            };
+        }
         case 'exam_application_finished':
             // Sem prova em andamento no encerramento, não há o que dizer (antes saía
             // "0 tentativas em andamento descartadas").
@@ -1060,10 +1167,15 @@ function buildApplicationAuditTrail(application, auditLogs = [], { students = []
 }
 
 module.exports = {
+    tidyScrubbedText,
     ANONYMIZED_STUDENT_NAME,
     CSV_BOM,
     GRADE_MAX,
+    GRADE_REASON_MAX,
+    GRADE_REASON_MIN,
+    GRADE_REASON_REQUIRED_MESSAGE,
     MANUAL_TYPES,
+    REQUIRE_REASON_AFTER_PUBLISH,
     buildClassGradebook,
     buildCsv,
     buildGradeGroups,
@@ -1084,6 +1196,7 @@ module.exports = {
     formatDateTimeBR,
     formatGradeBR,
     gradeCountsMismatch,
+    gradeChangeReason,
     gradeFromScore,
     gradebookCsv,
     isEmptyInput,

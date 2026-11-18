@@ -20,7 +20,7 @@ Como trabalhar neste repositório sem quebrar o que já funciona. Vale para dese
 
 - Node.js **20.19+**.
 - Instalação: `npm run setup` (instala raiz + `web/`).
-- O servidor recusa iniciar se o build estiver ausente ou desatualizado (ver `utils/buildIntegrity.js`). Rode `npm run build` após mudar o frontend.
+- O servidor recusa iniciar se o build estiver ausente ou desatualizado (ver `utils/buildIntegrity.js`). Rode `npm run build` após mudar o frontend ou `backend/utils/staticAssets.js` (a regra de nomes de `/assets`, que o build também usa).
 
 ## Fluxo de trabalho
 

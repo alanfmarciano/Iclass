@@ -20,7 +20,6 @@ async function setBranding(page, interfacePreset, themeMode) {
     const auth = JSON.parse(localStorage.getItem('iclass-v3-auth') || '{}');
     const headers = { 'Content-Type': 'application/json' };
     if (auth.adminSession) headers['x-admin-session'] = auth.adminSession;
-    else if (auth.adminAuth) headers.Authorization = auth.adminAuth;
     const response = await fetch('/api/branding', {
       method: 'POST',
       headers,

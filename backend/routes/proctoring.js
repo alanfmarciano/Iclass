@@ -10,6 +10,7 @@ const {
     studentBelongsToClass,
     studentCanSeeBroadcastMessage,
     sanitizeBroadcastMessageForStudent,
+    sendInternalError,
 } = require('../middlewares.js');
 const { countStudentExamAttempts, normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { normalizeExamToken, verifyExamToken } = require('../utils/examToken.js');
@@ -24,6 +25,9 @@ const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
+const { FIELD_LIMITS: KEYSTROKE_FIELD_LIMITS } = require('../utils/keystrokeStore.js');
+const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
+const { filterKeystrokeEvents, keystrokeModeOf, normalizeEventKind } = require('../utils/keystrokePolicy.js');
 
 // Prova bloqueada por perda de foco: as questões ficam ocultas, então o rascunho só é
 // aceito logo depois do bloqueio (o que o aluno marcou antes dele e ainda estava a
@@ -45,6 +49,57 @@ const STUDENT_ACTIVITY_EVENTS = new Set([
     'exam_render_error', 'exam_error_reload', 'exam_update_reload',
 ]);
 const ACTIVITY_DETAILS_MAX = 500;
+// Teto da lista de eventos de um lote de teclas (H9b): 4 lotes do ExamRunner. Acima
+// disso o pedido recebe 400 { field: 'events' }, sem gravar nada.
+const KEYSTROKE_EVENTS_MAX = 2000;
+
+// Entrada das rotas da prova (fase 2, H9b: ENG-03): tipo e tamanho de cada campo
+// (utils/inputSchema.js), conferidos depois da sessão; a presença continua com a rota.
+// Os identificadores aceitam null (prova sem aplicação, aluno sem curso) como as telas
+// mandam (ExamRunner.jsx, ExamErrorScreen.jsx).
+const examIdentity = ({ idMax = 100 } = {}) => ({
+    email: str({ max: 254, nullable: true, label: 'e-mail' }),
+    studentClass: str({ max: 200, nullable: true, label: 'turma' }),
+    courseId: str({ max: 100, nullable: true, label: 'curso' }),
+    examKey: str({ max: 200, nullable: true, label: 'prova' }),
+    applicationId: str({ max: idMax, nullable: true, label: 'aplicação' }),
+    attemptId: str({ max: idMax, nullable: true, label: 'tentativa' }),
+});
+const PROCTORING_SCHEMAS = {
+    logActivity: body({
+        ...examIdentity(),
+        eventType: str({ max: 60, nullable: true, label: 'tipo de evento' }),
+        details: str({ max: 2000, nullable: true, label: 'detalhes' }),
+        pageExit: bool({ nullable: true, label: 'saída da página' }),
+    }),
+    // Lote de teclas: os identificadores com até 200 caracteres (contrato do H1-b) e os
+    // eventos numa lista de até 2.000 itens (o corpo inteiro já fica em 512 KB; o
+    // ExamRunner manda lotes de 500). A rota grava os 500 primeiros e diz quantos além
+    // deles ficaram de fora (dropped). O item que não é objeto continua pulado, sem
+    // recusar o lote (contrato e teste do H1-b: o lote só com itens inválidos responde
+    // 200 com inserted 0); por isso os itens não passam por shape().
+    logKeystrokes: body({
+        ...examIdentity({ idMax: 200 }),
+        events: list(null, { max: KEYSTROKE_EVENTS_MAX, nullable: true, label: 'eventos' }),
+    }),
+    autosave: body({
+        ...examIdentity(),
+        answers: shape({}, { nullable: true, label: 'respostas' }),
+        examConfigVersion: either([str({ max: 64 }), num()], { nullable: true, label: 'versão da prova' }),
+    }),
+    acknowledgeMessage: body({
+        email: str({ max: 254, nullable: true, label: 'e-mail' }),
+        messageId: str({ max: 100, nullable: true, label: 'mensagem' }),
+    }),
+    messageHistoryDelete: body({
+        ...examIdentity(),
+        messageId: str({ max: 100, nullable: true, label: 'mensagem' }),
+    }),
+    validateExamToken: body({
+        ...examIdentity(),
+        token: str({ max: 64, nullable: true, label: 'código da prova' }),
+    }),
+};
 
 function applicationForClass(cls, examKey, applicationId) {
     const id = applicationId || cls?.onlineExamConfigs?.[examKey]?.applicationId;
@@ -120,7 +175,7 @@ function stateContext({ application, studentEmail, examKey, attemptId } = {}) {
 }
 
 // 1. Recebe e grava logs de perda de foco do navegador do aluno (Proctoring)
-router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
+router.post('/api/student/log-activity', validateStudentSession, PROCTORING_SCHEMAS.logActivity, (req, res) => {
     try {
         const { email, studentClass, courseId, examKey, applicationId, attemptId, eventType, details } = req.body;
         if (!email || !examKey || !eventType) {
@@ -193,110 +248,157 @@ router.post('/api/student/log-activity', validateStudentSession, (req, res) => {
             existing.focusUnlockedAt = null;
             db.memory.studentExamState[stateKey] = existing;
         }
-        db.save();
+        // Rota quente (H1-c, DES-01): grava só o log novo e o estado da tentativa. As
+        // rotas do aluno anotadas levam também 'authSessions': a validação da sessão
+        // registra o IP novo do aparelho, que vai para a tabela auth_sessions.
+        db.save({ only: ['proctoringLogs', 'studentExamState', 'authSessions'] });
         
         res.json({ success: true });
     } catch (err) {
-        console.error('Erro ao salvar log de atividade:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
 // 1b. Recebe lotes do histórico de digitação da prova (Modo Prova Rigoroso).
-//     Armazenamento dedicado para não poluir os logs de foco. Nunca dispara pausa.
-const KEYSTROKE_CAP_PER_ATTEMPT = 20000; // guarda-chuva para não crescer sem limite
-router.post('/api/student/log-keystrokes', validateStudentSession, (req, res) => {
+//     Armazenamento dedicado (tabela própria, db.keystrokes) para não poluir os logs de
+//     foco. Nunca dispara pausa. Ordem: sessão → campos (texto curto) → cortes de campo
+//     de cada evento → append; lote sem evento válido não grava nada. O schema (H9b)
+//     vem logo depois da sessão; o filtro por keystrokeMode (H8b) entra depois dele.
+//     O teto por aluno e aplicação (ICLASS_KEYSTROKE_CAP, padrão 20 mil) é aplicado pelo
+//     store no mesmo ciclo da gravação, pelos contadores, sem percorrer as teclas.
+const KEYSTROKE_BATCH_MAX = 500;
+// Identificação da prova, da aplicação e da tentativa: texto curto. Antes o attemptId ia
+// como viesse (qualquer tipo e tamanho) para cada um dos até 500 eventos do lote, e uma
+// prova que não fosse texto derrubava a rota com 500.
+const KEYSTROKE_ID_MAX = 200;
+
+function shortTextField(value, { required = false } = {}) {
+    if (value === undefined || value === null || value === '') return required ? { error: true } : { value: null };
+    if (typeof value !== 'string') return { error: true };
+    const text = value.trim();
+    if (!text) return required ? { error: true } : { value: null };
+    if (text.length > KEYSTROKE_ID_MAX) return { error: true };
+    return { value: text };
+}
+
+function safeInteger(value) {
+    const number = Math.trunc(Number(value));
+    return Number.isSafeInteger(number) && number !== 0 ? number : null;
+}
+
+router.post('/api/student/log-keystrokes', validateStudentSession, PROCTORING_SCHEMAS.logKeystrokes, (req, res) => {
     try {
         const { studentClass, courseId, examKey, applicationId, attemptId, events } = req.body;
         if (!examKey || !Array.isArray(events) || events.length === 0) {
             return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
         }
+        const exam = shortTextField(examKey, { required: true });
+        if (exam.error) return res.status(400).json({ success: false, error: 'Prova inválida no registro de digitação.', field: 'examKey' });
+        const requestedApplication = shortTextField(applicationId);
+        if (requestedApplication.error) return res.status(400).json({ success: false, error: 'Aplicação de prova inválida no registro de digitação.', field: 'applicationId' });
+        const attempt = shortTextField(attemptId);
+        if (attempt.error) return res.status(400).json({ success: false, error: 'Tentativa inválida no registro de digitação.', field: 'attemptId' });
         const normalizedEmail = req.studentEmail;
-        const normalizedExamKey = examKey.trim();
+        const normalizedExamKey = exam.value;
         const cls = requireEnrolledExamClass(req, res, studentClass, courseId);
         if (!cls) return;
-        const application = applicationForClass(cls, normalizedExamKey, applicationId);
-        if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+        const application = applicationForClass(cls, normalizedExamKey, requestedApplication.value);
+        if (requestedApplication.value && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
 
-        const store = db.memory.examKeystrokes;
-        let inserted = 0;
-        for (const ev of events.slice(0, 500)) {
-            if (!ev || typeof ev !== 'object') continue;
-            store.push({
+        // Registro do teclado da aplicação (H8b, CRIT-04): 'eventos' (padrão, e também
+        // sem aplicação ou em aplicação de antes desta versão) só guarda atalhos, cópia e
+        // menu do botão direito; 'nada' não guarda nada; 'tudo' guarda tudo. Vale antes
+        // dos cortes de campo e mesmo com o código antigo da prova no navegador.
+        const allowedEvents = filterKeystrokeEvents(keystrokeModeOf(application), events.slice(0, KEYSTROKE_BATCH_MAX));
+
+        // Cortes de campo de cada evento (os de antes) e números como inteiros seguros:
+        // um campo grande não se multiplica pelos 500 eventos do lote.
+        const serverTs = Date.now();
+        const courseText = typeof courseId === 'string' ? courseId.trim().slice(0, KEYSTROKE_FIELD_LIMITS.courseId) : '';
+        const rows = [];
+        for (const ev of allowedEvents) {
+            if (!ev || typeof ev !== 'object' || Array.isArray(ev)) continue;
+            rows.push({
                 id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
                 studentEmail: normalizedEmail,
                 studentClass: cls.name,
-                courseId: cls.courseId || courseId || null,
+                courseId: cls.courseId || courseText || null,
                 examKey: normalizedExamKey,
                 applicationId: application?.id || null,
-                attemptId: attemptId || null,
-                seq: Number(ev.seq) || null,
-                clientTs: Number(ev.clientTs) || null,
-                serverTs: Date.now(),
-                key: typeof ev.key === 'string' ? ev.key.slice(0, 40) : '',
-                code: typeof ev.code === 'string' ? ev.code.slice(0, 40) : '',
-                mods: typeof ev.mods === 'string' ? ev.mods.slice(0, 16) : '',
-                kind: typeof ev.kind === 'string' ? ev.kind.slice(0, 24) : 'key',
-                question: ev.question != null ? String(ev.question).slice(0, 12) : null,
+                attemptId: attempt.value,
+                seq: safeInteger(ev.seq),
+                clientTs: safeInteger(ev.clientTs),
+                serverTs,
+                key: typeof ev.key === 'string' ? ev.key.slice(0, KEYSTROKE_FIELD_LIMITS.key) : '',
+                code: typeof ev.code === 'string' ? ev.code.slice(0, KEYSTROKE_FIELD_LIMITS.code) : '',
+                mods: typeof ev.mods === 'string' ? ev.mods.slice(0, KEYSTROKE_FIELD_LIMITS.mods) : '',
+                kind: normalizeEventKind(ev.kind).slice(0, KEYSTROKE_FIELD_LIMITS.kind),
+                question: ev.question != null && typeof ev.question !== 'object' ? String(ev.question).slice(0, KEYSTROKE_FIELD_LIMITS.question) : null,
                 blocked: ev.blocked === true,
                 suspicious: ev.suspicious === true,
             });
-            inserted++;
         }
 
-        // Poda por tentativa para não crescer indefinidamente.
-        const attemptEvents = store.filter(k => k.studentEmail === normalizedEmail
-            && (application ? k.applicationId === application.id : k.examKey === normalizedExamKey));
-        if (attemptEvents.length > KEYSTROKE_CAP_PER_ATTEMPT) {
-            const excess = attemptEvents
-                .sort((a, b) => (a.serverTs || 0) - (b.serverTs || 0))
-                .slice(0, attemptEvents.length - KEYSTROKE_CAP_PER_ATTEMPT);
-            const excessIds = new Set(excess.map(e => e.id));
-            db.memory.examKeystrokes = store.filter(k => !excessIds.has(k.id));
-        }
-
-        db.save();
-        res.json({ success: true, inserted });
+        // Sem evento válido (ou nenhum que o modo da aplicação guarde), nada é gravado e o
+        // ciclo de gravação nem é pedido. Com eventos, a resposta sai depois do COMMIT
+        // (503 retryable se a gravação falhar).
+        if (rows.length) db.keystrokes.append(rows);
+        // Eventos além dos 500 do lote não são gravados: a resposta diz quantos (H9b).
+        res.json({ success: true, inserted: rows.length, dropped: Math.max(0, events.length - KEYSTROKE_BATCH_MAX) });
     } catch (err) {
-        console.error('Erro ao salvar histórico de digitação:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
-// 1c. Histórico completo de digitação de um aluno (visualização ao vivo do professor)
+// 1c. Histórico de digitação de um aluno (visualização ao vivo do professor).
+//     Cursor = row_id da tabela (ordem de chegada; o seq do navegador recomeça quando a
+//     página recarrega). Com ?after=<cursor>: as primeiras `limit` depois dele, com
+//     hasMore. Sem after: as últimas `limit` (sinceSeq, o filtro antigo pelo seq, só
+//     nesse caso). Resposta: { success, events, total, cursor, hasMore, logs }; logs são
+//     os eventos de foco do mesmo aluno, prova e aplicação (os últimos 500).
+const KEYSTROKE_VIEW_LOGS = 500;
 router.get('/api/admin/exam-keystrokes/:class/:examKey', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, async () => {
         try {
-            const studentClass = req.params.class.trim();
             const examKey = req.params.examKey.trim();
             const email = String(req.query.email || '').trim().toLowerCase();
             const applicationId = String(req.query.applicationId || '').trim();
+            const rawAfter = req.query.after === undefined ? '' : String(req.query.after).trim();
+            if (rawAfter && !/^\d{1,15}$/.test(rawAfter)) {
+                return res.status(400).json({ success: false, error: 'Parâmetro after inválido: use o cursor devolvido pela consulta anterior.', field: 'after' });
+            }
             const sinceSeq = Number(req.query.sinceSeq) || 0;
-            const limit = Math.min(Number(req.query.limit) || 2000, 5000);
+            const limit = Math.max(1, Math.min(Math.floor(Number(req.query.limit)) || 2000, 5000));
             if (!email) return res.status(400).json({ error: 'Parâmetro email é obrigatório.' });
 
             // Identifica pelo aluno + prova + aplicação — exatamente a mesma lógica do
             // contador do monitor (monitor-status). studentClass não entra no filtro para
             // evitar divergência de casing/valor gravado que esconderia o histórico.
-            let events = (db.memory.examKeystrokes || []).filter(k =>
-                k.studentEmail.toLowerCase() === email
-                && k.examKey.toLowerCase() === examKey.toLowerCase()
-                && (!applicationId || k.applicationId === applicationId)
-                && (!sinceSeq || Number(k.seq || 0) > sinceSeq)
-            );
-            events.sort((a, b) => (Number(a.seq || 0) - Number(b.seq || 0)) || (a.serverTs - b.serverTs));
-            const total = events.length;
-            events = events.slice(-limit);
-            res.json({ success: true, events, total });
+            const page = await db.keystrokes.query({
+                email,
+                examKey,
+                applicationId: applicationId || undefined,
+                after: rawAfter ? Number(rawAfter) : undefined,
+                sinceSeq,
+                limit,
+            });
+            const lowerExam = examKey.toLowerCase();
+            const logs = (db.memory.proctoringLogs || [])
+                .filter(log => log
+                    && String(log.studentEmail || '').toLowerCase() === email
+                    && String(log.examKey || '').toLowerCase() === lowerExam
+                    && (!applicationId || log.applicationId === applicationId))
+                .sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0))
+                .slice(-KEYSTROKE_VIEW_LOGS);
+            res.json({ success: true, events: page.events, total: page.total, cursor: page.cursor, hasMore: page.hasMore, logs });
         } catch (err) {
-            console.error('Erro ao recuperar histórico de digitação:', err);
-            res.status(500).json({ error: 'Erro interno no servidor.' });
+            return sendInternalError(err, req, res);
         }
     });
 });
 
 // 2. Salva periodicamente as respostas intermediárias e o tempo restante do aluno
-router.post('/api/student/autosave-progress', validateStudentSession, async (req, res) => {
+router.post('/api/student/autosave-progress', validateStudentSession, PROCTORING_SCHEMAS.autosave, async (req, res) => {
     try {
         const { examKey, applicationId, attemptId, studentClass, courseId, answers } = req.body;
         if (!examKey) {
@@ -355,11 +457,11 @@ router.post('/api/student/autosave-progress', validateStudentSession, async (req
             savedAt: new Date().toISOString()
         };
 
-        await db.save();
+        // Rota quente (H1-c, DES-01): o rascunho mexe só no estado da tentativa.
+        await db.save({ only: ['studentExamState', 'authSessions'] });
         res.json({ success: true });
     } catch (err) {
-        console.error('Erro ao salvar progresso do aluno:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -381,8 +483,7 @@ router.get('/api/admin/proctoring-logs/:class/:examKey', (req, res) => {
             
             res.json(logs);
         } catch (err) {
-            console.error('Erro ao recuperar logs de auditoria:', err);
-            res.status(500).json({ error: 'Erro interno no servidor.' });
+            return sendInternalError(err, req, res);
         }
     });
 });
@@ -450,7 +551,7 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
                     state.studentClass = cls.name;
                     state.courseId = cls.courseId || null;
                     db.memory.studentExamState[stateKey] = state;
-                    db.save();
+                    db.save({ only: ['studentExamState', 'authSessions'] });
                 }
             }
         }
@@ -464,14 +565,13 @@ router.get('/api/student/exam-state', validateStudentSession, (req, res) => {
             maxAttempts
         });
     } catch (err) {
-        console.error('Erro ao buscar estado da prova do estudante:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
 
 // 5. Confirma o recebimento de uma mensagem (marca como lida)
-router.post('/api/student/acknowledge-message', validateStudentSession, (req, res) => {
+router.post('/api/student/acknowledge-message', validateStudentSession, PROCTORING_SCHEMAS.acknowledgeMessage, (req, res) => {
     try {
         const { messageId } = req.body;
         if (!messageId) {
@@ -488,11 +588,10 @@ router.post('/api/student/acknowledge-message', validateStudentSession, (req, re
             msg.acknowledgedBy.push(req.studentEmail);
         }
         if (msg.targetEmail) msg.status = 'read';
-        db.save();
+        db.save({ only: ['broadcastMessages', 'authSessions'] });
         res.json({ success: true });
     } catch (err) {
-        console.error('Erro ao acusar recebimento de mensagem:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
@@ -516,12 +615,11 @@ router.get('/api/student/message-history', validateStudentSession, (req, res) =>
             .map(m => sanitizeBroadcastMessageForStudent(m, email));
         res.json({ success: true, messages });
     } catch (err) {
-        console.error('Erro ao carregar historico de mensagens:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
-router.post('/api/student/message-history/delete', validateStudentSession, (req, res) => {
+router.post('/api/student/message-history/delete', validateStudentSession, PROCTORING_SCHEMAS.messageHistoryDelete, (req, res) => {
     try {
         const email = req.studentEmail;
         const { messageId, studentClass, courseId, examKey, applicationId } = req.body || {};
@@ -542,22 +640,29 @@ router.post('/api/student/message-history/delete', validateStudentSession, (req,
                 }
             }
         });
-        db.save();
+        db.save({ only: ['broadcastMessages', 'authSessions'] });
         res.json({ success: true, deleted: count });
     } catch (err) {
-        console.error('Erro ao excluir historico de mensagens:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
 // 6. Valida o token de acesso da prova NO SERVIDOR (o token nunca é enviado ao cliente).
 //    Em caso de sucesso marca a prova como liberada para este aluno (tokenValidated).
-router.post('/api/student/validate-exam-token', validateStudentSession, (req, res) => {
+//    Limite por aluno (H5b, DES-X2): contam só os códigos errados, pela conta da sessão
+//    (10 em 5 min → 429 só para esse aluno; o código certo zera). Antes o teto era de 30
+//    validações por minuto por IP, contando as certas: a turma inteira atrás do mesmo
+//    roteador (NAT) digitando o código ao mesmo tempo recebia "Muitas tentativas".
+const EXAM_TOKEN_FAILURE_LIMIT = Object.freeze({ max: 10, windowMs: 5 * 60 * 1000 });
+const EXAM_TOKEN_TOO_MANY = 'Muitas tentativas com o código da prova. Aguarde alguns minutos ou chame o professor.';
+
+router.post('/api/student/validate-exam-token', validateStudentSession, PROCTORING_SCHEMAS.validateExamToken, (req, res) => {
     try {
-        const { rateLimit } = require('../utils/rateLimit.js');
-        const _rl = rateLimit(`exam-token:${req.ip}`, { max: 30, windowMs: 60000 });
-        if (!_rl.allowed) {
-            return res.status(429).json({ error: 'Muitas tentativas. Aguarde um instante e tente novamente.' });
+        const rateLimiter = require('../utils/rateLimit.js');
+        const tokenFailureKey = `exam-token-fail:${req.studentEmail}`;
+        const tokenFailures = rateLimiter.peek(tokenFailureKey, EXAM_TOKEN_FAILURE_LIMIT);
+        if (!tokenFailures.allowed) {
+            return res.status(429).json({ error: EXAM_TOKEN_TOO_MANY, retryAfterSeconds: Math.max(1, Math.ceil(tokenFailures.retryAfterMs / 1000)) });
         }
         const { email, studentClass, courseId, examKey, applicationId, token } = req.body;
         if (!email || !examKey) {
@@ -587,8 +692,10 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
         const provided = normalizeExamToken(token);
         const validToken = requiredTokenHash ? verifyExamToken(provided, requiredTokenHash) : provided === requiredToken;
         if (!validToken) {
+            rateLimiter.hit(tokenFailureKey, EXAM_TOKEN_FAILURE_LIMIT);
             return res.json({ success: true, valid: false });
         }
+        rateLimiter.reset(tokenFailureKey);
 
         if (application) {
             // A tentativa aberta é sempre a que continua, qualquer que seja o identificador
@@ -629,7 +736,9 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
             }
             context.state.tokenValidated = true;
             db.memory.studentExamState[context.key] = context.state;
-            db.save();
+            // A tentativa nova pode consumir o "+N min" guardado na aplicação para o aluno
+            // (attemptContextForStudent), por isso examApplications vai junto.
+            db.save({ only: ['studentExamState', 'examApplications', 'authSessions'] });
             return res.json({ success: true, valid: true, applicationId: application.id, attemptId: context.state.attemptId || null });
         }
 
@@ -645,12 +754,11 @@ router.post('/api/student/validate-exam-token', validateStudentSession, (req, re
         };
         existing.tokenValidated = true;
         db.memory.studentExamState[stateKey] = existing;
-        db.save();
+        db.save({ only: ['studentExamState', 'authSessions'] });
 
         res.json({ success: true, valid: true, applicationId: null, attemptId: existing.attemptId || null });
     } catch (err) {
-        console.error('Erro ao validar token de prova:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 

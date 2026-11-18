@@ -2,9 +2,11 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount } = require('../middlewares.js');
+const { validateAdmin, isProfessorAccount, sendInternalError } = require('../middlewares.js');
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside, assertSafeId } = require('../utils/safePath.js');
+const { revokeStudentSession } = require('../utils/authSessions.js');
+const { recordAudit } = require('../utils/audit.js');
 
 const ARCHIVE_DIR = runtimePaths.ARCHIVE_DIR;
 
@@ -101,13 +103,19 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     },
                 }, null, 2));
             } catch (error) {
-                return res.status(500).json({ error: `Falha ao gravar o arquivo: ${error.message}` });
+                // O detalhe (caminho, código do sistema) fica no crash.log; a tela recebe a
+                // mensagem padrão com o código do erro (ENG-04).
+                return sendInternalError(error, req, res);
             }
 
             db.memory.courses = (db.memory.courses || []).filter(item => item.id !== courseId);
             db.memory.classes = classes.filter(item => item.courseId !== courseId);
             db.memory.submissions = (db.memory.submissions || []).filter(item => !(item.courseId === courseId || classNames.has(item.studentClass)));
             db.memory.students = (db.memory.students || []).filter(student => !orphanEmails.has(String(student.email || '').toLowerCase()));
+            // Os alunos que saíram com o curso perdem a sessão (também na tabela
+            // auth_sessions, H3a-2): ela não volta num reinício nem quando o curso arquivado
+            // for restaurado com eles.
+            orphanEmails.forEach(email => revokeStudentSession(db.memory, email));
             db.memory.students.forEach(student => {
                 if (Array.isArray(student.classes)) student.classes = student.classes.filter(item => !classNames.has(typeof item === 'string' ? item : (item && item.name)));
                 if (student.studentClass && classNames.has(student.studentClass)) {
@@ -125,6 +133,16 @@ function createAdminArchiveRouter({ studentClassNames }) {
                 if (fs.existsSync(file)) {
                     try { fs.unlinkSync(file); } catch (error) {}
                 }
+            });
+            // O que saiu do sistema e para onde foi (SEG-07): a cópia inteira está na pasta.
+            const counts = { turmas: courseClasses.length, alunos: orphanStudents.length, submissoes: submissions.length, arquivos: Object.keys(contentFiles).length };
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'course_archived',
+                category: 'academic',
+                courseId,
+                details: { folder: folderName, name: course.name || '', schoolId: course.schoolId || null, classes: courseClasses.map(item => item.name), counts },
             });
 
             await db.save();
@@ -157,7 +175,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
             if (!fs.existsSync(courseFile)) return res.status(404).json({ error: 'Arquivo não encontrado.' });
 
             let bundle;
-            try { bundle = JSON.parse(fs.readFileSync(courseFile, 'utf8')); } catch (error) { return res.status(500).json({ error: 'Arquivo corrompido.' }); }
+            try { bundle = JSON.parse(fs.readFileSync(courseFile, 'utf8')); } catch (error) { return sendInternalError(error, req, res, 'Arquivo corrompido.'); }
             const course = bundle.course;
             if (!course || !course.id) return res.status(400).json({ error: 'Curso inválido no arquivo.' });
             if ((db.memory.courses || []).some(item => item.id === course.id)) return res.status(400).json({ error: 'Já existe um curso ativo com este ID.' });
@@ -190,6 +208,22 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     Object.assign(db.memory[collection], bundle[collection]);
                 }
             });
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'course_archive_restored',
+                category: 'academic',
+                courseId: course.id,
+                details: {
+                    folder: path.basename(directory),
+                    name: course.name || '',
+                    counts: {
+                        turmas: (bundle.classes || []).length,
+                        alunos: (bundle.students || []).length,
+                        submissoes: (bundle.submissions || []).length,
+                    },
+                },
+            });
             await db.save();
             try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) {}
             res.json({ success: true, course });
@@ -197,12 +231,29 @@ function createAdminArchiveRouter({ studentClassNames }) {
     });
 
     router.post('/api/admin/archived-courses/delete', (req, res) => {
-        validateAdmin(req, res, (config, matchedAdmin) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
             if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
             let directory;
             try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta inválida.' }); }
             if (!directory) return res.status(404).json({ error: 'Arquivo não encontrado.' });
-            try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) { return res.status(500).json({ error: error.message }); }
+            // O manifesto diz o que foi apagado (curso e contagens), para a auditoria.
+            let manifest = {};
+            try { manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifesto.json'), 'utf8')) || {}; } catch (error) { manifest = {}; }
+            try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) { return sendInternalError(error, req, res); }
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'course_archive_deleted',
+                category: 'academic',
+                courseId: manifest.courseId ? String(manifest.courseId) : undefined,
+                details: {
+                    folder: path.basename(directory),
+                    name: String(manifest.name || ''),
+                    archivedAt: manifest.archivedAt || null,
+                    counts: manifest.counts && typeof manifest.counts === 'object' ? manifest.counts : null,
+                },
+            });
+            await db.save();
             res.json({ success: true });
         });
     });

@@ -10,7 +10,9 @@ import { Textarea } from '../../components/ui/Textarea'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { Modal } from '../../components/ui/Modal'
 import { PageHeader } from '../../components/ui/PageHeader'
+import { RoomAddressButton } from './RoomAddress'
 import { useApi } from '../../hooks/useApi'
+import { usePolling } from '../../hooks/usePolling'
 import { api } from '../../lib/api'
 import { fmtGrade } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
@@ -21,13 +23,20 @@ import { liveCorrectionDraft } from './examTools'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
+import { serverOutageNotices, withLiveOutagePauses } from './serverOutage'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
+import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
 const DEFAULT_WAITING_ROOM_MINUTES = 10
+// Consultas periódicas do Monitor (fase 2, H2-D): situação dos alunos e digitação ao vivo.
+const MONITOR_POLL_MS = 3000
+const KEYSTROKE_POLL_MS = 2000
+// Teclas guardadas na tela da digitação ao vivo (as mais recentes).
+const KEYSTROKE_VIEW_LIMIT = 5000
 const STATUS = { online: ['success', 'Online'], active: ['success', 'Online'], blur: ['warning', 'Saiu da aba'], absent: ['neutral', 'Ausente'], ausente: ['neutral', 'Ausente'], finished: ['info', 'Finalizou'], focus_locked: ['danger', 'Foco bloqueado'], time_over: ['warning', 'Tempo esgotado'], discarded: ['neutral', 'Desconsiderada'] }
 const EXAM_STATUS = {
   prepared: ['neutral', 'Preparada'],
@@ -43,6 +52,8 @@ const REPORT_REASON_LABELS = {
   erro_digitacao: 'Erro de digitação',
   outro: 'Outro',
 }
+
+const EMPTY_LIST = []
 
 function fmt(sec) { if (sec == null) return '-'; const m = Math.floor(sec / 60), s = sec % 60; return `${m}:${String(s).padStart(2, '0')}` }
 function formatApplicationTimestamp(value) {
@@ -217,10 +228,12 @@ function Stat({ k, v, sub, warn }) {
   )
 }
 
-function KeystrokeViewer({ events, row, loading }) {
+// logs: eventos de foco do aluno na aplicação, da resposta da digitação ao vivo (todos, até
+// 500). Antes de ela chegar, os últimos que vêm na linha do Monitor.
+function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Nenhuma digitação registrada ainda.' }) {
   const [tab, setTab] = useState('resumo')
   const [susOnly, setSusOnly] = useState(false)
-  const logs = row?.logs || []
+  const logs = liveLogs || row?.logs || EMPTY_LIST
   const items = useMemo(() => buildItems(events, logs), [events, logs])
   const alerts = useMemo(() => buildAlerts(items), [items])
   const counters = useMemo(() => buildCounters(items), [items])
@@ -341,7 +354,7 @@ function KeystrokeViewer({ events, row, loading }) {
         {tab === 'stream' && (
           <div>
             <p className="text-[11.5px] text-subtle mb-3">Eventos agrupados na ordem em que aconteceram: digitação normal vira um bloco só; cada comando fica destacado. “Só suspeitos” esconde os blocos de digitação.</p>
-            {stream.length === 0 && !loading && <p className="text-sm text-muted text-center py-8">Nenhuma digitação registrada ainda.</p>}
+            {stream.length === 0 && !loading && <p className="text-sm text-muted text-center py-8">{emptyText}</p>}
             <div className="space-y-2">
               {stream.map((seg, i) => {
                 if (seg.type === 'typing') {
@@ -427,11 +440,12 @@ export default function MonitorPage() {
   const [keystrokeWatch, setKeystrokeWatch] = useState(null) // { email, name }
   const [keystrokeEvents, setKeystrokeEvents] = useState([])
   const [keystrokeLoading, setKeystrokeLoading] = useState(false)
+  const [keystrokeLogs, setKeystrokeLogs] = useState(null) // eventos de foco da resposta da digitação ao vivo
   const [err, setErr] = useState(null)
-  const timer = useRef(null)
-  const keystrokeTimer = useRef(null)
   const toast = useToast()
-  const activeApplicationsPath = `/api/admin/exam-applications?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}`
+  // view=summary: sem as versões da prova e as contestações, que o Monitor não lê da lista
+  // (consultada a cada 5 s).
+  const activeApplicationsPath = `/api/admin/exam-applications?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}&view=summary`
   const activeApplicationsRequest = useApi(activeApplicationsPath, [activeCourseId, activeClassName], { pollMs: 5000 })
 
   const courseClasses = useMemo(() => (classes || []).filter((c) => !activeCourseId || c.courseId === activeCourseId), [classes, activeCourseId])
@@ -442,10 +456,16 @@ export default function MonitorPage() {
   const selectedApplication = useMemo(() => applications.find((item) => item.id === applicationId) || null, [applications, applicationId])
   // Versão atual do token no servidor (a lista da turma é consultada a cada 5 s): se
   // outro navegador trocou o token, o painel deixa de mostrar o guardado nesta aba.
-  const tokenIssuedAt = useMemo(() => {
-    const live = (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId)
-    return (live || selectedApplication)?.accessTokenIssuedAt || ''
-  }, [activeApplicationsRequest.data, applicationId, selectedApplication])
+  const liveApplication = useMemo(() => (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId) || null, [activeApplicationsRequest.data, applicationId])
+  const tokenIssuedAt = (liveApplication || selectedApplication)?.accessTokenIssuedAt || ''
+  // Registro do teclado da aplicação (H8b): a coluna diz o que mostra ('nada': desligado).
+  const keystrokeMode = normalizeKeystrokeMode((liveApplication || selectedApplication)?.keystrokeMode)
+  // Aplicação de antes desta versão: o que ela já guardou é a digitação completa.
+  const keystrokeLegacy = (liveApplication || selectedApplication)?.keystrokeModeLegacy === true
+  // Queda do servidor com a prova correndo (H3b): o aviso (uma linha por queda) e as
+  // pausas da queda vêm da lista consultada a cada 5 s, porque a compensação acontece
+  // no servidor.
+  const outageNotice = useMemo(() => serverOutageNotices(liveApplication || selectedApplication), [liveApplication, selectedApplication])
   const selectedConfig = useMemo(() => {
     const current = selectedClass?.onlineExamConfigs?.[examKey] || {}
     if (!selectedApplication) return current
@@ -461,11 +481,11 @@ export default function MonitorPage() {
       timerMode: selectedApplication.timerMode,
       globalTimeAdjustment: selectedApplication.globalTimeAdjustment,
       waitingRoomDuration: selectedApplication.waitingRoomDuration,
-      pauses: selectedApplication.pauses || [],
+      pauses: withLiveOutagePauses(selectedApplication.pauses || [], liveApplication?.pauses),
       maxAttempts: selectedApplication.maxAttempts,
       requiresToken: selectedApplication.tokenEnabled === true,
     }
-  }, [selectedClass, examKey, selectedApplication])
+  }, [selectedClass, examKey, selectedApplication, liveApplication])
   const waitingStartsAt = Number(selectedConfig.startTime || 0)
   const waitingHasEnded = selectedConfig.status === 'waiting' && waitingStartsAt > 0 && clockNow >= waitingStartsAt
   const displayedStatus = waitingHasEnded ? 'running' : selectedConfig.status
@@ -530,7 +550,7 @@ export default function MonitorPage() {
     }
     const params = new URLSearchParams({ studentClass: selectedClass.name, courseId: selectedClass.courseId || courseId })
     const loadedKey = params.toString()
-    api.get(`/api/admin/exam-applications?${loadedKey}`)
+    api.get(`/api/admin/exam-applications?${loadedKey}&view=summary`)
       .then((response) => {
         if (cancelled) return
         setApplications(response.applications || [])
@@ -563,33 +583,47 @@ export default function MonitorPage() {
     setWaitMinutes(DEFAULT_WAITING_ROOM_MINUTES)
   }, [className, examKey, applicationId])
 
-  async function poll() {
-    if (!className || !examKey) return
+  // Consulta do Monitor (situação dos alunos e contestações) a cada 3 s pelo usePolling
+  // (fase 2, H2-D: DES-04, DES-09): uma por vez, pausa com a aba oculta, recuo de até 15 s
+  // com o servidor fora e consulta na hora ao voltar. Antes era um setInterval: com o
+  // servidor lento, as consultas se acumulavam. Depois de uma ação na tela, refreshMonitor()
+  // consulta na hora (ou logo depois da que está em andamento).
+  const monitorKey = className && examKey ? `${courseId}\u0000${className}\u0000${examKey}\u0000${applicationId}` : ''
+  const monitorKeyRef = useRef(monitorKey)
+  monitorKeyRef.current = monitorKey
+  async function poll(requestOptions) {
+    if (!className || !examKey) return true
+    const requestKey = monitorKey
     try {
       const params = new URLSearchParams()
       if (courseId) params.set('courseId', courseId)
       if (applicationId) params.set('applicationId', applicationId)
       const qs = params.toString() ? `?${params.toString()}` : ''
       const [r, reports] = await Promise.all([
-        api.get(`/api/admin/monitor-status/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}${qs}`),
+        api.get(`/api/admin/monitor-status/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}${qs}`, requestOptions),
         applicationId
-          ? api.get(`/api/admin/question-reports/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?applicationId=${encodeURIComponent(applicationId)}`)
+          ? api.get(`/api/admin/question-reports/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?applicationId=${encodeURIComponent(applicationId)}`, requestOptions)
           : Promise.resolve({ groups: [], totalOpen: 0 }),
       ])
+      // Resposta da turma, prova ou aplicação anterior (trocadas durante a consulta): descarta.
+      if (monitorKeyRef.current !== requestKey) return true
       setRows(Array.isArray(r) ? r : (r.monitorList || []))
       setReportGroups(reports.groups || [])
       setReportTotal(Number(reports.totalOpen || 0))
       setRowsSyncedAt(Date.now())
       setErr(null)
-    } catch (e) { setErr(e) }
+      return true
+    } catch (e) {
+      if (monitorKeyRef.current === requestKey) setErr(e)
+      return false
+    }
   }
-
-  useEffect(() => {
-    clearInterval(timer.current)
-    if (className && examKey) { poll(); timer.current = setInterval(poll, 3000) }
-    return () => clearInterval(timer.current)
-    // eslint-disable-next-line
-  }, [className, examKey, courseId, applicationId])
+  const monitorPolling = usePolling((requestOptions) => poll(requestOptions), {
+    intervalMs: MONITOR_POLL_MS,
+    enabled: !!(className && examKey),
+    resetKey: monitorKey,
+  })
+  const refreshMonitor = monitorPolling.runNow
 
   useEffect(() => {
     setRows([])
@@ -607,35 +641,61 @@ export default function MonitorPage() {
     return () => clearInterval(id)
   }, [selectedConfig.status, selectedConfig.startTime, selectedConfig.timerEnabled])
 
-  async function fetchKeystrokes(email) {
-    if (!className || !examKey || !email) return
+  // Digitação ao vivo (a cada 2 s, pelo usePolling): a primeira consulta traz as últimas
+  // teclas; as seguintes pedem só as que chegaram depois do cursor do servidor (`after`,
+  // o row_id da tabela: o seq do navegador recomeça quando o aluno recarrega a página) e
+  // acrescentam, guardando as últimas KEYSTROKE_VIEW_LIMIT. Com hasMore, busca de novo na
+  // hora. Os eventos de foco do aluno (`logs`) vêm na mesma resposta. Trocar de aluno,
+  // turma, prova ou aplicação recomeça do zero.
+  const keystrokeEmail = keystrokeWatch?.email || ''
+  const keystrokeKey = keystrokeEmail && className && examKey ? `${keystrokeEmail}\u0000${className}\u0000${examKey}\u0000${applicationId}` : ''
+  const keystrokeKeyRef = useRef(keystrokeKey)
+  keystrokeKeyRef.current = keystrokeKey
+  const keystrokeCursor = useRef(null)
+  useEffect(() => {
+    keystrokeCursor.current = null
+    setKeystrokeEvents([])
+    setKeystrokeLogs(null)
+  }, [keystrokeKey])
+
+  async function fetchKeystrokes(requestOptions) {
+    if (!keystrokeKey) return true
+    const requestKey = keystrokeKey
+    const after = keystrokeCursor.current
     try {
-      const params = new URLSearchParams({ email })
+      const params = new URLSearchParams({ email: keystrokeEmail })
       if (applicationId) params.set('applicationId', applicationId)
-      const r = await api.get(`/api/admin/exam-keystrokes/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?${params.toString()}`)
-      setKeystrokeEvents(r.events || [])
+      if (after !== null) params.set('after', String(after))
+      const r = await api.get(`/api/admin/exam-keystrokes/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?${params.toString()}`, requestOptions)
+      if (keystrokeKeyRef.current !== requestKey || keystrokeCursor.current !== after) return true
+      const events = Array.isArray(r.events) ? r.events : []
+      if (after === null) setKeystrokeEvents(events.slice(-KEYSTROKE_VIEW_LIMIT))
+      else if (events.length) setKeystrokeEvents((current) => [...current, ...events].slice(-KEYSTROKE_VIEW_LIMIT))
+      if (Array.isArray(r.logs)) setKeystrokeLogs(r.logs)
+      // Servidor sem cursor (versão anterior): continua buscando as últimas a cada vez.
+      const cursor = Number(r.cursor)
+      keystrokeCursor.current = r.cursor !== undefined && r.cursor !== null && Number.isFinite(cursor) ? cursor : null
+      if (r.hasMore === true && keystrokeCursor.current !== null) keystrokePolling.runNow()
+      return true
     } catch (e) {
-      setErr(e)
+      if (keystrokeKeyRef.current === requestKey) setErr(e)
+      return false
     } finally {
-      setKeystrokeLoading(false)
+      if (keystrokeKeyRef.current === requestKey) setKeystrokeLoading(false)
     }
   }
+  const keystrokePolling = usePolling((requestOptions) => fetchKeystrokes(requestOptions), {
+    intervalMs: KEYSTROKE_POLL_MS,
+    enabled: !!keystrokeKey,
+    resetKey: keystrokeKey,
+  })
 
   function openKeystrokeWatch(row) {
     setKeystrokeWatch({ email: row.email, name: row.name || row.email })
     setKeystrokeEvents([])
+    setKeystrokeLogs(null)
     setKeystrokeLoading(true)
   }
-
-  useEffect(() => {
-    clearInterval(keystrokeTimer.current)
-    if (keystrokeWatch?.email) {
-      fetchKeystrokes(keystrokeWatch.email)
-      keystrokeTimer.current = setInterval(() => fetchKeystrokes(keystrokeWatch.email), 2000)
-    }
-    return () => clearInterval(keystrokeTimer.current)
-    // eslint-disable-next-line
-  }, [keystrokeWatch?.email, className, examKey, applicationId])
 
   async function control(action, extra = {}) {
     try {
@@ -651,7 +711,7 @@ export default function MonitorPage() {
       else toast.success(result.text)
       await refetchClasses(true)
       await activeApplicationsRequest.refetch(true)
-      poll()
+      refreshMonitor()
       return response
     } catch (e) { toast.error(e.message); return null }
   }
@@ -685,7 +745,7 @@ export default function MonitorPage() {
         questionNumber: group.questionNumber,
       })
       toast.success('Contestações marcadas como revisadas')
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -712,7 +772,7 @@ export default function MonitorPage() {
       })
       setCorrectIssue(null)
       toast.success('Questão corrigida. Os alunos foram avisados.')
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -732,7 +792,7 @@ export default function MonitorPage() {
       })
       setAnnulIssue(null)
       toast.success('Questão anulada e resultados recalculados.')
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -763,7 +823,7 @@ export default function MonitorPage() {
       setReplaceIssue(null)
       toast.success('Questão substituída. Os alunos receberão a nova questão em instantes.')
       await refetchClasses(true)
-      await poll()
+      refreshMonitor()
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -791,7 +851,7 @@ export default function MonitorPage() {
         toast[feedback.tone](feedback.message)
       }
       if (!targetEmail) await refetchClasses(true)
-      poll()
+      refreshMonitor()
     } catch (e) { toast.error(e.message) }
   }
 
@@ -884,7 +944,7 @@ export default function MonitorPage() {
   }
 
   async function unlock(email) {
-    try { await api.post('/api/admin/unlock-student-focus', { studentEmail: email, studentClass: className, courseId, examKey, applicationId }); toast.success('Aluno desbloqueado'); poll() }
+    try { await api.post('/api/admin/unlock-student-focus', { studentEmail: email, studentClass: className, courseId, examKey, applicationId }); toast.success('Aluno desbloqueado'); refreshMonitor() }
     catch (e) { toast.error(e.message) }
   }
 
@@ -897,7 +957,7 @@ export default function MonitorPage() {
   async function assignVersion(email) {
     const version = prompt('Versão do aluno:', 'A')
     if (!version) return
-    try { await api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() }); toast.success('Versão atribuída'); poll() }
+    try { await api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() }); toast.success('Versão atribuída'); refreshMonitor() }
     catch (e) { toast.error(e.message) }
   }
 
@@ -923,6 +983,8 @@ export default function MonitorPage() {
       const params = new URLSearchParams()
       if (courseId) params.set('courseId', courseId)
       if (className) params.set('studentClass', className)
+      // Só as entregas desta aplicação (antes vinham todas as da turma, com as questões).
+      params.set('applicationId', applicationId)
       const list = await api.get(`/api/admin/submissions?${params.toString()}`)
       const subs = Array.isArray(list) ? list : (list?.submissions || [])
       const ids = subs
@@ -945,7 +1007,7 @@ export default function MonitorPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <PageHeader title="Monitor Online" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`} />
+      <PageHeader title="Monitor Online" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`}><RoomAddressButton /></PageHeader>
       {activeApplications.length > 0 && (
         <section className="border-y border-success/45 bg-success-soft/20" aria-labelledby="active-monitor-applications-title">
           <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
@@ -1088,6 +1150,27 @@ export default function MonitorPage() {
                     <span><strong>Não visível aos alunos.</strong> “Preparar” monta a aplicação; o aviso só será enviado depois de clicar em “Iniciar prova e avisar alunos” ou “Sala de espera”.</span>
                   </div>
                 )}
+                {outageNotice && (
+                  <div className={`mt-3 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm ${outageNotice.compensated ? 'border-info/40 bg-info-soft text-info' : 'border-warning/45 bg-warning-soft text-warning'}`} role="status">
+                    <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <strong>{outageNotice.title}</strong>
+                      <ul className="mt-1 space-y-1">
+                        {outageNotice.visible.map((item) => (
+                          <li key={item.key} className={item.compensated ? '' : 'font-semibold'}>{item.text}</li>
+                        ))}
+                      </ul>
+                      {outageNotice.hidden.length > 0 && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer underline">{outageNotice.hidden.length === 1 ? 'Ver a outra queda' : `Ver as outras ${outageNotice.hidden.length} quedas`}</summary>
+                          <ul className="mt-1 space-y-1">
+                            {outageNotice.hidden.map((item) => <li key={item.key}>{item.text}</li>)}
+                          </ul>
+                        </details>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {waitingRemaining != null && (
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     <p className="mr-1 font-mono text-lg font-bold tabular-nums text-warning">Liberação em {fmt(waitingRemaining)}</p>
@@ -1195,7 +1278,7 @@ export default function MonitorPage() {
           <Card className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-muted border-b border-border bg-surface-2">
-                <th className="px-4 py-3 font-semibold">Aluno</th><th className="px-4 py-3 font-semibold">IP</th><th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 font-semibold">Versão</th><th className="px-4 py-3 font-semibold">Tempo</th><th className="px-4 py-3 font-semibold">Progresso</th><th className="px-4 py-3 font-semibold">Digitação</th><th className="px-4 py-3 font-semibold">Foco</th><th className="px-4 py-3 font-semibold">Ações</th>
+                <th className="px-4 py-3 font-semibold">Aluno</th><th className="px-4 py-3 font-semibold">IP</th><th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 font-semibold">Versão</th><th className="px-4 py-3 font-semibold">Tempo</th><th className="px-4 py-3 font-semibold">Progresso</th><th className="px-4 py-3 font-semibold">{keystrokeColumnLabel(keystrokeMode, keystrokeLegacy)}</th><th className="px-4 py-3 font-semibold">Foco</th><th className="px-4 py-3 font-semibold">Ações</th>
               </tr></thead>
               <tbody>
                 {rows.map((r, i) => {
@@ -1218,15 +1301,15 @@ export default function MonitorPage() {
                       <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
                       <td className="px-4 py-3 font-mono text-muted">{r.progress || '-'}</td>
                       <td className="px-4 py-3">
-                        <button
+                        {keystrokeMode === 'nada' ? <span className="text-xs text-subtle">Desligado</span> : <button
                           className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
                           onClick={() => openKeystrokeWatch(r)}
-                          title="Ver digitação ao vivo"
+                          title={keystrokeWatchTitle(keystrokeMode, keystrokeLegacy)}
                         >
                           <Keyboard size={13} />
                           <span className="font-mono">{r.keystrokeCount || 0}</span>
                           {r.suspiciousCount > 0 && <Badge tone="danger">{r.suspiciousCount}</Badge>}
-                        </button>
+                        </button>}
                       </td>
                       <td className="px-4 py-3">
                         {r.focusLocked ? (
@@ -1265,14 +1348,16 @@ export default function MonitorPage() {
       <Modal
         open={!!keystrokeWatch}
         onClose={() => setKeystrokeWatch(null)}
-        title={`Digitação ao vivo — ${keystrokeWatch?.name || ''}`}
+        title={keystrokeLiveTitle(keystrokeMode, keystrokeLegacy, keystrokeWatch?.name)}
         description="Leitura dos comandos capturados. Atualiza a cada 2s."
         size="lg"
       >
         <KeystrokeViewer
           events={keystrokeEvents}
+          logs={keystrokeLogs}
           row={rows.find((r) => r.email === keystrokeWatch?.email) || keystrokeWatch}
           loading={keystrokeLoading}
+          emptyText={keystrokeLiveEmptyText(keystrokeMode, keystrokeLegacy)}
         />
       </Modal>
       <Modal open={!!previewIssue} onClose={() => setPreviewIssue(null)} title={`Questão ${previewIssue?.questionPosition || previewIssue?.questionNumber || ''}`} description={`${previewIssue?.count || 0} contestação(ões) recebida(s)`}>

@@ -9,12 +9,13 @@ import { Textarea } from '../../../components/ui/Textarea'
 import { Badge } from '../../../components/ui/Badge'
 import { ConfirmDialog, Modal } from '../../../components/ui/Modal'
 import { api, hasActiveSession } from '../../../lib/api'
+import { AUTOSAVE_TIMEOUT_MS, KEYSTROKE_TIMEOUT_MS, POLL_TIMEOUT_MS } from '../../../lib/requestTimeouts'
 import { onBeforeUpdateReload, updateReloadPending, UPDATE_RELOAD_EVENT } from '../../../lib/buildVersion'
 import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '../../../lib/renderErrors'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
 import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
-import { autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds, wait } from './examAutoSubmit'
+import { autoSubmitExtendedMessage, autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds, wait } from './examAutoSubmit'
 import {
   clearExamDraft,
   clearExamDraftsForApplication,
@@ -26,18 +27,137 @@ import {
   writeExamDraft,
 } from '../../../lib/examDrafts'
 import { fmtGrade } from '../../../lib/grades'
+import { useOnReconnect } from '../../../hooks/useServerConnection'
+import { isAltGrTyping, keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
+// A sincronização é o relógio da prova: não pausa com a aba oculta e uma só fica em voo
+// por vez (fase 2, H2-C: DES-09). O tique que encontra uma em andamento é pulado; um
+// pedido explícito (token aceito, volta da tela cheia, fim da espera) fica na fila e
+// roda logo depois dela.
 const SYNC_MS = 4000
+// Salvamento logo depois de cada resposta (frente do H3, CONF-03): 1,5 s depois da última
+// mudança, as respostas vão ao servidor sem esperar a sincronização de 4 s, que continua.
+// Antes, até 4 s de respostas ficavam só na tela e se perdiam numa queda do servidor.
+export const ANSWER_SAVE_DEBOUNCE_MS = 1500
+// Estado do salvamento que cada falha mostra no cabeçalho da prova (frente do H3):
+// - sem rede, tempo-limite ou servidor iniciando (503 starting): 'offline', sem culpar o
+//   aluno. As respostas ficam na tela e vão quando a conexão voltar (na hora da volta e
+//   em cada sincronização);
+// - gravação que falhou no servidor (503 retryable, decisões §3): 'retrying', com o erro,
+//   as respostas na tela e nova tentativa na sincronização seguinte;
+// - o resto (4xx/5xx de verdade): 'error', "Falha no último salvamento".
+export const SAVE_OFFLINE_TEXT = 'Sem conexão: as respostas serão enviadas quando a conexão voltar.'
+export const SAVE_RETRYING_TEXT = 'O servidor não conseguiu gravar agora: as respostas continuam na tela e serão enviadas de novo em instantes.'
+export const SUBMIT_RETRY_TEXT = 'Não foi possível enviar a prova agora. Suas respostas continuam na tela: tente enviar de novo em instantes.'
+export function saveFailureStatus(error) {
+  if (!error) return 'error'
+  if (error.network || error.timeout || error.status === 0 || error.starting || (error.status === 503 && error.data?.starting === true)) return 'offline'
+  if (error.retryable || (error.status === 503 && error.data?.retryable === true)) return 'retrying'
+  return 'error'
+}
 const KEYSTROKE_FLUSH_MS = 2000
 const KEYSTROKE_FLUSH_SIZE = 20
+// Envio da digitação (fase 2, H2-C e H9c): um envio por vez, com no máximo 500 eventos
+// (o servidor guarda no máximo 500 por envio e o corpo do aluno tem teto de 512 KB); o
+// que sobra fica no buffer para o envio seguinte. Depois de uma queda da rede, o buffer
+// acumulado sai em lotes, um logo depois do outro, sem perder eventos.
+// - Pedido de envio com outro em andamento fica marcado e sai assim que ele volta, mesmo
+//   que a prova já tenha saído da tela (Sair, link do portal): nada fica no buffer.
+// - Falha de rede, prazo ou servidor fora: os eventos voltam para a frente do buffer e o
+//   envio seguinte espera o recuo (2 s, 4 s, 8 s... até 30 s, com variação de 0,8 a
+//   1,2), em vez de sair a cada tecla. Uma nova tentativa fica agendada no fim do recuo.
+// - Lote recusado pelo conteúdo (400, 413) ou de aplicação que não existe mais (404):
+//   descartado, porque reenviar daria o mesmo erro para sempre.
+// - Sessão recusada (401) ou turma e identidade recusadas (403): os eventos ficam no
+//   buffer, mas nada é reenviado sozinho (antes tentava de novo a cada recuo enquanto a
+//   tela estivesse aberta, sem chance de dar certo). O envio volta quando uma
+//   sincronização for aceita, no fim do recuo; se a prova sair da tela antes, descarta.
+// - Saída da prova (Sair e desmontagem): o que sobrou sai na hora, sem esperar o envio em
+//   andamento; depois que a tela saiu, o recuo vale por no máximo 5 tentativas e só com a
+//   sessão aberta.
+export const KEYSTROKE_BATCH_MAX = 500
+// Espera máxima do último envio da digitação antes de "Enviar prova" (rede lenta não
+// segura a entrega).
+export const KEYSTROKE_SUBMIT_WAIT_MS = 3000
+
+export function waitForKeystrokeFlush(pending, waitMs = KEYSTROKE_SUBMIT_WAIT_MS) {
+  if (!pending || typeof pending.then !== 'function') return Promise.resolve()
+  let timer = null
+  return Promise.race([
+    Promise.resolve(pending).catch(() => {}),
+    new Promise((resolve) => { timer = setTimeout(resolve, waitMs) }),
+  ]).finally(() => clearTimeout(timer))
+}
+
+// Antes de "Enviar prova" (sobra do H5b, J2): espera o envio em andamento e manda todos os
+// lotes que sobraram no buffer, em lotes de até 500, um por vez, dentro da mesma espera
+// máxima (waitMs, a rede lenta não segura a entrega). Antes só o primeiro lote saía: com a
+// rede de volta depois de uma queda (fila de mais de 500 teclas), o resto ficava para
+// depois da entrega, quando o servidor já pode recusar a sessão (senha redefinida).
+// - pendingSend(): a promessa do envio em andamento, ou null;
+// - sendNext(): manda o próximo lote e devolve a promessa (undefined: nada saiu);
+// - remaining(): quantos eventos ainda estão no buffer.
+// Para quando o buffer esvazia, o prazo acaba ou um lote volta para o buffer (recusado:
+// tentar de novo daria o mesmo).
+export async function drainKeystrokesBeforeSubmit({ pendingSend, sendNext, remaining, waitMs = KEYSTROKE_SUBMIT_WAIT_MS, now = () => Date.now() }) {
+  const deadline = now() + waitMs
+  const left = () => Math.max(0, deadline - now())
+  for (;;) {
+    if (left() <= 0) return
+    const inFlight = pendingSend()
+    if (inFlight) {
+      await waitForKeystrokeFlush(inFlight, left())
+      if (pendingSend() === inFlight) return // ainda não voltou: o prazo acabou
+      continue
+    }
+    const before = remaining()
+    if (!before) return
+    const sent = sendNext()
+    if (!sent) return
+    await waitForKeystrokeFlush(sent, left())
+    if (remaining() >= before) return
+  }
+}
+export const KEYSTROKE_RETRY_BASE_MS = 2000
+export const KEYSTROKE_RETRY_MAX_MS = 30000
+const KEYSTROKE_RETRIES_AFTER_LEAVE = 5
+
+// Recuo depois de `failures` falhas seguidas (1, 2, 3...), com variação de 0,8 a 1,2.
+export function keystrokeRetryDelay(failures, random = Math.random) {
+  const step = Math.max(0, Math.min(30, Number(failures) - 1 || 0))
+  const delay = Math.min(KEYSTROKE_RETRY_MAX_MS, KEYSTROKE_RETRY_BASE_MS * 2 ** step)
+  return Math.round(delay * (0.8 + random() * 0.4))
+}
+// O envio da saída da página (keepalive) também leva no máximo 500, e cabe no limite do
+// navegador para pedidos keepalive (64 KB somando todos os pendentes, inclusive o
+// salvamento das respostas que sai junto).
+export const KEYSTROKE_KEEPALIVE_MAX_BYTES = 48 * 1024
+
+function jsonBytes(value) {
+  const text = JSON.stringify(value)
+  try { return new TextEncoder().encode(text).length } catch { return text.length * 3 }
+}
+
+// Lote do keepalive: até 500 eventos, cortado até o corpo caber no limite.
+export function keepaliveKeystrokeBatch(base, events, maxBytes = KEYSTROKE_KEEPALIVE_MAX_BYTES) {
+  let batch = events.slice(0, KEYSTROKE_BATCH_MAX)
+  for (let guard = 0; batch.length > 1 && guard < 20; guard += 1) {
+    const size = jsonBytes({ ...base, events: batch })
+    if (size <= maxBytes) break
+    batch = batch.slice(0, Math.max(1, Math.floor(batch.length * (maxBytes / size) * 0.9)))
+  }
+  return batch
+}
 // Identificador opaco da alternativa (AVA-05); uma letra avulsa vem de páginas antigas.
 const ANSWER_ID_PATTERN = /^[0-9A-Z]{13}$/
 
 // Combinações bloqueadas dentro da prova (fluxos de cópia/busca/impressão/devtools/Lens).
 // Retorna a razão se a combinação for suspeita/bloqueável, senão null.
 function classifyCombo(e) {
+  // Caractere digitado com AltGr (chega com Ctrl e Alt juntos): digitação, não atalho (H8b).
+  if (isAltGrTyping(e)) return null
   const k = (e.key || '').toLowerCase()
   const ctrl = e.ctrlKey, alt = e.altKey, meta = e.metaKey, shift = e.shiftKey
   if ((ctrl || meta) && ['c', 'x'].includes(k)) return { block: true, reason: 'copiar_recortar' }
@@ -52,6 +172,7 @@ function classifyCombo(e) {
 }
 
 function modsOf(e) {
+  if (isAltGrTyping(e)) return ['AltGr', e.shiftKey && 'Shift'].filter(Boolean).join('+')
   return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta'].filter(Boolean).join('+')
 }
 
@@ -65,6 +186,10 @@ export default function ExamRunner() {
 
   const [phase, setPhase] = useState('loading')
   const [cfg, setCfg] = useState(null)
+  // Registro do teclado desta aplicação (H8b) e o prazo de guarda do monitoramento, para
+  // as instruções. O ref é o que o keydown lê (sem refazer os ouvintes a cada sync).
+  const keystrokeModeRef = useRef('eventos')
+  const [proctoringRetentionDays, setProctoringRetentionDays] = useState(0)
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
   const [assignedVersion, setAssignedVersion] = useState('A')
@@ -101,11 +226,23 @@ export default function ExamRunner() {
   const submittedRef = useRef(false)
   const keyBufferRef = useRef([])
   const keySeqRef = useRef(0)
+  const flushInFlightRef = useRef(0) // envios da digitação em andamento
+  const flushPromiseRef = useRef(null) // promessa do envio da digitação em andamento
+  const flushQueuedRef = useRef(false) // pedido de envio durante um em andamento ou no recuo
+  const flushFailuresRef = useRef(0) // falhas seguidas do envio da digitação
+  const flushRetryAtRef = useRef(0) // até quando o envio espera o recuo
+  const flushRetryTimerRef = useRef(null)
+  const flushLeaveFailuresRef = useRef(0) // falhas depois que a prova saiu da tela
+  const flushRefusedRef = useRef(false) // sessão ou turma recusada: espera uma sincronização aceita
+  const flushRef = useRef(null)
+  const syncInFlightRef = useRef(false) // sincronização em andamento
+  const syncQueuedRef = useRef(false) // pedido explícito de sincronização durante uma
   const phaseRef = useRef(phase)
   const attemptIdRef = useRef(attemptId)
   const examConfigVersionRef = useRef(examConfigVersion)
   const lastSavedRef = useRef(null) // respostas que o servidor já confirmou
   const savingRef = useRef(false)
+  const saveQueuedRef = useRef(false) // resposta mudou enquanto um salvamento estava em andamento
   const loadedAttemptRef = useRef(null)
   const timeupRef = useRef(null) // respostas congeladas no fim do tempo, até a entrega
   const deliveredAttemptRef = useRef(null) // tentativa que esta tela mostrou como entregue
@@ -136,7 +273,12 @@ export default function ExamRunner() {
     mountedRef.current = true
     // A prova voltou à tela: não há mais tela de erro no lugar dela.
     clearInterruptedExam()
-    return () => { mountedRef.current = false }
+    return () => {
+      mountedRef.current = false
+      // Saiu da tela por qualquer caminho (Sair, telas de pausa, link, fim da sessão): a
+      // digitação que ainda está no buffer sai agora, e o que falhar segue no recuo.
+      flushRef.current?.({ final: true })
+    }
   }, [])
 
   // Chave da cópia local da tentativa: importada uma vez e mantida só em memória.
@@ -231,6 +373,15 @@ export default function ExamRunner() {
     submittedRef.current = true
     setSubmitting(true)
     try {
+      // A digitação que ainda está no buffer sai antes da entrega, com espera curta
+      // (KEYSTROKE_SUBMIT_WAIT_MS): depois da entrega o servidor pode recusar a sessão (senha
+      // redefinida pelo professor durante a prova, H5b) e o último lote sumia do Monitor.
+      // Espera o envio em andamento e manda todos os lotes que sobraram, não só o primeiro.
+      await drainKeystrokesBeforeSubmit({
+        pendingSend: () => (flushInFlightRef.current > 0 ? flushPromiseRef.current : null),
+        sendNext: () => flushRef.current?.({ final: true }),
+        remaining: () => keyBufferRef.current.length,
+      })
       const r = await api.post('/api/student/submit', {
         email,
         studentClass,
@@ -252,6 +403,10 @@ export default function ExamRunner() {
         setPhase('exhausted')
       } else if (e.status === 408 && e.data?.finalizedByServer) {
         finishDelivered({ finalizedByServer: true, answeredCount: e.data.answeredCount, gradePublished: false })
+      } else if (saveFailureStatus(e) !== 'error') {
+        // Sem conexão, servidor iniciando ou gravação que falhou: a prova continua aberta,
+        // com as respostas na tela (o salvamento automático segue tentando).
+        toast.error(SUBMIT_RETRY_TEXT)
       } else {
         toast.error(e.message || 'Falha ao enviar a prova')
       }
@@ -269,20 +424,30 @@ export default function ExamRunner() {
     if (!['active', 'paused', 'server_paused'].includes(phaseRef.current)) return
     const snapshot = answersRef.current
     if (lastSavedRef.current ? sameExamAnswers(lastSavedRef.current, snapshot) : countAnswered(snapshot) === 0) return
-    if (savingRef.current && !keepalive) return
+    // Um salvamento por vez; o pedido que chega no meio (resposta marcada durante o
+    // salvamento) sai logo depois dele, com as respostas de então.
+    if (savingRef.current && !keepalive) { saveQueuedRef.current = true; return }
     savingRef.current = true
+    let saved = false
     if (!keepalive) setSaveState((current) => ({ ...current, status: 'saving' }))
     try {
-      await api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }, keepalive ? { keepalive: true } : undefined)
+      await api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }, keepalive ? { keepalive: true } : { timeoutMs: AUTOSAVE_TIMEOUT_MS })
       lastSavedRef.current = snapshot
+      saved = true
       saveLocalCopy(currentAttemptId, answersRef.current, sameExamAnswers(snapshot, answersRef.current))
       if (!keepalive) setSaveState({ status: 'saved', at: new Date() })
     } catch (e) {
-      if (!keepalive) setSaveState((current) => ({ ...current, status: 'error' }))
+      if (!keepalive) setSaveState((current) => ({ ...current, status: saveFailureStatus(e) }))
       // O servidor já considera o tempo esgotado: entrega o que está na tela agora.
       if (e.status === 408 && phaseRef.current === 'active') startTimeUpRef.current?.()
     } finally {
       savingRef.current = false
+    }
+    // Só depois de um salvamento aceito: na falha, a próxima tentativa é a da sincronização
+    // (ou a da volta da conexão), sem insistir em seguida.
+    if (saveQueuedRef.current && !keepalive) {
+      saveQueuedRef.current = false
+      if (saved && mountedRef.current) setTimeout(() => { if (mountedRef.current) saveRef.current?.() }, 0)
     }
   }, [email, studentClass, courseId, examKey, applicationId, saveLocalCopy])
   saveRef.current = saveAnswersIfDirty
@@ -324,7 +489,9 @@ export default function ExamRunner() {
         }
         if (kind === 'extended') {
           if (timeupRef.current === frozen) {
-            resumeExtendedAttempt('O professor deu mais tempo. A prova continua.')
+            // Texto do servidor: tempo devolvido por uma queda do servidor (reason
+            // 'server_outage') ou mais tempo dado pelo professor.
+            resumeExtendedAttempt(autoSubmitExtendedMessage(e))
             syncRef.current?.()
           }
           return
@@ -373,22 +540,106 @@ export default function ExamRunner() {
   }, [saveLocalCopy, runAutoSubmit])
   startTimeUpRef.current = startTimeUp
 
-  const flushKeystrokes = useCallback((useBeacon = false) => {
-    const events = keyBufferRef.current
-    if (!events.length) return
-    keyBufferRef.current = []
-    const payload = { email, studentClass, courseId, examKey, applicationId, attemptId, events }
-    if (useBeacon) {
-      // Saída da página: fetch com keepalive leva o token de sessão (o sendBeacon não
-      // levava e o servidor recusava com 401).
-      api.post('/api/student/log-keystrokes', payload, { keepalive: true }).catch(() => {})
+  // Próximo envio da digitação no fim do recuo (o relógio do navegador pode disparar um
+  // instante antes da conta).
+  const scheduleKeystrokeRetry = useCallback(() => {
+    clearTimeout(flushRetryTimerRef.current)
+    const wait = Math.max(0, flushRetryAtRef.current - Date.now())
+    flushRetryTimerRef.current = setTimeout(() => {
+      flushRetryTimerRef.current = null
+      flushRetryAtRef.current = 0
+      flushRef.current?.()
+    }, wait)
+  }, [])
+
+  // flushKeystrokes() envia o próximo lote; { keepalive: true } é a saída da página e
+  // { final: true } a saída da prova (não espera o envio em andamento, o recuo nem uma
+  // sincronização aceita depois de uma recusa da sessão). Devolve a promessa do envio
+  // (resolvida também na falha), ou undefined quando nada saiu: o "Enviar prova" espera o
+  // último lote antes da entrega (submit).
+  const flushKeystrokes = useCallback(({ keepalive = false, final = false } = {}) => {
+    const buffer = keyBufferRef.current
+    if (!buffer.length) return
+    // Depois que a prova saiu da tela, só com a sessão aberta (no logout o servidor
+    // recusaria; a sessão acabou de fato).
+    if (!mountedRef.current && !hasActiveSession()) {
+      keyBufferRef.current = []
       return
     }
-    api.post('/api/student/log-keystrokes', payload).catch(() => {
-      // Reenvia no próximo flush se falhar (não perde a cauda).
+    // Um envio por vez e, depois de uma falha, só no fim do recuo (e, se o servidor recusou
+    // a sessão ou a turma, só depois de uma sincronização aceita): o pedido fica marcado e
+    // os eventos esperam no buffer.
+    if (!keepalive && !final && (flushInFlightRef.current > 0 || flushRefusedRef.current || Date.now() < flushRetryAtRef.current)) {
+      flushQueuedRef.current = true
+      return
+    }
+    const base = { email, studentClass, courseId, examKey, applicationId, attemptId }
+    const events = keepalive ? keepaliveKeystrokeBatch(base, buffer) : buffer.slice(0, KEYSTROKE_BATCH_MAX)
+    keyBufferRef.current = buffer.slice(events.length)
+    const payload = { ...base, events }
+    // Lote recusado pelo conteúdo (400 ou 413) ou de aplicação que não existe mais (404):
+    // reenviar daria o mesmo erro para sempre. Os outros (rede, prazo, servidor fora,
+    // sessão ou turma recusada) voltam para a frente do buffer (não perde a cauda).
+    const requeue = (err) => {
+      if (err?.status === 400 || err?.status === 404 || err?.status === 413) return false
       keyBufferRef.current = events.concat(keyBufferRef.current)
+      return true
+    }
+    if (keepalive) {
+      // Saída da página: fetch com keepalive leva o token de sessão (o sendBeacon não
+      // levava e o servidor recusava com 401). Se falhar com a página ainda aberta (aba
+      // oculta sem rede), os eventos voltam para o buffer.
+      api.post('/api/student/log-keystrokes', payload, { keepalive: true }).catch(requeue)
+      return
+    }
+    flushQueuedRef.current = false
+    flushInFlightRef.current += 1
+    const sending = api.post('/api/student/log-keystrokes', payload, { timeoutMs: KEYSTROKE_TIMEOUT_MS }).then(() => {
+      flushInFlightRef.current = Math.max(0, flushInFlightRef.current - 1)
+      flushFailuresRef.current = 0
+      flushRetryAtRef.current = 0
+      flushRefusedRef.current = false
+      if (flushInFlightRef.current > 0) return
+      // Sobrou um lote inteiro (fila de uma queda da rede), houve pedido durante o envio,
+      // a prova saiu da fase ativa (sem o relógio de 2 s) ou saiu da tela: o próximo lote
+      // sai já.
+      const pending = keyBufferRef.current.length
+      if (pending && (flushQueuedRef.current || pending >= KEYSTROKE_FLUSH_SIZE || phaseRef.current !== 'active' || !mountedRef.current)) {
+        flushRef.current?.()
+      }
+    }, (err) => {
+      flushInFlightRef.current = Math.max(0, flushInFlightRef.current - 1)
+      if (!requeue(err)) return
+      flushFailuresRef.current += 1
+      flushRetryAtRef.current = Date.now() + keystrokeRetryDelay(flushFailuresRef.current)
+      // Sessão (401) ou turma e identidade (403) recusadas: tentar de novo no recuo não
+      // muda nada. Nenhuma tentativa fica agendada; a sincronização aceita seguinte retoma
+      // o envio (runSync). Fora da tela, ninguém retoma: descarta.
+      if (err?.status === 401 || err?.status === 403) {
+        clearTimeout(flushRetryTimerRef.current)
+        flushRetryTimerRef.current = null
+        if (!mountedRef.current) {
+          keyBufferRef.current = []
+          return
+        }
+        flushRefusedRef.current = true
+        return
+      }
+      // Saiu da tela: tenta mais algumas vezes e desiste (a página não guarda mais nada).
+      if (!mountedRef.current) {
+        flushLeaveFailuresRef.current += 1
+        if (flushLeaveFailuresRef.current > KEYSTROKE_RETRIES_AFTER_LEAVE) {
+          keyBufferRef.current = []
+          return
+        }
+      }
+      scheduleKeystrokeRetry()
     })
-  }, [email, studentClass, courseId, examKey, applicationId, attemptId])
+    // O envio em andamento, para o "Enviar prova" esperar por ele (drainKeystrokesBeforeSubmit).
+    flushPromiseRef.current = sending
+    return sending
+  }, [email, studentClass, courseId, examKey, applicationId, attemptId, scheduleKeystrokeRetry])
+  flushRef.current = flushKeystrokes
 
   // Pede a tela cheia e diz se a página ficou em tela cheia. Sem a API (iPhone) ou com a
   // tela cheia proibida, retorna false: antes retornava true sem nada acontecer (UXA-02).
@@ -408,13 +659,19 @@ export default function ExamRunner() {
   // Captura do histórico de digitação + bloqueio de atalhos perigosos (só na fase ativa).
   useEffect(() => {
     if (phase !== 'active') return
+    // Registro do teclado (H8b, CRIT-04): o bloqueio acima vale sempre; o que entra no
+    // buffer segue o modo da aplicação (keystrokePolicy.js), e nada do que se digita no
+    // "Reportar problema" (campo de texto fora das alternativas) é registrado.
+    const record = (e, entry) => {
+      if (!shouldRecordKeystroke(keystrokeModeRef.current, e.target, entry)) return false
+      keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), ...entry })
+      return true
+    }
     const onKeyDown = (e) => {
       const cls = classifyCombo(e)
-      const isChar = e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey
+      const isChar = e.key && e.key.length === 1 && ((!e.ctrlKey && !e.altKey && !e.metaKey) || isAltGrTyping(e))
       if (cls && cls.block) e.preventDefault()
-      keyBufferRef.current.push({
-        seq: ++keySeqRef.current,
-        clientTs: Date.now(),
+      const recorded = record(e, {
         key: e.key,
         code: e.code,
         mods: modsOf(e),
@@ -423,18 +680,16 @@ export default function ExamRunner() {
         blocked: !!(cls && cls.block),
         suspicious: !!cls,
       })
-      if (keyBufferRef.current.length >= KEYSTROKE_FLUSH_SIZE) flushKeystrokes()
+      if (recorded && keyBufferRef.current.length >= KEYSTROKE_FLUSH_SIZE) flushKeystrokes()
     }
     const onCopy = (e) => {
       e.preventDefault()
-      keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), key: 'copy', code: 'copy', mods: '', kind: 'clipboard', question: null, blocked: true, suspicious: true })
-      flushKeystrokes()
+      if (record(e, { key: 'copy', code: 'copy', mods: '', kind: 'clipboard', question: null, blocked: true, suspicious: true })) flushKeystrokes()
     }
     const onCut = onCopy
     const onContext = (e) => {
       e.preventDefault()
-      keyBufferRef.current.push({ seq: ++keySeqRef.current, clientTs: Date.now(), key: 'contextmenu', code: 'contextmenu', mods: '', kind: 'contextmenu', question: null, blocked: true, suspicious: true })
-      flushKeystrokes()
+      if (record(e, { key: 'contextmenu', code: 'contextmenu', mods: '', kind: 'contextmenu', question: null, blocked: true, suspicious: true })) flushKeystrokes()
     }
     window.addEventListener('keydown', onKeyDown, true)
     document.addEventListener('copy', onCopy, true)
@@ -536,7 +791,7 @@ export default function ExamRunner() {
   useEffect(() => {
     if (!['active', 'paused', 'server_paused'].includes(phase)) return
     const flush = () => {
-      flushKeystrokes(true)
+      flushKeystrokes({ keepalive: true })
       saveRef.current?.({ keepalive: true })
     }
     const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
@@ -558,7 +813,7 @@ export default function ExamRunner() {
     return onBeforeUpdateReload(() => {
       pageHiddenRef.current = true
       if (submittedRef.current) return
-      flushKeystrokes(true)
+      flushKeystrokes({ keepalive: true })
       saveRef.current?.({ keepalive: true })
       api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: UPDATE_RELOAD_EVENT, details: 'A página da prova recarregou sozinha com a atualização do IClass' }, { keepalive: true }).catch(() => {})
     })
@@ -570,6 +825,20 @@ export default function ExamRunner() {
     saveLocalCopy(attemptId, answers, !!lastSavedRef.current && sameExamAnswers(lastSavedRef.current, answers))
   }, [answers, attemptId, phase, saveLocalCopy])
 
+  // Salvamento 1,5 s depois da última resposta marcada (ANSWER_SAVE_DEBOUNCE_MS). Nada a
+  // salvar (respostas iguais às confirmadas): saveAnswersIfDirty não manda pedido.
+  useEffect(() => {
+    if (phase !== 'active' || !attemptId || timeupRef.current) return undefined
+    const timer = setTimeout(() => saveRef.current?.(), ANSWER_SAVE_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [answers, attemptId, phase])
+
+  // A conexão voltou (lib/connection.js): salva e sincroniza na hora, sem esperar o tique.
+  useOnReconnect(() => {
+    if (!mountedRef.current) return
+    syncRef.current?.()
+  })
+
   useEffect(() => {
     if (phase !== 'active' || remaining == null) return
     if (remaining <= 0) {
@@ -580,11 +849,11 @@ export default function ExamRunner() {
     return () => clearInterval(id)
   }, [phase, remaining, startTimeUp])
 
-  const sync = useCallback(async () => {
+  const runSync = useCallback(async () => {
     try {
       await saveRef.current?.()
       const knownAttemptId = timeupRef.current?.attemptId || attemptIdRef.current || findExamDraftAttempt(applicationId) || ''
-      const r = await api.get(`/api/student/sync?${qs(`&attemptId=${encodeURIComponent(knownAttemptId)}&questionsVersion=${encodeURIComponent(questionsVersionRef.current)}`)}`)
+      const r = await api.get(`/api/student/sync?${qs(`&attemptId=${encodeURIComponent(knownAttemptId)}&questionsVersion=${encodeURIComponent(questionsVersionRef.current)}`)}`, { timeoutMs: POLL_TIMEOUT_MS })
       const c = (r.onlineExamConfigs || {})[examKey]
       if (!c) {
         timeOverScreenRef.current = false
@@ -592,7 +861,15 @@ export default function ExamRunner() {
         setPhase('error')
         return
       }
+      // Sessão e turma aceitas de novo: a digitação que o servidor tinha recusado (401 ou
+      // 403) volta a sair, no fim do recuo.
+      if (flushRefusedRef.current) {
+        flushRefusedRef.current = false
+        if (keyBufferRef.current.length) scheduleKeystrokeRetry()
+      }
       setCfg(c)
+      keystrokeModeRef.current = normalizeKeystrokeMode(c.keystrokeMode)
+      setProctoringRetentionDays(Number(r.proctoringRetentionDays) || 0)
       setExamConfigVersion(r.examConfigVersion || null)
       setExtraMinutes(Number(r.accessibilityExtraMinutes) || 0)
       if (r.examTitle) setExamTitle(r.examTitle)
@@ -757,6 +1034,25 @@ export default function ExamRunner() {
     // eslint-disable-next-line
   }, [examKey, applicationId, tokenOk, instructorMessage])
 
+  // Uma sincronização por vez (ver SYNC_MS). fromTimer: tique do relógio, pulado se já
+  // houver uma em voo; sem ele, o pedido fica na fila e roda logo depois.
+  const sync = useCallback(async ({ fromTimer = false } = {}) => {
+    if (syncInFlightRef.current) {
+      if (!fromTimer) syncQueuedRef.current = true
+      return
+    }
+    syncInFlightRef.current = true
+    try {
+      await runSync()
+    } finally {
+      syncInFlightRef.current = false
+      if (syncQueuedRef.current) {
+        syncQueuedRef.current = false
+        if (mountedRef.current) setTimeout(() => { if (mountedRef.current) syncRef.current?.() }, 0)
+      }
+    }
+  }, [runSync])
+
   async function closeInstructorMessage() {
     const message = instructorMessage
     setInstructorMessage(null)
@@ -796,7 +1092,7 @@ export default function ExamRunner() {
 
   useEffect(() => {
     sync()
-    const id = setInterval(sync, SYNC_MS)
+    const id = setInterval(() => sync({ fromTimer: true }), SYNC_MS)
     return () => clearInterval(id)
   }, [sync])
 
@@ -903,7 +1199,8 @@ export default function ExamRunner() {
     leavingRef.current = true
     setLeavingBusy(true)
     await saveAnswersIfDirty()
-    flushKeystrokes()
+    // A digitação que sobrou sai já, sem esperar o envio em andamento: a tela vai sair.
+    flushKeystrokes({ final: true })
     await api.post('/api/student/log-activity', { email, studentClass, courseId, examKey, applicationId, attemptId, eventType: 'exam_left', details }).catch(() => {})
     if (mountedRef.current) {
       setLeavingBusy(false)
@@ -950,7 +1247,7 @@ export default function ExamRunner() {
     // Monitor como erro técnico e a prova não trava (o aluno recarrega e continua).
     const renderError = recentRenderError()
     if (renderError) {
-      api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_render_error', details: `Erro técnico na tela da prova: ${renderError.message}` }, { keepalive: true }).catch(() => {})
+      api.post('/api/student/log-activity', { ...ctx, attemptId: attemptIdRef.current, eventType: 'exam_render_error', details: `Erro técnico na tela da prova: ${String(renderError.message || '').slice(0, 400)}` }, { keepalive: true }).catch(() => {})
       // A tela de erro da prova confirma e registra uma saída por voltar ou link.
       markInterruptedExam({ ...ctx, attemptId: attemptIdRef.current })
       return
@@ -1151,7 +1448,7 @@ export default function ExamRunner() {
           {noFullscreen
             ? <li>Este aparelho não permite <strong>tela cheia</strong>: a prova abre sem ela e o professor é avisado. Sair da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>
             : <li>A prova roda em <strong>tela cheia</strong>. Sair da tela cheia, da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>}
-          <li>Durante a prova, os atalhos de teclado e a digitação são monitorados para garantir a integridade da avaliação.</li>
+          <li data-testid="keystroke-notice">{keystrokeNotice(cfg?.keystrokeMode, proctoringRetentionDays)}</li>
           <li>Durante a prova, o menu do portal fica indisponível. Sair da prova (pelo botão Sair ou pelo voltar do navegador) pede confirmação, fica registrado para o professor e bloqueia a prova até a liberação dele.</li>
           <li>Depois de sair, você retorna à mesma tentativa, com as respostas salvas, enquanto houver tempo e a aplicação estiver aberta.</li>
           <li>Revise as respostas antes de confirmar o envio final.</li>
@@ -1292,9 +1589,11 @@ export default function ExamRunner() {
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:contents">
             <div className="min-w-0 flex-1 basis-24 sm:col-start-1 sm:row-start-2 flex flex-wrap items-baseline gap-x-2">
               <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
-              <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : 'text-subtle'}`} aria-live="polite">
+              <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : saveState.status === 'offline' || saveState.status === 'retrying' ? 'text-warning' : 'text-subtle'}`} aria-live="polite">
                 {saveState.status === 'saving' && 'Salvando respostas...'}
                 {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}
+                {saveState.status === 'offline' && SAVE_OFFLINE_TEXT}
+                {saveState.status === 'retrying' && SAVE_RETRYING_TEXT}
                 {saveState.status === 'error' && 'Falha no último salvamento'}
               </p>
             </div>
@@ -1338,7 +1637,7 @@ export default function ExamRunner() {
               </Button>
             </div>
             {/* Abaixo de 360 px as alternativas usam a largura toda do cartão. */}
-            <div className="space-y-2 pl-9 max-[359px]:pl-0">
+            <div className="space-y-2 pl-9 max-[359px]:pl-0" data-exam-answer="">
               {/* O aluno vê a letra da posição (A, B, C... nesta versão) e a resposta guarda o
                   identificador da alternativa; a letra original nunca chega aqui (AVA-05). */}
               {q.alternatives.map((alt) => {

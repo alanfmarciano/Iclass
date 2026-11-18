@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
 import { Card } from '../../components/ui/Card'
 import { Input } from '../../components/ui/Input'
+import { passwordHint } from '../../lib/passwordPolicy'
 import { Select } from '../../components/ui/Select'
 import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
@@ -35,7 +36,7 @@ export default function AdminEditPage() {
 
   useEffect(() => {
     if (form) return
-    if (isNew) { setForm({ name: '', email: '', password: '', role: 'admin', assignedClasses: [], additionalPermissions: [] }); return }
+    if (isNew) { setForm({ name: '', email: '', password: '', requirePasswordChange: true, role: 'admin', assignedClasses: [], additionalPermissions: [] }); return }
     if (account) setForm({ name: account.name || '', email: account.email, role: account.role || 'admin', assignedClasses: account.assignedClasses || [], additionalPermissions: account.additionalPermissions || [] })
   }, [account, isNew, form])
 
@@ -109,7 +110,13 @@ export default function AdminEditPage() {
             <Card className="p-5 space-y-3">
               <Input label="Nome" value={form.name} disabled={!canManage} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               <Input label="E-mail" type="email" value={form.email} disabled={!canManage || !isNew} onChange={(e) => setForm({ ...form, email: e.target.value })} helper={!isNew ? 'O e-mail identifica a conta e não é alterado aqui.' : undefined} />
-              {isNew && <Input label="Senha" type="password" value={form.password} disabled={!canManage} onChange={(e) => setForm({ ...form, password: e.target.value })} />}
+              {isNew && <Input label="Senha" type="password" autoComplete="new-password" value={form.password} disabled={!canManage} onChange={(e) => setForm({ ...form, password: e.target.value })} helper={passwordHint('instructor')} />}
+              {isNew && (
+                <label className="flex items-center gap-2 text-sm text-text">
+                  <input type="checkbox" checked={form.requirePasswordChange !== false} disabled={!canManage} onChange={(e) => setForm({ ...form, requirePasswordChange: e.target.checked })} />
+                  Pedir troca no primeiro acesso
+                </label>
+              )}
               <Select label="Papel" value={form.role} disabled={!canManage} onChange={(e) => setForm({ ...form, role: e.target.value, additionalPermissions: e.target.value === 'admin' ? [] : form.additionalPermissions })}>
                 <option value="admin">Administrador</option>
                 <option value="professor">Professor</option>

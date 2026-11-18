@@ -1,49 +1,68 @@
-import { useState } from 'react'
+import { Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthProvider'
 import { canAccessAdminPath } from './lib/adminPermissions'
-import { AppShell } from './components/layout/AppShell'
-import { StudentShell } from './features/student/StudentShell'
-import { StudentExamShell } from './features/student/StudentExamShell'
-import { Input } from './components/ui/Input'
-import { Button } from './components/ui/Button'
-import { api } from './lib/api'
+import { lazyPage } from './lib/lazyPage'
+import { PasswordChangeForm } from './components/PasswordChangeForm'
+import { PageLoading } from './components/ui/PageLoading'
 import LoginPage from './features/LoginPage'
+
+// Telas e layouts sob demanda (H2-A, DES-06): cada um é um arquivo próprio do build, e o
+// navegador só baixa o que abre. O login continua no pacote inicial (é a primeira tela).
+// Tela nova entra aqui com lazyPage(() => import(...)). Layout cujo arquivo não chegou
+// (servidor fora, Wi-Fi caída) espera na tela inteira (LayoutLoading); a tela dentro do
+// layout espera no lugar da página, com o menu à vista.
+const layoutOptions = { loading: LayoutLoading }
+const AppShell = lazyPage(() => import('./components/layout/AppShell'), 'AppShell', layoutOptions)
+const StudentShell = lazyPage(() => import('./features/student/StudentShell'), 'StudentShell', layoutOptions)
+const StudentExamShell = lazyPage(() => import('./features/student/StudentExamShell'), 'StudentExamShell', layoutOptions)
 // Instrutor
-import DashboardPage from './features/admin/DashboardPage'
-import ProvasPage from './features/admin/ProvasPage'
-import MonitorPage from './features/admin/MonitorPage'
-import ResultadosPage from './features/admin/ResultadosPage'
-import MateriaisPage from './features/admin/MateriaisPage'
-import ChamadaPage from './features/admin/ChamadaPage'
-import AvisosPage from './features/admin/AvisosPage'
-import CalendarioPage from './features/admin/CalendarioPage'
-import BibliotecaPage from './features/admin/BibliotecaPage'
-import EditorPage from './features/admin/EditorPage'
-import TurmasPage from './features/admin/TurmasPage'
-import AssistenteHorariosPage from './features/admin/AssistenteHorariosPage'
-import AlunosPage from './features/admin/AlunosPage'
-import MatriculasPage from './features/admin/MatriculasPage'
-import AlunosGlobalPage from './features/admin/AlunosGlobalPage'
-import AlunoGlobalEditPage from './features/admin/AlunoGlobalEditPage'
-import AlunoDetailPage from './features/admin/AlunoDetailPage'
-import AdminsPage from './features/admin/AdminsPage'
-import AdminEditPage from './features/admin/AdminEditPage'
-import ForumPage from './features/admin/ForumPage'
-import IdentidadePage from './features/admin/IdentidadePage'
-import EscolasPage from './features/admin/EscolasPage'
-import EscolaEditPage from './features/admin/EscolaEditPage'
-import SistemaPage from './features/admin/SistemaPage'
+const DashboardPage = lazyPage(() => import('./features/admin/DashboardPage'))
+const ProvasPage = lazyPage(() => import('./features/admin/ProvasPage'))
+const MonitorPage = lazyPage(() => import('./features/admin/MonitorPage'))
+const ResultadosPage = lazyPage(() => import('./features/admin/ResultadosPage'))
+const MateriaisPage = lazyPage(() => import('./features/admin/MateriaisPage'))
+const ChamadaPage = lazyPage(() => import('./features/admin/ChamadaPage'))
+const AvisosPage = lazyPage(() => import('./features/admin/AvisosPage'))
+const CalendarioPage = lazyPage(() => import('./features/admin/CalendarioPage'))
+const BibliotecaPage = lazyPage(() => import('./features/admin/BibliotecaPage'))
+const EditorPage = lazyPage(() => import('./features/admin/EditorPage'))
+const TurmasPage = lazyPage(() => import('./features/admin/TurmasPage'))
+const AssistenteHorariosPage = lazyPage(() => import('./features/admin/AssistenteHorariosPage'))
+const AlunosPage = lazyPage(() => import('./features/admin/AlunosPage'))
+const MatriculasPage = lazyPage(() => import('./features/admin/MatriculasPage'))
+const AlunosGlobalPage = lazyPage(() => import('./features/admin/AlunosGlobalPage'))
+const AlunoGlobalEditPage = lazyPage(() => import('./features/admin/AlunoGlobalEditPage'))
+const AlunoDetailPage = lazyPage(() => import('./features/admin/AlunoDetailPage'))
+const AdminsPage = lazyPage(() => import('./features/admin/AdminsPage'))
+const AdminEditPage = lazyPage(() => import('./features/admin/AdminEditPage'))
+const ForumPage = lazyPage(() => import('./features/admin/ForumPage'))
+const IdentidadePage = lazyPage(() => import('./features/admin/IdentidadePage'))
+const EscolasPage = lazyPage(() => import('./features/admin/EscolasPage'))
+const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
+const SistemaPage = lazyPage(() => import('./features/admin/SistemaPage'))
+const AuditoriaPage = lazyPage(() => import('./features/admin/AuditoriaPage'))
+const PrivacidadePage = lazyPage(() => import('./features/admin/PrivacidadePage'))
+// Endereço da sala em tela cheia, fora do AppShell (H6a); a página traz a própria área
+// de erro (AppErrorBoundary), para o pacote inicial não crescer.
+const EnderecoSalaPage = lazyPage(() => import('./features/admin/EnderecoSalaPage'))
+const CadastrosEncerradosPage = lazyPage(() => import('./features/admin/CadastrosEncerradosPage'))
+// Públicas (sem login): Termos de Uso e Política de Privacidade (H8a-1).
+const LegalDocumentPage = lazyPage(() => import('./features/LegalDocumentPage'))
+// Pública (sem login): guia de instalação do certificado da conexão segura (H6c, OPS-08).
+const CertificadoPage = lazyPage(() => import('./features/CertificadoPage'))
 // Aluno
-import InicioPage from './features/student/InicioPage'
-import ModulosPage from './features/student/ModulosPage'
-import ProvasStudentPage from './features/student/ProvasPage'
-import ExamRunner from './features/student/exam/ExamRunner'
-import CadernoPage from './features/student/CadernoPage'
-import DuvidasPage from './features/student/DuvidasPage'
-import AvisosStudentPage from './features/student/AvisosPage'
-import CalendarioStudentPage from './features/student/CalendarioPage'
-import BibliotecaStudentPage from './features/student/BibliotecaPage'
+const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
+const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
+const ProvasStudentPage = lazyPage(() => import('./features/student/ProvasPage'))
+const ExamRunner = lazyPage(() => import('./features/student/exam/ExamRunner'))
+const CadernoPage = lazyPage(() => import('./features/student/CadernoPage'))
+const DuvidasPage = lazyPage(() => import('./features/student/DuvidasPage'))
+const AvisosStudentPage = lazyPage(() => import('./features/student/AvisosPage'))
+const CalendarioStudentPage = lazyPage(() => import('./features/student/CalendarioPage'))
+const BibliotecaStudentPage = lazyPage(() => import('./features/student/BibliotecaPage'))
+const ContaStudentPage = lazyPage(() => import('./features/student/ContaPage'))
+const MeusDadosStudentPage = lazyPage(() => import('./features/student/MeusDadosPage'))
 
 function RequireRole({ role, children }) {
   const { auth, authReady } = useAuth()
@@ -75,13 +94,24 @@ function SessionLoading() {
   )
 }
 
+function LayoutLoading() {
+  return (
+    <div className="min-h-screen grid place-items-center bg-bg text-text">
+      <PageLoading />
+    </div>
+  )
+}
+
 export default function App() {
   const { auth, authReady, maintenance, setAuth } = useAuth()
   if (!authReady) return <SessionLoading />
   if (auth.role === 'student' && maintenance?.enabled) return <MaintenanceScreen message={maintenance.message} />
-  if (auth.role === 'admin' && auth.mustChangePassword) return <PasswordChangeScreen onChanged={() => setAuth((current) => ({ ...current, mustChangePassword: false }))} />
+  if (auth.role === 'admin' && auth.mustChangePassword) return <PasswordChangeScreen reason={auth.passwordChangeReason} onChanged={() => setAuth((current) => ({ ...current, mustChangePassword: false, passwordChangeReason: null }))} />
+  // O layout (painel do instrutor, portal do aluno ou prova) chega sob demanda: até lá,
+  // a mesma tela de "Validando sessão...". As telas dentro do layout têm o próprio
+  // "Carregando..." (PageLoading), com o menu à vista.
   return (
-    <>
+    <Suspense fallback={<SessionLoading />}>
       <Routes>
       <Route path="/login" element={auth.role ? <Navigate to={auth.role === 'admin' ? '/' : '/aluno'} replace /> : <LoginPage />} />
 
@@ -113,7 +143,13 @@ export default function App() {
         <Route path="escolas/:id" element={<RequireAdminPath path="/escolas"><EscolaEditPage /></RequireAdminPath>} />
         <Route path="identidade" element={<RequireAdminPath path="/identidade"><IdentidadePage /></RequireAdminPath>} />
         <Route path="sistema" element={<RequireAdminPath path="/sistema"><SistemaPage /></RequireAdminPath>} />
+        <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
+        <Route path="lgpd" element={<RequireAdministrator><RequireAdminPath path="/lgpd"><PrivacidadePage /></RequireAdminPath></RequireAdministrator>} />
+        <Route path="encerrados" element={<RequireAdministrator><RequireAdminPath path="/encerrados"><CadastrosEncerradosPage /></RequireAdminPath></RequireAdministrator>} />
       </Route>
+
+      {/* Endereço da sala para projetar no quadro (H6a): tela cheia, sem o menu do painel. */}
+      <Route path="/endereco" element={<RequireRole role="admin"><RequireAdminPath path="/endereco"><EnderecoSalaPage /></RequireAdminPath></RequireRole>} />
 
       {/* Aluno */}
       {/* Prova online em layout próprio, sem o menu, o sino e os links do portal (AVA-12). */}
@@ -129,11 +165,19 @@ export default function App() {
         <Route path="avisos" element={<AvisosStudentPage />} />
         <Route path="calendario" element={<CalendarioStudentPage />} />
         <Route path="biblioteca" element={<BibliotecaStudentPage />} />
+        <Route path="conta" element={<ContaStudentPage />} />
+        <Route path="meus-dados" element={<MeusDadosStudentPage />} />
       </Route>
+
+      {/* Termos e Privacidade: abertos a qualquer um, com ou sem login (H8a-1). */}
+      <Route path="/termos" element={<LegalDocumentPage kind="termos" />} />
+      <Route path="/privacidade" element={<LegalDocumentPage kind="privacidade" />} />
+      {/* Guia do certificado: aberto a qualquer um, em http e em https (H6c). */}
+      <Route path="/certificado" element={<CertificadoPage />} />
 
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
-    </>
+    </Suspense>
   )
 }
 
@@ -148,27 +192,31 @@ function MaintenanceScreen({ message }) {
   )
 }
 
-function PasswordChangeScreen({ onChanged }) {
-  const [password, setPassword] = useState('')
-  const [confirmation, setConfirmation] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  async function submit(event) {
-    event.preventDefault()
-    if (password.length < 10) return setError('Use pelo menos 10 caracteres.')
-    if (password !== confirmation) return setError('As senhas não coincidem.')
-    setBusy(true); setError('')
-    try { await api.post('/api/admin/change-password', { newPassword: password }); onChanged() }
-    catch (submitError) { setError(submitError.message) } finally { setBusy(false) }
-  }
+// Troca obrigatória do instrutor (senha temporária do launcher, conta criada pelo
+// administrador ou senha fraca, H5a): o mesmo formulário do aluno, com o mínimo de 10
+// caracteres. A senha atual é pedida na conta criada pelo administrador e na senha fraca
+// (o servidor também pede, com 400 currentPasswordRequired, e o campo aparece).
+const ADMIN_PASSWORD_INTRO = {
+  created: 'A sua conta foi criada com uma senha definida pelo administrador. Antes de acessar o painel, escolha uma senha só sua.',
+  weak: 'A sua senha é fácil de adivinhar. Antes de acessar o painel, escolha uma senha nova.',
+}
+function PasswordChangeScreen({ reason, onChanged }) {
+  const askCurrent = reason === 'created' || reason === 'weak'
   return (
     <main className="min-h-screen grid place-items-center bg-bg p-6 text-text">
-      <form onSubmit={submit} className="w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-lg space-y-4">
-        <div><h1 className="text-xl font-bold">Troque a senha temporária</h1><p className="mt-1 text-sm text-muted">Esta etapa é obrigatória antes de acessar o painel.</p></div>
-        <Input label="Nova senha" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
-        <Input label="Confirmar nova senha" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} error={error} />
-        <Button type="submit" className="w-full" loading={busy}>Salvar nova senha</Button>
-      </form>
+      <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-lg space-y-4">
+        <div>
+          <h1 className="text-xl font-bold">{reason === 'weak' ? 'Troque a sua senha' : 'Troque a senha temporária'}</h1>
+          <p className="mt-1 text-sm text-muted">{ADMIN_PASSWORD_INTRO[reason] || 'Esta etapa é obrigatória antes de acessar o painel.'}</p>
+        </div>
+        <PasswordChangeForm
+          kind="instructor"
+          endpoint="/api/admin/change-password"
+          askCurrent={askCurrent}
+          currentLabel={reason === 'created' ? 'Senha recebida' : 'Senha atual'}
+          onChanged={onChanged}
+        />
+      </div>
     </main>
   )
 }

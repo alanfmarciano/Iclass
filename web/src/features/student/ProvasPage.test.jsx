@@ -1,7 +1,7 @@
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ProvasPage, { buildExamPrintHtml } from './ProvasPage'
+import ProvasPage, { buildExamPrintHtml, openExamPrintWindow } from './ProvasPage'
 
 const mocks = vi.hoisted(() => ({ post: vi.fn(), submissions: [] }))
 
@@ -85,3 +85,67 @@ describe('Provas do aluno · impressão da prova', () => {
     expect(buildExamPrintHtml({ ...detail, gradePublished: false }, questions, answers)).toContain('<span>Nota</span><b>—</b>')
   })
 })
+
+// H5d (SEG-16): a janela de impressão (about:blank) herda a CSP do IClass, com
+// script-src 'self'. O <script>window.onload=...print()</script> que ia dentro do HTML
+// era bloqueado e a impressão do aluno não abria; agora quem chama print() é a janela
+// de origem, como nas impressões do professor.
+describe('Provas do aluno · impressão sem script (CSP)', () => {
+  const detail = { gradePublished: true, score: 75, correctCount: 3, totalCount: 4, examKey: 'Avaliacao_FUTEC_1', assignedVersion: 'A' }
+  const questions = [{ number: 1, text: 'Enunciado', alternatives: [{ letter: 'A', text: 'Um' }, { letter: 'B', text: 'Dois' }] }]
+  const answers = new Map([[1, { studentChoice: 'B', correctAnswer: 'B', isCorrect: true }]])
+
+  function fakeWindow(readyState) {
+    const listeners = {}
+    const written = []
+    return {
+      written,
+      listeners,
+      print: vi.fn(),
+      focus: vi.fn(),
+      addEventListener: vi.fn((name, fn) => { listeners[name] = fn }),
+      document: { readyState, open: vi.fn(), write: vi.fn(html => written.push(html)), close: vi.fn() },
+    }
+  }
+
+  afterEach(() => vi.useRealTimers())
+
+  it('[UC-SEC-002] o HTML da impressão não tem script nem manipulador inline', () => {
+    const html = buildExamPrintHtml(detail, questions, answers)
+    expect(html).not.toMatch(/<script/i)
+    expect(html).not.toMatch(/\son[a-z]+\s*=/i)
+    // O estilo inline continua (style-src 'unsafe-inline' na CSP).
+    expect(html).toMatch(/<style>/)
+  })
+
+  it('[UC-SEC-002] a janela de origem escreve o HTML e chama print() uma vez', () => {
+    vi.useFakeTimers()
+    const win = fakeWindow('complete')
+    const open = vi.fn(() => win)
+    expect(openExamPrintWindow('<html><body>prova</body></html>', open)).toBe(true)
+    expect(open).toHaveBeenCalledWith('', '_blank')
+    expect(win.written).toEqual(['<html><body>prova</body></html>'])
+    expect(win.document.close).toHaveBeenCalled()
+    expect(win.print).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(300)
+    expect(win.focus).toHaveBeenCalled()
+    expect(win.print).toHaveBeenCalledTimes(1)
+  })
+
+  it('[UC-SEC-002] documento ainda carregando: imprime no load, uma vez só', () => {
+    vi.useFakeTimers()
+    const win = fakeWindow('loading')
+    expect(openExamPrintWindow('<html></html>', () => win)).toBe(true)
+    vi.advanceTimersByTime(1000)
+    expect(win.print).not.toHaveBeenCalled()
+    win.listeners.load()
+    win.listeners.load()
+    vi.advanceTimersByTime(300)
+    expect(win.print).toHaveBeenCalledTimes(1)
+  })
+
+  it('[UC-SEC-002] pop-up bloqueado: devolve false sem erro', () => {
+    expect(openExamPrintWindow('<html></html>', () => null)).toBe(false)
+  })
+})
+

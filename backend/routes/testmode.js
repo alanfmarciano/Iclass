@@ -9,6 +9,8 @@ const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const attendanceUtil = require('../utils/attendance.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { applicationToOnlineConfig, createExamApplication } = require('../utils/examApplications.js');
+const { markStudentPresence } = require('../utils/authSessions.js');
+const { modelDocumentId } = require('../utils/legalDocuments.js');
 
 const TEST = process.env.TEST_MODE === '1';
 const TEST_ADMIN = DEMO_ACCOUNTS.admin;
@@ -225,8 +227,11 @@ function ensureStudents() {
       studentClass: TEST_CLASS, period: 'Manhã',
       guardian: { name: `Responsável por ${name.split(' ')[0]}`, phone: `(11) 98888-${String(1100 + index).slice(-4)}`, email: `responsavel.${index + 1}@teste.local`, parentesco: index % 2 ? 'Pai' : 'Mãe', observacao: 'Contato autorizado para assuntos acadêmicos.' },
       accessibility,
-      termsAcceptance: { version: '1.0', at: now - (60 - index) * 86400000 },
-      privacyAcceptance: { version: '1.0', at: now - (60 - index) * 86400000 },
+      // Primeiro acesso (H8a-2): data de nascimento de adulto e aceite do modelo (nada é
+      // publicado na demonstração), para o portão não aparecer nas contas demo.
+      birthDate: `${2000 + (index % 6)}-0${1 + (index % 9)}-1${index % 10}`,
+      termsAcceptance: { documentId: modelDocumentId('termos'), version: null, schoolId: null, at: now - (60 - index) * 86400000 },
+      privacyAcceptance: { documentId: modelDocumentId('privacidade'), version: null, schoolId: null, at: now - (60 - index) * 86400000 },
       lastLoginAt: now - (index + 1) * 3600000,
       lastSeenAt: now - index * 180000,
       createdAt: current && current.createdAt || now - (120 + index) * 86400000,
@@ -242,7 +247,6 @@ function seedAcademicData() {
   const completionCounts = [9, 12, 6, 15, 8, 10, 4, 13, 7, 11, 5, 14];
   db.memory.progress = db.memory.progress || {};
   db.memory.notes = db.memory.notes || {};
-  db.memory.sessions = db.memory.sessions || {};
 
   const submissions = [];
   const attendance = [];
@@ -263,7 +267,9 @@ function seedAcademicData() {
       FECOP: 'Conferir grupos do Active Directory e políticas de acesso antes da próxima aula.',
       IRCOM: 'Resumo dos protocolos industriais e pontos importantes do laboratório.'
     };
-    if (studentIndex < 4) db.memory.sessions[email] = now - studentIndex * 60000;
+    // Quatro alunos aparecem "online" no painel (só presença, sem login: pelo
+    // authSessions, que não grava isso como sessão nem na tabela auth_sessions).
+    if (studentIndex < 4) markStudentPresence(db.memory, email, now - studentIndex * 60000);
 
     RESULT_EXAMS.forEach((examKey, examIndex) => {
       const score = 60 + ((studentIndex * 7 + examIndex * 8) % 39);
@@ -497,6 +503,20 @@ function ensureSeed() {
 }
 
 router.get('/api/test-mode', (req, res) => res.json({ enabled: TEST }));
+
+// Erro fatal simulado (H3c), para conferir o supervisor: só em TEST_MODE com
+// ICLASS_TEST_ALLOW_CRASH=1 (os testes que sobem o servidor num processo próprio) e só do
+// próprio computador. Sem a segunda chave, a varredura de rotas dos testes que rodam no
+// mesmo processo derrubaria o próprio teste. Lança fora de qualquer pedido
+// (setImmediate), como uma exceção num timer: vira uncaughtException.
+router.post('/api/test/crash', (req, res) => {
+  const address = String((req.socket && req.socket.remoteAddress) || '');
+  if (!TEST || process.env.ICLASS_TEST_ALLOW_CRASH !== '1' || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)) {
+    return res.status(403).json({ error: 'Disponível apenas com o servidor em TEST_MODE (ICLASS_TEST_ALLOW_CRASH=1), no próprio computador.' });
+  }
+  res.status(202).json({ success: true });
+  res.once('finish', () => setImmediate(() => { throw new Error('Falha simulada pelo modo de teste (/api/test/crash).'); }));
+});
 
 router.post('/api/test/seed', (req, res) => {
   // Seed cria contas administrativas com senha conhecida ("teste"); só pode

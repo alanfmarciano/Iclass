@@ -7,18 +7,42 @@ const {
     canAccessAdminPermission,
     resolveAdminApiPermission,
 } = require('./utils/adminPermissions.js');
-const { SERVER_INSTANCE_ID, ABSOLUTE_TTL_MS } = require('./utils/sessionConfig.js');
-const settingsUtil = require('./utils/settings.js');
+const { SERVER_INSTANCE_ID } = require('./utils/sessionConfig.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
 const { computeAttemptDeadline } = require('./utils/examDeadline.js');
 const { listExamApplications } = require('./utils/examApplications.js');
+const { keystrokeModeOf } = require('./utils/keystrokePolicy.js');
 const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
-const { ownEntry } = require('./utils/ownEntry.js');
-function absoluteTtlMs() { try { return settingsUtil.getSettings().session.absoluteHours * 3600000; } catch (e) { return ABSOLUTE_TTL_MS; } }
+const { logError } = require('./utils/errorLog.js');
+const { DB_WRITE_ERROR_MESSAGE } = require('./utils/dbWriter.js');
+const { bindToRequestContext, noteRequestWriteFailure } = require('./utils/persistenceContext.js');
+const {
+    findStudentSession,
+    studentSessionByEmail,
+    sessionMatchesToken,
+    hasSessionCredential,
+    revokeStudentSession,
+    checkAdminSessionToken,
+    createAdminSession,
+    revokeAdminSession,
+    touchSession,
+    isUserActivityRequest,
+    sessionAbsoluteTtlMs,
+    sessionPredatesRevocation,
+    revokedSessionReason,
+} = require('./utils/authSessions.js');
+const {
+    STUDENT_PASSWORD_CHANGE_PATHS,
+    adminPasswordChangeState,
+    isStudentExamSessionPath,
+    passwordChangeRequiredBody,
+    studentHasOpenAttempt,
+    studentPasswordChangeState,
+} = require('./utils/passwordChange.js');
 
 // Caminhos dos arquivos de banco de dados locais
 const DB_STUDENTS_FILE = path.join(DATA_DIR, 'db_students.json');
@@ -27,25 +51,8 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const DB_CLASSES_FILE = path.join(DATA_DIR, 'db_classes.json');
 const DB_ADMINS_FILE = path.join(DATA_DIR, 'db_admins.json');
 
-// Armazena todos os IPs da rede local
-let localIpAddresses = [];
-function detectIP() {
-    const os = require('os');
-    const interfaces = os.networkInterfaces();
-    for (let devName in interfaces) {
-        let iface = interfaces[devName];
-        for (let i = 0; i < iface.length; i++) {
-            let alias = iface[i];
-            if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
-                localIpAddresses.push({ name: devName, address: alias.address });
-            }
-        }
-    }
-    if (localIpAddresses.length === 0) {
-        localIpAddresses.push({ name: 'localhost', address: 'localhost' });
-    }
-}
-detectIP();
+// Os endereços da rede local saíram daqui (o detectIP lia os adaptadores uma vez só, ao
+// subir): agora são relidos a cada pedido em utils/networkAddresses.js (H6a, OPS-10).
 
 function normalizeIp(ip) {
     if (!ip) return '';
@@ -56,6 +63,40 @@ function normalizeIp(ip) {
         return '127.0.0.1';
     }
     return ip;
+}
+
+// Respostas de sessão derrubada (contrato das respostas de estado: 401
+// { sessionRevoked: true, reason }). reason: 'expired' (sem sessão para o token, inclusive
+// a que não voltou depois de um reinício, ou fora do prazo absoluto), 'replaced' (a conta
+// entrou em outro aparelho), 'account_missing' (conta apagada), 'account_inactive' (aluno
+// bloqueado ou inativo, com 403) e 'missing' (pedido sem token nenhum).
+function sendSessionRevoked(res, status, error, reason) {
+    return res.status(status).json({ error, sessionRevoked: true, reason });
+}
+
+// Sessão que um 401/403 acabou de tirar da memória (vencida, conta apagada ou bloqueada):
+// sai também da tabela auth_sessions (H3a-2) antes da resposta; sem isso ela voltava no
+// boot seguinte e, com a conta desbloqueada ou recriada com o mesmo e-mail, o token antigo
+// entrava de novo. Falha de gravação não troca o 401 por 503: o motor regrava sozinho, e a
+// retomada do boot descarta a sessão de conta apagada ou bloqueada (restoreSessions).
+function persistSessionRevocation(removed) {
+    if (removed) db.save().catch(() => {});
+}
+
+// Sessão encerrada há pouco por uma ação (H5b; contrato das respostas de estado: 401
+// { sessionRevoked: true, reason }): o pedido seguinte do token antigo diz o motivo, em vez
+// do "sessão expirada" genérico. utils/authSessions.js guarda o motivo (revokedSessionReason).
+const REVOKED_SESSION_MESSAGES = Object.freeze({
+    logout: 'Esta sessão foi encerrada pelo botão Sair. Faça login novamente.',
+    password_reset: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
+    password_changed: 'A senha desta conta foi trocada em outro aparelho. Entre de novo com a senha nova.',
+    replaced: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
+});
+
+function revokedSessionBody(token) {
+    const reason = typeof token === 'string' && token ? revokedSessionReason(token) : null;
+    if (!reason || !REVOKED_SESSION_MESSAGES[reason]) return null;
+    return { error: REVOKED_SESSION_MESSAGES[reason], sessionRevoked: true, reason };
 }
 
 function validateStudentSession(req, res, next) {
@@ -69,57 +110,59 @@ function validateStudentSession(req, res, next) {
         return res.status(403).json({ error: 'A identidade informada não corresponde à sessão autenticada.' });
     }
 
+    // O token vem do cabeçalho (ou do corpo, no beacon de saída). Na URL (?sessionToken=)
+    // não vale mais (H5b, SEG-16): o endereço vai para o histórico e para os registros.
     const providedToken = req.headers['x-session-token']
-        || (req.body && req.body.sessionToken)
-        || (req.query && req.query.sessionToken);
+        || (req.body && req.body.sessionToken);
     let normalizedEmail = distinctClaims[0] || '';
-    const tokenMatch = providedToken
-        ? Object.entries(db.memory.sessions || {}).find(([, value]) => value && typeof value === 'object' && value.token === providedToken)
-        : null;
-    if (normalizedEmail && tokenMatch && tokenMatch[0] !== normalizedEmail) {
+    // A sessão é procurada pelo hash do token (utils/authSessions.js); o token cru só
+    // existe no navegador.
+    const tokenMatch = typeof providedToken === 'string' ? findStudentSession(db.memory, providedToken) : null;
+    // Token de uma sessão que acabou por uma ação (Sair, "Redefinir senha"): o 401 diz o
+    // motivo, também quando o aluno já entrou de novo em outro aparelho.
+    const revokedBody = !tokenMatch ? revokedSessionBody(providedToken) : null;
+    if (revokedBody) return res.status(401).json(revokedBody);
+    if (normalizedEmail && tokenMatch && tokenMatch.email !== normalizedEmail) {
         return res.status(403).json({ error: 'A identidade informada não corresponde à sessão autenticada.' });
     }
     if (!normalizedEmail && tokenMatch) {
-        normalizedEmail = tokenMatch[0];
+        normalizedEmail = tokenMatch.email;
     }
     if (!normalizedEmail) {
+        // Token que o servidor não conhece (sessão vencida ou que não voltou depois de um
+        // reinício) numa rota sem e-mail na query nem no corpo (GET /api/student/enrollments):
+        // é sessão encerrada, não pedido malformado. Antes respondia 400 "E-mail do estudante
+        // é obrigatório." e o portal não levava o aluno ao login. O token substituído por um
+        // login novo já saiu acima, com 'replaced' (revokedSessionBody).
+        if (typeof providedToken === 'string' && providedToken) {
+            return sendSessionRevoked(res, 401, 'Sessão expirada ou não autenticada. Por favor, faça login novamente.', 'expired');
+        }
         return res.status(400).json({ error: 'E-mail do estudante é obrigatório.' });
     }
     // Só a sessão gravada com esse e-mail (chave própria): '__proto__' ou 'constructor'
     // devolviam o valor herdado de Object.prototype.
-    const session = ownEntry(db.memory.sessions, normalizedEmail);
+    const session = studentSessionByEmail(db.memory, normalizedEmail);
     
     if (!session) {
-        return res.status(401).json({
-            error: 'Sessão expirada ou não autenticada. Por favor, faça login novamente.',
-            sessionRevoked: true
-        });
+        return sendSessionRevoked(res, 401, 'Sessão expirada ou não autenticada. Por favor, faça login novamente.', 'expired');
     }
     
-    if (typeof session !== 'object' || !session.token) {
-        delete db.memory.sessions[normalizedEmail];
-        return res.status(401).json({
-            error: 'Sessão expirada. Faça login novamente.',
-            sessionRevoked: true
-        });
+    if (!hasSessionCredential(session)) {
+        // Só presença (semente do TEST_MODE), que não é gravada em auth_sessions.
+        revokeStudentSession(db.memory, normalizedEmail);
+        return sendSessionRevoked(res, 401, 'Sessão expirada. Faça login novamente.', 'expired');
     }
 
     const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
     const sessionIp = normalizeIp(session.ip);
     
-    // Sessão única: se a sessão tem um token (login recente), exige que a requisição
-    // apresente o mesmo token. Um novo login gera token novo e invalida o dispositivo antigo.
-    const sessionObj = db.memory.sessions[normalizedEmail];
-    if (sessionObj && typeof sessionObj === 'object' && sessionObj.token) {
-        if (!providedToken || providedToken !== sessionObj.token) {
-            return res.status(401).json({
-                error: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
-                sessionRevoked: true
-            });
-        }
+    // Sessão única: exige que a requisição apresente o token da sessão gravada. Um novo
+    // login gera token novo e invalida o dispositivo antigo.
+    if (typeof providedToken !== 'string' || !sessionMatchesToken(session, providedToken)) {
+        return sendSessionRevoked(res, 401, 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.', 'replaced');
     }
 
-    // O token (UUID por login) já prova a identidade. Um IP diferente é registrado,
+    // O token (aleatório, um por login) já prova a identidade. Um IP diferente é registrado,
     // mas não derruba a sessão: celular que troca de Wi-Fi para 4G ou recebe outro
     // IP do roteador perdia a prova no meio.
     if (sessionIp && sessionIp !== clientIp) {
@@ -128,54 +171,83 @@ function validateStudentSession(req, res, next) {
     }
 
     const nowTs = Date.now();
-    const liveSession = db.memory.sessions[normalizedEmail];
-    if (liveSession && typeof liveSession === 'object') {
-        if (!liveSession.createdAt) liveSession.createdAt = nowTs;
-        // Cap ABSOLUTO no servidor (backstop). A ociosidade e enforced no cliente.
-        if (nowTs - liveSession.createdAt > absoluteTtlMs()) {
-            delete db.memory.sessions[normalizedEmail];
-            return res.status(401).json({ error: 'Sessão expirada (limite máximo atingido). Faça login novamente.', sessionRevoked: true });
-        }
-        liveSession.lastSeen = nowTs;
+    if (!session.createdAt) session.createdAt = nowTs;
+    // Cap ABSOLUTO no servidor (backstop). A ociosidade e enforced no cliente.
+    if (nowTs - session.createdAt > sessionAbsoluteTtlMs()) {
+        persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail));
+        return sendSessionRevoked(res, 401, 'Sessão expirada (limite máximo atingido). Faça login novamente.', 'expired');
     }
-
     const student = (db.memory.students || []).find(item => item && item.email && item.email.toLowerCase() === normalizedEmail);
     if (!student) {
-        delete db.memory.sessions[normalizedEmail];
-        return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
+        persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail));
+        return sendSessionRevoked(res, 401, 'Conta não encontrada. Faça login novamente.', 'account_missing');
     }
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
-        delete db.memory.sessions[normalizedEmail];
-        return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa.', sessionRevoked: true });
+        persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail));
+        return sendSessionRevoked(res, 403, 'Esta conta está bloqueada ou inativa.', 'account_inactive');
+    }
+    // Senha redefinida pelo professor depois deste login (H5b, SEG-10): a sessão de antes
+    // do "Redefinir senha" acaba. Quem tem uma tentativa aberta agora termina a prova com
+    // ela, e só com ela (decisão do coordenador, J2): até a tentativa fechar, o token
+    // antigo vale só nas rotas da prova (STUDENT_EXAM_SESSION_PATHS); as outras respondem
+    // 401 password_reset sem encerrar a sessão. Antes ele abria o portal inteiro até a
+    // entrega. Depois da entrega, do encerramento da aplicação ou, na prova com cronômetro,
+    // do prazo com a folga (decisões §10), a sessão acaba no primeiro pedido.
+    // A prova da turma que o aluno ainda não abriu não segura a sessão antiga.
+    const routePath = `${req.baseUrl || ''}${req.path || ''}`;
+    if (sessionPredatesRevocation(student, session)) {
+        const attemptOpen = studentHasOpenAttempt(db.memory, normalizedEmail, nowTs);
+        if (!attemptOpen) persistSessionRevocation(revokeStudentSession(db.memory, normalizedEmail, { reason: 'password_reset', now: nowTs }));
+        if (!attemptOpen || !isStudentExamSessionPath(routePath)) {
+            return res.status(401).json({
+                error: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
+                sessionRevoked: true,
+                reason: 'password_reset',
+            });
+        }
+    }
+    touchSession(session, nowTs, { active: isUserActivityRequest(req) });
+
+    // Troca obrigatória de senha (H5a, utils/passwordChange.js): senha criada ou
+    // redefinida pelo professor, ou senha fraca no login. Só a presença, a própria troca,
+    // a saída e o registro de erro da tela continuam; a prova em andamento nunca recebe
+    // o 403.
+    const passwordChange = studentPasswordChangeState(db.memory, student, session);
+    if (passwordChange.required && !STUDENT_PASSWORD_CHANGE_PATHS.has(routePath)) {
+        return res.status(403).json(passwordChangeRequiredBody(passwordChange.reason));
     }
 
     req.auth = { role: 'student', email: normalizedEmail, student };
     req.studentEmail = normalizedEmail;
     req.studentAccount = student;
+    req.studentSession = session;
+    req.studentPasswordChange = passwordChange;
     // Sessão do aparelho (o mesmo token do login): a regra de foco da saída da página
     // confere que quem volta à prova é a mesma sessão (utils/examFocusRules.js).
     req.studentSessionToken = providedToken;
 
-    next();
+    // Devolve o que o próximo passo devolver: a promessa de um callback assíncrono
+    // chega a quem chamou (validateAnySession, Express 5), e o erro não fica solto.
+    return next();
 }
 
 // Identifica quem faz a requisição por token: instrutor (x-admin-session) ou aluno
 // (x-session-token). Usado nas rotas que servem conteúdo de prova a qualquer perfil
-// autenticado; sem token válido a rota responde 401. O token de instrutor só vale se for
-// chave própria de adminSessions: '__proto__' (ou 'constructor', 'toString'...) devolvia o
-// valor herdado de Object.prototype e entrava como instrutor, sem login.
+// autenticado; sem token válido a rota responde 401. O token de instrutor vale só com
+// sessão gravada (utils/authSessions.js: '__proto__' não é sessão), dentro do prazo
+// absoluto e de conta que ainda existe; antes, o token vencido ou de conta apagada
+// continuava entrando aqui. O aluno segue para a validação completa (validateStudentSession).
 function resolveRequester(req) {
     const adminToken = String(req.get('x-admin-session') || '');
-    const adminSession = ownEntry(db.memory.adminSessions, adminToken);
-    if (adminSession) {
-        return { role: 'admin', email: adminSession.email };
+    const admin = adminToken ? checkAdminSessionToken(adminToken) : null;
+    if (admin && admin.ok) {
+        return { role: 'admin', email: admin.email };
     }
-    const studentToken = String(req.get('x-session-token') || (req.query && req.query.sessionToken) || '');
+    const studentToken = String(req.get('x-session-token') || '');
     if (studentToken) {
-        const match = Object.entries(db.memory.sessions || {})
-            .find(([, value]) => value && typeof value === 'object' && value.token === studentToken);
-        if (match) return { role: 'student', email: match[0] };
+        const match = findStudentSession(db.memory, studentToken);
+        if (match) return { role: 'student', email: match.email };
     }
     return null;
 }
@@ -185,15 +257,17 @@ function resolveRequester(req) {
 // conferirem a matrícula na turma antes de devolver qualquer dado de prova.
 function validateAnySession(req, res, next) {
     const requester = resolveRequester(req);
-    if (!requester && req.headers.authorization) {
-        // Instrutor no login legado (Authorization "email:senha").
-        return validateAdmin(req, res, (config, account) => {
-            req.requester = { role: 'admin', email: String(account.email || '').toLowerCase() };
-            next();
-        });
-    }
     if (!requester) {
-        return res.status(401).json({ error: 'Autenticação necessária.', sessionRevoked: true });
+        // Sessão encerrada há pouco por uma ação (Sair, "Redefinir senha", troca de senha):
+        // o 401 diz o motivo (H5b). Com token (de aluno ou de instrutor) que o servidor não
+        // conhece mais: sessão vencida, como nas outras validações; sem token nenhum:
+        // 'missing'. O ?sessionToken= da URL não vale mais (H5b, SEG-16).
+        const revokedBody = revokedSessionBody(String(req.get('x-session-token') || ''))
+            || revokedSessionBody(String(req.get('x-admin-session') || ''));
+        if (revokedBody) return res.status(401).json(revokedBody);
+        const presented = [req.get('x-admin-session'), req.get('x-session-token')]
+            .some(value => typeof value === 'string' && value !== '');
+        return sendSessionRevoked(res, 401, 'Autenticação necessária.', presented ? 'expired' : 'missing');
     }
     if (requester.role !== 'student') {
         req.requester = requester;
@@ -201,7 +275,7 @@ function validateAnySession(req, res, next) {
     }
     return validateStudentSession(req, res, () => {
         req.requester = { role: 'student', email: req.studentEmail };
-        next();
+        return next();
     });
 }
 
@@ -280,6 +354,9 @@ const STUDENT_EXAM_CONFIG_FIELDS = [
     'maxAttempts',
     'shuffleQuestions',
     'shuffleAnswers',
+    // Registro do teclado da aplicação (H8b): a prova filtra e as instruções dizem o que
+    // é registrado. Sem o campo (aplicação de antes desta versão) vale 'eventos'.
+    'keystrokeMode',
     'preparedAt',
     'updatedAt',
 ];
@@ -290,6 +367,7 @@ function studentExamConfigSummary(cfg) {
     STUDENT_EXAM_CONFIG_FIELDS.forEach(field => {
         if (cfg[field] !== undefined) summary[field] = cfg[field];
     });
+    summary.keystrokeMode = keystrokeModeOf(cfg);
     summary.requiresToken = !!cfg.accessToken || !!cfg.accessTokenHash || cfg.tokenEnabled === true;
     summary.annulledQuestions = (Array.isArray(cfg.annulledQuestions) ? cfg.annulledQuestions : [])
         .map(item => ({ questionNumber: Number(item && item.questionNumber), mode: item && item.mode ? String(item.mode) : null }))
@@ -372,90 +450,182 @@ function validateRequestedAdminContext(req, res, account) {
     return true;
 }
 
+// Guarda dos callbacks (ENG-04): executa fn(...args) e leva qualquer exceção, síncrona
+// ou da promessa devolvida, ao errorHandler (500 com o código do erro). Sem ela, o
+// callback assíncrono de validateAdmin ou do multer que lançava deixava o pedido sem
+// resposta e virava unhandledRejection. Devolve o resultado de fn (a promessa já
+// tratada), para quem chama poder esperar.
+function runGuarded(req, res, fn, args = []) {
+    const fail = err => errorHandler(err, req, res, () => {});
+    let result;
+    try {
+        result = fn(...args);
+    } catch (err) {
+        fail(err);
+        return undefined;
+    }
+    if (result && typeof result.then === 'function') return result.then(undefined, fail);
+    return result;
+}
+
+// Versão para callbacks passados a terceiros (multer): guarded(req, res, async (err) => ...).
+// O callback continua no contexto do pedido (utils/persistenceContext.js): as gravações
+// feitas nele também são esperadas antes da resposta.
+function guarded(req, res, fn) {
+    return bindToRequestContext((...args) => runGuarded(req, res, fn, args));
+}
+
+// Para os catch das rotas (e todo 500 de rota): registra no crash.log e responde o 500
+// com o texto do contrato, igual em todas as rotas: "Ocorreu um erro interno no
+// servidor. Código do erro: a1b2c3d4.". `context` (opcional, em português) diz o que a
+// rota tentava fazer ("Falha ao gravar arquivo no disco.") e vai só para o crash.log,
+// como a linha "contexto: ..." depois do stack. A resposta nunca leva error.message.
+function sendInternalError(err, req, res, context) {
+    return respondWithError(err, req, res, { context });
+}
+
+// Falha prevista e tratada antes de uma ação destrutiva (por exemplo, o backup de
+// segurança que não pôde ser salvo antes de "Limpar estado de prova" ou "Resetar sala"):
+// não é "erro interno". Responde 503 com a mensagem própria da rota, que já diz que nada
+// mudou ("...; nada foi apagado."), mais o código do pedido, e registra a causa no
+// crash.log com esse código, como o 500. O 500 genérico fica só para o inesperado.
+function sendHandledFailure(err, req, res, message) {
+    const request = req || {};
+    const requestId = request.id ? String(request.id) : '';
+    const text = String(message || '').trim() || INTERNAL_ERROR_MESSAGE;
+    logError('falha tratada', err, { req: request, details: { contexto: text } });
+    if (res.headersSent) return finishStartedResponse(res);
+    clearDownloadHeaders(res);
+    return res.status(503).json({
+        success: false,
+        error: requestId ? `${text} Código do erro: ${requestId}.` : text,
+        ...(requestId ? { requestId } : {}),
+    });
+}
+
+// Recusas previstas que chegam sem status: caminho ou identificador inválido
+// (utils/safePath.js), com a mensagem em português.
+const CLIENT_ERROR_CODES = new Set(['INVALID_PATH', 'PATH_OUTSIDE_BASE', 'INVALID_ID']);
+
+// Recusa prevista: erro com status 4xx e mensagem em português, como "Turma não
+// encontrada." (classContent) ou "Arquivo de backup inválido." (utils/backup.js), ou um
+// dos códigos de CLIENT_ERROR_CODES. Devolve o status da resposta, ou 0 se não for recusa.
+function routeRefusalStatus(err) {
+    if (!err || !err.message) return 0;
+    const status = Number(err.status);
+    if (status >= 400 && status < 500) return status;
+    return CLIENT_ERROR_CODES.has(err.code) ? 400 : 0;
+}
+
+// Para os catch que recebem tanto a recusa prevista quanto a falha inesperada (por
+// exemplo, o try em volta de forkMaterial, de transitionExamApplication ou da
+// restauração de backup). A recusa responde com o status e a mensagem dela; o resto
+// (disco cheio, pasta no lugar do .md, JSON cortado, TypeError) vira o 500 com o código
+// do erro e o registro no crash.log. Antes, `res.status(error.status || 400)
+// .json({ error: error.message })` devolvia "EISDIR: illegal operation on a directory"
+// num 400, sem código e sem registro (ENG-04).
+function sendRouteError(err, req, res, context) {
+    const status = routeRefusalStatus(err);
+    if (status) return res.status(status).json({ error: err.message });
+    return sendInternalError(err, req, res, context);
+}
+
+// Texto que a resposta de sendRouteError leva para este erro, para quem também precisa
+// registrá-lo (o histórico de backup guarda o mesmo texto que a tela mostrou, com o
+// código do erro, e não a mensagem técnica em inglês).
+function publicErrorMessage(err, req) {
+    if (err && err.code === 'ICLASS_DB_WRITE') return DB_WRITE_ERROR_MESSAGE;
+    if (routeRefusalStatus(err)) return String(err.message);
+    return internalErrorMessage(req);
+}
+
+// Código do pedido (primeiro middleware do createApp): vai no cabeçalho X-Request-Id de
+// toda resposta e na mensagem do erro interno ("Código do erro: a1b2c3d4"), para achar
+// o registro no crash.log.
+function assignRequestId(req, res, next) {
+    req.id = crypto.randomBytes(4).toString('hex');
+    res.set('X-Request-Id', req.id);
+    next();
+}
+
+// Sessão de instrutor do pedido (cabeçalho x-admin-session), sem efeito colateral:
+// { token, session } quando o token tem sessão gravada, dentro do prazo absoluto e de
+// conta que existe; null em qualquer outro caso. Usada pelo limite do corpo JSON e pelo
+// errorHandler (413 de sessão vencida).
+function resolveAdminSession(req, now = Date.now()) {
+    const token = req && req.headers ? req.headers['x-admin-session'] : null;
+    if (typeof token !== 'string' || !token) return null;
+    const check = checkAdminSessionToken(token, now);
+    return check.ok ? { token, session: check.session } : null;
+}
+
 function validateAdmin(req, res, callback) {
     // 1) Preferir sessao de instrutor via TOKEN (nao expoe a senha no cliente).
-    // Só sessão gravada (chave própria): '__proto__' não é sessão.
+    // A sessão é procurada pelo hash do token (utils/authSessions.js); '__proto__' não é
+    // sessão. Chave gravada com valor que não é sessão, ou fora do prazo, é removida e
+    // conta como sessão expirada.
     const adminSessionToken = req.headers['x-admin-session'];
-    const sess = ownEntry(db.memory.adminSessions, adminSessionToken);
-    if (sess) {
-        const now = Date.now();
-        if (now - (sess.createdAt || now) > absoluteTtlMs()) {
-            delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true });
+    const now = Date.now();
+    const check = typeof adminSessionToken === 'string' && adminSessionToken
+        ? checkAdminSessionToken(adminSessionToken, now)
+        : { ok: false, reason: 'missing' };
+    if (check.reason !== 'missing') {
+        if (!check.ok) {
+            // Sessão encerrada há pouco por uma ação (troca de senha em outro aparelho,
+            // Sair): o 401 diz o motivo.
+            const revokedBody = REVOKED_SESSION_MESSAGES[check.reason] ? revokedSessionBody(adminSessionToken) : null;
+            if (revokedBody) return res.status(401).json(revokedBody);
+            persistSessionRevocation(revokeAdminSession(db.memory, adminSessionToken));
+            if (check.reason === 'account_missing') {
+                return sendSessionRevoked(res, 401, 'Conta não encontrada. Faça login novamente.', 'account_missing');
+            }
+            return sendSessionRevoked(res, 401, 'Sessão expirada. Faça login novamente.', 'expired');
         }
-        const adminsList = readJSON(DB_ADMINS_FILE);
-        const tokenAdmin = adminsList.find(a => a.email && a.email.toLowerCase() === sess.email);
-        if (!tokenAdmin) {
-            delete db.memory.adminSessions[adminSessionToken];
-            return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.', sessionRevoked: true });
-        }
-        sess.lastSeen = now;
+        const tokenAdmin = check.account;
+        touchSession(check.session, now, { active: isUserActivityRequest(req) });
         req.adminSessionToken = adminSessionToken;
         const cfg = readJSON(CONFIG_FILE);
         req.adminAccount = tokenAdmin;
         req.adminConfig = cfg;
         if (!validateRequestedAdminContext(req, res, tokenAdmin)) return;
         installProfessorResponseRedaction(res, tokenAdmin);
-        return callback(cfg, tokenAdmin);
+        return runGuarded(req, res, callback, [cfg, tokenAdmin]);
     }
 
-    // 2) Fallback legado: Authorization "email:senha".
-    // Não aceita senha via query string (evita senha em logs/histórico do navegador).
-    const authHeader = req.headers.authorization || (req.body && req.body.password);
-    if (!authHeader) {
-        return res.status(401).json({ error: 'Acesso não autorizado.' });
+    // 2) Sem sessão, sem acesso. A senha só passa uma vez, no POST
+    // /api/session/admin-login (routes/adminAccounts.js), que devolve o token. O antigo
+    // 'Authorization: email:senha' e o `password` no corpo não autenticam mais (SEG-03):
+    // a senha deixava de passar pela rede a cada pedido, e o corpo de "criar conta" com a
+    // sessão vencida deixava de valer como tentativa de login contra o administrador.
+    if (typeof adminSessionToken === 'string' && adminSessionToken) {
+        // Token de sessão que o servidor não conhece mais: saiu na limpeza do prazo
+        // absoluto (pruneExpiredSessions), não voltou depois de um reinício longo
+        // (restoreSessions) ou foi encerrado. Mesmo 401 da sessão vencida, com
+        // sessionRevoked e reason (contrato das respostas de estado), em vez do "Acesso
+        // não autorizado." de quem nunca entrou.
+        return sendSessionRevoked(res, 401, 'Sessão expirada. Faça login novamente.', 'expired');
     }
-
-    const { rateLimit } = require('./utils/rateLimit.js');
-    const _rlAdmin = rateLimit(`admin-login:${req.ip}`, { max: 30, windowMs: 60000 });
-    if (!_rlAdmin.allowed) {
-        return res.status(429).json({ error: 'Muitas tentativas de acesso. Aguarde um instante e tente novamente.' });
-    }
-
-    let email, password;
-    if (authHeader.includes(':')) {
-        const parts = authHeader.split(':');
-        email = parts[0].trim().toLowerCase();
-        password = parts.slice(1).join(':').trim();
-    } else {
-        email = db.defaultAdminEmail();
-        password = authHeader.trim();
-    }
-    
-    const admins = readJSON(DB_ADMINS_FILE);
-    const matchedAdmin = admins.find(a => a.email && a.email.toLowerCase() === email && db.verifyPassword(a.password, password));
-    
-    if (matchedAdmin) {
-        if (db.needsPasswordRehash(matchedAdmin.password)) {
-            matchedAdmin.password = db.hashPassword(password);
-            db.save();
-        }
-        const config = readJSON(CONFIG_FILE);
-        req.adminAccount = matchedAdmin;
-        req.adminConfig = config;
-        if (!validateRequestedAdminContext(req, res, matchedAdmin)) return;
-        installProfessorResponseRedaction(res, matchedAdmin);
-        callback(config, matchedAdmin);
-    } else {
-        res.status(401).json({ error: 'Acesso não autorizado. E-mail ou senha incorretos.' });
-    }
+    return res.status(401).json({ error: 'Acesso não autorizado.' });
 }
 
-function issueAdminSession(email) {
-    const crypto2 = require('crypto');
-    const token = crypto2.randomUUID ? crypto2.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2));
-    const now = Date.now();
-    db.memory.adminSessions = db.memory.adminSessions || {};
-    db.memory.adminSessions[token] = { email: String(email || '').toLowerCase(), createdAt: now, lastSeen: now };
+// Sessão nova de instrutor (utils/authSessions.js): devolve o token cru, que só vai na
+// resposta; a memória guarda o hash. origin 'setup' no acesso rápido local.
+// A sessão vai para a tabela auth_sessions (H3a-2) na gravação completa pedida aqui:
+// dentro de um pedido, a resposta com o token só sai depois do COMMIT
+// (utils/persistenceContext.js), e um reinício logo depois não derruba o professor.
+function issueAdminSession(email, { origin } = {}) {
+    const token = createAdminSession(db.memory, email, { now: Date.now(), origin });
+    db.save();
     return token;
 }
 
 function validateAdminPermission(req, res, permission, callback) {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    // O callback roda dentro da guarda de validateAdmin (a promessa dele é devolvida).
+    return validateAdmin(req, res, (config, matchedAdmin) => {
         if (!canAccessAdminPermission(matchedAdmin, permission)) {
             return res.status(403).json({ error: 'Sua conta não possui permissão para esta operação.' });
         }
-        callback(config, matchedAdmin);
+        return callback(config, matchedAdmin);
     });
 }
 
@@ -658,7 +828,9 @@ function validateProfessorRequestScope(req, account) {
     if (forbiddenClass && !keepsExistingStudentClasses) return 'A turma solicitada não está atribuída a esta conta.';
 
     const courseIds = [body.courseId, query.courseId].filter(Boolean).map(value => String(value).trim());
-    const pathCourse = pathName.match(/^\/courses\/([^/]+)\/structure$/);
+    // Curso pelo caminho: estrutura, alterar e excluir (/courses/:id) e duplicar (a
+    // origem do /clone também precisa estar no escopo; SEG-12).
+    const pathCourse = pathName.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone))?$/);
     if (pathCourse) courseIds.push(safeDecode(pathCourse[1]));
     const forbiddenCourse = courseIds.filter(Boolean).find(courseId => !adminCanAccessCourse(account, courseId));
     if (forbiddenCourse) return 'O curso solicitado não pertence às turmas atribuídas a esta conta.';
@@ -690,7 +862,7 @@ function validateProfessorRequestScope(req, account) {
 }
 
 function adminRbacGuard(req, res, next) {
-    validateAdmin(req, res, (config, matchedAdmin) => {
+    return validateAdmin(req, res, (config, matchedAdmin) => {
         const permission = resolveAdminApiPermission(req.method, req.path);
         // Restauração de backup recusada aqui (antes da rota) também é evento de
         // segurança: fica no histórico de backup, como as recusas da própria rota.
@@ -706,8 +878,10 @@ function adminRbacGuard(req, res, next) {
                 .catch(() => {})
                 .then(() => res.status(403).json(body));
         };
-        if (matchedAdmin.mustChangePassword === true && !['/whoami', '/change-password'].includes(req.path)) {
-            return refuse({ error: 'Troque a senha temporária antes de continuar.', passwordChangeRequired: true });
+        // Troca de senha pedida (H5a; com TEST_MODE, só a senha temporária do launcher).
+        const passwordChange = adminPasswordChangeState(matchedAdmin);
+        if (passwordChange.required && !['/whoami', '/change-password'].includes(req.path)) {
+            return refuse(passwordChangeRequiredBody(passwordChange.reason));
         }
         if (permission === undefined && isProfessorAccount(matchedAdmin)) {
             return refuse({ error: 'Esta operação administrativa não está liberada para professores.' });
@@ -731,14 +905,15 @@ function readJSON(file) {
     return [];
 }
 
-// Função para escrever dados JSON via Memory DB
+// Função para escrever dados JSON via Memory DB. Devolve a gravação (db.save()): quem
+// precisa do COMMIT espera; dentro de um pedido a resposta já espera por ela (CONF-04).
 function writeJSON(file, data) {
     if (file.includes('db_students.json')) db.memory.students = data;
     else if (file.includes('db_classes.json')) db.memory.classes = data;
     else if (file.includes('db_submissions.json')) db.memory.submissions = data;
     else if (file.includes('config.json')) db.memory.config = data;
     else if (file.includes('db_admins.json')) db.memory.admins = data;
-    db.save();
+    return db.save();
 }
 
 function getAnswerKeyReleaseKey(examKey) {
@@ -1000,17 +1175,98 @@ function getReleasedItemsForClass(cls, studentEmail) {
     return released;
 }
 
-// Middleware centralizado de tratamento de erros
+// Falha de gravação no banco (DbWriteError, code 'ICLASS_DB_WRITE'): o cliente mantém a
+// sessão e tenta de novo (contrato de gravação da fase 2). O texto (DB_WRITE_ERROR_MESSAGE)
+// vem de utils/dbWriter.js.
+const INTERNAL_ERROR_MESSAGE = 'Ocorreu um erro interno no servidor.';
+
+// Texto do erro interno (contrato da fase 2), com o código do pedido quando há um.
+function internalErrorMessage(req) {
+    const requestId = req && req.id ? String(req.id) : '';
+    return requestId ? `${INTERNAL_ERROR_MESSAGE} Código do erro: ${requestId}.` : INTERNAL_ERROR_MESSAGE;
+}
+
+// Resposta já começou (stream, sendFile): não há como mandar outro corpo; só fecha.
+function finishStartedResponse(res) {
+    if (res && !res.writableEnded && typeof res.end === 'function') {
+        try { res.end(); } catch (e) { /* conexão já caiu */ }
+    }
+}
+
+// Erro depois que a rota já preparou um download (tipo do arquivo e Content-Disposition,
+// como no ZIP do backup completo): a resposta de erro sai como JSON comum, e não como um
+// "arquivo .zip" com o JSON dentro.
+function clearDownloadHeaders(res) {
+    if (!res || typeof res.removeHeader !== 'function') return;
+    try {
+        res.removeHeader('Content-Disposition');
+        res.removeHeader('Content-Type');
+    } catch (e) { /* cabeçalhos já enviados */ }
+}
+
+// Middleware centralizado de tratamento de erros. Também é chamado direto pela guarda
+// dos callbacks (runGuarded) e pelos catch das rotas (sendInternalError).
 function errorHandler(err, req, res, next) {
-    console.error('🔴 [SERVER ERROR]:', err);
-    const status = Number(err && (err.status || err.statusCode)) || 500;
-    // Erro interno (500+) não expõe a mensagem do código (ex.: "email.trim is not
-    // a function"); JSON malformado ganha mensagem em português (CONF-14).
-    let message = 'Ocorreu um erro interno no servidor.';
+    return respondWithError(err, req, res, {});
+}
+
+function respondWithError(err, req, res, { context } = {}) {
+    const request = req || {};
+    const requestId = request.id || '';
+    const headersSent = !!(res && res.headersSent);
+    if (!headersSent) clearDownloadHeaders(res);
+
+    if (err && err.code === 'ICLASS_DB_WRITE') {
+        // Aqui só a linha no console: quem registra a falha de gravação no crash.log é o
+        // motor de gravação (H1-a, por logError, no máximo uma linha por minuto), para uma
+        // trava longa do banco não virar um bloco por pedido.
+        console.error(`⚠️ [GRAVAÇÃO] ${request.method || ''} ${String(request.originalUrl || request.url || '').split('?')[0]}: ${err.message || err}`);
+        // Resposta já adiada pelo persistenceContext (a rota respondeu antes de esperar a
+        // gravação que agora falhou): ela também sai como 503.
+        noteRequestWriteFailure(err);
+        if (headersSent) return finishStartedResponse(res);
+        return res.status(503).json({ success: false, error: DB_WRITE_ERROR_MESSAGE, retryable: true, ...(requestId ? { requestId } : {}) });
+    }
+
+    let status = Number(err && (err.status || err.statusCode)) || 500;
+    if (status < 400 || status > 599) status = 500;
+
+    // Corpo grande demais com a sessão de instrutor vencida (ou de antes de um reinício):
+    // o limite aplicado foi o de quem não tem sessão (512 KB). O que resolve é entrar de
+    // novo, não encolher a apostila (ENG-03).
+    if (err && err.type === 'entity.too.large' && request.headers && request.headers['x-admin-session'] && !resolveAdminSession(request)) {
+        if (headersSent) return finishStartedResponse(res);
+        return res.status(401).json({ success: false, error: 'Sessão expirada. Faça login novamente.', sessionRevoked: true, reason: 'expired' });
+    }
+
+    if (status >= 500) {
+        // Erro interno: registra o stack no crash.log com o código do pedido (e o contexto
+        // dado pela rota) e responde só o texto padrão com o código, que o professor
+        // repassa ao suporte (ENG-04). Nunca expõe a mensagem do código (ex.: "email.trim
+        // is not a function").
+        const contextText = typeof context === 'string' ? context.trim() : '';
+        logError('erro interno', err, { req: request, details: contextText ? { contexto: contextText } : undefined });
+        if (headersSent) return finishStartedResponse(res);
+        return res.status(status).json({
+            success: false,
+            error: internalErrorMessage(request),
+            ...(requestId ? { requestId } : {}),
+        });
+    }
+
+    // Erro do pedido (4xx): JSON malformado e corpo grande ganham mensagem em português
+    // (CONF-14); os demais mantêm a mensagem própria.
+    console.error(`⚠️ [${status}] ${request.method || ''} ${String(request.originalUrl || request.url || '').split('?')[0]}: ${(err && (err.type || err.message)) || err}`);
+    if (headersSent) return finishStartedResponse(res);
+    let message = INTERNAL_ERROR_MESSAGE;
     if (err && err.type === 'entity.parse.failed') message = 'Dados enviados em formato inválido (JSON).';
     else if (err && err.type === 'entity.too.large') message = 'Os dados enviados são grandes demais.';
-    else if (status < 500 && err && err.message) message = err.message;
-    res.status(status).json({
+    // Outras recusas do leitor de corpo (charset ou codificação desconhecidos) vinham em inglês.
+    else if (err && typeof err.type === 'string') message = 'Dados enviados em formato inválido.';
+    // Parâmetro do caminho com % inválido: o roteador respondia "Failed to decode param".
+    else if (err instanceof URIError) message = 'O endereço pedido tem caracteres inválidos.';
+    else if (err && err.message) message = err.message;
+    return res.status(status).json({
         success: false,
         error: message
     });
@@ -1136,7 +1392,6 @@ module.exports = {
     CONFIG_FILE,
     DB_CLASSES_FILE,
     DB_ADMINS_FILE,
-    localIpAddresses,
     normalizeIp,
     validateStudentSession,
     resolveRequester,
@@ -1184,5 +1439,13 @@ module.exports = {
     getCourseItemKeys,
     isCourseItemKey,
     isCourseExamKey,
-    errorHandler
+    errorHandler,
+    runGuarded,
+    guarded,
+    sendInternalError,
+    sendHandledFailure,
+    sendRouteError,
+    publicErrorMessage,
+    resolveAdminSession,
+    assignRequestId,
 };

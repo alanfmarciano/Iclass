@@ -5,6 +5,8 @@ const path = require('path');
 const db = require('../database.js');
 const { SERVER_INSTANCE_ID } = require('../utils/sessionConfig.js');
 const settingsUtil = require('../utils/settings.js');
+const { connectionInfo } = require('../utils/networkPolicy.js');
+const secureConnection = require('../utils/secureConnection.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -18,14 +20,18 @@ const {
 } = require('../utils/contentAccess.js');
 const {
     sanitizeEvaluationForStudent,
-    localIpAddresses,
     validateAdmin,
     validateAdminPermission,
     validateAnySession,
     studentBelongsToClass,
     findClassByNameAndCourse,
-    getReleasedItemsForClass
+    getReleasedItemsForClass,
+    isProfessorAccount,
+    adminAllowedCourseIds
 } = require('../middlewares.js');
+const { logError, oneLine } = require('../utils/errorLog.js');
+const { rateLimit } = require('../utils/rateLimit.js');
+const { body, oneOf, str } = require('../utils/inputSchema.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
 // O cliente compara o instanceId; se mudou (servidor reiniciado), forca novo login.
@@ -43,6 +49,87 @@ router.get('/api/settings/public', (req, res) => {
 router.get('/api/session/status', (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({ instanceId: SERVER_INSTANCE_ID, now: Date.now() });
+});
+
+// Como esta conexão é tratada (SEG-03), sem login: a tela de login e o painel do
+// professor mostram se o painel abre neste aparelho e o aviso de conexão sem proteção.
+// { secure, thisComputer, adminAccess: 'ok'|'local-only'|'https-required',
+//   adminAccessMode, insecureAdmin, tlsAvailable, studentsHttps, httpsUrl }.
+router.get('/api/connection', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(connectionInfo(req));
+});
+
+// Conexão segura (H6c, SEG-03 e OPS-08), sem login, em http e em https: o aparelho baixa
+// o certificado da CA deste IClass antes de confiar no https (guia /certificado).
+// - GET /iclass-ca.crt: o certificado da CA (DER), para instalar no aparelho;
+// - GET /api/connection/certificate: a impressão digital (para comparar com a de Sistema
+//   → Rede, no computador do IClass) e as validades. Sem conexão segura, 200 com
+//   available:false e um texto curto (sem resposta de estado nova: contrato 9). O motivo
+//   (pasta, permissão) aparece só no console e em Sistema → Rede, não para quem abre a
+//   página sem login. httpsUrl é null quando o endereço seguro não serve a este aparelho
+//   (IP da rede fora do certificado): o guia diz para avisar o administrador.
+router.get('/iclass-ca.crt', (req, res) => {
+    const der = secureConnection.caCertificateDer();
+    res.set('Cache-Control', 'no-store');
+    if (!der) return res.status(404).type('text/plain; charset=utf-8').send(`${secureConnection.publicUnavailableText()} O certificado do IClass não pode ser baixado agora.`);
+    res.set('Content-Type', 'application/x-x509-ca-cert');
+    res.set('Content-Disposition', 'attachment; filename="iclass-ca.crt"');
+    return res.send(Buffer.from(der));
+});
+
+router.get('/api/connection/certificate', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const status = secureConnection.status();
+    if (!status.available) {
+        return res.json({ available: false, error: secureConnection.publicUnavailableText() });
+    }
+    return res.json({
+        available: true,
+        fingerprintSha256: status.ca.fingerprintSha256,
+        validFrom: status.ca.validFrom,
+        validTo: status.ca.validTo,
+        recreatedAt: status.ca.recreatedAt,
+        server: status.server,
+        httpsUrl: connectionInfo(req).httpsUrl,
+    });
+});
+
+// Erro de tela do navegador (fase 2, H9c: ENG-05): a área de erro dos layouts e a tela
+// de erro da raiz (web/src/lib/clientErrors.js) avisam aqui, e o aviso vira uma linha
+// "erro de tela" no crash.log da pasta de dados, com quem estava na tela, a área, o
+// caminho da página e a versão do build. Não grava no banco. Pede sessão (aluno ou
+// instrutor) e aceita até 10 avisos por minuto por e-mail (acima disso, 429): com o
+// limite do arquivo (5 MB, utils/errorLog.js) e o tamanho dos campos, um aparelho não
+// enche o disco. Só o aviso aceito conta no limite: o recusado (400) não grava nada.
+// Cada campo vira uma linha só (quebras de linha e caracteres de controle saem), para
+// o texto mandado pelo navegador não forjar no arquivo um bloco com cabeçalho de outro
+// usuário. Fora de /api/admin: o aluno também avisa.
+// Campos conferidos pelo schema (utils/inputSchema.js, H9b) depois da sessão: o aviso
+// recusado (400) não grava nada nem conta no limite.
+const CLIENT_ERROR_AREAS = ['raiz', 'admin', 'aluno', 'prova'];
+const CLIENT_ERROR_SCHEMA = body({
+    area: oneOf(CLIENT_ERROR_AREAS, { required: true, label: 'área' }),
+    message: str({ max: 300, required: true, label: 'mensagem' }),
+    path: str({ max: 200, label: 'caminho' }),
+    build: str({ max: 64, label: 'versão' }),
+});
+const CLIENT_ERROR_RATE_LIMIT = { max: 10, windowMs: 60000 };
+
+router.post('/api/client-error', validateAnySession, CLIENT_ERROR_SCHEMA, (req, res) => {
+    const email = String((req.requester && req.requester.email) || '').toLowerCase();
+    const limit = rateLimit(`client-error:${email}`, CLIENT_ERROR_RATE_LIMIT);
+    if (!limit.allowed) {
+        res.set('Retry-After', String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))));
+        return res.status(429).json({ success: false, error: 'Muitos avisos de erro seguidos. Aguarde um instante.' });
+    }
+    const text = (name) => (typeof req.body[name] === 'string' ? oneLine(req.body[name]) : '');
+    // Objeto sem stack: o stack do servidor não diz nada sobre o erro do navegador.
+    logError('erro de tela', { message: text('message') || '(sem mensagem)' }, {
+        req,
+        details: { 'área': text('area'), caminho: text('path'), build: text('build') },
+    });
+    return res.status(204).end();
 });
 
 
@@ -217,11 +304,6 @@ router.get('/:key.md', async (req, res, next) => {
     });
 });
 
-// Retorna os IPs da rede local
-router.get('/api/admin/network-info', (req, res) => {
-    res.json(localIpAddresses);
-});
-
 const { extractBranding, resolveEffectiveBranding, validateBrandingPatch } = require('../utils/branding.js');
 
 function rejectInvalidBranding(res, body) {
@@ -271,82 +353,35 @@ function isCourseDeleted(course) {
 }
 
 // Lista completa de cursos (estrutura, chaves de unidades e avaliações, excluídos)
-// só para o instrutor. Sem sessão de instrutor, devolve apenas id e nome dos cursos
-// ativos com turma aberta para cadastro.
+// só para o instrutor; o professor recebe só os cursos do escopo dele (SEG-12). Sem
+// sessão de instrutor, devolve apenas id e nome dos cursos ativos com turma aberta para
+// cadastro. Instrutor é só quem manda x-admin-session: o 'Authorization: email:senha'
+// não vale mais (SEG-03) e cai na lista pública.
 router.get('/api/courses', (req, res) => {
-    const hasAdminCredentials = !!(req.get('x-admin-session') || req.headers.authorization);
+    const hasAdminCredentials = !!req.get('x-admin-session');
     if (!hasAdminCredentials) {
         const openCourseIds = new Set((db.memory.classes || []).filter(cls => cls.registrationEnabled).map(cls => cls.courseId));
         return res.json((db.memory.courses || [])
             .filter(course => !isCourseDeleted(course) && openCourseIds.has(course.id))
             .map(course => ({ id: course.id, name: course.name || '' })));
     }
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
-        const courses = db.memory.courses || [];
+        const allowed = isProfessorAccount(matchedAdmin) ? adminAllowedCourseIds(matchedAdmin) : null;
+        const courses = (db.memory.courses || []).filter(course => course && (!allowed || allowed.has(String(course.id))));
         res.json(includeDeleted ? courses : courses.filter(c => !isCourseDeleted(c)));
     });
 });
 
-router.post('/api/courses', (req, res) => {
-    validateAdminPermission(req, res, 'course.manage', () => {
-        const newCourse = { ...req.body };
-        if (!newCourse.id || !newCourse.name) {
-            return res.status(400).json({ error: 'ID e Nome são obrigatórios.' });
-        }
-        if (newCourse.branding !== undefined) {
-            if (rejectInvalidBranding(res, newCourse.branding)) return;
-            newCourse.branding = extractBranding(newCourse.branding);
-        }
-        if (!db.memory.courses) db.memory.courses = [];
-        const existing = db.memory.courses.find(c => c.id === newCourse.id);
-        if (existing) {
-            return res.status(400).json({ error: 'Já existe um curso com esse ID.' });
-        }
-        if (!newCourse.structure) newCourse.structure = [];
-        newCourse.status = newCourse.status || 'active';
-        newCourse.deleted = false;
-        newCourse.deletedAt = null;
-        db.memory.courses.push(newCourse);
-        db.save();
-        res.json({ success: true, course: newCourse });
-    });
-});
-router.put('/api/courses/:id', (req, res) => {
-    validateAdminPermission(req, res, 'course.manage', () => {
-        const courseId = req.params.id;
-        if (!db.memory.courses) db.memory.courses = [];
-        const idx = db.memory.courses.findIndex(c => c.id === courseId);
-        if (idx === -1) {
-            return res.status(404).json({ error: 'Curso não encontrado.' });
-        }
-        const patch = { ...req.body };
-        if (patch.branding !== undefined) {
-            if (rejectInvalidBranding(res, patch.branding)) return;
-            patch.branding = { ...(db.memory.courses[idx].branding || {}), ...extractBranding(patch.branding) };
-        }
-        db.memory.courses[idx] = { ...db.memory.courses[idx], ...patch, id: courseId };
-        db.save();
-        res.json({ success: true, course: db.memory.courses[idx] });
-    });
-});
-
-router.delete('/api/courses/:id', (req, res) => {
-    validateAdminPermission(req, res, 'course.manage', () => {
-        const courseId = req.params.id;
-        if (!db.memory.courses) db.memory.courses = [];
-        const idx = db.memory.courses.findIndex(c => c.id === courseId);
-        if (idx === -1) {
-            return res.status(404).json({ error: 'Curso não encontrado.' });
-        }
-        db.memory.courses[idx] = {
-            ...db.memory.courses[idx],
-            status: 'deleted',
-            deleted: true,
-            deletedAt: new Date().toISOString()
-        };
-        db.save();
-        res.json({ success: true, course: db.memory.courses[idx] });
-    });
-});
+// Criar, alterar e excluir curso mudaram para /api/admin/courses (SEG-12), que passa
+// pela guarda do painel (escopo do professor, troca obrigatória de senha) e grava só os
+// campos permitidos. Uma aba aberta com o app de antes da atualização ainda chama estas
+// rotas: recebe 410 com o pedido de recarregar a página, e nada é gravado.
+const COURSE_ROUTE_MOVED = 'O IClass foi atualizado. Recarregue a página (F5) para continuar.';
+function courseRouteMoved(req, res) {
+    res.status(410).json({ success: false, error: COURSE_ROUTE_MOVED });
+}
+router.post('/api/courses', courseRouteMoved);
+router.put('/api/courses/:id', courseRouteMoved);
+router.delete('/api/courses/:id', courseRouteMoved);
 module.exports = router;

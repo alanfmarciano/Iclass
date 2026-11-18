@@ -12,9 +12,14 @@ import { StatCard } from '../../components/ui/StatCard'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { csvCell } from '../../lib/csv'
+import { ANONYMIZED_STATUS, sameStatus } from './studentDeletion'
 
-const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning' }
+const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
+// Situações que se aplicam pelo lote "Alterar situação" (Anonimizado não: só em Cadastros
+// encerrados). O filtro também acha os anonimizados.
 const STATUS_LIST = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido']
+const FILTER_STATUS_LIST = [...STATUS_LIST, ANONYMIZED_STATUS]
+const toneOf = (status) => STATUS_TONE[Object.keys(STATUS_TONE).find((key) => sameStatus(key, status))] || 'neutral'
 const RISCO_TONE = { alto: 'danger', medio: 'warning', baixo: 'success' }
 const RISCO_LABEL = { alto: 'Alto', medio: 'Médio', baixo: 'Baixo' }
 // Mesmo limiar usado pelo backend para risco por inatividade (studentAnalytics.js).
@@ -100,7 +105,7 @@ export default function AlunosGlobalPage() {
 
   const rows = useMemo(() => base.filter((s) => {
     if (escola && !schoolIdsOf(s).includes(escola)) return false
-    if (situacao && (s.status || 'Ativo') !== situacao) return false
+    if (situacao && !sameStatus(s.status || 'Ativo', situacao)) return false
     if (foco === 'sem-turma' && scn(s).length > 0) return false
     if (foco === 'ativos' && (s.status || 'Ativo') !== 'Ativo') return false
     if (foco === 'inativos') {
@@ -219,7 +224,7 @@ export default function AlunosGlobalPage() {
       const cold = d === null || d >= DIAS_SEM_ACESSO
       return <span className={cold ? 'text-warning text-sm' : 'text-muted text-sm'}>{relativeDays(r.atividade)}</span>
     } },
-    { key: 'status', label: 'Situação', render: (r) => <Badge tone={STATUS_TONE[r.status || 'Ativo'] || 'neutral'}>{r.status || 'Ativo'}</Badge> },
+    { key: 'status', label: 'Situação', render: (r) => <Badge tone={toneOf(r.status || 'Ativo')}>{r.status || 'Ativo'}</Badge> },
   ]
 
   const activeChips = [
@@ -259,7 +264,7 @@ export default function AlunosGlobalPage() {
         </Select>
         <Select label="Situação" value={situacao} onChange={(e) => setParam('situacao', e.target.value)}>
           <option value="">Todas</option>
-          {STATUS_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
+          {FILTER_STATUS_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
         </Select>
       </div>
 

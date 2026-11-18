@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles } from 'lucide-react'
+import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
 import { canAccessAdminPath } from '../../lib/adminPermissions'
@@ -9,6 +9,8 @@ import { useApi } from '../../hooks/useApi'
 const COURSE_GROUPS = [
   { label: 'Visão geral', items: [
     { to: '/', icon: LayoutDashboard, text: 'Dashboard', end: true },
+    // Endereço e QR code para projetar no quadro (H6a): abre em tela cheia, sem o menu.
+    { to: '/endereco', icon: QrCode, text: 'Endereço da sala' },
     { to: '/matriculas', icon: UserCheck, text: 'Matrículas', adminOnly: true },
   ] },
   { label: 'Avaliações', items: [
@@ -35,12 +37,15 @@ const INSTITUTION_GROUPS = [
     { to: '/', icon: LayoutGrid, text: 'Acesso Cursos', end: true, always: true },
     { to: '/turmas', icon: School, text: 'Cursos e turmas' },
     { to: '/diretorio', icon: Users, text: 'Alunos' },
+    { to: '/encerrados', icon: Archive, text: 'Cadastros encerrados', adminOnly: true },
   ] },
   { label: 'Instituição', items: [
     { to: '/escolas', icon: Building2, text: 'Escolas' },
     { to: '/identidade', icon: Palette, text: 'Identidade Visual' },
     { to: '/admins', icon: KeyRound, text: 'Administradores' },
     { to: '/sistema', icon: Settings, text: 'Sistema' },
+    { to: '/auditoria', icon: ScrollText, text: 'Auditoria', adminOnly: true },
+    { to: '/lgpd', icon: ShieldCheck, text: 'Privacidade (LGPD)', adminOnly: true },
   ] },
 ]
 

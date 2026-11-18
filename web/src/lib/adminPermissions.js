@@ -17,10 +17,21 @@ export const ADMIN_PERMISSIONS = Object.freeze({
   BRANDING_MANAGE: 'branding.manage',
   SYSTEM_MANAGE: 'system.manage',
   SCHOOLS_SCOPE: 'schools.scope',
+  // Tela Auditoria e aba Auditoria da ficha do aluno: só o administrador (decisão P5);
+  // não é concedível ao professor (o servidor responde 403).
+  AUDIT_VIEW: 'audit.view',
+  // Página Privacidade (LGPD): Termos, Política e encarregado (H8a-1). Só o
+  // administrador; não é concedível ao professor (o servidor responde 403).
+  STUDENTS_SECURITY: 'students.security',
+  // Cadastros encerrados (H7c): anonimizar e apagar de vez, só o administrador; não é
+  // concedível ao professor (o servidor responde 403).
+  STUDENTS_DESTROY: 'students.destroy',
 })
 
 export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
+  // Endereço da sala em tela cheia, para projetar (H6a).
+  '/endereco': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
   '/provas': ADMIN_PERMISSIONS.PAGE_EXAMS,
   '/monitor': ADMIN_PERMISSIONS.PAGE_MONITOR,
   '/resultados': ADMIN_PERMISSIONS.PAGE_RESULTS,
@@ -39,6 +50,9 @@ export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/escolas': ADMIN_PERMISSIONS.PAGE_BRANDING,
   '/identidade': ADMIN_PERMISSIONS.SCHOOLS_SCOPE,
   '/sistema': ADMIN_PERMISSIONS.PAGE_SYSTEM,
+  '/auditoria': ADMIN_PERMISSIONS.AUDIT_VIEW,
+  '/lgpd': ADMIN_PERMISSIONS.STUDENTS_SECURITY,
+  '/encerrados': ADMIN_PERMISSIONS.STUDENTS_DESTROY,
 })
 
 const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([

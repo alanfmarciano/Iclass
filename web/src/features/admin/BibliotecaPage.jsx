@@ -11,11 +11,12 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
+import { copyText } from '../../lib/clipboard'
+import { ManualCopyModal } from '../../components/ui/ManualCopyModal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 
 const ICON = { image: ImageIcon, pdf: FileText, video: Film, link: Globe, zip: FileArchive, doc: FileText, sheet: FileText, other: File }
 function human(b) { if (!b) return ''; const u = ['B', 'KB', 'MB', 'GB']; let i = 0, n = b; while (n >= 1024 && i < 3) { n /= 1024; i++ } return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}` }
-function authHeaders() { try { const a = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}; const h = {}; if (a.adminSession) h['x-admin-session'] = a.adminSession; else if (a.adminAuth) h['Authorization'] = a.adminAuth; return h } catch { return {} } }
 
 export default function BibliotecaPage() {
   const { courseId, courseName, className } = useAdminWorkspace()
@@ -38,6 +39,7 @@ export default function BibliotecaPage() {
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState('')
+  const [manualCopy, setManualCopy] = useState('')
   const [scope, setScope] = useState('class')
 
   const affectedClasses = useMemo(() => {
@@ -72,9 +74,9 @@ export default function BibliotecaPage() {
         const fd = new FormData()
         fd.append('file', file); fd.append('courseId', courseId); fd.append('studentClass', className); fd.append('scope', scope); fd.append('moduleId', moduleId)
         if (name) fd.append('name', name); if (tags) fd.append('tags', tags); if (desc) fd.append('description', desc)
-        const res = await fetch('/api/admin/library/upload', { method: 'POST', headers: authHeaders(), body: fd })
-        const data = await res.json().catch(() => null)
-        if (!res.ok) throw new Error((data && data.error) || 'Falha no upload')
+        // Pelo cliente da API (sessão do instrutor, sem prazo e, sem rede, a mensagem em
+        // português; fase 2, H9c).
+        await api.post('/api/admin/library/upload', fd)
         toast.success('Material adicionado')
       } else {
         if (!name || !url) { toast.error('Informe título e URL'); setBusy(false); return }
@@ -85,7 +87,12 @@ export default function BibliotecaPage() {
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
 
-  async function copy(u) { try { await navigator.clipboard.writeText(u); setCopied(u); setTimeout(() => setCopied(''), 1500) } catch { toast.error('Não foi possível copiar') } }
+  // Copiar com plano B (H6a): pelo IP da rede (http) o navegador não libera a API de
+  // copiar; sem nenhum jeito, o endereço aparece selecionado para o Ctrl+C.
+  async function copy(u) {
+    if (await copyText(u) === 'copied') { setCopied(u); setTimeout(() => setCopied(''), 1500) }
+    else setManualCopy(u)
+  }
 
   async function remove(e) {
     if (scope === 'course' && !confirm(`A exclusão será aplicada em: ${affectedClasses.join(', ') || 'todas as turmas do curso'}. Deseja continuar?`)) return
@@ -179,6 +186,7 @@ export default function BibliotecaPage() {
           </div>
         )}
       </PageState>
+      <ManualCopyModal open={!!manualCopy} text={manualCopy} label="URL do material" onClose={() => setManualCopy('')} />
     </div>
   )
 }

@@ -490,7 +490,7 @@ Deve exibir:
 - Reset de senha deve funcionar.
 - Bloqueio deve impedir login.
 - Arquivar aluno não deve apagar histórico.
-- Excluir aluno deve ser ação protegida e preferencialmente lógica, não física.
+- Excluir aluno é desligar (situação Inativo, Transferido, Evadido ou Concluído, com motivo); anonimizar ou apagar de vez só em Cadastros encerrados, pelo administrador, caso a caso (H7c).
 
 ---
 

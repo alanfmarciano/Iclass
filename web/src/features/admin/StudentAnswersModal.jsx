@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CheckCircle2, XCircle, Loader2, ArrowRight } from 'lucide-react'
 import { Modal } from '../../components/ui/Modal'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { api } from '../../lib/api'
+import { usePolling } from '../../hooks/usePolling'
 import { OriginalLetter, reviewLettersNote, seenWithOriginal } from './reviewLetters'
 
 const STATUS_LABEL = {
@@ -19,48 +20,48 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
   const [review, setReview] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const timer = useRef(null)
-  const statusRef = useRef(null) // último status carregado, lido pelo timer sem re-render
+  const [finished, setFinished] = useState(false) // prova finalizada: para de atualizar
+  // Pedido atual (aluno, turma, prova e aplicação): a resposta de um pedido anterior
+  // (modal reaberto para outro aluno) não vale mais.
+  const target = open && student?.email && className && examKey
+    ? `${student.email}|${className}|${courseId || ''}|${examKey}|${applicationId || ''}`
+    : ''
+  const targetRef = useRef(target)
+  targetRef.current = target
+  const loadingRef = useRef(0) // consultas em voo: a periódica não sai junto com outra
 
-  useEffect(() => {
-    if (!open || !student?.email || !className || !examKey) return undefined
-    let alive = true
-    let inFlight = false
-    statusRef.current = null
-
-    async function load(showSpinner) {
-      if (inFlight) return
-      inFlight = true
-      if (showSpinner) setLoading(true)
-      try {
-        const params = new URLSearchParams({ studentEmail: student.email })
-        if (courseId) params.set('courseId', courseId)
-        if (applicationId) params.set('applicationId', applicationId)
-        const data = await api.get(`/api/admin/monitor-review/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?${params.toString()}`)
-        if (!alive) return
-        statusRef.current = data?.status || null
-        setReview(data)
-        setError(null)
-      } catch (e) {
-        if (alive) setError(e.message || 'Não foi possível carregar as respostas.')
-      } finally {
-        inFlight = false
-        if (alive && showSpinner) setLoading(false)
-      }
-    }
-
-    load(true)
-    // Atualiza em tempo real enquanto a prova não estiver finalizada.
-    timer.current = setInterval(() => {
-      if (statusRef.current !== 'finished') load(false)
-    }, 6000)
-
-    return () => {
-      alive = false
-      if (timer.current) clearInterval(timer.current)
+  const load = useCallback(async (showSpinner, requestOptions = undefined) => {
+    if (!target) return true
+    const requested = target
+    if (showSpinner) setLoading(true)
+    loadingRef.current += 1
+    try {
+      const params = new URLSearchParams({ studentEmail: student.email })
+      if (courseId) params.set('courseId', courseId)
+      if (applicationId) params.set('applicationId', applicationId)
+      const data = await api.get(`/api/admin/monitor-review/${encodeURIComponent(className)}/${encodeURIComponent(examKey)}?${params.toString()}`, requestOptions)
+      if (targetRef.current !== requested) return true
+      setFinished(data?.status === 'finished')
+      setReview(data)
+      setError(null)
+      return true
+    } catch (e) {
+      if (targetRef.current === requested) setError(e.message || 'Não foi possível carregar as respostas.')
+      return false
+    } finally {
+      loadingRef.current -= 1
+      if (showSpinner && targetRef.current === requested) setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, student?.email, className, courseId, examKey, applicationId])
+  }, [target])
+
+  useEffect(() => {
+    setFinished(false)
+    if (target) load(true)
+  }, [target, load])
+  // Atualiza em tempo real (a cada 6 s, uma consulta por vez, só com a aba à vista)
+  // enquanto a prova não estiver finalizada.
+  usePolling((requestOptions) => (loadingRef.current ? true : load(false, requestOptions)), { intervalMs: 6000, enabled: !!target && !finished, immediate: false })
 
   if (!open) return null
 

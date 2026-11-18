@@ -3,12 +3,20 @@ const { test, expect } = require('@playwright/test');
 // Cabeçalho da prova com zoom de 200% num celular de 390 px: a tela tem 195 px CSS
 // (UXA-03, ACS-16). Antes o Enviar e o cronômetro passavam da borda da tela (cortados)
 // e a contagem "0/4 respondidas" ficava embaixo dos botões Sair e Mensagens.
-const ADMIN = { Authorization: 'admin@teste.local:teste' };
+// Sessão de administrador pelo POST /api/session/admin-login (o cabeçalho com e-mail e
+// senha não autentica mais, H6b/SEG-03). Uma sessão por teste: e-mail e senha contam no
+// limite de tentativas de acesso (30 por minuto) que os testes seguintes também usam.
+async function adminHeaders(request) {
+    const response = await request.post('/api/session/admin-login', { data: { email: 'admin@teste.local', password: 'teste' } });
+    expect(response.ok(), `login do administrador: ${response.status()}`).toBe(true);
+    const who = await response.json();
+    return { 'x-admin-session': who.sessionToken };
+}
 const CLASS = '1DES';
 const COURSE = 'curso_legacy_01';
 const EXAM = 'Avaliacao_FUTEC_5';
 
-async function startPerAttemptApplication(request, headers = ADMIN) {
+async function startPerAttemptApplication(request, headers) {
     const apps = await (await request.get('/api/admin/exam-applications', { headers })).json();
     const seed = apps.applications.find(item => item.historyId === 'seed_history_futec_5');
     const snapshot = seed.versionSnapshots[0];
@@ -39,7 +47,8 @@ async function startPerAttemptApplication(request, headers = ADMIN) {
 test('[UC-PROVA-003] cabeçalho da prova com zoom de 200% num celular de 390 px (195 px CSS): Enviar e cronômetro inteiros, nada sobreposto', async ({ browser, request }) => {
     test.setTimeout(60000);
     await request.post('/api/test/seed');
-    const applicationId = await startPerAttemptApplication(request);
+    const admin = await adminHeaders(request);
+    const applicationId = await startPerAttemptApplication(request, admin);
     const context = await browser.newContext({ viewport: { width: 195, height: 422 }, deviceScaleFactor: 2 });
     const page = await context.newPage();
     try {
@@ -97,7 +106,7 @@ test('[UC-PROVA-003] cabeçalho da prova com zoom de 200% num celular de 390 px 
         expect(layout.alternativesOutside, 'alternativas dentro do cartão').toBe(0);
     } finally {
         await context.close();
-        await request.post(`/api/admin/exam-applications/${applicationId}/control`, { headers: ADMIN, data: { action: 'finish', inProgressPolicy: 'discard' } });
+        await request.post(`/api/admin/exam-applications/${applicationId}/control`, { headers: admin, data: { action: 'finish', inProgressPolicy: 'discard' } });
     }
 });
 
@@ -107,10 +116,7 @@ test('[UC-PROVA-003] cabeçalho da prova com zoom de 200% num celular de 390 px 
 test('[UC-LAYOUT-001] celular com prova disponível: com a gaveta do menu aberta, Sair recebe o toque', async ({ browser, request }) => {
     test.setTimeout(60000);
     await request.post('/api/test/seed');
-    // Sessão de administrador: e-mail e senha em cada chamada contam no limite de
-    // tentativas de acesso (30 por minuto) que os testes seguintes também usam.
-    const who = await (await request.get('/api/admin/whoami', { headers: ADMIN })).json();
-    const adminSession = { 'x-admin-session': who.sessionToken };
+    const adminSession = await adminHeaders(request);
     const applicationId = await startPerAttemptApplication(request, adminSession);
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
     const page = await context.newPage();

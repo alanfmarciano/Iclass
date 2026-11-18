@@ -32,13 +32,17 @@ const {
     validateAdminPermission,
     isProfessorAccount,
     adminCanAccessClass,
-    adminCanAccessItem
+    adminCanAccessItem,
+    sendInternalError
 } = require('../middlewares.js');
 const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
-const { recordLoginLog, buildAcceptance, DEFAULT_TERMS_VERSION, DEFAULT_PRIVACY_VERSION } = require('../utils/security.js');
+const { recordLoginLog } = require('../utils/security.js');
+const legalAcceptance = require('../utils/legalAcceptance.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
+const { parseEvaluationMarkdown } = require('../utils/parser.js');
+const { logError } = require('../utils/errorLog.js');
 const { normalizeExamToken } = require('../utils/examToken.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
@@ -55,8 +59,21 @@ const {
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
-const { pruneExpiredStudentSessions } = require('../utils/studentSessions.js');
+const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
+const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
+const { studentSessionProfile } = require('../utils/studentProfile.js');
+const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const {
+    passwordChangeRuleActive,
+    passwordChanged,
+    requirePasswordChange,
+    studentHasExamInProgress,
+    studentPasswordChangeState,
+} = require('../utils/passwordChange.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+const { KEY_PATTERN, body, bool, dict, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
+const { annotationsForScreen, applyAnnotationWrite, applyNoteWrite, noteForScreen, studentMap } = require('../utils/studentNotes.js');
+const serverLifecycle = require('../utils/serverLifecycle.js');
 const {
     createSubmissionFromAttempt,
     questionsForAttempt,
@@ -71,6 +88,7 @@ const {
     canReplaceServerFinalization,
     computeAttemptDeadline,
     countAnswers,
+    extendedByServerOutage,
     finalizeAttemptState,
     lateSubmitDecision,
     markLateSubmission,
@@ -81,11 +99,144 @@ const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } 
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
+const { recordAudit } = require('../utils/audit.js');
+const { keystrokeModeOf } = require('../utils/keystrokePolicy.js');
 const {
     attemptContextForStudent,
     collectiveTimeOverForNewAttempt,
     settleStudentAttempt,
 } = require('../utils/studentAttemptContext.js');
+
+// Entrada das rotas do aluno e das públicas (fase 2, H9b: ENG-03). O schema confere tipo
+// e tamanho (utils/inputSchema.js) e responde 400 { success:false, error, field }; a
+// presença de cada campo continua com a rota, com as mensagens de antes. Nas rotas com
+// sessão o schema vem depois de validateStudentSession: quem não entrou recebe o 401,
+// não um 400. Escrito a partir do que as telas mandam (web/src): identificadores que a
+// tela pode mandar vazios ou null (prova sem aplicação, aluno sem curso) aceitam null.
+const emailField = (label = 'e-mail') => str({ max: 254, nullable: true, label });
+const passwordField = (label = 'senha') => str({ max: 200, trim: false, nullable: true, label });
+const courseField = () => str({ max: 100, nullable: true, label: 'curso' });
+const classField = () => str({ max: 200, nullable: true, label: 'turma' });
+const idField = (label) => str({ max: 100, nullable: true, label });
+const unitKeyField = (label = 'unidade') => str({ max: 200, pattern: KEY_PATTERN, nullable: true, label });
+// Versão da configuração da prova: a data ISO de cfg.updatedAt (ou um número, em
+// registro antigo), sempre comparada como veio.
+const examConfigVersionField = () => either([str({ max: 64 }), num()], { nullable: true, label: 'versão da prova' });
+// Texto do fórum (dúvida e resposta): de 1 a 5.000 caracteres depois de aparar
+// (defaults_without_alan, pergunta 1 do H9). Vazio continua com a mensagem da rota.
+const FORUM_TEXT_MAX = 5000;
+
+const STUDENT_SCHEMAS = {
+    // Login: tipo errado continua com a mensagem de antes ('E-mail e senha são obrigatórios.').
+    login: body({
+        email: str({ max: 254, nullable: true, label: 'e-mail', typeMessage: 'E-mail e senha são obrigatórios.' }),
+        password: str({ max: 200, trim: false, nullable: true, label: 'senha', typeMessage: 'E-mail e senha são obrigatórios.' }),
+    }),
+    register: body({
+        name: str({ max: 120, nullable: true, label: 'nome' }),
+        nomeSocial: str({ max: 120, nullable: true, label: 'nome social' }),
+        email: emailField(),
+        password: passwordField(),
+        phone: str({ max: 40, nullable: true, label: 'telefone' }),
+        guardianPhone: str({ max: 40, nullable: true, label: 'telefone do responsável' }),
+        matricula: str({ max: 200, nullable: true, label: 'matrícula' }),
+        unidade: str({ max: 200, nullable: true, label: 'unidade' }),
+        status: str({ max: 200, nullable: true, label: 'situação' }),
+        period: str({ max: 200, nullable: true, label: 'período' }),
+        courseId: courseField(),
+        studentClass: classField(),
+        acceptedTerms: either([bool(), str({ max: 20 })], { nullable: true, label: 'aceite dos Termos' }),
+        guardian: shape({
+            name: str({ max: 120, nullable: true, label: 'nome do responsável' }),
+            phone: str({ max: 40, nullable: true, label: 'telefone do responsável' }),
+            email: emailField('e-mail do responsável'),
+            parentesco: str({ max: 200, nullable: true, label: 'parentesco' }),
+            observacao: str({ max: 200, nullable: true, label: 'observação do responsável' }),
+        }, { nullable: true, label: 'responsável' }),
+        accessibility: shape({
+            observacao: str({ max: 200, nullable: true, label: 'observação de acessibilidade' }),
+        }, { nullable: true, label: 'acessibilidade' }),
+    }),
+    recover: body({ email: emailField() }),
+    leave: body({ email: emailField(), sessionToken: str({ max: 200, trim: false, nullable: true, label: 'sessão' }) }),
+    changePassword: body({ currentPassword: passwordField('senha atual'), newPassword: passwordField('nova senha') }),
+    enrollmentRequest: body({ email: emailField(), courseId: courseField(), studentClass: classField() }),
+    enrollmentCancel: body({ email: emailField(), id: idField('solicitação') }),
+    announcementRead: body({ email: emailField(), id: idField('aviso') }),
+    startAttempt: body({}),
+    reportQuestion: body({
+        applicationId: idField('aplicação'),
+        attemptId: idField('tentativa'),
+        reason: str({ max: 60, nullable: true, label: 'motivo' }),
+        text: str({ max: 300, nullable: true, label: 'detalhe' }),
+        questionNumber: int({ min: 1, max: 100000, coerce: true, nullable: true, label: 'questão' }),
+    }),
+    submit: body({
+        email: emailField(),
+        studentClass: classField(),
+        courseId: courseField(),
+        examKey: str({ max: 200, nullable: true, label: 'prova' }),
+        applicationId: idField('aplicação'),
+        attemptId: idField('tentativa'),
+        // Respostas: objeto simples (a decodificação das alternativas já limita o resto).
+        answers: shape({}, { nullable: true, label: 'respostas' }),
+        examConfigVersion: examConfigVersionField(),
+        auto: bool({ nullable: true, label: 'envio automático' }),
+        // Corpo de telas antigas: o aluno e a turma dentro de `student`.
+        student: shape({
+            email: emailField(),
+            studentClass: classField(),
+            courseId: courseField(),
+            currentCourseId: courseField(),
+        }, { nullable: true, label: 'aluno' }),
+    }),
+    mySubmissions: body({ email: emailField(), courseId: courseField(), studentClass: classField() }),
+    notificationsSeen: body({
+        email: emailField(),
+        courseId: courseField(),
+        studentClass: classField(),
+        ids: list(str({ max: 200, label: 'itens' }), { max: 500, nullable: true, label: 'itens' }),
+    }),
+    // { [chaveDaUnidade]: true/false } (registros antigos podem ter listas).
+    progress: body({
+        email: emailField(),
+        completedUnits: dict(
+            either([bool(), list(either([str({ max: 200, trim: false }), num()]), { max: 2000 })]),
+            { maxKeys: 2000, keyMax: 200, nullable: true, label: 'progresso' },
+        ),
+    }),
+    trackAccess: body({
+        email: emailField(),
+        key: unitKeyField(),
+        moduleKey: str({ max: 200, nullable: true, label: 'módulo' }),
+        courseId: courseField(),
+    }),
+    // A nota tem até 50.000 caracteres (utils/studentNotes.js, que deixa a nota antiga
+    // maior só diminuir); o corpo inteiro do aluno já para em 512 KB.
+    notesSave: body({ email: emailField(), moduleKey: unitKeyField(), note: str({ trim: false, nullable: true, label: 'nota' }) }),
+    notesGet: body({ email: emailField(), moduleKey: unitKeyField() }),
+    annotation: body({
+        email: emailField(),
+        key: unitKeyField(),
+        paragraphId: str({ max: 40, pattern: /^[A-Za-z0-9_-]{1,40}$/, nullable: true, label: 'parágrafo' }),
+        note: str({ trim: false, nullable: true, label: 'anotação' }),
+        // Trecho destacado: guardado com até 1.000 caracteres (cortado pela rota).
+        highlightedText: str({ trim: false, nullable: true, label: 'trecho destacado' }),
+    }),
+};
+
+// Fórum: o aluno e o instrutor (painel) usam as mesmas rotas; a sessão de cada um é
+// conferida antes (router.use('/api/forum')).
+const forumContext = () => ({ courseId: courseField(), studentClass: classField(), email: emailField() });
+const forumTextField = () => str({ max: FORUM_TEXT_MAX, nullable: true, label: 'texto' });
+const FORUM_SCHEMAS = {
+    comment: body({ ...forumContext(), key: unitKeyField('tópico'), text: forumTextField() }),
+    reply: body({ ...forumContext(), commentId: idField('dúvida'), text: forumTextField() }),
+    commentEdit: body({ ...forumContext(), commentId: idField('dúvida'), text: forumTextField() }),
+    commentDelete: body({ ...forumContext(), commentId: idField('dúvida') }),
+    replyEdit: body({ ...forumContext(), commentId: idField('dúvida'), replyId: idField('resposta'), text: forumTextField() }),
+    replyDelete: body({ ...forumContext(), commentId: idField('dúvida'), replyId: idField('resposta') }),
+};
 
 // Marca a presença automática do dia (origem "login", exibida como "Automática"),
 // no máx. 1x/dia por turma, respeitando a config (liga/desliga + janela + fuso).
@@ -170,7 +321,7 @@ function applicationForClass(cls, examKey, applicationId) {
 function applyPageReturn(state, { sessionToken, application, cls, examKey }) {
     if (!state || state.focusLocked !== true || !state.pageExit) return false;
     const now = Date.now();
-    const decision = pageExitReturnDecision(state, { sessionToken, now });
+    const decision = pageExitReturnDecision(state, { sessionToken, now, outages: application?.outages });
     if (decision.expired) {
         // Passou do prazo: vale a regra de saída de sempre (o professor libera).
         delete state.pageExit;
@@ -223,56 +374,73 @@ function attemptOutcomeFor(application, studentEmail, attemptId) {
 // ROTAS DE REDE E PRESENÇA
 // ----------------------------------------------------
 
-// Ping do Aluno para manter a sessão online
+// Ping do Aluno para manter a sessão online. validateStudentSession já conferiu a
+// sessão (token e e-mail) e atualizou a presença (lastSeen), que serve só para o
+// contador "online". O ramo antigo que criava aqui uma sessão sem token saiu: ele
+// nunca era alcançado depois da validação e gravaria sessão que não é do login.
 router.get('/api/ping', validateStudentSession, (req, res) => {
-    const email = req.query.email;
-    if (email) {
-        const normalizedEmail = email.toLowerCase();
-        const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
-        const existingSession = db.memory.sessions[normalizedEmail];
-        
-        if (existingSession && typeof existingSession === 'object') {
-            // Presença serve só para o contador "online". Não bloqueamos por IP diferente
-            // (isso fazia o aluno sumir da lista se o IP mudasse). O IP de login continua
-            // sendo verificado nas rotas sensíveis (envio de prova, autosave etc.).
-            existingSession.lastSeen = Date.now();
-        } else {
-            db.memory.sessions[normalizedEmail] = {
-                lastSeen: Date.now(),
-                ip: clientIp
-            };
-        }
+    if (req.query.email) {
         // Presença automática também no heartbeat: cobre alunos com sessão já ativa
         // (retomada do navegador), que não passam de novo pelo POST /api/student/login.
-        if (ensureDailyLoginAttendance(normalizedEmail, { req, source: 'heartbeat' })) {
-            db.save().catch(() => {});
+        // Rota quente (H1-c, DES-01): só a presença nova, sem segurar a resposta do
+        // heartbeat (detached); a falha fica com a regravação de fundo do motor.
+        if (ensureDailyLoginAttendance(req.studentEmail, { req, source: 'heartbeat' })) {
+            db.save({ only: ['attendance', 'authSessions'], detached: true }).catch(() => {});
         }
     }
-    res.json({ success: true });
+    // A tela do portal acompanha a troca obrigatória de senha por aqui (H5a): pedida pelo
+    // professor com o aluno já logado, ou já feita em outro aparelho.
+    const passwordChange = req.studentPasswordChange || {};
+    res.json({
+        success: true,
+        passwordChangeRequired: passwordChange.required === true,
+        ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
+        // Versão publicada dos documentos, a mesma do sino (notifications): o aluno sem
+        // turma (autocadastro pendente) não tem sino, e o portão de primeiro acesso dele
+        // só via os Termos novos quando a guarda de 10 min vencia.
+        legalVersion: legalAcceptance.publishedLegalVersion(db.memory),
+    });
 });
 
-// Beacon de saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer
-// pessoa na rede derrubava a sessão de um aluno pelo e-mail, inclusive durante a prova.
-router.post('/api/student/leave', express.text({ type: 'text/plain' }), (req, res, next) => {
+// Saída do aluno. Só encerra a PRÓPRIA sessão: sem autenticação qualquer pessoa na
+// rede derrubava a sessão de um aluno pelo e-mail, inclusive durante a prova.
+// - POST /api/student/logout: o "Sair" do portal (H5b, SEG-10). Antes o "Sair" só
+//   apagava o navegador e o token seguia valendo no servidor por até 8 h (computador de
+//   laboratório compartilhado);
+// - POST /api/student/leave: o mesmo, com o corpo em texto (beacon de saída antigo).
+function parseLeaveBody(req, res, next) {
     if (typeof req.body === 'string') {
         let parsed = null;
         try { parsed = req.body.trim().startsWith('{') ? JSON.parse(req.body) : null; } catch (jsonErr) {}
         req.body = parsed && typeof parsed === 'object' ? parsed : { email: req.body.trim() };
     }
     next();
-}, validateStudentSession, (req, res) => {
-    delete db.memory.sessions[req.studentEmail];
+}
+
+async function endStudentSession(req, res) {
+    // O motivo fica guardado: o pedido seguinte do token antigo (outra aba) recebe 401
+    // com reason 'logout'. A sessão sai também da tabela auth_sessions (H3a-2): sem a
+    // gravação ela voltaria depois de um reinício do servidor.
+    revokeStudentSession(db.memory, req.studentEmail, { reason: 'logout' });
+    await db.save();
     res.json({ success: true });
-});
+}
+
+router.post('/api/student/logout', express.text({ type: 'text/plain' }), parseLeaveBody, validateStudentSession, STUDENT_SCHEMAS.leave, endStudentSession);
+router.post('/api/student/leave', express.text({ type: 'text/plain' }), parseLeaveBody, validateStudentSession, STUDENT_SCHEMAS.leave, endStudentSession);
 
 // Remove apenas sessões que atingiram o prazo absoluto. O heartbeat controla
 // a presença exibida no monitor, mas uma aba em segundo plano pode ter seus
 // timers suspensos pelo navegador e não pode perder a autenticação por isso.
-const sessionCleanupInterval = setInterval(() => {
+// Tarefa de fundo: gravação { detached: true } (a falha vai para o crash.log pelo
+// motor de gravação, que regrava sozinho).
+// Registrada no ciclo de vida do servidor (H3c): o desligamento ordenado a para antes do
+// db.close, e uma volta no meio do desligamento não grava num banco já fechado.
+serverLifecycle.registerTimer('session-prune', setInterval(() => {
     const absoluteHours = Number(settingsUtil.getSettings().session.absoluteHours) || 8;
-    pruneExpiredStudentSessions(db.memory.sessions, { absoluteTtlMs: absoluteHours * 3600000 });
-}, 15 * 60 * 1000);
-sessionCleanupInterval.unref();
+    const removed = pruneExpiredSessions(db.memory, { absoluteTtlMs: absoluteHours * 3600000 });
+    if (removed) db.save({ detached: true }).catch(() => {});
+}, 15 * 60 * 1000));
 
 // ----------------------------------------------------
 // ROTAS DE API DO ALUNO
@@ -380,6 +548,7 @@ const STUDENT_APPLICATION_FIELDS = [
     'questionCount',
     'tokenEnabled',
     'globalTimeAdjustment',
+    'keystrokeMode',
     'createdAt',
     'startedAt',
     'finishedAt',
@@ -403,6 +572,7 @@ function applicationForStudent(application, cls, studentEmail) {
     STUDENT_APPLICATION_FIELDS.forEach(field => {
         if (application[field] !== undefined) safeApplication[field] = application[field];
     });
+    safeApplication.keystrokeMode = keystrokeModeOf(application);
     const course = getCourseForClass(cls);
     return {
         ...safeApplication,
@@ -454,6 +624,16 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
 // Sincronização unificada durante a prova: estado, mensagens pop-up, configuração da
 // prova e itens liberados em UMA única requisição (reduz a carga de polling na rede
 // local quando há muitos alunos simultâneos).
+// Gravação parcial nas rotas quentes do aluno (H1-c, DES-01): db.save({ only }) com as
+// coleções que a rota muda. Toda lista leva 'authSessions': a validação da sessão
+// (validateStudentSession) registra o IP novo do aparelho (celular que troca de Wi-Fi) e
+// completa a sessão de formato antigo, e isso vai para a tabela auth_sessions.
+// Gravação parcial do sync: o estado da tentativa (sorteio,
+// volta à página, chave da cópia local), o log da volta à página e a aplicação (a
+// tentativa nova consome o "+N min" guardado para o aluno). A entrega de uma tentativa
+// vencida (settleStudentAttempt) continua com a gravação completa.
+const SYNC_SAVE_COLLECTIONS = ['studentExamState', 'proctoringLogs', 'examApplications', 'authSessions'];
+
 router.get('/api/student/sync', validateStudentSession, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     try {
@@ -566,12 +746,12 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 rawState.courseId = cls.courseId || null;
                 if (application) rawState.applicationId = application.id;
                 db.memory.studentExamState[stateKey] = rawState;
-                db.save();
+                db.save({ only: SYNC_SAVE_COLLECTIONS });
             }
-            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save();
+            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save({ only: SYNC_SAVE_COLLECTIONS });
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
-            if (application && context.state && ensureLocalCopyKey(rawState)) db.save();
+            if (application && context.state && ensureLocalCopyKey(rawState)) db.save({ only: SYNC_SAVE_COLLECTIONS });
             localCopyKey = application && context.state ? localCopyKeyFor(rawState) : null;
 
             // Não expõe a flag interna de validação de token nem a chave dentro do estado.
@@ -678,35 +858,49 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             attemptOutcome,
             timeOver,
             localCopyKey,
+            // Prazo de guarda do monitoramento da prova (settings.retention, H8b), para as
+            // instruções: 0 = sem prazo automático (até a escola apagar).
+            proctoringRetentionDays: examKey ? settingsUtil.retentionSettings().proctoringDays : 0,
             examTitle: examKey ? studentApplicationLabel({ examKey }, cls) : null,
             accessibilityExtraMinutes: examKey && cls.onlineExamConfigs?.[examKey]?.timerEnabled !== false
                 ? accessibilityExtraMinutes(email, cls.onlineExamConfigs?.[examKey]?.durationMinutes)
                 : 0
         });
     } catch (err) {
-        console.error('Erro no sync unificado do estudante:', err);
-        res.status(500).json({ error: 'Erro interno no servidor.' });
+        return sendInternalError(err, req, res);
     }
 });
 
 // Cadastro de Aluno
-router.post('/api/student/register', (req, res) => {
+router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) => {
+    // 60 cadastros a cada 10 min por IP (H5b, DES-X2): a turma toda se cadastrando na
+    // primeira aula, atrás do mesmo roteador, cabe; antes eram 10 por minuto.
     const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    const _rl = rateLimit(`student-register:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 60, windowMs: 10 * 60 * 1000 });
     if (!_rl.allowed) {
         return res.status(429).json({ error: 'Muitos cadastros seguidos. Aguarde um instante e tente novamente.' });
     }
     const { password, studentClass, courseId } = req.body;
     const fields = extractStudentFields(req.body);
 
-    if (!fields.name || !fields.email || !password || !studentClass || !courseId) {
-        return res.status(400).json({ error: 'Dados incompletos.' });
+    // Formato dos 400 combinado entre os grupos: { success: false, error, field } (o campo
+    // que falta primeiro, na ordem da tela).
+    const missingField = [['name', fields.name], ['email', fields.email], ['password', password], ['courseId', courseId], ['studentClass', studentClass]]
+        .find(([, value]) => !value);
+    if (missingField) {
+        return res.status(400).json({ success: false, error: 'Dados incompletos.', field: missingField[0] });
     }
+    // Política de senha (H5a, SEG-06): a senha "1" era aceita. O autocadastro nunca pede
+    // a troca no primeiro acesso: quem escolheu a senha foi o próprio aluno.
+    const policy = validateNewPassword(password, {
+        kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial,
+    });
+    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
 
     const classes = readJSON(DB_CLASSES_FILE);
     const matchedClass = classes.find(c => c.name === studentClass && c.courseId === courseId && c.registrationEnabled);
     if (!matchedClass) {
-        return res.status(400).json({ error: 'A turma selecionada não existe ou não está liberada para cadastro.' });
+        return res.status(400).json({ success: false, error: 'A turma selecionada não existe ou não está liberada para cadastro.', field: 'studentClass' });
     }
 
     const period = matchedClass.period || 'Tarde';
@@ -724,11 +918,32 @@ router.post('/api/student/register', (req, res) => {
     };
     const validation = validateStudentFields(selfFields, students, null);
     if (!validation.ok) {
-        return res.status(400).json({ error: validation.error });
+        return res.status(400).json({ success: false, error: validation.error, field: validation.field });
     }
 
     if (!req.body.acceptedTerms) {
-        return res.status(400).json({ error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.' });
+        return res.status(400).json({ success: false, error: 'É necessário aceitar os Termos de Uso e a Política de Privacidade.', field: 'acceptedTerms' });
+    }
+    // Primeiro acesso (H8a-2; SEG-08, SEG-09): data de nascimento obrigatória; menor de 18
+    // anos informa o responsável (nome e telefone ou e-mail); o aceite vale para os
+    // documentos atuais. A tela manda os ids dos documentos que mostrou: se a escola
+    // publicou outra versão no meio, 409 para o aluno ler a nova. Sem os ids (tela antiga
+    // ainda no navegador), vale o documento atual.
+    let registration;
+    try {
+        registration = legalAcceptance.checkRegistration(db.memory, req.body, { courseId });
+    } catch (error) {
+        if (!(error instanceof legalAcceptance.PrivacyAcceptError)) throw error;
+        return res.status(error.status).json(legalAcceptance.privacyErrorBody(error));
+    }
+
+    // Hash com o scrypt assíncrono (DES-07). Durante a espera outro cadastro pode ter
+    // entrado com o mesmo e-mail: a conferência de e-mail repetido roda de novo depois.
+    const passwordHash = await db.hashPasswordAsync(String(password).trim());
+    const currentStudents = readJSON(DB_STUDENTS_FILE);
+    const recheck = validateStudentFields(selfFields, currentStudents, null);
+    if (!recheck.ok) {
+        return res.status(400).json({ success: false, error: recheck.error, field: recheck.field });
     }
 
     const enrollmentRequest = {
@@ -748,25 +963,46 @@ router.post('/api/student/register', (req, res) => {
         nomeSocial: fields.nomeSocial || '',
         email: fields.email,
         phone: fields.phone || '',
-        guardianPhone: (fields.guardian && fields.guardian.phone) || '',
-        guardian: fields.guardian || null,
+        guardianPhone: (registration.guardian && registration.guardian.phone) || (fields.guardian && fields.guardian.phone) || '',
+        guardian: registration.guardian
+            ? { ...(fields.guardian || {}), ...registration.guardian, observacao: (fields.guardian && fields.guardian.observacao) || '' }
+            : (fields.guardian || null),
+        birthDate: registration.birthDate,
         matricula: '',
         unidade: '',
         status: DEFAULT_STATUS,
-        password: db.hashPassword(String(password).trim()),
+        password: passwordHash,
         classes: [],
         studentClass: '',
         period: '',
         enrollmentRequests: [enrollmentRequest],
         loginTime: null,
         recoveryRequested: false,
-        termsAcceptance: buildAcceptance(DEFAULT_TERMS_VERSION, req),
-        privacyAcceptance: buildAcceptance(DEFAULT_PRIVACY_VERSION, req),
+        passwordChangedAt: new Date().toISOString(),
+        // Aceite do documento exato (H8a-2): { documentId, version, schoolId, at, ip,
+        // device }. Antes do H8a-2 gravava só { version: '1.0' }.
+        termsAcceptance: legalAcceptance.buildDocumentAcceptance(registration.terms, registration.school, req),
+        privacyAcceptance: legalAcceptance.buildDocumentAcceptance(registration.privacy, registration.school, req),
         createdAt: Date.now(),
         updatedAt: Date.now()
     };
-    students.push(studentObj);
-    writeJSON(DB_STUDENTS_FILE, students);
+    currentStudents.push(studentObj);
+    recordAudit(db.memory, {
+        req,
+        // Sem sessão no cadastro: o papel vem da conta passada (o aluno, como no portão).
+        actor: { email: studentObj.email, role: 'aluno' },
+        action: 'privacy_accept',
+        category: 'privacy',
+        studentEmail: studentObj.email,
+        courseId,
+        details: legalAcceptance.acceptAuditDetails([registration.terms, registration.privacy], {
+            source: 'cadastro',
+            schoolId: registration.school ? registration.school.id : null,
+            isMinor: registration.isMinor,
+            guardianInformed: !!registration.guardian,
+        }),
+    });
+    writeJSON(DB_STUDENTS_FILE, currentStudents);
 
     res.json({ success: true, enrollmentRequest });
 });
@@ -794,11 +1030,18 @@ function enrollmentPayload(student) {
     return { classes, courses, requests };
 }
 
+// Dados da conta para Minha conta (H5b; SEG-16): a matrícula não vai no perfil do login
+// (utils/studentProfile.js), que fica guardado no navegador; a tela a lê aqui, na hora.
+router.get('/api/student/account', validateStudentSession, (req, res) => {
+    const student = req.studentAccount || {};
+    res.json({ success: true, matricula: typeof student.matricula === 'string' ? student.matricula : (student.matricula == null ? '' : String(student.matricula)) });
+});
+
 router.get('/api/student/enrollments', validateStudentSession, (req, res) => {
     res.json(enrollmentPayload(req.studentAccount));
 });
 
-router.post('/api/student/enrollments/request', validateStudentSession, async (req, res) => {
+router.post('/api/student/enrollments/request', validateStudentSession, STUDENT_SCHEMAS.enrollmentRequest, async (req, res) => {
     const courseId = String(req.body.courseId || '').trim();
     const studentClass = String(req.body.studentClass || '').trim();
     const matchedClass = (db.memory.classes || []).find(item => item.courseId === courseId && item.name === studentClass && item.registrationEnabled);
@@ -830,7 +1073,7 @@ router.post('/api/student/enrollments/request', validateStudentSession, async (r
     res.json({ success: true, request });
 });
 
-router.post('/api/student/enrollments/cancel', validateStudentSession, async (req, res) => {
+router.post('/api/student/enrollments/cancel', validateStudentSession, STUDENT_SCHEMAS.enrollmentCancel, async (req, res) => {
     const request = (req.studentAccount.enrollmentRequests || []).find(item => item.id === req.body.id);
     if (!request) return res.status(404).json({ error: 'Solicitação não encontrada.' });
     if (request.status !== 'pending') return res.status(409).json({ error: 'Somente solicitações pendentes podem ser canceladas.' });
@@ -912,12 +1155,12 @@ router.get('/api/student/announcements', validateStudentSession, (req, res) => {
     res.json(list.map(a => ({ id: a.id, title: a.title, message: a.message, priority: a.priority, pinned: a.pinned, createdAt: a.createdAt, authorName: a.authorName, read: (a.readBy || []).includes(email) })));
 });
 
-router.post('/api/student/announcements/read', validateStudentSession, (req, res) => {
+router.post('/api/student/announcements/read', validateStudentSession, STUDENT_SCHEMAS.announcementRead, (req, res) => {
     const email = req.studentEmail;
     const id = String(req.body.id || '');
     const ann = (db.memory.announcements || []).find(a => a.id === id);
     if (!ann || !studentCanSeeAnnouncement(req.studentAccount, email, ann)) return res.status(404).json({ error: 'Aviso não encontrado.' });
-    if (markAnnouncementRead(ann, email)) db.save();
+    if (markAnnouncementRead(ann, email)) db.save({ only: ['announcements', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -956,35 +1199,32 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
 
 
 // Login do aluno
-router.post('/api/student/login', async (req, res) => {
-    const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-login:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 30, windowMs: 60000 });
-    if (!_rl.allowed) {
-        return res.status(429).json({ error: 'Muitas tentativas de login. Aguarde um instante e tente novamente.' });
-    }
-    const { email, password } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
-    }
-
-    const students = db.memory.students;
-    const normalizedEmail = email.trim().toLowerCase();
-    const student = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail && db.verifyPassword(s.password, password.trim()));
-
-    if (!student) {
-        recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'fail', reason: 'Credenciais inválidas', req });
-        await db.save();
-        return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
-    }
+router.post('/api/student/login', STUDENT_SCHEMAS.login, async (req, res) => {
+    // Senha conferida com o scrypt assíncrono (utils/passwordLogin.js, DES-07): a turma
+    // entrando junto não para o servidor. O hash antigo é regravado em scrypt$ lá.
+    // A senha errada não espera o banco (H5b): a falha fica em loginLogs na memória e a
+    // gravação é agrupada (no máximo uma a cada 60 s, utils/security.js). Antes cada
+    // senha errada fazia um db.save() inteiro.
+    const login = await attemptPasswordLogin({ kind: 'student', email: req.body.email, password: req.body.password, req });
+    if (!login.ok) return res.status(login.status).json(login.body);
+    const student = login.account;
+    const normalizedEmail = login.email;
 
     const status = String(student.status || '').trim().toLowerCase();
     if (!['ativo', 'active'].includes(status)) {
         recordLoginLog(db.memory, { email: normalizedEmail, role: 'student', status: 'blocked', reason: `Status: ${student.status || 'não informado'}`, req });
-        await db.save();
+        await db.save({ only: ['loginLogs'] });
         return res.status(403).json({ error: 'Esta conta está bloqueada ou inativa. Procure o instrutor.' });
     }
 
-    if (db.needsPasswordRehash(student.password)) student.password = db.hashPassword(password.trim());
+    // Senha fraca pela política de hoje (H5a, decisão P3 do Alan): a troca passa a ser
+    // pedida, menos durante uma prova em andamento (fica para o login seguinte) e com
+    // TEST_MODE (contas demo). Quem já tinha a troca pedida e está em prova segue sem
+    // ela nesta sessão (utils/passwordChange.js).
+    const inExam = passwordChangeRuleActive() && studentHasExamInProgress(db.memory, normalizedEmail, student);
+    if (passwordChangeRuleActive() && login.weakPassword && student.mustChangePassword !== true && !inExam) {
+        requirePasswordChange(student, 'weak');
+    }
 
     student.loginTime = new Date().toISOString();
     student.lastLoginAt = Date.now();
@@ -995,19 +1235,24 @@ router.post('/api/student/login', async (req, res) => {
     ensureDailyLoginAttendance(normalizedEmail, { req, source: 'login' });
     // Sessão única: gera um token novo a cada login. Logins anteriores (em outros
     // dispositivos) deixam de valer porque o token guardado neles passa a divergir.
-    const sessionToken = crypto.randomUUID
-        ? crypto.randomUUID()
-        : (Date.now().toString(36) + Math.random().toString(36).slice(2));
-    db.memory.sessions[normalizedEmail] = {
-        lastSeen: Date.now(),
-        createdAt: Date.now(),
+    // O servidor guarda só o hash do token (utils/authSessions.js).
+    const sessionToken = createStudentSession(db.memory, normalizedEmail, {
         ip: normalizeIp(req.ip || req.socket.remoteAddress),
-        token: sessionToken
-    };
-    await db.save();
+        now: Date.now(),
+    });
+    const passwordChange = studentPasswordChangeState(db.memory, student, studentSessionByEmail(db.memory, normalizedEmail));
+    // Rota quente no começo da aula (H1-c, DES-01): a conta (hora do login, hash novo,
+    // troca obrigatória), o registro do login, a presença automática e a sessão gravada
+    // (contrato: rota anotada que cria sessão leva 'authSessions'; a que audita leva
+    // 'auditLogs').
+    await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs'] });
 
     // Retorna dados do estudante sem expor o campo de senha
     const { password: _, ...safeStudent } = student;
+    // A tela segue o que vale para esta sessão (em prova, a troca fica para depois).
+    safeStudent.mustChangePassword = passwordChange.required === true;
+    if (passwordChange.required) safeStudent.passwordChangeReason = passwordChange.reason;
+    else delete safeStudent.passwordChangeReason;
     
     const allClasses = db.memory.classes;
     const allCourses = db.memory.courses;
@@ -1073,18 +1318,27 @@ router.post('/api/student/login', async (req, res) => {
         safeStudent.studentClass = '';
     }
 
-    res.json({ success: true, student: safeStudent, sessionToken });
+    res.json({
+        success: true,
+        // Só o que o portal usa (H5b): responsável, telefones e acessibilidade ficam no
+        // servidor (utils/studentProfile.js).
+        student: studentSessionProfile(safeStudent),
+        sessionToken,
+        mustChangePassword: passwordChange.required === true,
+        ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
+    });
 });
 
 // Solicitação de recuperação de senha pelo aluno
-router.post('/api/student/recover', (req, res) => {
+router.post('/api/student/recover', STUDENT_SCHEMAS.recover, (req, res) => {
     const { email } = req.body;
     if (!email) {
         return res.status(400).json({ error: 'E-mail é obrigatório.' });
     }
 
+    // 30 pedidos a cada 10 min por IP (H5b, DES-X2).
     const { rateLimit } = require('../utils/rateLimit.js');
-    const _rl = rateLimit(`student-recover:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 10, windowMs: 60000 });
+    const _rl = rateLimit(`student-recover:${normalizeIp(req.ip || req.socket.remoteAddress)}`, { max: 30, windowMs: 10 * 60 * 1000 });
     if (!_rl.allowed) {
         return res.status(429).json({ error: 'Muitas solicitações seguidas. Aguarde um instante e tente novamente.' });
     }
@@ -1103,7 +1357,57 @@ router.post('/api/student/recover', (req, res) => {
 });
 
 
-router.post('/api/student/exam-applications/:applicationId/start-attempt', validateStudentSession, async (req, res) => {
+// Troca de senha pelo próprio aluno (H5a; UXA-13, SEG-10): na tela Minha conta e na
+// troca obrigatória (senha criada ou redefinida pelo professor, ou senha fraca). Antes o
+// aluno não tinha como sair de uma senha que o professor conhecia.
+// - Sempre pede a senha atual (na troca obrigatória, a temporária que o professor
+//   entregou), conferida pelo attemptPasswordLogin, o único caminho que confere senha:
+//   scrypt assíncrono, o teto por IP do login e o erro em loginLogs. Assim quem só tem a
+//   sessão aberta (um aparelho de antes do "Redefinir senha") não escolhe a senha nova.
+// - A senha nova passa pela política (utils/passwordPolicy.js) e não pode ser a atual: a
+//   temporária, que o professor conhece, não vira a senha definitiva.
+// - A sessão atual continua (o aluno tem uma sessão só).
+router.post('/api/student/change-password', validateStudentSession, STUDENT_SCHEMAS.changePassword, async (req, res) => {
+    const student = req.studentAccount;
+    const { currentPassword, newPassword } = req.body;
+    if (typeof currentPassword !== 'string' || !currentPassword.trim()) {
+        return res.status(400).json({ success: false, error: 'Informe a senha atual.', field: 'currentPassword' });
+    }
+    if (typeof newPassword !== 'string' || !newPassword.trim()) {
+        return res.status(400).json({ success: false, error: 'Informe a nova senha.', field: 'newPassword' });
+    }
+    const policy = validateNewPassword(newPassword, {
+        kind: 'student', email: student.email, name: student.name, nomeSocial: student.nomeSocial, matricula: student.matricula,
+    });
+    if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'newPassword'));
+    if (newPassword.trim() === currentPassword.trim()) {
+        return res.status(400).json({ success: false, error: 'A nova senha precisa ser diferente da atual.', passwordPolicy: true, field: 'newPassword' });
+    }
+    const changedMeanwhile = () => res.status(409).json({ error: 'A senha desta conta acabou de ser alterada. Entre de novo e tente outra vez.' });
+    const check = await attemptPasswordLogin({ kind: 'student', email: req.studentEmail, password: currentPassword, req, purpose: 'change_password' });
+    if (!check.ok && check.status === 429) return res.status(429).json(check.body);
+    if (!check.ok && check.passwordChanged) return changedMeanwhile();
+    if (!check.ok) {
+        // A tentativa errada fica em loginLogs e conta no atraso da conta (loginGuard),
+        // com a gravação agrupada (attemptPasswordLogin).
+        return res.status(400).json({ success: false, error: 'Senha atual incorreta.', field: 'currentPassword' });
+    }
+    if (check.account !== student || student.password !== check.password) return changedMeanwhile();
+    const storedBefore = check.password;
+    const passwordHash = await db.hashPasswordAsync(newPassword.trim());
+    // Outra troca (o professor redefiniu, outra aba) terminou durante a espera: não
+    // sobrescreve a senha que ela gravou.
+    if (student.password !== storedBefore || !(db.memory.students || []).includes(student)) return changedMeanwhile();
+    student.password = passwordHash;
+    passwordChanged(student);
+    student.recoveryRequested = false;
+    student.updatedAt = Date.now();
+    await db.save();
+    res.json({ success: true, message: 'Senha alterada.' });
+});
+
+
+router.post('/api/student/exam-applications/:applicationId/start-attempt', validateStudentSession, STUDENT_SCHEMAS.startAttempt, async (req, res) => {
     const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
     if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
     const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
@@ -1203,7 +1507,9 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     initializeExamState(state, config);
     ensureLocalCopyKey(state);
     db.memory.studentExamState[context.key] = state;
-    await db.save();
+    // Rota quente (H1-c, DES-01): a tentativa e a aplicação (o "+N min" guardado para o
+    // aluno passa para a tentativa nova).
+    await db.save({ only: ['studentExamState', 'examApplications', 'authSessions'] });
     // A tentativa acabou de começar: as questões da versão do aluno já vão na resposta,
     // com os identificadores opacos das alternativas (AVA-05).
     const delivered = attemptQuestionsAvailable({ application, onlineConfig: config, state })
@@ -1232,7 +1538,7 @@ const QUESTION_REPORT_REASONS = new Set([
     'outro',
 ]);
 
-router.post('/api/student/report-question', validateStudentSession, async (req, res) => {
+router.post('/api/student/report-question', validateStudentSession, STUDENT_SCHEMAS.reportQuestion, async (req, res) => {
     const applicationId = String(req.body?.applicationId || '').trim();
     const attemptId = String(req.body?.attemptId || '').trim();
     const reason = String(req.body?.reason || '').trim();
@@ -1315,11 +1621,11 @@ router.post('/api/student/report-question', validateStudentSession, async (req, 
         details: { reportId: report.id, questionNumber: number, reason },
         timestamp: now,
     });
-    await db.save();
+    await db.save({ only: ['examApplications', 'auditLogs', 'authSessions'] });
     res.status(201).json({ success: true, report });
 });
 
-router.post('/api/student/submit', validateStudentSession, async (req, res) => {
+router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submit, async (req, res) => {
     const { student = {}, studentClass: bodyStudentClass, courseId: bodyCourseId, examKey, applicationId, attemptId, answers: rawAnswers, questionNumbers, examConfigVersion, auto } = req.body;
     if (!examKey || !rawAnswers || typeof rawAnswers !== 'object' || Array.isArray(rawAnswers)) {
         return res.status(400).json({ error: 'Dados inválidos ou incompletos.' });
@@ -1531,34 +1837,50 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
     }
 
     // Envio automático com o prazo ainda bem à frente: a tela não viu o tempo extra
-    // (o professor deu mais tempo ou reabriu a tentativa no "+N min" da turma). A
-    // prova continua; o navegador volta para as questões com o tempo novo.
+    // (o professor deu mais tempo ou reabriu a tentativa no "+N min" da turma, ou o
+    // servidor devolveu o tempo em que ficou fora do ar). A prova continua; o navegador
+    // volta para as questões com o tempo novo. reason 'server_outage': o prazo só está
+    // à frente pelo tempo devolvido da queda (H3b), e a tela diz isso ao aluno.
     if (auto === true && timing.overdueMs !== null && timing.overdueMs < -AUTO_SUBMIT_EARLY_TOLERANCE_MS) {
+        const serverOutage = !!application && extendedByServerOutage(lockedState, application, nowTs);
         return res.status(409).json({
-            error: 'O professor deu mais tempo. A prova continua.',
+            error: serverOutage
+                ? 'O servidor ficou fora do ar e o tempo foi devolvido. A prova continua.'
+                : 'O professor deu mais tempo. A prova continua.',
             deadlineExtended: true,
             timerRemaining: Math.max(0, Math.ceil(-timing.overdueMs / 1000)),
+            ...(serverOutage ? { reason: 'server_outage' } : {}),
         });
     }
 
     // Tenta obter questoes estruturadas do banco de dados primeiro
     let questions;
-    const evaluation = db.memory.evaluations[examKey];
+    let evaluation = db.memory.evaluations[examKey];
     if (evaluation) {
         questions = evaluation.questions;
     } else {
-        // Fallback: Localiza e lê o arquivo da prova antigo .md
+        // Fallback: a prova antiga só em .md (content/<prova>.md), sem entrada em
+        // evaluations. Antes o leitor do .md não estava importado aqui: o caminho sempre
+        // dava ReferenceError, engolido pelo catch, e o aluno recebia 500 "Falha ao
+        // processar avaliação no servidor.". A avaliação lida do .md também vale para a
+        // correção (gabarito das questões que a versão aplicada não trouxer).
         const filePath = path.join(CONTENT_DIR, `${examKey}.md`);
         try {
-            await fs.promises.access(filePath, fs.constants.F_OK);
             const mdContent = await fs.promises.readFile(filePath, 'utf8');
             const parsedObj = parseEvaluationMarkdown(mdContent, examKey);
             questions = parsedObj ? parsedObj.questions : [];
-        } catch (err) {}
+            if (parsedObj && Array.isArray(parsedObj.questions) && parsedObj.questions.length) evaluation = parsedObj;
+        } catch (err) {
+            // Sem o arquivo: segue para o erro de prova sem questões, abaixo. Outra falha
+            // (arquivo ilegível) fica no crash.log.
+            if (!err || err.code !== 'ENOENT') logError('[PROVA] Não foi possível ler a prova em .md', err, { req, details: { examKey } });
+        }
     }
     
     if (!questions || questions.length === 0) {
-        return res.status(500).json({ error: 'Falha ao processar avaliação no servidor.' });
+        // Prova sem questões no banco nem no .md: o código do erro leva o professor ao
+        // registro no crash.log (qual prova faltou).
+        return sendInternalError(new Error(`Avaliação sem questões no servidor: ${examKey}`), req, res, 'Falha ao processar avaliação no servidor.');
     }
 
     questions = questions.map((question, index) => ({
@@ -1613,16 +1935,18 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
         if (reopenable) submissionObj.reopenableState = reopenable;
     }
     
-    const submissions = db.memory.submissions;
-    submissions.push(submissionObj);
-    writeJSON(DB_SUBMISSIONS_FILE, submissions);
+    // A entrega nova entra na lista (submissions é só acréscimo) e a tentativa sai dos
+    // estados. Rota quente (H1-c, DES-01): uma gravação parcial só, em vez do writeJSON
+    // (gravação completa) seguido de outra; os caminhos raros acima (entrega pelo
+    // servidor fora do prazo, troca da entrega automática) continuam completos.
+    db.memory.submissions.push(submissionObj);
 
     lockedState.status = 'submitted';
     lockedState.submittedAt = submissionObj.timestamp;
     if (stateKey && db.memory.studentExamState[stateKey]) {
         delete db.memory.studentExamState[stateKey];
     }
-    await db.save();
+    await db.save({ only: ['submissions', 'studentExamState', 'auditLogs', 'examApplications', 'authSessions'] });
 
     res.json({
         success: true,
@@ -1638,7 +1962,7 @@ router.post('/api/student/submit', validateStudentSession, async (req, res) => {
 });
 
 // Obter histórico de submissões de um aluno
-router.post('/api/student/my-submissions', validateStudentSession, (req, res) => {
+router.post('/api/student/my-submissions', validateStudentSession, STUDENT_SCHEMAS.mySubmissions, (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.body.courseId || '').trim();
     const studentClass = String(req.body.studentClass || '').trim();
@@ -1788,14 +2112,16 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     items.sort((a, b) => b.at - a.at);
     const limited = items.slice(0, 30);
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length });
+    // legalVersion: os documentos publicados agora ("<termos>|<política>"); o portão de
+    // primeiro acesso do portal compara com o que guardou (decisões §12, sobra do H8a-2).
+    res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length, legalVersion: legalAcceptance.publishedLegalVersion(db.memory) });
 });
 
 // "Marcar como lidas" (UXA-X3): carimbo para dúvidas, notas e provas e leitura dos
 // avisos listados no sino (readBy), senão o próximo polling trazia o contador de volta.
 // O carimbo é da turma/curso do sino (aluno em duas turmas não perde os itens novos da
 // outra); sem turma informada (navegador antigo), vale para todas, como antes.
-router.post('/api/student/notifications/seen', validateStudentSession, async (req, res) => {
+router.post('/api/student/notifications/seen', validateStudentSession, STUDENT_SCHEMAS.notificationsSeen, async (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.query.courseId || req.body?.courseId || '').trim();
     const className = String(req.query.studentClass || req.body?.studentClass || '').trim();
@@ -1934,7 +2260,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
 
 // Atualizar progresso do aluno (POST)
 // completedUnits: { [chaveDaUnidade]: true/false } (registros antigos podem ter listas).
-router.post('/api/student/progress', validateStudentSession, (req, res) => {
+router.post('/api/student/progress', validateStudentSession, STUDENT_SCHEMAS.progress, (req, res) => {
     const { completedUnits } = req.body || {};
     const email = req.studentEmail;
     if (!email || !completedUnits) return res.status(400).json({ error: 'Dados incompletos.' });
@@ -1945,12 +2271,12 @@ router.post('/api/student/progress', validateStudentSession, (req, res) => {
     }
 
     db.memory.progress[email.toLowerCase()] = completedUnits;
-    db.save();
+    db.save({ only: ['progress', 'authSessions'] });
     res.json({ success: true });
 });
 
 // Registra acesso a um módulo/apostila (Fase 4 — histórico de módulos acessados)
-router.post('/api/student/track-access', validateStudentSession, (req, res) => {
+router.post('/api/student/track-access', validateStudentSession, STUDENT_SCHEMAS.trackAccess, (req, res) => {
     const { email, key, moduleKey, courseId } = req.body;
     if (!email || !key) return res.status(400).json({ error: 'Dados incompletos.' });
     if (!Array.isArray(db.memory.moduleAccess)) db.memory.moduleAccess = [];
@@ -1963,39 +2289,57 @@ router.post('/api/student/track-access', validateStudentSession, (req, res) => {
         timestamp: Date.now(),
     });
     if (db.memory.moduleAccess.length > 10000) db.memory.moduleAccess.splice(0, db.memory.moduleAccess.length - 10000);
-    db.save();
+    // Só acréscimo (e a poda das mais antigas, que a gravação parcial apaga).
+    db.save({ only: ['moduleAccess', 'authSessions'] });
     res.json({ success: true });
 });
 
 // ==========================================
 // NOTAS (MEU CADERNO)
 // ==========================================
-router.post('/api/student/notes/save', validateStudentSession, (req, res) => {
+// Tetos (H9b, ENG-03; utils/studentNotes.js): até 50.000 caracteres por nota, 300
+// unidades e 1.000.000 de caracteres no total por aluno. Nota antiga acima do limite só
+// pode diminuir; nota salva vazia apaga a chave (notes/get continua devolvendo '').
+router.post('/api/student/notes/save', validateStudentSession, STUDENT_SCHEMAS.notesSave, (req, res) => {
     const { moduleKey, note } = req.body;
     const email = req.studentEmail;
     if (!moduleKey) return res.status(400).json({ error: 'Dados insuficientes' });
-    
-    if (!db.memory.notes[email]) {
-        db.memory.notes[email] = {};
-    }
-    db.memory.notes[email][moduleKey] = note;
-    db.save();
+    if (!db.memory.notes || typeof db.memory.notes !== 'object') db.memory.notes = {};
+    // Caderno guardado em outro formato (texto ou lista no lugar do mapa): o servidor
+    // converte (o conteúdo vira a nota "anotacoes-anteriores", sem perder nada) e grava
+    // normalmente (decisões §12, sobra do H9b; antes era 409 legacy_format).
+    const { map: notes, legacy } = studentMap(db.memory.notes, email);
+    const existed = Object.prototype.hasOwnProperty.call(db.memory.notes, email);
+    const hadKey = Object.prototype.hasOwnProperty.call(notes, moduleKey);
+    const result = applyNoteWrite(notes, moduleKey, note);
+    if (!result.ok) return res.status(400).json({ success: false, error: result.error, field: result.field });
+    // Apagar o que não existe num caderno antigo não grava a conversão.
+    if (legacy && result.deleted && !hadKey) return res.json({ success: true });
+    if (Object.keys(notes).length) db.memory.notes[email] = notes;
+    else if (existed) delete db.memory.notes[email];
+    db.save({ only: ['notes', 'authSessions'] });
     res.json({ success: true });
 });
 
-router.post('/api/student/notes/get', validateStudentSession, (req, res) => {
+router.post('/api/student/notes/get', validateStudentSession, STUDENT_SCHEMAS.notesGet, (req, res) => {
     const { moduleKey } = req.body;
     const email = req.studentEmail;
     if (!moduleKey) return res.status(400).json({ error: 'Dados insuficientes' });
     
-    const notesMap = db.memory.notes[email] || {};
-    res.json({ success: true, note: notesMap[moduleKey] || "" });
+    // Só a chave própria: 'constructor' devolvia a função herdada de Object.
+    const notesMap = studentMap(db.memory.notes, email).map || {};
+    const note = Object.prototype.hasOwnProperty.call(notesMap, moduleKey) ? notesMap[moduleKey] : '';
+    // Sempre texto (H9b): nota antiga gravada como objeto ou número não vira "[object Object]".
+    res.json({ success: true, note: noteForScreen(note) });
 });
 
 // ==========================================
 // ANOTAÇÕES E DESTAQUES POR PARÁGRAFO
 // ==========================================
-router.post('/api/student/annotation', validateStudentSession, (req, res) => {
+// Tetos (H9b, ENG-03; utils/studentNotes.js): nota do parágrafo com até 5.000
+// caracteres, trecho destacado guardado com até 1.000, até 500 parágrafos por unidade e
+// 300 unidades por aluno. Apagar (note e highlightedText null) sempre passa.
+router.post('/api/student/annotation', validateStudentSession, STUDENT_SCHEMAS.annotation, (req, res) => {
     const { key, paragraphId, highlightedText, note } = req.body;
     const email = req.studentEmail;
     if (!key || !paragraphId) {
@@ -2008,27 +2352,22 @@ router.post('/api/student/annotation', validateStudentSession, (req, res) => {
     }
     
     const lowerEmail = email.toLowerCase();
-    if (!db.memory.annotations[lowerEmail]) {
-        db.memory.annotations[lowerEmail] = {};
-    }
-    if (!db.memory.annotations[lowerEmail][key]) {
-        db.memory.annotations[lowerEmail][key] = {};
-    }
+    if (!db.memory.annotations || typeof db.memory.annotations !== 'object') db.memory.annotations = {};
+    // Anotações guardadas em outro formato (texto ou lista no lugar do mapa, do aluno ou da
+    // unidade): o servidor converte sem perder nada e grava normalmente (decisões §12,
+    // sobra do H9b; antes era 409 legacy_format). Recusa ou apagar o que não existe não
+    // grava a conversão.
+    const { map: annotations, legacy } = studentMap(db.memory.annotations, lowerEmail, { kind: 'annotations' });
+    const existed = Object.prototype.hasOwnProperty.call(db.memory.annotations, lowerEmail);
+    const before = legacy ? null : JSON.stringify(annotations);
+    const result = applyAnnotationWrite(annotations, key, paragraphId, { note, highlightedText });
+    if (!result.ok) return res.status(400).json({ success: false, error: result.error, field: result.field });
+    if (legacy && result.deleted) return res.json({ success: true });
+    if (!legacy && result.deleted && before === JSON.stringify(annotations)) return res.json({ success: true });
+    if (Object.keys(annotations).length) db.memory.annotations[lowerEmail] = annotations;
+    else if (existed) delete db.memory.annotations[lowerEmail];
     
-    if (note === null && highlightedText === null) {
-        delete db.memory.annotations[lowerEmail][key][paragraphId];
-        if (Object.keys(db.memory.annotations[lowerEmail][key]).length === 0) {
-            delete db.memory.annotations[lowerEmail][key];
-        }
-    } else {
-        db.memory.annotations[lowerEmail][key][paragraphId] = {
-            highlightedText,
-            note,
-            timestamp: new Date().toISOString()
-        };
-    }
-    
-    db.save();
+    db.save({ only: ['annotations', 'authSessions'] });
     res.json({ success: true });
 });
 
@@ -2040,19 +2379,26 @@ router.get('/api/student/annotations', validateStudentSession, (req, res) => {
     }
     
     const lowerEmail = email.toLowerCase();
-    const studentAnns = db.memory.annotations[lowerEmail] || {};
-    res.json({ success: true, annotations: studentAnns[key] || {} });
+    // Só chaves próprias (como em notes/get): '__proto__' ou 'constructor' na query
+    // devolviam o que vem de Object.prototype.
+    // Mapa do aluno ou unidade num formato antigo: convertidos na leitura, sem regravar;
+    // note e highlightedText sempre texto (decisões §12, sobra do H9b).
+    const own = (map, name) => !!map && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, name);
+    const studentAnns = studentMap(db.memory.annotations, lowerEmail, { kind: 'annotations' }).map;
+    const unit = typeof key === 'string' && own(studentAnns, key) ? studentAnns[key] : null;
+    res.json({ success: true, annotations: annotationsForScreen(unit) });
 });
 
 // ==========================================
 // FÓRUM / DÚVIDAS INTEGRADO
 // ==========================================
-// Quando a chamada vem do painel administrativo, aplica também o RBAC e o
-// escopo de conteúdo da conta. Chamadas do portal do aluno mantêm o fluxo atual.
+// Quando a chamada vem do painel administrativo (x-admin-session), aplica também o RBAC
+// e o escopo de conteúdo da conta. Chamadas do portal do aluno mantêm o fluxo atual. O
+// 'Authorization: email:senha' não identifica instrutor (SEG-03).
 router.use('/api/forum', (req, res, next) => {
-    const hasAdminCredentials = !!(req.headers['x-admin-session'] || req.headers.authorization);
+    const hasAdminCredentials = !!req.headers['x-admin-session'];
     if (!hasAdminCredentials) return validateStudentSession(req, res, next);
-    validateAdminPermission(req, res, 'page.forum', (config, matchedAdmin) => {
+    return validateAdminPermission(req, res, 'page.forum', (config, matchedAdmin) => {
         let key = (req.body && req.body.key) || (req.query && req.query.key);
         if (!key && req.body && req.body.commentId) {
             const comment = (db.memory.forum || []).find(item => item.id === req.body.commentId);
@@ -2100,18 +2446,40 @@ function adminForumContextAllowed(req, matchedAdmin, comment) {
     return adminCanAccessClass(matchedAdmin, context.studentClass, context.courseId);
 }
 
+// Dúvida que o professor pode ver no painel (SEG-11): a turma da dúvida (gravada, ou
+// inferida pelo aluno nas antigas) precisa estar no escopo dele. Dúvida antiga sem
+// turma que se possa inferir fica escondida do professor; o administrador vê todas.
+// Devolve também se a inferência gravou a turma numa dúvida antiga (quem chama grava).
+function forumCommentVisibleToAdmin(account, comment) {
+    if (!isProfessorAccount(account)) return { visible: true, migrated: false };
+    const wasLegacy = !!comment && !comment.courseId && !comment.studentClass;
+    const context = comment ? inferLegacyForumContext(comment) : null;
+    return {
+        visible: !!context && adminCanAccessClass(account, context.studentClass, context.courseId),
+        migrated: wasLegacy && !!context,
+    };
+}
+
 router.get('/api/forum', (req, res) => {
     const { key } = req.query;
     const courseId = String(req.query.courseId || '').trim();
     const studentClass = String(req.query.studentClass || '').trim();
     if (!key) return res.status(400).json({ error: 'Falta a chave do material' });
-    if (req.auth.role === 'student' && (courseId || studentClass)) {
+    // O aluno lê só as dúvidas da turma em que está (SEG-11): sem curso e turma, a lista
+    // trazia nomes e dúvidas de todas as turmas, até para conta sem turma nenhuma.
+    if (req.auth.role === 'student') {
+        if (!courseId || !studentClass) return res.status(400).json({ success: false, error: 'Informe o curso e a turma.', field: courseId ? 'studentClass' : 'courseId' });
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
-        if (!cls || !studentBelongsToClass(req.studentAccount, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
+        if (!cls || !studentBelongsToClass(req.studentAccount, cls)) return res.status(403).json({ success: false, error: 'Contexto de turma não autorizado.' });
     }
-    
+
     let migrated = false;
     const comments = db.memory.forum.filter(c => c.key === key && !c.deleted).filter(c => {
+        if (req.auth.role === 'admin') {
+            const scope = forumCommentVisibleToAdmin(req.auth.admin, c);
+            if (scope.migrated) migrated = true;
+            if (!scope.visible) return false;
+        }
         if (!courseId && !studentClass) return true;
         const wasLegacy = !c.courseId && !c.studentClass;
         const context = inferLegacyForumContext(c);
@@ -2187,7 +2555,7 @@ function logForumEvent(comment, type, actor, detail) {
     if (comment.events.length > 100) comment.events = comment.events.slice(-100);
 }
 
-router.post('/api/forum/comment', (req, res) => {
+router.post('/api/forum/comment', FORUM_SCHEMAS.comment, (req, res) => {
     const { key, text } = req.body;
     const courseId = String(req.body.courseId || '').trim();
     const studentClass = String(req.body.studentClass || '').trim();
@@ -2217,7 +2585,7 @@ router.post('/api/forum/comment', (req, res) => {
     res.json({ success: true, comment: newComment });
 });
 
-router.post('/api/forum/reply', (req, res) => {
+router.post('/api/forum/reply', FORUM_SCHEMAS.reply, (req, res) => {
     const { commentId, text } = req.body;
     if (!commentId || !text || text.trim() === '') {
         return res.status(400).json({ error: 'Campos obrigatórios não preenchidos' });
@@ -2252,7 +2620,7 @@ router.post('/api/forum/reply', (req, res) => {
     res.json({ success: true, reply: newReply });
 });
 
-router.post('/api/forum/comment/edit', (req, res) => {
+router.post('/api/forum/comment/edit', FORUM_SCHEMAS.commentEdit, (req, res) => {
     const { commentId, text } = req.body;
     if (!commentId || !text || text.trim() === '') {
         return res.status(400).json({ error: 'Dados incompletos.' });
@@ -2276,7 +2644,7 @@ router.post('/api/forum/comment/edit', (req, res) => {
     res.json({ success: true, comment });
 });
 
-router.post('/api/forum/comment/delete', (req, res) => {
+router.post('/api/forum/comment/delete', FORUM_SCHEMAS.commentDelete, (req, res) => {
     const { commentId } = req.body;
     if (!commentId) {
         return res.status(400).json({ error: 'Falta o ID do comentário.' });
@@ -2304,7 +2672,7 @@ router.post('/api/forum/comment/delete', (req, res) => {
     res.json({ success: true });
 });
 
-router.post('/api/forum/reply/edit', (req, res) => {
+router.post('/api/forum/reply/edit', FORUM_SCHEMAS.replyEdit, (req, res) => {
     const { commentId, replyId, text } = req.body;
     if (!commentId || !replyId || !text || text.trim() === '') {
         return res.status(400).json({ error: 'Dados incompletos.' });
@@ -2334,7 +2702,7 @@ router.post('/api/forum/reply/edit', (req, res) => {
     res.json({ success: true, reply });
 });
 
-router.post('/api/forum/reply/delete', (req, res) => {
+router.post('/api/forum/reply/delete', FORUM_SCHEMAS.replyDelete, (req, res) => {
     const { commentId, replyId } = req.body;
     if (!commentId || !replyId) {
         return res.status(400).json({ error: 'Dados incompletos.' });
@@ -2379,10 +2747,18 @@ router.post('/api/admin/forum/all', (req, res) => {
         const studentClass = String(req.body?.studentClass || '').trim();
         const cls = studentClass ? findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId) : null;
         if (studentClass && !cls) return res.status(404).json({ error: 'Turma não encontrada.' });
-        let comments = isProfessorAccount(matchedAdmin)
-            ? (db.memory.forum || []).filter(comment => adminCanAccessItem(matchedAdmin, comment.key))
-            : (db.memory.forum || []);
         let migrated = false;
+        // Professor: só as dúvidas das turmas dele, uma a uma (SEG-11). Antes o filtro era
+        // pelo curso do tópico, e sem turma no pedido vinham as dúvidas (com e-mail) de
+        // todas as turmas; o tópico 'geral' não pertence a curso nenhum e passava sempre.
+        let comments = isProfessorAccount(matchedAdmin)
+            ? (db.memory.forum || []).filter(comment => {
+                if (!comment || !adminCanAccessItem(matchedAdmin, comment.key)) return false;
+                const scope = forumCommentVisibleToAdmin(matchedAdmin, comment);
+                if (scope.migrated) migrated = true;
+                return scope.visible;
+            })
+            : (db.memory.forum || []);
         if (courseId || studentClass) {
             const allowedKeys = cls ? getCourseItemKeys(cls) : new Set();
             allowedKeys.add('geral');
@@ -2465,12 +2841,30 @@ router.post('/api/admin/forum/purge', (req, res) => {
         const idx = (db.memory.forum || []).findIndex(c => c.id === commentId);
         if (idx === -1) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, db.memory.forum[idx])) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
+        const comment = db.memory.forum[idx];
+        const context = inferLegacyForumContext(comment) || {};
+        let purged = null;
         if (replyId) {
-            const comment = db.memory.forum[idx];
             const rIdx = (comment.replies || []).findIndex(r => r.id === replyId);
-            if (rIdx !== -1) comment.replies.splice(rIdx, 1);
+            if (rIdx !== -1) {
+                comment.replies.splice(rIdx, 1);
+                purged = { scope: 'resposta', commentId: comment.id, replyId, removedReplies: 1 };
+            }
         } else {
             db.memory.forum.splice(idx, 1);
+            purged = { scope: 'dúvida', commentId: comment.id, removedReplies: Array.isArray(comment.replies) ? comment.replies.length : 0 };
+        }
+        // Apagar de vez fica na auditoria (SEG-07): o escopo e a contagem, sem o texto.
+        if (purged) {
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'forum_purged',
+                category: 'system',
+                courseId: context.courseId || undefined,
+                studentClass: context.studentClass || undefined,
+                details: purged,
+            });
         }
         db.save();
         res.json({ success: true });

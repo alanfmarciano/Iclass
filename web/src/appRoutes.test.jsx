@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appRoutes } from './appRoutes'
 import { clearRenderError, markRenderError, recentRenderError } from './lib/renderErrors'
 
+const reported = vi.hoisted(() => ({ calls: [] }))
+vi.mock('./lib/clientErrors', () => ({ reportClientError: (...args) => { reported.calls.push(args) } }))
+
 function TelaQuebrada() {
   throw new Error('Cannot read properties of undefined (reading \'name\')')
 }
@@ -21,6 +24,7 @@ function AppDeTeste() {
 afterEach(() => {
   cleanup()
   clearRenderError()
+  reported.calls.length = 0
 })
 
 describe('[UC-PROVA-003] tela de erro do sistema (G4)', () => {
@@ -35,6 +39,10 @@ describe('[UC-PROVA-003] tela de erro do sistema (G4)', () => {
       expect(screen.queryByText(/Unexpected Application Error/)).not.toBeInTheDocument()
       // A prova que desmontar logo depois sabe que foi erro de tela, não saída.
       expect(recentRenderError()?.message).toMatch(/Cannot read properties of undefined/)
+      // Fase 2, H9c (ENG-05): o erro de tela da raiz também vai ao registro do servidor.
+      expect(reported.calls.map(([area, error]) => [area, error.message])).toEqual([
+        ['raiz', "Cannot read properties of undefined (reading 'name')"],
+      ])
     } finally {
       consoleError.mockRestore()
     }

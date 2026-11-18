@@ -49,12 +49,35 @@ function keepPageExitOnLock(state, now = Date.now()) {
     if (now - Number(state.pageExit.at) > PAGE_EXIT_BURST_MS) delete state.pageExit;
 }
 
+// Quanto do intervalo [from, to] o servidor passou fora do ar (application.outages,
+// gravados pelo servidor: utils/serverLifecycle.js, H3b). Intervalos que se sobrepõem
+// contam uma vez.
+function outageOverlapMs(outages, from, to) {
+    if (!Array.isArray(outages) || !(to > from)) return 0;
+    const ranges = outages
+        .map(outage => [Math.max(Number(outage && outage.from), from), Math.min(Number(outage && outage.to), to)])
+        .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start)
+        .sort((a, b) => a[0] - b[0]);
+    let total = 0;
+    let coveredUntil = -Infinity;
+    ranges.forEach(([start, end]) => {
+        const begin = Math.max(start, coveredUntil);
+        if (end > begin) total += end - begin;
+        coveredUntil = Math.max(coveredUntil, end);
+    });
+    return total;
+}
+
 // A sessão voltou à tentativa (sincronização da página da prova): destrava sozinho se é
 // a mesma sessão, dentro do prazo, e a prova está travada por essa saída da página.
-function pageExitReturnDecision(state, { sessionToken, now = Date.now() } = {}) {
+// O tempo em que o servidor esteve fora do ar (outages da aplicação) não conta no
+// prazo: o aluno que recarregou a página logo antes de uma queda não tinha como voltar
+// antes de o servidor voltar (decisão do coordenador, §3; a regra de 60 s continua).
+function pageExitReturnDecision(state, { sessionToken, now = Date.now(), outages = null } = {}) {
     const exit = state?.pageExit;
     if (!exit || state.focusLocked !== true) return { unlock: false };
-    const elapsedMs = now - Number(exit.at);
+    const exitAt = Number(exit.at);
+    const elapsedMs = now - exitAt - outageOverlapMs(outages, exitAt, now);
     if (!(PAGE_EXIT_RETURN_WINDOW_MS > 0) || !(elapsedMs >= 0) || elapsedMs > PAGE_EXIT_RETURN_WINDOW_MS) {
         return { unlock: false, expired: elapsedMs > PAGE_EXIT_RETURN_WINDOW_MS };
     }
@@ -72,6 +95,7 @@ module.exports = {
     PAGE_RETURN_EVENT,
     keepPageExitOnLock,
     markPageExit,
+    outageOverlapMs,
     pageExitReturnDecision,
     pageReturnDetails,
     sessionFingerprint,

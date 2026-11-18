@@ -12,6 +12,9 @@ data/uploads/
 data/alunos/
 data/lixeira/
 data/backups/
+# Chave e certificados da conexão segura (H6c): nunca no repositório
+data/tls/
+data-demo/tls/
 data/*.db
 data/*.db-*
 

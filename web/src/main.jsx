@@ -6,6 +6,7 @@ import { appRoutes } from './appRoutes'
 import { ThemeProvider } from './context/ThemeProvider'
 import { ToastProvider } from './context/ToastProvider'
 import { AuthProvider } from './context/AuthProvider'
+import { ServerConnectionBanner } from './components/layout/ServerConnectionBanner'
 import { BrandingProvider } from './context/BrandingProvider'
 import { PreferencesProvider } from './context/PreferencesProvider'
 import './index.css'
@@ -15,12 +16,15 @@ function Root() {
   return (
     <ThemeProvider>
       <AuthProvider>
+        {/* Faixa "sem conexão / servidor reiniciando" (frente do H3), em todas as telas. */}
+        <ServerConnectionBanner />
         <BrandingProvider>
-          <PreferencesProvider>
-            <ToastProvider>
+          {/* Os avisos ficam por fora das preferências: a gravação recusada aparece na tela (H9b). */}
+          <ToastProvider>
+            <PreferencesProvider>
               <App />
-            </ToastProvider>
-          </PreferencesProvider>
+            </PreferencesProvider>
+          </ToastProvider>
         </BrandingProvider>
       </AuthProvider>
     </ThemeProvider>

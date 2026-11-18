@@ -10,6 +10,9 @@ process.env.PORT = '3132';
 process.env.ICLASS_DATA_DIR = path.join(root, 'data');
 process.env.ICLASS_CONTENT_DIR = path.join(root, 'content');
 process.env.ICLASS_ARCHIVE_DIR = path.join(root, 'archives');
+// Verificador de gravação parcial (H1): toda alteração fora do only de uma gravação
+// parcial aparece no log do servidor como [VERIFICAÇÃO DE GRAVAÇÃO].
+if (!process.env.ICLASS_VERIFY_SAVES) process.env.ICLASS_VERIFY_SAVES = '1';
 process.on('exit', () => { try { fs.rmSync(root, { recursive: true, force: true }); } catch (e) {} });
 
 require('../../backend/server.js').startServer().catch(error => {

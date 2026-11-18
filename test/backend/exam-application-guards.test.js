@@ -66,7 +66,6 @@ test.before(async () => {
     db.memory.examApplications = [];
     db.memory.studentExamState = {};
     db.memory.proctoringLogs = [];
-    db.memory.examKeystrokes = [];
     db.memory.broadcastMessages = [];
     db.memory.auditLogs = [];
 });
@@ -356,7 +355,8 @@ test('[UC-MANUT-001] limpar estado de prova exige turma e confirmação, respeit
     db.memory.studentExamState['ana@guards.local_Avaliacao_Guardas'] = { studentEmail: 'ana@guards.local', examKey, answers: { 1: 'B' } };
     db.memory.studentExamState['legado-b'] = { studentEmail: 'carla@guards.local', studentClass: classB, examKey, answers: {} };
     db.memory.proctoringLogs.push({ id: 'log-a', studentEmail: 'ana@guards.local', studentClass: classA, examKey, eventType: 'tab_blur' });
-    db.memory.examKeystrokes.push({ id: 'key-a', studentEmail: 'ana@guards.local', studentClass: classA, examKey, key: 'a' });
+    // Teclas na tabela própria (db.keystrokes), gravadas antes da prévia.
+    await db.keystrokes.append([{ id: 'key-a', studentEmail: 'ana@guards.local', studentClass: classA, examKey, key: 'a' }]);
     db.memory.broadcastMessages.push(
         { id: 'msg-a', studentClass: classA, courseId, examKey, targetEmail: null, messageText: 'Turma A' },
         { id: 'msg-b', studentClass: classB, courseId, examKey, targetEmail: null, messageText: 'Turma B' },
@@ -367,6 +367,8 @@ test('[UC-MANUT-001] limpar estado de prova exige turma e confirmação, respeit
     assert.equal(previewA.body.flush.counts.pendingAnswers, 1);
     assert.equal(previewA.body.flush.counts.messages, 1);
     assert.equal(previewA.body.flush.preserved.proctoringLogs, 1);
+    // Contada pelos contadores do histórico de digitação, só a da turma A.
+    assert.equal(previewA.body.flush.preserved.keystrokes, 1);
 
     const originalSave = db.save;
     let saves = 0;
@@ -385,7 +387,8 @@ test('[UC-MANUT-001] limpar estado de prova exige turma e confirmação, respeit
     assert.equal(openStatesOf(carla, application.id).length, 1);
     assert.deepEqual(db.memory.broadcastMessages.map(message => message.id), ['msg-b']);
     assert.equal(db.memory.proctoringLogs.length, 1);
-    assert.equal(db.memory.examKeystrokes.length, 1);
+    assert.equal(db.keystrokes.stats({ email: 'ana@guards.local', examKey }).total, 1, 'a limpeza não apaga a digitação');
+    assert.deepEqual((await db.keystrokes.findByEmails(['ana@guards.local'])).map(item => item.id), ['key-a']);
     assert.ok(fs.existsSync(path.join(runtimePaths.BACKUPS_DIR, flushed.body.backup)), 'backup de segurança salvo antes');
     const audit = db.memory.auditLogs.find(log => log.type === 'exam_state_flushed');
     assert.equal(audit.studentClass, classA);
@@ -439,6 +442,95 @@ test('[UC-MANUT-001] resetar sala só na turma escolhida encerra a prova salvand
 
     resetSessions();
     await control(appB.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+});
+
+// Disco cheio (ENOSPC) só ao gravar na pasta de backups: o backup de segurança falha.
+// Desde o H4a o backup de segurança é o ZIP formato 2 gravado em stream
+// (fs.createWriteStream), não mais o JSON do writeFileSync: as duas gravações falham.
+async function withBackupDiskFull(fn) {
+    const originalWrite = fs.writeFileSync;
+    const originalStream = fs.createWriteStream;
+    const backupsDir = path.resolve(runtimePaths.BACKUPS_DIR);
+    const inBackups = file => typeof file === 'string' && path.resolve(file).startsWith(backupsDir + path.sep);
+    const diskFull = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+    fs.writeFileSync = function patchedWrite(file, ...args) {
+        if (inBackups(file)) throw diskFull();
+        return originalWrite.call(this, file, ...args);
+    };
+    fs.createWriteStream = function patchedStream(file, ...args) {
+        if (inBackups(file)) {
+            const { Writable } = require('node:stream');
+            return new Writable({ write(chunk, encoding, callback) { callback(diskFull()); } });
+        }
+        return originalStream.call(this, file, ...args);
+    };
+    try { return await fn(); } finally { fs.writeFileSync = originalWrite; fs.createWriteStream = originalStream; }
+}
+
+// Coleções gravadas no banco de um backup ZIP formato 2 (data/database.db), lidas pelo
+// mesmo caminho do boot (db.readStoredData).
+async function readBackupZipData(file) {
+    const AdmZip = require('adm-zip');
+    const dbFile = require('../../backend/utils/dbFile.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-guards-zip-'));
+    const target = path.join(dir, 'database.db');
+    fs.writeFileSync(target, new AdmZip(file).getEntry('data/database.db').getData());
+    const connection = await dbFile.openDatabaseFile(target);
+    try {
+        return (await db.readStoredData(connection)).memory;
+    } finally {
+        await dbFile.closeDatabaseFile(connection);
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+test('[UC-MANUT-001] backup de segurança que não pôde ser salvo: 503 com a mensagem própria e o código, nada muda (H9a, decisão do coordenador 5)', async () => {
+    const { ana, carla } = students;
+    resetSessions();
+    const crashLog = path.join(runtimePaths.DATA_DIR, 'crash.log');
+    const { application: appA } = await prepareAndStart(classA);
+    const startedAna = await startAttempt(ana, appA.id);
+    await autosave(ana, appA.id, startedAna.attemptId, { 1: 'B' });
+    db.memory.studentExamState['sobra-b'] = { studentEmail: carla.email, studentClass: classB, examKey, answers: { 1: 'A' } };
+    db.memory.broadcastMessages.push({ id: 'msg-falha-b', studentClass: classB, courseId, examKey, targetEmail: null, messageText: 'B' });
+    const backupsBefore = fs.existsSync(runtimePaths.BACKUPS_DIR) ? fs.readdirSync(runtimePaths.BACKUPS_DIR).length : 0;
+    const auditBefore = db.memory.auditLogs.length;
+    try {
+        const { flush, reset } = await withBackupDiskFull(async () => ({
+            flush: await admin('post', '/api/admin/flush-exam-state').send({ studentClass: classB, courseId, confirm: 'LIMPAR' }),
+            reset: await admin('post', '/api/admin/reset').send({ studentClass: classA, courseId, confirm: 'RESETAR' }),
+        }));
+
+        // Falha prevista e tratada: não é o "erro interno" (500), e o texto diz que nada mudou.
+        for (const [response, tail] of [[flush, 'nada foi apagado'], [reset, 'nada foi alterado']]) {
+            assert.equal(response.status, 503);
+            assert.equal(response.body.success, false);
+            assert.equal(response.body.retryable, undefined, 'não é a falha de gravação que o cliente repete sozinho');
+            const requestId = response.headers['x-request-id'];
+            assert.ok(requestId);
+            assert.equal(response.body.requestId, requestId);
+            assert.equal(response.body.error, `Não foi possível salvar o backup de segurança; ${tail}. Código do erro: ${requestId}.`);
+            assert.doesNotMatch(response.body.error, /ENOSPC|erro interno/);
+            const logged = fs.readFileSync(crashLog, 'utf8');
+            const block = logged.slice(logged.lastIndexOf(requestId) - 40);
+            assert.match(block, /falha tratada/);
+            assert.match(block, /ENOSPC/);
+            assert.match(block, new RegExp(`contexto: Não foi possível salvar o backup de segurança; ${tail}\\.`));
+        }
+
+        // Nada foi apagado nem alterado: sobra e mensagem da turma B, prova da turma A rodando.
+        assert.deepEqual(db.memory.studentExamState['sobra-b'].answers, { 1: 'A' });
+        assert.ok(db.memory.broadcastMessages.some(message => message.id === 'msg-falha-b'));
+        assert.equal(applicationOf(appA.id).status, 'running');
+        assert.deepEqual(openStatesOf(ana, appA.id)[0].answers, { 1: 'B' });
+        assert.ok(db.memory.sessions[ana.email]);
+        assert.equal(fs.existsSync(runtimePaths.BACKUPS_DIR) ? fs.readdirSync(runtimePaths.BACKUPS_DIR).length : 0, backupsBefore);
+        assert.equal(db.memory.auditLogs.length, auditBefore, 'sem registro de limpeza ou reset que não aconteceu');
+    } finally {
+        delete db.memory.studentExamState['sobra-b'];
+        db.memory.broadcastMessages = db.memory.broadcastMessages.filter(message => message.id !== 'msg-falha-b');
+        await control(appA.id, { action: 'finish', inProgressPolicy: 'discard' });
+    }
 });
 
 test('[UC-MANUT-001] reiniciar o servidor exige confirmação explícita', async () => {
@@ -597,8 +689,10 @@ test('[UC-MANUT-001] resetar sala mantém conectado quem faz prova em outra turm
     assert.equal(applicationOf(appA.id).status, 'finished');
 
     // O backup salvo antes do reset traz as aplicações como estavam: restaurá-lo desfaz o encerramento.
-    const snapshot = JSON.parse(fs.readFileSync(path.join(runtimePaths.BACKUPS_DIR, reset.body.backup), 'utf8'));
-    assert.equal(snapshot.data.examApplications.find(item => item.id === appA.id).status, 'running');
+    // Desde o H4a é o ZIP formato 2 dos dados (antes-resetar-sala_dados_*.zip).
+    assert.match(reset.body.backup, /^antes-resetar-sala_dados_.+\.zip$/);
+    const saved = await readBackupZipData(path.join(runtimePaths.BACKUPS_DIR, reset.body.backup));
+    assert.equal(saved.examApplications.find(item => item.id === appA.id).status, 'running');
 
     resetSessions();
     await control(appB.id, { action: 'finish', inProgressPolicy: 'discard' }).expect(200);

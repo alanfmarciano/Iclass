@@ -110,6 +110,14 @@ function seed() {
 }
 
 const admin = (req) => req.set('x-admin-session', adminToken);
+// Excluir aluno direto saiu (H7c: POST /api/admin/delete-student responde 410). O
+// apagar de vez é desligar (bulk-status) e depois apagar em Cadastros encerrados, que
+// faz a mesma cascata de antes: os casos de posse de e-mail da fase 1 continuam aqui.
+async function purgeStudent(email) {
+    const closed = await admin(request(app).post('/api/admin/student/bulk-status')).send({ emails: [email], status: 'Inativo', reason: 'Saiu da escola' });
+    assert.equal(closed.status, 200, closed.body.error);
+    return admin(request(app).post('/api/admin/students/purge')).send({ email, confirm: 'APAGAR', reason: 'Matrícula feita por engano' });
+}
 const professor = (req) => req.set('x-admin-session', professorToken);
 const createGrade = (body) => admin(request(app).post('/api/admin/submissions/create')).send({ studentEmail: 'ana@notas.local', courseId: COURSE_A, studentClass: '1DES', type: 'impressa', ...body });
 
@@ -243,7 +251,8 @@ test('[UC-NOTAS-001] lançar, publicar, mudar a regra e excluir ficam na auditor
 
     const publish = await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: [id], published: true });
     assert.equal(publish.status, 200);
-    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: id, action: 'policy', policy: 'average' });
+    // Nota já publicada: mudar a regra pede o motivo (H7a-2), que fica na auditoria.
+    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: id, action: 'policy', policy: 'average', reason: 'Regra combinada com a coordenação' });
     assert.equal(policy.status, 200);
     const removed = await admin(request(app).post('/api/admin/submissions/delete')).send({ id: second.body.submissionId });
     assert.equal(removed.status, 200);
@@ -261,6 +270,7 @@ test('[UC-NOTAS-001] lançar, publicar, mudar a regra e excluir ficam na auditor
     const policyEntry = audit.body.find(entry => entry.action === 'grade_result_policy');
     assert.match(policyEntry.oldValue, /Melhor nota/);
     assert.match(policyEntry.newValue, /Média das consideradas/);
+    assert.equal(policyEntry.reason, 'Regra combinada com a coordenação');
 
     const review = await admin(request(app).get(`/api/admin/submissions/${id}/review`));
     assert.equal(review.status, 200);
@@ -449,8 +459,9 @@ test('[UC-NOTAS-001] presença manual valida data, aluno e turma (CONF-14)', asy
 });
 
 test('[UC-NOTAS-001] entradas com tipo errado dão 400, não 500 com mensagem interna (CONF-14)', async () => {
-    const del = await admin(request(app).post('/api/admin/delete-student')).send({ email: 123 });
+    const del = await admin(request(app).post('/api/admin/students/purge')).send({ email: 123, confirm: 'APAGAR', reason: 'Teste de tipo' });
     assert.equal(del.status, 400);
+    assert.equal(del.body.field, 'email');
     const delSub = await admin(request(app).post('/api/admin/submissions/delete')).send({ studentEmail: 123, examKey: 'Avaliacao_P1' });
     assert.equal(delSub.status, 400);
     const publish = await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: 'abc' });
@@ -641,7 +652,7 @@ test('[UC-NOTAS-004] lixeira de notas: a exclusão pode ser desfeita e fica regi
     const created = await createGrade({ examKey: 'Avaliacao_P2', correctCount: 7, totalCount: 10 });
     const id = created.body.submissionId;
     await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: [id], published: true });
-    const removed = await professor(request(app).post('/api/admin/submissions/delete')).send({ id });
+    const removed = await professor(request(app).post('/api/admin/submissions/delete')).send({ id, reason: 'Lançada no aluno errado' });
     assert.equal(removed.status, 200);
     assert.equal(db.memory.submissions.some(item => item.id === id), false);
 
@@ -747,13 +758,14 @@ test('[UC-NOTAS-001] regra e "Usar esta nota" valem para o grupo inteiro, inclus
     const report = async () => (await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`))).body.overallAverage;
     assert.deepEqual((await list()).map(item => item.consolidatedScore), [90, 90], 'um grupo, maior nota');
 
-    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: novo, action: 'policy', policy: 'average' });
+    // O grupo tem nota publicada: mudar a regra e escolher a nota pedem o motivo (H7a-2).
+    const policy = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: novo, action: 'policy', policy: 'average', reason: 'Média combinada com a turma' });
     assert.equal(policy.status, 200, policy.body.error);
     assert.deepEqual(policy.body.submissions.map(item => [item.id, item.consolidatedScore]).sort(), [['antiga', 70], [novo, 70]], 'a resposta traz o grupo inteiro');
     assert.equal(db.memory.submissions.find(item => item.id === 'antiga').aggregationPolicy, 'average');
     assert.equal(await report(), 7);
 
-    const select = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: 'antiga', action: 'select' });
+    const select = await admin(request(app).post('/api/admin/submissions/result-control')).send({ submissionId: 'antiga', action: 'select', reason: 'Vale a primeira tentativa' });
     assert.equal(select.status, 200, select.body.error);
     assert.deepEqual(select.body.submissions.map(item => [item.id, item.consolidatedScore]).sort(), [['antiga', 90], [novo, 90]]);
     const rows = await list();
@@ -886,12 +898,13 @@ test('[UC-NOTAS-004] excluir o aluno anonimiza as cópias das notas dele na lixe
         } }),
         submission('bia_p1', { email: 'bia@notas.local', name: 'Bia', score: 90 }),
     ];
-    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_online' })).status, 200);
-    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'bia_p1' })).status, 200);
+    // As duas notas estão publicadas (submission()): excluir pede o motivo (H7a-2).
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_online', reason: 'Lançada em duplicidade' })).status, 200);
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'bia_p1', reason: 'Lançada em duplicidade' })).status, 200);
     const before = db.memory.auditLogs.find(entry => entry.action === 'grade_delete' && entry.details.deletedSubmission.id === 'ana_online');
     assert.equal(before.details.deletedSubmission.student.matricula, 'MAT-2026-001', 'antes da exclusão do aluno a cópia é completa (restaurável)');
 
-    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ANA@notas.local' });
+    const deleted = await purgeStudent('ANA@notas.local');
     assert.equal(deleted.status, 200, deleted.body.error);
 
     const entry = db.memory.auditLogs.find(item => item.action === 'grade_delete' && item.details.deletedSubmission.id === 'ana_online');
@@ -1013,9 +1026,10 @@ test('[UC-NOTAS-004] excluir o aluno tira o e-mail, o nome e o cadastro de todo 
         { id: 'audit_bia_x', actor: 'admin@notas.local', studentEmail: 'bia@notas.local', action: 'update', field: 'Nome', oldValue: 'Bia', newValue: 'Bia Lima', timestamp: Date.now() },
     );
     db.memory.submissions = [submission('ana_p1', { name: 'Ana Souza', score: 63, extra: { correctCount: 3, totalCount: 4 } })];
-    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_p1' })).status, 200);
+    // Nota publicada (submission()): excluir pede o motivo (H7a-2).
+    assert.equal((await admin(request(app).post('/api/admin/submissions/delete')).send({ id: 'ana_p1', reason: 'Lançada em duplicidade' })).status, 200);
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('ana@notas.local')).status, 200);
 
     const leaks = db.memory.auditLogs.filter(item => /ana@notas\.local|Ana Souza|MAT-2026-001/i.test(JSON.stringify(item)));
     assert.deepEqual(leaks.map(item => item.id), [], 'nenhuma entrada cita o e-mail, o nome ou a matrícula');
@@ -1051,7 +1065,7 @@ test('[UC-NOTAS-004] excluir aluno que reaproveitou o e-mail antigo de outro nã
     ];
     const troca = { ...db.memory.auditLogs[1] };
     const antiga = { ...db.memory.auditLogs[0] };
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('ana@notas.local')).status, 200);
     assert.deepEqual(db.memory.auditLogs.find(item => item.id === 'troca_ana'), troca, 'a troca de e-mail da Ana (viva) continua com o valor antigo');
     // Antes da troca o e-mail era da Ana: a entrada dela com ana@ não muda (antes virava "aluno excluído").
     assert.deepEqual(db.memory.auditLogs.find(item => item.id === 'old_ana'), antiga);
@@ -1073,7 +1087,7 @@ test('[UC-NOTAS-004] excluir o aluno anonimiza as contestações dele nas aplica
     db.memory.examApplications[0].studentVersions = { 'ana@notas.local': 'B' };
     db.memory.classes[0].onlineExamConfigs = { Avaliacao_P1: { questionReports: [report('r_ana_cfg', 'ANA@notas.local', 'Ana', 'texto da Ana')], studentAdjustments: { 'ana@notas.local': 10 } } };
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('ana@notas.local')).status, 200);
 
     const application = db.memory.examApplications[0];
     const serialized = JSON.stringify(application) + JSON.stringify(db.memory.classes[0]);
@@ -1161,7 +1175,7 @@ test('[UC-NOTAS-004] excluir ana@teste.local não altera nada de joana@teste.loc
         announcement: snapshot(db.memory.announcements.find(item => item.id === 'av_joana')),
     };
 
-    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: ANA });
+    const deleted = await purgeStudent(ANA);
     assert.equal(deleted.status, 200, deleted.body.error);
 
     // Nada da Joana mudou (antes: "joana@teste.local" contém "ana@teste.local" e virava "joaluno excluído").
@@ -1232,7 +1246,7 @@ test('[UC-NOTAS-004] aluno que trocou de e-mail tem os registros dos dois e-mail
     const biaBefore = JSON.parse(JSON.stringify(db.memory.auditLogs.find(item => item.id === 'bia_x')));
     assert.deepEqual(db.memory.loginLogs.map(item => item.email).sort(), [NEW, OLD].sort());
 
-    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: NEW });
+    const deleted = await purgeStudent(NEW);
     assert.equal(deleted.status, 200, deleted.body.error);
 
     const emailPattern = email => new RegExp(`(?<![A-Za-z0-9._%+-])${email.replace(/\./g, '\\.')}(?![A-Za-z0-9_%+-]|\\.[A-Za-z0-9])`, 'i');
@@ -1271,7 +1285,7 @@ test('[UC-NOTAS-004] e-mail antigo que hoje é o login de outro aluno não entra
     db.memory.attendance = [{ id: 'p_carlos', studentEmail: 'ana@notas.local', date: '2026-03-01', status: 'presente' }];
     const carlosBefore = JSON.parse(JSON.stringify({ audit: db.memory.auditLogs.find(item => item.id === 'carlos_x'), logins: db.memory.loginLogs, attendance: db.memory.attendance }));
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana.souza@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('ana.souza@notas.local')).status, 200);
 
     assert.deepEqual({ audit: db.memory.auditLogs.find(item => item.id === 'carlos_x'), logins: db.memory.loginLogs, attendance: db.memory.attendance }, carlosBefore);
     assert.ok(db.memory.students.some(item => item.email === 'ana@notas.local' && item.name === 'Carlos'));
@@ -1307,10 +1321,10 @@ test('[UC-NOTAS-004] excluir aluno cadastrado com o e-mail antigo de um aluno vi
     const update = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: OLD, email: ANA, name: 'Ana Teste', classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
     assert.equal(update.status, 200, update.body.error);
     await pause(5);
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Bia Nova', email: OLD, studentPassword: '123', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Bia Nova', email: OLD, studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     await pause(5);
-    assert.equal((await request(app).post('/api/student/login').send({ email: OLD, password: '123' })).status, 200);
+    assert.equal((await request(app).post('/api/student/login').send({ email: OLD, password: 'Caderno-Novo-9' })).status, 200);
     const later = Date.now();
     db.memory.examApplications[0].questionReports.push(
         { id: 'r_nova', applicationId: 'app_1', questionNumber: 2, studentEmail: OLD, studentName: 'Bia Nova', reason: 'outro', text: 'contestação da Bia Nova', status: 'open', createdAt: new Date(later).toISOString() },
@@ -1325,7 +1339,7 @@ test('[UC-NOTAS-004] excluir aluno cadastrado com o e-mail antigo de um aluno vi
         troca: db.memory.auditLogs.find(item => item.field === 'E-mail/login'),
     }));
 
-    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: OLD });
+    const deleted = await purgeStudent(OLD);
     assert.equal(deleted.status, 200, deleted.body.error);
 
     // O que a Ana gravou com ana.antiga@ antes da troca continua igual (antes: login apagado,
@@ -1359,7 +1373,7 @@ test('[UC-NOTAS-004] excluir o aluno tira o e-mail dele também das chaves dos o
     const snapshot = db.memory.auditLogs.find(item => item.type === 'class_updated');
     assert.ok(snapshot.after.studentReleasedItems['ana@notas.local'], 'a turma inteira vai para o "depois" da auditoria');
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('ana@notas.local')).status, 200);
 
     const after = db.memory.auditLogs.find(item => item.id === snapshot.id);
     for (const side of ['before', 'after']) {
@@ -1374,7 +1388,7 @@ test('[UC-NOTAS-004] excluir o aluno tira o e-mail dele também das chaves dos o
 
 test('[UC-NOTAS-004] conta de aluno com o e-mail de um professor: excluí-la não leva a autoria do professor', async () => {
     const PROF = 'prof@notas.local';
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Conta Teste', email: PROF, studentPassword: '123', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Conta Teste', email: PROF, studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     db.memory.auditLogs.push(
         { id: 'prof_prova', type: 'exam_application_finished', actor: PROF, applicationId: 'app_1', details: { summary: { finishedBy: PROF } }, timestamp: Date.now() },
@@ -1388,7 +1402,7 @@ test('[UC-NOTAS-004] conta de aluno com o e-mail de um professor: excluí-la nã
     }];
     const before = JSON.parse(JSON.stringify({ prova: db.memory.auditLogs.find(item => item.id === 'prof_prova'), turma: db.memory.auditLogs.find(item => item.id === 'prof_turma'), forum: db.memory.forum }));
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: PROF })).status, 200);
+    assert.equal((await purgeStudent(PROF)).status, 200);
 
     assert.deepEqual({ prova: db.memory.auditLogs.find(item => item.id === 'prof_prova'), turma: db.memory.auditLogs.find(item => item.id === 'prof_turma'), forum: db.memory.forum }, before);
     assert.deepEqual(db.memory.loginLogs.map(item => item.id), ['l_prof'], 'o login do professor fica; o da conta de aluno sai');
@@ -1413,7 +1427,7 @@ test('[UC-NOTAS-004] dúvida do aluno excluído com resposta de outra aluna fica
     ];
     const biaReply = JSON.parse(JSON.stringify(db.memory.forum[0].replies[0]));
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('ana@notas.local')).status, 200);
 
     assert.deepEqual(db.memory.forum.map(item => item.id), ['c_ana'], 'a dúvida sem resposta de outros sai');
     const kept = db.memory.forum[0];
@@ -1442,7 +1456,7 @@ test('[UC-NOTAS-004] homônimos sem matrícula: excluir um não manda para a lix
     assert.equal(path.dirname(fileA), path.dirname(fileB), 'os dois caem na mesma pasta (matrícula + nome)');
     db.memory.attendance = [{ id: 'p_b', studentEmail: 'carlos.2red@notas.local', studentClass: '2RED', courseId: COURSE_B, date: '2026-03-02', aulas: [], justificativa: { tipo: 'atestado', arquivo: fileB, arquivoNome: 'atestado-2red.pdf' } }];
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'carlos.2red@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('carlos.2red@notas.local')).status, 200);
 
     assert.ok(fs.existsSync(path.join(runtimePaths.DATA_DIR, fileA)), 'o atestado do Carlos vivo continua na pasta');
     assert.equal(fs.existsSync(path.join(runtimePaths.DATA_DIR, fileB)), false, 'o do Carlos excluído vai para a lixeira');
@@ -1461,15 +1475,15 @@ test('[UC-NOTAS-004] e-mail antigo que hoje é o login de outro aluno: o que é 
     const update = await admin(request(app).post('/api/admin/student/update')).send({ originalEmail: 'ana@notas.local', email: 'ana.souza@notas.local', name: 'Ana', classes: [{ name: '1DES', courseId: COURSE_A }], status: 'Ativo' });
     assert.equal(update.status, 200, update.body.error);
     await pause(5);
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carlos', email: 'ana@notas.local', studentPassword: '123', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carlos', email: 'ana@notas.local', studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     await pause(5);
-    assert.equal((await request(app).post('/api/student/login').send({ email: 'ana@notas.local', password: '123' })).status, 200);
+    assert.equal((await request(app).post('/api/student/login').send({ email: 'ana@notas.local', password: 'Caderno-Novo-9' })).status, 200);
     db.memory.examApplications[0].questionReports.push({ id: 'r_carlos', applicationId: 'app_1', questionNumber: 2, studentEmail: 'ana@notas.local', studentName: 'Carlos', reason: 'outro', text: 'texto do Carlos', status: 'open', createdAt: new Date().toISOString() });
     const carlosLogin = JSON.parse(JSON.stringify(db.memory.loginLogs[1]));
     const carlosReport = JSON.parse(JSON.stringify(db.memory.examApplications[0].questionReports[1]));
 
-    assert.equal((await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana.souza@notas.local' })).status, 200);
+    assert.equal((await purgeStudent('ana.souza@notas.local')).status, 200);
 
     assert.deepEqual(db.memory.loginLogs, [carlosLogin], 'o login da Ana com ana@ (antes do Carlos) sai; o do Carlos fica');
     assert.equal(db.memory.examApplications[0].questionReports[0].text, '', 'a contestação da Ana com ana@ fica anônima');
@@ -1537,7 +1551,7 @@ test('[UC-NOTAS-004] excluir a aluna que passou a usar o e-mail largado por outr
         progress: db.memory.progress['joana@notas.local'],
     }));
 
-    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'aluno05@notas.local' });
+    const deleted = await purgeStudent('aluno05@notas.local');
     assert.equal(deleted.status, 200, deleted.body.error);
 
     // Antes: presença, observação, nota e dúvida de janeiro da Ana ficavam com aluno05@
@@ -1562,7 +1576,7 @@ test('[UC-NOTAS-004] excluir a aluna que passou a usar o e-mail largado por outr
     }, joanaBefore);
 
     // Nova conta com o e-mail liberado não herda nada da Ana.
-    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carla Nova', email: 'aluno05@notas.local', studentPassword: '12345', classes: [{ name: '1DES', courseId: COURSE_A }] });
+    const created = await admin(request(app).post('/api/admin/student/create')).send({ name: 'Carla Nova', email: 'aluno05@notas.local', studentPassword: 'Caderno-Novo-9', classes: [{ name: '1DES', courseId: COURSE_A }] });
     assert.equal(created.status, 200, created.body.error);
     const query = '?email=aluno05%40notas.local';
     assert.deepEqual((await admin(request(app).get(`/api/admin/student/observations${query}`))).body, []);
@@ -1582,7 +1596,7 @@ test('[UC-NOTAS-004] excluir a aluna que largou o e-mail não leva os registros 
     }));
     assert.equal(anaBefore.attendance.length, 1);
 
-    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'joana@notas.local' });
+    const deleted = await purgeStudent('joana@notas.local');
     assert.equal(deleted.status, 200, deleted.body.error);
 
     // A presença de janeiro com aluno05@ é da Ana (renomeada na troca dela), mesmo com
@@ -1610,7 +1624,7 @@ test('[UC-NOTAS-004] excluir o aluno não tira nome e matrícula de identificado
         examKey: 'Avaliacao_Ana', applicationId: 'app_2026', timestamp: '2026-03-01T10:00:00.000Z', date: '2026-03-02',
         details: { submissionId: 'sub_2026_Ana', attemptId: 'att_Ana_2026', startedAt: '2026-03-01T09:00:00.000Z', reason: 'Ana (matrícula 2026) pediu revisão' },
     }];
-    const deleted = await admin(request(app).post('/api/admin/delete-student')).send({ email: 'ana@notas.local' });
+    const deleted = await purgeStudent('ana@notas.local');
     assert.equal(deleted.status, 200, deleted.body.error);
     const entry = db.memory.auditLogs.find(item => item.id === 'grade_ana');
     // Antes: "2026-03-01" virava "-03-01", "Avaliacao_Ana" virava "Avaliacao_Aluno excluído".
@@ -1619,7 +1633,8 @@ test('[UC-NOTAS-004] excluir o aluno não tira nome e matrícula de identificado
         ['Avaliacao_Ana', 'app_2026', '2026-03-01T10:00:00.000Z', '2026-03-02', 'sub_2026_Ana', 'att_Ana_2026', '2026-03-01T09:00:00.000Z'],
     );
     assert.equal(/\d{4}-\d{2}-\d{2}T/.test(entry.anonymizedAt), true, 'anonymizedAt fica uma data inteira');
-    assert.equal(entry.details.reason, 'Aluno excluído (matrícula ) pediu revisão', 'o texto livre perde nome e matrícula');
+    // Decisões §12 (sobra do H7c): sem o espaço que a matrícula deixava antes do parêntese.
+    assert.equal(entry.details.reason, 'Aluno excluído (matrícula) pediu revisão', 'o texto livre perde nome e matrícula');
     assert.equal(entry.studentEmail, '');
 });
 

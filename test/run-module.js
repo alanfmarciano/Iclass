@@ -37,9 +37,10 @@ const SUITES = {
     npmScript('test:docs', 'Rastreabilidade da documentacao'),
     npmScript('test:backend', 'Todos os testes do servidor'),
     npmScript('test:web', 'Todos os testes da interface'),
+    npmScript('check:bundle', 'Orcamento do pacote da interface'),
   ],
   provas: [
-    backend('exam-applications.test.js', 'exam-attempts.test.js'),
+    backend('exam-applications.test.js', 'exam-attempts.test.js', 'keystroke-store.test.js'),
     web(
       'src/features/student/StudentExamAvailability.test.jsx',
       'src/features/admin/FinishApplicationModal.test.jsx',
@@ -77,13 +78,17 @@ const SUITES = {
       'safe-path.test.js',
       'launcher-safety.test.js',
       'admin-rbac-catalog.test.js',
+      'security-headers.test.js',
     ),
+    npmScript('test:audit', 'Auditoria das dependencias'),
   ],
   full: [
     npmScript('test:docs', 'Rastreabilidade da documentacao'),
     npmScript('test:backend', 'Todos os testes do servidor'),
     npmScript('test:web', 'Todos os testes da interface'),
     npmScript('build', 'Compilacao da interface'),
+    npmScript('check:bundle', 'Orcamento do pacote da interface'),
+    npmScript('test:audit', 'Auditoria das dependencias'),
     e2e(),
   ],
 };
