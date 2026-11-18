@@ -9,11 +9,13 @@ import { useApi } from '../../hooks/useApi'
 import { compareText, matchesSearch } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
+import { isFullAdmin } from '../../lib/adminPermissions'
 
 // Telas do ambiente da instituição: abrem sem curso escolhido. Toda tela nova do grupo
 // Instituição ou Gestão acadêmica da Sidebar entra aqui também (senão o item do menu cai
 // no seletor de curso); o teste AdminCourseGate.test confere as duas listas.
-export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria', '/lgpd', '/encerrados']
+// Minha conta (UXI-07) abre com ou sem curso escolhido: é da conta, não da turma.
+export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria', '/lgpd', '/encerrados', '/minha-conta']
 
 function isDeleted(course) {
   return course?.deleted === true || course?.status === 'deleted' || course?.status === 'inactive' || !!course?.deletedAt
@@ -193,7 +195,7 @@ export function AdminCourseGate({ children }) {
           onFavorite={toggleFavorite}
           onOpen={openWorkspace}
           onManage={course => navigate(`/turmas?courseId=${encodeURIComponent(course.id)}`)}
-          isProfessor={auth.accountRole === 'professor'}
+          isProfessor={!isFullAdmin(auth)}
         />
       ))}
     </div>

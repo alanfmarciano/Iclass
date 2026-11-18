@@ -14,7 +14,7 @@ const { revokeAdminSession, revokeAdminSessions } = require('../utils/authSessio
 const { attemptPasswordLogin, logRole } = require('../utils/passwordLogin.js');
 const loginGuard = require('../utils/loginGuard.js');
 const { recordLoginLog } = require('../utils/security.js');
-const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
+const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { adminPasswordChangeState, passwordChangeRuleActive, passwordChanged, requirePasswordChange } = require('../utils/passwordChange.js');
 const { body, bool, dict, either, list, shape, str } = require('../utils/inputSchema.js');
 
@@ -58,6 +58,12 @@ const ACCOUNT_SCHEMAS = {
     update: body(accountFields()),
     delete: body({ email: accountEmailField() }),
     changePassword: body({ currentPassword: accountPasswordField('senha atual'), newPassword: accountPasswordField('nova senha') }),
+    // Minha conta do instrutor (UXI-07): o próprio nome e "Sair dos outros aparelhos".
+    profile: body({ name: str({ max: 120, nullable: true, label: 'nome' }) }),
+    endOtherSessions: body({}),
+    // "Redefinir senha" de outra conta, pelo administrador (UXI-07): senha vazia gera
+    // uma temporária.
+    resetPassword: body({ email: accountEmailField(), newPassword: accountPasswordField('nova senha') }),
     logout: body({}),
     preferences: body({}),
 };
@@ -81,7 +87,8 @@ function requireAdminManager(res, requester) {
 // Papéis do catálogo (backend/utils/adminRoles.js, FUN-13): admin, professor, monitor
 // (Professor auxiliar), secretaria e coordenacao.
 const ADMIN_ACCOUNT_ROLES = new Set(ADMIN_ROLE_IDS);
-// Papel oculto (hoje o professor auxiliar, que ainda lê nota: papel-monitor-pendencia.test.js)
+// Papel oculto (hoje o professor auxiliar, por decisão do plano; sem notas desde o B1:
+// professor-auxiliar-sem-notas.test.js)
 // fica fora da criação de conta também pela API, não só na tela: não aparece na lista do
 // erro e não é aceito como papel novo. A conta que já tem o papel (gravada antes ou vinda
 // de backup) continua editável sem trocar de papel.
@@ -104,6 +111,13 @@ function parseAdminAccountRole(value, fallback = 'admin', currentRole = null) {
 // como administrador, como no boot).
 function storedAccountRole(account) {
     return accountRoleId(account) || 'admin';
+}
+
+// A conta da sessão, na lista gravada (Minha conta: nome e sessões da própria conta).
+function ownAccount(sessionAccount) {
+    const email = String((sessionAccount && sessionAccount.email) || '').toLowerCase();
+    if (!email) return null;
+    return (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === email) || null;
 }
 
 function parseAssignedClasses(value) {
@@ -594,8 +608,11 @@ function createAdminAccountsRouter() {
             // confere senha: scrypt assíncrono (DES-07) e o mesmo teto por IP do login do
             // instrutor, para a sessão roubada não testar senhas sem limite (429).
             let storedBefore = matchedAdmin.password;
+            // Senha redefinida pelo administrador (UXI-07, 'reset'): a temporária é a senha
+            // atual, como na troca do aluno.
             const needsCurrent = matchedAdmin.mustChangePassword !== true
-                || matchedAdmin.passwordChangeReason === 'created' || matchedAdmin.passwordChangeReason === 'weak';
+                || matchedAdmin.passwordChangeReason === 'created' || matchedAdmin.passwordChangeReason === 'weak'
+                || matchedAdmin.passwordChangeReason === 'reset';
             if (needsCurrent && (typeof currentPassword !== 'string' || !currentPassword.trim())) {
                 return res.status(400).json({ success: false, error: 'Informe a senha atual.', currentPasswordRequired: true, field: 'currentPassword' });
             }
@@ -640,6 +657,124 @@ function createAdminAccountsRouter() {
             });
             await db.save();
             res.json({ success: true, message: 'Senha atualizada com sucesso!', endedSessions });
+        });
+    });
+
+    // Minha conta (UXI-07): cada conta do painel, de qualquer papel, corrige o próprio
+    // nome. A Coordenação (só consulta) também: é autoatendimento (READ_ONLY_EXCEPTIONS de
+    // adminRoles.js). E-mail e papel continuam com o administrador (Contas).
+    router.post('/api/admin/account/profile', ACCOUNT_SCHEMAS.profile, (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            const account = ownAccount(matchedAdmin);
+            if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
+            const name = typeof req.body.name === 'string' ? req.body.name.trim().replace(/\s+/g, ' ') : '';
+            if (!name) return res.status(400).json({ success: false, error: 'Informe o seu nome.', field: 'name' });
+            const before = account.name || '';
+            if (before === name) return res.json({ success: true, name, changed: false });
+            account.name = name;
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'account_profile_updated',
+                category: 'account',
+                targetEmail: account.email,
+                field: 'name',
+                before: { name: before },
+                after: { name },
+            });
+            await db.save({ only: ['admins', 'auditLogs'] });
+            res.json({ success: true, name, changed: true });
+        });
+    });
+
+    // "Sair dos outros aparelhos" (UXI-07): encerra as outras sessões desta conta (outro
+    // navegador, outro computador); a deste pedido continua. O aparelho de lá recebe 401
+    // { sessionRevoked: true, reason: 'ended_elsewhere' } no pedido seguinte.
+    router.post('/api/admin/account/end-other-sessions', ACCOUNT_SCHEMAS.endOtherSessions, (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            const account = ownAccount(matchedAdmin);
+            if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
+            const endedSessions = revokeAdminSessions(db.memory, account.email, {
+                exceptToken: req.adminSessionToken,
+                reason: 'ended_elsewhere',
+            });
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'account_sessions_ended',
+                category: 'account',
+                targetEmail: account.email,
+                details: { endedSessions },
+            });
+            await db.save({ only: ['authSessions', 'auditLogs'] });
+            res.json({
+                success: true,
+                endedSessions,
+                message: endedSessions
+                    ? `${endedSessions === 1 ? '1 outro aparelho saiu' : `${endedSessions} outros aparelhos saíram`} desta conta.`
+                    : 'Nenhum outro aparelho estava com esta conta aberta.',
+            });
+        });
+    });
+
+    // "Redefinir senha" de outra conta do painel (UXI-07), só pelo administrador
+    // (accounts.manage e requireAdminManager): sem newPassword o servidor gera uma senha
+    // temporária (xxxxx-xxxxx) e a devolve só nesta resposta; digitada, passa pela
+    // política de senha do instrutor. Nos dois casos a conta troca a senha no próximo
+    // acesso ('reset', com a temporária como senha atual), as sessões abertas dela acabam
+    // (401 password_reset no pedido seguinte) e o atraso de login é liberado. A auditoria
+    // (account_password_reset, categoria segurança) nunca leva a senha. A própria conta
+    // troca a senha em Minha conta, com a senha atual.
+    router.post('/api/admin/accounts/reset-password', ACCOUNT_SCHEMAS.resetPassword, (req, res) => {
+        validateAdmin(req, res, async (config, currentAdmin) => {
+            if (!requireAdminManager(res, currentAdmin)) return;
+            const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+            if (!email) return res.status(400).json({ success: false, error: 'Informe o e-mail da conta.', field: 'email' });
+            if (email === String(currentAdmin.email || '').toLowerCase()) {
+                return res.status(400).json({ success: false, error: 'Para trocar a sua própria senha, use Minha conta.', field: 'email' });
+            }
+            const findAccount = () => (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === email);
+            const target = findAccount();
+            if (!target) return res.status(404).json({ error: 'Conta não encontrada.' });
+            const typed = typeof req.body.newPassword === 'string' ? req.body.newPassword.trim() : '';
+            let temporaryPassword = null;
+            if (typed) {
+                const policy = validateNewPassword(typed, { kind: 'instructor', email: target.email, name: target.name });
+                if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'newPassword'));
+            } else {
+                temporaryPassword = generateTemporaryPassword();
+            }
+            // Hash com o scrypt assíncrono (DES-07); a conta é procurada de novo depois da
+            // espera (pode ter sido excluída no meio).
+            const passwordHash = await db.hashPasswordAsync(typed || temporaryPassword);
+            const account = findAccount();
+            if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
+            const now = Date.now();
+            account.password = passwordHash;
+            account.passwordChangedAt = new Date(now).toISOString();
+            requirePasswordChange(account, 'reset');
+            const endedSessions = revokeAdminSessions(db.memory, account.email, { reason: 'password_reset', now });
+            loginGuard.clear(loginGuard.accountKey('admin', account.email));
+            recordAudit(db.memory, {
+                req,
+                actor: currentAdmin,
+                action: 'account_password_reset',
+                category: 'security',
+                targetEmail: account.email,
+                details: { mode: typed ? 'typed' : 'generated', mustChangePassword: true, endedSessions },
+            }, { timestamp: now });
+            await db.save({ only: ['admins', 'authSessions', 'auditLogs'] });
+            // Com TEST_MODE (demonstração) a troca não é pedida: a resposta diz o que vale.
+            const changeRequired = passwordChangeRuleActive();
+            res.json({
+                success: true,
+                mustChangePassword: changeRequired,
+                endedSessions,
+                message: changeRequired
+                    ? 'Senha redefinida. No próximo acesso a pessoa vai escolher uma senha nova.'
+                    : 'Senha redefinida.',
+                ...(temporaryPassword ? { temporaryPassword } : {}),
+            });
         });
     });
 

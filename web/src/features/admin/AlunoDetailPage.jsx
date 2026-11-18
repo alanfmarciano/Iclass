@@ -21,6 +21,7 @@ import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf 
 import { acceptanceText, birthDateText } from '../../lib/legalAcceptance'
 import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades, isFullAdmin } from '../../lib/adminPermissions'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -80,7 +81,7 @@ export default function AlunoDetailPage() {
       // em curso fora do escopo do professor aparece desativada (o boletim dela daria 403).
       const summaries = await api.get('/api/admin/course-summaries').catch(() => [])
       const list = Array.isArray(summaries) ? summaries : summaries?.courses || []
-      setBoletimChoices(boletimChoiceOptions(ctx.choose, list, { restricted: auth.accountRole === 'professor', workspace }))
+      setBoletimChoices(boletimChoiceOptions(ctx.choose, list, { restricted: !isFullAdmin(auth), workspace }))
       return
     }
     setBoletimChoices(null)
@@ -90,7 +91,16 @@ export default function AlunoDetailPage() {
       if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
     } catch (e) { toast.error(e.message) }
   }
-  const isProfessor = auth.accountRole === 'professor'
+  // Auditoria (audit.view) e Segurança (students.security) seguem a permissão (só o
+  // administrador pleno hoje); antes era "não é professor" (contrato C2 do P4).
+  const canAudit = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.AUDIT_VIEW)
+  const canSecurity = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_SECURITY)
+  // Editar o cadastro pede students.edit (professor e Secretaria; o Professor auxiliar e a
+  // Coordenação só consultam e o servidor recusaria a gravação).
+  const canEditStudent = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_EDIT)
+  // Conta que não lê nota (Professor auxiliar): o servidor manda a ficha sem nota
+  // (gradesHidden) e a tela tira os quadros de nota em vez de mostrar zeros.
+  const gradesHidden = !canReadStudentGrades(auth)
   const { data: students, loading, error } = useApi('/api/admin/students')
   const [academic, setAcademic] = useState(null)
   const [dash, setDash] = useState(null)
@@ -139,9 +149,9 @@ export default function AlunoDetailPage() {
     api.get(`/api/admin/student/dashboard?${dashQuery}`).then(setDash).catch(() => setDash(null))
     // Aba Auditoria: só o administrador (audit.view, decisão P5). O professor nem pede
     // a trilha (o servidor responde 403); o histórico de cada nota está em Resultados.
-    if (!isProfessor) api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
+    if (canAudit) api.get(`/api/admin/student/audit?email=${encodeURIComponent(email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
     else setAuditRows([])
-  }, [email, workspace.courseId, workspace.className, isProfessor])
+  }, [email, workspace.courseId, workspace.className, canAudit])
 
   const subs = academic?.submissions || []
   // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
@@ -167,7 +177,8 @@ export default function AlunoDetailPage() {
     { id: 'geral', label: 'Visão geral' },
     { id: 'academico', label: 'Acadêmico' },
     { id: 'frequencia', label: 'Frequência' },
-    ...(!isProfessor ? [{ id: 'auditoria', label: 'Auditoria' }, { id: 'seguranca', label: 'Segurança' }] : []),
+    ...(canAudit ? [{ id: 'auditoria', label: 'Auditoria' }] : []),
+    ...(canSecurity ? [{ id: 'seguranca', label: 'Segurança' }] : []),
   ]
 
   return (
@@ -187,9 +198,10 @@ export default function AlunoDetailPage() {
                 </div>
                 <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {student.email}</p>
               </div>
-              <Button variant="secondary" icon={FileText} onClick={() => openBoletim()}>Boletim (PDF)</Button>
+              {/* O boletim é nota: some para quem não lê nota (Professor auxiliar). */}
+              {!gradesHidden && <Button variant="secondary" icon={FileText} onClick={() => openBoletim()}>Boletim (PDF)</Button>}
               {/* Cadastro anonimizado não se edita (o servidor responde 409): sem Editar. */}
-              {!(isAnonymizedStatus(student.status) || student.anonymizedAt) && <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>}
+              {canEditStudent && !(isAnonymizedStatus(student.status) || student.anonymizedAt) && <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>}
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -199,7 +211,9 @@ export default function AlunoDetailPage() {
                 <div className="h-1.5 rounded bg-surface overflow-hidden mt-1.5"><div className="h-full bg-primary" style={{ width: (dash?.kpis?.frequencia ?? 0) + '%' }} /></div>
               </Kpi>
               {/* Média do servidor: consolidada como em Resultados (sem nota no curso ativo, "—"). */}
-              <Kpi label="Média geral" value={fmtGradeValue(dash?.kpis?.media)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />
+              {gradesHidden
+                ? <Kpi label="Média geral" value="—" sub="As notas não aparecem para o seu papel." />
+                : <Kpi label="Média geral" value={fmtGradeValue(dash?.kpis?.media)} sub={`${dash?.kpis?.provasFeitas ?? subs.length} prova(s)`} />}
               <Kpi label="Progresso"><div className="flex items-center gap-2.5"><ProgressRing value={dash?.kpis?.progresso ?? 0}>{(dash?.kpis?.progresso ?? 0)}%</ProgressRing></div></Kpi>
               <Kpi label="Provas" value={`${dash?.kpis?.provasFeitas ?? subs.length}/${dash?.kpis?.provasTotais ?? 0}`} sub={`${Math.max(0, (dash?.kpis?.provasTotais ?? 0) - (dash?.kpis?.provasFeitas ?? subs.length))} pendentes`} />
             </div>
@@ -208,7 +222,7 @@ export default function AlunoDetailPage() {
 
             {tab === 'geral' && (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {!gradesHidden && <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                   <Card title="Evolução das notas" className="lg:col-span-2" action={
                     <div className="flex gap-2">
                       <select value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="text-xs bg-surface border border-border rounded-md px-2 py-1 text-text">
@@ -226,11 +240,11 @@ export default function AlunoDetailPage() {
                       <div key={m.id || m.modulo}><div className="flex justify-between text-xs mb-1"><span className="text-text">{m.modulo}</span><span className="text-muted">{fmtGradeValue(m.media)}</span></div><div className="h-1.5 rounded bg-surface-2 overflow-hidden"><div className="h-full bg-primary" style={{ width: `${Math.min(100, Number(m.media) * 10)}%` }} /></div></div>
                     ))}</div> : <p className="text-sm text-muted">Sem notas ainda.</p>}
                   </Card>
-                </div>
+                </div>}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   <Card title="Comparativo com a turma">
                     <div className="space-y-4">
-                      <CompareBar label="Média" me={dash?.comparativo?.studentMedia ?? 0} them={dash?.comparativo?.turmaMedia ?? 0} max={10} format={(value) => fmtGradeValue(value, '0,0')} />
+                      {!gradesHidden && <CompareBar label="Média" me={dash?.comparativo?.studentMedia ?? 0} them={dash?.comparativo?.turmaMedia ?? 0} max={10} format={(value) => fmtGradeValue(value, '0,0')} />}
                       <CompareBar label="Frequência" me={dash?.comparativo?.studentFreq ?? 0} them={dash?.comparativo?.turmaFreq ?? 0} max={100} suffix="%" />
                       <p className="text-xs text-subtle">Comparado com {dash?.comparativo?.turmaSize ?? 0} aluno(s) da turma.</p>
                     </div>
@@ -267,7 +281,7 @@ export default function AlunoDetailPage() {
                       <div className="bg-surface-2 rounded-lg p-3"><p className="text-xs text-muted mb-1">Recorde</p><p className="text-xl font-semibold text-text">{dash?.streak?.recorde ?? 0} <span className="text-xs text-muted font-normal">dias</span></p></div>
                     </div>
                     <div className="mt-3 space-y-1.5 text-sm">
-                      <div className="flex justify-between"><span className="text-muted">Média (mês atual vs anterior)</span><span className="text-text">{fmtGradeValue(dash?.temporal?.mediaAtual ?? 0)} vs {fmtGradeValue(dash?.temporal?.mediaAnterior ?? 0)}</span></div>
+                      {!gradesHidden && <div className="flex justify-between"><span className="text-muted">Média (mês atual vs anterior)</span><span className="text-text">{fmtGradeValue(dash?.temporal?.mediaAtual ?? 0)} vs {fmtGradeValue(dash?.temporal?.mediaAnterior ?? 0)}</span></div>}
                       <div className="flex justify-between"><span className="text-muted">Presenças (mês)</span><span className="text-text">{dash?.temporal?.presencaAtual ?? 0} vs {dash?.temporal?.presencaAnterior ?? 0}</span></div>
                     </div>
                   </Card>
@@ -337,13 +351,13 @@ export default function AlunoDetailPage() {
               </div>
             </Modal>
 
-            {tab === 'auditoria' && !isProfessor && (
+            {tab === 'auditoria' && canAudit && (
               <Card title="Auditoria do aluno">
                 <StudentAuditPanel rows={auditRows} />
               </Card>
             )}
 
-            {tab === 'seguranca' && !isProfessor && (
+            {tab === 'seguranca' && canSecurity && (
               <Card title="Segurança e privacidade">
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between border-b border-border/50 pb-2"><span className="text-muted">Último login</span><span className="text-text">{fmtDateTime(student.lastLoginAt)}</span></div>

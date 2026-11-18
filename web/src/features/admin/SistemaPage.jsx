@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { Modal } from '../../components/ui/Modal'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { TypedConfirm, typedConfirmMatches } from '../../components/ui/TypedConfirm'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Badge } from '../../components/ui/Badge'
@@ -13,7 +14,7 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 import { SaudeCard } from './sistema/SaudeCard'
 import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { RedeCard } from './sistema/RedeCard'
@@ -121,8 +122,22 @@ function TrashCard() {
   const toast = useToast()
   const list = items || []
   async function restore(id) { try { await api.post('/api/admin/trash/restore', { id }); toast.success('Item restaurado'); refetch() } catch (e) { toast.error(e.message) } }
-  async function del(id) { if (!confirm('Excluir definitivamente? Não dá para recuperar depois.')) return; try { await api.post('/api/admin/trash/delete', { id }); toast.success('Excluído definitivamente'); refetch() } catch (e) { toast.error(e.message) } }
-  async function empty() { if (!confirm('Esvaziar a lixeira? Todos os itens serão apagados definitivamente.')) return; try { const r = await api.post('/api/admin/trash/empty', {}); toast.success((r.removed || 0) + ' item(ns) apagados'); refetch() } catch (e) { toast.error(e.message) } }
+  // Apagar de vez e esvaziar: pergunta no ConfirmDialog (contrato C12 do P3; antes era a
+  // caixa do navegador). O erro aparece no próprio diálogo, que continua aberto.
+  const [pending, setPending] = useState(null) // { type: 'delete', id } | { type: 'empty' }
+  function del(id) { setPending({ type: 'delete', id }) }
+  function empty() { setPending({ type: 'empty' }) }
+  async function confirmPending() {
+    if (pending?.type === 'delete') {
+      await api.post('/api/admin/trash/delete', { id: pending.id })
+      toast.success('Excluído definitivamente')
+    } else if (pending?.type === 'empty') {
+      const r = await api.post('/api/admin/trash/empty', {})
+      toast.success((r.removed || 0) + ' item(ns) apagados')
+    }
+    setPending(null)
+    refetch()
+  }
   return (
     <Card>
       <CardHeader title={<span className="inline-flex items-center gap-2"><Trash2 size={16} /> Lixeira</span>} subtitle="Itens excluídos — restaure ou apague de vez"
@@ -142,6 +157,15 @@ function TrashCard() {
           </div>
         ))}
       </CardBody>
+      <ConfirmDialog
+        open={!!pending}
+        onClose={() => setPending(null)}
+        onConfirm={confirmPending}
+        title={pending?.type === 'empty' ? 'Esvaziar a lixeira?' : 'Excluir definitivamente?'}
+        message={pending?.type === 'empty' ? 'Todos os itens da lixeira serão apagados definitivamente.' : 'Não dá para recuperar depois.'}
+        confirmLabel={pending?.type === 'empty' ? 'Esvaziar' : 'Excluir'}
+        tone="danger"
+      />
     </Card>
   )
 }
@@ -262,15 +286,15 @@ export default function SistemaPage() {
 
       <SaudeCard refreshKey={healthKey} />
 
-      <RedeCard canManage={canManage} isAdmin={auth?.accountRole !== 'professor'} />
+      <RedeCard canManage={canManage} isAdmin={isFullAdmin(auth)} />
 
       {canManage && <SettingsCard />}
 
-      {canManage && <RetencaoCard isAdmin={auth?.accountRole !== 'professor'} />}
+      {canManage && <RetencaoCard isAdmin={isFullAdmin(auth)} />}
 
       {canManage && <TrashCard />}
 
-      {canManage && <BackupCard isAdmin={auth?.accountRole !== 'professor'} />}
+      {canManage && <BackupCard isAdmin={isFullAdmin(auth)} />}
 
       {canManage && <ArmazenamentoCard />}
 

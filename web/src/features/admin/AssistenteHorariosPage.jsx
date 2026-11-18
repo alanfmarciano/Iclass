@@ -9,13 +9,14 @@ import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { AssistenteHorariosWizard } from './TurmaPresencaConfig'
+import { isFullAdmin } from '../../lib/adminPermissions'
 
 export default function AssistenteHorariosPage() {
   const { courseId, className } = useParams()
   const nav = useNavigate()
   const toast = useToast()
   const { auth } = useAuth()
-  const isAdmin = auth.accountRole !== 'professor'
+  const isAdmin = isFullAdmin(auth)
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const accountsApi = useApi(isAdmin ? '/api/admin/accounts' : null)

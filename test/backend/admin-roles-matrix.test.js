@@ -651,6 +651,37 @@ test('[UC-PAPEIS-003] guarda: nenhum arquivo do backend usa isProfessorAccount n
     assert.deepEqual(offenders, [], `use isFullAdmin/accountScopeKind (backend/utils/adminRoles.js):\n${offenders.join('\n')}`);
 });
 
+// Contrato C2 na tela (B1): o painel decide pelo que o servidor manda (effectivePermissions,
+// isFullAdmin, canReadStudentGrades de web/src/lib/adminPermissions.js), nunca por
+// accountRole !== 'professor' como "é administrador" (a secretaria e a coordenação caíam
+// como administrador pleno). Antes do B1 eram mais de 20 linhas assim, espalhadas pelo painel.
+test('[UC-PAPEIS-003] guarda: nenhuma tela do painel usa o papel de professor como "é administrador"', () => {
+    const files = [];
+    const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).forEach(entry => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(js|jsx)$/.test(entry.name) && !/\.test\.(js|jsx)$/.test(entry.name)) files.push(full);
+    });
+    walk(path.join(ROOT, 'web', 'src'));
+    // Usos permitidos: listas de professores (para atribuir turma ou horário) e a reserva
+    // de permissões do professor quando a sessão gravada é de antes do effectivePermissions.
+    const allowed = [
+        { file: 'web/src/features/admin/TurmasPage.jsx', pattern: /const professors = \(accountsApi\.data \|\| \[\]\)\.filter\(account => account\.role === 'professor'\)/ },
+        { file: 'web/src/features/admin/AssistenteHorariosPage.jsx', pattern: /const professors = \(accountsApi\.data \|\| \[\]\)\.filter\(account => account\.role === 'professor'\)/ },
+        { file: 'web/src/lib/adminPermissions.js', pattern: /^\s*if \(role === 'professor'\) \{$/ },
+    ];
+    const offenders = [];
+    for (const file of files) {
+        const rel = path.relative(ROOT, file).split(path.sep).join('/');
+        fs.readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+            if (!usesProfessorRoleCheck(line)) return;
+            if (allowed.some(item => item.file === rel && item.pattern.test(line))) return;
+            offenders.push(`${rel}:${index + 1}: ${line.trim()}`);
+        });
+    }
+    assert.deepEqual(offenders, [], `use isFullAdmin/canAccessAdminPermission (web/src/lib/adminPermissions.js):\n${offenders.join('\n')}`);
+});
+
 test('[UC-PAPEIS-004] acesso local do launcher: os dois logins mandam effectivePermissions, escopo, somente leitura e rótulo; o perfil admin só abre administrador pleno', async () => {
     const { createSetupModeRouter } = require('../../backend/routes/setupMode.js');
     const { DEMO_ACCOUNTS } = require('../../backend/utils/demoAccounts.js');
@@ -742,7 +773,7 @@ test('[UC-PAPEIS-005] contas: cria cada papel com o escopo dele, recusa papel e 
     const coord = await create({ name: 'Coordenação', email: 'nova.coord@papeis.local', role: 'coordenacao', assignedSchoolIds: [SCHOOL_A], additionalPermissions: ['page.exams'] });
     assert.equal(coord.status, 200, JSON.stringify(coord.body));
     assert.deepEqual(db.memory.admins.find(item => item.email === 'nova.coord@papeis.local').additionalPermissions, ['page.exams']);
-    // Professor auxiliar: papel oculto enquanto lê nota (papel-monitor-pendencia.test.js).
+    // Professor auxiliar: papel oculto por decisão do plano (professor-auxiliar-sem-notas.test.js).
     // A API recusa criar conta com ele e trocar outra conta para ele; a conta que já tem o
     // papel continua editável com o escopo de turmas.
     const mon = await create({ name: 'Auxiliar', email: 'novo.mon@papeis.local', role: 'monitor', assignedClasses: [{ courseId: COURSE_A, className: '1A' }] });

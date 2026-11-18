@@ -12,14 +12,17 @@ import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
 import { LoginProtectionBadge, UNLOCK_LOGIN_HINT } from './loginProtection'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission, permissionLabel } from '../../lib/adminPermissions'
-
-const ROLE_LABEL = { admin: 'Administrador', professor: 'Professor' }
+import { ADMIN_PERMISSIONS, accountRoleId, canAccessAdminPermission, permissionLabel, roleLabelOf, roleScopeOf } from '../../lib/adminPermissions'
 
 export default function AdminsPage() {
   const nav = useNavigate()
   const { auth } = useAuth()
   const { data: admins, loading, error, refetch } = useApi('/api/admin/accounts')
+  // Catálogo dos papéis (FUN-13): rótulo e escopo de cada um, do servidor.
+  const { data: rolesData } = useApi('/api/admin/roles')
+  const { data: schools } = useApi('/api/admin/schools')
+  const roles = rolesData?.roles || []
+  const schoolName = (id) => (schools || []).find((school) => String(school.id) === String(id))?.name || id
   const canManage = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.ACCOUNTS_MANAGE)
   const toast = useToast()
   const [unlocking, setUnlocking] = useState(null)
@@ -38,8 +41,9 @@ export default function AdminsPage() {
   const rows = admins || []
   const stats = useMemo(() => ({
     total: rows.length,
-    admins: rows.filter((a) => a.role !== 'professor').length,
-    profs: rows.filter((a) => a.role === 'professor').length,
+    admins: rows.filter((a) => accountRoleId(a) === 'admin').length,
+    // Professores, professores auxiliares, Secretaria e Coordenação.
+    others: rows.filter((a) => accountRoleId(a) !== 'admin').length,
   }), [rows])
 
   const open = (emailAddr) => nav('/admins/' + encodeURIComponent(emailAddr))
@@ -62,25 +66,31 @@ export default function AdminsPage() {
       </div>
     ) },
     { key: 'email', label: 'E-mail', render: (r) => <span className="text-muted">{r.email}</span> },
-    { key: 'role', label: 'Papel', render: (r) => <Badge tone={r.role === 'professor' ? 'info' : 'neutral'}>{ROLE_LABEL[r.role] || 'Administrador'}</Badge> },
-    { key: 'assignedClasses', label: 'Turmas', render: (r) => r.role === 'professor'
-      ? ((r.assignedClasses || []).map((assignment) => assignment.className).join(', ') || '—')
-      : `Todas as turmas (${(r.assignedClasses || []).length})` },
-    { key: 'additionalPermissions', label: 'Acessos extras', render: (r) => r.role === 'professor' && (r.additionalPermissions || []).length
+    // Selo do papel com o rótulo do catálogo (Secretaria, Coordenação...).
+    { key: 'role', label: 'Papel', render: (r) => <Badge tone={accountRoleId(r) === 'admin' ? 'neutral' : 'info'}>{roleLabelOf(roles, accountRoleId(r))}</Badge> },
+    // Escopo conforme o papel: turmas (professor e professor auxiliar), escolas
+    // (Secretaria e Coordenação) ou tudo (administrador).
+    { key: 'assignedClasses', label: 'Turmas ou escolas', render: (r) => {
+      const scope = roleScopeOf(roles, accountRoleId(r))
+      if (scope === 'tudo') return 'Todas as turmas'
+      if (scope === 'escolas') return (r.assignedSchoolIds || []).map(schoolName).join(', ') || '—'
+      return (r.assignedClasses || []).map((assignment) => assignment.className).join(', ') || '—'
+    } },
+    { key: 'additionalPermissions', label: 'Acessos extras', render: (r) => accountRoleId(r) !== 'admin' && (r.additionalPermissions || []).length
       ? <span className="text-xs text-muted">{r.additionalPermissions.map(permissionLabel).join(', ')}</span>
       : '—' },
   ]
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      <PageHeader title="Contas de acesso" subtitle="Administradores e professores com acesso ao painel">
+      <PageHeader title="Contas de acesso" subtitle="Administradores, professores, Secretaria e Coordenação com acesso ao painel">
         {canManage ? <Button icon={UserPlus} onClick={() => nav('/admins/novo')}>Nova conta</Button> : <Badge tone="neutral">Somente consulta</Badge>}
       </PageHeader>
 
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Total de contas" value={stats.total} icon="KeyRound" />
         <StatCard label="Administradores" value={stats.admins} icon="ShieldCheck" />
-        <StatCard label="Professores" value={stats.profs} icon="GraduationCap" />
+        <StatCard label="Professores e equipe" value={stats.others} icon="GraduationCap" />
       </div>
 
       <PageState loading={loading} error={error} onRetry={refetch}>

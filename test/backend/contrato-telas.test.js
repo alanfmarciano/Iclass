@@ -301,13 +301,29 @@ test('[UC-ERRO-003] contrato das telas do professor: preferências (modelos, adi
     ok(await asInstructor('/api/admin/preferences', 'professor').send({ 'gate.favorites': [`${COURSE_ID}::${CLASS_NAME}`] }), 'favoritos');
     ok(await asInstructor('/api/admin/preferences', 'professor').send({ 'forum.lastSeen': new Date().toISOString(), 'dashboard.riskCount': 5, 'forum.templates': templates }), 'várias chaves no mesmo pedido');
 
-    // AdminEditPage: criar (o form inteiro), atualizar e remover a conta.
-    screen('features/admin/AdminEditPage.jsx', "setForm({ name: '', email: '', password: '', requirePasswordChange: true, role: 'admin', assignedClasses: [], additionalPermissions: [] })");
-    screen('features/admin/AdminEditPage.jsx', "api.post('/api/admin/accounts/create', form)");
+    // AdminEditPage (papéis, B1 da fase 3): o corpo comum (e-mail, nome, papel, extras e o
+    // escopo do papel: turmas para professor, escolas para Secretaria e Coordenação), mais
+    // a senha e a troca no primeiro acesso na criação.
+    screen('features/admin/AdminEditPage.jsx', "setForm({ name: '', email: '', password: '', requirePasswordChange: true, role: 'admin', assignedClasses: [], assignedSchoolIds: [], additionalPermissions: [] })");
+    screen('features/admin/AdminEditPage.jsx', "const scopeFields = scope === 'turmas' ? { assignedClasses: form.assignedClasses } : scope === 'escolas' ? { assignedSchoolIds: form.assignedSchoolIds } : {}");
+    screen('features/admin/AdminEditPage.jsx', "const common = { email: form.email, name: form.name, role: form.role, additionalPermissions: form.role === 'admin' ? [] : form.additionalPermissions, ...scopeFields }");
+    screen('features/admin/AdminEditPage.jsx', "api.post('/api/admin/accounts/create', { ...common, password: form.password, requirePasswordChange: form.requirePasswordChange })");
     const newEmail = 'nova.professora@teste.local';
-    ok(await asInstructor('/api/admin/accounts/create').send({ name: 'Nova Professora', email: newEmail, password: 'Senha-forte-2026', requirePasswordChange: true, role: 'professor', assignedClasses: [{ courseId: COURSE_ID, className: CLASS_NAME }], additionalPermissions: [] }), 'criar conta');
-    screen('features/admin/AdminEditPage.jsx', "api.post('/api/admin/accounts/update', { email: form.email, name: form.name, role: form.role, assignedClasses: form.assignedClasses, additionalPermissions: form.additionalPermissions })");
-    ok(await asInstructor('/api/admin/accounts/update').send({ email: newEmail, name: 'Nova Professora da Silva', role: 'professor', assignedClasses: [{ courseId: COURSE_ID, className: CLASS_NAME }], additionalPermissions: [] }), 'atualizar conta');
+    ok(await asInstructor('/api/admin/accounts/create').send({ email: newEmail, name: 'Nova Professora', role: 'professor', additionalPermissions: [], assignedClasses: [{ courseId: COURSE_ID, className: CLASS_NAME }], password: 'Senha-forte-2026', requirePasswordChange: true }), 'criar conta');
+    screen('features/admin/AdminEditPage.jsx', "api.post('/api/admin/accounts/update', common)");
+    ok(await asInstructor('/api/admin/accounts/update').send({ email: newEmail, name: 'Nova Professora da Silva', role: 'professor', additionalPermissions: [], assignedClasses: [{ courseId: COURSE_ID, className: CLASS_NAME }] }), 'atualizar conta');
+    const schoolOfCourse = (db.memory.courses || []).find(course => course.id === COURSE_ID)?.schoolId || 'escola_default';
+    ok(await asInstructor('/api/admin/accounts/update').send({ email: newEmail, name: 'Nova Professora da Silva', role: 'secretaria', additionalPermissions: [], assignedSchoolIds: [schoolOfCourse] }), 'trocar para Secretaria');
+    // Redefinir senha de outra conta (UXI-07, AccountPasswordDialogs.jsx): gerada ou digitada.
+    screen('features/admin/AccountPasswordDialogs.jsx', "api.post('/api/admin/accounts/reset-password', mode === 'typed' ? { email, newPassword: typed } : { email })");
+    const reset = ok(await asInstructor('/api/admin/accounts/reset-password').send({ email: newEmail }), 'redefinir senha gerada');
+    assert.match(reset.body.temporaryPassword, /^[a-z0-9]{5}-[a-z0-9]{5}$/i);
+    ok(await asInstructor('/api/admin/accounts/reset-password').send({ email: newEmail, newPassword: 'Outra-senha-forte-2026' }), 'redefinir senha digitada');
+    // Minha conta (MinhaContaPage.jsx): nome e "Sair dos outros aparelhos".
+    screen('features/admin/MinhaContaPage.jsx', "api.post('/api/admin/account/profile', { name: trimmed })");
+    ok(await asInstructor('/api/admin/account/profile', 'professor').send({ name: 'Professor Contrato' }), 'mudar o próprio nome');
+    screen('features/admin/MinhaContaPage.jsx', "api.post('/api/admin/account/end-other-sessions', {})");
+    ok(await asInstructor('/api/admin/account/end-other-sessions', 'professor').send({}), 'sair dos outros aparelhos');
     screen('features/admin/AdminEditPage.jsx', "api.post('/api/admin/accounts/delete', { email: form.email })");
     ok(await asInstructor('/api/admin/accounts/delete').send({ email: newEmail }), 'remover conta');
 
@@ -489,9 +505,7 @@ test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem locale
 const NATIVE_DIALOGS_LEFT = {
     'features/admin/CalendarioPage.jsx': 1,
     'features/admin/EditorPage.jsx': 2,
-    'features/admin/IdentidadePage.jsx': 1,
     'features/admin/ResultadosPage.jsx': 1,
-    'features/admin/SistemaPage.jsx': 2,
     'features/admin/TurmaPresencaConfig.jsx': 1,
 };
 // Exceções combinadas no plano (a tela muda antes de quem troca a caixa dela).

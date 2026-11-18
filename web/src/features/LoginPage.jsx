@@ -124,6 +124,10 @@ export default function LoginPage() {
           toast.info(serverMessage || 'A senha desta conta foi alterada. Entre de novo com a senha nova.')
           return
         }
+        if (r === 'ended_elsewhere') {
+          toast.info(serverMessage || 'Esta sessão foi encerrada pela própria conta em outro aparelho. Faça login novamente.')
+          return
+        }
         if (r === 'replaced') {
           toast.info(serverMessage || 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.')
           return

@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { useBranding } from '../../context/BrandingProvider'
 import { AdminCourseGate } from '../../features/admin/AdminCourseGate'
 import { getAdminNavGroups } from './Sidebar'
+import { ADMIN_PERMISSIONS, accountRoleLabel, canAccessAdminPermission } from '../../lib/adminPermissions'
 import { LumenShell } from './LumenShell'
 import { NotificationBell } from '../ui/NotificationBell'
 import { useAdminNotificationOpener } from './useAdminNotificationOpener'
@@ -22,8 +23,10 @@ export function LumenAdminShell() {
   const brandName = branding?.displayName || 'IClass'
   const workspace = auth.activeWorkspace
   const courseLabel = workspace ? `${workspace.courseName || workspace.courseId} · ${workspace.className}` : ''
-  const accountLabel = auth.accountRole === 'professor' ? 'Professor' : 'Administrador'
-  const enrollmentPath = workspace?.courseId && auth.accountRole !== 'professor' ? `/api/admin/enrollment-requests?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : null
+  // Rótulo do papel vindo do servidor (Secretaria, Coordenação...), D18 do P4.
+  const accountLabel = accountRoleLabel(auth)
+  // O avatar do topo abre o menu Minha conta · Sair (UXI-07).
+  const enrollmentPath = workspace?.courseId && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.ENROLLMENTS_APPROVE) ? `/api/admin/enrollment-requests?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : null
   const enrollments = useApi(enrollmentPath, [workspace?.courseId, workspace?.className], { pollMs: 15000 })
   const openNotification = useAdminNotificationOpener()
 
@@ -33,8 +36,9 @@ export function LumenAdminShell() {
       brandName={brandName}
       logo={logo}
       conceptLabel={courseLabel || 'Ambiente da instituição'}
-      userName={auth.email || accountLabel}
+      userName={auth.name || auth.email || accountLabel}
       userDetail={accountLabel}
+      accountMenu={{ accountPath: '/minha-conta', email: auth.email || '' }}
       pathname={pathname}
       contextAction={courseLabel ? {
         icon: BookOpen,

@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 import { GraduationCap, LogOut, Menu, X } from 'lucide-react'
 import { ThemeToggle } from '../ui/ThemeToggle'
 import { cn } from '../../lib/cn'
+import { AccountMenu } from './AccountMenu'
 
 function initials(value = '') {
   return value
@@ -22,6 +23,8 @@ export function LumenShell({
   userDetail = '',
   contextAction = null,
   notifications = null,
+  // { accountPath, email }: o avatar vira o menu Minha conta · Sair (painel, UXI-07).
+  accountMenu = null,
   pathname,
   onLogout,
   children,
@@ -111,10 +114,24 @@ export function LumenShell({
           )}
           {notifications}
           <ThemeToggle />
-          <div className="lumen-profile" title={userDetail || userName}>
-            <span className="lumen-avatar">{initials(userName || userDetail)}</span>
-            <span className="lumen-profile-copy"><strong>{userName || 'Usuário'}</strong><span>{userDetail}</span></span>
-          </div>
+          {accountMenu ? (
+            <AccountMenu
+              name={userName === accountMenu.email ? '' : userName}
+              email={accountMenu.email || ''}
+              detail={userDetail}
+              accountPath={accountMenu.accountPath}
+              onLogout={onLogout}
+              buttonClassName="lumen-profile text-left"
+              avatarClassName="lumen-avatar"
+            >
+              <span className="lumen-profile-copy"><strong>{userName || 'Usuário'}</strong><span>{userDetail}</span></span>
+            </AccountMenu>
+          ) : (
+            <div className="lumen-profile" title={userDetail || userName}>
+              <span className="lumen-avatar">{initials(userName || userDetail)}</span>
+              <span className="lumen-profile-copy"><strong>{userName || 'Usuário'}</strong><span>{userDetail}</span></span>
+            </div>
+          )}
           <button type="button" className="lumen-icon-button lumen-logout" onClick={onLogout} aria-label="Sair"><LogOut size={18} /></button>
           <button
             type="button"

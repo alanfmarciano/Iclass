@@ -30,6 +30,8 @@ import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspi
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
+import { useAuth } from '../../context/AuthProvider'
+import { canReadStudentGrades } from '../../lib/adminPermissions'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -403,6 +405,10 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
 }
 
 export default function MonitorPage() {
+  const auth = useAuth()?.auth || {}
+  // "Ver respostas" mostra o gabarito e o acerto de cada questão (é nota): some para quem
+  // acompanha a prova sem ler nota (Professor auxiliar; o servidor responde 403).
+  const canSeeAnswers = canReadStudentGrades(auth)
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
@@ -1357,10 +1363,10 @@ export default function MonitorPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {applicationFinished ? (
-                            <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
+                            canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
                           ) : (
                             <>
-                              <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
+                              {canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>}
                               {r.focusLocked && <Button size="sm" variant="secondary" icon={Unlock} onClick={() => unlock(r.email)}>Foco</Button>}
                               <Button size="sm" variant="secondary" icon={Clock} onClick={() => adjustOne(r.email)}>Tempo</Button>
                               <Button size="sm" variant="secondary" icon={Send} onClick={() => broadcast(r.email)}>Msg</Button>

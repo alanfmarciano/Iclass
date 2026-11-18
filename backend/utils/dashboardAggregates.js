@@ -430,7 +430,11 @@ function securityQueueItems(security) {
 // PULSO — 3 métricas com tendência (janela móvel de 30 dias vs. 30 anteriores).
 // Série: 6 fatias de 5 dias, para a sparkline ter eixo temporal real.
 // ---------------------------------------------------------------------------
-function computeTrends({ memory, students, course, cls, now }) {
+// withGrades === false (conta que não lê nota, como o Professor auxiliar;
+// canReadStudentGrades em adminPermissions.js): a média das provas sai vazia (valores
+// null, base zerada) e a resposta leva gradesHidden: true; frequência, disciplinas e
+// engajamento ficam iguais.
+function computeTrends({ memory, students, course, cls, now, withGrades = true }) {
     const emails = emailSet(students);
     const courseId = course ? String(course.id) : '';
     const inWin = (ts, startDaysAgo, endDaysAgo) =>
@@ -474,7 +478,7 @@ function computeTrends({ memory, students, course, cls, now }) {
         (memory.submissions || []).filter(s => s.student && emails.has(lower(s.student.email))),
         { courseId, studentClass: cls ? cls.name : '', students: memory.students || [], classes: memory.classes || [] },
     );
-    const gradedGroups = buildGradeGroups(subsScoped).filter(group => group.score !== null);
+    const gradedGroups = withGrades ? buildGradeGroups(subsScoped).filter(group => group.score !== null) : [];
     const mediaOf = (groups) => {
         if (!groups.length) return null;
         return Math.round(groups.reduce((a, group) => a + group.score, 0) / groups.length / 10 * 10) / 10;
@@ -528,6 +532,7 @@ function computeTrends({ memory, students, course, cls, now }) {
 
     const round1 = v => v == null ? null : Math.round(v * 10) / 10;
     return {
+        ...(withGrades ? {} : { gradesHidden: true }),
         disciplinas,
         frequencia: {
             atual: freqAtual, anterior: freqAnterior,

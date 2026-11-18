@@ -182,6 +182,19 @@ function hasAdminCapability(account, permission) {
     return isFullAdmin(account) || getEffectiveAdminPermissions(account).has(permission);
 }
 
+// Quem lê nota de aluno (pendência da J0, B1 da fase 3): a ficha do aluno (boletim,
+// histórico e indicadores), o resumo dos alunos e as tendências do Dashboard e a revisão
+// da prova no Monitor (acerto e gabarito) só mostram nota a quem tem uma destas: a tela
+// Resultados (page.results) ou Relatórios (reports.view, que imprime boletins). O
+// professor, a Coordenação e a Secretaria leem; o Professor auxiliar (papel 'monitor',
+// contrato rbac.papeis: "sem notas") faz a chamada e acompanha a prova, mas recebe essas
+// respostas sem nota. A tela usa a mesma lista (web/src/lib/adminPermissions.js).
+const GRADE_READ_PERMISSIONS = Object.freeze(['page.results', 'reports.view']);
+
+function canReadStudentGrades(account) {
+    return isFullAdmin(account) || hasAnyAdminPermission(getEffectiveAdminPermissions(account), GRADE_READ_PERMISSIONS);
+}
+
 // Catálogo dos papéis para a tela de contas (GET /api/admin/roles).
 function adminRoleCatalogForScreen() {
     return ROLE_CATALOG.map(role => ({
@@ -459,6 +472,8 @@ module.exports = {
     getEffectiveAdminPermissions,
     effectivePermissionList,
     hasAdminCapability,
+    GRADE_READ_PERMISSIONS,
+    canReadStudentGrades,
     adminAccessSummary,
     adminRoleCatalogForScreen,
     canAccessAdminPermission,

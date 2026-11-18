@@ -26,10 +26,25 @@ export const ADMIN_PERMISSIONS = Object.freeze({
   // Cadastros encerrados (H7c): anonimizar e apagar de vez, só o administrador; não é
   // concedível ao professor (o servidor responde 403).
   STUDENTS_DESTROY: 'students.destroy',
+  // Fase 3 (papéis, FUN-13): os mesmos valores do servidor (ADMIN_PERMISSION_VALUES de
+  // backend/utils/adminPermissions.js; o teste professor-permissions-snapshot confere).
+  STUDENTS_EDIT: 'students.edit',
+  STUDENTS_IMPORT: 'students.import',
+  STUDENTS_CERTIFICATES: 'students.certificates',
+  STUDENTS_MERGE: 'students.merge',
+  ENROLLMENTS_APPROVE: 'enrollments.approve',
+  REPORTS_VIEW: 'reports.view',
+  PAGE_ASSIGNMENTS: 'page.assignments',
+  PAGE_MESSAGES: 'page.messages',
+  MESSAGES_READ_ALL: 'messages.readAll',
+  COURSE_PURGE: 'course.purge',
+  FORUM_PURGE: 'forum.purge',
 })
 
 export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
+  // Minha conta do instrutor (UXI-07): todo papel tem page.dashboard.
+  '/minha-conta': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
   // Endereço da sala em tela cheia, para projetar (H6a).
   '/endereco': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
   '/provas': ADMIN_PERMISSIONS.PAGE_EXAMS,
@@ -40,7 +55,8 @@ export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/biblioteca': ADMIN_PERMISSIONS.PAGE_EDITOR,
   '/turmas': ADMIN_PERMISSIONS.PAGE_CLASSES,
   '/alunos': ADMIN_PERMISSIONS.PAGE_STUDENTS,
-  '/matriculas': ADMIN_PERMISSIONS.PAGE_STUDENTS,
+  // Aprovar matrícula (P4 D16): administrador e Secretaria; antes era "não é professor".
+  '/matriculas': ADMIN_PERMISSIONS.ENROLLMENTS_APPROVE,
   '/chamada': ADMIN_PERMISSIONS.PAGE_STUDENTS,
   '/diretorio': ADMIN_PERMISSIONS.PAGE_STUDENTS,
   '/admins': ADMIN_PERMISSIONS.PAGE_ACCOUNTS,
@@ -55,6 +71,9 @@ export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/encerrados': ADMIN_PERMISSIONS.STUDENTS_DESTROY,
 })
 
+// Padrão do professor, só para a sessão guardada por uma versão anterior, que ainda não
+// tem effectivePermissions (o whoami da abertura completa logo depois). A lista que vale
+// é a do servidor (auth.effectivePermissions), igual a esta para o professor sem extras.
 const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([
   ADMIN_PERMISSIONS.PAGE_DASHBOARD,
   ADMIN_PERMISSIONS.PAGE_EXAMS,
@@ -66,6 +85,11 @@ const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([
   ADMIN_PERMISSIONS.PAGE_STUDENTS,
   ADMIN_PERMISSIONS.PAGE_FORUM,
   ADMIN_PERMISSIONS.SCHOOLS_SCOPE,
+  ADMIN_PERMISSIONS.PAGE_ASSIGNMENTS,
+  ADMIN_PERMISSIONS.PAGE_MESSAGES,
+  ADMIN_PERMISSIONS.REPORTS_VIEW,
+  ADMIN_PERMISSIONS.STUDENTS_EDIT,
+  ADMIN_PERMISSIONS.STUDENTS_IMPORT,
 ])
 
 const ACTION_DEPENDENCIES = Object.freeze({
@@ -75,7 +99,24 @@ const ACTION_DEPENDENCIES = Object.freeze({
   [ADMIN_PERMISSIONS.SYSTEM_MANAGE]: ADMIN_PERMISSIONS.PAGE_SYSTEM,
 })
 
+// Rótulo de cada permissão que pode ser dada a mais a uma conta (tela Contas). Quais
+// aparecem para cada papel vem do servidor (GET /api/admin/roles: concediveis menos
+// permissoesPadrao do papel); a ordem é a desta lista.
 export const GRANTABLE_ADMIN_PERMISSIONS = Object.freeze([
+  { permission: ADMIN_PERMISSIONS.PAGE_DASHBOARD, group: 'Visão geral', label: 'Dashboard', description: 'Exibe o Dashboard da turma e as listas de turmas e cursos.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_EXAMS, group: 'Provas', label: 'Visualizar e preparar provas', description: 'Exibe a tela Provas: aplicações, versões e liberação.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_MONITOR, group: 'Provas', label: 'Monitor Online', description: 'Acompanha a prova ao vivo (presença, tempo e foco dos alunos).' },
+  { permission: ADMIN_PERMISSIONS.PAGE_RESULTS, group: 'Notas', label: 'Resultados', description: 'Vê e lança notas, corrige e libera os resultados para os alunos.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_MATERIALS, group: 'Conteúdo', label: 'Materiais e liberação', description: 'Libera e esconde materiais e avaliações para a turma.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_EDITOR, group: 'Conteúdo', label: 'Editor e Biblioteca', description: 'Edita apostilas, avaliações e a biblioteca de arquivos.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_STUDENTS, group: 'Alunos', label: 'Alunos e chamada', description: 'Vê a lista e a ficha dos alunos e faz a chamada.' },
+  { permission: ADMIN_PERMISSIONS.STUDENTS_EDIT, group: 'Alunos', label: 'Alterar cadastro', description: 'Cria e altera alunos, faz a matrícula em lote e redefine a senha do aluno.' },
+  { permission: ADMIN_PERMISSIONS.STUDENTS_IMPORT, group: 'Alunos', label: 'Importar planilha', description: 'Importa alunos por planilha.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_FORUM, group: 'Comunicação', label: 'Avisos, calendário e fórum', description: 'Escreve avisos e eventos e responde o fórum da turma.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_ASSIGNMENTS, group: 'Comunicação', label: 'Tarefas', description: 'Exibe a tela Tarefas.' },
+  { permission: ADMIN_PERMISSIONS.PAGE_MESSAGES, group: 'Comunicação', label: 'Mensagens', description: 'Exibe a tela Mensagens com os alunos.' },
+  { permission: ADMIN_PERMISSIONS.REPORTS_VIEW, group: 'Relatórios', label: 'Relatórios', description: 'Tira relatórios e boletins das turmas da conta.' },
+  { permission: ADMIN_PERMISSIONS.SCHOOLS_SCOPE, group: 'Escolas', label: 'Identidade da escola', description: 'Ajusta a identidade visual das escolas atribuídas.' },
   { permission: ADMIN_PERMISSIONS.PAGE_CLASSES, group: 'Turmas', label: 'Visualizar tela', description: 'Exibe a página de turmas em modo consulta.' },
   { permission: ADMIN_PERMISSIONS.CLASSES_MANAGE, group: 'Turmas', label: 'Gerenciar turmas', description: 'Exibe ações de criação, alteração e exclusão de turmas.' },
   { permission: ADMIN_PERMISSIONS.PAGE_ACCOUNTS, group: 'Contas', label: 'Visualizar tela', description: 'Exibe a lista de contas administrativas.' },
@@ -91,17 +132,58 @@ const ALL_ADMIN_PERMISSIONS = new Set([
   ...Object.values(ADMIN_PERMISSIONS),
 ])
 
-export function getEffectiveAdminPermissions(auth) {
-  const accountRole = auth?.accountRole || 'admin'
-  if (accountRole !== 'professor') return new Set(ALL_ADMIN_PERMISSIONS)
-  return new Set([
-    ...PROFESSOR_DEFAULT_PERMISSIONS,
-    ...(Array.isArray(auth?.additionalPermissions) ? auth.additionalPermissions : []),
-  ])
+// Papel da conta do painel: sessão sem papel (de antes dos papéis) é administrador.
+export function accountRoleOf(auth) {
+  const role = String(auth?.accountRole || '').trim().toLowerCase()
+  return role || 'admin'
 }
 
+// Só administrador pleno (contas, backup, restauração, rede, apagar de vez, lixeira,
+// dados de acessibilidade). Contrato C2 do P4: a tela nunca usa "não é professor" como
+// "é administrador"; o escopo e o resto vêm de effectivePermissions.
+export function isFullAdmin(auth) {
+  return accountRoleOf(auth) === 'admin'
+}
+
+// Conjunto efetivo da conta: o do servidor (effectivePermissions do whoami e do login,
+// D18 do P4). Sessão guardada por uma versão anterior, sem a lista: o administrador tem
+// tudo e o professor o padrão de antes (o whoami da abertura troca pela lista do
+// servidor); outro papel sem a lista não tem nada.
+export function getEffectiveAdminPermissions(auth) {
+  if (Array.isArray(auth?.effectivePermissions)) return new Set(auth.effectivePermissions)
+  const role = accountRoleOf(auth)
+  if (role === 'admin') return new Set(ALL_ADMIN_PERMISSIONS)
+  if (role === 'professor') {
+    return new Set([
+      ...PROFESSOR_DEFAULT_PERMISSIONS,
+      ...(Array.isArray(auth?.additionalPermissions) ? auth.additionalPermissions : []),
+    ])
+  }
+  return new Set()
+}
+
+// Quem lê nota de aluno: a mesma lista do servidor (GRADE_READ_PERMISSIONS de
+// backend/utils/adminPermissions.js). O Professor auxiliar não tem nenhuma: a ficha, o
+// Dashboard e o Monitor aparecem sem nota para ele.
+export const GRADE_READ_PERMISSIONS = Object.freeze([ADMIN_PERMISSIONS.PAGE_RESULTS, ADMIN_PERMISSIONS.REPORTS_VIEW])
+
+export function canReadStudentGrades(auth) {
+  if (isFullAdmin(auth)) return true
+  const permissions = getEffectiveAdminPermissions(auth)
+  return GRADE_READ_PERMISSIONS.some((permission) => permissions.has(permission))
+}
+
+// Rótulo do papel para o topo e para Minha conta: o do servidor (roleLabel); sessão
+// antiga sem ele, o de antes.
+export function accountRoleLabel(auth) {
+  if (auth?.roleLabel) return auth.roleLabel
+  return accountRoleOf(auth) === 'professor' ? 'Professor' : accountRoleOf(auth) === 'admin' ? 'Administrador' : 'Conta do painel'
+}
+
+// A permissão pode ser uma lista (qualquer uma basta), como nas regras do servidor.
 export function canAccessAdminPermission(auth, permission) {
-  return getEffectiveAdminPermissions(auth).has(permission)
+  const permissions = getEffectiveAdminPermissions(auth)
+  return (Array.isArray(permission) ? permission : [permission]).some((item) => permissions.has(item))
 }
 
 export function canAccessAdminPath(auth, pathname) {
@@ -128,4 +210,70 @@ export function toggleAdditionalPermission(current, permission) {
 export function permissionLabel(permission) {
   const option = GRANTABLE_ADMIN_PERMISSIONS.find(item => item.permission === permission)
   return option ? `${option.group}: ${option.label}` : permission
+}
+
+// O que a sessão do painel guarda da conta (whoami e login): papel, escopo atribuído e o
+// que a conta pode, calculado pelo servidor (effectivePermissions, scopeKind, readOnly e
+// roleLabel; D18 do P4), mais o nome para o avatar e Minha conta (UXI-07). A tela não
+// recalcula as permissões (lib/adminPermissions.js lê effectivePermissions).
+export function adminAccountFields(who = {}) {
+  return {
+    name: typeof who.name === 'string' ? who.name : '',
+    accountRole: who.role || 'admin',
+    assignedClasses: who.assignedClasses || [],
+    assignedCourseIds: who.assignedCourseIds || [],
+    assignedSchoolIds: who.assignedSchoolIds || [],
+    additionalPermissions: who.additionalPermissions || [],
+    ...(Array.isArray(who.effectivePermissions) ? { effectivePermissions: who.effectivePermissions } : {}),
+    ...(who.scopeKind ? { scopeKind: who.scopeKind } : {}),
+    ...(typeof who.readOnly === 'boolean' ? { readOnly: who.readOnly } : {}),
+    ...(who.roleLabel ? { roleLabel: who.roleLabel } : {}),
+  }
+}
+
+// Papéis das contas do painel (FUN-13). A lista que vale vem do servidor (GET
+// /api/admin/roles, catálogo de backend/utils/adminRoles.js: rótulo, descrição, escopo,
+// permissões padrão e concedíveis); esta é só a reserva de rótulo e escopo para a tela
+// não ficar sem nome enquanto o catálogo carrega.
+export const ADMIN_ROLE_FALLBACK = Object.freeze([
+  { id: 'admin', rotulo: 'Administrador', escopo: 'tudo' },
+  { id: 'professor', rotulo: 'Professor', escopo: 'turmas' },
+  { id: 'monitor', rotulo: 'Professor auxiliar', escopo: 'turmas' },
+  { id: 'secretaria', rotulo: 'Secretaria', escopo: 'escolas' },
+  { id: 'coordenacao', rotulo: 'Coordenação', escopo: 'escolas' },
+])
+
+// Papel da linha da lista de contas (conta sem papel é administrador).
+export function accountRoleId(account) {
+  return String(account?.role || '').trim().toLowerCase() || 'admin'
+}
+
+export function findRole(roles, roleId) {
+  const id = String(roleId || '').trim().toLowerCase() || 'admin'
+  return (Array.isArray(roles) ? roles : []).find((role) => role.id === id)
+    || ADMIN_ROLE_FALLBACK.find((role) => role.id === id)
+    || null
+}
+
+export function roleLabelOf(roles, roleId) {
+  return findRole(roles, roleId)?.rotulo || 'Papel desconhecido'
+}
+
+export function roleScopeOf(roles, roleId) {
+  return findRole(roles, roleId)?.escopo || 'turmas'
+}
+
+// Permissões que a tela de contas oferece a mais para o papel: as concedíveis do
+// catálogo que ainda não vêm no padrão, na ordem de GRANTABLE_ADMIN_PERMISSIONS (com
+// rótulo); a do catálogo sem rótulo aparece com o próprio valor no fim.
+export function grantableOptionsForRole(roles, roleId) {
+  const role = findRole(roles, roleId)
+  if (!role || !Array.isArray(role.concediveis)) return []
+  const defaults = new Set(Array.isArray(role.permissoesPadrao) ? role.permissoesPadrao : [])
+  const offered = role.concediveis.filter((permission) => !defaults.has(permission))
+  const known = GRANTABLE_ADMIN_PERMISSIONS.filter((item) => offered.includes(item.permission))
+  const unknown = offered
+    .filter((permission) => !GRANTABLE_ADMIN_PERMISSIONS.some((item) => item.permission === permission))
+    .map((permission) => ({ permission, group: 'Outras', label: permission, description: '' }))
+  return [...known, ...unknown]
 }

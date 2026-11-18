@@ -200,7 +200,7 @@ function createStudentSession(memory, email, { ip = '', now = Date.now(), origin
 // { sessionRevoked: true, reason }). A sessão revogada sai da memória e da tabela, e o
 // pedido seguinte do token antigo cairia no "sessão expirada" genérico: o aluno cuja senha
 // o professor redefiniu lia "Sessão expirada" em vez do motivo. Aqui fica só o sha256 do
-// token e o motivo ('logout', 'password_reset', 'password_changed' ou 'replaced', quando um
+// token e o motivo ('logout', 'password_reset', 'password_changed', 'ended_elsewhere' ou 'replaced', quando um
 // login novo da mesma conta substituiu a sessão), por no máximo o prazo absoluto da sessão
 // e até 5.000 entradas (a mais antiga sai primeiro).
 // Gravado junto com as sessões (frente do H3, sobra da J2): cada motivo vira uma linha de
@@ -210,7 +210,9 @@ function createStudentSession(memory, email, { ip = '', now = Date.now(), origin
 // reinício, o aluno da senha redefinida lia "Sessão expirada". A versão anterior lê essa
 // linha como ilegível e a descarta (sem erro).
 const RECENT_REVOCATIONS_MAX = 5000;
-const REVOCATION_REASONS = Object.freeze(['logout', 'password_reset', 'password_changed', 'replaced']);
+// 'ended_elsewhere' (fase 3, UXI-07): "Sair dos outros aparelhos" em Minha conta do
+// instrutor. A versão 281029f descarta a linha com esse motivo (parseRevocationRow).
+const REVOCATION_REASONS = Object.freeze(['logout', 'password_reset', 'password_changed', 'replaced', 'ended_elsewhere']);
 const recentRevocations = new Map(); // sha256 do token → { reason, at }
 
 function rememberRevocation(hash, reason, now = Date.now()) {

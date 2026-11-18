@@ -134,7 +134,12 @@ function absenceCount(memory, email, courseId = '') {
 
 // options: { courseId, studentClass } do curso/turma ativos (a ficha do aluno manda os
 // da área de trabalho do professor). As notas são as dessa matrícula.
+// options.withGrades === false (conta que não lê nota, como o Professor auxiliar;
+// canReadStudentGrades em adminPermissions.js): a ficha vem sem média, notas, desempenho
+// por módulo e comparativo de notas, e o risco não usa a média (gradesHidden: true). O
+// resto (frequência, faltas, engajamento, progresso) fica igual.
 function computeStudentDashboard(memory, email, options = {}) {
+    const withGrades = options.withGrades !== false;
     email = String(email || '').trim().toLowerCase();
     const student = (memory.students || []).find(s => s.email && s.email.toLowerCase() === email) || null;
     const resolve = createSubmissionContextResolver({ students: memory.students || [], classes: memory.classes || [] });
@@ -149,7 +154,7 @@ function computeStudentDashboard(memory, email, options = {}) {
     // Uma unidade só conta como concluída se tiver progresso real: array vazio não é "feito".
     const isDone = (v) => Array.isArray(v) ? v.length > 0 : !!v;
     const completed = Object.keys(progressMap).filter(k => isDone(progressMap[k])).length;
-    const media = mediaOf(subs);
+    const media = withGrades ? mediaOf(subs) : null;
     const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId));
     const limiar = riskThreshold(memory, student, courseId);
     // null = sem chamada lançada (desconhecido), distinto de 0% de presença.
@@ -170,7 +175,7 @@ function computeStudentDashboard(memory, email, options = {}) {
     const structure = (typeof options.structureFor === 'function' && options.structureFor(courseId, scope.studentClass))
         || ((memory.courses || []).find(c => String(c.id) === String(courseId))?.structure)
         || [];
-    const modulos = buildStudentReportModules({
+    const modulos = !withGrades ? [] : buildStudentReportModules({
         submissions: subs,
         structure,
         evaluations: memory.evaluations || {},
@@ -192,17 +197,19 @@ function computeStudentDashboard(memory, email, options = {}) {
     const turmaMedias = [], turmaFreqs = [];
     turma.forEach(s => {
         const e = s.email.toLowerCase();
-        const ss = scopeSubmissions((memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === e), scope, resolve);
-        // Colega só com notas inválidas (registro antigo) não tem média: não entra como 0.
-        const media = ss.length ? mediaOf(ss) : null;
-        if (media !== null) turmaMedias.push(media);
+        if (withGrades) {
+            const ss = scopeSubmissions((memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === e), scope, resolve);
+            // Colega só com notas inválidas (registro antigo) não tem média: não entra como 0.
+            const media = ss.length ? mediaOf(ss) : null;
+            if (media !== null) turmaMedias.push(media);
+        }
         const f = freqPct(memory, e, courseId);
         if (f != null) turmaFreqs.push(f);
     });
     const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
     const comparativo = {
         studentMedia: kpis.media,
-        turmaMedia: Math.round(avg(turmaMedias) * 10) / 10,
+        turmaMedia: withGrades ? Math.round(avg(turmaMedias) * 10) / 10 : null,
         studentFreq: frequencia,
         turmaFreq: Math.round(avg(turmaFreqs)),
         turmaSize: turma.length,
@@ -263,18 +270,19 @@ function computeStudentDashboard(memory, email, options = {}) {
             .filter(a => a.studentEmail === email && isPresentAtt(a) && inWindow(new Date(a.date || 0).getTime(), startDaysAgo, endDaysAgo))
             .map(a => a.date)).size;
     const temporal = {
-        mediaAtual: round1(mediaOf(subsWindow(30, 0))),
-        mediaAnterior: round1(mediaOf(subsWindow(60, 30))),
+        mediaAtual: withGrades ? round1(mediaOf(subsWindow(30, 0))) : null,
+        mediaAnterior: withGrades ? round1(mediaOf(subsWindow(60, 30))) : null,
         presencaAtual: attWindow(30, 0),
         presencaAnterior: attWindow(60, 30),
     };
 
     // Notas (cada tentativa, para o gráfico de evolução). A média por módulo está acima.
-    const validSubs = subs.filter(s => normalizeScore(s.score) !== null);
+    const validSubs = withGrades ? subs.filter(s => normalizeScore(s.score) !== null) : [];
     const notas = [...validSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
         .map(s => ({ label: (s.examKey || '').split('_').slice(1).join(' '), value: normalizeScore(s.score) / 10 }));
 
-    return { kpis, comparativo, risco, engajamento, streak, temporal, notas, modulos, frequenciaDisciplinas, faltas: stats.faltasContam, limiarRisco: limiar };
+    const result = { kpis, comparativo, risco, engajamento, streak, temporal, notas, modulos, frequenciaDisciplinas, faltas: stats.faltasContam, limiarRisco: limiar };
+    return withGrades ? result : { ...result, gradesHidden: true };
 }
 
 // Resumo leve por aluno (para o Dashboard): frequência, faltas, média, nível de risco.
@@ -290,7 +298,9 @@ function studentOverview(memory, student, options = {}) {
     // consolidação de Resultados: registro antigo sem curso fica no curso da matrícula.
     const resolve = (index && index.resolve) || createSubmissionContextResolver({ students: memory.students || [], classes: memory.classes || [] });
     const subs = scopeSubmissions(todasSubs, { courseId, studentClass: options.studentClass || '' }, resolve);
-    const media = round1(mediaOf(subs));
+    // options.withGrades === false: sem média (e o risco sem o motivo 'media'), para quem
+    // não lê nota (canReadStudentGrades).
+    const media = options.withGrades === false ? null : round1(mediaOf(subs));
     const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId, index));
     const limiar = riskThreshold(memory, student, courseId);
     // null = "sem aula lançada". Nunca 0: isso acusaria o aluno de faltar a tudo.

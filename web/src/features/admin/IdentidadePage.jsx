@@ -5,12 +5,13 @@ import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useBranding } from '../../context/BrandingProvider'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 
 const PALETTE = ['#ef4444', '#6d28d9', '#2563eb', '#059669', '#d97706', '#db2777', '#0891b2', '#111827']
 const SCOPES = [
@@ -156,7 +157,8 @@ function LumenLivePreview({ name, primary, secondary }) {
 export default function IdentidadePage() {
   const { auth } = useAuth()
   const { refreshBranding } = useBranding()
-  const isProfessor = auth.accountRole === 'professor'
+  // Conta com escopo (não é administrador pleno): só a identidade das escolas dela.
+  const isProfessor = !isFullAdmin(auth)
   const { data: schools, setData: setSchools } = useApi('/api/admin/schools')
   const { data: courses, setData: setCourses } = useApi('/api/courses')
   const toast = useToast()
@@ -296,9 +298,15 @@ export default function IdentidadePage() {
     toast.info(`Tema “${theme.name}” carregado. Clique em Salvar para aplicar.`)
   }
 
-  async function deleteSavedTheme(theme) {
-    if (!window.confirm(`Excluir o tema salvo “${theme.name}”?`)) return
+  // Excluir tema salvo: pergunta no ConfirmDialog (contrato C12 do P3; antes era a caixa
+  // do navegador, window.confirm).
+  const [themeToDelete, setThemeToDelete] = useState(null)
+  function deleteSavedTheme(theme) { setThemeToDelete(theme) }
+  async function confirmDeleteSavedTheme() {
+    const theme = themeToDelete
+    if (!theme) return
     if (await persistSavedThemes(savedThemes.filter((item) => item.id !== theme.id))) toast.success(`Tema “${theme.name}” excluído.`)
+    setThemeToDelete(null)
   }
 
   function restoreVisualDefaults() {
@@ -526,6 +534,15 @@ export default function IdentidadePage() {
           </div>
         </div>
       </PageState>
+      <ConfirmDialog
+        open={!!themeToDelete}
+        onClose={() => setThemeToDelete(null)}
+        onConfirm={confirmDeleteSavedTheme}
+        title={themeToDelete ? `Excluir o tema salvo “${themeToDelete.name}”?` : 'Excluir o tema salvo?'}
+        message="O tema sai da lista de temas salvos. A identidade visual que está em uso não muda."
+        confirmLabel="Excluir tema"
+        tone="danger"
+      />
     </div>
   )
 }

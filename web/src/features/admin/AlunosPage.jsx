@@ -24,6 +24,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { acceptanceText, birthDateText, isMinorBirthDate, todayIso } from '../../lib/legalAcceptance'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 
 const STATUS_OPTIONS = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido']
 const STATUS_TONE = {
@@ -63,7 +64,13 @@ export default function AlunosPage() {
   const { auth } = useAuth()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
   const nav = useNavigate()
-  const isProfessor = auth.accountRole === 'professor'
+  // Conta com escopo (não é administrador pleno): dados de acessibilidade só leitura e sem
+  // desligar aluno, como o professor de antes. Auditoria, segurança e certificados seguem
+  // a permissão de cada um (contrato C2 do P4).
+  const isProfessor = !isFullAdmin(auth)
+  const canAudit = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.AUDIT_VIEW)
+  const canSecurity = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_SECURITY)
+  const canCertificates = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_CERTIFICATES)
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data: students, loading, error, refetch } = useApi(`/api/admin/students?${contextQuery}`)
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
@@ -323,8 +330,8 @@ export default function AlunosPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, originalEmail: menuRow.email, classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>}
           <Button variant="secondary" icon={History} onClick={() => { setHistory(menuRow); setMenuRow(null) }}>Histórico</Button>
-          {!isProfessor && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(menuRow); setMenuRow(null) }}>Auditoria</Button>}
-          {!isProfessor && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
+          {canAudit && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(menuRow); setMenuRow(null) }}>Auditoria</Button>}
+          {canSecurity && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
           <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>
           {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>}
@@ -400,7 +407,7 @@ export default function AlunosPage() {
               {profile.accessibilityNoteRestricted && <Row label="Observação" value="Restrita à coordenação" />}
             </Section>
 
-            {!isProfessor && (
+            {canSecurity && (
             <Section title="Segurança e privacidade">
               <Row label="Último login" value={profile.lastLoginAt ? new Date(profile.lastLoginAt).toLocaleString('pt-BR') : ''} />
               <Row label="Último acesso" value={profile.lastSeenAt ? new Date(profile.lastSeenAt).toLocaleString('pt-BR') : ''} />
@@ -451,7 +458,7 @@ export default function AlunosPage() {
             <Section title="Certificados">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-subtle">{academic?.certificates?.length || 0} emitido(s)</span>
-                {!isProfessor && <Button size="sm" variant="secondary" onClick={issueCert}>Emitir certificado</Button>}
+                {canCertificates && <Button size="sm" variant="secondary" onClick={issueCert}>Emitir certificado</Button>}
               </div>
               {academic?.certificates?.length ? (
                 <div className="space-y-1">
@@ -460,7 +467,7 @@ export default function AlunosPage() {
                       <div className="min-w-0"><p className="text-text truncate">{c.courseName}</p><p className="text-subtle">{c.code}</p></div>
                       <div className="flex items-center gap-2">
                         <Badge tone={c.status === 'Emitido' ? 'success' : 'danger'}>{c.status}</Badge>
-                        {!isProfessor && c.status === 'Emitido' && <button onClick={() => revokeCert(c.id)} className="text-danger" title="Cancelar"><Trash2 size={14} /></button>}
+                        {canCertificates && c.status === 'Emitido' && <button onClick={() => revokeCert(c.id)} className="text-danger" title="Cancelar"><Trash2 size={14} /></button>}
                       </div>
                     </div>
                   ))}
@@ -484,8 +491,8 @@ export default function AlunosPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
               {!isAnonymizedStatus(profile?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...profile, originalEmail: profile.email, classes: studentClassNames(profile), courseId: ((classes || []).find((c) => studentClassNames(profile).includes(c.name))?.courseId) || activeCourseId, guardian: profile.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setProfile(null) }}>Editar</Button>}
               <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(profile); setProfile(null) }}>Observações</Button>
-              {!isProfessor && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(profile); setProfile(null) }}>Segurança</Button>}
-              {!isProfessor && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(profile); setProfile(null) }}>Auditoria</Button>}
+              {canSecurity && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(profile); setProfile(null) }}>Segurança</Button>}
+              {canAudit && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(profile); setProfile(null) }}>Auditoria</Button>}
             </div>
           </div>
         )}

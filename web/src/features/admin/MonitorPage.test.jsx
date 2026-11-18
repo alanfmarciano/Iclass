@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
   // Lista da turma consultada a cada 5 s (useApi); sem valor, a mesma da carga inicial.
   liveApplications: null,
+  // Conta da sessão: vazia vale administrador (como uma sessão antiga sem papel).
+  auth: {},
 }))
 
 const classes = [{ name: '1DES', courseId: 'C1', onlineExamConfigs: {} }]
@@ -21,6 +23,7 @@ const applications = [
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => ({ courseId: 'C1', courseName: 'Curso', className: '1DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
@@ -492,5 +495,35 @@ describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação'
     expect(keystrokeLiveTitle('nada', false, 'Elisa')).toBe('Teclado — Elisa')
     expect(keystrokeLiveEmptyText('nada')).toBe('Registro de teclado desligado nesta prova.')
     expect(keystrokeLiveTitle('eventos', true, 'Elisa')).toBe('Digitação ao vivo — Elisa')
+  })
+})
+
+describe('[UC-PAPEIS-001] MonitorPage · professor auxiliar sem as respostas corrigidas', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'B' }
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(() => { mocks.auth = {}; cleanup() })
+
+  it('o professor vê "Ver respostas"; o professor auxiliar acompanha a prova (Tempo, Msg) sem esse botão', async () => {
+    mocks.auth = { accountRole: 'professor' }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Ver respostas' })).toBeInTheDocument()
+    cleanup()
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Tempo' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ver respostas' })).toBeNull()
   })
 })

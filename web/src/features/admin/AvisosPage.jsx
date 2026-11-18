@@ -16,13 +16,14 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { matchesSearch } from '../../lib/textSearch'
+import { isFullAdmin } from '../../lib/adminPermissions'
 
 function when(ts) { try { return new Date(ts).toLocaleString('pt-BR') } catch { return '' } }
 
 export default function AvisosPage() {
   const { auth } = useAuth()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
-  const isAdmin = (auth.accountRole || 'admin') === 'admin'
+  const isAdmin = isFullAdmin(auth)
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
   const { data: list, loading, error, refetch } = useApi(`/api/admin/announcements?${contextQuery}`)

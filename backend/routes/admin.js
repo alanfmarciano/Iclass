@@ -36,7 +36,7 @@ const {
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
-const { canAccessAdminPermission, hasAdminCapability } = require('../utils/adminPermissions.js');
+const { canAccessAdminPermission, canReadStudentGrades, hasAdminCapability } = require('../utils/adminPermissions.js');
 const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
 const {
@@ -2002,11 +2002,14 @@ router.get('/api/admin/student/attendance', (req, res) => {
 });
 
 // Histórico acadêmico consolidado (Fase 4) — provas/notas + progresso. Somente admin.
+// Conta que não lê nota (Professor auxiliar, canReadStudentGrades): a lista de provas vem
+// vazia, com gradesHidden: true; o resto da ficha (presença, progresso) fica igual.
 router.get('/api/admin/student/academic', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        const submissions = (db.memory.submissions || [])
+        const withGrades = canReadStudentGrades(matchedAdmin);
+        const submissions = !withGrades ? [] : (db.memory.submissions || [])
             .filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email)
             // Nota inválida de registro antigo (vazia ou fora de 0 a 10) vai como null + aviso.
             .map(s => ({ id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp }))
@@ -2017,6 +2020,7 @@ router.get('/api/admin/student/academic', (req, res) => {
         const certificates = (db.memory.certificates || []).filter(c => c.studentEmail === email).sort((a, b) => (b.issuedAt || 0) - (a.issuedAt || 0));
         const moduleAccess = (db.memory.moduleAccess || []).filter(m => m.studentEmail === email).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 50);
         res.json({
+            ...(withGrades ? {} : { gradesHidden: true }),
             submissions,
             progress: { completedCount: completedUnits.length, completedUnits },
             attendance: { count: attendance.length, recent: attendance.slice(0, 30) },
@@ -2061,9 +2065,13 @@ router.get('/api/admin/student/report', (req, res) => {
         const className = cls?.name || membership.name || '';
         const structure = effectiveStructure(courseId, cls?.name)?.structure || course?.structure || [];
 
-        const ownSubmissions = (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
+        // Conta que não lê nota (Professor auxiliar, canReadStudentGrades): o boletim vem
+        // sem as provas (modules vazio, overallAverage null, gradesHidden: true); a
+        // frequência e o progresso continuam.
+        const withGrades = canReadStudentGrades(matchedAdmin);
+        const ownSubmissions = !withGrades ? [] : (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
         const contextSubmissions = scopeSubmissionsToContext(ownSubmissions, gradeScope(courseId, className));
-        const { modules, overallAverage } = buildStudentReportModules({
+        const { modules, overallAverage } = !withGrades ? { modules: [], overallAverage: null } : buildStudentReportModules({
             submissions: contextSubmissions.filter(s => s.gradePublished === true),
             allSubmissions: contextSubmissions,
             structure,
@@ -2083,6 +2091,7 @@ router.get('/api/admin/student/report', (req, res) => {
         const school = (db.memory.schools || []).find(s => s.id === (course && course.schoolId)) || null;
 
         res.json({
+            ...(withGrades ? {} : { gradesHidden: true }),
             generatedAt: Date.now(),
             institution: (school && (school.name || school.info?.tradeName)) || db.memory.branding?.displayName || db.memory.branding?.institutionName || 'IClass',
             student: { name: student.name, nomeSocial: student.nomeSocial || '', email: student.email, matricula: student.matricula || '', status: student.status || '' },
@@ -2100,7 +2109,7 @@ router.get('/api/admin/student/report', (req, res) => {
 
 // Painel do aluno — Etapa 1: indicadores consolidados. Somente admin (escopo aplicado pelo guard).
 router.get('/api/admin/student/dashboard', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
         // Curso/turma ativos da ficha: a média é a dessa matrícula, consolidada como em
@@ -2110,6 +2119,8 @@ router.get('/api/admin/student/dashboard', (req, res) => {
             studentClass: String(req.query.studentClass || '').trim(),
             // Módulos da estrutura da turma (com as variantes dela), como no boletim.
             structureFor: (courseId, className) => (courseId ? effectiveStructure(courseId, className)?.structure : null),
+            // Sem nota para quem não lê nota (Professor auxiliar): gradesHidden: true.
+            withGrades: canReadStudentGrades(matchedAdmin),
         }));
     });
 });
@@ -4711,6 +4722,13 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
         const examKey = req.params.examKey.trim();
         const courseId = req.query.courseId;
         const studentEmail = String(req.query.studentEmail || '').trim().toLowerCase();
+        // A revisão mostra as respostas do aluno com o gabarito e o acerto de cada questão:
+        // é nota. Quem acompanha a prova sem ler nota (Professor auxiliar, page.monitor sem
+        // page.results nem reports.view) recebe 403 grades_hidden; a lista do Monitor
+        // (monitor-status) continua com ele.
+        if (!canReadStudentGrades(req.adminAccount)) {
+            return res.status(403).json({ code: 'grades_hidden', error: 'Sua conta acompanha a prova, mas não vê as respostas corrigidas, o gabarito nem a nota do aluno.' });
+        }
         if (!studentEmail) return res.status(400).json({ error: 'studentEmail é obrigatório.' });
 
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)
@@ -5289,11 +5307,13 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
         // Índice montado uma vez por requisição: a tela de Alunos chama esta rota sem
         // filtro de curso, então sem ele o custo seria alunos × (presenças + submissões).
         const index = buildOverviewIndex(db.memory);
+        // Sem média para quem não lê nota (Professor auxiliar, canReadStudentGrades).
+        const withGrades = canReadStudentGrades(matchedAdmin);
         const overview = list.map(st => ({
             email: st.email,
             name: (st.nomeSocial && st.nomeSocial.trim()) || st.name || st.email,
             className: studentClass || scn(st)[0] || '',
-            ...studentOverview(db.memory, st, { courseId, studentClass, index }),
+            ...studentOverview(db.memory, st, { courseId, studentClass, index, withGrades }),
         }));
         res.json(overview);
     });
@@ -5551,7 +5571,8 @@ router.post('/api/admin/notifications/seen', (req, res) => {
 router.get('/api/admin/dashboard/trends', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const scope = _dashboardScope(req, matchedAdmin);
-        res.json(computeTrends({ memory: db.memory, students: scope.students, course: scope.course, cls: scope.cls, now: Date.now() }));
+        // Sem a média das provas para quem não lê nota (Professor auxiliar).
+        res.json(computeTrends({ memory: db.memory, students: scope.students, course: scope.course, cls: scope.cls, now: Date.now(), withGrades: canReadStudentGrades(matchedAdmin) }));
     });
 });
 

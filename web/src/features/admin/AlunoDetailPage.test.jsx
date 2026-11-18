@@ -309,3 +309,40 @@ describe('[UC-LGPD-011] Ficha do aluno · cópia dos dados pessoais', () => {
     expect(mocks.get.mock.calls.some(([path]) => String(path).startsWith('/api/admin/lgpd/students/export'))).toBe(false)
   })
 })
+
+describe('Ficha do aluno · professor auxiliar sem notas', () => {
+  it('[UC-PAPEIS-001] sem Resultados nem relatórios: sem Média, sem quadros de nota, sem Boletim e sem Auditoria nem Segurança', async () => {
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'], roleLabel: 'Professor auxiliar' }
+    const fallback = mocks.get.getMockImplementation()
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/student/dashboard')) {
+        return {
+          gradesHidden: true,
+          kpis: { media: null, provasFeitas: 0, provasTotais: 4, frequencia: 90, progresso: 10 },
+          comparativo: { studentMedia: null, turmaMedia: null, studentFreq: 90, turmaFreq: 85, turmaSize: 12 },
+          risco: { level: 'baixo', reasons: [] },
+          engajamento: { weeks: [], diasAtivos: 3 },
+          streak: { atual: 1, recorde: 2 },
+          temporal: { mediaAtual: null, mediaAnterior: null, presencaAtual: 3, presencaAnterior: 2 },
+          modulos: [],
+        }
+      }
+      return fallback(path)
+    })
+    render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('As notas não aparecem para o seu papel.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Boletim (PDF)' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Editar' })).toBeNull()
+    expect(screen.queryByText('Evolução das notas')).toBeNull()
+    expect(screen.queryByText('Desempenho por módulo')).toBeNull()
+    expect(screen.queryByText(/Média \(mês atual vs anterior\)/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Auditoria' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Frequência' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Segurança' })).toBeNull()
+    expect(mocks.get).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/admin\/student\/audit/))
+  })
+})

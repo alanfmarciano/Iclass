@@ -18,6 +18,7 @@ const CRUMBS = {
   '/identidade': ['Instituição', 'Identidade Visual'], '/sistema': ['Instituição', 'Sistema'], '/auditoria': ['Instituição', 'Auditoria'],
   '/lgpd': ['Instituição', 'Privacidade (LGPD)'],
   '/encerrados': ['Gestão acadêmica', 'Cadastros encerrados'],
+  '/minha-conta': ['Conta', 'Minha conta'],
 }
 export function AppShell() {
   const [open, setOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches)

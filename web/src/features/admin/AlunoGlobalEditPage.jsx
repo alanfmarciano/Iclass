@@ -16,6 +16,7 @@ import { StudentAuditPanel } from './StudentAuditPanel'
 import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
 import { StudentCloseDialog } from './StudentCloseDialog'
 import { isAnonymizedStatus, isClosedStatus } from './studentDeletion'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', Anonimizado: 'neutral' }
 
@@ -40,7 +41,10 @@ export default function AlunoGlobalEditPage() {
   const nav = useNavigate()
   const toast = useToast()
   const { auth } = useAuth()
-  const isProfessor = auth?.accountRole === 'professor'
+  // Conta com escopo (não é administrador pleno): acessibilidade só leitura e sem
+  // desligar, como o professor de antes; a Auditoria segue audit.view (contrato C2 do P4).
+  const isProfessor = !isFullAdmin(auth)
+  const canAudit = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.AUDIT_VIEW)
   const students = useApi('/api/admin/students')
   const { data: classes } = useApi('/api/admin/classes')
   const { data: courses } = useApi('/api/courses')
@@ -64,9 +68,9 @@ export default function AlunoGlobalEditPage() {
   // Aba Auditoria: só o administrador (audit.view, decisão P5); o professor nem pede a
   // trilha (o servidor responde 403).
   useEffect(() => {
-    if (isNew || !student || isProfessor) return
+    if (isNew || !student || !canAudit) return
     api.get(`/api/admin/student/audit?email=${encodeURIComponent(student.email)}`).then((r) => setAuditRows(Array.isArray(r) ? r : [])).catch(() => setAuditRows([]))
-  }, [student, isNew, isProfessor])
+  }, [student, isNew, canAudit])
 
   function toggleClass(name) {
     setForm((f) => ({ ...f, classes: f.classes.includes(name) ? f.classes.filter((x) => x !== name) : [...f.classes, name] }))
@@ -110,7 +114,7 @@ export default function AlunoGlobalEditPage() {
   const canClose = !isNew && !!form && !isProfessor && !isClosedStatus(student?.status)
   const tabs = [
     { id: 'cadastro', label: 'Cadastro' },
-    ...(!isProfessor ? [{ id: 'auditoria', label: 'Auditoria' }] : []),
+    ...(canAudit ? [{ id: 'auditoria', label: 'Auditoria' }] : []),
   ]
 
   return (
@@ -158,7 +162,7 @@ export default function AlunoGlobalEditPage() {
               </>
             )}
 
-            {!isNew && tab === 'auditoria' && !isProfessor && (
+            {!isNew && tab === 'auditoria' && canAudit && (
               <Card title="Auditoria do aluno">
                 <StudentAuditPanel rows={auditRows} />
               </Card>

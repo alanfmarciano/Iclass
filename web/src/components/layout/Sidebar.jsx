@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
-import { canAccessAdminPath } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPath, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 import { useBranding } from '../../context/BrandingProvider'
 import { useApi } from '../../hooks/useApi'
 
@@ -11,7 +11,8 @@ const COURSE_GROUPS = [
     { to: '/', icon: LayoutDashboard, text: 'Dashboard', end: true },
     // Endereço e QR code para projetar no quadro (H6a): abre em tela cheia, sem o menu.
     { to: '/endereco', icon: QrCode, text: 'Endereço da sala' },
-    { to: '/matriculas', icon: UserCheck, text: 'Matrículas', adminOnly: true },
+    // Aprovar matrícula (enrollments.approve): administrador e Secretaria.
+    { to: '/matriculas', icon: UserCheck, text: 'Matrículas' },
   ] },
   { label: 'Avaliações', items: [
     { to: '/provas', icon: ClipboardList, text: 'Provas' },
@@ -53,7 +54,8 @@ export function getAdminNavGroups(auth, pendingEnrollments = 0) {
   const baseGroups = auth.activeWorkspace?.courseId && auth.activeWorkspace?.className ? COURSE_GROUPS : INSTITUTION_GROUPS
   return baseGroups
     .map((group) => ({ ...group, items: group.items
-      .filter((item) => (!item.adminOnly || auth.accountRole !== 'professor') && (item.always || canAccessAdminPath(auth, item.to)))
+      // adminOnly: só o administrador pleno (contrato C2 do P4), além da permissão do caminho.
+      .filter((item) => (!item.adminOnly || isFullAdmin(auth)) && (item.always || canAccessAdminPath(auth, item.to)))
       .map((item) => item.to === '/matriculas' ? { ...item, badge: pendingEnrollments } : item) }))
     .filter((group) => group.items.length > 0)
 }
@@ -64,7 +66,7 @@ export function Sidebar({ open, onNavigate }) {
   const logo = branding?.logoLightUrl || branding?.logoDarkUrl || ''
   const brandName = branding?.displayName || 'IClass'
   const inCourse = !!(auth.activeWorkspace?.courseId && auth.activeWorkspace?.className)
-  const enrollmentPath = inCourse && auth.accountRole !== 'professor' ? `/api/admin/enrollment-requests?courseId=${encodeURIComponent(auth.activeWorkspace.courseId)}&studentClass=${encodeURIComponent(auth.activeWorkspace.className)}` : null
+  const enrollmentPath = inCourse && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.ENROLLMENTS_APPROVE) ? `/api/admin/enrollment-requests?courseId=${encodeURIComponent(auth.activeWorkspace.courseId)}&studentClass=${encodeURIComponent(auth.activeWorkspace.className)}` : null
   const enrollments = useApi(enrollmentPath, [auth.activeWorkspace?.courseId, auth.activeWorkspace?.className], { pollMs: 15000 })
   const visibleGroups = getAdminNavGroups(auth, enrollments.data?.pendingCount || 0)
 
