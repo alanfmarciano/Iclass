@@ -13,6 +13,12 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Cada tela mostra só as ações que a conta pode fazer: Novo aluno, Editar, Redefinir senha e as ações em lote do Diretório ficam com quem altera cadastro (não aparecem para a Coordenação nem para o Professor auxiliar). No Dashboard, o calendário, "Ver resultados" e as pendências de Resultados e do Fórum só aparecem para quem abre essas telas (antes a Secretaria via a seção "Não foi possível carregar"). Liberações, no menu do aluno, fica com quem libera conteúdo (antes aparecia para o Professor auxiliar, a Secretaria e a Coordenação e dava erro), e a Coordenação lê as observações sem o formulário de registrar. (FUN-13)
 - Em Identidade (excluir tema) e Sistema (esvaziar a lixeira e excluir de vez), a pergunta abre na janela do IClass, e não na caixa do navegador.
 
+### Notas com uma regra só
+- As cores das notas (verde, amarelo e vermelho), a "Aprovação" de Resultados, a nota em vermelho do boletim impresso e o motivo "média abaixo de 6,0" do Dashboard e da ficha do aluno seguem a mesma regra, pela média mínima de 6,0. A comparação é feita com a nota como ela aparece: quem tem 5,96 (mostrado como 6,0) não aparece mais como abaixo da média, e a ficha do aluno arredonda a média como o boletim. (ENG-02)
+- Resultados mostra sempre a nota da prova calculada pelo servidor (maior, última, média ou escolhida), sem refazer a conta na tela. (ENG-02)
+- Provas antigas em Markdown aceitam a alternativa e) e o gabarito "E" (antes a e) ficava colada no texto da d)). Letra depois de e) fica de fora com um aviso em Provas, nunca some sem avisar. (ENG-02)
+- Nota gravada só com espaços conta como nota vazia (antes valia 0). (ENG-02)
+
 ### Busca e ordem das listas
 - Agora dá para buscar sem acento e sem se preocupar com maiúsculas: "joao" acha "João" e "avaliacao" acha "Avaliação". Vale nas tabelas do painel, na Biblioteca, em Matrículas, na Chamada, no Fórum, em Provas (do professor e do aluno), em Avisos, em Cadastros encerrados, no Monitor, em Turmas, no seletor de curso e na Auditoria.
 - A busca aceita mais de uma palavra, em qualquer ordem: "martins joão" acha "João Martins". Na Auditoria, as palavras podem estar em campos diferentes da mesma entrada.

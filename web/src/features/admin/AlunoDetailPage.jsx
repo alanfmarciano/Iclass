@@ -17,7 +17,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf } from '../../lib/grades'
+import { CRITERIO_PADRAO, boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf, gradeTone } from '../../lib/grades'
 import { acceptanceText, birthDateText } from '../../lib/legalAcceptance'
 import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
@@ -309,7 +309,7 @@ export default function AlunoDetailPage() {
                         <div><p className="text-text">{s.examKey}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
                         {gradeOf(s.score) === null
                           ? <Badge tone="neutral" title="Registro antigo com nota vazia ou fora de 0 a 10">nota inválida</Badge>
-                          : <Badge tone={gradeOf(s.score) >= 6 ? 'success' : 'warning'}>{fmtGrade(s.score)}</Badge>}
+                          : <Badge tone={gradeTone(gradeOf(s.score), CRITERIO_PADRAO, 'simples', 'warning')}>{fmtGrade(s.score)}</Badge>}
                       </div>
                     ))}
                   </div>

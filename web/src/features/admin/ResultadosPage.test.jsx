@@ -255,3 +255,43 @@ describe('Resultados · motivo ao mudar nota publicada', () => {
     expect(mocks.toast.success).toHaveBeenCalledWith('Entrega excluída. Ela pode ser restaurada em "Notas excluídas".')
   })
 })
+
+describe('Resultados · regra de nota única', () => {
+  const entrega = (id, email, name, score, consolidatedScore, extra = {}) => ({
+    id, student: { name, email, courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', studentClass: '1DES',
+    examKey: 'Avaliacao_P2', applicationId: `app_${email}`, score, consolidatedScore, countsTowardResult: true,
+    gradePublished: true, timestamp: '2026-03-01T10:00:00Z', ...extra,
+  })
+
+  it('[UC-TENTATIVA-003] usa só a nota consolidada do servidor e a média mínima de 6,0 na nota como aparece', async () => {
+    const original = mocks.stable.submissions
+    const matchMedia = window.matchMedia
+    // Sem animação dos números (prefers-reduced-motion).
+    window.matchMedia = (query) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+    mocks.stable.submissions = [
+      // 59,6 aparece como 6,0: conta como aprovado (antes, 59,6 < 60 não contava).
+      entrega('a1', 'ana@x.local', 'Ana', 59.6, 59.6),
+      entrega('b1', 'bia@x.local', 'Bia', 40, 40),
+      // Sem consolidatedScore (o servidor sempre manda): o navegador não recalcula a
+      // regra das tentativas; antes a "maior nota" local dava 9,0 a Caio.
+      entrega('c1', 'caio@x.local', 'Caio', 90, undefined, { countsTowardResult: undefined }),
+      entrega('c2', 'caio@x.local', 'Caio', 70, undefined, { countsTowardResult: undefined }),
+    ]
+    try {
+      renderPage()
+      const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
+      await waitFor(() => expect(within(aprovacao).getByText('50%')).toBeInTheDocument())
+      const media = screen.getByText('Média geral').closest('div').parentElement
+      expect(within(media).getByText('5,0')).toBeInTheDocument()
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).getByText('6,0').className).toMatch(/text-success/)
+      const bia = screen.getByText('Bia').closest('tr')
+      expect(within(bia).getByText('4,0').className).toMatch(/text-warning/)
+      const caio = screen.getByText('Caio').closest('tr')
+      expect(within(caio).getByText('-')).toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+      window.matchMedia = matchMedia
+    }
+  })
+})

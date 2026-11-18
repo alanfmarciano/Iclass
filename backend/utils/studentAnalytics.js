@@ -7,6 +7,9 @@ const {
     buildStudentReportModules,
     consolidatedStudentAverage,
     createSubmissionContextResolver,
+    formatMinimumGrade,
+    gradeCriterionFor,
+    isPassingGrade,
     studentMemberships,
     submissionMatchesContext,
     withResolvedContext,
@@ -71,7 +74,9 @@ function studentScope(memory, student, { courseId = '', studentClass = '' } = {}
     return { courseId: String((cls && cls.courseId) || membership.courseId || ''), studentClass: membership.name };
 }
 // Arredonda para 1 casa preservando null (sem dado continua sem dado).
-const round1 = (v) => v == null ? null : Math.round(v * 10) / 10;
+// Uma casa, metade para cima, sem ruído de ponto flutuante: o mesmo arredondamento de
+// roundGrade (boletim, quadro e portal). Math.round(5.95 * 10) dava 5,9 aqui e 6,0 lá.
+const round1 = (v) => v == null ? null : Math.round(Number((v * 10).toFixed(6))) / 10;
 
 // Um dia conta como presença (streak/dias ativos) se tiver ao menos 1 aula presente.
 function isPresentAtt(a) {
@@ -220,7 +225,9 @@ function computeStudentDashboard(memory, email, options = {}) {
     const disciplinasEmRisco = frequenciaDisciplinas.filter(d => d.emRisco);
     if (stats.totalAulas > 0 && stats.frequenciaGeral != null && stats.frequenciaGeral < limiar) reasons.push(`Frequência baixa (${frequencia}%)`);
     if (disciplinasEmRisco.length) reasons.push(`Baixa frequência em ${disciplinasEmRisco.map(d => d.nome).join(', ')}`);
-    if (media != null && media < 6) reasons.push(`Média abaixo de 6 (${kpis.media})`);
+    // Média abaixo da mínima do critério (padrão 6,0), comparada como aparece na tela.
+    const criterio = gradeCriterionFor(memory, scope);
+    if (isPassingGrade(media, criterio) === false) reasons.push(`Média abaixo de ${formatMinimumGrade(criterio)} (${String(kpis.media).replace('.', ',')})`);
     const lastAccess = student && (student.lastLoginAt || student.lastSeenAt);
     const daysSince = lastAccess ? Math.floor((Date.now() - lastAccess) / 86400000) : null;
     if (daysSince !== null && daysSince > 14) reasons.push(`Sem acesso há ${daysSince} dias`);
@@ -311,7 +318,7 @@ function studentOverview(memory, student, options = {}) {
     const reasons = [];
     if (frequencia != null && frequencia < limiar) reasons.push('freq');
     if (disciplinasEmRisco) reasons.push('disciplina');
-    if (media != null && media < 6) reasons.push('media');
+    if (isPassingGrade(media, gradeCriterionFor(memory, { courseId, studentClass: options.studentClass || '' })) === false) reasons.push('media');
     const lastAccess = student.lastLoginAt || student.lastSeenAt;
     const daysSince = lastAccess ? Math.floor((Date.now() - lastAccess) / 86400000) : null;
     if (daysSince !== null && daysSince > 14) reasons.push('acesso');

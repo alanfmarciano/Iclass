@@ -289,6 +289,8 @@ export default function ProvasPage() {
     ])
     const ev = evalRes.evaluation || evalRes
     setEvaluation(ev)
+    // Prova lida do .md antigo pela primeira vez: o que ficou de fora (letra depois de e)).
+    if (Array.isArray(ev.avisosImportacao) && ev.avisosImportacao.length) toast.warning(`Ao ler a prova do arquivo: ${ev.avisosImportacao.join(' ')}`)
     setExcluded([])
     setUnusedOnly(false)
     setForm((f) => ({ ...f, questionCount: clampCount(f.questionCount, ev.questions?.length || 1) }))

@@ -10,7 +10,7 @@ import { MiniLineChart } from '../../components/ui/MiniLineChart'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
-import { consolidatedAverage, fmtGradeValue } from '../../lib/grades'
+import { CRITERIO_PADRAO, consolidatedAverage, fmtGradeValue, gradeBand as faixaDaNota, gradeTone as tomDaNota } from '../../lib/grades'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { usePolling } from '../../hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
@@ -18,8 +18,11 @@ import { matchesSearch } from '../../lib/textSearch'
 
 // Nota e armazenada em escala 0-100 e exibida em 0-10.
 const toGrade = (score) => Number(score) / 10
-const gradeTone = (g) => (g >= 7 ? 'success' : g >= 6 ? 'warning' : 'danger')
-const gradeText = (g) => (g >= 7 ? 'text-success' : g >= 6 ? 'text-warning' : 'text-danger')
+// Critério de nota do curso. Sem critérios configurados (hoje), o padrão: média
+// mínima 6,0. A faixa vem de web/src/lib/grades.js, a mesma regra do servidor.
+const criterio = CRITERIO_PADRAO
+const TONE_TEXT = { success: 'text-success', warning: 'text-warning', danger: 'text-danger' }
+const gradeText = (g) => TONE_TEXT[tomDaNota(g, criterio, 'aluno', 'danger')]
 const isPublished = (s) => s.gradePublished === true && !Number.isNaN(Number(s.score))
 const isConsidered = (s) => s.countsTowardResult && s.resultStatus !== 'archived'
 const shortLabel = (key = '') => key.replace(/^Avaliacao_?/i, '').replace(/_/g, ' ').slice(0, 8)
@@ -33,7 +36,8 @@ const POLICY_LABEL = { highest: 'Maior nota', latest: 'Última tentativa', avera
 const MOD_ACCENTS = ['var(--info)', 'var(--success)', 'var(--warning)', 'var(--primary)', 'var(--danger)']
 // Mesmo arredondamento do boletim e de Resultados (7,35 -> 7,4).
 const fmtGrade = (n) => fmtGradeValue(n)
-const gradeBand = (g) => (g == null ? '' : g >= 9 ? 'g-success' : g >= 7 ? 'g-info' : g >= 6 ? 'g-warning' : 'g-danger')
+const BAND_CLASS = { excelente: 'g-success', bom: 'g-info', suficiente: 'g-warning', abaixo: 'g-danger', muito_abaixo: 'g-danger' }
+const gradeBand = (g) => (g == null ? '' : BAND_CLASS[faixaDaNota(g, criterio)] || '')
 const fmtDate = (t) => (t ? new Date(t).toLocaleDateString('pt-BR') : '')
 
 // Card de uma prova avulsa (uma tentativa unica).

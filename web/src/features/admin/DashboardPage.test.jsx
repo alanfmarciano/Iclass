@@ -93,4 +93,13 @@ describe('[UC-PAPEIS-001] Dashboard por papel', () => {
     expect(riskReasons(row, 75).map((item) => item.text)).toEqual(['nenhuma prova entregue'])
     expect(riskReasons(row, 75, true)).toEqual([])
   })
+
+  it('[UC-TENTATIVA-003] riskReasons: média abaixo da mínima do critério, na nota como aparece', () => {
+    const texts = (media, criterio) => riskReasons({ frequencia: 90, faltas: 0, media }, 75, false, criterio).map((item) => item.text)
+    expect(texts(5)).toEqual(['média 5,0 — abaixo de 6,0'])
+    expect(texts(5.95)).toEqual([])
+    expect(texts(6)).toEqual([])
+    expect(texts(5, { mediaMinima: 5 })).toEqual([])
+    expect(texts(4.5, { mediaMinima: 5 })).toEqual(['média 4,5 — abaixo de 5,0'])
+  })
 })

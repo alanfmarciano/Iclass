@@ -456,3 +456,40 @@ test('[UC-TENTATIVA-001] cronômetro coletivo pausado: quem ainda não começou 
     assert.ok(Math.abs(brunoRow.timerRemaining - first[bruno.email]) <= 2, `Bruno começou com ${brunoRow.timerRemaining}`);
     await finishOpenApplications();
 });
+
+test('[UC-TENTATIVA-003] "Ver respostas" de entrega antiga sem correção salva usa o gabarito da correção (correctAnswerFor)', async () => {
+    const { ana } = students;
+    const legacyKey = 'Avaliacao_Monitor_Legada';
+    // Entrega antiga, sem aplicação e sem gradedAnswers: o gabarito sai da versão
+    // gravada. A questão 1 marca a certa só pela alternativa (isCorrect), a 2 pelo
+    // campo correctAnswer em minúscula, a 3 não tem gabarito.
+    db.memory.submissions.push({
+        id: 'sub_legada_monitor',
+        examKey: legacyKey,
+        studentEmail: ana.email,
+        student: { email: ana.email, name: 'Aluno 1', studentClass, courseId },
+        studentClass,
+        courseId,
+        score: 50,
+        timestamp: new Date().toISOString(),
+        examSnapshot: {
+            version: 'A',
+            questions: [
+                { originalNumber: 1, text: 'Questão 1', alternatives: [{ letter: 'A', text: 'x', isCorrect: false }, { letter: 'B', text: 'y', isCorrect: true }] },
+                { originalNumber: 2, text: 'Questão 2', correctAnswer: 'c', alternatives: [{ letter: 'A', text: 'x' }, { letter: 'B', text: 'y' }, { letter: 'C', text: 'z' }] },
+                { originalNumber: 3, text: 'Questão 3', alternatives: [{ letter: 'A', text: 'x' }, { letter: 'B', text: 'y' }] },
+            ],
+        },
+    });
+    try {
+        const review = await admin('get', `/api/admin/monitor-review/${encodeURIComponent(studentClass)}/${encodeURIComponent(legacyKey)}`)
+            .query({ courseId, studentEmail: ana.email })
+            .expect(200);
+        assert.equal(review.body.status, 'finished');
+        assert.deepEqual(review.body.questions.map(q => q.correctAnswer), ['B', 'C', null]);
+        assert.deepEqual(review.body.questions[0].alternatives.map(a => a.correct), [false, true]);
+        assert.deepEqual(review.body.questions[1].alternatives.map(a => a.correct), [false, false, true]);
+    } finally {
+        db.memory.submissions = db.memory.submissions.filter(sub => sub.id !== 'sub_legada_monitor');
+    }
+});

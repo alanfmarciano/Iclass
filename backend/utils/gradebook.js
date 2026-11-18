@@ -83,6 +83,84 @@ function formatGradeBR(score) {
     return grade === null ? '' : grade.toFixed(1).replace('.', ',');
 }
 
+// ---- Critério e faixas da nota (ENG-02, contrato C1 do P2) -------------------
+// Toda comparação de nota com a média mínima passa por aqui (e, na tela, pela cópia
+// em web/src/lib/grades.js, conferida por test/backend/regra-de-nota-unica.test.js).
+// Ninguém compara nota com 6, 7, 9 ou 60 escritos no código.
+//
+// Sem critérios configurados vale o padrão: média mínima 6,0 e a conta de sempre
+// (regraAntiga). gradeCriterionFor é o único lugar que diz qual critério vale para um
+// curso ou turma; os critérios do curso (P2-S3) entram ali.
+const MEDIA_MINIMA_PADRAO = 6;
+const DEFAULT_GRADE_CRITERION = Object.freeze({ mediaMinima: MEDIA_MINIMA_PADRAO, mencoes: null, regraAntiga: true });
+// Faixas acima da mínima: 9,0 em diante "excelente", 7,0 em diante "bom". Abaixo da
+// mínima, até 2 pontos dela é "abaixo"; mais longe, "muito abaixo". Com mínima 6
+// são as faixas que as telas sempre usaram (9/7/6, e 4 no "Média" de Resultados).
+const FAIXA_EXCELENTE = 9;
+const FAIXA_BOM = 7;
+const DISTANCIA_DE_ALERTA = 2;
+// Análise da prova (Monitor): "alto" a partir de 8,5.
+const FAIXA_ALTO_DESEMPENHO = 8.5;
+const GRADE_BANDS = ['excelente', 'bom', 'suficiente', 'abaixo', 'muito_abaixo'];
+
+// Uma casa, "metade para cima", como roundGrade (8,99 -> 9,0; 5,96 -> 6,0): a faixa
+// é a da nota que aparece na tela.
+function roundGradeValue(grade) {
+    if (grade === null || grade === undefined || grade === '' || typeof grade === 'boolean') return null;
+    const number = Number(grade);
+    if (!Number.isFinite(number) || number < 0 || number > GRADE_MAX) return null;
+    return Math.round(Number((number * 10).toFixed(6))) / 10;
+}
+
+function normalizeGradeCriterion(criterio) {
+    const minima = roundGradeValue(criterio?.mediaMinima);
+    return {
+        mediaMinima: minima === null ? MEDIA_MINIMA_PADRAO : minima,
+        mencoes: Array.isArray(criterio?.mencoes) ? criterio.mencoes : null,
+        regraAntiga: criterio?.regraAntiga !== false,
+    };
+}
+
+// Critério que vale para o curso/turma: gradeCriterionFor(memory, { courseId, studentClass }).
+// Hoje nenhum curso tem critérios: sempre o padrão.
+function gradeCriterionFor(_memory, _context) {
+    return { ...DEFAULT_GRADE_CRITERION };
+}
+
+// Nota de 0 a 10 -> faixa (GRADE_BANDS), ou null sem nota válida.
+function gradeBand(grade, criterio) {
+    const value = roundGradeValue(grade);
+    if (value === null) return null;
+    const { mediaMinima } = normalizeGradeCriterion(criterio);
+    if (value < mediaMinima) {
+        const alerta = Math.round((mediaMinima - DISTANCIA_DE_ALERTA) * 10) / 10;
+        return value >= alerta ? 'abaixo' : 'muito_abaixo';
+    }
+    if (value >= FAIXA_EXCELENTE) return 'excelente';
+    if (value >= FAIXA_BOM) return 'bom';
+    return 'suficiente';
+}
+
+// A nota alcança a média mínima? null sem nota válida.
+function isPassingGrade(grade, criterio) {
+    const band = gradeBand(grade, criterio);
+    if (band === null) return null;
+    return band !== 'abaixo' && band !== 'muito_abaixo';
+}
+
+// "baixo" (abaixo da mínima), "medio" ou "alto" para a análise da prova.
+function performanceBucket(grade, criterio) {
+    const passing = isPassingGrade(grade, criterio);
+    if (passing === null) return null;
+    if (!passing) return 'baixo';
+    return roundGradeValue(grade) >= FAIXA_ALTO_DESEMPENHO ? 'alto' : 'medio';
+}
+
+// Média mínima para texto ("6,0").
+function formatMinimumGrade(criterio) {
+    return normalizeGradeCriterion(criterio).mediaMinima.toFixed(1).replace('.', ',');
+}
+
 function average(values) {
     const valid = values.filter(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
     return valid.length ? valid.reduce((sum, value) => sum + Number(value), 0) / valid.length : null;
@@ -1170,6 +1248,8 @@ module.exports = {
     tidyScrubbedText,
     ANONYMIZED_STUDENT_NAME,
     CSV_BOM,
+    DEFAULT_GRADE_CRITERION,
+    GRADE_BANDS,
     GRADE_MAX,
     GRADE_REASON_MAX,
     GRADE_REASON_MIN,
@@ -1195,12 +1275,18 @@ module.exports = {
     formatDateBR,
     formatDateTimeBR,
     formatGradeBR,
+    formatMinimumGrade,
+    gradeBand,
     gradeCountsMismatch,
+    gradeCriterionFor,
     gradeChangeReason,
     gradeFromScore,
     gradebookCsv,
     isEmptyInput,
+    isPassingGrade,
+    normalizeGradeCriterion,
     parseCountInput,
+    performanceBucket,
     parseGradeInput,
     recordGradeAudit,
     safeFilePart,

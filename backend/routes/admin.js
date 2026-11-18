@@ -33,7 +33,7 @@ const {
     sendRouteError,
     validateAdminPermission
 } = require('../middlewares.js');
-const { parseEvaluationMarkdown } = require('../utils/parser.js');
+const { parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { canAccessAdminPermission, canReadStudentGrades, hasAdminCapability } = require('../utils/adminPermissions.js');
@@ -81,11 +81,13 @@ const {
     formatDateTimeBR,
     formatGradeBR,
     gradeCountsMismatch,
+    gradeCriterionFor,
     gradeFromScore,
     gradebookCsv,
     isEmptyInput,
     parseCountInput,
     parseGradeInput,
+    performanceBucket,
     recordGradeAudit,
     gradeChangeReason,
     safeFilePart,
@@ -3358,14 +3360,19 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
         const { key } = req.params;
         if (!adminCanAccessItem(matchedAdmin, key)) return res.status(403).json({ error: 'Recurso não autorizado.' });
         let evaluation = db.memory.evaluations[key];
-        
+        // Avisos da leitura do .md (alternativa ou gabarito fora de a-e): voltam só na
+        // primeira abertura, quando a prova sai do arquivo; não ficam gravados.
+        let avisos = [];
+
         if (!evaluation) {
             // Tenta carregar e migrar se houver arquivo .md legando em disco
             const mdPath = path.join(runtimePaths.CONTENT_DIR, `${key}.md`);
             if (fs.existsSync(mdPath)) {
                 try {
                     const mdContent = fs.readFileSync(mdPath, 'utf8');
-                    evaluation = parseEvaluationMarkdown(mdContent, key);
+                    const parsed = parseEvaluationMarkdownWithWarnings(mdContent, key);
+                    evaluation = parsed.evaluation;
+                    avisos = parsed.avisos;
                     if (evaluation) {
                         db.memory.evaluations[key] = evaluation;
                         db.save();
@@ -3377,7 +3384,7 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
         if (!evaluation) {
             return res.status(404).json({ error: 'Avaliação não encontrada.' });
         }
-        res.json(evaluation);
+        res.json(avisos.length ? { ...evaluation, avisosImportacao: avisos } : evaluation);
     });
 });
 
@@ -4810,12 +4817,6 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             }));
         }
 
-        function getCorrectAnswer(question) {
-            if (question.correctAnswer) return String(question.correctAnswer).toUpperCase();
-            const correctAlt = (question.alternatives || []).find(alt => alt.isCorrect);
-            return correctAlt && correctAlt.letter ? String(correctAlt.letter).toUpperCase() : '';
-        }
-
         const gradedByNumber = new Map(
             (submission ? (submission.gradedAnswers || []) : (liveGrade ? liveGrade.gradedAnswers : []))
                 .map(a => [Number(a.questionNumber), a])
@@ -4839,12 +4840,13 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                 correctAnswer = graded.correctAnswer ? String(graded.correctAnswer).toUpperCase() : null;
                 isCorrect = graded.isCorrect === true;
             } else if (submission) {
-                correctAnswer = getCorrectAnswer(question) || null;
+                // Gabarito pela mesma regra da correção (examGrading.correctAnswerFor).
+                correctAnswer = correctAnswerFor(question) || null;
             } else {
                 const rawChoice = answers[question.number] != null ? answers[question.number]
                     : (answers[questionNumber] != null ? answers[questionNumber] : null);
                 studentChoice = rawChoice != null ? String(rawChoice).toUpperCase() : null;
-                correctAnswer = getCorrectAnswer(question) || null;
+                correctAnswer = correctAnswerFor(question) || null;
                 isCorrect = !!studentChoice && studentChoice === correctAnswer;
             }
 
@@ -5025,10 +5027,11 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
         const validScores = [...submissionsByStudent.values()]
             .map(list => consolidatedStudentAverage(list).average)
             .filter(score => score !== null);
+        // Faixas pela média mínima do critério (gradebook.performanceBucket), na nota
+        // como aparece na tela (5,96 é 6,0).
+        const criterio = gradeCriterionFor(db.memory, { courseId: String(req.query.courseId || ''), studentClass });
         validScores.forEach(score => {
-            if (score < 60) gradeBuckets.baixo++;
-            else if (score < 85) gradeBuckets.medio++;
-            else gradeBuckets.alto++;
+            gradeBuckets[performanceBucket(score / 10, criterio)]++;
         });
 
         submissions.forEach(sub => {
