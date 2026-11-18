@@ -1,0 +1,3417 @@
+{
+ "sinoAluno": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "items": [
+    {
+     "id": "prova:app_run",
+     "type": "prova",
+     "title": "Prova disponível",
+     "text": "Prova 2",
+     "at": 1792504800000,
+     "unread": true,
+     "href": "/aluno/prova/Prova_2?applicationId=app_run"
+    },
+    {
+     "id": "aviso:an_turma",
+     "type": "aviso",
+     "title": "Aviso da turma",
+     "text": "Prova na sexta.",
+     "at": 1792335600000,
+     "href": "/aluno/avisos",
+     "unread": true
+    },
+    {
+     "id": "duvida:r_prof",
+     "type": "duvida",
+     "title": "Sua dúvida foi respondida",
+     "text": "Minha dúvida",
+     "at": 1792335600000,
+     "href": "/aluno/duvidas",
+     "unread": true
+    },
+    {
+     "id": "nota:sub_ana_pub",
+     "type": "nota",
+     "title": "Nota publicada",
+     "text": "Prova 1",
+     "at": 1792335600000,
+     "href": "/aluno/provas",
+     "unread": true
+    },
+    {
+     "id": "aviso:an_curso",
+     "type": "aviso",
+     "title": "Aviso do curso",
+     "text": "Semana de provas.",
+     "at": 1792076400000,
+     "href": "/aluno/avisos",
+     "unread": false
+    }
+   ],
+   "unread": 4,
+   "legalVersion": "modelo-2026.1:termos|modelo-2026.1:privacidade"
+  }
+ },
+ "calendarioAluno": {
+  "status": 200,
+  "body": [
+   {
+    "id": "ev_curso",
+    "title": "Prova final",
+    "description": "",
+    "eventDate": "2026-11-05",
+    "startTime": "08:00",
+    "endTime": "",
+    "eventType": "prova",
+    "target": "curso",
+    "targetValue": "DES",
+    "courseId": "DES",
+    "authorName": ""
+   },
+   {
+    "id": "ev_turma",
+    "title": "Feira de ciências",
+    "description": "No pátio.",
+    "eventDate": "2026-11-05",
+    "startTime": "14:00",
+    "endTime": "17:00",
+    "eventType": "evento",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "authorName": "Professora Paula"
+   }
+  ]
+ },
+ "fila": [
+  {
+   "id": "chamada_pendente",
+   "tipo": "chamada_pendente",
+   "titulo": "Chamada de hoje não lançada",
+   "detalhe": "1 aula na grade de hoje · Chamada",
+   "count": 1,
+   "tone": "danger",
+   "href": "/chamada",
+   "permissao": "page.dashboard"
+  },
+  {
+   "id": "sem_avaliacao",
+   "tipo": "sem_avaliacao",
+   "titulo": "Alunos sem nenhuma avaliação",
+   "detalhe": "nunca entregaram prova neste curso · Resultados",
+   "count": 1,
+   "tone": "info",
+   "href": "/resultados",
+   "permissao": "page.results"
+  },
+  {
+   "id": "conteudo_bloqueado",
+   "tipo": "conteudo_bloqueado",
+   "titulo": "Conteúdo de \"Unidade 1\" ainda bloqueado",
+   "detalhe": "a prova desta unidade acontece em até 7 dias · Materiais",
+   "count": 1,
+   "tone": "neutral",
+   "href": "/materiais",
+   "permissao": "page.materials"
+  },
+  {
+   "id": "compactar_banco",
+   "tipo": "compactar_banco",
+   "titulo": "Compactar o banco",
+   "detalhe": "30 MB sem uso dentro do arquivo do banco (30%) · Sistema → Armazenamento",
+   "count": 30,
+   "tone": "info",
+   "href": "/sistema",
+   "permissao": "system.manage"
+  },
+  {
+   "id": "senhas_pedidas",
+   "tipo": "senhas_pedidas",
+   "titulo": "Alunos pediram nova senha",
+   "detalhe": "gere uma senha temporária em Redefinir senha · Alunos",
+   "count": 1,
+   "tone": "warning",
+   "href": "/alunos",
+   "permissao": "page.students"
+  }
+ ],
+ "filaSemTurma": [
+  {
+   "id": "duvidas_paradas",
+   "tipo": "duvidas_paradas",
+   "titulo": "Dúvidas sem resposta há mais de 24 h",
+   "detalhe": "aguardando o instrutor · Fórum",
+   "count": 2,
+   "tone": "warning",
+   "href": "/forum",
+   "permissao": "page.forum",
+   "at": 1788620400000
+  }
+ ],
+ "sinoInstrutor": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "items": [
+    {
+     "id": "chamada_pendente@DES::1DES",
+     "type": "chamada_pendente",
+     "title": "Chamada de hoje não lançada",
+     "text": "1 aula na grade de hoje · Chamada",
+     "context": "",
+     "count": 1,
+     "tone": "danger",
+     "href": "/chamada",
+     "at": null,
+     "courseId": "DES",
+     "courseName": "Desenvolvimento",
+     "studentClass": "1DES",
+     "schoolId": "escola_a",
+     "period": "Manhã",
+     "key": "DES::1DES::chamada_pendente:1",
+     "unread": true
+    },
+    {
+     "id": "duvidas_paradas@DES::1DES",
+     "type": "duvidas_paradas",
+     "title": "Dúvidas sem resposta há mais de 24 h",
+     "text": "aguardando o instrutor · Fórum",
+     "context": "",
+     "count": 2,
+     "tone": "warning",
+     "href": "/forum",
+     "at": 1788620400000,
+     "courseId": "DES",
+     "courseName": "Desenvolvimento",
+     "studentClass": "1DES",
+     "schoolId": "escola_a",
+     "period": "Manhã",
+     "key": "DES::1DES::duvidas_paradas:2",
+     "unread": true
+    },
+    {
+     "id": "sem_avaliacao@DES::1DES",
+     "type": "sem_avaliacao",
+     "title": "Alunos sem nenhuma avaliação",
+     "text": "nunca entregaram prova neste curso · Resultados",
+     "context": "",
+     "count": 1,
+     "tone": "info",
+     "href": "/resultados",
+     "at": null,
+     "courseId": "DES",
+     "courseName": "Desenvolvimento",
+     "studentClass": "1DES",
+     "schoolId": "escola_a",
+     "period": "Manhã",
+     "key": "DES::1DES::sem_avaliacao:1",
+     "unread": true
+    }
+   ],
+   "unread": 3
+  }
+ },
+ "meusDadosAluno": {
+  "type": "iclass-dados-pessoais",
+  "formatVersion": 1,
+  "audience": "aluno",
+  "generatedAt": "2026-10-20T15:00:00.000Z",
+  "notice": "Cópia dos seus dados pessoais guardados pelo IClass desta escola (art. 18 da LGPD: acesso e portabilidade). Não traz a sua senha nem dados de outros alunos. Nota ainda não publicada aparece como \"em revisão\", e o gabarito só aparece depois que o professor o libera. Para corrigir um dado ou pedir a cópia completa, fale com o professor ou com o encarregado de dados da escola.",
+  "institution": {
+   "id": "escola_a",
+   "name": "Escola Alfa",
+   "dpo": {
+    "name": "Encarregada Lia",
+    "email": "dpo@escola.local",
+    "phone": ""
+   }
+  },
+  "profile": {
+   "name": "Ana Souza",
+   "email": "ana@igualdade.local",
+   "matricula": "2026-001",
+   "phone": "11 98888-0000",
+   "status": "Ativo",
+   "period": "Manhã"
+  },
+  "enrollments": {
+   "classes": [
+    {
+     "className": "1DES",
+     "courseId": "DES",
+     "courseName": "Desenvolvimento"
+    }
+   ],
+   "period": "Manhã",
+   "requests": []
+  },
+  "acceptances": {
+   "terms": null,
+   "privacy": null,
+   "previous": []
+  },
+  "submissions": [
+   {
+    "id": "sub_ana_pub",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "period": "Manhã",
+     "studentClass": "1DES",
+     "courseId": "DES"
+    },
+    "examKey": "Prova_1",
+    "score": 80,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A"
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792335600000,
+    "answerKeyReleased": false
+   },
+   {
+    "id": "sub_ana_rev",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "period": "Manhã",
+     "studentClass": "1DES",
+     "courseId": "DES"
+    },
+    "examKey": "Prova_2",
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A"
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": false,
+    "countsTowardResult": false,
+    "answerKeyReleased": false,
+    "resultStatus": "em_revisao"
+   }
+  ],
+  "attendance": [
+   {
+    "id": "att_ana",
+    "studentEmail": "ana@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-01",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "timestamp": 1791212400000
+   }
+  ],
+  "certificates": [],
+  "observations": [
+   {
+    "id": "obs_ana",
+    "studentEmail": "ana@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Participa bem.",
+    "timestamp": 1791730800000
+   }
+  ],
+  "progress": {
+   "ana@igualdade.local": {
+    "Apostila_1": true
+   }
+  },
+  "notes": {
+   "ana@igualdade.local": {
+    "geral": "Minhas anotações."
+   }
+  },
+  "annotations": {
+   "ana@igualdade.local": {
+    "Apostila_1": [
+     {
+      "text": "grifo"
+     }
+    ]
+   }
+  },
+  "forum": {
+   "questions": [
+    {
+     "id": "f_ana",
+     "key": "Apostila_1",
+     "courseId": "DES",
+     "studentClass": "1DES",
+     "studentName": "Ana Souza",
+     "studentEmail": "ana@igualdade.local",
+     "text": "Minha dúvida",
+     "timestamp": "2026-10-17T15:00:00.000Z",
+     "status": "respondida",
+     "replies": [
+      {
+       "from": "Equipe",
+       "text": "Resposta",
+       "timestamp": "2026-10-18T15:00:00.000Z"
+      }
+     ]
+    }
+   ],
+   "replies": []
+  },
+  "moduleAccess": [
+   {
+    "id": "acc_ana",
+    "studentEmail": "ana@igualdade.local",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "timestamp": 1792422000000
+   }
+  ],
+  "loginLogs": [
+   {
+    "id": "login_ana",
+    "email": "ana@igualdade.local",
+    "role": "student",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.5"
+   }
+  ],
+  "proctoring": {
+   "focusEvents": [
+    {
+     "id": "pl_ana",
+     "studentEmail": "ana@igualdade.local",
+     "examKey": "Prova_1",
+     "type": "tab_blur",
+     "timestamp": 1791644400000
+    }
+   ],
+   "keystrokes": []
+  },
+  "examRecords": [],
+  "examMessages": [],
+  "profileHistory": [
+   {
+    "timestamp": "2026-08-31T15:00:00.000Z",
+    "label": "Cadastro do aluno alterado",
+    "field": "E-mail/login",
+    "oldValue": "ana.antiga@igualdade.local",
+    "newValue": "ana@igualdade.local"
+   }
+  ],
+  "examTitles": {
+   "Prova_1": "Prova 1",
+   "Prova_2": "Prova 2"
+  },
+  "counts": {
+   "submissions": 2,
+   "attendance": 1,
+   "certificates": 0,
+   "observations": 1,
+   "forumQuestions": 1,
+   "forumReplies": 0,
+   "moduleAccess": 1,
+   "loginLogs": 1,
+   "proctoringLogs": 1,
+   "keystrokes": 0,
+   "examMessages": 0,
+   "profileHistory": 1
+  }
+ },
+ "meusDadosAdmin": {
+  "type": "iclass-dados-pessoais",
+  "formatVersion": 1,
+  "audience": "admin",
+  "generatedAt": "2026-10-20T15:00:00.000Z",
+  "notice": "Exportação completa dos dados pessoais do aluno, feita pela administração (art. 18 da LGPD). Inclui observações restritas, acessibilidade, provas em andamento e a auditoria. Este arquivo é dado pessoal: guarde em lugar seguro e não envie por canal aberto.",
+  "institution": {
+   "id": "escola_a",
+   "name": "Escola Alfa",
+   "dpo": {
+    "name": "Encarregada Lia",
+    "email": "dpo@escola.local",
+    "phone": ""
+   }
+  },
+  "generatedBy": "adm@igualdade.local",
+  "knownEmails": [
+   "ana@igualdade.local",
+   "ana.antiga@igualdade.local"
+  ],
+  "anonymized": false,
+  "profile": {
+   "name": "Ana Souza",
+   "email": "ana@igualdade.local",
+   "status": "Ativo",
+   "matricula": "2026-001",
+   "period": "Manhã",
+   "phone": "11 98888-0000",
+   "notificationsSeenAt": 1792162800000,
+   "notificationsSeenAtByContext": {
+    "DES::1DES": 1792249200000
+   }
+  },
+  "enrollments": {
+   "classes": [
+    {
+     "className": "1DES",
+     "courseId": "DES",
+     "courseName": "Desenvolvimento"
+    }
+   ],
+   "period": "Manhã",
+   "requests": []
+  },
+  "acceptances": {
+   "terms": null,
+   "privacy": null,
+   "previous": []
+  },
+  "submissions": [
+   {
+    "id": "sub_ana_pub",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 80,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792335600000,
+    "gradePublishedBy": "prof@igualdade.local"
+   },
+   {
+    "id": "sub_ana_rev",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_2",
+    "score": 55,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": false
+   }
+  ],
+  "attendance": [
+   {
+    "id": "att_ana",
+    "studentEmail": "ana@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-01",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   }
+  ],
+  "certificates": [],
+  "observations": [
+   {
+    "id": "obs_ana",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Participa bem.",
+    "timestamp": 1791730800000
+   },
+   {
+    "id": "obs_ana_team",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Equipe pedagógica",
+    "text": "Conversar com a família.",
+    "timestamp": 1791817200000
+   }
+  ],
+  "progress": {
+   "ana@igualdade.local": {
+    "Apostila_1": true
+   }
+  },
+  "notes": {
+   "ana@igualdade.local": {
+    "geral": "Minhas anotações."
+   }
+  },
+  "annotations": {
+   "ana@igualdade.local": {
+    "Apostila_1": [
+     {
+      "text": "grifo"
+     }
+    ]
+   }
+  },
+  "forum": {
+   "questions": [
+    {
+     "id": "f_ana",
+     "key": "Apostila_1",
+     "courseId": "DES",
+     "studentClass": "1DES",
+     "studentName": "Ana Souza",
+     "studentEmail": "ana@igualdade.local",
+     "text": "Minha dúvida",
+     "timestamp": "2026-10-17T15:00:00.000Z",
+     "status": "respondida",
+     "replies": [
+      {
+       "from": "Equipe",
+       "id": "r_prof",
+       "authorName": "Professora Paula",
+       "authorEmail": "prof@igualdade.local",
+       "authorRole": "Instrutor",
+       "text": "Resposta",
+       "timestamp": "2026-10-18T15:00:00.000Z"
+      }
+     ],
+     "events": []
+    }
+   ],
+   "replies": []
+  },
+  "moduleAccess": [
+   {
+    "id": "acc_ana",
+    "studentEmail": "ana@igualdade.local",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "timestamp": 1792422000000
+   }
+  ],
+  "loginLogs": [
+   {
+    "id": "login_ana",
+    "email": "ana@igualdade.local",
+    "role": "student",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.5"
+   }
+  ],
+  "proctoring": {
+   "focusEvents": [
+    {
+     "id": "pl_ana",
+     "studentEmail": "ana@igualdade.local",
+     "examKey": "Prova_1",
+     "type": "tab_blur",
+     "timestamp": 1791644400000
+    }
+   ],
+   "keystrokes": []
+  },
+  "examRecords": [],
+  "examMessages": [],
+  "profileHistory": [
+   {
+    "timestamp": "2026-08-31T15:00:00.000Z",
+    "label": "Cadastro do aluno alterado",
+    "field": "E-mail/login",
+    "oldValue": "ana.antiga@igualdade.local",
+    "newValue": "ana@igualdade.local"
+   }
+  ],
+  "openAttempts": [],
+  "audit": [
+   {
+    "id": "aud_email",
+    "action": "update",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "actorRole": "",
+    "timestamp": 1788188400000,
+    "ip": "",
+    "studentEmail": "ana@igualdade.local",
+    "targetEmail": "",
+    "courseId": null,
+    "studentClass": null,
+    "examKey": null,
+    "applicationId": null,
+    "submissionId": null,
+    "field": "E-mail/login",
+    "oldValue": "ana.antiga@igualdade.local",
+    "newValue": "ana@igualdade.local",
+    "reason": "",
+    "before": null,
+    "after": null,
+    "details": null,
+    "label": "Cadastro do aluno alterado"
+   }
+  ],
+  "examTitles": {
+   "Prova_1": "Prova 1",
+   "Prova_2": "Prova 2"
+  },
+  "counts": {
+   "submissions": 2,
+   "attendance": 1,
+   "certificates": 0,
+   "observations": 2,
+   "forumQuestions": 1,
+   "forumReplies": 0,
+   "moduleAccess": 1,
+   "loginLogs": 1,
+   "proctoringLogs": 1,
+   "keystrokes": 0,
+   "examMessages": 0,
+   "profileHistory": 1,
+   "audit": 1,
+   "openAttempts": 0
+  }
+ },
+ "encerrados": [
+  {
+   "email": "bia@igualdade.local",
+   "name": "Bia Lima",
+   "nomeSocial": "",
+   "matricula": "2026-002",
+   "status": "Inativo",
+   "since": 1789916400000,
+   "by": "adm@igualdade.local",
+   "reason": "Pedido da família da Bia Lima",
+   "classes": [
+    {
+     "name": "1DES",
+     "courseId": "DES"
+    }
+   ],
+   "anonymizedAt": null,
+   "anonymized": false,
+   "counts": {
+    "submissions": 1,
+    "attendance": 1,
+    "certificates": 1
+   }
+  },
+  {
+   "email": "caio@igualdade.local",
+   "name": "Caio Prado",
+   "nomeSocial": "",
+   "matricula": "2026-003",
+   "status": "Transferido",
+   "since": 1790780400000,
+   "by": "adm@igualdade.local",
+   "reason": "Mudou de escola",
+   "classes": [
+    {
+     "name": "1DES",
+     "courseId": "DES"
+    }
+   ],
+   "anonymizedAt": null,
+   "anonymized": false,
+   "counts": {
+    "submissions": 1,
+    "attendance": 1,
+    "certificates": 1
+   }
+  }
+ ],
+ "encerradosRota": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "items": [
+    {
+     "email": "bia@igualdade.local",
+     "name": "Bia Lima",
+     "nomeSocial": "",
+     "matricula": "2026-002",
+     "status": "Inativo",
+     "since": 1789916400000,
+     "by": "adm@igualdade.local",
+     "reason": "Pedido da família da Bia Lima",
+     "classes": [
+      {
+       "name": "1DES",
+       "courseId": "DES"
+      }
+     ],
+     "anonymizedAt": null,
+     "anonymized": false,
+     "counts": {
+      "submissions": 1,
+      "attendance": 1,
+      "certificates": 1
+     }
+    },
+    {
+     "email": "caio@igualdade.local",
+     "name": "Caio Prado",
+     "nomeSocial": "",
+     "matricula": "2026-003",
+     "status": "Transferido",
+     "since": 1790780400000,
+     "by": "adm@igualdade.local",
+     "reason": "Mudou de escola",
+     "classes": [
+      {
+       "name": "1DES",
+       "courseId": "DES"
+      }
+     ],
+     "anonymizedAt": null,
+     "anonymized": false,
+     "counts": {
+      "submissions": 1,
+      "attendance": 1,
+      "certificates": 1
+     }
+    }
+   ],
+   "total": 2,
+   "lastBackupAt": null
+  }
+ },
+ "trocaEmail": {
+  "status": 200,
+  "body": {
+   "success": true
+  }
+ },
+ "memoriaDepoisDaTroca": {
+  "students": [
+   {
+    "name": "Ana Souza",
+    "email": "ana@igualdade.local",
+    "status": "Ativo",
+    "matricula": "2026-001",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "phone": "11 98888-0000",
+    "notificationsSeenAt": 1792162800000,
+    "notificationsSeenAtByContext": {
+     "DES::1DES": 1792249200000
+    }
+   },
+   {
+    "name": "Bia Lima",
+    "email": "bia@igualdade.local",
+    "status": "Inativo",
+    "matricula": "2026-002",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "statusChangedAt": 1789916400000,
+    "statusChangedBy": "adm@igualdade.local",
+    "statusReason": "Pedido da família da Bia Lima",
+    "guardian": {
+     "name": "Rita Lima",
+     "phone": "11 9"
+    }
+   },
+   {
+    "name": "Caio Prado",
+    "email": "caio@igualdade.local",
+    "status": "Transferido",
+    "matricula": "2026-003",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "statusChangedAt": 1790780400000,
+    "statusChangedBy": "adm@igualdade.local",
+    "statusReason": "Mudou de escola"
+   },
+   {
+    "name": "Duda Reis",
+    "email": "duda.nova@igualdade.local",
+    "status": "Ativo",
+    "matricula": "2026-004",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "nomeSocial": "",
+    "phone": "",
+    "guardianPhone": "",
+    "birthDate": "",
+    "unidade": "",
+    "guardian": null,
+    "accessibility": null,
+    "updatedAt": "<agora>"
+   },
+   {
+    "name": "Edu Novo",
+    "email": "ana.antiga@igualdade.local",
+    "status": "Ativo",
+    "matricula": "",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "createdAt": 1792076400000
+   }
+  ],
+  "submissions": [
+   {
+    "id": "sub_ana_pub",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 80,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792335600000,
+    "gradePublishedBy": "prof@igualdade.local"
+   },
+   {
+    "id": "sub_ana_rev",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_2",
+    "score": 55,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": false
+   },
+   {
+    "id": "sub_bia",
+    "student": {
+     "name": "Bia Lima",
+     "email": "bia@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 70,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1789052400000,
+    "studentMatricula": "2026-002"
+   },
+   {
+    "id": "sub_caio",
+    "student": {
+     "name": "Caio Prado",
+     "email": "caio@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 60,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1790348400000
+   },
+   {
+    "id": "sub_duda",
+    "student": {
+     "name": "Duda Reis",
+     "email": "duda.nova@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 90,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792422000000,
+    "recoveredAfterFinish": true
+   }
+  ],
+  "attendance": [
+   {
+    "id": "att_ana",
+    "studentEmail": "ana@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-01",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   },
+   {
+    "id": "att_bia",
+    "studentEmail": "bia@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-09-10",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "justificada"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000,
+    "justificativa": {
+     "tipo": "atestado",
+     "texto": "Consulta da Bia",
+     "arquivo": "alunos/2026-002 - Bia Lima/atestados/a.pdf",
+     "abonado": true
+    },
+    "observacao": "Chegou cedo",
+    "ip": "10.0.0.9"
+   },
+   {
+    "id": "att_caio",
+    "studentEmail": "caio@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-09-11",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "falta"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   },
+   {
+    "id": "att_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-02",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   }
+  ],
+  "certificates": [
+   {
+    "id": "cert_bia",
+    "studentEmail": "bia@igualdade.local",
+    "courseId": "DES",
+    "code": "CERT-B",
+    "status": "Emitido",
+    "issuedAt": 1789484400000,
+    "issuedBy": "adm@igualdade.local"
+   },
+   {
+    "id": "cert_caio",
+    "studentEmail": "caio@igualdade.local",
+    "courseId": "DES",
+    "code": "CERT-C",
+    "status": "Emitido",
+    "issuedAt": 1790607600000,
+    "issuedBy": "adm@igualdade.local"
+   },
+   {
+    "id": "cert_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "courseId": "DES",
+    "code": "CERT-D",
+    "status": "Emitido",
+    "issuedAt": 1792335600000,
+    "issuedBy": "adm@igualdade.local"
+   }
+  ],
+  "pedagogicalObservations": [
+   {
+    "id": "obs_ana",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Participa bem.",
+    "timestamp": 1791730800000
+   },
+   {
+    "id": "obs_ana_team",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Equipe pedagógica",
+    "text": "Conversar com a família.",
+    "timestamp": 1791817200000
+   },
+   {
+    "id": "obs_bia",
+    "studentEmail": "bia@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Bia ajudou.",
+    "timestamp": 1789052400000
+   },
+   {
+    "id": "obs_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Duda ótima.",
+    "timestamp": 1792162800000
+   }
+  ],
+  "progress": {
+   "ana@igualdade.local": {
+    "Apostila_1": true
+   },
+   "bia@igualdade.local": {
+    "Apostila_1": true
+   },
+   "duda.nova@igualdade.local": {
+    "Apostila_1": true
+   }
+  },
+  "notes": {
+   "ana@igualdade.local": {
+    "geral": "Minhas anotações."
+   },
+   "duda.nova@igualdade.local": {
+    "geral": "Da Duda."
+   }
+  },
+  "annotations": {
+   "ana@igualdade.local": {
+    "Apostila_1": [
+     {
+      "text": "grifo"
+     }
+    ]
+   },
+   "caio@igualdade.local": {
+    "Apostila_1": [
+     {
+      "text": "do Caio"
+     }
+    ]
+   }
+  },
+  "forum": [
+   {
+    "id": "f_ana",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Ana Souza",
+    "studentEmail": "ana@igualdade.local",
+    "text": "Minha dúvida",
+    "timestamp": "2026-10-17T15:00:00.000Z",
+    "status": "respondida",
+    "replies": [
+     {
+      "id": "r_prof",
+      "authorName": "Professora Paula",
+      "authorEmail": "prof@igualdade.local",
+      "authorRole": "Instrutor",
+      "text": "Resposta",
+      "timestamp": "2026-10-18T15:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "id": "f_bia",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Bia Lima",
+    "studentEmail": "bia@igualdade.local",
+    "text": "Dúvida da Bia",
+    "timestamp": "2026-09-05T15:00:00.000Z",
+    "replies": [
+     {
+      "id": "r_duda",
+      "authorName": "Duda Reis",
+      "authorEmail": "duda@igualdade.local",
+      "authorRole": "Aluno",
+      "text": "Palpite da Duda",
+      "timestamp": "2026-09-06T15:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "id": "f_caio",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Caio Prado",
+    "studentEmail": "caio@igualdade.local",
+    "text": "Parada",
+    "timestamp": "2026-09-25T15:00:00.000Z",
+    "replies": []
+   }
+  ],
+  "moduleAccess": [
+   {
+    "id": "acc_ana",
+    "studentEmail": "ana@igualdade.local",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "timestamp": 1792422000000
+   },
+   {
+    "id": "acc_bia",
+    "studentEmail": "bia@igualdade.local",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "timestamp": 1789052400000
+   }
+  ],
+  "loginLogs": [
+   {
+    "id": "login_ana",
+    "email": "ana@igualdade.local",
+    "role": "student",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.5"
+   },
+   {
+    "id": "login_bia",
+    "email": "bia@igualdade.local",
+    "role": "student",
+    "status": "success",
+    "timestamp": 1789052400000,
+    "ip": "10.0.0.6"
+   },
+   {
+    "id": "login_prof",
+    "email": "prof@igualdade.local",
+    "role": "professor",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.1"
+   }
+  ],
+  "proctoringLogs": [
+   {
+    "id": "pl_ana",
+    "studentEmail": "ana@igualdade.local",
+    "examKey": "Prova_1",
+    "type": "tab_blur",
+    "timestamp": 1791644400000
+   },
+   {
+    "id": "pl_bia",
+    "studentEmail": "bia@igualdade.local",
+    "examKey": "Prova_1",
+    "type": "tab_blur",
+    "timestamp": 1789052400000
+   }
+  ],
+  "broadcastMessages": [
+   {
+    "id": "msg_bia",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "examKey": "Prova_1",
+    "targetEmail": "bia@igualdade.local",
+    "messageText": "Bia, confira.",
+    "senderEmail": "prof@igualdade.local",
+    "acknowledgedBy": [
+     "bia@igualdade.local"
+    ],
+    "timestamp": 1789052400000
+   },
+   {
+    "id": "msg_all",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "examKey": "Prova_1",
+    "targetEmail": null,
+    "messageText": "Para todos.",
+    "senderEmail": "prof@igualdade.local",
+    "acknowledgedBy": [
+     "ana@igualdade.local",
+     "caio@igualdade.local",
+     "duda.nova@igualdade.local"
+    ],
+    "deletedFor": [
+     "caio@igualdade.local"
+    ],
+    "timestamp": 1791644400000
+   }
+  ],
+  "announcements": [
+   {
+    "id": "an_turma",
+    "title": "Aviso da turma",
+    "message": "Prova na sexta.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "priority": "normal",
+    "createdAt": 1792335600000,
+    "readBy": [
+     "duda.nova@igualdade.local"
+    ],
+    "authorName": "Professora Paula"
+   },
+   {
+    "id": "an_curso",
+    "title": "Aviso do curso",
+    "message": "Semana de provas.",
+    "target": "curso",
+    "targetValue": "DES",
+    "courseId": "DES",
+    "priority": "alta",
+    "pinned": true,
+    "createdAt": 1792076400000,
+    "readBy": [
+     "ana@igualdade.local",
+     "bia@igualdade.local"
+    ],
+    "expiresAt": "2099-12-31"
+   },
+   {
+    "id": "an_velho",
+    "title": "Aviso vencido",
+    "message": "Já passou.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "createdAt": 1788188400000,
+    "expiresAt": "2020-01-01"
+   },
+   {
+    "id": "an_bia",
+    "title": "Só para a Bia",
+    "message": "Traga o documento.",
+    "target": "aluno",
+    "targetValue": "bia@igualdade.local",
+    "courseId": "DES",
+    "createdAt": 1788966000000,
+    "readBy": []
+   },
+   {
+    "id": "an_duda",
+    "title": "Só para a Duda",
+    "message": "Parabéns.",
+    "target": "aluno",
+    "targetValue": "duda.nova@igualdade.local",
+    "courseId": "DES",
+    "createdAt": 1792422000000,
+    "readBy": [
+     "duda.nova@igualdade.local"
+    ]
+   },
+   {
+    "id": "ev_turma",
+    "kind": "calendar",
+    "title": "Feira de ciências",
+    "message": "No pátio.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "eventDate": "2026-11-05",
+    "startTime": "14:00",
+    "endTime": "17:00",
+    "eventType": "evento",
+    "authorName": "Professora Paula",
+    "createdAt": 1791990000000
+   },
+   {
+    "id": "ev_curso",
+    "kind": "calendar",
+    "title": "Prova final",
+    "target": "curso",
+    "targetValue": "DES",
+    "courseId": "DES",
+    "eventDate": "2026-11-05",
+    "startTime": "08:00",
+    "eventType": "prova",
+    "createdAt": 1791990000000
+   },
+   {
+    "id": "ev_outra",
+    "kind": "calendar",
+    "title": "Da outra turma",
+    "target": "turma",
+    "targetValue": "2DES",
+    "courseId": "DES",
+    "eventDate": "2026-10-30",
+    "createdAt": 1791990000000
+   }
+  ],
+  "examApplications": [
+   {
+    "id": "app_run",
+    "examKey": "Prova_2",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "running",
+    "startedAt": "2026-10-20T14:00:00.000Z",
+    "createdAt": "2026-10-20T13:00:00.000Z"
+   },
+   {
+    "id": "app_prep",
+    "examKey": "Prova_1",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "prepared",
+    "startsAt": 1792681200000,
+    "createdAt": "2026-10-19T15:00:00.000Z"
+   },
+   {
+    "id": "app_fim",
+    "examKey": "Prova_1",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "finished",
+    "createdAt": "2026-09-10T15:00:00.000Z",
+    "questionReports": [
+     {
+      "id": "rep_bia",
+      "studentEmail": "bia@igualdade.local",
+      "studentName": "Bia Lima",
+      "questionNumber": 2,
+      "text": "A Bia Lima acha que tem duas certas.",
+      "createdAt": 1789052400000
+     }
+    ],
+    "studentAdjustments": {
+     "bia@igualdade.local": {
+      "extraMinutes": 10
+     },
+     "duda.nova@igualdade.local": {
+      "extraMinutes": 5
+     }
+    },
+    "studentVersions": {
+     "bia@igualdade.local": "B",
+     "duda.nova@igualdade.local": "A"
+    },
+    "finishResolution": {
+     "discardedAttempts": [
+      {
+       "studentEmail": "caio@igualdade.local",
+       "attemptId": "x"
+      }
+     ]
+    }
+   }
+  ],
+  "studentExamState": {
+   "Prova_9::caio@igualdade.local::1DES": {
+    "studentEmail": "caio@igualdade.local",
+    "status": "in_progress"
+   },
+   "Prova_9::duda.nova@igualdade.local::1DES": {
+    "studentEmail": "duda.nova@igualdade.local",
+    "status": "in_progress"
+   }
+  },
+  "classes": [
+   {
+    "name": "1DES",
+    "courseId": "DES",
+    "status": "active",
+    "period": "Manhã",
+    "releasedItems": {},
+    "studentReleasedItems": {
+     "bia@igualdade.local": {
+      "Apostila_9": true
+     },
+     "duda.nova@igualdade.local": {
+      "Apostila_8": true
+     }
+    },
+    "attendanceConfig": {
+     "grade": {
+      "0": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "1": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "2": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "3": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "4": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "5": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "6": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "name": "2DES",
+    "courseId": "DES",
+    "status": "active",
+    "period": "Tarde",
+    "releasedItems": {}
+   }
+  ],
+  "auditLogs": [
+   {
+    "id": "aud_email",
+    "action": "update",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "studentEmail": "ana@igualdade.local",
+    "field": "E-mail/login",
+    "oldValue": "ana.antiga@igualdade.local",
+    "newValue": "ana@igualdade.local",
+    "timestamp": 1788188400000
+   },
+   {
+    "id": "aud_bia",
+    "action": "update",
+    "category": "student",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "bia@igualdade.local",
+    "field": "Telefone",
+    "oldValue": "",
+    "newValue": "11 9",
+    "timestamp": 1788620400000
+   },
+   {
+    "id": "aud_bia_status",
+    "action": "student_status_changed",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "studentEmail": "bia@igualdade.local",
+    "field": "Situação",
+    "oldValue": "Ativo",
+    "newValue": "Inativo",
+    "reason": "Pedido da família da Bia Lima",
+    "timestamp": 1789916400000
+   },
+   {
+    "id": "aud_caio_grade",
+    "action": "grade_delete",
+    "category": "grade",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "caio@igualdade.local",
+    "examKey": "Prova_2",
+    "submissionId": "sub_caio_old",
+    "timestamp": 1790434800000,
+    "details": {
+     "deletedSubmission": {
+      "id": "sub_caio_old",
+      "student": {
+       "name": "Caio Prado",
+       "email": "caio@igualdade.local",
+       "studentClass": "1DES",
+       "courseId": "DES"
+      },
+      "examKey": "Prova_2",
+      "score": 40
+     }
+    }
+   },
+   {
+    "id": "aud_duda",
+    "action": "grade_publish",
+    "category": "grade",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "duda.nova@igualdade.local",
+    "examKey": "Prova_1",
+    "timestamp": 1792422000000
+   },
+   {
+    "id": "audit_student_<agora>_<sorteio>",
+    "action": "update",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "actorRole": "admin",
+    "timestamp": "<agora>",
+    "ip": "127.0.0.1",
+    "device": "",
+    "studentEmail": "duda.nova@igualdade.local",
+    "field": "E-mail/login",
+    "oldValue": "duda@igualdade.local",
+    "newValue": "duda.nova@igualdade.local"
+   }
+  ]
+ },
+ "anonimizar": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "message": "Cadastro anonimizado. Notas, presença e certificados ficam guardados sem os dados pessoais.",
+   "email": "anonimizado-<ref>@anonimizado.invalid",
+   "name": "Aluno anonimizado <REF>",
+   "anonymizedAt": "<agora>",
+   "kept": {
+    "submissions": 1,
+    "attendance": 1,
+    "certificates": 1
+   },
+   "lastBackupAt": null
+  }
+ },
+ "memoriaDepoisDeAnonimizar": {
+  "students": [
+   {
+    "name": "Ana Souza",
+    "email": "ana@igualdade.local",
+    "status": "Ativo",
+    "matricula": "2026-001",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "phone": "11 98888-0000",
+    "notificationsSeenAt": 1792162800000,
+    "notificationsSeenAtByContext": {
+     "DES::1DES": 1792249200000
+    }
+   },
+   {
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "name": "Aluno anonimizado <REF>",
+    "nomeSocial": "",
+    "email": "anonimizado-<ref>@anonimizado.invalid",
+    "matricula": "",
+    "phone": "",
+    "guardianPhone": "",
+    "guardian": null,
+    "accessibility": null,
+    "unidade": "",
+    "status": "Anonimizado",
+    "statusChangedAt": 1789916400000,
+    "statusChangedBy": "adm@igualdade.local",
+    "statusReason": "",
+    "anonymizedRef": "<sorteio>",
+    "anonymizedAt": "<agora>",
+    "anonymizedBy": "adm@igualdade.local",
+    "updatedAt": "<agora>"
+   },
+   {
+    "name": "Caio Prado",
+    "email": "caio@igualdade.local",
+    "status": "Transferido",
+    "matricula": "2026-003",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "statusChangedAt": 1790780400000,
+    "statusChangedBy": "adm@igualdade.local",
+    "statusReason": "Mudou de escola"
+   },
+   {
+    "name": "Duda Reis",
+    "email": "duda.nova@igualdade.local",
+    "status": "Ativo",
+    "matricula": "2026-004",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "nomeSocial": "",
+    "phone": "",
+    "guardianPhone": "",
+    "birthDate": "",
+    "unidade": "",
+    "guardian": null,
+    "accessibility": null,
+    "updatedAt": "<agora>"
+   },
+   {
+    "name": "Edu Novo",
+    "email": "ana.antiga@igualdade.local",
+    "status": "Ativo",
+    "matricula": "",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "createdAt": 1792076400000
+   }
+  ],
+  "submissions": [
+   {
+    "id": "sub_ana_pub",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 80,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792335600000,
+    "gradePublishedBy": "prof@igualdade.local"
+   },
+   {
+    "id": "sub_ana_rev",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_2",
+    "score": 55,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": false
+   },
+   {
+    "id": "sub_bia",
+    "student": {
+     "name": "Aluno anonimizado <REF>",
+     "email": "anonimizado-<ref>@anonimizado.invalid",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 70,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1789052400000
+   },
+   {
+    "id": "sub_caio",
+    "student": {
+     "name": "Caio Prado",
+     "email": "caio@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 60,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1790348400000
+   },
+   {
+    "id": "sub_duda",
+    "student": {
+     "name": "Duda Reis",
+     "email": "duda.nova@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 90,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792422000000,
+    "recoveredAfterFinish": true
+   }
+  ],
+  "attendance": [
+   {
+    "id": "att_ana",
+    "studentEmail": "ana@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-01",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   },
+   {
+    "id": "att_bia",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-09-10",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "justificada"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000,
+    "justificativa": {
+     "tipo": "atestado",
+     "abonado": true
+    }
+   },
+   {
+    "id": "att_caio",
+    "studentEmail": "caio@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-09-11",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "falta"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   },
+   {
+    "id": "att_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-02",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   }
+  ],
+  "certificates": [
+   {
+    "id": "cert_bia",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "courseId": "DES",
+    "code": "CERT-B",
+    "status": "Emitido",
+    "issuedAt": 1789484400000,
+    "issuedBy": "adm@igualdade.local"
+   },
+   {
+    "id": "cert_caio",
+    "studentEmail": "caio@igualdade.local",
+    "courseId": "DES",
+    "code": "CERT-C",
+    "status": "Emitido",
+    "issuedAt": 1790607600000,
+    "issuedBy": "adm@igualdade.local"
+   },
+   {
+    "id": "cert_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "courseId": "DES",
+    "code": "CERT-D",
+    "status": "Emitido",
+    "issuedAt": 1792335600000,
+    "issuedBy": "adm@igualdade.local"
+   }
+  ],
+  "pedagogicalObservations": [
+   {
+    "id": "obs_ana",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Participa bem.",
+    "timestamp": 1791730800000
+   },
+   {
+    "id": "obs_ana_team",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Equipe pedagógica",
+    "text": "Conversar com a família.",
+    "timestamp": 1791817200000
+   },
+   {
+    "id": "obs_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Duda ótima.",
+    "timestamp": 1792162800000
+   }
+  ],
+  "progress": {
+   "ana@igualdade.local": {
+    "Apostila_1": true
+   },
+   "duda.nova@igualdade.local": {
+    "Apostila_1": true
+   }
+  },
+  "notes": {
+   "ana@igualdade.local": {
+    "geral": "Minhas anotações."
+   },
+   "duda.nova@igualdade.local": {
+    "geral": "Da Duda."
+   }
+  },
+  "annotations": {
+   "ana@igualdade.local": {
+    "Apostila_1": [
+     {
+      "text": "grifo"
+     }
+    ]
+   },
+   "caio@igualdade.local": {
+    "Apostila_1": [
+     {
+      "text": "do Caio"
+     }
+    ]
+   }
+  },
+  "forum": [
+   {
+    "id": "f_ana",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Ana Souza",
+    "studentEmail": "ana@igualdade.local",
+    "text": "Minha dúvida",
+    "timestamp": "2026-10-17T15:00:00.000Z",
+    "status": "respondida",
+    "replies": [
+     {
+      "id": "r_prof",
+      "authorName": "Professora Paula",
+      "authorEmail": "prof@igualdade.local",
+      "authorRole": "Instrutor",
+      "text": "Resposta",
+      "timestamp": "2026-10-18T15:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "id": "f_bia",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Aluno excluído",
+    "studentEmail": "",
+    "text": "Texto removido (aluno excluído).",
+    "timestamp": "2026-09-05T15:00:00.000Z",
+    "replies": [
+     {
+      "id": "r_duda",
+      "authorName": "Duda Reis",
+      "authorEmail": "duda@igualdade.local",
+      "authorRole": "Aluno",
+      "text": "Palpite da Duda",
+      "timestamp": "2026-09-06T15:00:00.000Z"
+     }
+    ],
+    "studentAnonymized": true,
+    "anonymizedAt": "<agora>"
+   },
+   {
+    "id": "f_caio",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Caio Prado",
+    "studentEmail": "caio@igualdade.local",
+    "text": "Parada",
+    "timestamp": "2026-09-25T15:00:00.000Z",
+    "replies": []
+   }
+  ],
+  "moduleAccess": [
+   {
+    "id": "acc_ana",
+    "studentEmail": "ana@igualdade.local",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "timestamp": 1792422000000
+   }
+  ],
+  "loginLogs": [
+   {
+    "id": "login_ana",
+    "email": "ana@igualdade.local",
+    "role": "student",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.5"
+   },
+   {
+    "id": "login_prof",
+    "email": "prof@igualdade.local",
+    "role": "professor",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.1"
+   }
+  ],
+  "proctoringLogs": [
+   {
+    "id": "pl_ana",
+    "studentEmail": "ana@igualdade.local",
+    "examKey": "Prova_1",
+    "type": "tab_blur",
+    "timestamp": 1791644400000
+   }
+  ],
+  "broadcastMessages": [
+   {
+    "id": "msg_all",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "examKey": "Prova_1",
+    "targetEmail": null,
+    "messageText": "Para todos.",
+    "senderEmail": "prof@igualdade.local",
+    "acknowledgedBy": [
+     "ana@igualdade.local",
+     "caio@igualdade.local",
+     "duda.nova@igualdade.local"
+    ],
+    "deletedFor": [
+     "caio@igualdade.local"
+    ],
+    "timestamp": 1791644400000
+   }
+  ],
+  "announcements": [
+   {
+    "id": "an_turma",
+    "title": "Aviso da turma",
+    "message": "Prova na sexta.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "priority": "normal",
+    "createdAt": 1792335600000,
+    "readBy": [
+     "duda.nova@igualdade.local"
+    ],
+    "authorName": "Professora Paula"
+   },
+   {
+    "id": "an_curso",
+    "title": "Aviso do curso",
+    "message": "Semana de provas.",
+    "target": "curso",
+    "targetValue": "DES",
+    "courseId": "DES",
+    "priority": "alta",
+    "pinned": true,
+    "createdAt": 1792076400000,
+    "readBy": [
+     "ana@igualdade.local"
+    ],
+    "expiresAt": "2099-12-31"
+   },
+   {
+    "id": "an_velho",
+    "title": "Aviso vencido",
+    "message": "Já passou.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "createdAt": 1788188400000,
+    "expiresAt": "2020-01-01"
+   },
+   {
+    "id": "an_duda",
+    "title": "Só para a Duda",
+    "message": "Parabéns.",
+    "target": "aluno",
+    "targetValue": "duda.nova@igualdade.local",
+    "courseId": "DES",
+    "createdAt": 1792422000000,
+    "readBy": [
+     "duda.nova@igualdade.local"
+    ]
+   },
+   {
+    "id": "ev_turma",
+    "kind": "calendar",
+    "title": "Feira de ciências",
+    "message": "No pátio.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "eventDate": "2026-11-05",
+    "startTime": "14:00",
+    "endTime": "17:00",
+    "eventType": "evento",
+    "authorName": "Professora Paula",
+    "createdAt": 1791990000000
+   },
+   {
+    "id": "ev_curso",
+    "kind": "calendar",
+    "title": "Prova final",
+    "target": "curso",
+    "targetValue": "DES",
+    "courseId": "DES",
+    "eventDate": "2026-11-05",
+    "startTime": "08:00",
+    "eventType": "prova",
+    "createdAt": 1791990000000
+   },
+   {
+    "id": "ev_outra",
+    "kind": "calendar",
+    "title": "Da outra turma",
+    "target": "turma",
+    "targetValue": "2DES",
+    "courseId": "DES",
+    "eventDate": "2026-10-30",
+    "createdAt": 1791990000000
+   }
+  ],
+  "examApplications": [
+   {
+    "id": "app_run",
+    "examKey": "Prova_2",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "running",
+    "startedAt": "2026-10-20T14:00:00.000Z",
+    "createdAt": "2026-10-20T13:00:00.000Z"
+   },
+   {
+    "id": "app_prep",
+    "examKey": "Prova_1",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "prepared",
+    "startsAt": 1792681200000,
+    "createdAt": "2026-10-19T15:00:00.000Z"
+   },
+   {
+    "id": "app_fim",
+    "examKey": "Prova_1",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "finished",
+    "createdAt": "2026-09-10T15:00:00.000Z",
+    "questionReports": [
+     {
+      "id": "rep_bia",
+      "studentEmail": "",
+      "studentName": "Aluno excluído",
+      "questionNumber": 2,
+      "text": "",
+      "createdAt": 1789052400000,
+      "studentAnonymized": true,
+      "anonymizedAt": "<agora>"
+     }
+    ],
+    "studentAdjustments": {
+     "duda.nova@igualdade.local": {
+      "extraMinutes": 5
+     }
+    },
+    "studentVersions": {
+     "duda.nova@igualdade.local": "A"
+    },
+    "finishResolution": {
+     "discardedAttempts": [
+      {
+       "studentEmail": "caio@igualdade.local",
+       "attemptId": "x"
+      }
+     ]
+    }
+   }
+  ],
+  "studentExamState": {
+   "Prova_9::caio@igualdade.local::1DES": {
+    "studentEmail": "caio@igualdade.local",
+    "status": "in_progress"
+   },
+   "Prova_9::duda.nova@igualdade.local::1DES": {
+    "studentEmail": "duda.nova@igualdade.local",
+    "status": "in_progress"
+   }
+  },
+  "classes": [
+   {
+    "name": "1DES",
+    "courseId": "DES",
+    "status": "active",
+    "period": "Manhã",
+    "releasedItems": {},
+    "studentReleasedItems": {
+     "duda.nova@igualdade.local": {
+      "Apostila_8": true
+     }
+    },
+    "attendanceConfig": {
+     "grade": {
+      "0": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "1": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "2": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "3": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "4": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "5": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "6": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "name": "2DES",
+    "courseId": "DES",
+    "status": "active",
+    "period": "Tarde",
+    "releasedItems": {}
+   }
+  ],
+  "auditLogs": [
+   {
+    "id": "aud_email",
+    "action": "update",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "studentEmail": "ana@igualdade.local",
+    "field": "E-mail/login",
+    "oldValue": "ana.antiga@igualdade.local",
+    "newValue": "ana@igualdade.local",
+    "timestamp": 1788188400000
+   },
+   {
+    "id": "aud_bia",
+    "action": "update",
+    "category": "student",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "field": "Telefone",
+    "oldValue": "",
+    "newValue": "",
+    "timestamp": 1788620400000,
+    "studentAnonymized": true,
+    "anonymizedAt": "<agora>"
+   },
+   {
+    "id": "aud_bia_status",
+    "action": "student_status_changed",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "field": "Situação",
+    "oldValue": "",
+    "newValue": "",
+    "reason": "Pedido da família de Aluno anonimizado <REF>",
+    "timestamp": 1789916400000,
+    "studentAnonymized": true,
+    "anonymizedAt": "<agora>"
+   },
+   {
+    "id": "aud_caio_grade",
+    "action": "grade_delete",
+    "category": "grade",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "caio@igualdade.local",
+    "examKey": "Prova_2",
+    "submissionId": "sub_caio_old",
+    "timestamp": 1790434800000,
+    "details": {
+     "deletedSubmission": {
+      "id": "sub_caio_old",
+      "student": {
+       "name": "Caio Prado",
+       "email": "caio@igualdade.local",
+       "studentClass": "1DES",
+       "courseId": "DES"
+      },
+      "examKey": "Prova_2",
+      "score": 40
+     }
+    }
+   },
+   {
+    "id": "aud_duda",
+    "action": "grade_publish",
+    "category": "grade",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "duda.nova@igualdade.local",
+    "examKey": "Prova_1",
+    "timestamp": 1792422000000
+   },
+   {
+    "id": "audit_student_<agora>_<sorteio>",
+    "action": "update",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "actorRole": "admin",
+    "timestamp": "<agora>",
+    "ip": "127.0.0.1",
+    "device": "",
+    "studentEmail": "duda.nova@igualdade.local",
+    "field": "E-mail/login",
+    "oldValue": "duda@igualdade.local",
+    "newValue": "duda.nova@igualdade.local"
+   },
+   {
+    "id": "audit_student_<agora>_<sorteio>",
+    "action": "student_anonymized",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "actorRole": "admin",
+    "timestamp": "<agora>",
+    "ip": "127.0.0.1",
+    "device": "",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "reason": "Pedido de Aluno anonimizado <REF> pela LGPD",
+    "details": {
+     "ref": "<sorteio>",
+     "kept": {
+      "submissions": 1,
+      "attendance": 1,
+      "certificates": 1
+     }
+    }
+   }
+  ]
+ },
+ "apagar": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "message": "Cadastro apagado de vez.",
+   "removed": {
+    "submissions": 1,
+    "attendance": 1,
+    "certificates": 1
+   },
+   "lastBackupAt": null
+  }
+ },
+ "memoriaDepoisDeApagar": {
+  "students": [
+   {
+    "name": "Ana Souza",
+    "email": "ana@igualdade.local",
+    "status": "Ativo",
+    "matricula": "2026-001",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "phone": "11 98888-0000",
+    "notificationsSeenAt": 1792162800000,
+    "notificationsSeenAtByContext": {
+     "DES::1DES": 1792249200000
+    }
+   },
+   {
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "name": "Aluno anonimizado <REF>",
+    "nomeSocial": "",
+    "email": "anonimizado-<ref>@anonimizado.invalid",
+    "matricula": "",
+    "phone": "",
+    "guardianPhone": "",
+    "guardian": null,
+    "accessibility": null,
+    "unidade": "",
+    "status": "Anonimizado",
+    "statusChangedAt": 1789916400000,
+    "statusChangedBy": "adm@igualdade.local",
+    "statusReason": "",
+    "anonymizedRef": "<sorteio>",
+    "anonymizedAt": "<agora>",
+    "anonymizedBy": "adm@igualdade.local",
+    "updatedAt": "<agora>"
+   },
+   {
+    "name": "Duda Reis",
+    "email": "duda.nova@igualdade.local",
+    "status": "Ativo",
+    "matricula": "2026-004",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "nomeSocial": "",
+    "phone": "",
+    "guardianPhone": "",
+    "birthDate": "",
+    "unidade": "",
+    "guardian": null,
+    "accessibility": null,
+    "updatedAt": "<agora>"
+   },
+   {
+    "name": "Edu Novo",
+    "email": "ana.antiga@igualdade.local",
+    "status": "Ativo",
+    "matricula": "",
+    "classes": [
+     {
+      "name": "1DES",
+      "courseId": "DES"
+     }
+    ],
+    "studentClass": "1DES",
+    "period": "Manhã",
+    "createdAt": 1792076400000
+   }
+  ],
+  "submissions": [
+   {
+    "id": "sub_ana_pub",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 80,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792335600000,
+    "gradePublishedBy": "prof@igualdade.local"
+   },
+   {
+    "id": "sub_ana_rev",
+    "student": {
+     "name": "Ana Souza",
+     "email": "ana@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_2",
+    "score": 55,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": false
+   },
+   {
+    "id": "sub_bia",
+    "student": {
+     "name": "Aluno anonimizado <REF>",
+     "email": "anonimizado-<ref>@anonimizado.invalid",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 70,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1789052400000
+   },
+   {
+    "id": "sub_duda",
+    "student": {
+     "name": "Duda Reis",
+     "email": "duda.nova@igualdade.local",
+     "studentClass": "1DES",
+     "courseId": "DES",
+     "period": "Manhã"
+    },
+    "examKey": "Prova_1",
+    "score": 90,
+    "correctCount": 4,
+    "totalCount": 5,
+    "gradedAnswers": [
+     {
+      "questionNumber": 1,
+      "studentChoice": "A",
+      "correctAnswer": "A",
+      "isCorrect": true
+     }
+    ],
+    "type": "online",
+    "attemptNumber": 1,
+    "timestamp": "2026-10-10T15:00:00.000Z",
+    "gradePublished": true,
+    "gradePublishedAt": 1792422000000,
+    "recoveredAfterFinish": true
+   }
+  ],
+  "attendance": [
+   {
+    "id": "att_ana",
+    "studentEmail": "ana@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-01",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   },
+   {
+    "id": "att_bia",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-09-10",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "justificada"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000,
+    "justificativa": {
+     "tipo": "atestado",
+     "abonado": true
+    }
+   },
+   {
+    "id": "att_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "date": "2026-10-02",
+    "origin": "chamada",
+    "concluida": true,
+    "aulas": [
+     {
+      "ordem": 1,
+      "status": "presente"
+     }
+    ],
+    "markedBy": "prof@igualdade.local",
+    "timestamp": 1791212400000
+   }
+  ],
+  "certificates": [
+   {
+    "id": "cert_bia",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "courseId": "DES",
+    "code": "CERT-B",
+    "status": "Emitido",
+    "issuedAt": 1789484400000,
+    "issuedBy": "adm@igualdade.local"
+   },
+   {
+    "id": "cert_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "courseId": "DES",
+    "code": "CERT-D",
+    "status": "Emitido",
+    "issuedAt": 1792335600000,
+    "issuedBy": "adm@igualdade.local"
+   }
+  ],
+  "pedagogicalObservations": [
+   {
+    "id": "obs_ana",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Participa bem.",
+    "timestamp": 1791730800000
+   },
+   {
+    "id": "obs_ana_team",
+    "studentEmail": "ana@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Equipe pedagógica",
+    "text": "Conversar com a família.",
+    "timestamp": 1791817200000
+   },
+   {
+    "id": "obs_duda",
+    "studentEmail": "duda.nova@igualdade.local",
+    "author": "prof@igualdade.local",
+    "category": "Participação",
+    "visibility": "Compartilhada",
+    "text": "Duda ótima.",
+    "timestamp": 1792162800000
+   }
+  ],
+  "progress": {
+   "ana@igualdade.local": {
+    "Apostila_1": true
+   },
+   "duda.nova@igualdade.local": {
+    "Apostila_1": true
+   }
+  },
+  "notes": {
+   "ana@igualdade.local": {
+    "geral": "Minhas anotações."
+   },
+   "duda.nova@igualdade.local": {
+    "geral": "Da Duda."
+   }
+  },
+  "annotations": {
+   "ana@igualdade.local": {
+    "Apostila_1": [
+     {
+      "text": "grifo"
+     }
+    ]
+   }
+  },
+  "forum": [
+   {
+    "id": "f_ana",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Ana Souza",
+    "studentEmail": "ana@igualdade.local",
+    "text": "Minha dúvida",
+    "timestamp": "2026-10-17T15:00:00.000Z",
+    "status": "respondida",
+    "replies": [
+     {
+      "id": "r_prof",
+      "authorName": "Professora Paula",
+      "authorEmail": "prof@igualdade.local",
+      "authorRole": "Instrutor",
+      "text": "Resposta",
+      "timestamp": "2026-10-18T15:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "id": "f_bia",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "studentName": "Aluno excluído",
+    "studentEmail": "",
+    "text": "Texto removido (aluno excluído).",
+    "timestamp": "2026-09-05T15:00:00.000Z",
+    "replies": [
+     {
+      "id": "r_duda",
+      "authorName": "Duda Reis",
+      "authorEmail": "duda@igualdade.local",
+      "authorRole": "Aluno",
+      "text": "Palpite da Duda",
+      "timestamp": "2026-09-06T15:00:00.000Z"
+     }
+    ],
+    "studentAnonymized": true,
+    "anonymizedAt": "<agora>"
+   }
+  ],
+  "moduleAccess": [
+   {
+    "id": "acc_ana",
+    "studentEmail": "ana@igualdade.local",
+    "key": "Apostila_1",
+    "courseId": "DES",
+    "studentClass": "1DES",
+    "timestamp": 1792422000000
+   }
+  ],
+  "loginLogs": [
+   {
+    "id": "login_ana",
+    "email": "ana@igualdade.local",
+    "role": "student",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.5"
+   },
+   {
+    "id": "login_prof",
+    "email": "prof@igualdade.local",
+    "role": "professor",
+    "status": "success",
+    "timestamp": 1792422000000,
+    "ip": "10.0.0.1"
+   }
+  ],
+  "proctoringLogs": [
+   {
+    "id": "pl_ana",
+    "studentEmail": "ana@igualdade.local",
+    "examKey": "Prova_1",
+    "type": "tab_blur",
+    "timestamp": 1791644400000
+   }
+  ],
+  "broadcastMessages": [
+   {
+    "id": "msg_all",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "examKey": "Prova_1",
+    "targetEmail": null,
+    "messageText": "Para todos.",
+    "senderEmail": "prof@igualdade.local",
+    "acknowledgedBy": [
+     "ana@igualdade.local",
+     "duda.nova@igualdade.local"
+    ],
+    "deletedFor": [],
+    "timestamp": 1791644400000
+   }
+  ],
+  "announcements": [
+   {
+    "id": "an_turma",
+    "title": "Aviso da turma",
+    "message": "Prova na sexta.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "priority": "normal",
+    "createdAt": 1792335600000,
+    "readBy": [
+     "duda.nova@igualdade.local"
+    ],
+    "authorName": "Professora Paula"
+   },
+   {
+    "id": "an_curso",
+    "title": "Aviso do curso",
+    "message": "Semana de provas.",
+    "target": "curso",
+    "targetValue": "DES",
+    "courseId": "DES",
+    "priority": "alta",
+    "pinned": true,
+    "createdAt": 1792076400000,
+    "readBy": [
+     "ana@igualdade.local"
+    ],
+    "expiresAt": "2099-12-31"
+   },
+   {
+    "id": "an_velho",
+    "title": "Aviso vencido",
+    "message": "Já passou.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "createdAt": 1788188400000,
+    "expiresAt": "2020-01-01"
+   },
+   {
+    "id": "an_duda",
+    "title": "Só para a Duda",
+    "message": "Parabéns.",
+    "target": "aluno",
+    "targetValue": "duda.nova@igualdade.local",
+    "courseId": "DES",
+    "createdAt": 1792422000000,
+    "readBy": [
+     "duda.nova@igualdade.local"
+    ]
+   },
+   {
+    "id": "ev_turma",
+    "kind": "calendar",
+    "title": "Feira de ciências",
+    "message": "No pátio.",
+    "target": "turma",
+    "targetValue": "1DES",
+    "courseId": "DES",
+    "eventDate": "2026-11-05",
+    "startTime": "14:00",
+    "endTime": "17:00",
+    "eventType": "evento",
+    "authorName": "Professora Paula",
+    "createdAt": 1791990000000
+   },
+   {
+    "id": "ev_curso",
+    "kind": "calendar",
+    "title": "Prova final",
+    "target": "curso",
+    "targetValue": "DES",
+    "courseId": "DES",
+    "eventDate": "2026-11-05",
+    "startTime": "08:00",
+    "eventType": "prova",
+    "createdAt": 1791990000000
+   },
+   {
+    "id": "ev_outra",
+    "kind": "calendar",
+    "title": "Da outra turma",
+    "target": "turma",
+    "targetValue": "2DES",
+    "courseId": "DES",
+    "eventDate": "2026-10-30",
+    "createdAt": 1791990000000
+   }
+  ],
+  "examApplications": [
+   {
+    "id": "app_run",
+    "examKey": "Prova_2",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "running",
+    "startedAt": "2026-10-20T14:00:00.000Z",
+    "createdAt": "2026-10-20T13:00:00.000Z"
+   },
+   {
+    "id": "app_prep",
+    "examKey": "Prova_1",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "prepared",
+    "startsAt": 1792681200000,
+    "createdAt": "2026-10-19T15:00:00.000Z"
+   },
+   {
+    "id": "app_fim",
+    "examKey": "Prova_1",
+    "studentClass": "1DES",
+    "courseId": "DES",
+    "status": "finished",
+    "createdAt": "2026-09-10T15:00:00.000Z",
+    "questionReports": [
+     {
+      "id": "rep_bia",
+      "studentEmail": "",
+      "studentName": "Aluno excluído",
+      "questionNumber": 2,
+      "text": "",
+      "createdAt": 1789052400000,
+      "studentAnonymized": true,
+      "anonymizedAt": "<agora>"
+     }
+    ],
+    "studentAdjustments": {
+     "duda.nova@igualdade.local": {
+      "extraMinutes": 5
+     }
+    },
+    "studentVersions": {
+     "duda.nova@igualdade.local": "A"
+    },
+    "finishResolution": {
+     "discardedAttempts": [
+      {
+       "studentEmail": "",
+       "attemptId": "x"
+      }
+     ]
+    }
+   }
+  ],
+  "studentExamState": {
+   "Prova_9::duda.nova@igualdade.local::1DES": {
+    "studentEmail": "duda.nova@igualdade.local",
+    "status": "in_progress"
+   }
+  },
+  "classes": [
+   {
+    "name": "1DES",
+    "courseId": "DES",
+    "status": "active",
+    "period": "Manhã",
+    "releasedItems": {},
+    "studentReleasedItems": {
+     "duda.nova@igualdade.local": {
+      "Apostila_8": true
+     }
+    },
+    "attendanceConfig": {
+     "grade": {
+      "0": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "1": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "2": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "3": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "4": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "5": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ],
+      "6": [
+       {
+        "ordem": 1,
+        "inicio": "08:00",
+        "disciplinaId": "prog"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "name": "2DES",
+    "courseId": "DES",
+    "status": "active",
+    "period": "Tarde",
+    "releasedItems": {}
+   }
+  ],
+  "auditLogs": [
+   {
+    "id": "aud_email",
+    "action": "update",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "studentEmail": "ana@igualdade.local",
+    "field": "E-mail/login",
+    "oldValue": "ana.antiga@igualdade.local",
+    "newValue": "ana@igualdade.local",
+    "timestamp": 1788188400000
+   },
+   {
+    "id": "aud_bia",
+    "action": "update",
+    "category": "student",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "field": "Telefone",
+    "oldValue": "",
+    "newValue": "",
+    "timestamp": 1788620400000,
+    "studentAnonymized": true,
+    "anonymizedAt": "<agora>"
+   },
+   {
+    "id": "aud_bia_status",
+    "action": "student_status_changed",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "field": "Situação",
+    "oldValue": "",
+    "newValue": "",
+    "reason": "Pedido da família de Aluno anonimizado <REF>",
+    "timestamp": 1789916400000,
+    "studentAnonymized": true,
+    "anonymizedAt": "<agora>"
+   },
+   {
+    "id": "aud_caio_grade",
+    "action": "grade_delete",
+    "category": "grade",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "",
+    "examKey": "Prova_2",
+    "submissionId": "sub_caio_old",
+    "timestamp": 1790434800000,
+    "details": {
+     "deletedSubmission": {
+      "id": "sub_caio_old",
+      "student": {
+       "name": "Aluno excluído",
+       "email": "",
+       "courseId": "DES",
+       "studentClass": "1DES"
+      },
+      "examKey": "Prova_2",
+      "score": 40,
+      "anonymized": true,
+      "anonymizedAt": "<agora>"
+     }
+    },
+    "studentAnonymized": true,
+    "anonymizedAt": "<agora>"
+   },
+   {
+    "id": "aud_duda",
+    "action": "grade_publish",
+    "category": "grade",
+    "actor": "prof@igualdade.local",
+    "studentEmail": "duda.nova@igualdade.local",
+    "examKey": "Prova_1",
+    "timestamp": 1792422000000
+   },
+   {
+    "id": "audit_student_<agora>_<sorteio>",
+    "action": "update",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "actorRole": "admin",
+    "timestamp": "<agora>",
+    "ip": "127.0.0.1",
+    "device": "",
+    "studentEmail": "duda.nova@igualdade.local",
+    "field": "E-mail/login",
+    "oldValue": "duda@igualdade.local",
+    "newValue": "duda.nova@igualdade.local"
+   },
+   {
+    "id": "audit_student_<agora>_<sorteio>",
+    "action": "student_anonymized",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "actorRole": "admin",
+    "timestamp": "<agora>",
+    "ip": "127.0.0.1",
+    "device": "",
+    "studentEmail": "anonimizado-<ref>@anonimizado.invalid",
+    "reason": "Pedido de Aluno anonimizado <REF> pela LGPD",
+    "details": {
+     "ref": "<sorteio>",
+     "kept": {
+      "submissions": 1,
+      "attendance": 1,
+      "certificates": 1
+     }
+    }
+   },
+   {
+    "id": "audit_student_<agora>_<sorteio>",
+    "action": "student_purged",
+    "category": "student",
+    "actor": "adm@igualdade.local",
+    "actorRole": "admin",
+    "timestamp": "<agora>",
+    "ip": "127.0.0.1",
+    "device": "",
+    "reason": "Transferido há muito tempo",
+    "details": {
+     "removed": {
+      "submissions": 1,
+      "attendance": 1,
+      "certificates": 1
+     },
+     "wasAnonymized": false
+    }
+   }
+  ]
+ },
+ "encerradosDepois": [
+  {
+   "email": "anonimizado-<ref>@anonimizado.invalid",
+   "name": "Aluno anonimizado <REF>",
+   "nomeSocial": "",
+   "matricula": "",
+   "status": "Anonimizado",
+   "since": 1789916400000,
+   "by": "adm@igualdade.local",
+   "reason": "",
+   "classes": [
+    {
+     "name": "1DES",
+     "courseId": "DES"
+    }
+   ],
+   "anonymizedAt": "<agora>",
+   "anonymized": true,
+   "counts": {
+    "submissions": 1,
+    "attendance": 1,
+    "certificates": 1
+   }
+  }
+ ]
+}

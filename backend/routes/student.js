@@ -38,6 +38,7 @@ const {
 const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
 const { recordLoginLog } = require('../utils/security.js');
 const legalAcceptance = require('../utils/legalAcceptance.js');
+const studentFeeds = require('../utils/studentFeeds.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
@@ -1172,7 +1173,7 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
     if (!student) return res.json([]);
     const cls = findClassByNameAndCourse(db.memory.classes || [], requestedClass, requestedCourse);
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
-    const list = (db.memory.announcements || [])
+    let list = (db.memory.announcements || [])
         .filter(item => {
             if (item.kind !== 'calendar') return false;
             if (requestedCourse && item.courseId !== requestedCourse) return false;
@@ -1194,6 +1195,14 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
             courseId: item.courseId,
             authorName: item.authorName || '',
         }));
+    // Eventos dos provedores da fase 3 (tarefas, dias não letivos, provas agendadas),
+    // juntados depois dos de hoje e na mesma ordem (utils/studentFeeds.js).
+    if (studentFeeds.hasProviders('calendar')) {
+        const extra = studentFeeds.collectStudentCalendarEvents({
+            memory: db.memory, student, email, cls, courseId: requestedCourse, studentClass: requestedClass,
+        });
+        if (extra.length) list = [...list, ...extra].sort(studentFeeds.compareCalendarEvents);
+    }
     res.json(list);
 });
 
@@ -2108,6 +2117,12 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
                 href: `/aluno/prova/${encodeURIComponent(application.examKey)}?applicationId=${encodeURIComponent(application.id)}`,
             });
         });
+
+    // Itens dos provedores da fase 3 (tarefas, mensagens, revisão de nota...), depois
+    // dos de hoje; a ordem e o limite de 30 valem para todos (utils/studentFeeds.js).
+    studentFeeds.collectStudentNotifications({
+        memory: db.memory, student, email, cls, courseId, studentClass: className, seenAt, today, now: Date.now(),
+    }).forEach(item => items.push(item));
 
     items.sort((a, b) => b.at - a.at);
     const limited = items.slice(0, 30);

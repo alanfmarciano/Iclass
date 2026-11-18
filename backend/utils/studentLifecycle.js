@@ -48,6 +48,7 @@ const {
 } = require('./gradebook.js');
 const { revokeStudentSession } = require('./authSessions.js');
 const fileStore = require('./storage.js');
+const studentData = require('./studentDataHandlers.js');
 
 const ANONYMIZE_WORD = 'ANONIMIZAR';
 const PURGE_WORD = 'APAGAR';
@@ -295,12 +296,14 @@ function anonymizedSubmission(submission, pseudonym) {
     return next;
 }
 
-// Contagens para a tela e para a entrada da auditoria (sem dado pessoal).
-function recordCounts(memory, owned) {
+// Contagens para a tela e para a entrada da auditoria (sem dado pessoal). Depois das de
+// hoje, as das coleções novas (handlers com count de studentDataHandlers.js).
+function recordCounts(memory, owned, aluno) {
     return {
         submissions: countBy(memory.submissions, item => item && item.student && owned(item, item.student.email)),
         attendance: countBy(memory.attendance, item => item && owned(item, item.studentEmail)),
         certificates: countBy(memory.certificates, item => item && owned(item, item.studentEmail)),
+        ...(aluno ? studentData.countStudentData(memory, aluno) : {}),
     };
 }
 
@@ -314,7 +317,9 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
     // Nos campos que a troca de e-mail renomeia ('renamed'), o e-mail atual é sempre
     // dele, mesmo em registro com data da época em que o e-mail era de outro aluno.
     const ownedRecord = (item, value, kind = 'renamed') => !!item && owns(value, item, kind);
-    const counts = recordCounts(memory, (item, value) => ownedRecord(item, value));
+    // O aluno para os handlers das coleções novas (cadastro como estava antes do passo).
+    const aluno = studentData.studentContextFrom(student, ownership);
+    const counts = recordCounts(memory, (item, value) => ownedRecord(item, value), aluno);
     const pseudonym = anonymize ? newPseudonym(memory) : null;
     const replacement = anonymize ? pseudonym.email : '';
     // O motivo digitado pode citar o aluno ("pedido da Ana Souza"): o nome, o e-mail e a
@@ -451,6 +456,11 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         asName: anonymize ? fileStore.studentFolderName(memory.students[index]) : undefined,
     });
 
+    // Coleções novas da fase 3 (entregas, grupos, conversas...): cada uma pelo handler
+    // dela, depois dos blocos de cima (utils/studentDataHandlers.js).
+    if (anonymize) studentData.anonymizeStudentData(memory, aluno, pseudonym);
+    else studentData.purgeStudentData(memory, aluno);
+
     // Entrada da auditoria sem dado pessoal: no anonimizar, só o pseudônimo; no apagar,
     // nem isso (só as contagens e o motivo).
     if (anonymize) {
@@ -531,6 +541,13 @@ async function runStudentLifecycle(db, { mode, email, actor, reason, req, now = 
 function closedStudentRows(memory, { sinceOf }) {
     const closed = (memory.students || []).filter(student => student && student.email && (isClosedStudentStatus(student.status) || isAnonymizedStudent(student)));
     const byEmail = new Map(closed.map(student => [normalizeEmail(student.email), { submissions: 0, attendance: 0, certificates: 0 }]));
+    // Contagens das coleções novas (handlers com count), por aluno encerrado.
+    if (studentData.hasStudentDataHandlers('count')) {
+        closed.forEach(student => {
+            const aluno = studentData.studentDataContext(memory, student);
+            if (aluno) Object.assign(byEmail.get(normalizeEmail(student.email)), studentData.countStudentData(memory, aluno));
+        });
+    }
     const bump = (email, field) => {
         const counts = byEmail.get(normalizeEmail(email));
         if (counts) counts[field] += 1;

@@ -10,6 +10,7 @@
 const attendanceUtil = require('./attendance.js');
 const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js');
 const { studentSessionByEmail } = require('./authSessions.js');
+const { collectInstructorQueue } = require('./studentFeeds.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -297,6 +298,12 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // 9. Backup (H4b, OPS-03): falha, atraso, cópia externa atrasada e destino externo não
     // configurado. Só administrador (a rota manda null para os outros).
     backupQueueItems(extras && extras.backup).forEach(item => items.push(item));
+
+    // 10. Pendências dos provedores da fase 3 (entregas para corrigir, correção
+    // pendente, revisão aberta, chamada não cobrada...), depois das de hoje
+    // (utils/studentFeeds.js). Sem provedor, a fila é a de antes.
+    collectInstructorQueue({ memory, cls, course, students, emails, today, now, canSeeMatriculas: !!canSeeMatriculas })
+        .forEach(item => items.push(item));
 
     return items;
 }

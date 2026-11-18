@@ -98,6 +98,14 @@ O `db.health()` e o `db.ping()` (`database.js`, H3b) dão o estado da gravação
 
 Cada arquivo encapsula uma responsabilidade testável: `backup.js`, `examApplications.js`, `examAttempts.js`, `examGrading.js`, `examToken.js`, `security.js`, `safePath.js`, `rateLimit.js`, `uploadSecurity.js`, `authSessions.js` (único módulo de sessão: cria, procura pelo hash do token, confere, revoga, limpa as vencidas, marca a presença e calcula as linhas da tabela `auth_sessions`; fora dele ninguém lê nem grava `db.memory.sessions` ou `adminSessions`), `studentSessions.js`, `students.js`, `branding.js`, `buildIntegrity.js`, `parser.js`, entre outros. Novas regras de negócio devem nascer aqui, não dentro do handler da rota.
 
+Fundação da fase 3 (C0b), pontos únicos que os grupos estendem sem mexer nos arquivos de hoje:
+
+- **Hora da escola** (`utils/schoolTime.js`): `deadlineFromLocal(data, hora, fuso)` (prazo digitado no relógio da escola vira instante em ms; horário de verão pela regra do Temporal: hora que não existe vale depois do pulo, a que se repete vale a primeira), `schoolDateOf(ms)` e `localParts(ms)` no fuso de `settings.timezone`. Tarefas, agenda de prova e de material, dias não letivos e diário não criam outra conta de fuso.
+- **Sino, calendário e fila** (`utils/studentFeeds.js`): `registerStudentNotificationProvider`, `registerStudentCalendarProvider` e `registerInstructorQueueProvider`. `GET /api/student/notifications`, `GET /api/student/calendar-events` e `dashboardAggregates.computeQueue` juntam os itens dos provedores depois dos de hoje; provedor que falha fica de fora com o erro no `crash.log`.
+- **Ciclo de vida dos dados do aluno** (`utils/studentDataHandlers.js`): toda coleção nova com aluno registra `registerStudentDataHandler({ collection, label, rename, anonymize, purge, merge, relink, count, exportSection })` no próprio módulo; a troca de e-mail (`renameStudentEmailEverywhere`), o anonimizar e o apagar de vez (`studentLifecycle.js`), as contagens de Cadastros encerrados, Meus dados (`studentDataExport.js`), a mesclagem e o religar depois de restaurar percorrem a lista depois dos blocos de hoje. `mergeOwnedRecords` é a regra de colisão da mesclagem e `relinkRecordsByEmail` o religar pelo e-mail.
+- **Turma encerrada** (`utils/academicCalendar.js`): `assertClassOpen(turma, { res })`, por enquanto sem efeito, chamada antes de gravar pelas rotas de nota e presença; o teste `class-open-guard.test.js` recusa rota nova que grava nota ou presença sem chamar.
+- O teste `igualdade-c0b.test.js` compara a saída dos pontos de hoje com a do código de antes da fundação (`fixtures/igualdade-c0b.json`).
+
 ## 3. Persistência — o padrão `db.memory` + `db.save()`
 
 O SQLite é usado como **key-value** (tabelas no formato `NOME (key TEXT PRIMARY KEY, value TEXT)`). O estado vive espelhado em memória em `db.memory` (um objeto com uma coleção por chave) e é serializado para o disco em `db.save()`.
