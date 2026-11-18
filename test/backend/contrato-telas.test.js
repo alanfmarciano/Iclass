@@ -284,8 +284,11 @@ test('[UC-ERRO-003] contrato das telas do professor: preferências (modelos, adi
     // mais chaves por pedido).
     screen('context/PreferencesProvider.jsx', 'pending.current = { ...pending.current, [key]: value }');
     screen('context/PreferencesProvider.jsx', "api.post('/api/admin/preferences', batch)");
-    // ForumPage: modelos { id, title, text } com texto de até 5.000.
-    screen('features/admin/ForumPage.jsx', "setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: tplForm.title.trim(), text: tplForm.text.trim() }])");
+    // ForumPage: modelos { id, title, text } com texto de até 5.000. O formulário só se
+    // limpa depois de o servidor gravar (decisões §12, sobra do H9b): a tela guarda o
+    // formulário em form e espera a promessa do setPref.
+    screen('features/admin/ForumPage.jsx', "const saved = await setPref('forum.templates', [...templates, { id: 'tpl_' + Date.now(), title: form.title.trim(), text: form.text.trim() }])");
+    screen('features/admin/ForumPage.jsx', "if (saved) setTplForm((current) => (current === form ? { title: '', text: '' } : current))");
     const templates = Array.from({ length: 5 }, (_, index) => ({ id: `tpl_${1731340000000 + index}`, title: `Modelo ${index + 1}`, text: 'Obrigado pela pergunta! '.repeat(200).slice(0, 5000) }));
     ok(await asInstructor('/api/admin/preferences', 'professor').send({ 'forum.templates': templates }), 'modelos do fórum');
     ok(await asInstructor('/api/admin/preferences', 'professor').send({ 'forum.lastSeen': new Date().toISOString() }), 'fórum lido');
