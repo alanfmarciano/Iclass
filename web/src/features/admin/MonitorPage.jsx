@@ -414,6 +414,9 @@ export default function MonitorPage() {
   // auxiliar acompanha a prova sem esses botões (o servidor responderia 403).
   const canResults = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const canReplaceQuestion = canResults && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS)
+  // A marca do gabarito em "Ver questão" (contestações) só para quem corrige a questão ou
+  // prepara a prova; o servidor manda a questão sem a correta para o Professor auxiliar.
+  const canSeeAnswerKey = canResults || canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS)
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
@@ -1411,10 +1414,11 @@ export default function MonitorPage() {
               <div className="mt-3 space-y-2">
                 {(previewIssue.question?.alternatives || []).map((alternative, index) => {
                   const letter = String(alternative.letter || String.fromCharCode(65 + index)).toUpperCase()
-                  const correct = letter === String(previewIssue.question?.correctAnswer || '').toUpperCase() || alternative.isCorrect === true
+                  const correct = canSeeAnswerKey && (letter === String(previewIssue.question?.correctAnswer || '').toUpperCase() || alternative.isCorrect === true)
                   return <div key={letter} className={`rounded-md border p-3 text-sm ${correct ? 'border-success/50 bg-success-soft text-success' : 'border-border text-text'}`}><strong>{letter})</strong> {alternative.text} {correct && '— gabarito'}</div>
                 })}
               </div>
+              {!canSeeAnswerKey && <p className="mt-3 text-xs text-muted">O gabarito não aparece para o seu papel.</p>}
             </Card>
             <div className="space-y-2">
               {previewIssue.reports?.map((report) => (

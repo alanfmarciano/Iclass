@@ -37,6 +37,7 @@ const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { canAccessAdminPermission, canReadStudentGrades, hasAdminCapability } = require('../utils/adminPermissions.js');
+const { canReadExamVersions, classWithoutAnswerKeys, onlineExamConfigWithoutAnswerKeys } = require('../utils/examAnswerKeyView.js');
 const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
 const {
@@ -2847,25 +2848,14 @@ router.post('/api/admin/student/certificates/revoke', (req, res) => {
 });
 
 // Versões da prova (versionSnapshots, com o gabarito) só para quem prepara prova
-// (page.exams). As outras contas que leem a turma (Professor auxiliar no Monitor,
-// Secretaria e Coordenação no Dashboard e em Turmas) recebem a configuração sem elas; o
-// painel não as usa (a prova do aluno lê pela rota do aluno). B1, papel "sem notas".
-function _classWithoutAnswerKeys(cls) {
-    if (!cls || !cls.onlineExamConfigs || typeof cls.onlineExamConfigs !== 'object') return cls;
-    const onlineExamConfigs = {};
-    Object.entries(cls.onlineExamConfigs).forEach(([examKey, cfg]) => {
-        if (!cfg || typeof cfg !== 'object') { onlineExamConfigs[examKey] = cfg; return; }
-        const { versionSnapshots, ...rest } = cfg;
-        onlineExamConfigs[examKey] = rest;
-    });
-    return { ...cls, onlineExamConfigs };
-}
+// (page.exams): classWithoutAnswerKeys em utils/examAnswerKeyView.js (B1, papel "sem
+// notas"). Também o histórico de montagens e as avaliações personalizadas da turma.
 
 // Obter lista completa de turmas cadastradas (administrador)
 router.get('/api/admin/classes', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const classes = readJSON(DB_CLASSES_FILE);
-        const withAnswerKeys = canAccessAdminPermission(matchedAdmin, 'page.exams');
+        const withAnswerKeys = canReadExamVersions(matchedAdmin);
         // Contagem dos professores da turma: papel professor mesmo (isProfessorAccount).
         const professors = (db.memory.admins || []).filter(account => isProfessorAccount(account));
         const students = db.memory.students || [];
@@ -2874,7 +2864,7 @@ router.get('/api/admin/classes', (req, res) => {
         res.json(filterClassesForAdmin(classes, matchedAdmin)
           .filter(cls => (!courseId || String(cls.courseId) === courseId) && (!studentClass || cls.name === studentClass))
           .map(cls => ({
-            ...(withAnswerKeys ? cls : _classWithoutAnswerKeys(cls)),
+            ...(withAnswerKeys ? cls : classWithoutAnswerKeys(cls)),
             attendanceConfig: attendanceUtil.effectiveAttendanceConfig(cls),
             studentCount: students.filter(student => studentBelongsToClass(student, cls.name, cls.courseId)).length,
             professorCount: professors.filter(account => adminCanAccessClass(account, cls.name, cls.courseId)).length,
@@ -4024,13 +4014,17 @@ function makeBackup(key, content, isJson = false) {
 // Resposta do controle da prova para quem só acompanha (page.monitor sem page.exams, como
 // o Professor auxiliar): a aplicação e a configuração sem as versões (gabarito). B1.
 function _examControlView(matchedAdmin, payload) {
-    if (canAccessAdminPermission(matchedAdmin, 'page.exams')) return payload;
-    const strip = value => {
+    if (canReadExamVersions(matchedAdmin)) return payload;
+    const stripApplication = value => {
         if (!value || typeof value !== 'object') return value;
         const { versionSnapshots, questionReports, ...rest } = value;
         return rest;
     };
-    return { ...payload, ...('application' in payload ? { application: strip(payload.application) } : {}), ...('config' in payload ? { config: strip(payload.config) } : {}) };
+    return {
+        ...payload,
+        ...('application' in payload ? { application: stripApplication(payload.application) } : {}),
+        ...('config' in payload ? { config: onlineExamConfigWithoutAnswerKeys(payload.config) } : {}),
+    };
 }
 
 router.post('/api/admin/server-exam-control', (req, res) => {

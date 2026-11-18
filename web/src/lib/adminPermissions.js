@@ -182,7 +182,7 @@ export function canReadStudentGrades(auth) {
 // antiga sem ele, o de antes.
 export function accountRoleLabel(auth) {
   if (auth?.roleLabel) return auth.roleLabel
-  return accountRoleOf(auth) === 'professor' ? 'Professor' : accountRoleOf(auth) === 'admin' ? 'Administrador' : 'Conta do painel'
+  return accountRoleOf(auth) === PROFESSOR_ROLE_ID ? 'Professor' : isFullAdmin(auth) ? 'Administrador' : 'Conta do painel'
 }
 
 // A permissão pode ser uma lista (qualquer uma basta), como nas regras do servidor.

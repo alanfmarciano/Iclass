@@ -77,6 +77,12 @@ export default function AlunosPage() {
   // O histórico de provas da turma vem de Resultados (page.results): sem ela, nem a
   // consulta nem o botão Histórico (a Secretaria e o Professor auxiliar).
   const canResults = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  // Liberações lê a estrutura do curso (page.editor) e grava a liberação (page.materials):
+  // o Professor auxiliar, a Secretaria e a Coordenação não têm e o servidor respondia 403.
+  const canRelease = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EDITOR) && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_MATERIALS)
+  // Conta só de consulta (Coordenação): lê as observações sem o formulário de registrar
+  // (o servidor responde 403 read_only_account).
+  const readOnlyAccount = auth?.readOnly === true
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data: students, loading, error, refetch } = useApi(`/api/admin/students?${contextQuery}`)
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
@@ -339,7 +345,7 @@ export default function AlunosPage() {
           {canAudit && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(menuRow); setMenuRow(null) }}>Auditoria</Button>}
           {canSecurity && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
-          <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>
+          {canRelease && <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>}
           {canEditStudent && !isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>}
           {menuRow?.loginProtection && <Button variant="secondary" icon={LockOpen} loading={unlocking} title={UNLOCK_LOGIN_HINT} onClick={() => unlockLogin(menuRow)}>Liberar login</Button>}
           {/* Desligar aluno (H7c): muda a situação; anonimizar ou apagar fica em Cadastros encerrados. */}
@@ -506,6 +512,9 @@ export default function AlunosPage() {
 
       <Modal open={!!obs} onClose={() => setObs(null)} title="Observações pedagógicas" description={obs?.email}>
         <div className="space-y-4">
+          {readOnlyAccount ? (
+            <p className="text-sm text-muted">Sua conta consulta as observações, sem registrar.</p>
+          ) : (
           <div className="space-y-2 rounded-md border border-border p-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Select label="Categoria" value={obsForm.category} onChange={(e) => setObsForm({ ...obsForm, category: e.target.value, ...(OBS_SENSITIVE.has(e.target.value) ? { visibility: OBS_RESTRICTED } : {}) })}>
@@ -519,6 +528,7 @@ export default function AlunosPage() {
             <Textarea label="Observação" value={obsForm.text} onChange={(e) => setObsForm({ ...obsForm, text: e.target.value })} maxLength={OBSERVATION_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} />
             <div className="flex justify-end"><Button loading={obsSaving} onClick={addObs}>Registrar</Button></div>
           </div>
+          )}
           <div className="space-y-2 max-h-72 overflow-auto">
             {obsRows.map((o) => (
               <div key={o.id} className="rounded-md border border-border p-3">

@@ -67,6 +67,11 @@ describe('[UC-PAPEIS-001] Dashboard por papel', () => {
     expect(screen.queryByRole('button', { name: 'Ver resultados' })).toBeNull()
     expect(pulse().getByText('oculta')).toBeInTheDocument()
     expect(pulse().getByText('As notas não aparecem para o seu papel.')).toBeInTheDocument()
+    // Sem o selo de tendência ao lado de "oculta" (lia "oculta sem base"); a frequência e o
+    // engajamento, sem base de comparação, continuam com o deles.
+    const mediaCard = pulse().getByText('oculta').closest('.premium-card')
+    expect(within(mediaCard).queryByText('sem base')).toBeNull()
+    expect(pulse().getAllByText('sem base')).toHaveLength(2)
     expect(pulse().queryByText(/alunos avaliados/)).toBeNull()
     // A média vazia não vira "nenhuma prova entregue" nos motivos de risco.
     expect(screen.queryByText('nenhuma prova entregue')).toBeNull()

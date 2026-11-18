@@ -598,7 +598,11 @@ test('[UC-PAPEIS-001] professor auxiliar não muda nota pelas ações novas do M
 function usesProfessorRoleCheck(line) {
     return /isProfessorAccount/.test(line)
         || /[Rr]ole\??\s*(?:!==|===|!=|==)\s*['"]professor['"]/.test(line)
-        || /['"]professor['"]\s*(?:!==|===|!=|==)\s*[\w.?]*[Rr]ole\b/.test(line);
+        || /['"]professor['"]\s*(?:!==|===|!=|==)\s*[\w.?]*[Rr]ole\b/.test(line)
+        // Papel lido por função (accountRoleOf(auth) === 'professor'): o ")" antes do
+        // operador escapava das duas formas acima.
+        || /[Rr]ole\w*\([^()]*\)\s*(?:!==|===|!=|==)\s*['"]professor['"]/.test(line)
+        || /['"]professor['"]\s*(?:!==|===|!=|==)\s*[\w.?]*[Rr]ole\w*\(/.test(line);
 }
 
 test('[UC-PAPEIS-003] o teste de guarda reconhece as formas antigas de "não é professor"', () => {
@@ -609,6 +613,8 @@ test('[UC-PAPEIS-003] o teste de guarda reconhece as formas antigas de "não é 
         "const isAdmin = nextRole != 'professor';",
         "if ('professor' !== currentAdmin.role) next();",
         "return isProfessorAccount(account) ? [] : all;",
+        "return accountRoleOf(auth) === 'professor' ? 'Professor' : 'Conta do painel'",
+        "if ('professor' !== accountRoleId(account)) return;",
     ].forEach(line => assert.equal(usesProfessorRoleCheck(line), true, line));
     ["const professors = list.filter(item => item.kind === 'professor');", "if (profile === 'professor') return;"]
         .forEach(line => assert.equal(usesProfessorRoleCheck(line), false, line));
@@ -625,6 +631,8 @@ test('[UC-PAPEIS-003] guarda: nenhum arquivo do backend usa isProfessorAccount n
     const allowed = [
         { file: 'backend/utils/adminPermissions.js', pattern: /function isProfessorAccount\(account\)/ },
         { file: 'backend/utils/adminPermissions.js', pattern: /^\s*isProfessorAccount,$/ },
+        // O corpo da definição (o papel gravado é professor mesmo).
+        { file: 'backend/utils/adminPermissions.js', pattern: /^\s*return !!account && accountRoleId\(account\) === 'professor';$/ },
         { file: 'backend/middlewares.js', pattern: /^\s*isProfessorAccount,$/ },
         // Texto da recusa do guarda para o professor (a de antes).
         { file: 'backend/middlewares.js', pattern: /return refuse\(\{ error: isProfessorAccount\(matchedAdmin\)$/ },

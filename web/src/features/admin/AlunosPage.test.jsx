@@ -63,3 +63,37 @@ describe('[UC-PAPEIS-001] Alunos da turma: ações de cadastro só com students.
     expect(mocks.paths.some((path) => String(path).startsWith('/api/admin/submissions'))).toBe(false)
   })
 })
+
+// Ajuste 2 do B1: Liberações (estrutura do curso, page.editor, e liberação, page.materials)
+// aparecia para o auxiliar, a Secretaria e a Coordenação e dava 403 com uma mensagem
+// enganosa; o formulário de observação aparecia para a Coordenação, que só consulta.
+const SECRETARIA = { accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'students.edit', 'students.import', 'enrollments.approve', 'students.certificates', 'reports.view'] }
+
+describe('[UC-PAPEIS-001] Alunos da turma: Liberações e observações só para quem pode usar', () => {
+  it('o professor tem Liberações; o auxiliar, a Secretaria e a Coordenação não', async () => {
+    mocks.auth = { accountRole: 'professor' }
+    let menu = await openMenu()
+    expect(menu.getByRole('button', { name: 'Liberações' })).toBeInTheDocument()
+    for (const auth of [MONITOR, SECRETARIA, COORDENACAO]) {
+      cleanup()
+      mocks.auth = auth
+      menu = await openMenu()
+      expect(menu.getByRole('button', { name: 'Observações' })).toBeInTheDocument()
+      expect(menu.queryByRole('button', { name: 'Liberações' })).toBeNull()
+    }
+  })
+
+  it('a Coordenação lê as observações sem o formulário de registrar; o auxiliar registra', async () => {
+    mocks.auth = COORDENACAO
+    let menu = await openMenu()
+    await userEvent.click(menu.getByRole('button', { name: 'Observações' }))
+    expect(await screen.findByText('Sua conta consulta as observações, sem registrar.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Registrar' })).toBeNull()
+    cleanup()
+    mocks.auth = MONITOR
+    menu = await openMenu()
+    await userEvent.click(menu.getByRole('button', { name: 'Observações' }))
+    expect(await screen.findByRole('button', { name: 'Registrar' })).toBeInTheDocument()
+    expect(screen.queryByText('Sua conta consulta as observações, sem registrar.')).toBeNull()
+  })
+})

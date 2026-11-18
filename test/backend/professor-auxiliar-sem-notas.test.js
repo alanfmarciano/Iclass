@@ -42,8 +42,9 @@ const { canReadStudentGrades, roleGrantablePermissions } = require('../../backen
 const { createExamApplication } = require('../../backend/utils/examApplications.js');
 
 const COURSE = 'curso_a';
-const TOKENS = { admin: 'tok-aux-admin', professor: 'tok-aux-prof', monitor: 'tok-aux-monitor' };
-const EMAILS = { admin: 'admin@auxiliar.local', professor: 'prof@auxiliar.local', monitor: 'aux@auxiliar.local' };
+const SCHOOL = 'escola_a';
+const TOKENS = { admin: 'tok-aux-admin', professor: 'tok-aux-prof', monitor: 'tok-aux-monitor', secretaria: 'tok-aux-sec', coordenacao: 'tok-aux-coord' };
+const EMAILS = { admin: 'admin@auxiliar.local', professor: 'prof@auxiliar.local', monitor: 'aux@auxiliar.local', secretaria: 'sec@auxiliar.local', coordenacao: 'coord@auxiliar.local' };
 const STUDENT = 'ana@auxiliar.local';
 
 let app;
@@ -55,11 +56,15 @@ function seed() {
         { email: EMAILS.professor, name: 'Prof', role: 'professor', password: db.hashPassword('x'), assignedClasses: turma },
         // Conta com o papel oculto (gravada antes ou vinda de backup): é o que o Alan teria.
         { email: EMAILS.monitor, name: 'Auxiliar', role: 'monitor', password: db.hashPassword('x'), assignedClasses: turma },
+        // Leem a turma pelo Dashboard e por Turmas, sem preparar prova (ajuste 2 do B1).
+        { email: EMAILS.secretaria, name: 'Secretaria', role: 'secretaria', password: db.hashPassword('x'), assignedSchoolIds: [SCHOOL] },
+        { email: EMAILS.coordenacao, name: 'Coordenação', role: 'coordenacao', password: db.hashPassword('x'), assignedSchoolIds: [SCHOOL] },
     ];
+    db.memory.schools = [{ id: SCHOOL, name: 'Escola A' }];
     const now = Date.now();
     db.memory.adminSessions = Object.fromEntries(Object.entries(TOKENS)
         .map(([who, token]) => [token, { email: EMAILS[who], createdAt: now, lastSeen: now }]));
-    db.memory.courses = [{ id: COURSE, name: 'Curso A', structure: [
+    db.memory.courses = [{ id: COURSE, name: 'Curso A', schoolId: SCHOOL, structure: [
         { id: 'm1', name: 'Módulo 1', units: [{ key: 'u1', name: 'Prova 1', avaliacaoKey: 'Avaliacao_P1' }] },
     ] }];
     db.memory.classes = [{ name: '1A', courseId: COURSE, onlineExamConfigs: {} }];
@@ -269,5 +274,85 @@ test('[UC-PAPEIS-001] fila do Dashboard: sem pendência de tela que a conta não
         assert.equal(aux.body.every(item => ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'].includes(item.permissao)), true, JSON.stringify(aux.body));
     } finally {
         db.memory.students = db.memory.students.filter(student => student.email !== 'caio@auxiliar.local');
+    }
+});
+
+// Ajuste 2 do B1: o gabarito ainda chegava a quem não prepara prova por duas rotas que o
+// ajuste 1 não cobriu: POST /config (page.dashboard; a turma com as versões da prova) e a
+// questão contestada de GET /question-reports (page.monitor; correctAnswer e isCorrect).
+// Também o histórico de montagens e as avaliações personalizadas da turma em GET /classes.
+test('[UC-PAPEIS-001] gabarito: POST /config, contestações e GET /classes sem a resposta certa para quem não prepara nem corrige prova', async () => {
+    const snapshot = { version: 'A', questions: [{
+        originalNumber: 1, text: 'Quanto é 2 + 2?', questionText: 'Quanto é 2 + 2?', correctAnswer: 'B',
+        alternatives: [{ letter: 'A', text: '3', isCorrect: false }, { letter: 'B', text: '4', isCorrect: true }],
+    }] };
+    const application = createExamApplication({
+        examKey: 'Avaliacao_P1', courseId: COURSE, studentClass: '1A', status: 'running',
+        config: { versionSnapshots: [snapshot] },
+    });
+    application.questionReports = [{
+        id: 'qreport_1', applicationId: application.id, examKey: 'Avaliacao_P1', studentClass: '1A', courseId: COURSE,
+        questionNumber: 1, questionPosition: 1, assignedVersion: 'A', studentEmail: STUDENT, studentName: 'Ana',
+        reason: 'enunciado', text: 'Não entendi', status: 'open', createdAt: new Date().toISOString(),
+    }];
+    db.memory.examApplications = [application];
+    const cls = db.memory.classes[0];
+    cls.onlineExamConfigs = { Avaliacao_P1: { applicationId: application.id, status: 'running', versionSnapshots: [snapshot], printSnapshot: [snapshot] } };
+    cls.examHistory = { Avaliacao_P1: [{ id: 'eh_1', type: 'impressa', examCode: 'X1', printSnapshot: [snapshot], versionSnapshots: [snapshot] }] };
+    cls.contentOverrides = { evaluations: { Avaliacao_P1: { title: 'Prova 1 da turma', questions: snapshot.questions } } };
+    const KEY = /correctAnswer|isCorrect|versionSnapshots|printSnapshot/;
+    try {
+        // POST /config (Dashboard, Materiais, Monitor): o status da prova sim, as versões não.
+        for (const who of ['monitor', 'secretaria', 'coordenacao']) {
+            const config = await as(who, request(app).post('/api/admin/config')).send({ studentClass: '1A', courseId: COURSE });
+            assert.equal(config.status, 200, `${who}: ${JSON.stringify(config.body)}`);
+            assert.equal(config.body.onlineExamConfigs.Avaliacao_P1.status, 'running', who);
+            assert.doesNotMatch(JSON.stringify(config.body), KEY, who);
+            const classes = await get(who, `/api/admin/classes?courseId=${COURSE}&studentClass=1A`).expect(200);
+            assert.equal(classes.body.length, 1, who);
+            assert.equal(classes.body[0].examHistory.Avaliacao_P1[0].examCode, 'X1', `${who}: o histórico continua, sem as versões`);
+            assert.equal(classes.body[0].contentOverrides.evaluations.Avaliacao_P1.title, 'Prova 1 da turma', who);
+            assert.doesNotMatch(JSON.stringify(classes.body), KEY, who);
+        }
+        // Quem prepara prova recebe como antes.
+        const configProf = await as('professor', request(app).post('/api/admin/config')).send({ studentClass: '1A', courseId: COURSE }).expect(200);
+        assert.equal(configProf.body.onlineExamConfigs.Avaliacao_P1.versionSnapshots[0].questions[0].correctAnswer, 'B');
+        const classesProf = await get('professor', `/api/admin/classes?courseId=${COURSE}&studentClass=1A`).expect(200);
+        assert.equal(classesProf.body[0].examHistory.Avaliacao_P1[0].printSnapshot.length, 1);
+        assert.equal(classesProf.body[0].contentOverrides.evaluations.Avaliacao_P1.questions[0].correctAnswer, 'B');
+
+        // Contestações no Monitor: o auxiliar vê o enunciado e as alternativas, sem a correta.
+        const reportsUrl = `/api/admin/question-reports/1A/Avaliacao_P1?applicationId=${application.id}`;
+        const aux = await get('monitor', reportsUrl);
+        assert.equal(aux.status, 200, JSON.stringify(aux.body));
+        assert.equal(aux.body.totalOpen, 1);
+        const question = aux.body.groups[0].question;
+        assert.equal(question.text, 'Quanto é 2 + 2?');
+        assert.deepEqual(question.alternatives.map(item => [item.letter, item.text]), [['A', '3'], ['B', '4']]);
+        assert.doesNotMatch(JSON.stringify(aux.body), KEY);
+        // Quem corrige a questão (page.results) recebe o gabarito para o formulário de correção.
+        const prof = await get('professor', reportsUrl).expect(200);
+        assert.equal(prof.body.groups[0].question.correctAnswer, 'B');
+        assert.equal(prof.body.groups[0].question.alternatives[1].isCorrect, true);
+
+        // Varredura: nenhuma leitura que o auxiliar faz no Dashboard e no Monitor leva o gabarito.
+        const reads = [
+            '/api/admin/classes', '/api/admin/course-summaries',
+            `/api/admin/dashboard/now?courseId=${COURSE}&studentClass=1A`, `/api/admin/dashboard/queue?courseId=${COURSE}&studentClass=1A`,
+            `/api/admin/dashboard/trends?courseId=${COURSE}&studentClass=1A`, `/api/admin/dashboard/students-overview?courseId=${COURSE}&studentClass=1A`,
+            `/api/admin/monitor-status/1A/Avaliacao_P1?courseId=${COURSE}&applicationId=${application.id}`,
+            `/api/admin/exam-applications?courseId=${COURSE}&studentClass=1A`, `/api/admin/exam-applications/${application.id}/finish-summary`,
+            reportsUrl, `/api/admin/students?courseId=${COURSE}&studentClass=1A`, '/api/admin/notifications', '/api/admin/setup/checklist',
+        ];
+        for (const url of reads) {
+            const response = await get('monitor', url);
+            if (response.status !== 200) continue;
+            assert.doesNotMatch(JSON.stringify(response.body), KEY, url);
+        }
+    } finally {
+        db.memory.examApplications = [];
+        cls.onlineExamConfigs = {};
+        delete cls.examHistory;
+        delete cls.contentOverrides;
     }
 });

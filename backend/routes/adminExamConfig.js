@@ -44,7 +44,12 @@ const {
     sendRouteError,
 } = require('../middlewares.js');
 const { accountScopeKind } = require('../utils/adminRoles.js');
-const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
+const {
+    canReadExamVersions,
+    canReadQuestionAnswerKey,
+    onlineExamConfigWithoutAnswerKeys,
+    questionWithoutAnswerKey,
+} = require('../utils/examAnswerKeyView.js');
 
 const VERSION_LABELS = ['A', 'B', 'C', 'D'];
 const DEFAULT_ONLINE_DURATION_MINUTES = 60;
@@ -410,7 +415,7 @@ function createAdminExamConfigRouter() {
             // O modo do teclado (H8b) continua no resumo: o Monitor rotula a coluna por ele.
             // Quem chega aqui só pelo Monitor (page.monitor sem page.exams, como o Professor
             // auxiliar) recebe sempre o resumo: as versões levam o gabarito.
-            if (String(req.query.view || '') === 'summary' || !canAccessAdminPermission(matchedAdmin, 'page.exams')) {
+            if (String(req.query.view || '') === 'summary' || !canReadExamVersions(matchedAdmin)) {
                 return res.json({ success: true, applications: applications.map(applicationSummary) });
             }
             res.json({ success: true, applications });
@@ -535,11 +540,10 @@ function createAdminExamConfigRouter() {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             // Quem controla a prova só pelo Monitor (page.monitor sem page.exams, como o
             // Professor auxiliar) recebe a aplicação e a configuração sem as versões (gabarito).
-            const withAnswerKeys = canAccessAdminPermission(matchedAdmin, 'page.exams');
+            const withAnswerKeys = canReadExamVersions(matchedAdmin);
             const forAccount = (application, onlineConfig) => {
                 if (withAnswerKeys) return { application, config: onlineConfig };
-                const { versionSnapshots, ...configWithoutKeys } = onlineConfig || {};
-                return { application: applicationSummary(application), config: onlineConfig ? configWithoutKeys : null };
+                return { application: applicationSummary(application), config: onlineConfig ? onlineExamConfigWithoutAnswerKeys(onlineConfig) : null };
             };
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
@@ -661,6 +665,11 @@ function createAdminExamConfigRouter() {
     router.get('/api/admin/question-reports/:class/:examKey', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             try {
+                // O gabarito da questão contestada vai para quem corrige a questão
+                // (page.results) ou prepara a prova (page.exams). Quem só acompanha a prova
+                // (Professor auxiliar, page.monitor) vê o enunciado e as alternativas, sem a
+                // correta (B1, papel "sem notas").
+                const withAnswerKey = canReadQuestionAnswerKey(matchedAdmin);
                 const { application } = applicationForAdminRequest(req.query.applicationId);
                 if (application.studentClass.toLowerCase() !== String(req.params.class || '').trim().toLowerCase()
                     || application.examKey !== String(req.params.examKey || '').trim()) {
@@ -680,7 +689,8 @@ function createAdminExamConfigRouter() {
                     const reasons = {};
                     reports.forEach(report => { reasons[report.reason] = Number(reasons[report.reason] || 0) + 1; });
                     const version = reports[0]?.assignedVersion || 'A';
-                    const question = liveQuestion(application, number, version);
+                    const fullQuestion = liveQuestion(application, number, version);
+                    const question = withAnswerKey ? fullQuestion : questionWithoutAnswerKey(fullQuestion);
                     return {
                         questionNumber: number,
                         questionPosition: reports[0]?.questionPosition || null,

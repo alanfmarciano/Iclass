@@ -26,6 +26,7 @@ const { encodeQr } = require('../utils/qrCode.js');
 const { createSafetyBackup } = require('../utils/backup.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
+const { canReadExamVersions, onlineExamConfigsWithoutAnswerKeys } = require('../utils/examAnswerKeyView.js');
 const { finishApplication } = require('../utils/examFinish.js');
 const {
     applicationBelongsToClass,
@@ -355,7 +356,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     });
 
     router.post('/api/admin/config', (req, res) => {
-        validateAdmin(req, res, config => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
             const { studentClass, studentEmail, courseId } = req.body;
             // O mesmo endereço recomendado do cartão Rede e do QR da sala (H6a).
             const snapshot = studentAddresses(req);
@@ -372,7 +373,12 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 responseData.activeExamKey = cls.activeExamKey;
                 responseData.activeExamQuestionCount = cls.activeExamQuestionCount || 20;
                 responseData.examConfigs = cls.examConfigs || {};
-                responseData.onlineExamConfigs = cls.onlineExamConfigs || {};
+                // As versões da prova levam o gabarito: só para quem prepara prova
+                // (page.exams). O Professor auxiliar, a Secretaria e a Coordenação recebem a
+                // configuração sem elas, como em GET /classes (B1, papel "sem notas").
+                responseData.onlineExamConfigs = canReadExamVersions(matchedAdmin)
+                    ? (cls.onlineExamConfigs || {})
+                    : onlineExamConfigsWithoutAnswerKeys(cls.onlineExamConfigs || {});
                 responseData.releasedItems = getReleasedItemsForClass(cls, studentEmail);
             }
             res.json(responseData);
