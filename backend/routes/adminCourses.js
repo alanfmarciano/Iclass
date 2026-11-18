@@ -16,10 +16,10 @@ const express = require('express');
 const db = require('../database.js');
 const {
     validateAdminPermission,
-    isProfessorAccount,
     adminAssignedSchoolIds,
     adminCanAccessCourse,
 } = require('../middlewares.js');
+const { isFullAdmin, accountScopeKind } = require('../utils/adminRoles.js');
 const { recordAudit } = require('../utils/audit.js');
 const { extractBranding, validateBrandingPatch } = require('../utils/branding.js');
 const { isCourseDeleted } = require('../utils/contentAccess.js');
@@ -124,7 +124,7 @@ function createAdminCoursesRouter() {
             if (school.error) return sendFieldError(res, school.error, 'schoolId');
             // O professor só cria curso numa escola atribuída a ele: fora dela, o curso
             // nasceria fora do escopo da própria conta.
-            if (isProfessorAccount(matchedAdmin) && !adminAssignedSchoolIds(matchedAdmin).includes(school.value)) {
+            if (accountScopeKind(matchedAdmin) !== 'tudo' && !adminAssignedSchoolIds(matchedAdmin).includes(school.value)) {
                 return sendFieldError(res, 'Você só pode criar curso numa escola atribuída à sua conta.', 'schoolId', 403);
             }
             if (school.value && !schoolExists(school.value)) return sendFieldError(res, 'Escola não encontrada.', 'schoolId');
@@ -186,7 +186,7 @@ function createAdminCoursesRouter() {
                 if (school.error) return sendFieldError(res, school.error, 'schoolId');
                 // A mesma escola (a tela manda a atual junto com o nome) não é mudança.
                 if (school.value !== String(course.schoolId || '')) {
-                    if (isProfessorAccount(matchedAdmin)) {
+                    if (!isFullAdmin(matchedAdmin)) {
                         return sendFieldError(res, 'Só o administrador pode mudar a escola do curso.', 'schoolId', 403);
                     }
                     if (!school.value) return sendFieldError(res, 'Escolha a escola do curso.', 'schoolId');

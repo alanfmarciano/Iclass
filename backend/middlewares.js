@@ -7,6 +7,7 @@ const {
     canAccessAdminPermission,
     resolveAdminApiPermission,
 } = require('./utils/adminPermissions.js');
+const { isFullAdmin, accountScopeKind, readOnlyRefusal } = require('./utils/adminRoles.js');
 const { SERVER_INSTANCE_ID } = require('./utils/sessionConfig.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
@@ -426,7 +427,7 @@ function sanitizeOnlineExamConfigsForStudent(onlineExamConfigs) {
 }
 
 function validateRequestedAdminContext(req, res, account) {
-    if (!isProfessorAccount(account)) return true;
+    if (accountScopeKind(account) === 'tudo') return true;
     const body = req.body || {};
     const query = req.query || {};
     let courseId = String(body.courseId || query.courseId || '').trim();
@@ -587,6 +588,10 @@ function validateAdmin(req, res, callback) {
         const cfg = readJSON(CONFIG_FILE);
         req.adminAccount = tokenAdmin;
         req.adminConfig = cfg;
+        // Conta só de consulta (Coordenação, D17 do P4): nenhum POST, PUT ou DELETE, em
+        // /api/admin ou fora dele (fórum, logout), salvo o autoatendimento da própria conta.
+        const readOnly = readOnlyRefusal(req, tokenAdmin);
+        if (readOnly) return res.status(403).json(readOnly);
         if (!validateRequestedAdminContext(req, res, tokenAdmin)) return;
         installProfessorResponseRedaction(res, tokenAdmin);
         return runGuarded(req, res, callback, [cfg, tokenAdmin]);
@@ -629,8 +634,11 @@ function validateAdminPermission(req, res, permission, callback) {
     });
 }
 
+// Escopo (D18 do P4): as turmas e os cursos atribuídos só valem para papel de escopo
+// 'turmas' (professor, professor auxiliar); as escolas atribuídas valem para 'turmas' e
+// 'escolas' (secretaria, coordenação). O administrador ('tudo') não precisa de nenhum.
 function adminAssignedClasses(account) {
-    if (!isProfessorAccount(account) || !Array.isArray(account.assignedClasses)) return [];
+    if (accountScopeKind(account) !== 'turmas' || !Array.isArray(account.assignedClasses)) return [];
     return account.assignedClasses
         .filter(value => value && typeof value === 'object')
         .map(value => ({ courseId: String(value.courseId || '').trim(), className: String(value.className || value.name || '').trim() }))
@@ -638,7 +646,9 @@ function adminAssignedClasses(account) {
 }
 
 function normalizedAssignmentIds(account, field) {
-    if (!isProfessorAccount(account) || !Array.isArray(account && account[field])) return [];
+    const scope = accountScopeKind(account);
+    if (scope === 'tudo' || !Array.isArray(account && account[field])) return [];
+    if (field !== 'assignedSchoolIds' && scope !== 'turmas') return [];
     return [...new Set(account[field].map(value => String(value || '').trim()).filter(Boolean))];
 }
 
@@ -662,7 +672,7 @@ function studentClassNames(student) {
 }
 
 function adminCanAccessClass(account, className, courseId) {
-    if (!isProfessorAccount(account)) return true;
+    if (accountScopeKind(account) === 'tudo') return true;
     const normalizedName = String(className || '').trim();
     let normalizedCourse = String(courseId || '').trim();
     if (!normalizedCourse) {
@@ -677,7 +687,7 @@ function adminCanAccessClass(account, className, courseId) {
 }
 
 function adminAllowedCourseIds(account) {
-    if (!isProfessorAccount(account)) return new Set((db.memory.courses || []).map(course => course.id));
+    if (accountScopeKind(account) === 'tudo') return new Set((db.memory.courses || []).map(course => course.id));
     const schoolIds = new Set(adminAssignedSchoolIds(account));
     const ids = new Set([
         ...adminAssignedCourseIds(account),
@@ -690,12 +700,12 @@ function adminAllowedCourseIds(account) {
 }
 
 function adminCanAccessCourse(account, courseId) {
-    if (!isProfessorAccount(account)) return true;
+    if (accountScopeKind(account) === 'tudo') return true;
     return adminAllowedCourseIds(account).has(String(courseId || '').trim());
 }
 
 function adminCanAccessStudent(account, student) {
-    if (!isProfessorAccount(account)) return true;
+    if (accountScopeKind(account) === 'tudo') return true;
     const entries = student && Array.isArray(student.classes) && student.classes.length
         ? student.classes
         : (student && student.studentClass ? [student.studentClass] : []);
@@ -706,7 +716,7 @@ function adminCanAccessStudent(account, student) {
 }
 
 function adminAllowedSchoolIds(account) {
-    if (!isProfessorAccount(account)) return new Set((db.memory.schools || []).map(s => s.id));
+    if (accountScopeKind(account) === 'tudo') return new Set((db.memory.schools || []).map(s => s.id));
     const courseIds = adminAllowedCourseIds(account);
     const ids = new Set(adminAssignedSchoolIds(account));
     (db.memory.courses || []).forEach(c => { if (courseIds.has(String(c.id)) && c.schoolId) ids.add(String(c.schoolId)); });
@@ -714,12 +724,12 @@ function adminAllowedSchoolIds(account) {
 }
 
 function adminCanAccessSchool(account, schoolId) {
-    if (!isProfessorAccount(account)) return true;
+    if (accountScopeKind(account) === 'tudo') return true;
     return adminAllowedSchoolIds(account).has(String(schoolId || '').trim());
 }
 
 function filterSchoolsForAdmin(schools, account) {
-    return isProfessorAccount(account) ? (schools || []).filter(s => adminCanAccessSchool(account, s.id)) : (schools || []);
+    return accountScopeKind(account) !== 'tudo' ? (schools || []).filter(s => adminCanAccessSchool(account, s.id)) : (schools || []);
 }
 
 function courseContainsItem(course, itemKey) {
@@ -732,22 +742,22 @@ function courseContainsItem(course, itemKey) {
 }
 
 function adminCanAccessItem(account, itemKey) {
-    if (!isProfessorAccount(account) || !itemKey) return true;
+    if (accountScopeKind(account) === 'tudo' || !itemKey) return true;
     const matchingCourses = (db.memory.courses || []).filter(course => courseContainsItem(course, itemKey));
     if (matchingCourses.length === 0) return true;
     return matchingCourses.some(course => adminCanAccessCourse(account, course.id));
 }
 
 function filterClassesForAdmin(classes, account) {
-    return isProfessorAccount(account) ? (classes || []).filter(cls => adminCanAccessClass(account, cls.name, cls.courseId)) : (classes || []);
+    return accountScopeKind(account) !== 'tudo' ? (classes || []).filter(cls => adminCanAccessClass(account, cls.name, cls.courseId)) : (classes || []);
 }
 
 function filterStudentsForAdmin(students, account) {
-    return isProfessorAccount(account) ? (students || []).filter(student => adminCanAccessStudent(account, student)) : (students || []);
+    return accountScopeKind(account) !== 'tudo' ? (students || []).filter(student => adminCanAccessStudent(account, student)) : (students || []);
 }
 
 function filterSubmissionsForAdmin(submissions, account) {
-    if (!isProfessorAccount(account)) return submissions || [];
+    if (accountScopeKind(account) === 'tudo') return submissions || [];
     return (submissions || []).filter(submission => {
         const className = submission && submission.student && submission.student.studentClass;
         const courseId = submission && submission.student && submission.student.courseId;
@@ -785,7 +795,7 @@ function findScopedStudentEmail(pathName, req) {
 }
 
 function validateProfessorRequestScope(req, account) {
-    if (!isProfessorAccount(account)) return null;
+    if (accountScopeKind(account) === 'tudo') return null;
     const body = req.body || {};
     const query = req.query || {};
     const pathName = req.path || '/';
@@ -883,8 +893,12 @@ function adminRbacGuard(req, res, next) {
         if (passwordChange.required && !['/whoami', '/change-password'].includes(req.path)) {
             return refuse(passwordChangeRequiredBody(passwordChange.reason));
         }
-        if (permission === undefined && isProfessorAccount(matchedAdmin)) {
-            return refuse({ error: 'Esta operação administrativa não está liberada para professores.' });
+        // Rota sem regra no catálogo: só o administrador pleno passa (o teste de catálogo
+        // exige regra para toda rota de /api/admin).
+        if (permission === undefined && !isFullAdmin(matchedAdmin)) {
+            return refuse({ error: isProfessorAccount(matchedAdmin)
+                ? 'Esta operação administrativa não está liberada para professores.'
+                : 'Esta operação administrativa é só do administrador.' });
         }
         if (!canAccessAdminPermission(matchedAdmin, permission)) {
             return refuse({ error: 'Sua conta não possui permissão para esta operação.' });
@@ -1402,6 +1416,8 @@ module.exports = {
     validateAdminPermission,
     adminRbacGuard,
     isProfessorAccount,
+    isFullAdmin,
+    accountScopeKind,
     adminAssignedCourseIds,
     adminAssignedSchoolIds,
     adminAssignedClassNames,

@@ -36,7 +36,8 @@ const {
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
-const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
+const { canAccessAdminPermission, hasAdminCapability } = require('../utils/adminPermissions.js');
+const { isFullAdmin, accountScopeKind } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
 const {
     DEFAULT_STATUS,
@@ -313,9 +314,15 @@ function findEnrollmentRequest(requestId) {
     return null;
 }
 
+// Aprovar matrícula (D16 do P4): o administrador e, quando a permissão
+// enrollments.approve existir, quem a tiver (Secretaria); o professor continua sem.
+function canApproveEnrollments(account) {
+    return hasAdminCapability(account, 'enrollments.approve');
+}
+
 router.get('/api/admin/enrollment-requests', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
+        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
         if (studentClass && !findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)) {
@@ -330,7 +337,7 @@ router.post('/api/admin/enrollment-requests/:id/approve', (req, res) => {
     // validateAdmin entrega (config, conta): com um só parâmetro a conta era o config e o
     // bloqueio de professor nunca valia.
     validateAdmin(req, res, async (config, matchedAdmin) => {
-        if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
+        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
         const found = findEnrollmentRequest(req.params.id);
         if (!found) return res.status(404).json({ error: 'Solicitação não encontrada.' });
         if (found.request.status !== 'pending') return res.status(409).json({ error: 'Esta solicitação já foi analisada.' });
@@ -372,7 +379,7 @@ router.post('/api/admin/enrollment-requests/:id/reject', (req, res) => {
     // validateAdmin entrega (config, conta): com um só parâmetro a conta era o config e o
     // bloqueio de professor nunca valia.
     validateAdmin(req, res, async (config, matchedAdmin) => {
-        if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
+        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
         const found = findEnrollmentRequest(req.params.id);
         if (!found) return res.status(404).json({ error: 'Solicitação não encontrada.' });
         if (found.request.status !== 'pending') return res.status(409).json({ error: 'Esta solicitação já foi analisada.' });
@@ -1455,7 +1462,7 @@ router.post('/api/admin/student/create', (req, res) => {
             status: fields.status || DEFAULT_STATUS, // Padrão: Ativo
             guardian: fields.guardian || null,
             // Dados de acessibilidade/saúde: só o administrador grava (SEG-04).
-            accessibility: isProfessorAccount(matchedAdmin) ? null : (fields.accessibility || null),
+            accessibility: isFullAdmin(matchedAdmin) ? (fields.accessibility || null) : null,
             password: passwordHash,
             classes: studentClasses,
             studentClass: classEntryName(studentClasses[0]), // Compatibilidade com submissões legadas (sempre o nome)
@@ -1540,7 +1547,7 @@ router.post('/api/admin/student/update', (req, res) => {
         const newEmailNormalized = fields.email;
         // Dados de acessibilidade/saúde: o professor recebe a observação ocultada e não
         // altera esse bloco; o que está gravado continua como está (SEG-04).
-        if (isProfessorAccount(matchedAdmin)) delete fields.accessibility;
+        if (!isFullAdmin(matchedAdmin)) delete fields.accessibility;
 
         // Auditoria: calcula o que mudou ANTES de aplicar.
         const changes = diffStudentForAudit(before, { ...fields, classes: studentClasses });
@@ -1860,11 +1867,11 @@ function isObservationAuthor(account, obs) {
 }
 
 function canSeeObservation(account, obs) {
-    return !isProfessorAccount(account) || !isRestrictedObservation(obs) || isObservationAuthor(account, obs);
+    return isFullAdmin(account) || !isRestrictedObservation(obs) || isObservationAuthor(account, obs);
 }
 
 function canChangeObservation(account, obs) {
-    return !isProfessorAccount(account) || isObservationAuthor(account, obs);
+    return isFullAdmin(account) || isObservationAuthor(account, obs);
 }
 
 router.get('/api/admin/student/observations', (req, res) => {
@@ -2470,7 +2477,7 @@ function _annProfessorScope(matchedAdmin) {
     return { assigned, courseIds };
 }
 function _annInScope(a, matchedAdmin) {
-    if (!isProfessorAccount(matchedAdmin)) return true;
+    if (accountScopeKind(matchedAdmin) === 'tudo') return true;
     if (a.target === 'todos') return true;
     if (a.target === 'turma') return adminCanAccessClass(matchedAdmin, a.targetValue, a.courseId);
     if (a.target === 'curso') return adminAllowedCourseIds(matchedAdmin).has(String(a.courseId || a.targetValue));
@@ -2486,7 +2493,7 @@ function _annInScope(a, matchedAdmin) {
 // do escopo dele (antes o 'todos' contava como escopo de todo mundo e o professor
 // apagava ou redirecionava o aviso da direção).
 function _annCanChange(a, matchedAdmin) {
-    if (!isProfessorAccount(matchedAdmin)) return true;
+    if (isFullAdmin(matchedAdmin)) return true;
     if (!a || a.target === 'todos' || !ANN_TARGETS.includes(a.target)) return false;
     return _annInScope(a, matchedAdmin);
 }
@@ -2519,7 +2526,7 @@ router.post('/api/admin/announcements', (req, res) => {
         const { title, message, target, targetValue, courseId, studentClass, priority, pinned, expiresAt } = req.body || {};
         if (!title || !message) return res.status(400).json({ error: 'Título e mensagem são obrigatórios.' });
         const tgt = ANN_TARGETS.includes(target) ? target : 'turma';
-        if (isProfessorAccount(matchedAdmin)) {
+        if (!isFullAdmin(matchedAdmin)) {
             if (tgt === 'todos') return res.status(403).json({ error: 'Professor não pode enviar aviso para toda a instituição.' });
             if (tgt === 'turma' && !adminCanAccessClass(matchedAdmin, targetValue, courseId)) return res.status(403).json({ error: 'Turma fora do seu escopo.' });
             if (tgt === 'curso' && !adminAllowedCourseIds(matchedAdmin).has(String(courseId || targetValue))) return res.status(403).json({ error: 'Curso fora do seu escopo.' });
@@ -2564,7 +2571,7 @@ router.post('/api/admin/announcements/update', (req, res) => {
             return res.status(403).json({ error: ann.target === 'todos' ? 'Só o administrador edita aviso para toda a instituição.' : 'Aviso fora do seu escopo.' });
         }
         const tgt = ANN_TARGETS.includes(target) ? target : ann.target;
-        if (isProfessorAccount(matchedAdmin)) {
+        if (!isFullAdmin(matchedAdmin)) {
             if (tgt === 'todos') return res.status(403).json({ error: 'Professor não pode enviar para toda a instituição.' });
             if (tgt === 'turma' && !adminCanAccessClass(matchedAdmin, targetValue, courseId || ann.courseId)) return res.status(403).json({ error: 'Turma fora do seu escopo.' });
             if (tgt === 'curso' && !adminAllowedCourseIds(matchedAdmin).has(String(courseId || targetValue))) return res.status(403).json({ error: 'Curso fora do seu escopo.' });
@@ -2628,7 +2635,7 @@ function deletedItemCopy(item) {
 const CALENDAR_TYPES = ['aula', 'prova', 'entrega', 'aviso', 'reuniao', 'outro'];
 
 function _calendarTargetAllowed(matchedAdmin, target, targetValue, courseId) {
-    if (!isProfessorAccount(matchedAdmin)) return true;
+    if (accountScopeKind(matchedAdmin) === 'tudo') return true;
     if (target === 'curso') return adminAllowedCourseIds(matchedAdmin).has(String(courseId || targetValue));
     return adminCanAccessClass(matchedAdmin, targetValue, courseId);
 }
@@ -2796,6 +2803,7 @@ router.post('/api/admin/student/certificates/revoke', (req, res) => {
 router.get('/api/admin/classes', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const classes = readJSON(DB_CLASSES_FILE);
+        // Contagem dos professores da turma: papel professor mesmo (isProfessorAccount).
         const professors = (db.memory.admins || []).filter(account => isProfessorAccount(account));
         const students = db.memory.students || [];
         const courseId = String(req.query.courseId || '').trim();
@@ -2817,7 +2825,7 @@ router.get('/api/admin/course-summaries', (req, res) => {
         const allowedCourseIds = adminAllowedCourseIds(matchedAdmin);
         const courses = (db.memory.courses || []).filter(course =>
             (includeDeleted || !isDeletedCourse(course)) &&
-            (!isProfessorAccount(matchedAdmin) || allowedCourseIds.has(course.id))
+            (accountScopeKind(matchedAdmin) === 'tudo' || allowedCourseIds.has(course.id))
         );
         const classes = filterClassesForAdmin(readJSON(DB_CLASSES_FILE), matchedAdmin)
             .filter(cls => cls.status !== 'inactive' && cls.status !== 'deleted' && cls.active !== false && !cls.deletedAt);
@@ -3540,7 +3548,7 @@ router.post('/api/admin/attendance/justification-upload', (req, res) => {
             const email = String(req.body.studentEmail || '').trim().toLowerCase();
             const student = (db.memory.students || []).find(st => st.email && st.email.toLowerCase() === email);
             if (!student) { fileStore.moveToTrash(tempPath); return res.status(400).json({ error: 'Aluno não informado.' }); }
-            if (isProfessorAccount(matchedAdmin) && !adminCanAccessStudent(matchedAdmin, student)) { fileStore.moveToTrash(tempPath); return res.status(403).json({ error: 'Aluno fora do seu escopo.' }); }
+            if (!adminCanAccessStudent(matchedAdmin, student)) { fileStore.moveToTrash(tempPath); return res.status(403).json({ error: 'Aluno fora do seu escopo.' }); }
             const _stA = settingsUtil.getSettings();
             if (req.file.size > _stA.upload.maxSizeMb * 1024 * 1024) { fileStore.moveToTrash(tempPath); return res.status(400).json({ error: 'Arquivo excede o limite de ' + _stA.upload.maxSizeMb + ' MB.' }); }
             const rel = fileStore.storeStudentFile(student, 'atestados', req.file.originalname, tempPath);
@@ -3556,7 +3564,7 @@ router.get('/api/admin/attendance/justification-file', (req, res) => {
         const file = String(req.query.file || '');
         const student = (db.memory.students || []).find(st => st.email && st.email.toLowerCase() === email);
         if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Fora do seu escopo.' });
+        if (!adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Fora do seu escopo.' });
         if (!fileStore.isInsideStudents(file)) return res.status(400).json({ error: 'Caminho inválido.' });
         const base = path.resolve(fileStore.studentDir(student));
         const target = path.resolve(fileStore.absFromData(file));
@@ -3613,7 +3621,7 @@ router.get('/api/admin/library', (req, res) => {
         if (studentClass && !adminCanAccessClass(matchedAdmin, studentClass, courseId)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
         const source = courseId ? effectiveLibraryEntries(courseId, studentClass) : (db.memory.library || []);
         const list = source
-            .filter(entry => !isProfessorAccount(matchedAdmin) || allowedCourses.has(entry.courseId))
+            .filter(entry => accountScopeKind(matchedAdmin) === 'tudo' || allowedCourses.has(entry.courseId))
             .slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         const access = encodeURIComponent(String(req.get('x-admin-session') || ''));
         res.json(list.map(e => ({ ...e, url: e.kind === 'link' ? e.url : `${e.url}${e.url.includes('?') ? '&' : '?'}access=${access}`, usedIn: _libUsage(e) })));
@@ -4354,7 +4362,7 @@ router.post('/api/admin/send-broadcast-message', (req, res) => {
 // professor só as das turmas dele; mensagem sem curso vale pela turma, quando o nome
 // dela é único (adminCanAccessClass); com nome repetido em dois cursos, fica escondida.
 function adminCanAccessMessage(account, message) {
-    if (!isProfessorAccount(account)) return true;
+    if (accountScopeKind(account) === 'tudo') return true;
     return !!message && adminCanAccessClass(account, message.studentClass, message.courseId);
 }
 
@@ -5015,7 +5023,7 @@ function questionBankItemForScreen(question) {
 
 router.get('/api/admin/question-bank', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        const questions = isProfessorAccount(matchedAdmin)
+        const questions = accountScopeKind(matchedAdmin) !== 'tudo'
             ? (db.memory.questionBank || []).filter(question => question && (!question.sourceExamKey || adminCanAccessItem(matchedAdmin, question.sourceExamKey)))
             : (db.memory.questionBank || []).filter(Boolean);
         res.json({ success: true, questions: questions.map(questionBankItemForScreen) });
@@ -5297,7 +5305,7 @@ router.get('/api/admin/dashboard/now', (req, res) => {
 // de frequência): antes a fila usava o valor guardado, e o item só aparecia depois de
 // alguém abrir o cartão Armazenamento (sobra do H1-c na J2).
 async function _storageQueueBlock(matchedAdmin) {
-    if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
+    if (!matchedAdmin || !isFullAdmin(matchedAdmin)) return null;
     const status = await db.freshStorageStatus();
     if (!status.compactSuggested) return null;
     return { freeBytes: status.freeBytes, allocatedBytes: status.allocatedBytes };
@@ -5309,7 +5317,7 @@ async function _storageQueueBlock(matchedAdmin) {
 // (demonstração e testes usam dados descartáveis).
 function _backupQueueBlock(matchedAdmin, now = Date.now()) {
     if (process.env.TEST_MODE === '1') return null;
-    if (!matchedAdmin || isProfessorAccount(matchedAdmin) || !canAccessAdminPermission(matchedAdmin, 'system.manage')) return null;
+    if (!matchedAdmin || !isFullAdmin(matchedAdmin)) return null;
     try {
         return require('../utils/backup.js').backupAlerts({ now });
     } catch (error) {
@@ -5339,7 +5347,7 @@ function _securityQueueBlock(matchedAdmin, students, { adminOnly = true, now = D
         delayedEmails,
         waitingEmails: delayedEmails.filter(email => waitingNow('student', email)),
     };
-    if (!adminOnly || !canAccessAdminPermission(matchedAdmin, 'page.accounts')) return block;
+    if (!adminOnly || !isFullAdmin(matchedAdmin)) return block;
     const instructorEmails = new Set((db.memory.admins || []).filter(item => item && item.email).map(item => String(item.email).toLowerCase()));
     block.delayedAccounts = loginGuard.protectedEmails('admin', now).filter(email => instructorEmails.has(email));
     block.waitingAccounts = block.delayedAccounts.filter(email => waitingNow('admin', email));
@@ -5358,9 +5366,9 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
     validateAdmin(req, res, async (config, matchedAdmin) => {
         const scope = _dashboardScope(req, matchedAdmin);
         const now = Date.now();
-        // 'page.accounts' é permissão exclusiva de administrador pleno — é o
-        // proxy correto para "professor não vê matrículas" (ADMIN_ONLY_PERMISSION_SET).
-        const canSeeMatriculas = canAccessAdminPermission(matchedAdmin, 'page.accounts');
+        // Matrículas a aprovar: só quem aprova (o administrador e, com enrollments.approve,
+        // a Secretaria); o professor não vê (antes o teste era page.accounts).
+        const canSeeMatriculas = canApproveEnrollments(matchedAdmin);
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas,
@@ -5425,7 +5433,7 @@ router.get('/api/admin/notifications', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const scopes = _notificationScopes(req, matchedAdmin);
         const multiClass = !String(req.query.studentClass || '').trim();
-        const canSeeMatriculas = canAccessAdminPermission(matchedAdmin, 'page.accounts');
+        const canSeeMatriculas = canApproveEnrollments(matchedAdmin);
         const account = (db.memory.admins || []).find(a => a.email && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const seen = new Set((account && account.preferences && account.preferences['notifications.seen']) || []);
         const today = settingsUtil.today();
@@ -5539,7 +5547,7 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
         }
         const requestedSchoolId = typeof body.schoolId === 'string' ? body.schoolId.trim() : '';
         const schoolId = requestedSchoolId || src.schoolId || 'escola_default';
-        if (isProfessorAccount(matchedAdmin) && !adminAssignedSchoolIds(matchedAdmin).includes(String(schoolId))) {
+        if (accountScopeKind(matchedAdmin) !== 'tudo' && !adminAssignedSchoolIds(matchedAdmin).includes(String(schoolId))) {
             return res.status(403).json({ success: false, error: 'Você só pode duplicar curso para uma escola atribuída à sua conta.', field: 'schoolId' });
         }
         if (requestedSchoolId && requestedSchoolId !== String(src.schoolId || '') && !schoolExists(requestedSchoolId)) {

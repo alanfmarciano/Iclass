@@ -1,0 +1,49 @@
+{
+  "descricao": "O que um professor sem permissões extras tinha na versão 281029f (main das fases 1 e 2). O conjunto de hoje só pode crescer (B0a da fase 3, FUN-13). 'tela' é a lista que web/src/lib/adminPermissions.js montava para o professor (a constante 'page.fórum' virou 'page.forum'); 'menu' são os caminhos do menu lateral (getAdminNavGroups) do professor, no ambiente da instituição e dentro de uma turma.",
+  "versao": "281029f",
+  "servidor": [
+    "page.dashboard",
+    "page.exams",
+    "page.monitor",
+    "page.results",
+    "page.materials",
+    "page.editor",
+    "page.students",
+    "page.forum",
+    "schools.scope"
+  ],
+  "tela": [
+    "page.dashboard",
+    "page.exams",
+    "page.monitor",
+    "page.results",
+    "page.materials",
+    "page.editor",
+    "page.classes",
+    "page.students",
+    "page.forum",
+    "schools.scope"
+  ],
+  "concediveis": [
+    "page.dashboard",
+    "page.exams",
+    "page.monitor",
+    "page.results",
+    "page.materials",
+    "page.editor",
+    "page.classes",
+    "page.students",
+    "page.forum",
+    "page.branding",
+    "page.system",
+    "course.manage",
+    "classes.manage",
+    "branding.manage",
+    "system.manage",
+    "schools.scope"
+  ],
+  "menu": {
+    "instituicao": ["/", "/turmas", "/diretorio", "/identidade"],
+    "curso": ["/", "/endereco", "/provas", "/monitor", "/resultados", "/materiais", "/editor", "/biblioteca", "/alunos", "/chamada", "/avisos", "/calendario", "/forum"]
+  }
+}

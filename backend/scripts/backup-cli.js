@@ -33,6 +33,7 @@ const archive = require('../utils/backupArchive.js');
 const schema = require('../utils/backupSchema.js');
 const dbFile = require('../utils/dbFile.js');
 const store = require('../utils/backupStore.js');
+const { isFullAdmin } = require('../utils/adminRoles.js');
 
 const EXIT = { OK: 0, FAILED: 1, SERVER_RUNNING: 2 };
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -563,7 +564,7 @@ async function internalAfterRestore(previousDb) {
         previousProtectedConfig: previous ? db.currentProtectedConfig(previous) : undefined,
     });
     await db.save();
-    const adminEmails = (db.memory.admins || []).filter(account => account && account.email && account.role !== 'professor').map(account => account.email);
+    const adminEmails = (db.memory.admins || []).filter(account => account && account.email && isFullAdmin(account)).map(account => account.email);
     await db.close();
     return { ok: true, networkKept: !!previous, adminEmails };
 }

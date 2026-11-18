@@ -46,7 +46,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `progress` | objeto | progresso por aluno/unidade |
 | `uploads` | objeto | metadados de arquivos enviados |
 | `config` | objeto | configuração global; `releasedItems`; `retentionLastRun` `{ at, trigger: 'automatic'\|'manual', by, counts: { keystrokes, proctoringLogs, loginLogs, trash? }, remaining }` (última limpeza da retenção, H8b) |
-| `admins` | array | administradores/professores (RBAC) |
+| `admins` | array | contas do painel (RBAC): `role` `admin` (ou ausente) \| `professor` \| `monitor` \| `secretaria` \| `coordenacao` (fase 3, `utils/adminRoles.js`); `assignedClasses` e `assignedCourseIds` só para professor e monitor, `assignedSchoolIds` também para secretaria e coordenação; `additionalPermissions` só as concedíveis do papel. O boot mantém os papéis do catálogo e trata papel desconhecido gravado como `admin` (regra antiga) |
 | `sessions` | objeto | sessões de aluno: `email` → `{ tokenHash, createdAt, lastSeen, lastActivityAt, ip, origin? }`; `tokenHash` = sha256 do token, que fica só no navegador (`utils/authSessions.js`). `lastSeen` é a presença ("online"). Gravadas na tabela `auth_sessions` ([abaixo](#sessões-gravadas-auth_sessions)). `{ lastSeen }` sozinho (semente de demonstração do `TEST_MODE`) é só presença: não autentica e não é gravado. |
 | `adminSessions` | objeto | sessões de instrutor: `'h:' + sha256(token)` → `{ email, createdAt, lastSeen, lastActivityAt, origin? }`. `origin` só aparece quando não é `login` (`setup` no acesso rápido local). Gravadas na tabela `auth_sessions`. |
 | `studentExamState` | objeto | estado da prova por `studentEmail_examKey` |

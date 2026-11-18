@@ -12,12 +12,12 @@ const {
     findClassByNameAndCourse,
     getCourseItemKeys,
     getReleasedItemsForClass,
-    isProfessorAccount,
     sendHandledFailure,
     sendInternalError,
     sendRouteError,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
+const { isFullAdmin } = require('../utils/adminRoles.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const { connectionInfo, httpsAvailable, networkHttpsStatus, studentsHttpsEnabled } = require('../utils/networkPolicy.js');
 const secureConnection = require('../utils/secureConnection.js');
@@ -276,7 +276,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 activeApplications: activeApplicationCount(),
                 diskFreeBytes: await diskFreeBytes(DATA_DIR),
                 // Compactar é só do administrador (o professor vê o cartão sem o botão).
-                canCompact: !isProfessorAccount(matchedAdmin),
+                canCompact: isFullAdmin(matchedAdmin),
             });
         });
     });
@@ -286,7 +286,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     // disco. Grava a auditoria 'storage_compacted' com o tamanho antes e depois.
     router.post('/api/admin/storage/compact', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            if (isProfessorAccount(matchedAdmin)) {
+            if (!isFullAdmin(matchedAdmin)) {
                 return res.status(403).json({ error: 'Apenas administradores podem compactar o banco.' });
             }
             // Só texto: um array ['COMPACTAR'] viraria 'COMPACTAR' no String().
@@ -643,7 +643,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
 
     router.post('/api/admin/network-settings', (req, res) => {
         validateAdmin(req, res, async (config, account) => {
-            if (isProfessorAccount(account)) {
+            if (!isFullAdmin(account)) {
                 return res.status(403).json({ error: 'Só o administrador pode mudar as configurações de rede.' });
             }
             const body = req.body || {};
@@ -735,7 +735,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     // O caminho do destino externo do backup (settings.backup.destino, H4b) é só do
     // administrador, como em GET /api/admin/backup/status: o professor vê que há um
     // destino, não onde.
-    const settingsForAccount = (settings, account) => (isProfessorAccount(account) && settings && settings.backup && settings.backup.destino
+    const settingsForAccount = (settings, account) => (!isFullAdmin(account) && settings && settings.backup && settings.backup.destino
         ? { ...settings, backup: { ...settings.backup, destino: '' } }
         : settings);
 
@@ -758,7 +758,7 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             // em POST /api/admin/lgpd/retention. Aqui o professor não muda (sem erro: o
             // resto do pedido vale) e o administrador ainda muda, como antes.
             const patch = { ...(req.body && typeof req.body === 'object' ? req.body : {}) };
-            if (isProfessorAccount(account)) delete patch.trash;
+            if (!isFullAdmin(account)) delete patch.trash;
             db.memory.config.settings = settingsUtil.mergeSettings(patch);
             const changes = settingsChanges(before, settingsUtil.getSettings());
             if (changes.length) {

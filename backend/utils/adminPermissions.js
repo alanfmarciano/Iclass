@@ -1,3 +1,15 @@
+const {
+    ROLE_CATALOG,
+    FULL_ADMIN_ONLY_PERMISSIONS,
+    NEVER_FOR_PROFESSOR,
+    accountRoleId,
+    findAdminRole,
+    isFullAdmin,
+    accountScopeKind,
+    isReadOnlyAccount,
+    accountRoleLabel,
+} = require('./adminRoles.js');
+
 const ADMIN_PERMISSION_VALUES = Object.freeze([
     'page.dashboard',
     'page.exams',
@@ -26,22 +38,42 @@ const ADMIN_PERMISSION_VALUES = Object.freeze([
 ]);
 
 const ADMIN_PERMISSION_SET = new Set(ADMIN_PERMISSION_VALUES);
-// Exclusivas de administrador: nunca fazem parte do professor nem podem ser concedidas.
+// Papéis (fase 3, FUN-13): catálogo em adminRoles.js. Daqui saem as listas calculadas
+// de cada papel, só com as permissões que existem em ADMIN_PERMISSION_VALUES.
+// Exclusivas de administrador: nunca fazem parte de outro papel nem podem ser concedidas.
 // audit.view (SEG-07, decisão P5): a trilha de auditoria mostra IP, contas e o que os
 // outros professores fizeram; é só do administrador. O professor continua vendo o
 // histórico de cada nota em Resultados (rota das entregas, page.results).
-const ADMIN_ONLY_PERMISSION_SET = new Set(['page.accounts', 'accounts.manage', 'students.destroy', 'students.certificates', 'students.security', 'course.purge', 'forum.purge', 'audit.view']);
-const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze([
-    'page.dashboard',
-    'page.exams',
-    'page.monitor',
-    'page.results',
-    'page.materials',
-    'page.editor',
-    'page.students',
-    'page.forum',
-    'schools.scope',
-]);
+// students.certificates deixou de ser exclusiva (pode ser da Secretaria), mas continua
+// fora do professor (NEVER_FOR_PROFESSOR).
+const ADMIN_ONLY_PERMISSION_SET = new Set(FULL_ADMIN_ONLY_PERMISSIONS);
+const NEVER_FOR_PROFESSOR_SET = new Set(NEVER_FOR_PROFESSOR);
+
+const knownPermissions = list => list.filter(permission => ADMIN_PERMISSION_SET.has(permission));
+
+// Permissões padrão de um papel, já filtradas pelas que existem.
+function rolePermissionDefaults(roleId) {
+    const role = findAdminRole(roleId);
+    if (!role) return [];
+    if (role.permissoesPadrao === '*') return [...ADMIN_PERMISSION_VALUES];
+    return [...new Set(knownPermissions(role.permissoesPadrao))];
+}
+
+// Permissões que o administrador pode dar a mais a uma conta do papel.
+function roleGrantablePermissions(roleId) {
+    const role = findAdminRole(roleId);
+    if (!role) return [];
+    if (role.concediveis === '*') {
+        return ADMIN_PERMISSION_VALUES.filter(permission => !ADMIN_ONLY_PERMISSION_SET.has(permission)
+            && !(role.id === 'professor' && NEVER_FOR_PROFESSOR_SET.has(permission)));
+    }
+    return [...new Set(knownPermissions(role.concediveis))]
+        .filter(permission => !ADMIN_ONLY_PERMISSION_SET.has(permission));
+}
+
+// Padrão do professor, calculado do catálogo (professores existentes ganham o que entra
+// no papel sem migração; o conjunto de um professor de hoje só cresce).
+const PROFESSOR_DEFAULT_PERMISSIONS = Object.freeze(rolePermissionDefaults('professor'));
 const PERMISSION_DEPENDENCIES = Object.freeze({
     'classes.manage': 'page.classes',
     'accounts.manage': 'page.accounts',
@@ -58,15 +90,18 @@ function expandPermissionDependencies(permissions) {
     return [...expanded];
 }
 
-function normalizeAdditionalPermissions(value) {
+// Permissões extras gravadas na conta, só as concedíveis ao papel (padrão: professor,
+// como antes dos papéis). Uma extra que o papel não aceita é ignorada.
+function normalizeAdditionalPermissions(value, roleId = 'professor') {
     if (!Array.isArray(value)) return [];
+    const grantable = new Set(roleGrantablePermissions(roleId));
     const valid = [...new Set(value
         .map(permission => String(permission).trim())
-        .filter(permission => ADMIN_PERMISSION_SET.has(permission) && !ADMIN_ONLY_PERMISSION_SET.has(permission)))];
-    return expandPermissionDependencies(valid);
+        .filter(permission => grantable.has(permission)))];
+    return expandPermissionDependencies(valid).filter(permission => grantable.has(permission) || rolePermissionDefaults(roleId).includes(permission));
 }
 
-function parseAdditionalPermissions(value) {
+function parseAdditionalPermissions(value, roleId = 'professor') {
     if (value === undefined) return { ok: true, permissions: undefined };
     if (!Array.isArray(value)) {
         return { ok: false, error: 'Permissões adicionais devem ser enviadas como uma lista.' };
@@ -77,24 +112,62 @@ function parseAdditionalPermissions(value) {
     if (unknown) {
         return { ok: false, error: `Permissão adicional desconhecida: ${unknown}.` };
     }
-    const adminOnly = requested.find(permission => ADMIN_ONLY_PERMISSION_SET.has(permission));
+    const role = findAdminRole(roleId);
+    const grantable = new Set(roleGrantablePermissions(roleId));
+    const adminOnly = requested.find(permission => !grantable.has(permission));
     if (adminOnly) {
-        return { ok: false, error: `Permissão exclusiva de administrador e não concedível a professores: ${adminOnly}.` };
+        if (!role || role.id === 'professor') {
+            return { ok: false, error: `Permissão exclusiva de administrador e não concedível a professores: ${adminOnly}.` };
+        }
+        return { ok: false, error: `Permissão não concedível ao papel ${role.rotulo}: ${adminOnly}.` };
     }
 
-    return { ok: true, permissions: expandPermissionDependencies(requested) };
+    return { ok: true, permissions: expandPermissionDependencies(requested).filter(permission => grantable.has(permission) || rolePermissionDefaults(roleId).includes(permission)) };
 }
 
+// Só o papel 'professor' (não quer dizer "não é administrador": use isFullAdmin e
+// accountScopeKind de adminRoles.js).
 function isProfessorAccount(account) {
-    return account && account.role === 'professor';
+    return !!account && accountRoleId(account) === 'professor';
 }
 
+// Conjunto efetivo da conta: o administrador tem todas; os outros papéis, o padrão do
+// papel mais as extras concedíveis; papel desconhecido, nenhuma.
 function getEffectiveAdminPermissions(account) {
-    if (!isProfessorAccount(account)) return new Set(ADMIN_PERMISSION_VALUES);
+    const roleId = accountRoleId(account);
+    if (!roleId) return new Set();
+    if (roleId === 'admin') return new Set(ADMIN_PERMISSION_VALUES);
     return new Set([
-        ...PROFESSOR_DEFAULT_PERMISSIONS,
-        ...normalizeAdditionalPermissions(account.additionalPermissions),
+        ...rolePermissionDefaults(roleId),
+        ...normalizeAdditionalPermissions(account.additionalPermissions, roleId),
     ]);
+}
+
+// Lista para a sessão da tela (whoami e login): em ordem fixa, a do catálogo.
+function effectivePermissionList(account) {
+    const permissions = getEffectiveAdminPermissions(account);
+    return ADMIN_PERMISSION_VALUES.filter(permission => permissions.has(permission));
+}
+
+// Capacidade que antes era "só administrador" fixo na rota e passa a ser uma permissão
+// (ex.: enrollments.approve, P4 D16): o administrador sempre tem; os outros papéis, só
+// com a permissão (enquanto o valor não existir, ninguém além do administrador).
+function hasAdminCapability(account, permission) {
+    return isFullAdmin(account) || getEffectiveAdminPermissions(account).has(permission);
+}
+
+// Catálogo dos papéis para a tela de contas (GET /api/admin/roles).
+function adminRoleCatalogForScreen() {
+    return ROLE_CATALOG.map(role => ({
+        id: role.id,
+        rotulo: role.rotulo,
+        descricao: role.descricao,
+        escopo: role.escopo,
+        somenteLeitura: role.somenteLeitura,
+        oculto: role.oculto,
+        permissoesPadrao: ADMIN_PERMISSION_VALUES.filter(permission => rolePermissionDefaults(role.id).includes(permission)),
+        concediveis: ADMIN_PERMISSION_VALUES.filter(permission => roleGrantablePermissions(role.id).includes(permission)),
+    }));
 }
 
 // A regra pode aceitar mais de uma permissão (lista): basta ter uma delas.
@@ -108,9 +181,21 @@ function canAccessAdminPermission(account, permission) {
     return hasAnyAdminPermission(getEffectiveAdminPermissions(account), permission);
 }
 
+// Sessão do painel (whoami e login, D18 do P4): o que a tela usa em vez de recalcular.
+function adminAccessSummary(account) {
+    return {
+        effectivePermissions: effectivePermissionList(account),
+        scopeKind: accountScopeKind(account),
+        readOnly: isReadOnlyAccount(account),
+        roleLabel: accountRoleLabel(account),
+    };
+}
+
 const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET'], pattern: /^\/whoami$/, permission: 'page.dashboard' },
     { methods: ['GET'], pattern: /^\/accounts$/, permission: 'page.accounts' },
+    // Catálogo dos papéis para a tela de contas (FUN-13).
+    { methods: ['GET'], pattern: /^\/roles$/, permission: 'page.accounts' },
     { methods: ['POST'], pattern: /^\/accounts\/(create|update|delete|unlock-login)$/, permission: 'accounts.manage' },
     { methods: ['POST'], pattern: /^\/teacher-assignments$/, permission: 'accounts.manage' },
     { methods: ['GET'], pattern: /^\/network-info$/, permission: 'page.system' },
@@ -196,7 +281,9 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET'], pattern: /^\/dashboard\/students-overview$/, permission: 'page.dashboard' },
     { methods: ['GET'], pattern: /^\/dashboard\/(now|queue|trends)$/, permission: 'page.dashboard' },
     { methods: ['GET', 'POST'], pattern: /^\/notifications(?:\/seen)?$/, permission: 'page.dashboard' },
-    { methods: ['GET'], pattern: /^\/schools$/, permission: 'schools.scope' },
+    // Lista das escolas do escopo (filterSchoolsForAdmin): também para quem vê Turmas sem
+    // schools.scope (secretaria, coordenação, professor auxiliar), que não altera escola.
+    { methods: ['GET'], pattern: /^\/schools$/, permission: ['schools.scope', 'page.classes'] },
     { methods: ['POST'], pattern: /^\/schools\/update$/, permission: 'schools.scope' },
     { methods: ['POST'], pattern: /^\/schools\/(create|delete)$/, permission: 'branding.manage' },
 ]);
@@ -211,10 +298,18 @@ function resolveAdminApiPermission(method, path) {
 module.exports = {
     ADMIN_PERMISSION_VALUES,
     PROFESSOR_DEFAULT_PERMISSIONS,
+    rolePermissionDefaults,
+    roleGrantablePermissions,
     normalizeAdditionalPermissions,
     parseAdditionalPermissions,
     isProfessorAccount,
+    isFullAdmin,
+    accountScopeKind,
     getEffectiveAdminPermissions,
+    effectivePermissionList,
+    hasAdminCapability,
+    adminAccessSummary,
+    adminRoleCatalogForScreen,
     canAccessAdminPermission,
     hasAnyAdminPermission,
     resolveAdminApiPermission,

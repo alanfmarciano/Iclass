@@ -9,7 +9,8 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { studentBelongsToClass, getReleasedItemsForClass, isProfessorAccount, resolveAdminSession, assignRequestId } = require('./middlewares.js');
+const { studentBelongsToClass, getReleasedItemsForClass, resolveAdminSession, assignRequestId } = require('./middlewares.js');
+const { isFullAdmin } = require('./utils/adminRoles.js');
 const { crashLogPath, logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
@@ -196,7 +197,7 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
         // turma ou link de material com '/uploads/<nome>.json'), então o vínculo não basta.
         const sessionEmail = adminSession ? String(adminSession.email || '').toLowerCase() : '';
         const account = sessionEmail ? (db.memory.admins || []).find(item => item && item.email && item.email.toLowerCase() === sessionEmail) : null;
-        const isAdministrator = !!account && !isProfessorAccount(account);
+        const isAdministrator = !!account && isFullAdmin(account);
         if (!isAdministrator) {
             let backupLike = true;
             try { backupLike = await fileLooksLikeBackup(target); } catch (error) { backupLike = true; }

@@ -26,9 +26,9 @@ const {
     studentBelongsToClass,
     findClassByNameAndCourse,
     getReleasedItemsForClass,
-    isProfessorAccount,
     adminAllowedCourseIds
 } = require('../middlewares.js');
+const { accountScopeKind } = require('../utils/adminRoles.js');
 const { logError, oneLine } = require('../utils/errorLog.js');
 const { rateLimit } = require('../utils/rateLimit.js');
 const { body, oneOf, str } = require('../utils/inputSchema.js');
@@ -367,7 +367,7 @@ router.get('/api/courses', (req, res) => {
     }
     validateAdmin(req, res, (config, matchedAdmin) => {
         const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
-        const allowed = isProfessorAccount(matchedAdmin) ? adminAllowedCourseIds(matchedAdmin) : null;
+        const allowed = accountScopeKind(matchedAdmin) !== 'tudo' ? adminAllowedCourseIds(matchedAdmin) : null;
         const courses = (db.memory.courses || []).filter(course => course && (!allowed || allowed.has(String(course.id))));
         res.json(includeDeleted ? courses : courses.filter(c => !isCourseDeleted(c)));
     });

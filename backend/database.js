@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const os = require('os');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
+const { ADMIN_ROLE_IDS, roleScopeKind } = require('./utils/adminRoles.js');
 const { normalizeStoredStudentClasses } = require('./utils/students.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
@@ -252,7 +253,9 @@ function syncAdminClassAssignments() {
     const allAssignments = allClassAssignments();
     let changed = false;
     (memoryDB.admins || []).forEach(admin => {
-        if (!admin || admin.role === 'professor') return;
+        // Só o administrador pleno (escopo 'tudo') recebe todas as turmas; os papéis da
+        // fase 3 (professor auxiliar, secretaria, coordenação) seguem o escopo do papel.
+        if (!admin || roleScopeKind(admin.role || 'admin') !== 'tudo') return;
         if (!Array.isArray(admin.assignedClasses) || JSON.stringify(admin.assignedClasses) !== JSON.stringify(allAssignments)) {
             admin.assignedClasses = allAssignments.map(item => ({ ...item }));
             changed = true;
@@ -278,10 +281,11 @@ function syncProfessorAssignmentReferences() {
     let changed = false;
 
     (memoryDB.admins || []).forEach(account => {
-        if (!account || account.role !== 'professor') return;
+        const scope = account ? roleScopeKind(account.role || 'admin') : 'tudo';
+        if (!account || scope === 'tudo') return;
         const nextSchools = [...new Set((account.assignedSchoolIds || []).map(value => String(value || '').trim()).filter(id => id && schoolIds.has(id)))];
-        const nextCourses = [...new Set((account.assignedCourseIds || []).map(value => String(value || '').trim()).filter(id => id && courseIds.has(id)))];
-        const nextClasses = uniqueSortedAssignments((account.assignedClasses || [])
+        const nextCourses = scope !== 'turmas' ? [] : [...new Set((account.assignedCourseIds || []).map(value => String(value || '').trim()).filter(id => id && courseIds.has(id)))];
+        const nextClasses = scope !== 'turmas' ? [] : uniqueSortedAssignments((account.assignedClasses || [])
             .filter(value => value && typeof value === 'object')
             .map(value => ({ courseId: String(value.courseId || '').trim(), className: String(value.className || value.name || '').trim() }))
             .filter(value => classKeys.has(`${value.courseId}::${value.className}`)));
@@ -1379,12 +1383,17 @@ async function init() {
     // Migração de contas administrativas e senhas legadas.
     // Fase 5.1: contas sem papel (ou com papel desconhecido) continuam sendo
     // administradores. O shape normalizado também é persistido no SQLite.
+    // Fase 3 (FUN-13): os papéis do catálogo (adminRoles.js) ficam como estão; o escopo
+    // de cada um decide o que se normaliza: turmas, cursos e escolas para 'turmas'
+    // (professor, monitor), só escolas para 'escolas' (secretaria, coordenação).
     let needsSave = migrateLegacyExamApplications();
     if (memoryDB.admins && Array.isArray(memoryDB.admins)) {
         memoryDB.admins.forEach(admin => {
             if (!admin) return;
 
-            const normalizedRole = admin.role === 'professor' ? 'professor' : 'admin';
+            const storedRole = typeof admin.role === 'string' ? admin.role.trim().toLowerCase() : '';
+            const normalizedRole = storedRole && ADMIN_ROLE_IDS.includes(storedRole) ? storedRole : 'admin';
+            const roleScope = roleScopeKind(normalizedRole);
             if (admin.role !== normalizedRole) {
                 admin.role = normalizedRole;
                 needsSave = true;
@@ -1392,7 +1401,7 @@ async function init() {
 
             const unresolved = [];
             const normalizedAssignedClasses = [];
-            if (normalizedRole === 'professor' && Array.isArray(admin.assignedClasses)) {
+            if (roleScope === 'turmas' && Array.isArray(admin.assignedClasses)) {
                 admin.assignedClasses.forEach(value => {
                     if (value && typeof value === 'object') {
                         const courseId = String(value.courseId || '').trim();
@@ -1408,9 +1417,9 @@ async function init() {
                     else if (className) unresolved.push(className);
                 });
             }
-            const uniqueAssignments = normalizedRole === 'professor'
+            const uniqueAssignments = roleScope === 'turmas'
                 ? uniqueSortedAssignments(normalizedAssignedClasses)
-                : allClassAssignments();
+                : (roleScope === 'tudo' ? allClassAssignments() : []);
             if (!Array.isArray(admin.assignedClasses) || JSON.stringify(admin.assignedClasses) !== JSON.stringify(uniqueAssignments)) {
                 admin.assignedClasses = uniqueAssignments;
                 needsSave = true;
@@ -1420,10 +1429,10 @@ async function init() {
             const validCourseIds = new Set((memoryDB.courses || [])
                 .filter(course => course && !course.deleted && course.status !== 'deleted' && course.status !== 'inactive')
                 .map(course => String(course.id)));
-            const normalizedSchoolIds = normalizedRole === 'professor'
+            const normalizedSchoolIds = roleScope !== 'tudo'
                 ? [...new Set((admin.assignedSchoolIds || []).map(value => String(value || '').trim()).filter(id => id && validSchoolIds.has(id)))]
                 : [];
-            const normalizedCourseIds = normalizedRole === 'professor'
+            const normalizedCourseIds = roleScope === 'turmas'
                 ? [...new Set((admin.assignedCourseIds || []).map(value => String(value || '').trim()).filter(id => id && validCourseIds.has(id)))]
                 : [];
             if (!Array.isArray(admin.assignedSchoolIds) || JSON.stringify(admin.assignedSchoolIds) !== JSON.stringify(normalizedSchoolIds)) {
@@ -1439,8 +1448,8 @@ async function init() {
                 needsSave = true;
             }
 
-            const normalizedAdditionalPermissions = normalizedRole === 'professor'
-                ? normalizeAdditionalPermissions(admin.additionalPermissions)
+            const normalizedAdditionalPermissions = roleScope !== 'tudo'
+                ? normalizeAdditionalPermissions(admin.additionalPermissions, normalizedRole)
                 : [];
             if (!Array.isArray(admin.additionalPermissions) || JSON.stringify(admin.additionalPermissions) !== JSON.stringify(normalizedAdditionalPermissions)) {
                 admin.additionalPermissions = normalizedAdditionalPermissions;

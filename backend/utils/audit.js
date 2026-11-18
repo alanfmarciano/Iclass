@@ -25,6 +25,7 @@
 // (db.memory) e não grava (quem chama faz o db.save() depois).
 
 const crypto = require('crypto');
+const { accountRoleId } = require('./adminRoles.js');
 
 // Categorias da trilha (filtro da tela Auditoria e do CSV).
 const AUDIT_CATEGORIES = ['grade', 'student', 'attendance', 'exam', 'academic', 'content', 'account', 'security', 'system', 'backup', 'privacy', 'other'];
@@ -312,7 +313,9 @@ function resolveActor(actor, req) {
 // professor), o aluno da sessão, ou o próprio sistema. Sem como saber, fica de fora.
 // A conta passada com role 'aluno' vale para o aluno sem sessão ainda (autocadastro).
 function resolveActorRole(actor, req, actorValue) {
-    const accountRole = account => (account && account.role === 'professor' ? 'professor' : account && account.role === 'aluno' ? 'aluno' : 'admin');
+    // Papel da conta do painel pelo catálogo (adminRoles.js): 'admin', 'professor' ou um
+    // dos papéis da fase 3 ('secretaria', 'coordenacao', 'monitor').
+    const accountRole = account => (account && account.role === 'aluno' ? 'aluno' : (accountRoleId(account) || 'admin'));
     if (actor && typeof actor === 'object' && actor.email && normalizedActor(actor.email) === actorValue) return accountRole(actor);
     if (req && req.adminAccount && req.adminAccount.email && normalizedActor(req.adminAccount.email) === actorValue) return accountRole(req.adminAccount);
     if (req && req.studentEmail && normalizedActor(req.studentEmail) === actorValue) return 'aluno';

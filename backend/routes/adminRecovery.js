@@ -4,7 +4,8 @@ const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount, adminCanAccessClass, adminCanAccessCourse, guarded, sendInternalError, sendRouteError, sendHandledFailure, publicErrorMessage } = require('../middlewares.js');
+const { isFullAdmin, accountRoleLabel } = require('../utils/adminRoles.js');
+const { validateAdmin, adminCanAccessClass, adminCanAccessCourse, guarded, sendInternalError, sendRouteError, sendHandledFailure, publicErrorMessage } = require('../middlewares.js');
 const { logError } = require('../utils/errorLog.js');
 const fileStore = require('../utils/storage.js');
 const backupUtil = require('../utils/backup.js');
@@ -32,7 +33,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     //   escopo do professor; o resto só para quem excluiu. Item antigo sem essa
     //   informação fica com o administrador.
     function hiddenFromAccount(entry, matchedAdmin) {
-        if (!isProfessorAccount(matchedAdmin) || !entry) return false;
+        if (isFullAdmin(matchedAdmin) || !entry) return false;
         if (fileStore.isAdminOnlyTrashEntry(entry)) return true;
         const courseId = String(entry.courseId || '').trim();
         if (courseId) {
@@ -129,7 +130,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                     details: {
                         removed,
                         totalSize: visible.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0),
-                        scope: isProfessorAccount(matchedAdmin) ? 'itens do escopo do professor' : 'lixeira inteira',
+                        scope: isFullAdmin(matchedAdmin) ? 'lixeira inteira' : 'itens do escopo do professor',
                         items: visible.slice(0, TRASH_EMPTY_LISTED).map(trashAuditItem),
                         moreItems: Math.max(0, visible.length - TRASH_EMPTY_LISTED),
                     },
@@ -144,7 +145,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     // das contas; baixar e restaurar é exclusivo do administrador. Professor com
     // "Executar manutenção" só gera a cópia de segurança, que fica no servidor.
     function rejectProfessor(res, matchedAdmin) {
-        if (!isProfessorAccount(matchedAdmin)) return false;
+        if (isFullAdmin(matchedAdmin)) return false;
         res.status(403).json({ error: 'Baixar ou restaurar backup é exclusivo do administrador.' });
         return true;
     }
@@ -231,7 +232,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             await db.save();
             // O professor vê que a cópia externa saiu (ou falhou), não onde (o caminho do
             // destino é do administrador).
-            const professor = isProfessorAccount(matchedAdmin);
+            const professor = !isFullAdmin(matchedAdmin);
             const destino = backupUtil.backupStatus().destino;
             res.json({
                 success: true,
@@ -250,7 +251,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
     router.get('/api/admin/backup/status', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             const status = backupUtil.backupStatus();
-            if (isProfessorAccount(matchedAdmin)) {
+            if (!isFullAdmin(matchedAdmin)) {
                 const failure = status.ultimaFalha
                     ? { ...status.ultimaFalha, destino: '', mensagem: withoutDestination(status.ultimaFalha.mensagem, status.destino, status.ultimaFalha.destino) }
                     : null;
@@ -655,8 +656,10 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
 
     // Tentativa de restaurar sem ser administrador é evento de segurança: fica no histórico.
     async function refuseProfessorRestore(req, res, matchedAdmin) {
-        if (!isProfessorAccount(matchedAdmin)) return false;
-        recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { error: 'Tentativa de restauração por conta de professor (recusada).' });
+        if (isFullAdmin(matchedAdmin)) return false;
+        // "conta de professor", "conta de secretaria"...: o rótulo do papel no catálogo.
+        const who = accountRoleLabel(matchedAdmin).toLowerCase();
+        recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', { error: `Tentativa de restauração por conta de ${who} (recusada).` });
         await db.save().catch(() => {});
         rejectProfessor(res, matchedAdmin);
         return true;
