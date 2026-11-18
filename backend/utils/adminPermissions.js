@@ -300,9 +300,25 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/schools\/(create|delete)$/, permission: 'branding.manage' },
 ]);
 
+// Caminho de /api/admin como o Express 5 o casa com as rotas: sem a query string, sem
+// diferença entre maiúsculas e minúsculas e com a barra no fim opcional ('/student/Update'
+// e '/student/update/' rodam a rota '/student/update'). O guarda decide sobre esta forma;
+// antes comparava o caminho cru, e uma variante caía numa regra genérica mais frouxa (o
+// professor auxiliar alterava aluno por '/student/Update', o professor emitia certificado
+// por '/student/certificates/issue/'). trimAdminPath guarda a caixa, para os ids do
+// caminho (curso, conteúdo, turma); canonicalAdminPath é a forma de comparar.
+function trimAdminPath(path) {
+    const raw = String(path || '/').split('?')[0];
+    return raw.replace(/\/+$/, '') || '/';
+}
+
+function canonicalAdminPath(path) {
+    return trimAdminPath(path).toLowerCase();
+}
+
 function resolveAdminApiPermission(method, path) {
     const normalizedMethod = String(method || 'GET').toUpperCase();
-    const normalizedPath = String(path || '/').split('?')[0];
+    const normalizedPath = canonicalAdminPath(path);
     const rule = ADMIN_API_PERMISSION_RULES.find(item => item.methods.includes(normalizedMethod) && item.pattern.test(normalizedPath));
     return rule ? rule.permission : undefined;
 }
@@ -325,4 +341,6 @@ module.exports = {
     canAccessAdminPermission,
     hasAnyAdminPermission,
     resolveAdminApiPermission,
+    trimAdminPath,
+    canonicalAdminPath,
 };

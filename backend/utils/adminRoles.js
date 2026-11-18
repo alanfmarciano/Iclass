@@ -164,6 +164,16 @@ function accountScopeKind(account) {
     return role ? role.escopo : 'turmas';
 }
 
+// Texto da recusa de escopo: a conta de turmas (professor, professor auxiliar) e a de
+// escolas (secretaria, coordenação) não têm o mesmo "fora do escopo".
+function scopeOwnerPhrase(account) {
+    return accountScopeKind(account) === 'escolas' ? 'às escolas desta conta' : 'às turmas atribuídas a esta conta';
+}
+
+function outOfScopeMessage(account, subject) {
+    return `${subject} não pertence ${scopeOwnerPhrase(account)}.`;
+}
+
 function roleScopeKind(roleId) {
     const role = findAdminRole(roleId);
     return role ? role.escopo : 'turmas';
@@ -197,10 +207,11 @@ const READ_ONLY_EXCEPTIONS = Object.freeze([
 const READ_ONLY_EXCEPTION_SET = new Set(READ_ONLY_EXCEPTIONS);
 const READ_ONLY_REFUSAL = Object.freeze({ error: 'Sua conta é só de consulta.', code: 'read_only_account' });
 
+// Como o Express casa as rotas: sem diferença de caixa e com a barra no fim opcional.
 function requestFullPath(req) {
     const raw = String((req && (req.originalUrl || req.url)) || '/').split('?')[0];
     const trimmed = raw.length > 1 ? raw.replace(/\/+$/, '') : raw;
-    return trimmed || '/';
+    return (trimmed || '/').toLowerCase();
 }
 
 // Devolve o corpo da recusa (403) ou null quando o pedido pode seguir.
@@ -225,6 +236,7 @@ module.exports = {
     findAdminRole,
     isFullAdmin,
     accountScopeKind,
+    outOfScopeMessage,
     roleScopeKind,
     isReadOnlyAccount,
     accountRoleLabel,

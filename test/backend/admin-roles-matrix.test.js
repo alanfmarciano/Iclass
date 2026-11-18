@@ -3,8 +3,9 @@
 // secretaria, coordenacao), guarda com somente leitura e escopo por papel. Antes, toda
 // conta que não era professor virava superusuária (82 testes de isProfessorAccount).
 // Matriz: para cada papel e cada rota de /api/admin, o guarda deixa passar exatamente as
-// permissões do catálogo (regras de ADMIN_API_PERMISSION_RULES); a matriz ganha linha a
-// cada rota nova (contrato C2 do P4).
+// permissões do catálogo (regras de ADMIN_API_PERMISSION_RULES), também nas variantes de
+// caminho que o Express entrega à mesma rota (outra caixa, barra no fim); a matriz ganha
+// linha a cada rota nova (contrato C2 do P4).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -244,6 +245,125 @@ test('[UC-PAPEIS-001] alterar cadastro de aluno pede students.edit: o professor 
     const byProfessor = await as('professor', request(app).post('/api/admin/student/update')).send(body);
     assert.equal(byProfessor.status, 200, JSON.stringify(byProfessor.body));
     assert.equal(db.memory.students.find(student => student.email === 'ana@papeis.local').name, 'Ana Trocada');
+});
+
+// Variantes que o Express 5 entrega à mesma rota: outra caixa (inclusive no ponto de
+// montagem) e uma barra no fim. O guarda decide sobre a forma canônica.
+function pathVariants(fullPath) {
+    return [
+        fullPath.toUpperCase(),
+        `${fullPath}/`,
+        `${fullPath.replace(/\/([a-z])/g, (whole, letter) => `/${letter.toUpperCase()}`)}/`,
+    ];
+}
+
+test('[UC-PAPEIS-001] matriz com variantes de caminho: outra caixa ou barra no fim não muda a decisão do guarda', async () => {
+    // Antes o guarda comparava o caminho cru e o Express rodava a rota mesmo assim:
+    // '/student/Update' caía na regra genérica de aluno (page.students) e o professor
+    // auxiliar alterava cadastro; '/student/certificates/issue/' deixava o professor
+    // emitir certificado.
+    const routes = adminRoutes();
+    const wrong = [];
+    for (const name of ['professor', 'monitor', 'secretaria', 'coordenacao', 'desconhecido']) {
+        const acc = account(name);
+        for (const { method, route, file } of routes) {
+            const fullPath = route.replace(/:[^/]+/g, 'example');
+            const expected = expectedDecision(acc, method, route);
+            for (const variant of pathVariants(fullPath)) {
+                const got = await guardDecision(name, method, variant);
+                if (got !== expected) wrong.push(`${name} ${method} ${variant} (${file}): esperado ${expected}, veio ${got}`);
+            }
+        }
+    }
+    assert.deepEqual(wrong, [], wrong.slice(0, 40).join('\n'));
+    // A regra específica vale na variante.
+    for (const variant of ['/student/Update', '/student/update/', '/STUDENT/CREATE', '/Reset-Password/']) {
+        assert.equal(resolveAdminApiPermission('POST', variant), 'students.edit', variant);
+    }
+    assert.equal(resolveAdminApiPermission('POST', '/student/Certificates/Issue'), 'students.certificates');
+    assert.equal(resolveAdminApiPermission('GET', '/student/login-logs/'), 'students.security');
+    assert.equal(resolveAdminApiPermission('GET', '/student/login-logs/?x=1'), 'students.security');
+});
+
+test('[UC-PAPEIS-001] pelo app inteiro: variante de caminho não deixa o professor auxiliar alterar aluno nem o professor emitir certificado ou ler o login do aluno', async () => {
+    const body = { originalEmail: 'ana@papeis.local', name: 'Ana Mudada', email: 'ana@papeis.local', classes: [{ name: '1A', courseId: COURSE_A }] };
+    for (const url of ['/api/admin/student/Update', '/api/admin/student/update/', '/API/ADMIN/STUDENT/UPDATE']) {
+        const res = await as('monitor', request(app).post(url)).send(body);
+        assert.equal(res.status, 403, `monitor ${url}: ${JSON.stringify(res.body)}`);
+    }
+    assert.equal(db.memory.students.find(student => student.email === 'ana@papeis.local').name, 'Ana');
+    for (const url of ['/api/admin/student/Create', '/api/admin/student/create/']) {
+        const res = await as('monitor', request(app).post(url)).send({ name: 'Caio Novo', email: 'caio@papeis.local', classes: [{ name: '1A', courseId: COURSE_A }] });
+        assert.equal(res.status, 403, `monitor ${url}`);
+    }
+    assert.equal(db.memory.students.some(student => student.email === 'caio@papeis.local'), false);
+    assert.equal((await as('monitor', request(app).post('/api/admin/Reset-Password/')).send({ email: 'ana@papeis.local' })).status, 403);
+
+    for (const url of ['/api/admin/student/certificates/issue/', '/api/admin/student/Certificates/Issue']) {
+        const res = await as('professor', request(app).post(url)).send({ email: 'ana@papeis.local', courseName: 'Curso A', courseId: COURSE_A });
+        assert.equal(res.status, 403, `professor ${url}: ${JSON.stringify(res.body)}`);
+    }
+    assert.equal(db.memory.certificates.length, 0);
+    for (const url of ['/api/admin/student/login-logs/?email=ana@papeis.local', '/api/admin/Student/Login-Logs?email=ana@papeis.local']) {
+        assert.equal((await as('professor', request(app).get(url))).status, 403, `professor ${url}`);
+    }
+    // O professor continua alterando o aluno da turma dele pela forma canônica.
+    await as('professor', request(app).post('/api/admin/student/update')).send(body).expect(200);
+
+    // Somente leitura: a variante do autoatendimento passa e a de gravação é recusada.
+    await as('coordenacao', request(app).post('/api/admin/Preferences/')).send({ 'dashboard.layout': 'compacto' }).expect(200);
+    const write = await as('coordenacao', request(app).post('/API/ADMIN/STUDENT/CREATE')).send({ name: 'Novo', email: 'novo@papeis.local' });
+    assert.equal(write.status, 403);
+    assert.equal(write.body.code, 'read_only_account');
+});
+
+test('[UC-PAPEIS-002] escopo com variante de caminho: o curso e o conteúdo do caminho continuam conferidos', async () => {
+    // Com o guarda reconhecendo '/Courses/<id>/Structure', o id do caminho precisa sair
+    // da variante também; senão o curso de outra turma escaparia da conferência.
+    for (const url of [`/api/admin/Courses/${COURSE_B}/Structure`, `/api/admin/courses/${COURSE_B}/structure/`, `/API/ADMIN/COURSES/${COURSE_B}/STRUCTURE`]) {
+        const method = url.startsWith('/API') ? 'post' : 'get';
+        const res = await as('professor', request(guardApp)[method](url)).send({});
+        assert.equal(res.status, 403, url);
+        assert.equal(res.body.error, 'O curso solicitado não pertence às turmas atribuídas a esta conta.', url);
+    }
+    const own = await as('professor', request(guardApp).get(`/api/admin/Courses/${COURSE_A}/Structure/`));
+    assert.equal(own.status, 200, 'o curso da turma dele passa pela variante');
+    const otherSchool = await as('secretaria', request(guardApp).post('/api/admin/Schools/Update/')).send({ id: SCHOOL_B, name: 'Trocada' });
+    assert.equal(otherSchool.status, 403);
+});
+
+test('[UC-PAPEIS-002] recusa de escopo fala da escola para a secretaria e a coordenação e da turma para o professor', async () => {
+    for (const name of ['secretaria', 'coordenacao']) {
+        const res = await as(name, request(app).get('/api/admin/student/observations?email=bia@papeis.local'));
+        assert.equal(res.status, 403, name);
+        assert.equal(res.body.error, 'O aluno solicitado não pertence às escolas desta conta.', name);
+    }
+    // Turma de outra escola na lista de turmas do cadastro (a secretaria cria aluno).
+    const newStudent = { name: 'Caio', email: 'caio@papeis.local', classes: [{ name: '1B', courseId: COURSE_B }] };
+    const cls = await as('secretaria', request(app).post('/api/admin/student/create')).send(newStudent);
+    assert.equal(cls.status, 403);
+    assert.equal(cls.body.error, 'A turma solicitada não pertence às escolas desta conta.');
+    const prof = await as('professor', request(app).get('/api/admin/student/observations?email=bia@papeis.local'));
+    assert.equal(prof.body.error, 'O aluno solicitado não pertence às turmas atribuídas a esta conta.');
+    const profClass = await as('professor', request(app).post('/api/admin/student/create')).send(newStudent);
+    assert.equal(profClass.body.error, 'A turma solicitada não está atribuída a esta conta.');
+});
+
+test('[UC-PAPEIS-001] conteúdo pelo painel (/data.js e /:key.md): só quem mexe em conteúdo; professor auxiliar, secretaria e coordenação não leem apostila nem avaliação', async () => {
+    const contentDir = process.env.ICLASS_CONTENT_DIR;
+    fs.mkdirSync(contentDir, { recursive: true });
+    fs.writeFileSync(path.join(contentDir, 'Apostila_Papeis_1.md'), '# Apostila dos papéis\n');
+    for (const name of ['monitor', 'secretaria', 'coordenacao', 'desconhecido']) {
+        assert.equal((await as(name, request(app).get('/data.js'))).status, 403, `${name} /data.js`);
+        assert.equal((await as(name, request(app).get('/api/data.js'))).status, 403, `${name} /api/data.js`);
+        assert.equal((await as(name, request(app).get('/Apostila_Papeis_1.md'))).status, 403, `${name} .md`);
+    }
+    for (const name of ['admin', 'legado', 'professor']) {
+        const data = await as(name, request(app).get('/api/data.js')).expect(200);
+        assert.match(data.text, /Apostila dos papéis/, name);
+        const md = await as(name, request(app).get('/Apostila_Papeis_1.md')).expect(200);
+        assert.match(md.text, /Apostila dos papéis/, name);
+    }
 });
 
 test('[UC-PAPEIS-001] professor auxiliar não muda nota na prova ao vivo (anular, corrigir e trocar questão pedem page.results) nem recebe conteúdo como extra', async () => {

@@ -19,7 +19,7 @@ const {
     adminAssignedSchoolIds,
     adminCanAccessCourse,
 } = require('../middlewares.js');
-const { isFullAdmin, accountScopeKind } = require('../utils/adminRoles.js');
+const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { recordAudit } = require('../utils/audit.js');
 const { extractBranding, validateBrandingPatch } = require('../utils/branding.js');
 const { isCourseDeleted } = require('../utils/contentAccess.js');
@@ -166,7 +166,7 @@ function createAdminCoursesRouter() {
             const index = findCourseIndex(courseId);
             if (index === -1) return res.status(404).json({ error: 'Curso não encontrado.' });
             if (!adminCanAccessCourse(matchedAdmin, courseId)) {
-                return res.status(403).json({ error: 'O curso solicitado não pertence às turmas atribuídas a esta conta.' });
+                return res.status(403).json({ error: outOfScopeMessage(matchedAdmin, 'O curso solicitado') });
             }
             const course = db.memory.courses[index];
             const body = req.body || {};
@@ -235,7 +235,7 @@ function createAdminCoursesRouter() {
             const index = findCourseIndex(courseId);
             if (index === -1) return res.status(404).json({ error: 'Curso não encontrado.' });
             if (!adminCanAccessCourse(matchedAdmin, courseId)) {
-                return res.status(403).json({ error: 'O curso solicitado não pertence às turmas atribuídas a esta conta.' });
+                return res.status(403).json({ error: outOfScopeMessage(matchedAdmin, 'O curso solicitado') });
             }
             const course = db.memory.courses[index];
             // Já excluído: nada muda (nem a data da exclusão) e nada vai para a trilha.

@@ -6,8 +6,10 @@ const {
     isProfessorAccount,
     canAccessAdminPermission,
     resolveAdminApiPermission,
+    trimAdminPath,
+    canonicalAdminPath,
 } = require('./utils/adminPermissions.js');
-const { isFullAdmin, accountScopeKind, readOnlyRefusal } = require('./utils/adminRoles.js');
+const { isFullAdmin, accountScopeKind, readOnlyRefusal, outOfScopeMessage } = require('./utils/adminRoles.js');
 const { SERVER_INSTANCE_ID } = require('./utils/sessionConfig.js');
 const { effectiveStructure } = require('./utils/classContent.js');
 const { DATA_DIR } = require('./runtimePaths.js');
@@ -815,7 +817,11 @@ function validateProfessorRequestScope(req, account) {
     if (accountScopeKind(account) === 'tudo') return null;
     const body = req.body || {};
     const query = req.query || {};
-    const pathName = req.path || '/';
+    // pathName compara (minúsculas, sem barra no fim, como o Express casa a rota); os ids
+    // do caminho saem de rawPath, que guarda a caixa. Assim '/Courses/<id>/Structure', que
+    // o guarda reconhece e a rota roda, não escapa da conferência do curso.
+    const rawPath = trimAdminPath(req.path);
+    const pathName = canonicalAdminPath(req.path);
 
     const classNames = [body.studentClass, body.className, body.targetClass, query.studentClass, query.className]
         .filter(Boolean)
@@ -827,13 +833,13 @@ function validateProfessorRequestScope(req, account) {
     if (/^\/class\/(toggle-registration|delete)$/.test(pathName) && body.name) {
         classNames.push(String(body.name).trim());
     }
-    const pathClass = pathName.match(/^\/(?:monitor-status|monitor-review|export-grades|exam-analytics|proctoring-logs|exam-keystrokes)\/([^/]+)/);
+    const pathClass = rawPath.match(/^\/(?:monitor-status|monitor-review|export-grades|exam-analytics|proctoring-logs|exam-keystrokes)\/([^/]+)/i);
     if (pathClass) classNames.push(safeDecode(pathClass[1]));
-    const applicationPath = pathName.match(/^\/exam-applications\/([^/]+)/);
+    const applicationPath = rawPath.match(/^\/exam-applications\/([^/]+)/i);
     if (applicationPath) {
         const application = (db.memory.examApplications || []).find(item => item.id === safeDecode(applicationPath[1]));
         if (application && !adminCanAccessClass(account, application.studentClass, application.courseId)) {
-            return 'A aplicação solicitada não pertence às turmas atribuídas a esta conta.';
+            return outOfScopeMessage(account, 'A aplicação solicitada');
         }
     }
     const requestedCourseId = body.courseId || query.courseId || null;
@@ -852,32 +858,36 @@ function validateProfessorRequestScope(req, account) {
             && requestedClasses.length === currentClasses.length
             && requestedClasses.every((value, index) => value === currentClasses[index]);
     }
-    if (forbiddenClass && !keepsExistingStudentClasses) return 'A turma solicitada não está atribuída a esta conta.';
+    if (forbiddenClass && !keepsExistingStudentClasses) {
+        return accountScopeKind(account) === 'escolas'
+            ? outOfScopeMessage(account, 'A turma solicitada')
+            : 'A turma solicitada não está atribuída a esta conta.';
+    }
 
     const courseIds = [body.courseId, query.courseId].filter(Boolean).map(value => String(value).trim());
     // Curso pelo caminho: estrutura, alterar e excluir (/courses/:id) e duplicar (a
     // origem do /clone também precisa estar no escopo; SEG-12).
-    const pathCourse = pathName.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone))?$/);
+    const pathCourse = rawPath.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone))?$/i);
     if (pathCourse) courseIds.push(safeDecode(pathCourse[1]));
     const forbiddenCourse = courseIds.filter(Boolean).find(courseId => !adminCanAccessCourse(account, courseId));
-    if (forbiddenCourse) return 'O curso solicitado não pertence às turmas atribuídas a esta conta.';
+    if (forbiddenCourse) return outOfScopeMessage(account, 'O curso solicitado');
 
     const itemKeys = [body.itemKey, body.examKey, body.sourceExamKey, query.examKey].filter(Boolean);
     if (pathName === '/question-bank/delete' && body.key) {
         const question = (db.memory.questionBank || []).find(item => item.key === body.key);
         if (question && question.sourceExamKey) itemKeys.push(question.sourceExamKey);
     }
-    const itemPath = pathName.match(/^\/(?:material|evaluation)\/([^/]+)/);
+    const itemPath = rawPath.match(/^\/(?:material|evaluation)\/([^/]+)/i);
     if (itemPath) itemKeys.push(safeDecode(itemPath[1]));
     const forbiddenItem = itemKeys.find(itemKey => !adminCanAccessItem(account, itemKey));
-    if (forbiddenItem) return 'O conteúdo solicitado não pertence às turmas atribuídas a esta conta.';
+    if (forbiddenItem) return outOfScopeMessage(account, 'O conteúdo solicitado');
 
     const scopedEmail = findScopedStudentEmail(pathName, req);
     if (scopedEmail) {
         const normalizedEmail = String(scopedEmail).trim().toLowerCase();
         const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === normalizedEmail);
         if (student && !adminCanAccessStudent(account, student)) {
-            return 'O aluno solicitado não pertence às turmas atribuídas a esta conta.';
+            return outOfScopeMessage(account, 'O aluno solicitado');
         }
     }
 
@@ -890,11 +900,12 @@ function validateProfessorRequestScope(req, account) {
 
 function adminRbacGuard(req, res, next) {
     return validateAdmin(req, res, (config, matchedAdmin) => {
+        // Decide sobre o caminho como o Express casa a rota (caixa e barra final).
         const permission = resolveAdminApiPermission(req.method, req.path);
         const refuse = body => refuseAdminRequest(req, res, matchedAdmin, body);
         // Troca de senha pedida (H5a; com TEST_MODE, só a senha temporária do launcher).
         const passwordChange = adminPasswordChangeState(matchedAdmin);
-        if (passwordChange.required && !['/whoami', '/change-password'].includes(req.path)) {
+        if (passwordChange.required && !['/whoami', '/change-password'].includes(canonicalAdminPath(req.path))) {
             return refuse(passwordChangeRequiredBody(passwordChange.reason));
         }
         // Rota sem regra no catálogo: só o administrador pleno passa (o teste de catálogo

@@ -37,7 +37,7 @@ const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { canAccessAdminPermission, hasAdminCapability } = require('../utils/adminPermissions.js');
-const { isFullAdmin, accountScopeKind } = require('../utils/adminRoles.js');
+const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
 const {
     DEFAULT_STATUS,
@@ -2527,7 +2527,7 @@ router.post('/api/admin/announcements', (req, res) => {
         if (!title || !message) return res.status(400).json({ error: 'Título e mensagem são obrigatórios.' });
         const tgt = ANN_TARGETS.includes(target) ? target : 'turma';
         if (!isFullAdmin(matchedAdmin)) {
-            if (tgt === 'todos') return res.status(403).json({ error: 'Professor não pode enviar aviso para toda a instituição.' });
+            if (tgt === 'todos') return res.status(403).json({ error: 'Só o administrador envia aviso para toda a instituição.' });
             if (tgt === 'turma' && !adminCanAccessClass(matchedAdmin, targetValue, courseId)) return res.status(403).json({ error: 'Turma fora do seu escopo.' });
             if (tgt === 'curso' && !adminAllowedCourseIds(matchedAdmin).has(String(courseId || targetValue))) return res.status(403).json({ error: 'Curso fora do seu escopo.' });
         }
@@ -2572,7 +2572,7 @@ router.post('/api/admin/announcements/update', (req, res) => {
         }
         const tgt = ANN_TARGETS.includes(target) ? target : ann.target;
         if (!isFullAdmin(matchedAdmin)) {
-            if (tgt === 'todos') return res.status(403).json({ error: 'Professor não pode enviar para toda a instituição.' });
+            if (tgt === 'todos') return res.status(403).json({ error: 'Só o administrador envia aviso para toda a instituição.' });
             if (tgt === 'turma' && !adminCanAccessClass(matchedAdmin, targetValue, courseId || ann.courseId)) return res.status(403).json({ error: 'Turma fora do seu escopo.' });
             if (tgt === 'curso' && !adminAllowedCourseIds(matchedAdmin).has(String(courseId || targetValue))) return res.status(403).json({ error: 'Curso fora do seu escopo.' });
         }
@@ -4687,7 +4687,7 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
         if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
         // Escopo do professor: além da turma da URL, o aluno pedido precisa estar nas turmas dele.
         if (!adminCanAccessStudent(req.adminAccount, student) || (cls && !adminCanAccessClass(req.adminAccount, cls.name, cls.courseId))) {
-            return res.status(403).json({ error: 'O aluno solicitado não pertence às turmas atribuídas a esta conta.' });
+            return res.status(403).json({ error: outOfScopeMessage(req.adminAccount, 'O aluno solicitado') });
         }
 
         const openAttempt = application
@@ -5525,7 +5525,7 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
         const src = (db.memory.courses || []).find(c => c && c.id === req.params.id);
         if (!src) return res.status(404).json({ error: 'Curso de origem não encontrado.' });
         if (!adminCanAccessCourse(matchedAdmin, src.id)) {
-            return res.status(403).json({ error: 'O curso solicitado não pertence às turmas atribuídas a esta conta.' });
+            return res.status(403).json({ error: outOfScopeMessage(matchedAdmin, 'O curso solicitado') });
         }
         const body = req.body || {};
         if (typeof body.newId !== 'string' || !body.newId.trim()) {

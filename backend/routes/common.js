@@ -29,6 +29,18 @@ const {
     adminAllowedCourseIds
 } = require('../middlewares.js');
 const { accountScopeKind } = require('../utils/adminRoles.js');
+const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
+
+// Conteúdo pelo painel (/data.js e /:key.md): só quem mexe em conteúdo (editor, materiais
+// ou provas). Professor auxiliar, secretaria e coordenação não leem apostila nem
+// avaliação por aqui (D15 do P4); antes toda sessão de painel lia o conteúdo inteiro.
+const PANEL_CONTENT_PERMISSIONS = Object.freeze(['page.editor', 'page.materials', 'page.exams']);
+
+function panelCanReadContent(requester) {
+    const email = String((requester && requester.email) || '').trim().toLowerCase();
+    const account = (db.memory.admins || []).find(item => String(item.email || '').trim().toLowerCase() === email);
+    return !!account && canAccessAdminPermission(account, PANEL_CONTENT_PERMISSIONS);
+}
 const { logError, oneLine } = require('../utils/errorLog.js');
 const { rateLimit } = require('../utils/rateLimit.js');
 const { body, oneOf, str } = require('../utils/inputSchema.js');
@@ -140,6 +152,9 @@ router.post('/api/client-error', validateAnySession, CLIENT_ERROR_SCHEMA, (req, 
 router.get(['/data.js', '/api/data.js'], validateAnySession, async (req, res) => {
     res.set('Content-Type', 'application/javascript');
     if (req.requester.role === 'student') return sendStudentCourseData(req, res);
+    if (!panelCanReadContent(req.requester)) {
+        return res.status(403).type('application/json').json({ error: 'Sua conta não possui permissão para esta operação.' });
+    }
     const courseId = String(req.query.courseId || '').trim();
     const studentClass = String(req.query.studentClass || '').trim();
     const dataObj = {};
@@ -287,6 +302,9 @@ router.get('/:key.md', async (req, res, next) => {
             const content = await readApostila(canonicalKey, { ownHosts: [req.get('host')] });
             if (content === null) return res.status(404).type('text/plain').send('');
             return res.type('text/markdown').send(content);
+        }
+        if (!panelCanReadContent(req.requester)) {
+            return res.status(403).type('text/plain').send('Sua conta não possui permissão para esta operação.');
         }
 
         const filePath = await findContentFile(key);
