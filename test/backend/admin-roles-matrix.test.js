@@ -211,6 +211,61 @@ test('[UC-PAPEIS-001] professor auxiliar: chamada e Monitor; sem notas, provas, 
     }
 });
 
+test('[UC-PAPEIS-001] alterar cadastro de aluno pede students.edit: o professor auxiliar vê a ficha e faz a chamada, mas não cria, altera nem redefine senha; o professor continua', async () => {
+    // Antes a regra /student(/.*) inteira era page.students: o professor auxiliar mudava
+    // o nome do aluno, criava aluno e redefinia senha (D16 do P4).
+    const writes = [
+        ['POST', '/api/admin/student/create'], ['POST', '/api/admin/student/update'], ['POST', '/api/admin/student/bulk-enroll'],
+        ['POST', '/api/admin/student/bulk-status'], ['POST', '/api/admin/reset-password'],
+    ];
+    for (const [method, url] of writes) {
+        assert.equal(resolveAdminApiPermission(method, url.replace('/api/admin', '')), 'students.edit', url);
+        assert.equal(await guardDecision('monitor', method, url), 'permissao', `monitor ${url}`);
+        assert.equal(await guardDecision('professor', method, url), 'passa', `professor ${url}`);
+        assert.equal(await guardDecision('secretaria', method, url), 'passa', `secretaria ${url}`);
+    }
+    // Ver e fazer chamada continua com page.students.
+    for (const [method, url] of [['GET', '/api/admin/students'], ['GET', '/api/admin/student/observations'], ['POST', '/api/admin/student/attendance/mark'], ['POST', '/api/admin/student/observations/create'], ['POST', '/api/admin/attendance/bulk']]) {
+        assert.equal(await guardDecision('monitor', method, url), 'passa', `monitor ${url}`);
+    }
+    assert.equal(getEffectiveAdminPermissions(account('monitor')).has('students.edit'), false);
+    assert.equal(getEffectiveAdminPermissions(account('coordenacao')).has('students.edit'), false);
+
+    // Pelo app inteiro: o nome do aluno não muda pelo professor auxiliar; pelo professor, muda.
+    const body = { originalEmail: 'ana@papeis.local', name: 'Ana Trocada', email: 'ana@papeis.local', classes: [{ name: '1A', courseId: COURSE_A }] };
+    const byMonitor = await as('monitor', request(app).post('/api/admin/student/update')).send(body);
+    assert.equal(byMonitor.status, 403);
+    assert.equal(db.memory.students.find(student => student.email === 'ana@papeis.local').name, 'Ana');
+    const created = await as('monitor', request(app).post('/api/admin/student/create')).send({ name: 'Caio Novo', email: 'caio@papeis.local', classes: [{ name: '1A', courseId: COURSE_A }] });
+    assert.equal(created.status, 403);
+    assert.equal(db.memory.students.some(student => student.email === 'caio@papeis.local'), false);
+    const reset = await as('monitor', request(app).post('/api/admin/reset-password')).send({ email: 'ana@papeis.local' });
+    assert.equal(reset.status, 403);
+    const byProfessor = await as('professor', request(app).post('/api/admin/student/update')).send(body);
+    assert.equal(byProfessor.status, 200, JSON.stringify(byProfessor.body));
+    assert.equal(db.memory.students.find(student => student.email === 'ana@papeis.local').name, 'Ana Trocada');
+});
+
+test('[UC-PAPEIS-001] professor auxiliar não muda nota na prova ao vivo (anular, corrigir e trocar questão pedem page.results) nem recebe conteúdo como extra', async () => {
+    for (const url of ['/api/admin/annul-question', '/api/admin/correct-live-question', '/api/admin/replace-question']) {
+        assert.equal(await guardDecision('monitor', 'POST', url), 'permissao', `monitor ${url}`);
+        assert.equal(await guardDecision('professor', 'POST', url), 'passa', `professor ${url}`);
+    }
+    // O Monitor em si continua: controle da prova, tempo, foco e recado.
+    for (const url of ['/api/admin/server-exam-control', '/api/admin/adjust-student-time', '/api/admin/unlock-student-focus', '/api/admin/send-broadcast-message']) {
+        assert.equal(await guardDecision('monitor', 'POST', url), 'passa', `monitor ${url}`);
+    }
+    const catalog = ROLE_CATALOG.find(role => role.id === 'monitor');
+    ['page.results', 'page.materials', 'page.editor', 'page.exams', 'students.edit'].forEach(permission => {
+        assert.equal(rolePermissionDefaults('monitor').includes(permission), false, permission);
+        assert.equal(getEffectiveAdminPermissions({ role: 'monitor', additionalPermissions: [permission] }).has(permission), false, `extra ${permission}`);
+    });
+    assert.equal(catalog.concediveis.includes('page.materials'), false);
+    const refused = await as('admin', request(app).post('/api/admin/accounts/create')).send({ name: 'Aux', email: 'aux@papeis.local', password: 'Senha-forte-2026-x', requirePasswordChange: false, role: 'monitor', assignedClasses: [{ courseId: COURSE_A, className: '1A' }], additionalPermissions: ['page.materials'] });
+    assert.equal(refused.status, 400);
+    assert.match(refused.body.error, /não concedível ao papel Professor auxiliar: page\.materials/);
+});
+
 test('[UC-PAPEIS-001] coordenação só consulta: 403 read_only_account em todo POST fora do autoatendimento, dentro e fora de /api/admin', async () => {
     const createStudent = await as('coordenacao', request(app).post('/api/admin/student/create')).send({ name: 'Novo', email: 'novo@papeis.local', studentClass: '1A', courseId: COURSE_A });
     assert.equal(createStudent.status, 403);
@@ -236,6 +291,23 @@ test('[UC-PAPEIS-001] coordenação só consulta: 403 read_only_account em todo 
     const password = await as('coordenacao', request(app).post('/api/admin/change-password')).send({ newPassword: '' });
     assert.equal(password.status, 400, 'chega na rota (falta a senha nova), não é recusa de somente leitura');
     await as('coordenacao', request(app).post('/api/session/logout')).send({}).expect(200);
+});
+
+test('[UC-PAPEIS-001] tentativa de restaurar backup pela coordenação é recusada como só consulta e fica no histórico de segurança', async () => {
+    for (const url of ['/api/admin/backup/restore', '/api/admin/backup/restore/preview']) {
+        db.memory.auditLogs = [];
+        const res = await as('coordenacao', request(app).post(url)).send({});
+        assert.equal(res.status, 403, url);
+        assert.equal(res.body.code, 'read_only_account', url);
+        const entries = db.memory.auditLogs.filter(entry => entry.action === 'backup_restore_failed');
+        assert.equal(entries.length, 1, `${url}: antes a recusa de somente leitura não entrava no histórico`);
+        assert.equal(String(entries[0].actor || entries[0].actorEmail || JSON.stringify(entries[0])).includes(ACCOUNTS.coordenacao.email), true);
+        assert.match(entries[0].details.error, /Sua conta é só de consulta/);
+    }
+    // Outro POST recusado por somente leitura não vira registro de backup.
+    db.memory.auditLogs = [];
+    assert.equal((await as('coordenacao', request(app).post('/api/admin/student/create')).send({})).status, 403);
+    assert.equal(db.memory.auditLogs.some(entry => entry.action === 'backup_restore_failed'), false);
 });
 
 test('[UC-PAPEIS-002] escopo por escola: secretaria e coordenação da escola A não veem aluno, turma nem curso da escola B', async () => {
@@ -292,6 +364,28 @@ test('[UC-PAPEIS-002] o que era "só administrador" continua só dele: acessibil
     assert.equal(getEffectiveAdminPermissions(account('desconhecido')).size, 0);
 });
 
+// Qualquer identificador terminado em role/Role (account.role, actualRole, nextRole...)
+// comparado com 'professor', dos dois lados. Antes só '.role' contava, e o
+// actualRole !== 'professor' do acesso rápido local (setupMode.js) escapava.
+function usesProfessorRoleCheck(line) {
+    return /isProfessorAccount/.test(line)
+        || /[Rr]ole\??\s*(?:!==|===|!=|==)\s*['"]professor['"]/.test(line)
+        || /['"]professor['"]\s*(?:!==|===|!=|==)\s*[\w.?]*[Rr]ole\b/.test(line);
+}
+
+test('[UC-PAPEIS-003] o teste de guarda reconhece as formas antigas de "não é professor"', () => {
+    [
+        "const hasExpectedRole = profile === 'professor' ? actualRole === 'professor' : actualRole !== 'professor';",
+        "if (account.role !== 'professor') return true;",
+        "if (admin?.role === 'professor') return [];",
+        "const isAdmin = nextRole != 'professor';",
+        "if ('professor' !== currentAdmin.role) next();",
+        "return isProfessorAccount(account) ? [] : all;",
+    ].forEach(line => assert.equal(usesProfessorRoleCheck(line), true, line));
+    ["const professors = list.filter(item => item.kind === 'professor');", "if (profile === 'professor') return;"]
+        .forEach(line => assert.equal(usesProfessorRoleCheck(line), false, line));
+});
+
 test('[UC-PAPEIS-003] guarda: nenhum arquivo do backend usa isProfessorAccount nem role de professor como "é administrador"', () => {
     const files = [];
     const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).forEach(entry => {
@@ -311,19 +405,68 @@ test('[UC-PAPEIS-003] guarda: nenhum arquivo do backend usa isProfessorAccount n
         { file: 'backend/routes/admin.js', pattern: /const professors = \(db\.memory\.admins \|\| \[\]\)\.filter\(account => isProfessorAccount\(account\)\);/ },
         { file: 'backend/routes/admin.js', pattern: /professorCount: \(db\.memory\.admins \|\| \[\]\)\.filter\(account => isProfessorAccount\(account\) && adminCanAccessClass/ },
         { file: 'backend/routes/admin.js', pattern: /Contagem dos professores da turma: papel professor mesmo \(isProfessorAccount\)/ },
+        // Acesso rápido local: o perfil 'professor' abre a conta de papel professor mesmo; o
+        // perfil 'admin', só administrador pleno (isFullAdmin).
+        { file: 'backend/routes/setupMode.js', pattern: /^const \{ isFullAdmin, isProfessorAccount, adminAccessSummary \} = require/ },
+        { file: 'backend/routes/setupMode.js', pattern: /const hasExpectedRole = profile === 'professor' \? isProfessorAccount\(admin\) : isFullAdmin\(admin\);/ },
     ];
     const offenders = [];
     for (const file of files) {
         const rel = path.relative(ROOT, file).split(path.sep).join('/');
         if (rel === 'backend/utils/adminRoles.js') continue;
         fs.readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
-            const uses = /isProfessorAccount/.test(line) || /\.role\s*(?:!==|===|!=|==)\s*['"]professor['"]/.test(line) || /['"]professor['"]\s*(?:!==|===)\s*[\w.?]*\.role\b/.test(line);
-            if (!uses) return;
+            if (!usesProfessorRoleCheck(line)) return;
             if (allowed.some(item => item.file === rel && item.pattern.test(line))) return;
             offenders.push(`${rel}:${index + 1}: ${line.trim()}`);
         });
     }
     assert.deepEqual(offenders, [], `use isFullAdmin/accountScopeKind (backend/utils/adminRoles.js):\n${offenders.join('\n')}`);
+});
+
+test('[UC-PAPEIS-004] acesso local do launcher: os dois logins mandam effectivePermissions, escopo, somente leitura e rótulo; o perfil admin só abre administrador pleno', async () => {
+    const { createSetupModeRouter } = require('../../backend/routes/setupMode.js');
+    const { DEMO_ACCOUNTS } = require('../../backend/utils/demoAccounts.js');
+    const local = express();
+    local.use(express.json());
+    local.use(createSetupModeRouter({ enabled: true, setupToken: 'token-papeis-local' }));
+    const quick = profile => request(local).post('/api/setup/quick-session').send({ token: 'token-papeis-local', profile });
+    const base = { password: db.hashPassword('teste'), assignedClasses: [], assignedSchoolIds: [], assignedCourseIds: [], additionalPermissions: [] };
+
+    // A conta de demonstração do administrador com papel Secretaria não entra como
+    // administrador (antes: actualRole !== 'professor' bastava).
+    db.memory.admins.push({ ...base, name: 'Demo', email: DEMO_ACCOUNTS.admin.email, role: 'secretaria', assignedSchoolIds: [SCHOOL_A] });
+    const refused = await quick('admin');
+    assert.equal(refused.status, 404, JSON.stringify(refused.body));
+    account('admin'); // as contas do seed continuam
+    db.memory.admins.find(item => item.email === DEMO_ACCOUNTS.admin.email).role = 'coordenacao';
+    assert.equal((await quick('admin')).status, 404);
+    db.memory.admins.find(item => item.email === DEMO_ACCOUNTS.admin.email).role = 'admin';
+    const adminQuick = await quick('admin');
+    assert.equal(adminQuick.status, 200, JSON.stringify(adminQuick.body));
+    assert.deepEqual(adminQuick.body.effectivePermissions, [...ADMIN_PERMISSION_VALUES]);
+    assert.deepEqual([adminQuick.body.scopeKind, adminQuick.body.readOnly, adminQuick.body.roleLabel], ['tudo', false, 'Administrador']);
+
+    db.memory.admins.push({ ...base, name: 'Demo Prof', email: DEMO_ACCOUNTS.professor.email, role: 'professor', assignedClasses: [{ courseId: COURSE_A, className: '1A' }] });
+    const profQuick = await quick('professor');
+    assert.equal(profQuick.status, 200, JSON.stringify(profQuick.body));
+    const profAccount = db.memory.admins.find(item => item.email === DEMO_ACCOUNTS.professor.email);
+    assert.deepEqual(profQuick.body.effectivePermissions, ADMIN_PERMISSION_VALUES.filter(permission => getEffectiveAdminPermissions(profAccount).has(permission)));
+    assert.deepEqual([profQuick.body.scopeKind, profQuick.body.readOnly, profQuick.body.roleLabel], ['turmas', false, 'Professor']);
+
+    // Modo administrativo local (opção do launcher): só conta de administrador pleno, com
+    // os mesmos campos do admin-login.
+    db.memory.admins = db.memory.admins.map(item => (isFullAdmin(item) ? { ...item, role: 'secretaria' } : item));
+    const noAdmin = await request(local).post('/api/setup/admin-session').send({ token: 'token-papeis-local' });
+    assert.equal(noAdmin.status, 503, 'sem administrador pleno, nenhuma conta serve (antes: só role ausente ou admin; agora pela mesma regra do servidor)');
+    seed();
+    const other = express();
+    other.use(express.json());
+    other.use(createSetupModeRouter({ enabled: true, setupToken: 'token-papeis-local-2' }));
+    const session = await request(other).post('/api/setup/admin-session').send({ token: 'token-papeis-local-2' });
+    assert.equal(session.status, 200, JSON.stringify(session.body));
+    assert.equal(isFullAdmin(db.memory.admins.find(item => item.email === session.body.email)), true);
+    assert.deepEqual(session.body.effectivePermissions, [...ADMIN_PERMISSION_VALUES]);
+    assert.deepEqual([session.body.scopeKind, session.body.readOnly, session.body.roleLabel], ['tudo', false, 'Administrador']);
 });
 
 test('[UC-PAPEIS-004] whoami de cada papel: effectivePermissions iguais às do servidor, escopo, somente leitura e rótulo', async () => {

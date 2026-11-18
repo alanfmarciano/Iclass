@@ -77,13 +77,15 @@ const ROLE_CATALOG = Object.freeze([
         // Na tela o papel se chama "Professor auxiliar" (contradição X5 do plano: o painel
         // já tem a tela Monitor, da prova ao vivo); o valor gravado continua 'monitor'.
         rotulo: 'Professor auxiliar',
-        descricao: 'Turmas atribuídas: chamada e acompanhamento da prova ao vivo. Não lança notas, não mexe em provas, conteúdo nem mensagens.',
+        descricao: 'Turmas atribuídas: chamada e acompanhamento da prova ao vivo. Não lança nem muda notas, não altera cadastro de aluno e não mexe em provas, conteúdo nem mensagens.',
         escopo: 'turmas',
         somenteLeitura: false,
         // Fica fora da criação de conta na tela por enquanto (aviso nas notas do Alan).
         oculto: true,
+        // Sem students.edit (não altera cadastro), sem page.results (não lança nem muda
+        // nota, nem na prova ao vivo) e sem page.materials (não mexe em conteúdo).
         permissoesPadrao: Object.freeze(['page.dashboard', 'page.classes', 'page.students', 'page.monitor']),
-        concediveis: Object.freeze(['page.forum', 'page.materials']),
+        concediveis: Object.freeze(['page.forum']),
     }),
     Object.freeze({
         id: 'secretaria',

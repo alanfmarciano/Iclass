@@ -35,6 +35,11 @@ const ADMIN_PERMISSION_VALUES = Object.freeze([
     'course.purge',
     'forum.purge',
     'audit.view',
+    // Fase 3 (B0a, D16 do P4): alterar cadastro de aluno (criar, alterar, lote e senha)
+    // separado de page.students, que fica para ver a lista, a ficha e fazer a chamada.
+    // Entra aqui, e não no bloco do B0b, porque a divisão de /student(/.*) precisa vir
+    // antes da regra genérica de aluno. O professor e a Secretaria têm por padrão.
+    'students.edit',
 ]);
 
 const ADMIN_PERMISSION_SET = new Set(ADMIN_PERMISSION_VALUES);
@@ -239,6 +244,11 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     // Privacidade (LGPD): Termos, Política e encarregado (H8a-1). Só o administrador
     // (students.security é exclusiva dele); fica antes das regras genéricas de aluno.
     { methods: ['GET', 'POST'], pattern: /^\/lgpd(?:\/.*)?$/, permission: 'students.security' },
+    // Alterar cadastro de aluno (D16 do P4): criar, alterar, matrícula e situação em lote
+    // e redefinir a senha pedem students.edit. Ver a lista e a ficha, a chamada, as
+    // observações e o desbloqueio do login continuam com page.students (regra genérica
+    // logo abaixo). Antes da genérica, porque a primeira regra que casa é a que vale.
+    { methods: ['POST'], pattern: /^\/(student\/(create|update|bulk-enroll|bulk-status)|reset-password)$/, permission: 'students.edit' },
     { methods: ['GET', 'POST'], pattern: /^\/(students|student(?:\/.*)?|reset-password|delete-student)$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/enrollment-requests(?:\/.*)?$/, permission: 'page.students' },
     { methods: ['GET', 'POST'], pattern: /^\/attendance(?:\/.*)?$/, permission: 'page.students' },
@@ -270,7 +280,9 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/(server-exam-control|adjust-student-time|assign-student-version|unlock-student-focus|send-broadcast-message)$/, permission: 'page.monitor' },
     { methods: ['GET', 'POST'], pattern: /^\/message-history(?:\/.*)?$/, permission: 'page.monitor' },
     { methods: ['GET', 'POST'], pattern: /^\/question-reports(?:\/.*)?$/, permission: 'page.monitor' },
-    { methods: ['POST'], pattern: /^\/(correct-live-question|annul-question|replace-question)$/, permission: 'page.monitor' },
+    // Corrigir gabarito, anular e trocar questão na prova ao vivo mudam nota: pedem
+    // page.results (o professor tem as duas; o Professor auxiliar, só page.monitor).
+    { methods: ['POST'], pattern: /^\/(correct-live-question|annul-question|replace-question)$/, permission: 'page.results' },
     { methods: ['GET'], pattern: /^\/(monitor-status|monitor-review|proctoring-logs|exam-keystrokes)\/.*$/, permission: 'page.monitor' },
     { methods: ['GET'], pattern: /^\/export-grades\/.*$/, permission: 'page.results' },
     { methods: ['GET'], pattern: /^\/gradebook$/, permission: 'page.results' },

@@ -137,3 +137,19 @@ test('[UC-PAPEIS-004] o guarda deixa o professor seguir em cada permissão que e
         assert.notEqual(res.status, 401, url);
     }
 });
+
+test('[UC-PAPEIS-004] rotas que mudaram de permissão na fase 3 continuam abertas ao professor (cadastro de aluno e questão ao vivo)', () => {
+    // A divisão de /student(/.*) (students.edit) e as correções ao vivo (page.results)
+    // não podem tirar nada do professor de hoje: as duas estão no padrão dele.
+    const effective = getEffectiveAdminPermissions(professor());
+    const changed = [
+        ['POST', '/student/create'], ['POST', '/student/update'], ['POST', '/student/bulk-enroll'],
+        ['POST', '/student/bulk-status'], ['POST', '/reset-password'],
+        ['POST', '/annul-question'], ['POST', '/correct-live-question'], ['POST', '/replace-question'],
+    ];
+    for (const [method, url] of changed) {
+        const rule = resolveAdminApiPermission(method, url);
+        assert.ok([].concat(rule).some(permission => effective.has(permission)), `${method} ${url}: ${JSON.stringify(rule)}`);
+    }
+    assert.ok(PROFESSOR_DEFAULT_PERMISSIONS.includes('students.edit'));
+});

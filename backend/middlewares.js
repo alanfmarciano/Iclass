@@ -560,6 +560,22 @@ function resolveAdminSession(req, now = Date.now()) {
     return check.ok ? { token, session: check.session } : null;
 }
 
+// Recusa 403 do painel antes da rota. Restauração de backup recusada aqui (pelo guarda
+// ou pela conta só de consulta) também é evento de segurança: fica no histórico de
+// backup, como as recusas da própria rota.
+function refuseAdminRequest(req, res, account, body) {
+    if (!isBackupRestoreRequest(req)) return res.status(403).json(body);
+    try {
+        recordBackupAudit(req, account, 'backup_restore_failed', {
+            error: `Tentativa de restauração recusada: ${String(body.error || '').slice(0, 200)}`,
+        });
+    } catch (_) { /* o registro não pode impedir a recusa */ }
+    return Promise.resolve()
+        .then(() => db.save())
+        .catch(() => {})
+        .then(() => res.status(403).json(body));
+}
+
 function validateAdmin(req, res, callback) {
     // 1) Preferir sessao de instrutor via TOKEN (nao expoe a senha no cliente).
     // A sessão é procurada pelo hash do token (utils/authSessions.js); '__proto__' não é
@@ -590,8 +606,9 @@ function validateAdmin(req, res, callback) {
         req.adminConfig = cfg;
         // Conta só de consulta (Coordenação, D17 do P4): nenhum POST, PUT ou DELETE, em
         // /api/admin ou fora dele (fórum, logout), salvo o autoatendimento da própria conta.
+        // A tentativa de restaurar backup recusada aqui continua no histórico de segurança.
         const readOnly = readOnlyRefusal(req, tokenAdmin);
-        if (readOnly) return res.status(403).json(readOnly);
+        if (readOnly) return refuseAdminRequest(req, res, tokenAdmin, readOnly);
         if (!validateRequestedAdminContext(req, res, tokenAdmin)) return;
         installProfessorResponseRedaction(res, tokenAdmin);
         return runGuarded(req, res, callback, [cfg, tokenAdmin]);
@@ -874,20 +891,7 @@ function validateProfessorRequestScope(req, account) {
 function adminRbacGuard(req, res, next) {
     return validateAdmin(req, res, (config, matchedAdmin) => {
         const permission = resolveAdminApiPermission(req.method, req.path);
-        // Restauração de backup recusada aqui (antes da rota) também é evento de
-        // segurança: fica no histórico de backup, como as recusas da própria rota.
-        const refuse = body => {
-            if (!isBackupRestoreRequest(req)) return res.status(403).json(body);
-            try {
-                recordBackupAudit(req, matchedAdmin, 'backup_restore_failed', {
-                    error: `Tentativa de restauração recusada: ${String(body.error || '').slice(0, 200)}`,
-                });
-            } catch (_) { /* o registro não pode impedir a recusa */ }
-            return Promise.resolve()
-                .then(() => db.save())
-                .catch(() => {})
-                .then(() => res.status(403).json(body));
-        };
+        const refuse = body => refuseAdminRequest(req, res, matchedAdmin, body);
         // Troca de senha pedida (H5a; com TEST_MODE, só a senha temporária do launcher).
         const passwordChange = adminPasswordChangeState(matchedAdmin);
         if (passwordChange.required && !['/whoami', '/change-password'].includes(req.path)) {
