@@ -7,6 +7,7 @@ const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const { createStudentSession } = require('../utils/authSessions.js');
 const { adminPasswordChangeState } = require('../utils/passwordChange.js');
 const { studentSessionProfile } = require('../utils/studentProfile.js');
+const { isFullAdmin, isProfessorAccount, adminAccessSummary } = require('../utils/adminPermissions.js');
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
 
@@ -124,8 +125,9 @@ function createSetupModeRouter(options = {}) {
         } else {
             const expectedAccount = DEMO_ACCOUNTS[profile];
             const admin = findAccountByEmail(db.memory.admins, expectedAccount.email);
-            const actualRole = String(admin?.role || 'admin').toLowerCase();
-            const hasExpectedRole = profile === 'professor' ? actualRole === 'professor' : actualRole !== 'professor';
+            // Papéis (FUN-13): o perfil 'admin' só abre a conta de administrador pleno; uma
+            // conta de Secretaria ou Coordenação com o e-mail de demonstração não serve.
+            const hasExpectedRole = profile === 'professor' ? isProfessorAccount(admin) : isFullAdmin(admin);
             if (!admin || !hasExpectedRole) {
                 return res.status(404).json({ error: `A conta oficial de ${profile === 'professor' ? 'professor' : 'administrador'} ${expectedAccount.email} não está cadastrada corretamente.` });
             }
@@ -136,6 +138,8 @@ function createSetupModeRouter(options = {}) {
                 assignedCourseIds: Array.isArray(admin.assignedCourseIds) ? admin.assignedCourseIds : [],
                 assignedClasses: Array.isArray(admin.assignedClasses) ? admin.assignedClasses : [],
                 additionalPermissions: Array.isArray(admin.additionalPermissions) ? admin.additionalPermissions : [],
+                // Mesmos campos do admin-login e do whoami (D18 do P4).
+                ...adminAccessSummary(admin),
                 ...passwordChangeFields(admin),
                 sessionToken: issueAdminSession(actorEmail, { origin: 'setup' }), instanceId: SERVER_INSTANCE_ID, localSetupMode: true,
             };
@@ -161,7 +165,7 @@ function createSetupModeRouter(options = {}) {
             return res.status(403).json({ error: 'Autorização administrativa inválida.' });
         }
 
-        const eligibleAdmins = (db.memory.admins || []).filter(account => account && account.email && (!account.role || account.role === 'admin'));
+        const eligibleAdmins = (db.memory.admins || []).filter(account => account && account.email && isFullAdmin(account));
         const admin = eligibleAdmins.find(account => account.mustChangePassword !== true) || eligibleAdmins[0];
         if (!admin) return res.status(503).json({ error: 'Nenhuma conta administradora disponível.' });
 
@@ -182,6 +186,7 @@ function createSetupModeRouter(options = {}) {
             assignedCourseIds: Array.isArray(admin.assignedCourseIds) ? admin.assignedCourseIds : [],
             assignedClasses: Array.isArray(admin.assignedClasses) ? admin.assignedClasses : [],
             additionalPermissions: Array.isArray(admin.additionalPermissions) ? admin.additionalPermissions : [],
+            ...adminAccessSummary(admin),
             ...passwordChangeFields(admin),
             sessionToken,
             instanceId: SERVER_INSTANCE_ID,

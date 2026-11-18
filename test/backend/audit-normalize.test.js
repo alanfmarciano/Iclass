@@ -309,3 +309,85 @@ test('[UC-AUDITORIA-001] mergeAuditTrails junta a trilha do backup com a atual, 
     assert.deepEqual(mergeAuditTrails([], []), []);
     assert.deepEqual(mergeAuditTrails([{ id: 'só' }], null), [{ id: 'só' }]);
 });
+
+// Fase 3 (B0b): rótulos e categorias de todas as ações que as rotas novas vão gravar
+// (seção auditoria do plano), antes das rotas. Ação -> categoria esperada.
+const PHASE3_ACTIONS = {
+    assignment: ['assignment_created', 'assignment_updated', 'assignment_published', 'assignment_archived', 'assignment_unarchived',
+        'assignment_deleted', 'assignment_copied', 'assignment_submitted', 'assignment_extension_granted', 'assignment_manual_entry',
+        'assignment_files_exported'],
+    grade: ['assignment_grade_saved', 'assignment_grade_returned', 'assignment_redo_requested', 'assignment_grade_changed',
+        'grade_manual_correction', 'grade_correction_completed', 'grade_item_override', 'grade_review_requested',
+        'grade_review_answered', 'grade_invalidated', 'grade_invalidation_undone', 'grade_imported'],
+    backup: ['assignment_files_mirrored', 'assignment_files_recovered', 'backup_preupdate_created', 'backup_preupdate_skipped',
+        'schema_migrated_on_restore'],
+    academic: ['grading_criteria_updated', 'grading_plan_updated', 'manual_assessment_created', 'manual_assessment_updated',
+        'manual_assessment_archived', 'manual_assessment_restored', 'academic_term_created', 'academic_term_updated',
+        'academic_term_closed', 'academic_term_reopened', 'class_closed', 'class_reopened', 'non_school_day_created',
+        'non_school_day_updated', 'non_school_day_deleted', 'national_holidays_added', 'certificate_batch_issued',
+        'course_package_exported', 'course_package_imported', 'class_group_created', 'class_group_updated',
+        'class_group_archived', 'class_group_restored', 'class_groups_drawn', 'example_course_loaded', 'question_created',
+        'question_updated', 'question_archived', 'question_bank_imported', 'question_bank_exported'],
+    exam: ['exam_answer_key_corrected', 'exam_attempt_collected', 'exam_attempt_reopened_by_instructor', 'exam_attempt_extra_granted',
+        'exam_application_participants_set', 'exam_application_scheduled', 'exam_application_schedule_changed',
+        'exam_application_auto_opened', 'exam_application_auto_finished', 'exam_application_schedule_missed',
+        'exam_access_token_revealed'],
+    content: ['content_release_scheduled', 'content_release_auto', 'content_released', 'content_hidden', 'content_preview_started'],
+    attendance: ['diary_saved', 'diary_changed'],
+    document: ['report_exported', 'report_printed'],
+    student: ['student_imported', 'student_self_updated', 'student_merged', 'conversation_closed', 'conversation_reopened',
+        'guardian_contact_recorded', 'guardian_contacts_batch'],
+    account: ['account_profile_updated', 'account_sessions_ended', 'setup_admin_created'],
+    security: ['account_password_reset', 'bootstrap_credential_removed'],
+    privacy: ['conversation_read_by_admin'],
+    system: ['app_updated', 'eula_accepted', 'setup_completed', 'setup_checklist_dismissed', 'mdns_name_conflict'],
+};
+
+test('[UC-AUDITORIA-001] fase 3: toda ação nova tem rótulo em português e cai na categoria do plano', () => {
+    const wrong = [];
+    for (const [category, actions] of Object.entries(PHASE3_ACTIONS)) {
+        for (const action of actions) {
+            const label = ACTION_LABELS[action];
+            if (!label || !/[a-zà-ú]/i.test(label) || /^Outro evento/.test(label)) wrong.push(`${action}: sem rótulo`);
+            if (inferAuditCategory(action) !== category) wrong.push(`${action}: ${inferAuditCategory(action)} (esperado ${category})`);
+        }
+    }
+    assert.deepEqual(wrong, [], wrong.join('\n'));
+    // Rótulos são frases diferentes: duas ações com o mesmo rótulo confundiriam a tela.
+    const labels = Object.values(ACTION_LABELS);
+    const repeated = labels.filter((label, index) => labels.indexOf(label) !== index);
+    assert.deepEqual(repeated, [], `rótulos repetidos: ${repeated.join(', ')}`);
+});
+
+test('[UC-AUDITORIA-001] fase 3: categorias Tarefas e entregas e Relatórios e documentos', () => {
+    assert.ok(AUDIT_CATEGORIES.includes('assignment'));
+    assert.ok(AUDIT_CATEGORIES.includes('document'));
+    assert.equal(CATEGORY_LABELS.assignment, 'Tarefas e entregas');
+    assert.equal(CATEGORY_LABELS.document, 'Relatórios e documentos');
+    assert.equal(AUDIT_CATEGORIES[AUDIT_CATEGORIES.length - 1], 'other', 'Outros continua no fim do filtro');
+    assert.equal(new Set(AUDIT_CATEGORIES).size, AUDIT_CATEGORIES.length);
+    // A entrada nova grava a categoria no id e no campo, e volta igual na leitura.
+    const memory = { auditLogs: [] };
+    const report = recordAudit(memory, { action: 'report_exported', details: { reportId: 'frequencia-turma', format: 'csv', linhas: 12 } }, { timestamp: 1700000000000 });
+    assert.equal(report.category, 'document');
+    assert.match(report.id, /^audit_document_1700000000000_[0-9a-f]{8}$/);
+    const grade = recordAudit(memory, { action: 'assignment_grade_returned', studentEmail: 'Ana@Escola.Local' });
+    assert.equal(grade.category, 'grade', 'nota de tarefa aparece no histórico de notas');
+    const submitted = recordAudit(memory, { action: 'assignment_submitted', req: fakeReq({ studentEmail: 'ana@escola.local' }) });
+    assert.equal(submitted.category, 'assignment');
+    assert.equal(submitted.actorRole, 'aluno');
+    assert.equal(normalizeAuditEntry(report).label, 'Relatório exportado');
+    assert.equal(normalizeAuditEntry(submitted).label, 'Entrega enviada pelo aluno');
+    // Entrada antiga sem category, com o nome de uma ação nova, cai pela lista ou prefixo.
+    assert.equal(normalizeAuditEntry({ action: 'account_password_reset', actor: 'admin@e.l', timestamp: 1 }).category, 'security');
+    assert.equal(normalizeAuditEntry({ type: 'diary_changed', actorEmail: 'p@e.l', at: 1 }).category, 'attendance');
+    // As de antes não mudaram de categoria.
+    assert.equal(inferAuditCategory('account_password_changed'), 'account');
+    assert.equal(inferAuditCategory('student_password_reset'), 'security');
+    assert.equal(inferAuditCategory('student_login_unlocked'), 'account');
+    assert.equal(inferAuditCategory('certificate_issued'), 'academic');
+    assert.equal(inferAuditCategory('class_reset'), 'system');
+    // Ação nova sem rótulo de famílias novas: categoria pelo começo do nome.
+    assert.equal(inferAuditCategory('assignment_qualquer'), 'assignment');
+    assert.equal(inferAuditCategory('report_qualquer'), 'document');
+});

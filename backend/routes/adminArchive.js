@@ -2,7 +2,8 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database.js');
-const { validateAdmin, isProfessorAccount, sendInternalError } = require('../middlewares.js');
+const { validateAdmin, sendInternalError } = require('../middlewares.js');
+const { isFullAdmin } = require('../utils/adminRoles.js');
 const runtimePaths = require('../runtimePaths.js');
 const { resolveInside, assertSafeId } = require('../utils/safePath.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
@@ -45,7 +46,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
 
     router.post('/api/admin/courses/:id/purge', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores podem excluir definitivamente.' });
+            if (!isFullAdmin(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores podem excluir definitivamente.' });
             const courseId = req.params.id;
             const course = (db.memory.courses || []).find(item => item.id === courseId);
             if (!course) return res.status(404).json({ error: 'Curso não encontrado.' });
@@ -152,7 +153,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
 
     router.get('/api/admin/archived-courses', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
-            if (isProfessorAccount(matchedAdmin) || !fs.existsSync(ARCHIVE_DIR)) return res.json([]);
+            if (!isFullAdmin(matchedAdmin) || !fs.existsSync(ARCHIVE_DIR)) return res.json([]);
             const items = [];
             fs.readdirSync(ARCHIVE_DIR, { withFileTypes: true }).filter(entry => entry.isDirectory()).forEach(entry => {
                 const manifest = path.join(ARCHIVE_DIR, entry.name, 'manifesto.json');
@@ -167,7 +168,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
 
     router.post('/api/admin/archived-courses/restore', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
+            if (!isFullAdmin(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
             let directory;
             try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta inválida.' }); }
             if (!directory) return res.status(404).json({ error: 'Arquivo não encontrado.' });
@@ -232,7 +233,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
 
     router.post('/api/admin/archived-courses/delete', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
-            if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
+            if (!isFullAdmin(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores.' });
             let directory;
             try { directory = archiveDirectory(String(req.body.folder || '')); } catch (error) { return res.status(400).json({ error: 'Pasta inválida.' }); }
             if (!directory) return res.status(404).json({ error: 'Arquivo não encontrado.' });

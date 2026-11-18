@@ -25,16 +25,22 @@
 // (db.memory) e não grava (quem chama faz o db.save() depois).
 
 const crypto = require('crypto');
+const { accountRoleId } = require('./adminRoles.js');
 
 // Categorias da trilha (filtro da tela Auditoria e do CSV).
-const AUDIT_CATEGORIES = ['grade', 'student', 'attendance', 'exam', 'academic', 'content', 'account', 'security', 'system', 'backup', 'privacy', 'other'];
+// Fase 3 (B0b): 'assignment' (tarefas e entregas, P1) e 'document' (relatórios e
+// documentos impressos ou baixados, P4). As notas das tarefas continuam em 'grade', para
+// aparecerem no histórico de notas.
+const AUDIT_CATEGORIES = ['grade', 'student', 'attendance', 'assignment', 'exam', 'academic', 'content', 'document', 'account', 'security', 'system', 'backup', 'privacy', 'other'];
 const CATEGORY_LABELS = {
     grade: 'Notas',
     student: 'Alunos',
     attendance: 'Presença',
+    assignment: 'Tarefas e entregas',
     exam: 'Provas',
     academic: 'Cursos e turmas',
     content: 'Conteúdo',
+    document: 'Relatórios e documentos',
     account: 'Contas de acesso',
     security: 'Segurança',
     system: 'Sistema',
@@ -157,6 +163,125 @@ const ACTION_LABELS = Object.freeze({
     exam_attempt_reopened_extra_time: 'Tentativa reaberta com tempo extra',
     exam_attempt_reopen_discarded: 'Reabertura sem entrega nova: a entrega anterior voltou',
     exam_application_server_outage: 'Servidor fora do ar durante a prova',
+
+    // ---------------------------------------------------------------- fase 3 (B0b)
+    // Rótulos de todas as ações que as rotas novas da fase 3 vão gravar (seção auditoria
+    // do plano), de uma vez, para este arquivo sair do caminho das trilhas. Cada rota
+    // grava a sua ação quando entrar (audit-coverage.test.js confere por rota).
+    // Tarefas e entregas (P1)
+    assignment_created: 'Tarefa criada',
+    assignment_updated: 'Tarefa alterada',
+    assignment_published: 'Tarefa publicada',
+    assignment_archived: 'Tarefa arquivada',
+    assignment_unarchived: 'Tarefa reativada',
+    assignment_deleted: 'Tarefa excluída',
+    assignment_copied: 'Tarefa copiada para outra turma',
+    assignment_submitted: 'Entrega enviada pelo aluno',
+    assignment_extension_granted: 'Prazo prorrogado para o aluno',
+    assignment_manual_entry: 'Entrega em mãos registrada',
+    assignment_files_exported: 'Entregas baixadas em ZIP',
+    // Notas: tarefas (P1), correção, revisão e integridade (P3) e importação (P4)
+    assignment_grade_saved: 'Correção de tarefa salva',
+    assignment_grade_returned: 'Tarefa devolvida com nota',
+    assignment_redo_requested: 'Aluno precisa refazer a tarefa',
+    assignment_grade_changed: 'Nota de tarefa alterada depois de devolvida',
+    grade_manual_correction: 'Correção de questão lançada',
+    grade_correction_completed: 'Correção da prova concluída',
+    grade_item_override: 'Pontos de questão objetiva ajustados',
+    grade_review_requested: 'Aluno pediu revisão da nota',
+    grade_review_answered: 'Pedido de revisão respondido',
+    grade_invalidated: 'Tentativa anulada (integridade)',
+    grade_invalidation_undone: 'Anulação de tentativa desfeita',
+    grade_imported: 'Notas importadas por planilha',
+    // Backup: espelho das entregas (P1), backup antes da atualização e dados de backup
+    // antigo atualizados ao restaurar (P6)
+    assignment_files_mirrored: 'Cópia das entregas no destino externo',
+    assignment_files_recovered: 'Arquivos de entregas trazidos do destino externo',
+    backup_preupdate_created: 'Backup antes da atualização feito',
+    backup_preupdate_skipped: 'Atualização feita sem backup (pedido no launcher)',
+    schema_migrated_on_restore: 'Dados do backup atualizados para esta versão',
+    // Cursos e turmas: critérios, plano, avaliação manual, período letivo, encerrar turma
+    // e dias não letivos (P2); certificados em lote e pacote de curso (P4); grupos (P5);
+    // curso de exemplo (P6); banco de questões (P3)
+    grading_criteria_updated: 'Critérios de avaliação do curso alterados',
+    grading_plan_updated: 'Plano de avaliação da turma alterado',
+    manual_assessment_created: 'Avaliação manual criada',
+    manual_assessment_updated: 'Avaliação manual alterada',
+    manual_assessment_archived: 'Avaliação manual arquivada',
+    manual_assessment_restored: 'Avaliação manual reativada',
+    academic_term_created: 'Período letivo criado',
+    academic_term_updated: 'Período letivo alterado',
+    academic_term_closed: 'Período letivo encerrado',
+    academic_term_reopened: 'Período letivo reaberto',
+    class_closed: 'Turma encerrada',
+    class_reopened: 'Turma reaberta',
+    non_school_day_created: 'Dia não letivo cadastrado',
+    non_school_day_updated: 'Dia não letivo alterado',
+    non_school_day_deleted: 'Dia não letivo excluído',
+    national_holidays_added: 'Feriados nacionais adicionados',
+    certificate_batch_issued: 'Certificados emitidos em lote',
+    course_package_exported: 'Pacote do curso exportado',
+    course_package_imported: 'Curso importado de pacote',
+    class_group_created: 'Grupo de alunos criado',
+    class_group_updated: 'Grupo de alunos alterado',
+    class_group_archived: 'Grupo de alunos arquivado',
+    class_group_restored: 'Grupo de alunos reativado',
+    class_groups_drawn: 'Grupos sorteados',
+    example_course_loaded: 'Curso de exemplo carregado',
+    question_created: 'Questão criada no banco de questões',
+    question_updated: 'Questão do banco alterada',
+    question_archived: 'Questão do banco arquivada',
+    question_bank_imported: 'Questões importadas para o banco',
+    question_bank_exported: 'Banco de questões exportado',
+    // Provas: gabarito depois da prova, ações no Monitor, participantes, agendamento e
+    // token exibido (P3)
+    exam_answer_key_corrected: 'Gabarito corrigido depois da prova',
+    exam_attempt_collected: 'Prova de um aluno recolhida pelo professor',
+    exam_attempt_reopened_by_instructor: 'Tentativa reaberta pelo professor',
+    exam_attempt_extra_granted: 'Tentativa extra concedida',
+    exam_application_participants_set: 'Participantes da aplicação definidos',
+    exam_application_scheduled: 'Aplicação de prova agendada',
+    exam_application_schedule_changed: 'Agendamento da prova alterado ou cancelado',
+    exam_application_auto_opened: 'Prova aberta pelo agendamento',
+    exam_application_auto_finished: 'Prova encerrada pelo agendamento',
+    exam_application_schedule_missed: 'Agendamento perdido: servidor desligado no horário',
+    exam_access_token_revealed: 'Token da prova exibido',
+    // Conteúdo: liberação agendada (P3), liberar e esconder material (P4; a liberação por
+    // grupo do P5 usa content_released com details.groupId) e ver como aluno (P5)
+    content_release_scheduled: 'Liberação de material agendada',
+    content_release_auto: 'Material liberado pelo agendamento',
+    content_released: 'Material liberado',
+    content_hidden: 'Material escondido',
+    content_preview_started: 'Pré-visualização como aluno aberta',
+    // Presença: diário de classe (P4)
+    diary_saved: 'Diário da aula registrado',
+    diary_changed: 'Diário da aula alterado',
+    // Relatórios e documentos (P4)
+    report_exported: 'Relatório exportado',
+    report_printed: 'Relatório impresso',
+    // Alunos: importação, autoatendimento e mesclagem (P4); conversas e responsáveis (P5)
+    student_imported: 'Alunos importados por planilha',
+    student_self_updated: 'Aluno alterou o próprio cadastro',
+    student_merged: 'Cadastros de aluno mesclados',
+    conversation_closed: 'Conversa com aluno encerrada',
+    conversation_reopened: 'Conversa com aluno reaberta',
+    guardian_contact_recorded: 'Contato com o responsável registrado',
+    guardian_contacts_batch: 'Comunicado aos responsáveis entregue',
+    // Contas de acesso: Minha conta (P4) e administrador do primeiro acesso (P6)
+    account_profile_updated: 'Nome da conta alterado',
+    account_sessions_ended: 'Sessões encerradas pela própria conta',
+    setup_admin_created: 'Administrador criado no primeiro acesso',
+    // Segurança: senha redefinida pelo administrador (P4) e senha inicial apagada (P6)
+    account_password_reset: 'Senha de conta redefinida pelo administrador',
+    bootstrap_credential_removed: 'Senha inicial apagada do disco',
+    // Privacidade: o administrador abriu uma conversa de que não participa (P5)
+    conversation_read_by_admin: 'Conversa aberta pela administração',
+    // Sistema: atualização, licença, configuração inicial e nome na rede (P6)
+    app_updated: 'IClass atualizado',
+    eula_accepted: 'Licença de uso do IClass aceita',
+    setup_completed: 'Configuração inicial concluída',
+    setup_checklist_dismissed: 'Primeiros passos ocultados',
+    mdns_name_conflict: 'Nome na rede em uso por outro computador',
 });
 
 // Categoria de uma ação sem category gravada (entradas antigas, ou ação nova que não
@@ -187,6 +312,36 @@ const ACTION_CATEGORIES = Object.freeze({
     class_reset: 'system',
     exam_state_flushed: 'system',
     dpo_changed: 'privacy',
+    // Fase 3 (B0b): nomes que o começo não classifica, ou classificaria errado.
+    // Notas e espelho das entregas, que começam com assignment_ mas não são da tarefa:
+    assignment_grade_saved: 'grade',
+    assignment_grade_returned: 'grade',
+    assignment_redo_requested: 'grade',
+    assignment_grade_changed: 'grade',
+    assignment_files_mirrored: 'backup',
+    assignment_files_recovered: 'backup',
+    schema_migrated_on_restore: 'backup',
+    national_holidays_added: 'academic',
+    example_course_loaded: 'academic',
+    diary_saved: 'attendance',
+    diary_changed: 'attendance',
+    student_imported: 'student',
+    student_self_updated: 'student',
+    student_merged: 'student',
+    conversation_closed: 'student',
+    conversation_reopened: 'student',
+    guardian_contact_recorded: 'student',
+    guardian_contacts_batch: 'student',
+    // Começa com account_, mas é de segurança (a senha de outra conta).
+    account_password_reset: 'security',
+    setup_admin_created: 'account',
+    bootstrap_credential_removed: 'security',
+    conversation_read_by_admin: 'privacy',
+    app_updated: 'system',
+    eula_accepted: 'system',
+    setup_completed: 'system',
+    setup_checklist_dismissed: 'system',
+    mdns_name_conflict: 'system',
 });
 
 const CATEGORY_PREFIXES = [
@@ -213,6 +368,13 @@ const CATEGORY_PREFIXES = [
     ['legal_', 'privacy'],
     ['retention_', 'privacy'],
     ['lgpd_', 'privacy'],
+    // Fase 3 (B0b): famílias novas (as exceções estão em ACTION_CATEGORIES, que vem antes).
+    ['assignment_', 'assignment'],
+    ['report_', 'document'],
+    ['grading_', 'academic'],
+    ['manual_assessment_', 'academic'],
+    ['academic_term_', 'academic'],
+    ['non_school_day_', 'academic'],
 ];
 
 function inferAuditCategory(action, raw = null) {
@@ -312,7 +474,9 @@ function resolveActor(actor, req) {
 // professor), o aluno da sessão, ou o próprio sistema. Sem como saber, fica de fora.
 // A conta passada com role 'aluno' vale para o aluno sem sessão ainda (autocadastro).
 function resolveActorRole(actor, req, actorValue) {
-    const accountRole = account => (account && account.role === 'professor' ? 'professor' : account && account.role === 'aluno' ? 'aluno' : 'admin');
+    // Papel da conta do painel pelo catálogo (adminRoles.js): 'admin', 'professor' ou um
+    // dos papéis da fase 3 ('secretaria', 'coordenacao', 'monitor').
+    const accountRole = account => (account && account.role === 'aluno' ? 'aluno' : (accountRoleId(account) || 'admin'));
     if (actor && typeof actor === 'object' && actor.email && normalizedActor(actor.email) === actorValue) return accountRole(actor);
     if (req && req.adminAccount && req.adminAccount.email && normalizedActor(req.adminAccount.email) === actorValue) return accountRole(req.adminAccount);
     if (req && req.studentEmail && normalizedActor(req.studentEmail) === actorValue) return 'aluno';

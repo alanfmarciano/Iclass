@@ -8,7 +8,8 @@ const {
     issueAdminSession,
     SERVER_INSTANCE_ID,
 } = require('../middlewares.js');
-const { parseAdditionalPermissions, isProfessorAccount } = require('../utils/adminPermissions.js');
+const { parseAdditionalPermissions, normalizeAdditionalPermissions, adminAccessSummary, adminRoleCatalogForScreen } = require('../utils/adminPermissions.js');
+const { ADMIN_ROLE_IDS, ROLE_CATALOG, isFullAdmin, accountRoleId, roleScopeKind } = require('../utils/adminRoles.js');
 const { revokeAdminSession, revokeAdminSessions } = require('../utils/authSessions.js');
 const { attemptPasswordLogin, logRole } = require('../utils/passwordLogin.js');
 const loginGuard = require('../utils/loginGuard.js');
@@ -67,25 +68,34 @@ function jsonBytes(value) {
 }
 
 // Gestão de contas (criar/editar/excluir) é exclusiva de administradores.
-// Backstop além do RBAC: mesmo que a capability accounts.manage vaze para um
-// professor, o handler recusa — impede criar conta admin ou auto-promoção.
+// Backstop além do RBAC: mesmo que a capability accounts.manage vaze para outro
+// papel, o handler recusa — impede criar conta admin ou auto-promoção.
 function requireAdminManager(res, requester) {
-    if (isProfessorAccount(requester)) {
+    if (!isFullAdmin(requester)) {
         res.status(403).json({ error: 'Apenas administradores podem gerenciar contas.' });
         return false;
     }
     return true;
 }
 
-const ADMIN_ACCOUNT_ROLES = new Set(['admin', 'professor']);
+// Papéis do catálogo (backend/utils/adminRoles.js, FUN-13): admin, professor, monitor
+// (Professor auxiliar), secretaria e coordenacao.
+const ADMIN_ACCOUNT_ROLES = new Set(ADMIN_ROLE_IDS);
+const ROLE_CHOICES_TEXT = ROLE_CATALOG.map(role => `${role.id} (${role.rotulo})`).join(', ');
 
 function parseAdminAccountRole(value, fallback = 'admin') {
     if (value === undefined || value === null || String(value).trim() === '') {
         return { ok: true, role: fallback };
     }
     const role = String(value).trim().toLowerCase();
-    if (!ADMIN_ACCOUNT_ROLES.has(role)) return { ok: false, error: 'Papel inválido. Use admin ou professor.' };
+    if (!ADMIN_ACCOUNT_ROLES.has(role)) return { ok: false, error: `Papel inválido. Use um destes: ${ROLE_CHOICES_TEXT}.` };
     return { ok: true, role };
+}
+
+// Papel que a conta tem hoje, para o padrão da edição (papel desconhecido gravado vale
+// como administrador, como no boot).
+function storedAccountRole(account) {
+    return accountRoleId(account) || 'admin';
 }
 
 function parseAssignedClasses(value) {
@@ -185,6 +195,9 @@ function adminSessionPayload(account, sessionToken) {
         assignedCourseIds: Array.isArray(account.assignedCourseIds) ? account.assignedCourseIds : [],
         assignedClasses: Array.isArray(account.assignedClasses) ? account.assignedClasses : [],
         additionalPermissions: Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [],
+        // Papéis (D18 do P4): o que a conta pode, calculado pelo servidor, para a tela não
+        // recalcular (effectivePermissions), o escopo, se é só de consulta e o rótulo.
+        ...adminAccessSummary(account),
         mustChangePassword: passwordChange.required === true,
         ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
         sessionToken,
@@ -237,6 +250,12 @@ function createAdminAccountsRouter() {
                 return listed;
             }));
         });
+    });
+
+    // Catálogo dos papéis (FUN-13) para a tela de contas: rótulo, descrição, escopo,
+    // permissões padrão e concedíveis (só as que existem) e se é só de consulta.
+    router.get('/api/admin/roles', (req, res) => {
+        validateAdmin(req, res, () => res.json({ success: true, roles: adminRoleCatalogForScreen() }));
     });
 
     // Liberar login de uma conta de instrutor (H5b; SEG-06): depois de muitas senhas
@@ -305,27 +324,25 @@ function createAdminAccountsRouter() {
             if (!parsedSchools.ok) return res.status(400).json({ error: parsedSchools.error });
             const parsedCourses = parseAssignmentIds(req.body.assignedCourseIds, 'Cursos atribuídos');
             if (!parsedCourses.ok) return res.status(400).json({ error: parsedCourses.error });
-            const parsedPermissions = parseAdditionalPermissions(req.body.additionalPermissions);
+            const role = parsedRole.role;
+            const scope = roleScopeKind(role);
+            const parsedPermissions = role === 'admin'
+                ? { ok: true, permissions: [] }
+                : parseAdditionalPermissions(req.body.additionalPermissions, role);
             if (!parsedPermissions.ok) return res.status(400).json({ error: parsedPermissions.error });
 
-            const role = parsedRole.role;
-            let assignedClasses = parsedClasses.classes || [];
-            let assignedSchoolIds = parsedSchools.ids || [];
-            let assignedCourseIds = parsedCourses.ids || [];
+            // Escopo pelo papel: turmas, cursos e escolas para professor e professor
+            // auxiliar; só escolas para secretaria e coordenação; nada para o administrador.
+            let assignedClasses = scope === 'turmas' ? (parsedClasses.classes || []) : [];
+            let assignedSchoolIds = scope === 'tudo' ? [] : (parsedSchools.ids || []);
+            let assignedCourseIds = scope === 'turmas' ? (parsedCourses.ids || []) : [];
             let additionalPermissions = parsedPermissions.permissions || [];
-            if (role === 'professor') {
-                const invalid = findUnknownAssignedClass(assignedClasses);
-                if (invalid) return res.status(400).json({ error: `Turma inexistente: ${invalid.className}.` });
-                const invalidSchool = findUnknownSchool(assignedSchoolIds);
-                if (invalidSchool) return res.status(400).json({ error: `Escola inexistente: ${invalidSchool}.` });
-                const invalidCourse = findUnknownCourse(assignedCourseIds);
-                if (invalidCourse) return res.status(400).json({ error: `Curso inexistente: ${invalidCourse}.` });
-            } else {
-                assignedClasses = [];
-                assignedSchoolIds = [];
-                assignedCourseIds = [];
-                additionalPermissions = [];
-            }
+            const invalid = findUnknownAssignedClass(assignedClasses);
+            if (invalid) return res.status(400).json({ error: `Turma inexistente: ${invalid.className}.` });
+            const invalidSchool = findUnknownSchool(assignedSchoolIds);
+            if (invalidSchool) return res.status(400).json({ error: `Escola inexistente: ${invalidSchool}.` });
+            const invalidCourse = findUnknownCourse(assignedCourseIds);
+            if (invalidCourse) return res.status(400).json({ error: `Curso inexistente: ${invalidCourse}.` });
 
             const admins = readJSON(DB_ADMINS_FILE);
             const normalizedEmail = email.trim().toLowerCase();
@@ -377,7 +394,7 @@ function createAdminAccountsRouter() {
 
             const nextName = req.body.name === undefined ? (account.name || '') : String(req.body.name).trim();
             if (!nextName) return res.status(400).json({ error: 'Nome da conta não pode ficar vazio.' });
-            const parsedRole = parseAdminAccountRole(req.body.role, account.role === 'professor' ? 'professor' : 'admin');
+            const parsedRole = parseAdminAccountRole(req.body.role, storedAccountRole(account));
             if (!parsedRole.ok) return res.status(400).json({ error: parsedRole.error });
             const parsedClasses = parseAssignedClasses(req.body.assignedClasses);
             if (!parsedClasses.ok) return res.status(400).json({ error: parsedClasses.error });
@@ -385,32 +402,42 @@ function createAdminAccountsRouter() {
             if (!parsedSchools.ok) return res.status(400).json({ error: parsedSchools.error });
             const parsedCourses = parseAssignmentIds(req.body.assignedCourseIds, 'Cursos atribuídos');
             if (!parsedCourses.ok) return res.status(400).json({ error: parsedCourses.error });
-            const parsedPermissions = parseAdditionalPermissions(req.body.additionalPermissions);
+            const nextRole = parsedRole.role;
+            const nextScope = roleScopeKind(nextRole);
+            const sameRole = nextRole === storedAccountRole(account);
+            // Tirar o papel de administrador da última conta de administrador deixaria a
+            // instalação sem ninguém para contas, backup e restauração.
+            if (isFullAdmin(account) && nextRole !== 'admin'
+                && admins.filter(item => isFullAdmin(item)).length <= 1) {
+                return res.status(400).json({ error: 'Não é possível tirar o papel de administrador da única conta de administrador.', field: 'role' });
+            }
+            const parsedPermissions = nextRole === 'admin'
+                ? { ok: true, permissions: [] }
+                : parseAdditionalPermissions(req.body.additionalPermissions, nextRole);
             if (!parsedPermissions.ok) return res.status(400).json({ error: parsedPermissions.error });
 
-            const nextRole = parsedRole.role;
-            const nextAssignedClasses = nextRole === 'professor'
-                ? (parsedClasses.classes === undefined ? (Array.isArray(account.assignedClasses) ? account.assignedClasses : []) : parsedClasses.classes)
-                : [];
-            const nextAssignedSchoolIds = nextRole === 'professor'
-                ? (parsedSchools.ids === undefined ? (Array.isArray(account.assignedSchoolIds) ? account.assignedSchoolIds : []) : parsedSchools.ids)
-                : [];
-            const nextAssignedCourseIds = nextRole === 'professor'
-                ? (parsedCourses.ids === undefined ? (Array.isArray(account.assignedCourseIds) ? account.assignedCourseIds : []) : parsedCourses.ids)
-                : [];
+            // O que não veio no pedido fica como está, se o escopo do papel o aceita; ao trocar
+            // de papel, as permissões extras de antes só ficam se o papel novo as aceitar.
+            const keep = (parsed, field) => (parsed === undefined ? (Array.isArray(account[field]) ? account[field] : []) : parsed);
+            const nextAssignedClasses = nextScope === 'turmas' ? keep(parsedClasses.classes, 'assignedClasses') : [];
+            const nextAssignedSchoolIds = nextScope === 'tudo' ? [] : keep(parsedSchools.ids, 'assignedSchoolIds');
+            const nextAssignedCourseIds = nextScope === 'turmas' ? keep(parsedCourses.ids, 'assignedCourseIds') : [];
             const invalid = findUnknownAssignedClass(nextAssignedClasses);
-            if (nextRole === 'professor' && invalid) {
+            if (invalid) {
                 return res.status(400).json({ error: `Turma inexistente: ${invalid.className}.` });
             }
             const invalidSchool = findUnknownSchool(nextAssignedSchoolIds);
-            if (nextRole === 'professor' && invalidSchool) return res.status(400).json({ error: `Escola inexistente: ${invalidSchool}.` });
+            if (invalidSchool) return res.status(400).json({ error: `Escola inexistente: ${invalidSchool}.` });
             const invalidCourse = findUnknownCourse(nextAssignedCourseIds);
-            if (nextRole === 'professor' && invalidCourse) return res.status(400).json({ error: `Curso inexistente: ${invalidCourse}.` });
-            const nextAdditionalPermissions = nextRole === 'professor'
-                ? (parsedPermissions.permissions === undefined
-                    ? (Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [])
-                    : parsedPermissions.permissions)
-                : [];
+            if (invalidCourse) return res.status(400).json({ error: `Curso inexistente: ${invalidCourse}.` });
+            let nextAdditionalPermissions = [];
+            if (nextRole !== 'admin') {
+                if (parsedPermissions.permissions !== undefined) nextAdditionalPermissions = parsedPermissions.permissions;
+                else {
+                    const current = Array.isArray(account.additionalPermissions) ? account.additionalPermissions : [];
+                    nextAdditionalPermissions = sameRole ? current : normalizeAdditionalPermissions(current, nextRole);
+                }
+            }
 
             const accountBefore = accountAuditSnapshot(account);
             account.name = nextName;
@@ -469,7 +496,9 @@ function createAdminAccountsRouter() {
             const email = String(req.body.email || '').trim().toLowerCase();
             if (!email) return res.status(400).json({ error: 'Professor não informado.' });
             const account = (db.memory.admins || []).find(item => item && String(item.email || '').toLowerCase() === email);
-            if (!account || account.role !== 'professor') return res.status(404).json({ error: 'Professor não encontrado.' });
+            // Turmas, cursos e escolas atribuídos: papéis de escopo 'turmas' (professor e
+            // professor auxiliar).
+            if (!account || roleScopeKind(storedAccountRole(account)) !== 'turmas') return res.status(404).json({ error: 'Professor não encontrado.' });
 
             const parsedSchools = parseAssignmentIds(req.body.assignedSchoolIds, 'Escolas atribuídas');
             const parsedCourses = parseAssignmentIds(req.body.assignedCourseIds, 'Cursos atribuídos');
@@ -512,8 +541,8 @@ function createAdminAccountsRouter() {
 
             const admins = readJSON(DB_ADMINS_FILE);
             const target = admins.find(account => account.email && account.email.toLowerCase() === targetEmail);
-            const adminCount = admins.filter(account => !account.role || account.role === 'admin').length;
-            if (target && (!target.role || target.role === 'admin') && adminCount <= 1) {
+            const adminCount = admins.filter(account => isFullAdmin(account)).length;
+            if (target && isFullAdmin(target) && adminCount <= 1) {
                 return res.status(400).json({ error: 'Não é possível excluir o único administrador cadastrado.' });
             }
             const filtered = admins.filter(account => !account.email || account.email.toLowerCase() !== targetEmail);

@@ -42,6 +42,7 @@ const {
     isCourseExamKey,
     sendRouteError,
 } = require('../middlewares.js');
+const { accountScopeKind } = require('../utils/adminRoles.js');
 
 const VERSION_LABELS = ['A', 'B', 'C', 'D'];
 const DEFAULT_ONLINE_DURATION_MINUTES = 60;
@@ -392,9 +393,11 @@ function createAdminExamConfigRouter() {
                 studentClass: req.query.studentClass,
                 courseId: req.query.courseId,
                 examKey: req.query.examKey,
-            }).filter(application => matchedAdmin?.role !== 'professor'
-                || (matchedAdmin.assignedClasses || []).some(item =>
-                    item && item.courseId === application.courseId && item.className === application.studentClass))
+            }).filter(application => accountScopeKind(matchedAdmin) === 'tudo'
+                || (accountScopeKind(matchedAdmin) === 'turmas'
+                    ? (matchedAdmin.assignedClasses || []).some(item =>
+                        item && item.courseId === application.courseId && item.className === application.studentClass)
+                    : adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)))
                 // Aplicação de antes do H8b, sem o campo, aparece como 'eventos' (cópia; o banco não
                 // muda), com keystrokeModeLegacy: o que ela já guardou é a digitação completa.
                 .map(withKeystrokeMode);

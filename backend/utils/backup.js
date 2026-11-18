@@ -17,6 +17,7 @@ const store = require('./backupStore.js');
 const settingsUtil = require('./settings.js');
 const { recordAudit } = require('./audit.js');
 const { KEYSTROKE_TABLE, LEGACY_KEYSTROKE_TABLE } = require('./keystrokeStore.js');
+const { isFullAdmin } = require('./adminRoles.js');
 
 const { backupRefusal } = schema;
 const CONTENT_DIR = runtimePaths.CONTENT_DIR;
@@ -887,7 +888,7 @@ function validateRestoredAccounts(snapshot) {
     if (!Array.isArray(admins)) throw backupRefusal('Contas de acesso inválidas no backup.');
     const plain = admins.find(account => !account || !account.email || !db.isHashed(account.password));
     if (plain) throw backupRefusal(`O backup traz a conta ${(plain && plain.email) || 'sem e-mail'} sem senha protegida (texto puro). Restaure sem substituir as contas.`);
-    if (!admins.some(account => account.role !== 'professor')) throw backupRefusal('O backup não tem nenhuma conta de administrador. Restaure sem substituir as contas.');
+    if (!admins.some(account => isFullAdmin(account))) throw backupRefusal('O backup não tem nenhuma conta de administrador. Restaure sem substituir as contas.');
 }
 
 // O que foi restaurado, para o registro de auditoria e para a tela avisar das contas

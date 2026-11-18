@@ -51,6 +51,7 @@ const rateLimiter = require('./rateLimit.js');
 const loginGuard = require('./loginGuard.js');
 const { getClientIp, recordLoginLog, scheduleLoginLogSave } = require('./security.js');
 const { isWeakPassword } = require('./passwordPolicy.js');
+const { accountRoleId } = require('./adminRoles.js');
 
 const LOGIN_KINDS = Object.freeze({
     student: {
@@ -119,12 +120,13 @@ function decoyHash() {
     return decoyHashPromise;
 }
 
-// Papel gravado em loginLogs: o do aluno, ou o da conta de instrutor ('admin' ou
-// 'professor'; 'instructor' quando o e-mail não é de conta nenhuma).
+// Papel gravado em loginLogs: o do aluno, ou o da conta de instrutor ('admin',
+// 'professor' ou um dos papéis da fase 3, como 'secretaria'; 'instructor' quando o
+// e-mail não é de conta nenhuma).
 function logRole(kind, account) {
     if (kind === 'student') return 'student';
     if (!account) return 'instructor';
-    return account.role === 'professor' ? 'professor' : 'admin';
+    return accountRoleId(account) || 'admin';
 }
 
 // Alerta por IP: um registro por janela de 10 min, com count atualizado enquanto a

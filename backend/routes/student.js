@@ -30,11 +30,11 @@ const {
     getCourseItemKeys,
     validateAdmin,
     validateAdminPermission,
-    isProfessorAccount,
     adminCanAccessClass,
     adminCanAccessItem,
     sendInternalError
 } = require('../middlewares.js');
+const { isFullAdmin, accountScopeKind } = require('../utils/adminRoles.js');
 const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
 const { recordLoginLog } = require('../utils/security.js');
 const legalAcceptance = require('../utils/legalAcceptance.js');
@@ -2451,7 +2451,7 @@ function adminForumContextAllowed(req, matchedAdmin, comment) {
 // turma que se possa inferir fica escondida do professor; o administrador vê todas.
 // Devolve também se a inferência gravou a turma numa dúvida antiga (quem chama grava).
 function forumCommentVisibleToAdmin(account, comment) {
-    if (!isProfessorAccount(account)) return { visible: true, migrated: false };
+    if (accountScopeKind(account) === 'tudo') return { visible: true, migrated: false };
     const wasLegacy = !!comment && !comment.courseId && !comment.studentClass;
     const context = comment ? inferLegacyForumContext(comment) : null;
     return {
@@ -2751,7 +2751,7 @@ router.post('/api/admin/forum/all', (req, res) => {
         // Professor: só as dúvidas das turmas dele, uma a uma (SEG-11). Antes o filtro era
         // pelo curso do tópico, e sem turma no pedido vinham as dúvidas (com e-mail) de
         // todas as turmas; o tópico 'geral' não pertence a curso nenhum e passava sempre.
-        let comments = isProfessorAccount(matchedAdmin)
+        let comments = accountScopeKind(matchedAdmin) !== 'tudo'
             ? (db.memory.forum || []).filter(comment => {
                 if (!comment || !adminCanAccessItem(matchedAdmin, comment.key)) return false;
                 const scope = forumCommentVisibleToAdmin(matchedAdmin, comment);
@@ -2780,7 +2780,7 @@ router.post('/api/admin/forum/resolve', (req, res) => {
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
         if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
+        if (!adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         if (resolved) {
             comment.status = 'resolvida';
             comment.resolvedBy = matchedAdmin.email;
@@ -2803,7 +2803,7 @@ router.post('/api/admin/forum/faq', (req, res) => {
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
         if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
+        if (!adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         comment.isFaq = !!faq;
         comment.faqBy = faq ? matchedAdmin.email : null;
         comment.faqAt = faq ? new Date().toISOString() : null;
@@ -2819,7 +2819,7 @@ router.post('/api/admin/forum/restore', (req, res) => {
         const comment = (db.memory.forum || []).find(c => c.id === commentId);
         if (!comment) return res.status(404).json({ error: 'Dúvida não encontrada.' });
         if (!adminForumContextAllowed(req, matchedAdmin, comment)) return res.status(403).json({ error: 'Dúvida fora do contexto ativo.' });
-        if (isProfessorAccount(matchedAdmin) && !adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
+        if (!adminCanAccessItem(matchedAdmin, comment.key)) return res.status(403).json({ error: 'Sem acesso a esta dúvida.' });
         if (replyId) {
             const reply = (comment.replies || []).find(r => r.id === replyId);
             if (!reply) return res.status(404).json({ error: 'Resposta não encontrada.' });
@@ -2836,7 +2836,7 @@ router.post('/api/admin/forum/restore', (req, res) => {
 
 router.post('/api/admin/forum/purge', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        if (isProfessorAccount(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores podem apagar definitivamente.' });
+        if (!isFullAdmin(matchedAdmin)) return res.status(403).json({ error: 'Apenas administradores podem apagar definitivamente.' });
         const { commentId, replyId } = req.body;
         const idx = (db.memory.forum || []).findIndex(c => c.id === commentId);
         if (idx === -1) return res.status(404).json({ error: 'Dúvida não encontrada.' });

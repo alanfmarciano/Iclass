@@ -41,6 +41,7 @@ const schema = require('../utils/backupSchema.js');
 const dbFile = require('../utils/dbFile.js');
 const store = require('../utils/backupStore.js');
 const schemaMigrations = require('../utils/schemaMigrations.js');
+const { isFullAdmin } = require('../utils/adminRoles.js');
 
 const EXIT = { OK: 0, FAILED: 1, SERVER_RUNNING: 2 };
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -665,7 +666,7 @@ async function internalAfterRestore(previousDb) {
     const migratedEntry = (db.memory.auditLogs || []).slice(before).find(entry => entry && entry.action === 'schema_migrated_on_restore');
     await db.save();
     await db.syncSchemaUserVersion();
-    const adminEmails = (db.memory.admins || []).filter(account => account && account.email && account.role !== 'professor').map(account => account.email);
+    const adminEmails = (db.memory.admins || []).filter(account => account && account.email && isFullAdmin(account)).map(account => account.email);
     await db.close();
     return { ok: true, networkKept: !!previous, adminEmails, kept, migrated: migratedEntry && migratedEntry.details ? migratedEntry.details.migracoes || [] : [] };
 }

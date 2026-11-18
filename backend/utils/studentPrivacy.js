@@ -5,8 +5,10 @@
 // O cadastro do aluno também viaja copiado dentro das entregas (sub.student), das cópias
 // da lixeira de notas e dos registros de auditoria; por isso a máscara não fica rota a
 // rota: toda resposta JSON de uma rota de instrutor passa por redactSensitiveStudentPayload
-// quando a conta é de professor (installProfessorResponseRedaction em validateAdmin).
-const { isProfessorAccount } = require('./adminPermissions.js');
+// quando a conta não é de administrador pleno (installProfessorResponseRedaction em
+// validateAdmin). Fase 3 (FUN-13): vale para todo papel que não é 'admin' (professor,
+// professor auxiliar, secretaria e coordenação), não só para o professor.
+const { isFullAdmin } = require('./adminRoles.js');
 
 const MAX_DEPTH = 64;
 
@@ -36,7 +38,7 @@ function maskStudentRecord(student) {
 }
 
 function redactSensitiveStudentData(student, account) {
-    if (!isProfessorAccount(account)) return student;
+    if (isFullAdmin(account)) return student;
     return maskStudentRecord(student);
 }
 
@@ -72,7 +74,7 @@ function redactSensitiveStudentPayload(value, depth = 0) {
 }
 
 function installProfessorResponseRedaction(res, account) {
-    if (!res || !isProfessorAccount(account) || res.__studentPrivacyRedaction) return;
+    if (!res || !account || isFullAdmin(account) || res.__studentPrivacyRedaction) return;
     res.__studentPrivacyRedaction = true;
     const originalJson = res.json.bind(res);
     res.json = body => originalJson(redactSensitiveStudentPayload(body));
