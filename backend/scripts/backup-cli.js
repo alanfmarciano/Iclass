@@ -18,6 +18,13 @@
 // ligado (criar e restaurar só com ele parado: a memória dele ficaria fora da cópia ou
 // gravaria por cima do banco restaurado).
 //
+// Fase 3 (A0): o restaurar segue a mesma regra da tela Sistema para as coleções das funções
+// novas (missing 'keep' no registro de tabelas): a que o backup não traz (backup de antes
+// da função) é copiada do banco de antes, que vai para a quarentena, e o resumo antes de
+// confirmar diz quais ficam como estão. Os arquivos de data/entregas nunca saem do lugar.
+// Backup feito por uma versão mais nova do IClass é recusado; o de versão anterior sai
+// com os dados atualizados para esta versão (gancho 'schemaMigrations').
+//
 // Este processo não abre o banco pelo database.js (que cria e trava o arquivo ao ser
 // carregado e grava tudo ao fechar): lê e copia pelo utils/dbFile.js. As conferências que
 // precisam do database.js (estrutura das coleções; ganchos pós-restauração) rodam num
@@ -33,6 +40,7 @@ const archive = require('../utils/backupArchive.js');
 const schema = require('../utils/backupSchema.js');
 const dbFile = require('../utils/dbFile.js');
 const store = require('../utils/backupStore.js');
+const schemaMigrations = require('../utils/schemaMigrations.js');
 
 const EXIT = { OK: 0, FAILED: 1, SERVER_RUNNING: 2 };
 const DATA_DIR = runtimePaths.DATA_DIR;
@@ -249,10 +257,11 @@ async function commandCreate(options) {
 
 // Estrutura das coleções no banco extraído, num processo filho com uma pasta de dados
 // descartável (o database.js abre o banco dela, não o de verdade).
-function checkDatabaseSchema(file) {
+// liveDb: o banco de agora (para contar o que fica como está, A0).
+function checkDatabaseSchema(file, liveDb = '') {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-backup-cli-'));
     try {
-        const result = spawnSync(process.execPath, [__filename, '__conferir', file], {
+        const result = spawnSync(process.execPath, [__filename, '__conferir', file, liveDb || ''], {
             env: {
                 ...process.env,
                 ICLASS_DATA_DIR: scratch,
@@ -313,8 +322,27 @@ async function verifyArchive(file, stagingDir) {
     } catch (err) {
         throw new CliError(err.message);
     }
-    const content = checkDatabaseSchema(dbPath);
+    const content = checkDatabaseSchema(dbPath, fs.existsSync(DB_FILE) ? DB_FILE : '');
     return { manifest, dbPath, info, content, inclui: (manifest.inclui || []).filter(prefix => archive.FOLDER_PREFIXES.includes(prefix)) };
+}
+
+function plural(count, one, many) {
+    return `${count} ${count === 1 ? one : many}`;
+}
+
+// Versão dos dados do backup (A0): base 281029f, ou quantas etapas já tem, e quantas a
+// restauração aplica.
+function schemaLine(content) {
+    const esquema = content.esquema || { aplicadas: [], pendentes: [] };
+    const applied = (esquema.aplicadas || []).length;
+    const pending = (esquema.pendentes || []).length;
+    const base = applied ? `${plural(applied, 'etapa aplicada', 'etapas aplicadas')}` : 'base (de antes das atualizações automáticas dos dados)';
+    return `Versão dos dados: ${base}${pending ? `; ao restaurar, os dados são atualizados para esta versão (${plural(pending, 'etapa', 'etapas')})` : ''}.`;
+}
+
+function keptLine(kept) {
+    if (!kept || !kept.length) return '';
+    return `Ficam como estão (o backup é de antes desta função): ${kept.map(item => `${item.rotulo} (${item.atual})`).join(', ')}.`;
 }
 
 function printSummary(file, verified) {
@@ -324,6 +352,9 @@ function printSummary(file, verified) {
     say(`Tipo: ${manifest.variante === 'completo' ? 'completo (com a biblioteca)' : 'só os dados'}`);
     say(`Alunos: ${content.counts.students || 0}  Turmas: ${content.counts.classes || 0}  Entregas: ${content.counts.submissions || 0}  Contas de acesso: ${content.counts.admins || 0}`);
     say(`Pastas: ${verified.inclui.length ? verified.inclui.join(', ') : 'nenhuma'}`);
+    say(schemaLine(content));
+    const kept = keptLine(content.kept);
+    if (kept) say(kept);
     (content.warnings || []).forEach(warning => say(`Aviso: ${warning}`));
 }
 
@@ -498,6 +529,8 @@ async function commandRestore(target, options) {
             say('Backup restaurado.');
             say(`O banco e as pastas de antes estão em ${quarantine}.`);
             if (!hooks.networkKept) say('A regra de rede do painel voltou à do backup (o banco de antes não pôde ser lido).');
+            if (hooks.kept && hooks.kept.length) say(`Ficaram como estavam (o backup é de antes desta função): ${hooks.kept.map(item => `${item.rotulo} (${item.atual})`).join(', ')}.`);
+            if (hooks.migrated && hooks.migrated.length) say(`Os dados do backup foram atualizados para esta versão (${plural(hooks.migrated.length, 'etapa', 'etapas')}).`);
             if (hooks.adminEmails.length) say(`Contas de administrador deste backup: ${hooks.adminEmails.join(', ')}`);
             say('Todos precisarão entrar de novo. Se não souber a senha, use a opção [S] do launcher (redefinir a senha do administrador).');
             say('Agora abra o IClass de novo.');
@@ -517,8 +550,34 @@ async function commandRestore(target, options) {
 
 // --- modos internos (processo filho) ----------------------------------------------
 
-async function internalCheck(file) {
+// Coleções que ficam como estão (A0): as que o backup não traz e que a regra da
+// restauração mantém (backupSchema.missingCollectionOutcome 'keep'), menos a versão dos
+// dados (o gancho 'schemaMigrations' cuida dela). Só as de uma função nova (missing
+// 'keep') aparecem no resumo; as outras (configuração, identidade visual) também são
+// mantidas, como na tela.
+function keptCollections(db, absent) {
+    return db.COLLECTION_TABLES.filter(entry => entry.backup !== false && entry.kind !== 'derived' && entry.kind !== 'store'
+        && entry.collection !== schemaMigrations.SCHEMA_COLLECTION
+        && absent.has(entry.collection)
+        && schema.missingCollectionOutcome(entry) === 'keep');
+}
+
+async function liveRowCounts(liveDb) {
+    if (!liveDb || !fs.existsSync(liveDb)) return null;
+    let connection = null;
+    try {
+        connection = await dbFile.openDatabaseFile(liveDb, { readOnly: true });
+        return await dbFile.tableCounts(connection);
+    } catch (e) {
+        return null;
+    } finally {
+        if (connection) await dbFile.closeDatabaseFile(connection).catch(() => {});
+    }
+}
+
+async function internalCheck(file, liveDb) {
     const db = require('../database.js');
+    const { COLLECTION_LABELS } = require('../utils/backup.js');
     const tables = db.COLLECTION_TABLES.filter(entry => entry.backup !== false && entry.kind !== 'derived');
     const connection = await dbFile.openDatabaseFile(file, { readOnly: true });
     try {
@@ -527,27 +586,46 @@ async function internalCheck(file) {
         Object.entries(stored.memory).forEach(([collection, value]) => {
             if (!stored.absent.has(collection)) data[collection] = value;
         });
+        // Recusa a versão dos dados mais nova que esta (schemaMeta do banco do backup).
         const { warnings } = schema.validateBackupData(data, tables);
         let unreadable = 0;
         stored.unreadable.forEach(keys => { unreadable += keys.length; });
         if (unreadable) warnings.push(`${unreadable} registro(s) ilegível(is) no banco do backup.`);
         const counts = {};
         ['students', 'classes', 'submissions', 'admins'].forEach(key => { counts[key] = Array.isArray(data[key]) ? data[key].length : 0; });
-        return { ok: true, warnings, counts };
+        const plan = schemaMigrations.planSchema(data.schemaMeta);
+        const esquema = { aplicadas: plan.applied, pendentes: plan.pending.filter(row => row.tipo === 'memoria').map(row => row.id) };
+        const live = await liveRowCounts(liveDb);
+        const kept = live ? keptCollections(db, stored.absent)
+            .filter(entry => entry.missing === 'keep')
+            .map(entry => ({ colecao: entry.collection, rotulo: COLLECTION_LABELS[entry.collection] || entry.collection, atual: Number(live[entry.table]) || 0 }))
+            .filter(item => item.atual > 0) : [];
+        return { ok: true, warnings, counts, esquema, kept };
     } finally {
         await dbFile.closeDatabaseFile(connection);
     }
 }
 
+// Depois da troca do banco (o do backup já está em data/database.db): o banco de antes (na
+// quarentena) é lido só para leitura, e o deste backup também, antes do init, para saber
+// o que ele não traz e de que versão dos dados ele é. O init não roda as migrações
+// (schema 'restore'): as coleções 'keep' ausentes vêm do banco de antes e só depois o
+// gancho 'schemaMigrations' (o primeiro de db.afterRestore) roda as que faltam ao backup,
+// com o id de cada aluno de antes (previousStudentIds), como na tela.
 async function internalAfterRestore(previousDb) {
     const db = require('../database.js');
+    const { COLLECTION_LABELS } = require('../utils/backup.js');
     let previous = null;
+    let previousAbsent = new Set();
     if (previousDb && fs.existsSync(previousDb)) {
         try {
             const connection = await dbFile.openDatabaseFile(previousDb, { readOnly: true });
             try {
                 const stored = await db.readStoredData(connection);
-                if (!stored.absent.has('config')) previous = stored.memory;
+                if (!stored.absent.has('config')) {
+                    previous = stored.memory;
+                    previousAbsent = stored.absent;
+                }
             } finally {
                 await dbFile.closeDatabaseFile(connection);
             }
@@ -555,17 +633,41 @@ async function internalAfterRestore(previousDb) {
             previous = null;
         }
     }
-    await db.init();
+    const restored = await dbFile.openDatabaseFile(db.dbPath, { readOnly: true }).then(async connection => {
+        try {
+            const stored = await db.readStoredData(connection);
+            return { absent: stored.absent, schemaMeta: stored.absent.has(schemaMigrations.SCHEMA_COLLECTION) ? undefined : stored.memory.schemaMeta };
+        } finally {
+            await dbFile.closeDatabaseFile(connection);
+        }
+    });
+    await db.init({ schema: 'restore' });
+    const kept = [];
+    if (previous) {
+        keptCollections(db, restored.absent).forEach(entry => {
+            if (previousAbsent.has(entry.collection) || previous[entry.collection] === undefined) return;
+            db.memory[entry.collection] = previous[entry.collection];
+            const value = previous[entry.collection];
+            const count = Array.isArray(value) ? value.length : (value && typeof value === 'object' ? Object.keys(value).length : 0);
+            if (entry.missing === 'keep' && count > 0) kept.push({ colecao: entry.collection, rotulo: COLLECTION_LABELS[entry.collection] || entry.collection, atual: count });
+        });
+    }
+    const before = (db.memory.auditLogs || []).length;
     await db.runAfterRestore(db.memory, {
         keepNetwork: !!previous,
         previousNetwork: previous ? db.currentNetworkSettings(previous) : undefined,
         keepProtectedConfig: !!previous,
         previousProtectedConfig: previous ? db.currentProtectedConfig(previous) : undefined,
+        backupSchema: restored.schemaMeta,
+        previousSchemaMeta: previous && !previousAbsent.has(schemaMigrations.SCHEMA_COLLECTION) ? previous.schemaMeta : undefined,
+        previousStudentIds: previous ? db.currentStudentIds(previous) : new Map(),
     });
+    const migratedEntry = (db.memory.auditLogs || []).slice(before).find(entry => entry && entry.action === 'schema_migrated_on_restore');
     await db.save();
+    await db.syncSchemaUserVersion();
     const adminEmails = (db.memory.admins || []).filter(account => account && account.email && account.role !== 'professor').map(account => account.email);
     await db.close();
-    return { ok: true, networkKept: !!previous, adminEmails };
+    return { ok: true, networkKept: !!previous, adminEmails, kept, migrated: migratedEntry && migratedEntry.details ? migratedEntry.details.migracoes || [] : [] };
 }
 
 function parseOptions(args) {
@@ -594,7 +696,7 @@ async function main(argv = process.argv.slice(2)) {
     const [command, ...rest] = argv;
     if (command === '__conferir' || command === '__depois-de-restaurar') {
         try {
-            const result = command === '__conferir' ? await internalCheck(rest[0]) : await internalAfterRestore(rest[0]);
+            const result = command === '__conferir' ? await internalCheck(rest[0], rest[1]) : await internalAfterRestore(rest[0]);
             process.stdout.write(`@@${JSON.stringify(result)}`);
         } catch (err) {
             process.stdout.write(`@@${JSON.stringify({ ok: false, error: String((err && err.message) || err) })}`);

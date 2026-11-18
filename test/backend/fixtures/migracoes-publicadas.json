@@ -1,0 +1,9 @@
+{
+  "_leia": "Hash do código de cada migração publicada (schemaMigrations.migrationHash). Quem acrescenta uma linha em backend/migrations/index.js acrescenta o hash dela aqui; nunca apague nem troque uma linha deste arquivo.",
+  "migracoes": [
+    {
+      "id": "2026-11-p6-base",
+      "hash": "22a0fb3ddfdf061c39e812355b21daf1adb63c76f005b9595193ca952848bcd3"
+    }
+  ]
+}

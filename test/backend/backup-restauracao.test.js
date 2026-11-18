@@ -312,7 +312,7 @@ test('[UC-BACKUP-001] restaurar mantém settings.backup, settings.network e o se
     const second = await preview(Buffer.from(JSON.stringify(snapshot)), 'com-segredo.json');
     assert.equal((await confirmRestore(second.body.token)).status, 200);
     assert.equal(db.memory.config.examAnswerSecret, 'b'.repeat(64), 'o segredo válido do backup volta com as entregas dele');
-    assert.deepEqual(db.afterRestore.map(hook => hook.name), ['authSessions', 'legacyPasswordHashes', 'networkSettings', 'protectedConfig']);
+    assert.deepEqual(db.afterRestore.map(hook => hook.name), ['schemaMigrations', 'authSessions', 'legacyPasswordHashes', 'networkSettings', 'protectedConfig']);
 });
 
 test('[UC-BACKUP-001] o envio do backup não passa por data/uploads e não segue o limite de envio de materiais', async () => {

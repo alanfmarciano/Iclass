@@ -29,7 +29,9 @@ const runtimePaths = require('../runtimePaths.js');
 const { resolveInside } = require('./safePath.js');
 
 const STAMP = '\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z';
-const BACKUP_ORIGINS = Object.freeze(['automatico', 'manual', 'seguranca-restauracao', 'seguranca-completa', 'antes-limpeza-prova', 'antes-resetar-sala']);
+// Fase 3 (A0): 'pre-atualizacao' (o backup do boot antes de migrar os dados, P6) e
+// 'antes-mesclagem' (antes de juntar dois cadastros do mesmo aluno, P4-S4).
+const BACKUP_ORIGINS = Object.freeze(['automatico', 'manual', 'seguranca-restauracao', 'seguranca-completa', 'antes-limpeza-prova', 'antes-resetar-sala', 'pre-atualizacao', 'antes-mesclagem']);
 const BACKUP_NAME = new RegExp(`^(${BACKUP_ORIGINS.join('|')})(?:_(dados|completo))?_(${STAMP})\\.(zip|json)$`);
 // .bak das edições: <chave>_<carimbo>.(md|json).bak (admin.js makeBackup).
 const EDIT_BACKUP_NAME = new RegExp(`^(.+)_(${STAMP})\\.(md|json)\\.bak$`);
@@ -47,6 +49,9 @@ const RETENTION_RULES = Object.freeze([
     { grupo: 'seguranca', origens: ['seguranca-restauracao', 'seguranca-completa'], local: 5, externo: 5 },
     { grupo: 'antes-limpeza-prova', origens: ['antes-limpeza-prova'], local: 10, externo: 10 },
     { grupo: 'antes-resetar-sala', origens: ['antes-resetar-sala'], local: 10, externo: 10 },
+    // Cada grupo só conta os seus: a retenção do automático nunca apaga um destes.
+    { grupo: 'pre-atualizacao', origens: ['pre-atualizacao'], local: 3, externo: 3 },
+    { grupo: 'antes-mesclagem', origens: ['antes-mesclagem'], local: 10, externo: 10 },
 ]);
 
 const FOREIGN_FOLDER_MESSAGE = 'Escolha uma pasta fora da pasta do IClass (pendrive, HD externo ou pasta de rede).';

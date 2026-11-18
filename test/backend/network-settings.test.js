@@ -193,7 +193,7 @@ test('[UC-REDE-001] restaurar backup mantém o settings.network de agora', async
     // É um gancho de db.afterRestore (uma declaração só com sessões, senhas antigas e,
     // desde o H4a, a configuração protegida) e a regra mantida vai para o banco: o próximo
     // boot lê a mesma.
-    assert.deepEqual(db.afterRestore.map(hook => hook.name), ['authSessions', 'legacyPasswordHashes', 'networkSettings', 'protectedConfig']);
+    assert.deepEqual(db.afterRestore.map(hook => hook.name), ['schemaMigrations', 'authSessions', 'legacyPasswordHashes', 'networkSettings', 'protectedConfig']);
     seed({ network: { adminAccess: 'local' } });
     await db.save();
     assert.equal((await restore(backupWith(undefined))).status, 200);
