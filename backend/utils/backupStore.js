@@ -217,17 +217,26 @@ function updateState(mutate, dir = backupsDir()) {
 
 // Último backup local bem-sucedido (ms): o do estado ou, sem ele, o automatico* mais
 // novo da pasta pelo mtime (o .json da versão de antes também conta).
-function lastLocalSuccessMs(state = readState(), dir = backupsDir()) {
+// Sem estado.json (banco de antes do H4b), vale o automático mais novo da pasta, pela
+// data do próprio nome (automatico_<carimbo>): a data de modificação do arquivo muda
+// quando a pasta de dados é copiada, restaurada do OneDrive ou de um pendrive, e um
+// backup antigo copiado hoje parecia "de agora", e o boot deixava de fazer o automático
+// por 20 h (achado da J3 sobre a cópia do banco 5b69148). Só sem carimbo legível (ou com
+// carimbo no futuro) vale a data de modificação.
+function lastLocalSuccessMs(state = readState(), dir = backupsDir(), now = Date.now()) {
     const fromState = Date.parse(String((state.local && state.local.ultimoSucesso) || ''));
     if (Number.isFinite(fromState)) return fromState;
     let newest = null;
     readNames(dir).forEach(name => {
         const parsed = parseBackupName(name);
         if (!parsed || parsed.origem !== 'automatico') return;
-        try {
-            const mtime = fs.statSync(path.join(dir, name)).mtimeMs;
-            if (newest === null || mtime > newest) newest = mtime;
-        } catch (e) { /* sumiu entre a leitura e o stat */ }
+        let at = Date.parse(String(parsed.criadoEm || ''));
+        if (!Number.isFinite(at) || at > now + 60 * 1000) {
+            try {
+                at = fs.statSync(path.join(dir, name)).mtimeMs;
+            } catch (e) { return; /* sumiu entre a leitura e o stat */ }
+        }
+        if (newest === null || at > newest) newest = at;
     });
     return newest;
 }

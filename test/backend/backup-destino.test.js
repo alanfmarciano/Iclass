@@ -266,6 +266,28 @@ test('[UC-BACKUP-004] automático: devido com 20 h; adiado com prova em andament
     assert.match(source, /if \(process\.env\.TEST_MODE !== '1'\) \{\s*const backupIfDue = async \(\) => \{\s*try \{\s*const outcome = await backupUtil\.runAutomaticIfDue\(\)/);
 });
 
+// Achado da J3 (cópia do banco 5b69148): sem estado.json, o último automático era lido
+// pela data de modificação do arquivo. A pasta de dados copiada (ou restaurada do
+// OneDrive/pendrive) tem data de hoje, e o boot achava que o backup de 30 dias atrás era
+// recente: nenhum automático por 20 h. Agora vale o carimbo do nome.
+test('[UC-BACKUP-004] sem estado.json, o último automático vale pela data do nome, não pela data de modificação da cópia', async () => {
+    await resetState();
+    fs.rmSync(path.join(runtimePaths.BACKUPS_DIR, 'estado.json'), { force: true });
+    const now = Date.now();
+    const old = path.join(runtimePaths.BACKUPS_DIR, `automatico_${stamp(now - 30 * 24 * HOUR)}.json`);
+    fs.writeFileSync(old, '{}');
+    // A cópia da pasta deixou o arquivo com a data de modificação de agora.
+    fs.utimesSync(old, new Date(now), new Date(now));
+    assert.equal(store.lastLocalSuccessMs(undefined, undefined, now), now - 30 * 24 * HOUR);
+    const outcome = await backup.runAutomaticIfDue({ now });
+    assert.equal(outcome.ran, true, JSON.stringify(outcome));
+    // Carimbo recente no nome: continua "recent".
+    await resetState();
+    fs.rmSync(path.join(runtimePaths.BACKUPS_DIR, 'estado.json'), { force: true });
+    fs.writeFileSync(path.join(runtimePaths.BACKUPS_DIR, `automatico_dados_${stamp(now - 2 * HOUR)}.zip`), 'x');
+    assert.deepEqual(await backup.runAutomaticIfDue({ now }), { ran: false, reason: 'recent' });
+});
+
 test('[UC-BACKUP-004] destino removido: o local continua, a falha do externo fica no estado, no status e no "Precisa de você" só do administrador', async () => {
     await resetState();
     const destino = fs.mkdtempSync(path.join(externalRoot, 'pendrive-'));

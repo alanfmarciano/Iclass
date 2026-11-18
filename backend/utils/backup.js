@@ -570,7 +570,7 @@ async function runBackupJob({ origem = 'automatico', now = new Date() } = {}) {
 // Devolve { ran, reason, result?, error? }.
 async function runAutomaticIfDue({ now = Date.now() } = {}) {
     if (activeJob) return { ran: false, reason: 'busy' };
-    const last = store.lastLocalSuccessMs();
+    const last = store.lastLocalSuccessMs(undefined, undefined, now);
     const age = last ? now - last : Infinity;
     if (age < AUTO_DUE_MS) return { ran: false, reason: 'recent' };
     const active = activeApplicationsNow();
