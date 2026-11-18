@@ -386,6 +386,7 @@ function revokeAdminSession(memory, raw, { reason, now = Date.now() } = {}) {
     const entry = adminSessionEntry(memory, raw);
     if (!entry) return false;
     if (reason) rememberRevocation(adminKeyHash(entry.key), reason, now);
+    dropPreviewsOfAdminHash(memory, adminKeyHash(entry.key));
     delete memory.adminSessions[entry.key];
     return true;
 }
@@ -404,6 +405,7 @@ function revokeAdminSessions(memory, email, { exceptToken, reason, now = Date.no
         if (!isAdminSessionValue(value) || value.email.toLowerCase() !== normalizedEmail) return;
         if (kept && kept.key === key) return;
         if (reason) rememberRevocation(adminKeyHash(key), reason, now);
+        dropPreviewsOfAdminHash(memory, adminKeyHash(key));
         delete map[key];
         removed += 1;
     });
@@ -429,10 +431,163 @@ function checkAdminSessionToken(raw, now = Date.now(), options = {}) {
     return { ok: true, key, email, session, account };
 }
 
-// Todas as sessões saem (memória nova, restauração de backup).
+// Todas as sessões saem (memória nova, restauração de backup). As pré-visualizações
+// (memory.previewSessions) saem junto: restaurar um backup encerra as prévias.
 function clearSessions(memory) {
     memory.sessions = {};
     memory.adminSessions = {};
+    delete memory.previewSessions;
+}
+
+// ---------------------------------------------------------------------------
+// Pré-visualização como aluno (fase 3, P5-S6a, CRIT-08)
+//
+// Sessão de leitura que o instrutor abre para ver o portal de uma turma como um aluno
+// dela (POST /api/admin/preview-sessions). Fica só na memória, em memory.previewSessions
+// (fora do registro de tabelas, do backup e da tabela auth_sessions): reinício e
+// restauração de backup encerram as prévias. Como nas outras sessões, a chave é o sha256
+// do token; o token cru só vai na resposta. Cada prévia:
+// { id, adminSessionHash, adminEmail, accountStamp, courseId, studentClass, groupId,
+//   studentEmail ('previa-<hex>@previa.invalid'), createdAt, expiresAt }.
+// Ela vale enquanto: está no prazo (60 min), a sessão de instrutor que a abriu existe
+// (Sair ou troca de senha em outro aparelho a encerram) e a senha da conta não mudou
+// (accountStamp, conferido em utils/previewAccess.js). Usá-la não muda nada aqui: a
+// leitura do portal na prévia não pode alterar a memória.
+// ---------------------------------------------------------------------------
+const PREVIEW_TTL_MS = 60 * 60 * 1000;
+const PREVIEW_MAX_PER_ADMIN_SESSION = 5;
+const PREVIEW_MAX_TOTAL = 500;
+const PREVIEW_EMAIL_DOMAIN = 'previa.invalid';
+
+function previewMap(memory, { create = false } = {}) {
+    if (!memory || typeof memory !== 'object') return null;
+    const current = memory.previewSessions;
+    if (current && typeof current === 'object' && !Array.isArray(current)) return current;
+    if (!create) return null;
+    memory.previewSessions = {};
+    return memory.previewSessions;
+}
+
+function isPreviewValue(value) {
+    return !!(value && typeof value === 'object' && typeof value.adminSessionHash === 'string' && value.adminSessionHash
+        && typeof value.studentEmail === 'string' && value.studentEmail);
+}
+
+// sha256 do token da sessão de instrutor deste pedido ('' sem sessão gravada).
+function adminSessionHashOf(memory, rawAdminToken) {
+    const entry = adminSessionEntry(memory, rawAdminToken);
+    return entry && isAdminSessionValue(entry.value) ? adminKeyHash(entry.key) : '';
+}
+
+// Sessão de instrutor pelo sha256 do token: chave 'h:' + hash ou, no legado, a chave
+// igual ao token cru cujo hash bate. null quando ela não existe mais.
+function adminSessionByHash(memory, hash) {
+    const map = memory && memory.adminSessions;
+    if (!hash || !HASH_PATTERN.test(hash) || !map || typeof map !== 'object') return null;
+    const key = ADMIN_KEY_PREFIX + hash;
+    const direct = ownValue(map, key);
+    if (direct !== undefined) return isAdminSessionValue(direct) ? { key, session: direct } : null;
+    for (const legacyKey of Object.keys(map)) {
+        if (legacyKey.startsWith(ADMIN_KEY_PREFIX) || isInheritedKey(legacyKey)) continue;
+        if (adminKeyHash(legacyKey) === hash) return isAdminSessionValue(map[legacyKey]) ? { key: legacyKey, session: map[legacyKey] } : null;
+    }
+    return null;
+}
+
+// Prévias vencidas ou ilegíveis saem (chamado ao abrir uma prévia nova, nunca numa leitura).
+function prunePreviewSessions(memory, now = Date.now()) {
+    const map = previewMap(memory);
+    if (!map) return 0;
+    let removed = 0;
+    Object.keys(map).forEach(key => {
+        const value = map[key];
+        if (!isPreviewValue(value) || !(Number(value.expiresAt) > now)) {
+            delete map[key];
+            removed += 1;
+        }
+    });
+    return removed;
+}
+
+// Abre uma prévia para a sessão de instrutor do token adminToken. Devolve { token,
+// session } (token cru só para a resposta) ou lança TypeError sem sessão de instrutor.
+// Cada sessão de instrutor guarda até 5 prévias (a mais antiga sai) e a memória até 500.
+function createPreviewSession(memory, { adminToken, courseId, studentClass, groupId = null, accountStamp = '', now = Date.now() } = {}) {
+    const entry = adminSessionEntry(memory, adminToken);
+    if (!entry || !isAdminSessionValue(entry.value)) throw new TypeError('Sessão de instrutor inválida para a pré-visualização.');
+    const adminSessionHash = adminKeyHash(entry.key);
+    const map = previewMap(memory, { create: true });
+    prunePreviewSessions(memory, now);
+    const byCreation = (a, b) => Number(map[a].createdAt || 0) - Number(map[b].createdAt || 0);
+    const own = Object.keys(map).filter(key => map[key].adminSessionHash === adminSessionHash).sort(byCreation);
+    while (own.length >= PREVIEW_MAX_PER_ADMIN_SESSION) delete map[own.shift()];
+    const all = Object.keys(map).sort(byCreation);
+    while (all.length >= PREVIEW_MAX_TOTAL) delete map[all.shift()];
+
+    const token = newSessionToken();
+    const session = {
+        id: `prev_${now}_${crypto.randomBytes(3).toString('hex')}`,
+        adminSessionHash,
+        adminEmail: entry.value.email.toLowerCase(),
+        accountStamp: String(accountStamp || ''),
+        courseId: String(courseId || ''),
+        studentClass: String(studentClass || ''),
+        groupId: groupId ? String(groupId) : null,
+        studentEmail: `previa-${crypto.randomBytes(8).toString('hex')}@${PREVIEW_EMAIL_DOMAIN}`,
+        createdAt: now,
+        expiresAt: now + PREVIEW_TTL_MS,
+    };
+    map[hashSessionToken(token)] = session;
+    return { token, session };
+}
+
+// { hash, session, adminSession } da prévia deste token, ou { reason } quando ela não vale:
+// 'missing' (token desconhecido), 'expired' (passou dos 60 min) ou 'admin_session' (a
+// sessão do instrutor que a abriu acabou). Sem efeito colateral: não apaga nem atualiza
+// nada (a conferência da conta, da permissão e da turma é de utils/previewAccess.js).
+function findPreviewSession(memory, raw, now = Date.now()) {
+    const hash = hashSessionToken(raw);
+    const map = previewMap(memory);
+    const session = hash && map ? ownValue(map, hash) : undefined;
+    if (!isPreviewValue(session)) return { reason: 'missing' };
+    if (!(Number(session.expiresAt) > now)) return { reason: 'expired', hash, session };
+    const admin = adminSessionByHash(memory, session.adminSessionHash);
+    if (!admin) return { reason: 'admin_session', hash, session };
+    return { hash, session, adminSession: admin.session };
+}
+
+// Encerra a prévia deste token. Com adminToken, só se ela é da mesma conta.
+function endPreviewSession(memory, raw, { adminEmail } = {}) {
+    const hash = hashSessionToken(raw);
+    const map = previewMap(memory);
+    const session = hash && map ? ownValue(map, hash) : undefined;
+    if (!isPreviewValue(session)) return false;
+    if (adminEmail && session.adminEmail !== normalizeEmail(adminEmail)) return false;
+    delete map[hash];
+    return true;
+}
+
+// Encerra todas as prévias da conta (e-mail do instrutor). Devolve quantas saíram.
+function endPreviewSessionsOf(memory, adminEmail) {
+    const map = previewMap(memory);
+    const email = normalizeEmail(adminEmail);
+    if (!map || !email) return 0;
+    let removed = 0;
+    Object.keys(map).forEach(key => {
+        if (isPreviewValue(map[key]) && map[key].adminEmail !== email) return;
+        delete map[key];
+        removed += 1;
+    });
+    return removed;
+}
+
+// As prévias abertas por uma sessão de instrutor que acabou de sair.
+function dropPreviewsOfAdminHash(memory, adminSessionHash) {
+    const map = previewMap(memory);
+    if (!map || !adminSessionHash) return;
+    Object.keys(map).forEach(key => {
+        if (!isPreviewValue(map[key]) || map[key].adminSessionHash === adminSessionHash) delete map[key];
+    });
 }
 
 // Limpeza periódica: remove as sessões que passaram do prazo absoluto (aluno e
@@ -657,6 +812,14 @@ module.exports = {
     revokeAdminSessions,
     checkAdminSessionToken,
     clearSessions,
+    PREVIEW_TTL_MS,
+    PREVIEW_EMAIL_DOMAIN,
+    adminSessionHashOf,
+    createPreviewSession,
+    findPreviewSession,
+    endPreviewSession,
+    endPreviewSessionsOf,
+    prunePreviewSessions,
     pruneExpiredSessions,
     persistedSessionRows,
     sessionRowBelongsTo,

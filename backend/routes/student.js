@@ -102,6 +102,7 @@ const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
 const { recordAudit } = require('../utils/audit.js');
+const { previewToken } = require('../utils/previewAccess.js');
 const { keystrokeModeOf } = require('../utils/keystrokePolicy.js');
 const {
     attemptContextForStudent,
@@ -640,6 +641,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     try {
         const email = req.studentEmail;
+        const preview = req.preview === true;
         const studentClass = req.query.studentClass;
         const courseId = req.query.courseId;
         const examKey = (req.query.examKey || '').trim();
@@ -704,8 +706,10 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 studentConfigs[examKey] = { ...studentConfigs[examKey], applicationId: application.id, status: application.status, onlineActive: false };
             }
             // Tentativa vencida vira entrega (com as respostas salvas) antes de qualquer
-            // outra decisão: assim ela conta como usada e nunca é recriada vazia.
-            settleStudentAttempt(application, email);
+            // outra decisão: assim ela conta como usada e nunca é recriada vazia. Na
+            // pré-visualização (req.preview) o sync só lê: nada de entrega, tentativa,
+            // sorteio de versão, volta à página nem chave da cópia local.
+            if (!preview) settleStudentAttempt(application, email);
             maxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? onlineCfg?.maxAttempts);
             attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
                 studentEmail: email,
@@ -727,7 +731,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                     examKey,
                     studentClass: cls.name,
                     courseId: cls.courseId,
-                    create: !attemptsExhausted && !timeOver && ['waiting', 'running', 'paused'].includes(application.status),
+                    create: !preview && !attemptsExhausted && !timeOver && ['waiting', 'running', 'paused'].includes(application.status),
                 })
                 : attemptContextForStudent({ studentEmail: email, examKey });
             const stateKey = context.key || examStateKey({ studentEmail: email, examKey });
@@ -741,7 +745,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             };
             // Sorteia a versão da prova (uma vez) quando ela está ativa e tem múltiplas versões.
             // Com aplicação, só uma tentativa de verdade é gravada (nunca um estado avulso).
-            if (onlineCfg && !attemptsExhausted && (!application || context.state) && initializeExamState(rawState, onlineCfg)) {
+            if (!preview && onlineCfg && !attemptsExhausted && (!application || context.state) && initializeExamState(rawState, onlineCfg)) {
                 rawState.studentEmail = email;
                 rawState.examKey = examKey;
                 rawState.studentClass = cls.name;
@@ -750,10 +754,10 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 db.memory.studentExamState[stateKey] = rawState;
                 db.save({ only: SYNC_SAVE_COLLECTIONS });
             }
-            if (application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save({ only: SYNC_SAVE_COLLECTIONS });
+            if (!preview && application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save({ only: SYNC_SAVE_COLLECTIONS });
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
-            if (application && context.state && ensureLocalCopyKey(rawState)) db.save({ only: SYNC_SAVE_COLLECTIONS });
+            if (!preview && application && context.state && ensureLocalCopyKey(rawState)) db.save({ only: SYNC_SAVE_COLLECTIONS });
             localCopyKey = application && context.state ? localCopyKeyFor(rawState) : null;
 
             // Não expõe a flag interna de validação de token nem a chave dentro do estado.
@@ -1089,11 +1093,12 @@ router.post('/api/student/enrollments/cancel', validateStudentSession, STUDENT_S
 });
 
 // ===================== BIBLIOTECA DO ALUNO =====================
+// O aluno é o da sessão (req.studentAccount): na pré-visualização, o aluno virtual da turma
+// (contrato C4 do P5), que não está em db.memory.students.
 router.get('/api/student/library', validateStudentSession, (req, res) => {
-    const email = req.studentEmail;
     const courseId = String(req.query.courseId || '').trim();
     const studentClass = String(req.query.studentClass || '').trim();
-    const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+    const student = req.studentAccount;
     if (!student) return res.json([]);
     const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
@@ -1103,7 +1108,9 @@ router.get('/api/student/library', validateStudentSession, (req, res) => {
     // Mesma regra do download do arquivo (sendControlledFile em server.js).
     const list = visibleLibraryEntries(db.memory.library, courseId, studentClass);
     list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    const access = encodeURIComponent(String(req.get('x-session-token') || ''));
+    // O link do arquivo leva a sessão do pedido (a da prévia, na pré-visualização): o
+    // download (server.js sendControlledFile) confere a mesma regra da lista.
+    const access = encodeURIComponent(String((req.preview ? previewToken(req) : req.get('x-session-token')) || ''));
     res.json(list.map(e => ({
         id: e.id, name: e.name, url: e.kind === 'link' ? e.url : `${e.url}${e.url.includes('?') ? '&' : '?'}access=${access}`, type: e.type, kind: e.kind,
         description: e.description, tags: e.tags || [],
@@ -1146,7 +1153,7 @@ router.get('/api/student/announcements', validateStudentSession, (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.query.courseId || '').trim();
     const studentClass = String(req.query.studentClass || '').trim();
-    const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+    const student = req.studentAccount;
     if (!student) return res.json([]);
     const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
@@ -1172,7 +1179,7 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
     const email = req.studentEmail;
     const requestedCourse = String(req.query.courseId || '').trim();
     const requestedClass = String(req.query.studentClass || '').trim();
-    const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
+    const student = req.studentAccount;
     if (!student) return res.json([]);
     const cls = findClassByNameAndCourse(db.memory.classes || [], requestedClass, requestedCourse);
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
@@ -2177,7 +2184,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     const email = req.studentEmail;
     const courseId = String(req.query.courseId || '').trim();
     const className = String(req.query.studentClass || '').trim();
-    const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === email);
+    const student = req.studentAccount;
     if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
 
     const classes = readJSON(DB_CLASSES_FILE);
@@ -2420,7 +2427,8 @@ router.get('/api/student/annotations', validateStudentSession, (req, res) => {
 // 'Authorization: email:senha' não identifica instrutor (SEG-03).
 router.use('/api/forum', (req, res, next) => {
     const hasAdminCredentials = !!req.headers['x-admin-session'];
-    if (!hasAdminCredentials) return validateStudentSession(req, res, next);
+    // Pré-visualização: o cabeçalho da prévia vale mais que a sessão do painel.
+    if (!hasAdminCredentials || previewToken(req)) return validateStudentSession(req, res, next);
     return validateAdminPermission(req, res, 'page.forum', (config, matchedAdmin) => {
         let key = (req.body && req.body.key) || (req.query && req.query.key);
         if (!key && req.body && req.body.commentId) {
@@ -2435,13 +2443,16 @@ router.use('/api/forum', (req, res, next) => {
     });
 });
 
-function inferLegacyForumContext(comment) {
+// Dúvida antiga sem turma: a turma inferida pelo aluno fica gravada na dúvida (quem chama
+// grava). persist: false (pré-visualização) só calcula, sem mudar a dúvida.
+function inferLegacyForumContext(comment, { persist = true } = {}) {
     if (comment?.courseId || comment?.studentClass) return comment ? { courseId: String(comment.courseId || ''), studentClass: String(comment.studentClass || '') } : null;
     const student = (db.memory.students || []).find(item => String(item.email || '').toLowerCase() === String(comment?.studentEmail || '').toLowerCase());
     if (!student) return null;
     const matches = (db.memory.classes || []).filter(cls => studentBelongsToClass(student, cls))
         .filter(cls => comment.key === 'geral' || getCourseItemKeys(cls).has(comment.key));
     if (matches.length !== 1) return null;
+    if (!persist) return { courseId: String(matches[0].courseId || ''), studentClass: String(matches[0].name || '') };
     comment.courseId = String(matches[0].courseId || '');
     comment.studentClass = String(matches[0].name || '');
     return { courseId: comment.courseId, studentClass: comment.studentClass };
@@ -2497,6 +2508,7 @@ router.get('/api/forum', (req, res) => {
     }
 
     let migrated = false;
+    const persist = req.preview !== true;
     const comments = db.memory.forum.filter(c => c.key === key && !c.deleted).filter(c => {
         if (req.auth.role === 'admin') {
             const scope = forumCommentVisibleToAdmin(req.auth.admin, c);
@@ -2505,8 +2517,8 @@ router.get('/api/forum', (req, res) => {
         }
         if (!courseId && !studentClass) return true;
         const wasLegacy = !c.courseId && !c.studentClass;
-        const context = inferLegacyForumContext(c);
-        if (wasLegacy && context) migrated = true;
+        const context = inferLegacyForumContext(c, { persist });
+        if (wasLegacy && context && persist) migrated = true;
         return !!context && context.courseId === courseId && context.studentClass === studentClass;
     }).map(c => {
         const own = req.auth.role === 'admin' || String(c.studentEmail || '').toLowerCase() === req.auth.email;

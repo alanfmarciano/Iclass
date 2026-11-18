@@ -9,7 +9,8 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { studentBelongsToClass, getReleasedItemsForClass, resolveAdminSession, assignRequestId } = require('./middlewares.js');
+const { studentBelongsToClass, getReleasedItemsForClass, resolveAdminSession, assignRequestId, checkPreviewToken } = require('./middlewares.js');
+const { previewSessionGuard, PREVIEW_HEADER } = require('./utils/previewAccess.js');
 const { isFullAdmin } = require('./utils/adminRoles.js');
 const { crashLogPath, logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
@@ -174,11 +175,19 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
     // Só sessão gravada, dentro do prazo e de conta que existe (utils/authSessions.js):
     // '?access=__proto__' entregava arquivo protegido, e o token de instrutor vencido ou
     // de conta apagada continuava abrindo arquivo. O aluno precisa de conta ativa.
+    // Pré-visualização como aluno (P5-S6a): o token da prévia (no cabeçalho, que vale mais
+    // que os outros, ou no ?access= do link da biblioteca) abre o que o aluno virtual da
+    // turma abriria, pelas mesmas regras do aluno.
+    const previewHeader = String(req.get(PREVIEW_HEADER) || '');
     const now = Date.now();
-    const adminCheck = accessToken ? checkAdminSessionToken(accessToken, now) : null;
+    const adminCheck = accessToken && !previewHeader ? checkAdminSessionToken(accessToken, now) : null;
     const adminSession = adminCheck && adminCheck.ok ? adminCheck.session : null;
-    const studentCheck = accessToken && !adminSession ? checkStudentSessionToken(accessToken, now) : null;
-    const studentEmail = studentCheck && studentCheck.ok ? studentCheck.email : undefined;
+    const studentCheck = accessToken && !previewHeader && !adminSession ? checkStudentSessionToken(accessToken, now) : null;
+    const realStudentEmail = studentCheck && studentCheck.ok ? studentCheck.email : undefined;
+    const previewCandidate = previewHeader || (!adminSession && !realStudentEmail ? accessToken : '');
+    const previewCheck = previewCandidate ? checkPreviewToken(previewCandidate, now) : null;
+    const previewStudent = previewCheck && previewCheck.ok ? previewCheck.student : null;
+    const studentEmail = previewStudent ? previewStudent.email : realStudentEmail;
     const publicBrandingFile = baseDir === runtimePaths.UPLOADS_DIR && Object.values(db.memory.branding || {}).some(value => {
         if (typeof value !== 'string' || !value.startsWith('/uploads/')) return false;
         return path.basename(value.split('?')[0]) === filename;
@@ -207,7 +216,8 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
         }
     }
     if (studentEmail && !adminSession && !publicBrandingFile) {
-        const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
+        const student = previewStudent
+            || (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
         if (isContentImage) {
             // Imagens das apostilas: aluno com matrícula aprovada (UXA-09).
             if (!studentHasApprovedClass(student, studentBelongsToClass)) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
@@ -284,6 +294,10 @@ app.use((req, res, next) => {
 
 // Camada 5.3: toda rota /api/admin exige autenticação, capability e escopo.
 app.use('/api/admin', adminRbacGuard);
+// Pré-visualização como aluno (P5-S6a): com x-preview-session, só as rotas de leitura de
+// utils/previewAccess.js (PREVIEW_READ_ROUTES) passam; as outras respondem 403
+// preview_read_only. Antes de proctoringRoutes, porque log-activity grava.
+app.use(previewSessionGuard);
 app.use(proctoringRoutes);
 // Modo teste (ativo só com TEST_MODE=1)
 const testRoutes = require('./routes/testmode.js');

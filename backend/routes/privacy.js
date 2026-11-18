@@ -52,7 +52,23 @@ router.get('/api/legal/documents', (req, res) => {
 
 router.get('/api/student/privacy/status', validateStudentSession, (req, res) => {
     const query = req.query || {};
-    res.json(legalAcceptance.studentPrivacyStatus(db.memory, req.studentAccount, { courseId: queryText(query.courseId) }));
+    const status = legalAcceptance.studentPrivacyStatus(db.memory, req.studentAccount, { courseId: queryText(query.courseId), includeText: !req.preview });
+    // Pré-visualização (P5-S6a): o aluno virtual não aceita Termos nem informa data de
+    // nascimento; o portão de primeiro acesso não aparece para o instrutor.
+    if (req.preview) {
+        return res.json({
+            ...status,
+            required: false,
+            pending: false,
+            termsPending: false,
+            privacyPending: false,
+            birthDateMissing: false,
+            isMinor: false,
+            guardianMissing: false,
+            preview: true,
+        });
+    }
+    res.json(status);
 });
 
 router.post('/api/student/privacy/accept', validateStudentSession, async (req, res) => {
