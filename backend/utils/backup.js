@@ -79,7 +79,23 @@ const COLLECTION_LABELS = {
     library: 'Biblioteca',
     examApplications: 'Aplicações de prova',
     legalDocuments: 'Termos e Privacidade',
+    // Fase 3 (fundação A0): as coleções novas do registro.
+    schemaMeta: 'Versão dos dados',
+    assignments: 'Tarefas',
+    assignmentSubmissions: 'Trabalhos entregues (registros)',
+    assignmentFileTombstones: 'Arquivos de entregas removidos',
+    academicTerms: 'Períodos letivos',
+    nonSchoolDays: 'Dias não letivos',
+    classDiary: 'Diário de classe',
+    classGroups: 'Grupos de alunos',
+    conversations: 'Conversas',
+    conversationMessages: 'Mensagens das conversas',
+    guardianContacts: 'Contatos com responsáveis',
 };
+
+// Nota da linha da prévia para a coleção de uma função que o backup ainda não tinha
+// (missing 'keep'): a de hoje fica.
+const KEPT_MISSING_NOTE = 'fica como está (o backup é de antes desta função)';
 
 function collectionLabel(collection) {
     return COLLECTION_LABELS[collection] || collection;
@@ -608,6 +624,105 @@ async function runAutomaticIfDue({ now = Date.now() } = {}) {
     return { ran: true, reason: 'due', result };
 }
 
+// ---------------------------------------------------------------------------
+// Backup antes de atualizar os dados (fase 3, A0 / P6-S1: OPS-02, CONF-16)
+// ---------------------------------------------------------------------------
+// O boot (database.js init) chama createPreUpdateBackup quando há migração pendente num
+// banco que não é novo, ANTES do createTables e de qualquer gravação: a cópia é do arquivo
+// como a versão anterior deixou (db.snapshotRawTo), num ZIP formato 2 'pre-atualizacao'
+// (variante dados) em data/backups, conferido como a backup-cli confere (manifesto, CRC e
+// SHA-256 do banco, quick_check e contagens) e, com o destino externo da tela Sistema
+// conectado, uma cópia lá também (a falha dela só avisa). Sem espaço ou com falha: rejeita
+// com code 'ICLASS_PREUPDATE_BACKUP' e o boot sai com o código 2 sem gravar nada.
+// ICLASS_ATUALIZAR_SEM_BACKUP=1 (só o launcher oferece, depois de perguntar): migra sem o
+// backup e a auditoria registra backup_preupdate_skipped.
+// Retenção própria ('pre-atualizacao': 3 aqui e 3 no destino externo); a do automático
+// nunca apaga estes.
+const PREUPDATE_FREE_MARGIN_BYTES = 64 * 1024 * 1024;
+const UPDATES_FILE = 'atualizacoes.json';
+
+function preUpdateError(cause) {
+    const reason = cause && cause.preUpdateReason ? cause.preUpdateReason : failureMessage(cause);
+    const err = new Error(`Não foi possível fazer o backup antes de atualizar os dados: ${String(reason).replace(/\.$/, '')}. Nada foi alterado.`);
+    return Object.assign(err, { code: 'ICLASS_PREUPDATE_BACKUP', cause });
+}
+
+function configuredDestination(config) {
+    const settings = config && typeof config === 'object' && config.settings && typeof config.settings === 'object' ? config.settings : {};
+    const backup = settings.backup && typeof settings.backup === 'object' ? settings.backup : {};
+    return typeof backup.destino === 'string' ? backup.destino.trim() : '';
+}
+
+async function createPreUpdateBackup({ pendentes = [], de = null, para = '', config = null, now = new Date() } = {}) {
+    if (process.env.ICLASS_ATUALIZAR_SEM_BACKUP === '1') {
+        console.warn('⚠️ Atualizando os dados SEM o backup de antes (ICLASS_ATUALIZAR_SEM_BACKUP=1, pedido no launcher).');
+        return { skipped: true, motivo: 'pedido no launcher (ICLASS_ATUALIZAR_SEM_BACKUP=1)', pendentes, de, para };
+    }
+    console.log(`💾 Fazendo o backup antes de atualizar os dados (${pendentes.length} etapa${pendentes.length === 1 ? '' : 's'})...`);
+    try {
+        return await withBackupLock('pre-atualizacao', async job => {
+            const workDir = await newWorkDir();
+            try {
+                const dbInfo = await db.snapshotRawTo(path.join(workDir, 'database.db'));
+                await fs.promises.mkdir(BACKUPS_DIR, { recursive: true });
+                const needed = await archive.estimateBackupBytes('dados', dbInfo.bytes) + PREUPDATE_FREE_MARGIN_BYTES;
+                const free = await store.freeBytesAt(BACKUPS_DIR);
+                if (free !== null && free < needed) {
+                    throw Object.assign(new Error('sem espaço no disco'), {
+                        code: 'ENOSPC',
+                        preUpdateReason: `sem espaço no disco (são necessários cerca de ${megabytes(needed)} MB livres em ${BACKUPS_DIR} e há ${Math.floor(free / 1048576)} MB)`,
+                    });
+                }
+                const name = archive.backupFileName('pre-atualizacao', 'dados', now);
+                const saved = await saveZipInJob(job, { dir: BACKUPS_DIR, name, dbInfo, variante: 'dados', origem: 'pre-atualizacao', now });
+                // A mesma conferência da backup-cli (verificar): manifesto, CRC, e o banco
+                // de dentro do ZIP relido (quick_check, SHA-256 e contagens do manifesto).
+                try {
+                    await archive.verifyBackupZip(saved.file, { checkDbCrc: true, deep: true });
+                } catch (err) {
+                    await fs.promises.rm(saved.file, { force: true }).catch(() => {});
+                    await fs.promises.rm(`${saved.file}.sha256`, { force: true }).catch(() => {});
+                    throw Object.assign(err instanceof Error ? err : new Error(String(err)), { backupStage: 'verificacao' });
+                }
+                store.applyRetention(BACKUPS_DIR, { scope: 'local', protect: [saved.name] });
+                let externo = null;
+                const destino = configuredDestination(config);
+                if (destino) {
+                    try {
+                        const stat = await fs.promises.stat(destino);
+                        if (!stat.isDirectory()) throw new Error('não é pasta');
+                        const dir = store.externalDir(destino);
+                        await fs.promises.mkdir(dir, { recursive: true });
+                        const copy = await saveZipInJob(job, { dir, name, dbInfo, variante: 'dados', origem: 'pre-atualizacao', now, checkDbCrc: false });
+                        store.applyRetention(dir, { scope: 'externo', protect: [copy.name] });
+                        externo = { name: copy.name, pasta: dir };
+                    } catch (err) {
+                        console.warn(`⚠️ Backup antes de atualizar: a cópia no destino externo não foi feita (${failureMessage(err)}). O backup deste computador vale.`);
+                    }
+                }
+                console.log(`💾 Backup antes de atualizar criado e conferido: ${saved.name}${externo ? ` (cópia externa: ${externo.name})` : ''}`);
+                return { arquivo: saved.name, file: saved.file, bytes: saved.bytes, sha256: saved.sha256, destinoExterno: !!externo, pendentes, de, para };
+            } finally {
+                await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
+            }
+        });
+    } catch (err) {
+        logError('backup antes de atualizar os dados', err);
+        throw preUpdateError(err);
+    }
+}
+
+// data/backups/atualizacoes.json: cópia de schemaMeta.atualizacoes para o launcher ler
+// sem abrir o banco (voltar de versão, D11 do P6). Gravado em .tmp e renomeado.
+async function writeUpdatesFile(atualizacoes, dir = BACKUPS_DIR) {
+    await fs.promises.mkdir(dir, { recursive: true });
+    const file = path.join(dir, UPDATES_FILE);
+    const temporary = `${file}.tmp`;
+    await fs.promises.writeFile(temporary, JSON.stringify({ atualizacoes: Array.isArray(atualizacoes) ? atualizacoes : [] }, null, 2));
+    await archive.renameWithRetry(temporary, file);
+    return file;
+}
+
 function isoOrNull(ms) {
     return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
 }
@@ -831,17 +946,10 @@ function restoredCollectionValue(entry, restored, { exact = false } = {}) {
 }
 
 // O que acontece com a coleção que FALTA no backup (laço genérico por modo do registro,
-// H4a, CONF-07): 'replace' fica vazia (a restauração substitui tudo, como a tela promete;
-// antes a atual ficava e misturava, por exemplo, as presenças antigas com as novas);
-// 'keep' (config, identidade visual, estrutura antiga) e 'merge' (auditoria, Termos)
-// ficam como estão. Exceções: as contas de acesso ficam (só mudam com replaceAccounts e
-// se o backup as traz) e as aplicações de prova seguem o caminho de versão anterior
-// (refeitas a partir das turmas do backup).
-function missingCollectionOutcome(entry) {
-    if (entry.collection === 'admins' || entry.collection === 'examApplications') return 'keep';
-    if (entry.restore === 'keep' || entry.restore === 'merge') return 'keep';
-    return 'empty';
-}
+// H4a, CONF-07; a opção missing da fase 3 vale primeiro): ver
+// backupSchema.missingCollectionOutcome.
+// A regra fica em utils/backupSchema.js (a backup-cli usa a mesma, sem o database.js).
+const { missingCollectionOutcome } = schema;
 
 // Aplica as coleções da memória do snapshot pelo modo de cada uma, roda os ganchos
 // pós-restauração (db.afterRestore: sessões zeradas, senhas antigas protegidas, regra de
@@ -852,11 +960,17 @@ async function applySnapshot(snapshot, { replaceAccounts = false, exact = false 
     // A regra de rede e a configuração protegida de agora, lidas antes do laço: os ganchos
     // 'networkSettings' e 'protectedConfig' as põem de volta depois (decisões §7). Na volta
     // exata (exact) a cópia de antes já as traz.
+    // A0: a versão dos dados desta instalação e o id de cada aluno (e-mail -> id), também
+    // lidos antes do laço, para o gancho 'schemaMigrations' (o primeiro).
     const restoreContext = {
         keepNetwork: !exact,
         previousNetwork: db.currentNetworkSettings(db.memory),
         keepProtectedConfig: !exact,
         previousProtectedConfig: db.currentProtectedConfig(db.memory),
+        exact,
+        backupSchema: snapshot.data.schemaMeta,
+        previousSchemaMeta: db.currentSchemaMeta(db.memory),
+        previousStudentIds: db.currentStudentIds(db.memory),
     };
     db.COLLECTION_TABLES.forEach(entry => {
         // Tabela derivada (auth_sessions) não tem valor próprio na memória nem no backup:
@@ -895,6 +1009,7 @@ async function applySnapshot(snapshot, { replaceAccounts = false, exact = false 
     // segredo das alternativas da prova quando o do backup falta.
     await db.runAfterRestore(db.memory, restoreContext);
     await db.save();
+    await db.syncSchemaUserVersion();
     return applications;
 }
 
@@ -1489,8 +1604,18 @@ function buildPreview(prepared, snapshot) {
             : countValue(entry, data[entry.collection]);
         // Coleção juntada na restauração (auditoria, documentos legais): a de hoje não sai
         // (decisões §12, sobra do H4a: a linha dizia só os números).
-        return { colecao: entry.collection, rotulo: collectionLabel(entry.collection), backup, atual: currentCount(entry), ...(entry.restore === 'merge' ? { nota: 'mantida e somada à do backup' } : {}) };
+        const kept = backup === null && entry.missing === 'keep';
+        const nota = entry.collection === 'schemaMeta'
+            ? 'a desta instalação fica, e os dados do backup são atualizados para esta versão'
+            : (entry.restore === 'merge' ? 'mantida e somada à do backup' : (kept ? KEPT_MISSING_NOTE : null));
+        return { colecao: entry.collection, rotulo: collectionLabel(entry.collection), backup, atual: currentCount(entry), ...(nota ? { nota } : {}) };
     });
+    // Coleções das funções novas que o backup não traz (missing 'keep', A0): ficam como
+    // estão hoje. A backup-cli mostra a mesma lista antes de confirmar.
+    const ficamComoEstao = contagens.filter(item => {
+        const entry = BACKUP_TABLES.find(table => table.collection === item.colecao);
+        return item.backup === null && entry.missing === 'keep' && entry.collection !== 'schemaMeta' && item.atual > 0;
+    }).map(item => ({ colecao: item.colecao, rotulo: item.rotulo, atual: item.atual }));
     const ficaraoVazias = contagens.filter(item => {
         const entry = BACKUP_TABLES.find(table => table.collection === item.colecao);
         return item.backup === null && item.atual > 0 && missingCollectionOutcome(entry) === 'empty';
@@ -1508,6 +1633,7 @@ function buildPreview(prepared, snapshot) {
         contagens,
         arquivos: prepared.arquivos,
         ficaraoVazias,
+        ficamComoEstao,
         legado: legacy ? { aviso: LEGACY_BACKUP_WARNING } : null,
         contas: {
             noBackup: backupAccounts.length,
@@ -1964,6 +2090,9 @@ async function fileLooksLikeBackup(filePath) {
 
 
 module.exports = {
+    createPreUpdateBackup,
+    writeUpdatesFile,
+    UPDATES_FILE,
     COLLECTIONS, LEGACY_BACKUP_WARNING, SAFETY_BACKUP_FAILED_MESSAGE, BACKUP_BUSY_MESSAGE, UPLOADS_INBOX_DIR,
     RESTORE_DIR, WORK_DIR, RESTORE_TOKEN_TTL_MS, hasLegacyApplications,
     buildDataSnapshot, buildFullDataSnapshot, validateDataSnapshot, restoreDataSnapshot,
@@ -1974,5 +2103,5 @@ module.exports = {
     AUTO_DUE_MS, AUTO_DEFER_MAX_MS, ALERT_LATE_MS, ALERT_GRACE_UPTIME_MS,
     buildFullZipBuffer, streamFullZip, restoreFromFile, prepareRestore, applyPreparedRestore, discardPrepared,
     createRestoreToken, takeRestoreToken, sweepRestoreTokens, cleanWorkDirs, getZipLib,
-    fileLooksLikeBackup, mergeRowsByKey,
+    fileLooksLikeBackup, mergeRowsByKey, COLLECTION_LABELS, collectionLabel, missingCollectionOutcome,
 };

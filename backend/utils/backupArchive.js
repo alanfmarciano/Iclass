@@ -4,7 +4,9 @@
 // backup-cli):
 // - iclass-backup.json: o manifesto { type: 'iclass-backup-manifest', formato: 2,
 //   versaoApp, variante, origem, geradoEm, computador, inclui, arquivos, banco: { arquivo,
-//   bytes, sha256, tabelas } };
+//   bytes, sha256, tabelas }, esquema: { aplicadas: [ids], versaoApp } } (esquema: a
+//   versão dos dados do banco copiado, lida da tabela schema_meta da cópia; campo aditivo
+//   da fase 3, A0: o formato continua 2 e a versão 281029f ignora o campo e restaura);
 // - data/database.db: a cópia do banco feita pelo VACUUM INTO (db.snapshotTo), legível
 //   sozinha (dá para recuperar só descompactando);
 // - content/**, data/alunos/** e cursos_arquivados/** (dados dos cursos excluídos, que já
@@ -24,7 +26,9 @@ const { Transform, pipeline } = require('stream');
 const runtimePaths = require('../runtimePaths.js');
 const zipInspect = require('./zipInspect.js');
 const { resolveInside } = require('./safePath.js');
-const { BACKUP_FORMAT, backupRefusal } = require('./backupSchema.js');
+const { BACKUP_FORMAT, backupRefusal, compareManifestWithDatabase, validateManifest } = require('./backupSchema.js');
+const dbFile = require('./dbFile.js');
+const schemaMigrations = require('./schemaMigrations.js');
 
 const MANIFEST_ENTRY = 'iclass-backup.json';
 const DB_ENTRY = 'data/database.db';
@@ -118,6 +122,9 @@ async function writeBackupZip(output, { dbInfo, variante = 'completo', origem = 
         if (source.completoOnly && variante !== 'completo') continue;
         folders.push({ ...source, files: await listFolderFiles(source.dir, excluded) });
     }
+    // Versão dos dados da cópia (schema_meta). Cópia sem a tabela (o backup
+    // 'pre-atualizacao' de um banco 281029f): base, sem nenhuma aplicada.
+    const esquema = dbInfo.esquema || schemaMigrations.manifestSchema((await schemaMigrations.readSchemaMetaFile(dbInfo.file)).value);
     const manifest = {
         type: MANIFEST_TYPE,
         formato: BACKUP_FORMAT,
@@ -132,6 +139,7 @@ async function writeBackupZip(output, { dbInfo, variante = 'completo', origem = 
             bytes: folders.reduce((sum, folder) => sum + folder.files.reduce((total, file) => total + file.size, 0), 0),
         },
         banco: { arquivo: DB_ENTRY, bytes: dbInfo.bytes, sha256: dbInfo.sha256, tabelas: dbInfo.tabelas },
+        esquema,
     };
     const hash = crypto.createHash('sha256');
     let bytes = 0;
@@ -340,13 +348,32 @@ async function readEntryText(source, directory, entry, maxBytes) {
 }
 
 // Confere um ZIP formato 2 gravado: manifesto e banco presentes e, com checkDbCrc, o
-// banco relido inteiro com o CRC conferido. Devolve o manifesto.
-async function verifyBackupZip(file, { checkDbCrc = false } = {}) {
+// banco relido inteiro com o CRC conferido. deep (A0, o backup 'pre-atualizacao'): também
+// a conferência da backup-cli (verificar): o banco extraído numa pasta temporária, com o
+// quick_check, o tamanho, o SHA-256 e a contagem de cada tabela iguais aos do manifesto.
+// Devolve o manifesto.
+async function verifyBackupZip(file, { checkDbCrc = false, deep = false } = {}) {
     return withZip(file, async (source, directory) => {
         const manifestEntry = directory.entries.find(entry => entry.name === MANIFEST_ENTRY);
         const dbEntry = directory.entries.find(entry => entry.name === DB_ENTRY);
         if (!manifestEntry || !dbEntry) throw new Error(`O ZIP gravado está incompleto (${!manifestEntry ? MANIFEST_ENTRY : DB_ENTRY} ausente): ${file}`);
         const manifest = JSON.parse(await readEntryText(source, directory, manifestEntry, 16 * 1024 * 1024));
+        if (deep) {
+            validateManifest(manifest);
+            const scratch = await fs.promises.mkdtemp(path.join(path.dirname(file), '.conferencia-'));
+            try {
+                const target = path.join(scratch, 'database.db');
+                const stream = await zipInspect.openEntryStream(source, directory, dbEntry);
+                if (!stream) throw new Error(`O ZIP gravado não pôde ser relido: ${file}`);
+                await new Promise((resolve, reject) => {
+                    pipeline(stream, entryChecker(dbEntry), fs.createWriteStream(target), err => (err ? reject(err) : resolve()));
+                });
+                compareManifestWithDatabase(manifest, await dbFile.inspectDatabaseFile(target));
+            } finally {
+                await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => {});
+            }
+            return manifest;
+        }
         if (checkDbCrc) {
             const stream = await zipInspect.openEntryStream(source, directory, dbEntry);
             if (!stream) throw new Error(`O ZIP gravado não pôde ser relido: ${file}`);

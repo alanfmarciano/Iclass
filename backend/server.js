@@ -349,6 +349,22 @@ function resumeSessions(run) {
     return result;
 }
 
+// Depois do init (A0): o console diz o que a atualização fez, e data/backups/
+// atualizacoes.json recebe o histórico (o launcher lê sem abrir o banco). Falha ao gravar
+// o arquivo só avisa.
+function reportSchemaUpdate() {
+    const info = db.schemaBootInfo();
+    if (!info || !info.atualizacao) return;
+    const steps = info.aplicadasAgora.length;
+    if (!info.bancoNovo) {
+        const what = steps ? `${steps} etapa${steps === 1 ? '' : 's'}` : 'nenhuma etapa nova';
+        console.log(`🔄 Dados atualizados para a versão ${info.atualizacao.para || 'atual'}: ${what}${info.atualizacao.backup ? ` (backup de antes: ${info.atualizacao.backup})` : ''}.`);
+    }
+    const meta = db.memory.schemaMeta;
+    require('./utils/backup.js').writeUpdatesFile(meta && Array.isArray(meta.atualizacoes) ? meta.atualizacoes : [])
+        .catch(err => console.warn(`⚠️ Não foi possível gravar data/backups/atualizacoes.json: ${(err && err.code) || (err && err.message) || err}`));
+}
+
 // Estado do servidor antes de atender (H3b, ordem do boot): banco, tempo fora do ar,
 // sessões, migração do fórum, lixeira, devolução do tempo das provas em andamento,
 // gravação, primeira varredura do fim do tempo e heartbeat, nesta ordem. A devolução vem
@@ -358,13 +374,18 @@ function resumeSessions(run) {
 async function prepareServer() {
     // 1) Banco (carga e migrações). A falha aqui sai com o código próprio (H3c,
     // describeBootFailure): banco danificado 3, as outras 1 (o supervisor tenta de novo).
+    // Fase 3 (A0): antes de qualquer gravação o init lê a versão dos dados (schema_meta);
+    // banco de versão mais nova sai com 2; com migração pendente, o backup
+    // 'pre-atualizacao' conferido (fase 'backup-atualizacao'; falha: saída 2 sem gravar
+    // nada) e depois as migrações do registro (fase 'migrando'), gravadas uma vez.
     serverLifecycle.setBootPhase('loading');
     try {
-        await db.init();
+        await db.init({ onPhase: phase => serverLifecycle.setBootPhase(phase) });
     } catch (err) {
         if (err && typeof err === 'object') err.bootStage = 'database';
         throw err;
     }
+    reportSchemaUpdate();
     serverLifecycle.setBootPhase('restoring');
     // Restauração de backup interrompida no meio (o processo caiu durante o applyRestore;
     // decisões §12): o marcador em data/.restauracao/desfazer está lá, e tudo volta ao que
@@ -649,6 +670,17 @@ function describeBootFailure(cause, err, { port = PORT } = {}) {
         return { exitCode: EXIT_CODES.CONFIG, kind: 'listen', message: `⛔ Não foi possível abrir a porta ${port} (${code || detail}). Confira a configuração de rede e abra de novo.` };
     }
     const dbFile = path.join(runtimePaths.DATA_DIR, 'database.db');
+    // Versão dos dados (A0, CONF-16): nada foi gravado em nenhum dos três casos.
+    if (code === 'ICLASS_SCHEMA_NEWER' || code === 'ICLASS_PREUPDATE_BACKUP') {
+        return { exitCode: EXIT_CODES.CONFIG, kind: 'database', message: `⛔ ${detail}` };
+    }
+    if (code === 'ICLASS_MIGRATION_FAILED') {
+        return {
+            exitCode: EXIT_CODES.CONFIG,
+            kind: 'database',
+            message: `⛔ ${detail} Nada foi gravado: os dados continuam como a versão anterior deixou, e o backup de antes da atualização está em data/backups (pre-atualizacao_*). Avise o suporte do IClass.`,
+        };
+    }
     if (DB_CORRUPT_CODES.has(code)) {
         return {
             exitCode: EXIT_CODES.DB_CORRUPT,

@@ -611,8 +611,20 @@ function degradedState() {
 }
 
 // Fases do boot para o /api/health de quem está esperando o servidor: 'loading'
-// (lendo o banco), 'restoring' (sessões e tempo fora do ar), 'checking' (varredura do
-// fim do tempo) e, no fim, ready.
+// (lendo o banco), 'backup-atualizacao' (o backup antes de atualizar os dados, fase 3),
+// 'migrando' (as migrações do registro), 'restoring' (sessões e tempo fora do ar),
+// 'checking' (varredura do fim do tempo) e, no fim, ready. O launcher conhece os nomes
+// (contrato C11 do P6): espera 90 s nas comuns e 10 min nas duas de atualização.
+const BOOT_PHASES = Object.freeze({
+    loading: 'Lendo o banco de dados',
+    'backup-atualizacao': 'Fazendo o backup antes de atualizar os dados',
+    migrando: 'Atualizando os dados para esta versão',
+    restoring: 'Retomando as sessões',
+    checking: 'Conferindo as provas em andamento',
+    ready: 'Pronto',
+});
+const UPDATE_BOOT_PHASES = Object.freeze(['backup-atualizacao', 'migrando']);
+
 function setBootPhase(phase) {
     processState.boot.phase = String(phase || 'loading');
 }
@@ -758,6 +770,8 @@ module.exports = {
     requestShutdown,
     resetProcessState,
     setBootPhase,
+    BOOT_PHASES,
+    UPDATE_BOOT_PHASES,
     setShutdownHandler,
     shutdownRequested,
     supervisorInfo,

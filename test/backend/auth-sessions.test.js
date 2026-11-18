@@ -719,7 +719,7 @@ test('[UC-AUTH-001] restaurar backup zera as sessões pelo gancho de db.afterRes
     assert.equal(entry.backup, false);
     assert.equal(entry.reset, undefined, 'o zeramento não fica na entrada do registro');
     assert.ok(Array.isArray(db.afterRestore));
-    assert.deepEqual(db.afterRestore.map(hook => hook.name).slice(0, 1), ['authSessions']);
+    assert.deepEqual(db.afterRestore.map(hook => hook.name).slice(0, 2), ['schemaMigrations', 'authSessions']);
 
     const studentToken = await studentLogin();
     const adminToken = createAdminSession(db.memory, ADMIN.email);

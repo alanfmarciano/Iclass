@@ -24,6 +24,7 @@ const { logError } = require('./utils/errorLog.js');
 const { syncedFolderInfo } = require('./utils/syncedFolder.js');
 const { clearRevokedSessionReasons, clearSessions, persistedRevocationRows, persistedSessionRows, revokeAdminSessions, revokeStudentSession, sessionRowBelongsTo } = require('./utils/authSessions.js');
 const dbFile = require('./utils/dbFile.js');
+const schemaMigrations = require('./utils/schemaMigrations.js');
 
 function legacyHashPassword(password) {
     const salt = 'senai_salt_4.0_!@#';
@@ -354,6 +355,13 @@ function classStorageKey(cls) {
 // - backup: vai no backup (padrão true);
 // - restore: 'replace' (o backup substitui), 'merge' (junta com a atual), 'keep' (fica
 //   a atual quando falta no backup) ou 'reset' (volta vazia); padrão 'replace';
+// - missing (fase 3, A0): o que a restauração faz quando o backup NÃO traz a coleção.
+//   'keep' fica a atual (coleção de uma função que o backup antigo ainda não tinha:
+//   restaurar um backup de antes da atualização não apaga as tarefas, as conversas ou o
+//   diário criados depois); 'empty' fica vazia. Sem o campo valem as regras de antes
+//   (backupSchema.missingCollectionOutcome: 'replace' fica vazia, 'keep' e 'merge' ficam).
+//   Vale nos dois caminhos: a tela Sistema (backup.js applySnapshot) e a backup-cli, que
+//   copia do banco de antes (o que foi para a quarentena) as coleções 'keep' ausentes;
 // - legacyTable (só 'store'): a tabela antiga que a migração do boot esvazia; continua
 //   sendo criada (schema) e é desta entrada;
 // - rows (só 'derived'): rows(memory) devolve as linhas [chave, texto JSON]. Com restore
@@ -427,6 +435,27 @@ const COLLECTION_TABLES = Object.freeze([
     // regravados a cada save. Na restauração, junta por id: restaurar um backup anterior
     // (ou de versão antiga, sem a coleção) não apaga o texto que os alunos aceitaram.
     tableEntry('legalDocuments', 'legal_documents', 'array', 'id', { restore: 'merge' }),
+    // Fase 3 (fundação A0): as tabelas novas entram todas aqui de uma vez, vazias (CREATE
+    // TABLE IF NOT EXISTS), para as trilhas só escreverem a lógica da sua coleção.
+    // Versão dos dados (P6, utils/schemaMigrations.js): { aplicadas, atualizacoes,
+    // versaoApp }. Vai no backup (o backup diz de que esquema é); na restauração fica a
+    // desta instalação e o gancho 'schemaMigrations' completa as aplicadas e regrava.
+    tableEntry('schemaMeta', 'schema_meta', 'singleton', 'default', { restore: 'keep', missing: 'keep', empty: () => schemaMigrations.emptySchemaMeta() }),
+    // Tarefas e entregas de trabalho (P1). Os arquivos ficam em data/entregas, fora do ZIP.
+    tableEntry('assignments', 'assignments', 'array', 'id', { missing: 'keep' }),
+    tableEntry('assignmentSubmissions', 'assignment_submissions', 'array', 'id', { missing: 'keep' }),
+    // Lápides dos arquivos de entrega removidos (P1): chave fileId, sem id próprio.
+    tableEntry('assignmentFileTombstones', 'assignment_file_tombstones', 'array', 'fileId', { append: true, restore: 'merge' }),
+    // Períodos letivos e dias não letivos (P2).
+    tableEntry('academicTerms', 'academic_terms', 'array', 'id', { missing: 'keep' }),
+    tableEntry('nonSchoolDays', 'non_school_days', 'array', 'id', { missing: 'keep' }),
+    // Diário de classe (P4).
+    tableEntry('classDiary', 'class_diary', 'array', 'id', { missing: 'keep' }),
+    // Grupos, conversas e contatos com responsáveis (P5).
+    tableEntry('classGroups', 'class_groups', 'array', 'id', { missing: 'keep' }),
+    tableEntry('conversations', 'conversations', 'array', 'id', { missing: 'keep' }),
+    tableEntry('conversationMessages', 'conversation_messages', 'array', 'id', { append: true, missing: 'keep' }),
+    tableEntry('guardianContacts', 'guardian_contacts', 'array', 'id', { append: true, missing: 'keep' }),
 ]);
 
 // Tabelas que o registro deixa fora do backup (backup: false): a cópia do banco para o
@@ -521,11 +550,42 @@ function keepProtectedConfig(memory, context = {}) {
     }
 }
 
-// Ganchos pós-restauração, numa declaração só (trilhas A e B da J2): sessões, senhas
-// antigas, rede e configuração protegida (H4a). Cada gancho recebe a memória já
-// restaurada e o contexto da restauração (utils/backup.js applySnapshot). Valem para
-// todos os formatos: JSON, ZIP formato 1 e ZIP formato 2.
+// Alunos da memória com id (e-mail em minúsculas -> id), lidos antes da restauração: o
+// gancho 'schemaMigrations' passa o mapa às migrações e às normalizações
+// (context.previousStudentIds), para o aluno que o backup traz sem id reaproveitar o id do
+// mesmo e-mail (ensureStudentIds, P4-S3). Na backup-cli vem do banco que foi para a
+// quarentena.
+function currentStudentIds(memory = memoryDB) {
+    const ids = new Map();
+    (Array.isArray(memory && memory.students) ? memory.students : []).forEach(student => {
+        if (!student || typeof student.email !== 'string' || typeof student.id !== 'string' || !student.id) return;
+        const email = student.email.trim().toLowerCase();
+        if (email && !ids.has(email)) ids.set(email, student.id);
+    });
+    return ids;
+}
+
+// Versão dos dados de agora (lida antes do laço da restauração): o histórico de
+// atualizações desta instalação fica (schemaMeta tem restore 'keep').
+function currentSchemaMeta(memory = memoryDB) {
+    return memory && memory.schemaMeta !== undefined ? structuredClone(memory.schemaMeta) : undefined;
+}
+
+// Gancho 'schemaMigrations' (A0, CONF-16): as migrações de memória que faltam ao backup
+// (context.backupSchema; sem ele, a base 281029f) e as normalizações de todo boot rodam
+// sobre a memória restaurada, com db.save bloqueado; schemaMeta fica com a lista completa
+// e a auditoria com schema_migrated_on_restore. A volta exata (context.exact) não roda nada.
+function runRestoreSchemaMigrations(memory, context = {}) {
+    return schemaMigrations.afterRestore(memory, context, { guard: guardMigration });
+}
+
+// Ganchos pós-restauração, numa declaração só (trilhas A e B da J2): versão dos dados
+// (fase 3, A0: sempre o primeiro, para os outros já verem os dados no formato de agora),
+// sessões, senhas antigas, rede e configuração protegida (H4a). Cada gancho recebe a
+// memória já restaurada e o contexto da restauração (utils/backup.js applySnapshot e a
+// backup-cli). Valem para todos os formatos: JSON, ZIP formato 1 e ZIP formato 2.
 const AFTER_RESTORE_HOOKS = [
+    { name: 'schemaMigrations', run: runRestoreSchemaMigrations },
     { name: 'authSessions', run: resetAuthSessions },
     { name: 'legacyPasswordHashes', run: memory => upgradeLegacyPasswordHashes(memory) },
     { name: 'networkSettings', run: keepCurrentNetworkSettings },
@@ -731,10 +791,21 @@ async function checkDatabaseIntegrity() {
 
 // Integridade, PRAGMAs e tabelas, uma vez: o init e o primeiro ciclo de gravação esperam.
 // Se falhar (disco), a próxima tentativa recomeça.
+// prepareConnection: só a integridade e as PRAGMAs (o init lê schema_meta e faz o backup
+// 'pre-atualizacao' antes do createTables, que já criaria as tabelas novas no arquivo).
+let connectionPrepared = null;
+function prepareConnection() {
+    if (!connectionPrepared) {
+        connectionPrepared = connectionOpened.then(checkDatabaseIntegrity).then(configureConnection);
+        connectionPrepared.catch(() => { connectionPrepared = null; });
+    }
+    return connectionPrepared;
+}
+
 let connectionReady = null;
 function ensureConnection() {
     if (!connectionReady) {
-        connectionReady = connectionOpened.then(checkDatabaseIntegrity).then(configureConnection).then(createTables);
+        connectionReady = prepareConnection().then(createTables);
         connectionReady.catch(() => { connectionReady = null; });
     }
     return connectionReady;
@@ -1329,8 +1400,114 @@ function rebuildExamApplicationsFromClasses({ backupAt = null } = {}) {
     return { discarded, rebuilt: memoryDB.examApplications.length };
 }
 
-async function init() {
-    // PRAGMAs (busy_timeout, WAL, synchronous) e tabelas do registro.
+// Versão dos dados lida no boot (A0): o que faltava, o que foi aplicado e o backup
+// 'pre-atualizacao' (server.js prepareServer escreve data/backups/atualizacoes.json e o
+// console; o cartão Sobre do A1 lê daqui).
+let bootSchemaInfo = null;
+
+function schemaBootInfo() {
+    return bootSchemaInfo ? structuredClone(bootSchemaInfo) : null;
+}
+
+// Leitura direta do arquivo antes de qualquer gravação do boot: as tabelas que existem
+// (banco novo = nenhuma do registro), a versão dos dados (schema_meta) e o destino
+// externo do backup (config), para o backup 'pre-atualizacao' (a memória ainda não foi
+// carregada).
+async function readBootSchema() {
+    const existing = new Set(await dbFile.tableNames(sqliteDb));
+    const bancoNovo = !COLLECTION_TABLES.some(entry => MEMORY_KINDS.has(entry.kind) && existing.has(entry.table));
+    const stored = await schemaMigrations.readSchemaMetaOn(sqliteDb);
+    let config = null;
+    if (existing.has('config')) {
+        try {
+            const row = await dbFile.getOn(sqliteDb, "SELECT value FROM config WHERE key = 'app_config'");
+            config = row && row.value ? JSON.parse(row.value) : null;
+        } catch (e) { config = null; }
+    }
+    return { bancoNovo, stored, config, plan: schemaMigrations.planSchema(stored.value) };
+}
+
+function runOnConnection(connection, sql, params = []) {
+    return new Promise((resolve, reject) => connection.run(sql, params, err => (err ? reject(err) : resolve())));
+}
+
+// Uma migração de tipo 'sql' (tabelas próprias, kind 'store'): numa transação, dentro da
+// fila de gravação. sql.run/get/all na conexão do banco.
+function runSqlMigration(row) {
+    return writer.runExclusive(async connection => {
+        await runOnConnection(connection, 'BEGIN IMMEDIATE');
+        try {
+            const changed = await guardMigration(row, () => row.run({
+                run: (sql, params = []) => runOnConnection(connection, sql, params),
+                get: (sql, params = []) => dbFile.getOn(connection, sql, params),
+                all: (sql, params = []) => dbFile.allOn(connection, sql, params),
+            }));
+            await runOnConnection(connection, 'COMMIT');
+            return changed;
+        } catch (err) {
+            await runOnConnection(connection, 'ROLLBACK').catch(() => {});
+            throw err;
+        }
+    });
+}
+
+// PRAGMA user_version = quantidade de migrações aplicadas (só espelho; o VACUUM INTO do
+// backup carrega o cabeçalho). Falha não impede nada.
+async function syncSchemaUserVersion() {
+    const meta = schemaMigrations.normalizeSchemaMeta(memoryDB.schemaMeta);
+    const count = meta.aplicadas.length;
+    try {
+        const row = await getSql('PRAGMA user_version');
+        if (row && Number(Object.values(row)[0]) === count) return count;
+        await writer.runExclusive(connection => runOnConnection(connection, `PRAGMA user_version = ${Math.max(0, Math.floor(count))}`));
+    } catch (e) {
+        logError('[BANCO] espelho da versão dos dados (user_version)', e);
+    }
+    return count;
+}
+
+// options (A0, CONF-16):
+// - beforeMigrate(info): o backup 'pre-atualizacao', chamado antes do createTables e de
+//   qualquer gravação quando há migração pendente num banco que não é novo. Sem a opção,
+//   o de utils/backup.js (createPreUpdateBackup); false: sem backup (só testes). A falha
+//   rejeita o init sem gravar nada (saída 2 no boot);
+// - schema: 'boot' (padrão) roda as migrações e as normalizações; 'restore' (backup-cli
+//   depois de trocar o banco) deixa tudo para o gancho 'schemaMigrations';
+// - onPhase(fase): 'backup-atualizacao' e 'migrando' (serverLifecycle.setBootPhase).
+async function init(options = {}) {
+    const schemaMode = options.schema === 'restore' ? 'restore' : 'boot';
+    const onPhase = typeof options.onPhase === 'function' ? options.onPhase : () => {};
+    const startedAt = Date.now();
+    // Integridade e PRAGMAs (busy_timeout, WAL, synchronous).
+    await prepareConnection();
+    // 0. Versão dos dados, direto do arquivo, antes de qualquer gravação (A0).
+    const boot = await readBootSchema();
+    const plan = boot.plan;
+    let preUpdate = null;
+    if (schemaMode === 'boot') {
+        if (plan.unknown.length) {
+            const newer = schemaMigrations.newerDatabaseError(plan);
+            // Bancos de teste de outros ramos: só o aviso.
+            if (process.env.TEST_MODE !== '1') throw newer;
+            console.warn(`⚠️ ${newer.message} (TEST_MODE: seguindo assim mesmo.)`);
+        }
+        if (plan.pending.length && boot.stored.unreadable) {
+            console.warn('⚠️ A linha da versão dos dados (schema_meta) está ilegível: as migrações rodam de novo (são idempotentes).');
+        }
+        if (plan.pending.length && !boot.bancoNovo && options.beforeMigrate !== false) {
+            onPhase('backup-atualizacao');
+            const backupFn = typeof options.beforeMigrate === 'function'
+                ? options.beforeMigrate
+                : info => require('./utils/backup.js').createPreUpdateBackup(info);
+            preUpdate = await backupFn({
+                pendentes: plan.pending.map(row => row.id),
+                de: plan.versaoApp,
+                para: schemaMigrations.appVersion(),
+                config: boot.config,
+            });
+        }
+    }
+    // Tabelas do registro (CREATE TABLE IF NOT EXISTS: as novas nascem vazias).
     await ensureConnection();
 
     // 1. Executa migrações de arquivos JSON legados se houverem
@@ -1495,9 +1672,36 @@ async function init() {
         memoryDB.config.examAnswerSecret = crypto.randomBytes(32).toString('hex');
         needsSave = true;
     }
+    // Migrações do registro (A0, backend/migrations/index.js) que faltam, na ordem, e as
+    // normalizações de todo boot, com db.save bloqueado; tudo entra na mesma gravação das
+    // normalizações acima. Erro numa delas: nada da memória é gravado (saída 2).
+    if (schemaMode === 'boot') {
+        if (plan.pending.length && !boot.bancoNovo) onPhase('migrando');
+        const applied = await schemaMigrations.applyOnBoot(memoryDB, {
+            plan,
+            now: Date.now(),
+            guard: guardMigration,
+            runSql: runSqlMigration,
+            bancoNovo: boot.bancoNovo,
+            preUpdate,
+            startedAt,
+        });
+        if (applied.changed) needsSave = true;
+        bootSchemaInfo = {
+            bancoNovo: boot.bancoNovo,
+            pendentes: plan.pending.map(row => row.id),
+            desconhecidas: plan.unknown.slice(),
+            aplicadasAgora: applied.ran.map(item => item.id),
+            atualizacao: applied.entry,
+            backup: preUpdate,
+        };
+    } else {
+        bootSchemaInfo = { bancoNovo: boot.bancoNovo, pendentes: plan.pending.map(row => row.id), desconhecidas: plan.unknown.slice(), aplicadasAgora: [], atualizacao: null, backup: null, restauracao: true };
+    }
     if (needsSave) {
         await saveToDisk();
     }
+    if (schemaMode === 'boot') await syncSchemaUserVersion();
 
     // 4. Migração das avaliações do disco se não houver nenhuma cadastrada no DB
     if (Object.keys(memoryDB.evaluations).length === 0) {
@@ -1625,7 +1829,33 @@ if (process.env.NODE_TEST_CONTEXT) {
 // desconhecido lança TypeError na hora. Dentro de um pedido, a resposta espera o COMMIT
 // (utils/persistenceContext.js), a não ser com detached: true (presença automática, timers).
 // A promessa rejeita com DbWriteError (code 'ICLASS_DB_WRITE') quando não deu para gravar.
+// Migração do registro rodando (A0): db.save lança erro na hora. A migração é pura; a
+// gravação é uma só, no fim (init ou a restauração).
+// A trava vale só enquanto fn roda: a de memória é síncrona (nenhum outro pedido grava no
+// meio); a de tipo 'sql' (só no boot, sem pedidos) pode devolver promessa.
+let migrationGuard = null;
+
+function guardMigration(row, fn) {
+    const previous = migrationGuard;
+    migrationGuard = row;
+    let result;
+    try {
+        result = fn();
+    } catch (err) {
+        migrationGuard = previous;
+        throw err;
+    }
+    if (result && typeof result.then === 'function') {
+        return Promise.resolve(result).finally(() => { migrationGuard = previous; });
+    }
+    migrationGuard = previous;
+    return result;
+}
+
 function saveToDisk(options) {
+    if (migrationGuard) {
+        throw new Error(`A migração "${migrationGuard.nome}" (${migrationGuard.id}) tentou gravar no banco: migração não pode gravar (a gravação é uma só, no fim).`);
+    }
     const scope = writer.scopeFromOptions(options);
     const detached = !!(options && typeof options === 'object' && options.detached === true);
     return requestSave(scope, { detached });
@@ -1878,6 +2108,24 @@ async function snapshotTo(file) {
     return { ...info, ms };
 }
 
+// Cópia do arquivo como está, para o backup 'pre-atualizacao' (A0): no boot, antes do
+// createTables e antes de a memória ser carregada, sem passar pela fila de gravação (não
+// há nada nela ainda, e o db.save do snapshotTo gravaria a memória vazia). Mesma saída do
+// snapshotTo (sem as sessões, conferida pelo quick_check).
+async function snapshotRawTo(file) {
+    const target = path.resolve(String(file || ''));
+    if (!file || fs.existsSync(target)) throw new Error(`O arquivo da cópia do banco já existe ou não foi informado: ${target}`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const started = Date.now();
+    await prepareConnection();
+    await vacuumExclusive(() => new Promise((resolve, reject) => {
+        sqliteDb.run('VACUUM INTO ?', [target], err => (err ? reject(err) : resolve()));
+    }), { beforeRetry: () => fs.rmSync(target, { force: true }) });
+    await dbFile.clearTablesInCopy(target, TABLES_OUTSIDE_BACKUP);
+    const info = await dbFile.inspectDatabaseFile(target);
+    return { ...info, ms: Date.now() - started };
+}
+
 // Rede de segurança da gravação parcial (H1-c, DES-01): de 10 em 10 min (timer registrado
 // no server.js), se houve gravação parcial desde a última completa, uma gravação completa
 // assim que a fila esvaziar (ou depois de 30 s, na fila mesmo assim). Ela leva ao disco o
@@ -2070,6 +2318,13 @@ module.exports = {
     // consistente pelo VACUUM INTO (H4a).
     readStoredData,
     snapshotTo,
+    snapshotRawTo,
+    // Versão dos dados (A0): o que o boot leu e aplicou, o espelho em user_version e o
+    // que a restauração guarda antes do laço (gancho 'schemaMigrations').
+    schemaBootInfo,
+    syncSchemaUserVersion,
+    currentStudentIds,
+    currentSchemaMeta,
     get dbPath() { return dbPath; },
     save: saveToDisk,
     // Resolve quando toda gravação pedida até agora terminou (com sucesso ou não).
