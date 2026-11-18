@@ -663,19 +663,14 @@ test('[UC-PAPEIS-003] guarda: nenhuma tela do painel usa o papel de professor co
         else if (/\.(js|jsx)$/.test(entry.name) && !/\.test\.(js|jsx)$/.test(entry.name)) files.push(full);
     });
     walk(path.join(ROOT, 'web', 'src'));
-    // Usos permitidos: listas de professores (para atribuir turma ou horário) e a reserva
-    // de permissões do professor quando a sessão gravada é de antes do effectivePermissions.
-    const allowed = [
-        { file: 'web/src/features/admin/TurmasPage.jsx', pattern: /const professors = \(accountsApi\.data \|\| \[\]\)\.filter\(account => account\.role === 'professor'\)/ },
-        { file: 'web/src/features/admin/AssistenteHorariosPage.jsx', pattern: /const professors = \(accountsApi\.data \|\| \[\]\)\.filter\(account => account\.role === 'professor'\)/ },
-        { file: 'web/src/lib/adminPermissions.js', pattern: /^\s*if \(role === 'professor'\) \{$/ },
-    ];
+    // Sem exceções (desenho do P4, UC-PAPEIS-003: "lista de exceções vazia"). As listas de
+    // professores (Turmas, Assistente de horários) usam isProfessorRoleAccount e a reserva
+    // da sessão antiga compara com PROFESSOR_ROLE_ID, os dois em web/src/lib/adminPermissions.js.
     const offenders = [];
     for (const file of files) {
         const rel = path.relative(ROOT, file).split(path.sep).join('/');
         fs.readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
             if (!usesProfessorRoleCheck(line)) return;
-            if (allowed.some(item => item.file === rel && item.pattern.test(line))) return;
             offenders.push(`${rel}:${index + 1}: ${line.trim()}`);
         });
     }

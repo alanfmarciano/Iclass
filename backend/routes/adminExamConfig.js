@@ -44,6 +44,7 @@ const {
     sendRouteError,
 } = require('../middlewares.js');
 const { accountScopeKind } = require('../utils/adminRoles.js');
+const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
 
 const VERSION_LABELS = ['A', 'B', 'C', 'D'];
 const DEFAULT_ONLINE_DURATION_MINUTES = 60;
@@ -407,7 +408,9 @@ function createAdminExamConfigRouter() {
             // que nenhuma tela de polling lê e eram o grosso da resposta (DES-04, DES-13);
             // openReportCount diz quantas contestações estão em aberto. Sem view, nada muda.
             // O modo do teclado (H8b) continua no resumo: o Monitor rotula a coluna por ele.
-            if (String(req.query.view || '') === 'summary') {
+            // Quem chega aqui só pelo Monitor (page.monitor sem page.exams, como o Professor
+            // auxiliar) recebe sempre o resumo: as versões levam o gabarito.
+            if (String(req.query.view || '') === 'summary' || !canAccessAdminPermission(matchedAdmin, 'page.exams')) {
                 return res.json({ success: true, applications: applications.map(applicationSummary) });
             }
             res.json({ success: true, applications });
@@ -529,7 +532,15 @@ function createAdminExamConfigRouter() {
     });
 
     router.post('/api/admin/exam-applications/:applicationId/control', (req, res) => {
-        validateAdmin(req, res, async () => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            // Quem controla a prova só pelo Monitor (page.monitor sem page.exams, como o
+            // Professor auxiliar) recebe a aplicação e a configuração sem as versões (gabarito).
+            const withAnswerKeys = canAccessAdminPermission(matchedAdmin, 'page.exams');
+            const forAccount = (application, onlineConfig) => {
+                if (withAnswerKeys) return { application, config: onlineConfig };
+                const { versionSnapshots, ...configWithoutKeys } = onlineConfig || {};
+                return { application: applicationSummary(application), config: onlineConfig ? configWithoutKeys : null };
+            };
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
@@ -547,7 +558,7 @@ function createAdminExamConfigRouter() {
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) await db.save();
-                return res.json({ success: true, unchanged: true, application, config: cls.onlineExamConfigs?.[application.examKey] || null, finish: null });
+                return res.json({ success: true, unchanged: true, ...forAccount(application, cls.onlineExamConfigs?.[application.examKey] || null), finish: null });
             }
             if (plan.resolve) {
                 try {
@@ -581,7 +592,7 @@ function createAdminExamConfigRouter() {
             // Encerrar com tentativas em andamento resolve entregas (algumas já existiam):
             // gravação completa. As outras transições, parcial.
             await saveApplicationAction({ full: !!plan.resolve });
-            res.json({ success: true, application, config: cls.onlineExamConfigs[application.examKey], finish: processedFinish });
+            res.json({ success: true, ...forAccount(application, cls.onlineExamConfigs[application.examKey]), finish: processedFinish });
         });
     });
 

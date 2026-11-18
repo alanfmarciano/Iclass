@@ -14,8 +14,14 @@
 // revisão do Monitor responde 403 grades_hidden; a lista do Monitor continua com ele.
 //
 // O papel continua oculto na criação de conta (decisão do plano: "Professor auxiliar fica
-// escondido"); mostrá-lo depois é só tirar o oculto do catálogo. A parte de baixo segura
-// que a API também não cria conta com ele nem troca outra conta para ele.
+// escondido"). A parte de baixo segura que a API também não cria conta com ele nem troca
+// outra conta para ele.
+//
+// Ajuste do B1: o Monitor precisa da lista das aplicações, da ação da aplicação (iniciar,
+// pausar, encerrar) e do resumo do encerramento, que pediam page.exams; o auxiliar não
+// conseguia escolher prova nenhuma. Agora essas três aceitam page.monitor e a lista vem
+// sempre resumida para ele (sem as versões, que levam o gabarito). A fila do Dashboard
+// deixa de oferecer pendência de tela que a conta não abre (Resultados, Fórum).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -33,6 +39,7 @@ const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { findAdminRole } = require('../../backend/utils/adminRoles.js');
 const { canReadStudentGrades, roleGrantablePermissions } = require('../../backend/utils/adminPermissions.js');
+const { createExamApplication } = require('../../backend/utils/examApplications.js');
 
 const COURSE = 'curso_a';
 const TOKENS = { admin: 'tok-aux-admin', professor: 'tok-aux-prof', monitor: 'tok-aux-monitor' };
@@ -183,4 +190,84 @@ test('[UC-PAPEIS-001] o papel continua oculto: a API não cria conta com ele nem
     const changed = await as('admin', request(app).post('/api/admin/accounts/update')).send({ email: EMAILS.professor, role: 'monitor' });
     assert.equal(changed.status, 400, JSON.stringify(changed.body));
     assert.equal(db.memory.admins.find(item => item.email === EMAILS.professor).role, 'professor');
+});
+
+test('[UC-PAPEIS-001] Monitor: o professor auxiliar escolhe a prova (lista resumida, sem gabarito), pausa, retoma e vê o resumo do encerramento', async () => {
+    const application = createExamApplication({
+        examKey: 'Avaliacao_P1', courseId: COURSE, studentClass: '1A', status: 'running',
+        config: { versionSnapshots: [{ version: 'A', questions: [{ originalNumber: 1, correctAnswer: 'A', alternatives: [] }] }] },
+    });
+    db.memory.examApplications = [application];
+    db.memory.classes[0].onlineExamConfigs = { Avaliacao_P1: { applicationId: application.id, status: 'running' } };
+    try {
+        const listUrl = `/api/admin/exam-applications?courseId=${COURSE}&studentClass=1A`;
+        // Com view=summary (o polling do Monitor) e sem (o seletor de aplicações): sempre o resumo.
+        for (const url of [`${listUrl}&view=summary`, listUrl]) {
+            const aux = await get('monitor', url);
+            assert.equal(aux.status, 200, JSON.stringify(aux.body));
+            assert.deepEqual(aux.body.applications.map(item => item.id), [application.id]);
+            assert.equal(aux.body.applications[0].versionSnapshots, undefined, 'sem as versões (gabarito)');
+            assert.doesNotMatch(JSON.stringify(aux.body), /correctAnswer/);
+        }
+        // O professor continua recebendo a lista completa sem view=summary.
+        const prof = await get('professor', listUrl).expect(200);
+        assert.equal(prof.body.applications[0].versionSnapshots.length, 1);
+
+        const finish = await get('monitor', `/api/admin/exam-applications/${application.id}/finish-summary`);
+        assert.equal(finish.status, 200, JSON.stringify(finish.body));
+        assert.equal(finish.body.summary.applicationId, application.id);
+
+        const paused = await as('monitor', request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'pause' });
+        assert.equal(paused.status, 200, JSON.stringify(paused.body));
+        assert.equal(db.memory.examApplications[0].status, 'paused');
+        // A resposta do controle também vem sem as versões (gabarito), na aplicação e na configuração.
+        assert.equal(paused.body.application.status, 'paused');
+        assert.doesNotMatch(JSON.stringify(paused.body), /versionSnapshots|correctAnswer/);
+        // A turma lida pelo Monitor (GET /classes) também, para o auxiliar; o professor recebe como antes.
+        const classesAux = await get('monitor', `/api/admin/classes?courseId=${COURSE}&studentClass=1A`).expect(200);
+        assert.equal(classesAux.body[0].onlineExamConfigs.Avaliacao_P1.status, 'paused');
+        assert.doesNotMatch(JSON.stringify(classesAux.body), /versionSnapshots|correctAnswer/);
+        const classesProf = await get('professor', `/api/admin/classes?courseId=${COURSE}&studentClass=1A`).expect(200);
+        assert.equal(classesProf.body[0].onlineExamConfigs.Avaliacao_P1.versionSnapshots.length, 1);
+        // O controle antigo (sem aplicação, server-exam-control) também responde sem o gabarito.
+        const legacy = await as('monitor', request(app).post('/api/admin/server-exam-control')).send({ studentClass: '1A', courseId: COURSE, examKey: 'Avaliacao_P1', action: 'resume' });
+        assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
+        assert.doesNotMatch(JSON.stringify(legacy.body), /versionSnapshots|correctAnswer/);
+        await as('monitor', request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'pause' }).expect(200);
+        await as('monitor', request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'resume' }).expect(200);
+        assert.equal(db.memory.examApplications[0].status, 'running');
+
+        // O resto de exam-applications continua sendo da tela Provas e de Resultados.
+        assert.equal((await get('monitor', `/api/admin/exam-applications/${application.id}`)).status, 403, 'a aplicação inteira traz as versões');
+        assert.equal((await get('monitor', `/api/admin/exam-applications/${application.id}/audit`)).status, 403);
+        const prepare = await as('monitor', request(app).post('/api/admin/exam-applications')).send({ examKey: 'Avaliacao_P1', courseId: COURSE, studentClass: '1A' });
+        assert.equal(prepare.status, 403);
+        const adjust = await as('monitor', request(app).post(`/api/admin/exam-applications/${application.id}/time-adjustment`)).send({ adjustmentMinutes: 5 });
+        assert.equal(adjust.status, 403);
+
+        // Aplicação de turma fora do escopo dele: recusada pelo guarda, como antes.
+        const other = createExamApplication({ examKey: 'Avaliacao_P1', courseId: COURSE, studentClass: '9Z', status: 'running' });
+        db.memory.examApplications.push(other);
+        assert.equal((await as('monitor', request(app).post(`/api/admin/exam-applications/${other.id}/control`)).send({ action: 'pause' })).status, 403);
+        assert.equal(other.status, 'running');
+        const listed = await get('monitor', `/api/admin/exam-applications?view=summary`).expect(200);
+        assert.deepEqual(listed.body.applications.map(item => item.id), [application.id]);
+    } finally {
+        db.memory.examApplications = [];
+        db.memory.classes[0].onlineExamConfigs = {};
+    }
+});
+
+test('[UC-PAPEIS-001] fila do Dashboard: sem pendência de tela que a conta não abre (Resultados, Fórum), como no sino', async () => {
+    db.memory.students.push({ name: 'Caio', email: 'caio@auxiliar.local', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1A', courseId: COURSE }] });
+    try {
+        const url = `/api/admin/dashboard/queue?courseId=${COURSE}&studentClass=1A`;
+        const prof = await get('professor', url).expect(200);
+        assert.ok(prof.body.some(item => item.id === 'sem_avaliacao'), 'o professor continua vendo "Alunos sem nenhuma avaliação"');
+        const aux = await get('monitor', url).expect(200);
+        assert.equal(aux.body.some(item => item.id === 'sem_avaliacao'), false);
+        assert.equal(aux.body.every(item => ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'].includes(item.permissao)), true, JSON.stringify(aux.body));
+    } finally {
+        db.memory.students = db.memory.students.filter(student => student.email !== 'caio@auxiliar.local');
+    }
 });

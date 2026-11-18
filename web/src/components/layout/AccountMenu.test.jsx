@@ -61,3 +61,21 @@ describe('[UC-CONTA-001] avatar e menu da conta', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 })
+
+describe('[UC-CONTA-001] menu da conta em tela estreita', () => {
+  it('a 320 px, o menu que passaria da borda esquerda é deslocado para dentro da tela', async () => {
+    const user = userEvent.setup()
+    const original = HTMLElement.prototype.getBoundingClientRect
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function rect() {
+      if (this.getAttribute('role') === 'menu') return { left: -1, right: 255, top: 0, bottom: 0, width: 256, height: 0, x: -1, y: 0 }
+      return original.call(this)
+    })
+    try {
+      renderMenu()
+      await user.click(screen.getByRole('button', { name: 'Menu da conta: Maria da Silva Souza' }))
+      expect(screen.getByRole('menu', { name: 'Sua conta' }).style.transform).toBe('translateX(9px)')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})

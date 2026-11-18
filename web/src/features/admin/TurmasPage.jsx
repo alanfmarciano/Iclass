@@ -15,7 +15,7 @@ import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
-import { isFullAdmin } from '../../lib/adminPermissions'
+import { isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
 
 const CLASS_PERIODS = ['Manhã', 'Tarde', 'Noite']
 
@@ -74,7 +74,7 @@ export default function TurmasPage() {
   const courses = coursesApi.data || []
   const classes = classesApi.data || []
   const schools = schoolsApi.data || []
-  const professors = (accountsApi.data || []).filter(account => account.role === 'professor')
+  const professors = (accountsApi.data || []).filter(isProfessorRoleAccount)
 
   const filteredCourses = useMemo(() => courses.filter(course => {
     const courseClasses = classes.filter(cls => cls.courseId === course.id)

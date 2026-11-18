@@ -13,6 +13,8 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { csvCell } from '../../lib/csv'
 import { ANONYMIZED_STATUS, sameStatus } from './studentDeletion'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 // Situações que se aplicam pelo lote "Alterar situação" (Anonimizado não: só em Cadastros
@@ -136,6 +138,10 @@ export default function AlunosGlobalPage() {
   const cursosDisponiveis = useMemo(() => (courses || []).filter((c) => !escola || (c.schoolId || 'escola_default') === escola), [courses, escola])
 
   // ---- Seleção e ações em lote ----
+  // Novo aluno, matrícula e situação em lote pedem students.edit (D16 do P4): quem só
+  // consulta (Coordenação, Professor auxiliar) vê a lista e a ficha, sem essas ações.
+  const auth = useAuth()?.auth || {}
+  const canEditStudent = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_EDIT)
   const [selectedIds, setSelectedIds] = useState([])
   const [bulkOpen, setBulkOpen] = useState(null) // 'turma' | 'situacao'
   const [bulkValue, setBulkValue] = useState('')
@@ -239,7 +245,7 @@ export default function AlunosGlobalPage() {
     <div className="max-w-6xl mx-auto space-y-6">
       <PageHeader title="Alunos" subtitle="Todos os alunos da instituição — matricule em qualquer curso ou escola">
         <Button variant="secondary" icon={Download} onClick={exportCsv}>Exportar</Button>
-        <Button icon={UserPlus} onClick={() => nav('/diretorio/novo')}>Novo aluno</Button>
+        {canEditStudent && <Button icon={UserPlus} onClick={() => nav('/diretorio/novo')}>Novo aluno</Button>}
       </PageHeader>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -282,7 +288,7 @@ export default function AlunosGlobalPage() {
         </div>
       )}
 
-      {selectedIds.length > 0 && (
+      {canEditStudent && selectedIds.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 px-4 py-3 rounded-xl bg-primary-soft border border-primary">
           <span className="text-sm font-semibold text-text">{selectedIds.length} aluno(s) selecionado(s)</span>
           <Button size="sm" variant="secondary" onClick={() => openBulk('turma')}>Matricular em turma</Button>
@@ -305,7 +311,7 @@ export default function AlunosGlobalPage() {
       <PageState loading={loading} error={error} onRetry={refetch}>
         <DataTable columns={columns} rows={rows}
           searchKeys={['name', 'nomeSocial', 'email', 'matricula']}
-          selectable selectedIds={selectedIds} onSelectionChange={setSelectedIds}
+          selectable={canEditStudent} selectedIds={selectedIds} onSelectionChange={setSelectedIds}
           paginated pageSize={25}
           rowActions={(r) => openStudent(r.email)} onRowClick={(r) => openStudent(r.email)}
           emptyTitle="Nenhum aluno" emptyDesc="Nenhum aluno corresponde a este filtro." />

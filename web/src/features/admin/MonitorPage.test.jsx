@@ -527,3 +527,41 @@ describe('[UC-PAPEIS-001] MonitorPage · professor auxiliar sem as respostas cor
     expect(screen.queryByRole('button', { name: 'Ver respostas' })).toBeNull()
   })
 })
+
+describe('[UC-PAPEIS-001] MonitorPage · professor auxiliar acompanha a prova sem os botões de nota', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'B' }
+  const group = { questionNumber: 3, questionPosition: 3, count: 1, reasons: { gabarito: 1 }, question: { questionText: 'Enunciado da 3' }, reports: [{ studentName: 'Elisa', studentEmail: 'elisa@x.local' }] }
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [group], totalOpen: 1 }
+      return {}
+    })
+  })
+  afterEach(() => { mocks.auth = {}; cleanup() })
+
+  it('o professor tem Analytics, Corrigir e Anular; o auxiliar pausa, finaliza e descarta contestação, sem esses', async () => {
+    mocks.auth = { accountRole: 'professor' }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Corrigir' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Analytics' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Anular...' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Anular e substituir...' })).toBeInTheDocument()
+    cleanup()
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Descartar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Finalizar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pausar' })).toBeInTheDocument()
+    for (const name of ['Corrigir', 'Analytics', 'Anular...', 'Anular e substituir...']) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+  })
+})

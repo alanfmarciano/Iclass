@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
-vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { accountRole: mocks.role } }) }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.role === 'coordenacao' ? { accountRole: 'coordenacao', readOnly: true, effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.results', 'page.forum', 'page.assignments', 'reports.view'] } : { accountRole: mocks.role } }) }))
 vi.mock('./AlunosPage', () => ({ StudentFormTabs: () => null }))
 vi.mock('./StudentAuditPanel', () => ({ StudentAuditPanel: () => null }))
 // Respostas estáveis entre renderizações (como o useApi real), senão a ficha refaz a
@@ -81,5 +81,30 @@ describe('[UC-ENCERRADOS-001] "Desligar aluno" no lugar de "Excluir aluno"', () 
     expect(screen.queryByRole('button', { name: 'Desligar aluno' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Salvar' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Redefinir senha' })).toBeNull()
+  })
+})
+
+describe('[UC-PAPEIS-001] Cadastro global do aluno: Salvar e Redefinir senha só com students.edit', () => {
+  it('o professor salva e redefine a senha', async () => {
+    mocks.role = 'professor'
+    renderFicha('ana@x.local')
+    expect((await screen.findAllByRole('button', { name: 'Salvar' })).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Redefinir senha' })).toBeTruthy()
+  })
+
+  it('a Coordenação consulta a ficha sem Salvar nem Redefinir senha', async () => {
+    mocks.role = 'coordenacao'
+    renderFicha('ana@x.local')
+    expect(await screen.findByText('Sua conta consulta o cadastro do aluno, sem alterar.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Salvar' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Redefinir senha' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Voltar' })).toBeTruthy()
+  })
+
+  it('a Coordenação em /diretorio/novo não recebe o formulário de cadastro', async () => {
+    mocks.role = 'coordenacao'
+    renderFicha('novo')
+    expect(await screen.findByText('Sua conta não cadastra alunos.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Cadastrar' })).toBeNull()
   })
 })

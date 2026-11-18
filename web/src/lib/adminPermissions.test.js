@@ -115,3 +115,13 @@ describe('[UC-PAPEIS-005] papéis na tela de contas', () => {
     expect(roleLabelOf([], 'zelador')).toBe('Papel desconhecido')
   })
 })
+
+describe('[UC-PAPEIS-003] isProfessorRoleAccount: listas de professores sem comparar o papel na tela', () => {
+  it('só a conta de papel professor; sem papel é administrador', async () => {
+    const { isProfessorRoleAccount } = await import('./adminPermissions')
+    expect(isProfessorRoleAccount({ role: 'professor' })).toBe(true)
+    expect(isProfessorRoleAccount({ role: ' Professor ' })).toBe(true)
+    expect(['admin', 'monitor', 'secretaria', 'coordenacao', ''].map((role) => isProfessorRoleAccount({ role }))).toEqual([false, false, false, false, false])
+    expect(isProfessorRoleAccount(null)).toBe(false)
+  })
+})

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { LogOut, UserRound } from 'lucide-react'
 import { cn } from '../../lib/cn'
@@ -29,7 +29,22 @@ export function AccountMenu({ name = '', email = '', detail = '', accountPath = 
   const [open, setOpen] = useState(false)
   const rootRef = useRef(null)
   const buttonRef = useRef(null)
+  const menuRef = useRef(null)
   const menuId = useId()
+  // O menu abre alinhado à direita do avatar; em tela estreita (320 px) com o avatar longe
+  // da borda direita ele passava da borda esquerda. Ao abrir, desloca o que faltar para
+  // ficar a 8 px da borda.
+  const [shift, setShift] = useState(0)
+
+  useLayoutEffect(() => {
+    if (!open) { setShift(0); return }
+    const rect = menuRef.current?.getBoundingClientRect?.()
+    if (!rect) return
+    const gap = 8
+    const viewport = window.innerWidth || document.documentElement.clientWidth || 0
+    if (rect.left < gap) setShift(gap - rect.left)
+    else if (viewport && rect.right > viewport - gap) setShift(viewport - gap - rect.right)
+  }, [open])
 
   useEffect(() => {
     if (!open) return undefined
@@ -67,7 +82,7 @@ export function AccountMenu({ name = '', email = '', detail = '', accountPath = 
         {children}
       </button>
       {open && (
-        <div id={menuId} role="menu" aria-label="Sua conta" className="absolute right-0 top-full z-50 mt-2 w-64 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-xl">
+        <div ref={menuRef} id={menuId} role="menu" aria-label="Sua conta" style={shift ? { transform: `translateX(${shift}px)` } : undefined} className="absolute right-0 top-full z-50 mt-2 w-64 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-xl">
           <div className="border-b border-border px-4 py-3">
             <p className="truncate text-sm font-semibold text-text">{name || email}</p>
             {name && email && <p className="truncate text-xs text-muted">{email}</p>}

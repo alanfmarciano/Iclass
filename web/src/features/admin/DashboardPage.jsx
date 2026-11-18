@@ -19,6 +19,8 @@ import { DataQualityNote } from './dashboard/DataQualityNote'
 import { csvCell } from '../../lib/csv'
 import { snoozedWith } from './dashboard/snooze'
 import { compareOrdinal } from '../../lib/textSearch'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades } from '../../lib/adminPermissions'
 
 // Dashboard v3 — "fila de trabalho do dia", não relatório em miniatura.
 // São 4 endpoints com volatilidades diferentes; cada seção carrega, falha e
@@ -57,6 +59,17 @@ export default function DashboardPage() {
   const nav = useNavigate()
   const { pref, setPref } = usePreferences()
   const riskCount = pref('dashboard.riskCount', 5)
+  // O Dashboard é de todo papel (page.dashboard), mas cada seção só aparece para quem
+  // abre a tela dela (B1): o calendário pede page.forum (a Secretaria e o Professor
+  // auxiliar não têm), "Ver resultados" page.results, a prova em andamento o Monitor. Quem
+  // não lê nota (Professor auxiliar) vê a média como oculta, não como "sem dado".
+  const auth = useAuth()?.auth || {}
+  const can = (permission) => canAccessAdminPermission(auth, permission)
+  const canCalendar = can(ADMIN_PERMISSIONS.PAGE_FORUM)
+  const canResults = can(ADMIN_PERMISSIONS.PAGE_RESULTS)
+  const canMonitor = can(ADMIN_PERMISSIONS.PAGE_MONITOR)
+  const canChamada = can(ADMIN_PERMISSIONS.PAGE_STUDENTS)
+  const gradesHidden = !canReadStudentGrades(auth)
 
   const ctx = new URLSearchParams({ courseId, studentClass: className }).toString()
   // students-overview já vem escopado do servidor — sem refiltro no cliente.
@@ -64,7 +77,7 @@ export default function DashboardPage() {
   const now = useApi(`/api/admin/dashboard/now?${ctx}`, [], { pollMs: 30000 })
   const queue = useApi(`/api/admin/dashboard/queue?${ctx}`)
   const trends = useApi(`/api/admin/dashboard/trends?${ctx}`)
-  const calendar = useApi(`/api/admin/announcements/calendar?${ctx}`)
+  const calendar = useApi(canCalendar ? `/api/admin/announcements/calendar?${ctx}` : null)
 
   const hoje = new Date()
   const contexto = [
@@ -113,22 +126,23 @@ export default function DashboardPage() {
     const notes = []
     if (semDado > 0) notes.push({
       text: `${semDado} ${semDado === 1 ? 'aluno sem nenhuma chamada registrada — fica' : 'alunos sem nenhuma chamada registrada — ficam'} fora de todos os números acima`,
-      action: { label: 'Lançar chamada', onClick: () => nav('/chamada') },
+      ...(canChamada ? { action: { label: 'Lançar chamada', onClick: () => nav('/chamada') } } : {}),
     })
     const cob = trends.data?.disciplinas?.cobertura
     if (cob && cob.total > 0 && cob.comDisciplina < cob.total) {
       notes.push({ text: `${cob.total - cob.comDisciplina} de ${cob.total} registros de presença sem disciplina — a frequência por matéria cobre só ${cob.comDisciplina}` })
     }
     return notes
-  }, [semDado, trends.data, nav])
+  }, [semDado, trends.data, nav, canChamada])
 
   // Exportar ≠ imprimir: gera CSV do overview (imprimir continua no navegador).
   const exportCsv = () => {
     const rows = overview.data || []
     const esc = csvCell
+    // Sem a coluna Média para quem não lê nota (o servidor já manda a média vazia).
     const linhas = [
-      ['Aluno', 'E-mail', 'Turma', 'Frequência (%)', 'Presenças', 'Aulas', 'Faltas', 'Média', 'Risco'].map(esc).join(';'),
-      ...rows.map((o) => [o.name, o.email, o.className, o.frequencia ?? 'sem dado', o.presentes, o.totalAulas, o.faltas, o.media ?? 'sem prova', o.riscoLevel].map(esc).join(';')),
+      ['Aluno', 'E-mail', 'Turma', 'Frequência (%)', 'Presenças', 'Aulas', 'Faltas', ...(gradesHidden ? [] : ['Média']), 'Risco'].map(esc).join(';'),
+      ...rows.map((o) => [o.name, o.email, o.className, o.frequencia ?? 'sem dado', o.presentes, o.totalAulas, o.faltas, ...(gradesHidden ? [] : [o.media ?? 'sem prova']), o.riscoLevel].map(esc).join(';')),
     ]
     const blob = new Blob(['﻿' + linhas.join('\n')], { type: 'text/csv;charset=utf-8' })
     const a = document.createElement('a')
@@ -151,42 +165,44 @@ export default function DashboardPage() {
       <PageHeader title="Dashboard" subtitle={contexto}>
         <RoomAddressButton />
         <Button variant="secondary" icon={Download} onClick={exportCsv}>Exportar</Button>
-        <Button icon={ClipboardCheck} onClick={() => nav('/chamada')}>Lançar chamada</Button>
+        {canChamada && <Button icon={ClipboardCheck} onClick={() => nav('/chamada')}>Lançar chamada</Button>}
       </PageHeader>
 
       {/* AGORA — some numa linha fora de horário, devolvendo o espaço à fila. */}
       <section aria-label="Agora">
         <SectionState query={now} height={96}>
-          <NowBand now={now.data} onChamada={() => nav('/chamada')} onProva={() => nav('/monitor')} />
+          <NowBand now={now.data} onChamada={canChamada ? () => nav('/chamada') : undefined} onProva={canMonitor ? () => nav('/monitor') : undefined} />
         </SectionState>
       </section>
 
       {/* FILA + AGENDA — no mobile a fila vem antes de tudo: o professor no
           celular quer a pendência, não a tendência. */}
-      <section aria-label="Precisa de você" className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[1.35fr_1fr]">
+      <section aria-label="Precisa de você" className={`grid grid-cols-1 items-start gap-4${canCalendar ? ' lg:grid-cols-[1.35fr_1fr]' : ''}`}>
         <div>
           <SectionLabel>Precisa de você</SectionLabel>
           <SectionState query={queue} height={180}>
             <ActionQueue items={queue.data || []} onOpen={(item) => nav(item.href)} onSnooze={snooze} />
           </SectionState>
         </div>
-        <div>
-          <SectionLabel action={<button onClick={() => nav('/calendario')} className="text-xs font-medium text-primary hover:text-primary-hover">Calendário</button>}>
-            Próximos 7 dias
-          </SectionLabel>
-          <SectionState query={calendar} height={180}>
-            <WeekAgenda events={agenda} onOpen={() => nav('/calendario')} />
-          </SectionState>
-        </div>
+        {canCalendar && (
+          <div>
+            <SectionLabel action={<button onClick={() => nav('/calendario')} className="text-xs font-medium text-primary hover:text-primary-hover">Calendário</button>}>
+              Próximos 7 dias
+            </SectionLabel>
+            <SectionState query={calendar} height={180}>
+              <WeekAgenda events={agenda} onOpen={() => nav('/calendario')} />
+            </SectionState>
+          </div>
+        )}
       </section>
 
       {/* PULSO — 3 números com tendência, não 8 soltos. */}
       <section aria-label="Pulso da turma">
-        <SectionLabel action={<button onClick={() => nav('/resultados')} className="text-xs font-medium text-primary hover:text-primary-hover">Ver resultados</button>}>
+        <SectionLabel action={canResults ? <button onClick={() => nav('/resultados')} className="text-xs font-medium text-primary hover:text-primary-hover">Ver resultados</button> : null}>
           Pulso da turma
         </SectionLabel>
         <SectionState query={trends} height={170}>
-          <PulseGrid trends={trends.data} />
+          <PulseGrid trends={trends.data} gradesHidden={gradesHidden || trends.data?.gradesHidden === true} />
         </SectionState>
       </section>
 
@@ -197,13 +213,13 @@ export default function DashboardPage() {
             Alunos que precisam de atenção
           </SectionLabel>
           <SectionState query={overview} height={200}>
-            <RiskList students={emRisco} semDado={semDado} limiar={disc?.limiar ?? 75} onOpen={openStudent} />
+            <RiskList students={emRisco} semDado={semDado} limiar={disc?.limiar ?? 75} onOpen={openStudent} gradesHidden={gradesHidden} />
           </SectionState>
         </div>
         {/* D5: o recorte por disciplina só aparece com cobertura ≥ 50% dos registros. */}
         {disc?.exibir && disc.itens.length > 0 && (
           <div>
-            <SectionLabel action={<button onClick={() => nav('/chamada')} className="text-xs font-medium text-primary hover:text-primary-hover">Chamada</button>}>
+            <SectionLabel action={canChamada ? <button onClick={() => nav('/chamada')} className="text-xs font-medium text-primary hover:text-primary-hover">Chamada</button> : null}>
               Frequência por disciplina
             </SectionLabel>
             <DisciplineFrequency disciplinas={disc.itens} limiar={disc.limiar} semDisciplina={disc.cobertura.total - disc.cobertura.comDisciplina} />

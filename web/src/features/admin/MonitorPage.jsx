@@ -31,7 +31,7 @@ import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
-import { canReadStudentGrades } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades } from '../../lib/adminPermissions'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -409,6 +409,11 @@ export default function MonitorPage() {
   // "Ver respostas" mostra o gabarito e o acerto de cada questão (é nota): some para quem
   // acompanha a prova sem ler nota (Professor auxiliar; o servidor responde 403).
   const canSeeAnswers = canReadStudentGrades(auth)
+  // Liberar nota, Ver resultados, Analytics e corrigir, anular ou trocar questão mexem em
+  // nota (page.results; trocar também lê o banco de questões, page.exams). O Professor
+  // auxiliar acompanha a prova sem esses botões (o servidor responderia 403).
+  const canResults = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  const canReplaceQuestion = canResults && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS)
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
@@ -1246,10 +1251,10 @@ export default function MonitorPage() {
           <div className="flex flex-wrap gap-2">
             {applicationFinished ? (
               <>
-                <Button icon={CheckCircle2} loading={releaseBusy} onClick={releaseGrades}>Liberar nota para o aluno</Button>
-                <Button variant="secondary" icon={ArrowRight} onClick={goToResults}>Ver resultados</Button>
+                {canResults && <Button icon={CheckCircle2} loading={releaseBusy} onClick={releaseGrades}>Liberar nota para o aluno</Button>}
+                {canResults && <Button variant="secondary" icon={ArrowRight} onClick={goToResults}>Ver resultados</Button>}
                 <Button variant="secondary" icon={History} onClick={openMessageHistory}>Histórico msgs</Button>
-                <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>
+                {canResults && <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>}
               </>
             ) : (
               <>
@@ -1259,7 +1264,7 @@ export default function MonitorPage() {
                 <Button variant="secondary" icon={Clock} onClick={() => addTime()}>+5 min</Button>
                 <Button variant="secondary" icon={Send} onClick={() => broadcast()}>Aviso turma</Button>
                 <Button variant="secondary" icon={History} onClick={openMessageHistory}>Histórico msgs</Button>
-                <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>
+                {canResults && <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>}
                 <Button variant="destructive" icon={Square} onClick={openFinishDecision}>Finalizar</Button>
               </>
             )}
@@ -1293,10 +1298,10 @@ export default function MonitorPage() {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="ghost" icon={Eye} onClick={() => setPreviewIssue(group)}>Ver questão</Button>
-                          <Button size="sm" variant="secondary" icon={Pencil} onClick={() => openCorrection(group)}>Corrigir</Button>
+                          {canResults && <Button size="sm" variant="secondary" icon={Pencil} onClick={() => openCorrection(group)}>Corrigir</Button>}
                           <Button size="sm" variant="secondary" loading={issueBusy === `dismiss-${group.questionNumber}`} onClick={() => dismissReports(group)}>Descartar</Button>
-                          <Button size="sm" variant="secondary" icon={Ban} onClick={() => setAnnulIssue({ group, mode: 'remover_do_total', reason: '' })}>Anular...</Button>
-                          <Button size="sm" icon={Library} onClick={() => openReplacement(group)}>Anular e substituir...</Button>
+                          {canResults && <Button size="sm" variant="secondary" icon={Ban} onClick={() => setAnnulIssue({ group, mode: 'remover_do_total', reason: '' })}>Anular...</Button>}
+                          {canReplaceQuestion && <Button size="sm" icon={Library} onClick={() => openReplacement(group)}>Anular e substituir...</Button>}
                         </div>
                       </div>
                     </div>

@@ -2846,10 +2846,26 @@ router.post('/api/admin/student/certificates/revoke', (req, res) => {
     });
 });
 
+// Versões da prova (versionSnapshots, com o gabarito) só para quem prepara prova
+// (page.exams). As outras contas que leem a turma (Professor auxiliar no Monitor,
+// Secretaria e Coordenação no Dashboard e em Turmas) recebem a configuração sem elas; o
+// painel não as usa (a prova do aluno lê pela rota do aluno). B1, papel "sem notas".
+function _classWithoutAnswerKeys(cls) {
+    if (!cls || !cls.onlineExamConfigs || typeof cls.onlineExamConfigs !== 'object') return cls;
+    const onlineExamConfigs = {};
+    Object.entries(cls.onlineExamConfigs).forEach(([examKey, cfg]) => {
+        if (!cfg || typeof cfg !== 'object') { onlineExamConfigs[examKey] = cfg; return; }
+        const { versionSnapshots, ...rest } = cfg;
+        onlineExamConfigs[examKey] = rest;
+    });
+    return { ...cls, onlineExamConfigs };
+}
+
 // Obter lista completa de turmas cadastradas (administrador)
 router.get('/api/admin/classes', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const classes = readJSON(DB_CLASSES_FILE);
+        const withAnswerKeys = canAccessAdminPermission(matchedAdmin, 'page.exams');
         // Contagem dos professores da turma: papel professor mesmo (isProfessorAccount).
         const professors = (db.memory.admins || []).filter(account => isProfessorAccount(account));
         const students = db.memory.students || [];
@@ -2858,7 +2874,7 @@ router.get('/api/admin/classes', (req, res) => {
         res.json(filterClassesForAdmin(classes, matchedAdmin)
           .filter(cls => (!courseId || String(cls.courseId) === courseId) && (!studentClass || cls.name === studentClass))
           .map(cls => ({
-            ...cls,
+            ...(withAnswerKeys ? cls : _classWithoutAnswerKeys(cls)),
             attendanceConfig: attendanceUtil.effectiveAttendanceConfig(cls),
             studentCount: students.filter(student => studentBelongsToClass(student, cls.name, cls.courseId)).length,
             professorCount: professors.filter(account => adminCanAccessClass(account, cls.name, cls.courseId)).length,
@@ -4005,8 +4021,20 @@ function makeBackup(key, content, isJson = false) {
 // ----------------------------------------------------
 
 // 1. Inicia, pausa, retoma ou encerra um exame de uma turma
+// Resposta do controle da prova para quem só acompanha (page.monitor sem page.exams, como
+// o Professor auxiliar): a aplicação e a configuração sem as versões (gabarito). B1.
+function _examControlView(matchedAdmin, payload) {
+    if (canAccessAdminPermission(matchedAdmin, 'page.exams')) return payload;
+    const strip = value => {
+        if (!value || typeof value !== 'object') return value;
+        const { versionSnapshots, questionReports, ...rest } = value;
+        return rest;
+    };
+    return { ...payload, ...('application' in payload ? { application: strip(payload.application) } : {}), ...('config' in payload ? { config: strip(payload.config) } : {}) };
+}
+
 router.post('/api/admin/server-exam-control', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { studentClass, courseId, examKey, applicationId } = req.body;
         const actionAliases = { start: 'running', pause: 'paused', resume: 'running', finish: 'finished', stop: 'finished' };
         const action = actionAliases[req.body.action] || req.body.action;
@@ -4052,7 +4080,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) db.save();
-                return res.json({ success: true, unchanged: true, application, config: currentConfig });
+                return res.json(_examControlView(matchedAdmin, { success: true, unchanged: true, application, config: currentConfig }));
             }
             if (plan.resolve) {
                 try {
@@ -4083,7 +4111,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             cls.activeExamKey = active ? examKey : (cls.activeExamKey === examKey ? null : cls.activeExamKey);
             cls.activeApplicationId = active ? application.id : (cls.activeApplicationId === application.id ? null : cls.activeApplicationId);
             db.save();
-            return res.json({ success: true, application, config: cls.onlineExamConfigs[examKey] });
+            return res.json(_examControlView(matchedAdmin, { success: true, application, config: cls.onlineExamConfigs[examKey] }));
         }
         const actionStartsExam = action === 'running' || action === 'waiting';
         const hasPreparedSnapshot = currentConfig.activeHistoryId
@@ -4150,7 +4178,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
         }
 
         db.save();
-        res.json({ success: true, config: currentConfig });
+        res.json(_examControlView(matchedAdmin, { success: true, config: currentConfig }));
     });
 });
 
@@ -5440,6 +5468,11 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
+        // Como no sino: só o que a conta consegue abrir (B1). "Alunos sem nenhuma
+        // avaliação" leva a Resultados (page.results) e "Dúvidas sem resposta" ao Fórum
+        // (page.forum); o Professor auxiliar e a Secretaria não abrem essas telas. Para o
+        // administrador e o professor nada muda (eles têm todas).
+        items = items.filter(item => canAccessAdminPermission(matchedAdmin, item.permissao));
         items = items.filter(item => {
             // Item que não se adia (backup falhou ou atrasado, H4b): fica até resolver.
             if (item.adiavel === false) return true;

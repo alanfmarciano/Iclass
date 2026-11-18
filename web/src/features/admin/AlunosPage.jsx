@@ -71,11 +71,17 @@ export default function AlunosPage() {
   const canAudit = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.AUDIT_VIEW)
   const canSecurity = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_SECURITY)
   const canCertificates = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_CERTIFICATES)
+  // Criar, alterar e redefinir a senha do aluno pedem students.edit (D16 do P4): a
+  // Coordenação (só consulta) e o Professor auxiliar não têm, e o servidor responde 403.
+  const canEditStudent = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_EDIT)
+  // O histórico de provas da turma vem de Resultados (page.results): sem ela, nem a
+  // consulta nem o botão Histórico (a Secretaria e o Professor auxiliar).
+  const canResults = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data: students, loading, error, refetch } = useApi(`/api/admin/students?${contextQuery}`)
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
   const { data: courses } = useApi('/api/courses')
-  const submissions = useApi(`/api/admin/submissions?${contextQuery}`)
+  const submissions = useApi(canResults ? `/api/admin/submissions?${contextQuery}` : null)
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(emptyForm())
   const [menuRow, setMenuRow] = useState(null)
@@ -302,7 +308,7 @@ export default function AlunosPage() {
     <div className="max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div><h1 className="text-2xl font-bold text-text">Alunos</h1><p className="text-sm text-muted">{filteredStudents.length} contas em {courseName || activeCourseId} · {activeClassName}</p></div>
-        <Button icon={UserPlus} onClick={() => { setForm({ ...emptyForm(), courseId: activeCourseId, classes: [activeClassName] }); setOpen(true) }}>Novo aluno</Button>
+        {canEditStudent && <Button icon={UserPlus} onClick={() => { setForm({ ...emptyForm(), courseId: activeCourseId, classes: [activeClassName] }); setOpen(true) }}>Novo aluno</Button>}
       </div>
       <PageState loading={loading} error={error} onRetry={refetch}>
         <DataTable columns={columns} rows={filteredStudents.map((s, i) => ({ id: s.email || i, ...s }))}
@@ -328,13 +334,13 @@ export default function AlunosPage() {
           </div>
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, originalEmail: menuRow.email, classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>}
-          <Button variant="secondary" icon={History} onClick={() => { setHistory(menuRow); setMenuRow(null) }}>Histórico</Button>
+          {canEditStudent && !isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, originalEmail: menuRow.email, classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>}
+          {canResults && <Button variant="secondary" icon={History} onClick={() => { setHistory(menuRow); setMenuRow(null) }}>Histórico</Button>}
           {canAudit && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(menuRow); setMenuRow(null) }}>Auditoria</Button>}
           {canSecurity && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
           <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>
-          {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>}
+          {canEditStudent && !isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>}
           {menuRow?.loginProtection && <Button variant="secondary" icon={LockOpen} loading={unlocking} title={UNLOCK_LOGIN_HINT} onClick={() => unlockLogin(menuRow)}>Liberar login</Button>}
           {/* Desligar aluno (H7c): muda a situação; anonimizar ou apagar fica em Cadastros encerrados. */}
           {!isProfessor && menuRow && !isClosedStatus(menuRow.status) && <Button variant="destructive" icon={UserMinus} onClick={() => { setDel(menuRow); setMenuRow(null) }}>Desligar aluno</Button>}
@@ -422,7 +428,7 @@ export default function AlunosPage() {
                 <>
                   <Row label="Unidades concluídas" value={String(academic.progress?.completedCount ?? 0)} />
                   <p className="text-xs text-subtle mt-2 mb-1">Provas realizadas</p>
-                  {academic.submissions?.length ? (
+                  {academic.gradesHidden ? <p className="text-xs text-muted">As notas não aparecem para o seu papel.</p> : academic.submissions?.length ? (
                     <div className="space-y-1">
                       {academic.submissions.map((sb) => (
                         <div key={sb.id} className="flex items-center justify-between gap-2 text-xs rounded-md border border-border p-2">
@@ -489,7 +495,7 @@ export default function AlunosPage() {
             </Section>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-              {!isAnonymizedStatus(profile?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...profile, originalEmail: profile.email, classes: studentClassNames(profile), courseId: ((classes || []).find((c) => studentClassNames(profile).includes(c.name))?.courseId) || activeCourseId, guardian: profile.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setProfile(null) }}>Editar</Button>}
+              {canEditStudent && !isAnonymizedStatus(profile?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...profile, originalEmail: profile.email, classes: studentClassNames(profile), courseId: ((classes || []).find((c) => studentClassNames(profile).includes(c.name))?.courseId) || activeCourseId, guardian: profile.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setProfile(null) }}>Editar</Button>}
               <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(profile); setProfile(null) }}>Observações</Button>
               {canSecurity && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(profile); setProfile(null) }}>Segurança</Button>}
               {canAudit && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(profile); setProfile(null) }}>Auditoria</Button>}

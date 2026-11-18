@@ -45,6 +45,9 @@ export default function AlunoGlobalEditPage() {
   // desligar, como o professor de antes; a Auditoria segue audit.view (contrato C2 do P4).
   const isProfessor = !isFullAdmin(auth)
   const canAudit = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.AUDIT_VIEW)
+  // Salvar, cadastrar e redefinir a senha pedem students.edit (D16 do P4). Quem só
+  // consulta (Coordenação, Professor auxiliar) abre a ficha sem esses botões.
+  const canEditStudent = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.STUDENTS_EDIT)
   const students = useApi('/api/admin/students')
   const { data: classes } = useApi('/api/admin/classes')
   const { data: courses } = useApi('/api/courses')
@@ -111,6 +114,7 @@ export default function AlunoGlobalEditPage() {
   const enrollCount = form ? form.classes.length : 0
   // Cadastro anonimizado não se edita (o servidor responde 409); encerrado não se desliga de novo.
   const anonymized = !isNew && !!form && isAnonymizedStatus(form.status)
+  const canSave = canEditStudent && !anonymized
   const canClose = !isNew && !!form && !isProfessor && !isClosedStatus(student?.status)
   const tabs = [
     { id: 'cadastro', label: 'Cadastro' },
@@ -128,9 +132,9 @@ export default function AlunoGlobalEditPage() {
           <div className="space-y-5">
             <PageHeader title={isNew ? 'Novo aluno' : (displayName(form) || form.name || 'Aluno')} subtitle={isNew ? 'Cadastro global — turmas de qualquer curso' : form.originalEmail}>
               <div className="flex gap-2">
-                {!isNew && !anonymized && <Button variant="secondary" icon={KeyRound} onClick={() => setResetOpen(true)}>Redefinir senha</Button>}
+                {!isNew && canSave && <Button variant="secondary" icon={KeyRound} onClick={() => setResetOpen(true)}>Redefinir senha</Button>}
                 {canClose && <Button variant="destructive" icon={UserMinus} onClick={() => setClosing({ email: form.originalEmail, name: form.name, nomeSocial: form.nomeSocial })}>Desligar aluno</Button>}
-                {!anonymized && <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>}
+                {canSave && <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>}
               </div>
             </PageHeader>
 
@@ -144,20 +148,24 @@ export default function AlunoGlobalEditPage() {
               </div>
             )}
 
+            {!canEditStudent && !anonymized && (
+              <p className="rounded-lg border border-border bg-surface-2 px-4 py-3 text-sm text-muted">{isNew ? 'Sua conta não cadastra alunos.' : 'Sua conta consulta o cadastro do aluno, sem alterar.'}</p>
+            )}
+
             {anonymized && (
               <p className="rounded-lg border border-border bg-surface-2 px-4 py-3 text-sm text-muted">Cadastro anonimizado: os dados pessoais saíram e ele não pode ser editado. As notas, a presença e os certificados continuam com este código.</p>
             )}
 
             {!isNew && <Tabs tabs={tabs} active={tab} onChange={setTab} />}
 
-            {(isNew || tab === 'cadastro') && (
+            {((isNew && canEditStudent) || (!isNew && tab === 'cadastro')) && (
               <>
                 <Card className="p-5">
                   <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} schools={schools || []} multiCourse onToggleClass={toggleClass} passwordField={isNew ? 'studentPassword' : null} passwordLabel="Senha inicial (opcional)" accessibilityReadOnly={isProfessor} />
                 </Card>
                 <div className="flex justify-end gap-2">
-                  <Button variant="ghost" onClick={() => nav('/diretorio')}>Cancelar</Button>
-                  {!anonymized && <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>}
+                  <Button variant="ghost" onClick={() => nav('/diretorio')}>{canSave ? 'Cancelar' : 'Voltar'}</Button>
+                  {canSave && <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>}
                 </div>
               </>
             )}

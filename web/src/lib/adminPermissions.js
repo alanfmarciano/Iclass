@@ -132,6 +132,11 @@ const ALL_ADMIN_PERMISSIONS = new Set([
   ...Object.values(ADMIN_PERMISSIONS),
 ])
 
+// Valor gravado do papel de professor. Comparar o papel com ele fica só aqui
+// (isProfessorRoleAccount e a reserva da sessão antiga, logo abaixo): nas telas, "é
+// administrador" é isFullAdmin e o resto é permissão (guarda UC-PAPEIS-003, sem exceções).
+const PROFESSOR_ROLE_ID = 'professor'
+
 // Papel da conta do painel: sessão sem papel (de antes dos papéis) é administrador.
 export function accountRoleOf(auth) {
   const role = String(auth?.accountRole || '').trim().toLowerCase()
@@ -153,7 +158,7 @@ export function getEffectiveAdminPermissions(auth) {
   if (Array.isArray(auth?.effectivePermissions)) return new Set(auth.effectivePermissions)
   const role = accountRoleOf(auth)
   if (role === 'admin') return new Set(ALL_ADMIN_PERMISSIONS)
-  if (role === 'professor') {
+  if (role === PROFESSOR_ROLE_ID) {
     return new Set([
       ...PROFESSOR_DEFAULT_PERMISSIONS,
       ...(Array.isArray(auth?.additionalPermissions) ? auth.additionalPermissions : []),
@@ -246,6 +251,12 @@ export const ADMIN_ROLE_FALLBACK = Object.freeze([
 // Papel da linha da lista de contas (conta sem papel é administrador).
 export function accountRoleId(account) {
   return String(account?.role || '').trim().toLowerCase() || 'admin'
+}
+
+// Conta da lista de contas que é de professor: as telas que atribuem turma ou horário a
+// professores (Turmas, Assistente de horários) listam só essas. Não é "é administrador".
+export function isProfessorRoleAccount(account) {
+  return accountRoleId(account) === PROFESSOR_ROLE_ID
 }
 
 export function findRole(roles, roleId) {

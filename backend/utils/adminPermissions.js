@@ -280,6 +280,14 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     // O plano dizia ['page.results', 'page.monitor'], o que deixava o professor auxiliar
     // mudar nota; vale o papel (shared_contracts.rbac.papeis: monitor sem notas).
     { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/answer-key-correction$/, permission: 'page.results' },
+    // Monitor (B1, papel Professor auxiliar): a tela escolhe a prova pela lista das
+    // aplicações, inicia, pausa, retoma e encerra pela ação da aplicação e, ao encerrar,
+    // lê o resumo de quem ainda está fazendo a prova. Quem tem só page.monitor recebe a
+    // lista sempre resumida (sem as versões com o gabarito; a rota decide). O mesmo que a
+    // regra antiga de server-exam-control (page.monitor) já deixava fazer sem aplicação.
+    { methods: ['GET'], pattern: /^\/exam-applications$/, permission: ['page.exams', 'page.monitor'] },
+    { methods: ['GET'], pattern: /^\/exam-applications\/[^/]+\/finish-summary$/, permission: ['page.exams', 'page.monitor'] },
+    { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/control$/, permission: ['page.exams', 'page.monitor'] },
     { methods: ['GET', 'POST'], pattern: /^\/exam-applications(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-history(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/release-item$/, permission: 'page.materials' },
