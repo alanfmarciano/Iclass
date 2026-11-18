@@ -400,3 +400,134 @@ test('[UC-ERRO-003] contrato das telas públicas: cadastro (com e sem responsáv
     const joana = ok(await request(app).post('/api/student/login').send({ email: 'joana.lima@teste.local', password: 'senha da Joana' }), 'login depois do cadastro');
     ok(await request(app).post('/api/student/logout').set('x-session-token', joana.body.sessionToken).send({}), 'Sair do aluno');
 });
+
+// ------------------------------------------------------------------ guardas do código das telas (fase 3, C0a)
+
+// Arquivos de código das telas (sem os testes), com o caminho relativo a web/src.
+function screenSources(dir) {
+    const root = path.join(WEB_SRC, dir);
+    const out = [];
+    const walk = current => {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+            const full = path.join(current, entry.name);
+            if (entry.isDirectory()) walk(full);
+            else if (/\.(?:js|jsx)$/.test(entry.name) && !/\.test\.(?:js|jsx)$/.test(entry.name)) {
+                out.push({ file: path.relative(WEB_SRC, full).split(path.sep).join('/'), text: fs.readFileSync(full, 'utf8') });
+            }
+        }
+    };
+    walk(root);
+    return out;
+}
+
+function lineOf(text, index) {
+    return text.slice(0, index).split('\n').length;
+}
+
+// Argumentos de uma chamada a partir do '(' (conta parênteses, ignora o que está entre aspas).
+function callArguments(text, openIndex) {
+    let depth = 0;
+    let quote = null;
+    for (let i = openIndex; i < text.length; i += 1) {
+        const ch = text[i];
+        if (quote) {
+            if (ch === '\\') { i += 1; continue; }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+        if (ch === '(') depth += 1;
+        else if (ch === ')') {
+            depth -= 1;
+            if (depth === 0) return text.slice(openIndex + 1, i);
+        }
+    }
+    return text.slice(openIndex + 1);
+}
+
+// Busca que diferencia acento e ordem que não é a do português (CRIT-07).
+function textSearchViolations({ file, text }) {
+    const found = [];
+    const lowerIncludes = /\.to(?:Locale)?LowerCase\([^()]*\)\s*\.includes\(/g;
+    let match;
+    while ((match = lowerIncludes.exec(text))) found.push(`${file}:${lineOf(text, match.index)} busca com toLowerCase().includes (use matchesSearch)`);
+    const locale = /\.localeCompare\s*\(/g;
+    while ((match = locale.exec(text))) {
+        const args = callArguments(text, match.index + match[0].length - 1);
+        if (!/['"]pt-BR['"]/.test(args)) found.push(`${file}:${lineOf(text, match.index)} localeCompare sem 'pt-BR' (use compareText)`);
+    }
+    return found;
+}
+
+test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem localeCompare sem pt-BR em web/src/features', () => {
+    // A guarda pega os padrões antigos (para não passar por não achar nada).
+    assert.equal(textSearchViolations({ file: 't.jsx', text: "rows.filter((x) => String(x[k]).toLowerCase().includes(q.toLowerCase()))" }).length, 1);
+    assert.equal(textSearchViolations({ file: 't.jsx', text: "`${a} ${b}`.toLocaleLowerCase('pt-BR').includes(query)" }).length, 1);
+    assert.equal(textSearchViolations({ file: 't.jsx', text: 'list.sort((a, b) => a.letter.localeCompare(b.letter))' }).length, 1);
+    assert.equal(textSearchViolations({ file: 't.jsx', text: "list.sort((a, b) => String(a.x || '').localeCompare(String(b.x || '')))" }).length, 1);
+    assert.equal(textSearchViolations({ file: 't.jsx', text: "list.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))" }).length, 0);
+    assert.equal(textSearchViolations({ file: 't.jsx', text: 'matchesSearch([a.name, a.email], query)' }).length, 0);
+
+    const violations = screenSources('features').flatMap(textSearchViolations);
+    assert.deepEqual(violations, [], `use web/src/lib/textSearch.js (normalizeSearch, matchesSearch, compareText):\n${violations.join('\n')}`);
+
+    // A tabela padrão busca e ordena pela regra única.
+    const table = fs.readFileSync(path.join(WEB_SRC, 'components', 'ui', 'Table.jsx'), 'utf8');
+    assert.match(table, /import \{[^}]*\bcompareText\b[^}]*\bmatchesSearch\b[^}]*\} from '..\/..\/lib\/textSearch'/);
+    assert.deepEqual(textSearchViolations({ file: 'components/ui/Table.jsx', text: table }), []);
+});
+
+// Caixas do navegador (window.confirm, prompt e alert) congelam a página (o polling para)
+// e não dizem o que vai acontecer: tela tocada na fase 3 usa o ConfirmDialog
+// (web/src/components/ui/ConfirmDialog.jsx, contrato C12 do P3). As que ainda existem
+// estão na lista abaixo, com quantas há em cada arquivo; a lista só diminui (as do Monitor
+// e de Provas saem no P3, a da Biblioteca e a do Fórum saíram no C0a). Arquivo novo ou
+// chamada nova reprova.
+const NATIVE_DIALOGS_LEFT = {
+    'features/admin/CalendarioPage.jsx': 1,
+    'features/admin/EditorPage.jsx': 2,
+    'features/admin/IdentidadePage.jsx': 1,
+    'features/admin/MonitorPage.jsx': 4,
+    'features/admin/ProvasPage.jsx': 2,
+    'features/admin/ResultadosPage.jsx': 1,
+    'features/admin/SistemaPage.jsx': 2,
+    'features/admin/TurmaPresencaConfig.jsx': 1,
+};
+
+function nativeDialogCalls({ text }) {
+    const calls = [];
+    const pattern = /(^|[^\w.$])(window\.)?(confirm|prompt|alert)\s*\(/g;
+    let match;
+    while ((match = pattern.exec(text))) {
+        const name = match[3];
+        const start = match.index + match[1].length;
+        if (!match[2]) {
+            // 'function confirm(' é uma função da própria tela, não a caixa do navegador;
+            // e, se a tela tem a sua, a chamada sem 'window.' é dela.
+            if (/function\s+$/.test(text.slice(Math.max(0, start - 20), start))) continue;
+            if (new RegExp(`(?:function\\s+${name}\\s*\\(|(?:const|let|var)\\s+${name}\\s*=)`).test(text)) continue;
+        }
+        calls.push(lineOf(text, start));
+    }
+    return calls;
+}
+
+test('[UC-CONFIRMACAO-001] guarda: nenhuma caixa nova do navegador (confirm, prompt, alert) nas telas', () => {
+    assert.deepEqual(nativeDialogCalls({ text: "if (!confirm('Excluir?')) return" }).length, 1);
+    assert.deepEqual(nativeDialogCalls({ text: "const t = window.prompt('Texto')" }).length, 1);
+    assert.deepEqual(nativeDialogCalls({ text: "window.alert('x')" }).length, 1);
+    assert.deepEqual(nativeDialogCalls({ text: 'async function confirm() {}\n<Button onClick={() => confirm()} />' }).length, 0);
+    assert.deepEqual(nativeDialogCalls({ text: 'dialog.confirm(); onConfirm(); setConfirm(null)' }).length, 0);
+
+    const problems = [];
+    for (const source of screenSources('')) {
+        const lines = nativeDialogCalls(source);
+        const allowed = NATIVE_DIALOGS_LEFT[source.file] || 0;
+        if (lines.length > allowed) problems.push(`${source.file}: ${lines.length} (linhas ${lines.join(', ')}); o máximo é ${allowed}`);
+    }
+    assert.deepEqual(problems, [], `use o ConfirmDialog (web/src/components/ui/ConfirmDialog.jsx):\n${problems.join('\n')}`);
+    // A Biblioteca e o Fórum (tocados no C0a) não usam mais as caixas do navegador.
+    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx']) {
+        assert.equal(nativeDialogCalls({ text: fs.readFileSync(path.join(WEB_SRC, file), 'utf8') }).length, 0, file);
+    }
+});

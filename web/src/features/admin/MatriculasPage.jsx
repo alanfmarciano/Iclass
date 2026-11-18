@@ -13,6 +13,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
+import { matchesSearch } from '../../lib/textSearch'
 
 const STATUS = {
   pending: { label: 'Aguardando aprovação', tone: 'warning' },
@@ -43,9 +44,8 @@ export default function MatriculasPage() {
   const requests = requestsApi.data?.requests || []
   const courseClasses = useMemo(() => (classesApi.data || []).filter((item) => item.courseId === courseId && item.name === activeClassName), [classesApi.data, courseId, activeClassName])
   const filtered = useMemo(() => {
-    const term = query.trim().toLowerCase()
-    return requests.filter((request) => (!status || request.status === status) && (!term || [request.studentName, request.studentEmail, request.studentPhone, request.requestedClassName]
-      .some((value) => String(value || '').toLowerCase().includes(term))))
+    return requests.filter((request) => (!status || request.status === status)
+      && matchesSearch([request.studentName, request.studentEmail, request.studentPhone, request.requestedClassName], query))
   }, [requests, query, status])
   const pageSize = 10
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))

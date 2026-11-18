@@ -29,6 +29,7 @@ import {
   runningApplicationOf,
   snapshotsFromHistory,
 } from './examTools'
+import { matchesSearch } from '../../lib/textSearch'
 
 const EXAM_TOKEN_LENGTH = 5
 // Tema da prova e categoria do banco de questões: até 500 caracteres, o teto do servidor
@@ -210,14 +211,13 @@ export default function ProvasPage() {
     return { total: exams.length, active: by.running + by.waiting + by.paused + by.prepared, finished: by.finished, none: by.none, by }
   }, [exams, examStatusMap])
   const boardModules = useMemo(() => {
-    const q = boardQuery.trim().toLowerCase()
     return modulesWithExams.map((mod, index) => {
       const accent = MODULE_ACCENTS[index % MODULE_ACCENTS.length]
       const visibleExams = mod.exams.filter((e) => {
         const st = examBoardStatus(examStatusMap[e.key])
         const okMod = boardModule === 'todos' || mod.id === boardModule
         const okSt = boardStatus === 'todas' || st === boardStatus
-        const okQ = !q || (e.name || '').toLowerCase().includes(q) || (e.key || '').toLowerCase().includes(q)
+        const okQ = matchesSearch([e.name, e.key], boardQuery)
         return okMod && okSt && okQ
       })
       const appliedCount = mod.exams.filter((e) => examBoardStatus(examStatusMap[e.key]) === 'finished').length

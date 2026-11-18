@@ -3,6 +3,7 @@
 
 const { recordAudit, getClientIp, auditTimestamp } = require('./audit.js');
 const { checkBirthDate } = require('./birthDate.js');
+const { normalizeSearch } = require('./textSearch.js');
 
 // Status permitidos para o aluno. "Ativo" é o padrão ao cadastrar.
 const STUDENT_STATUSES = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido'];
@@ -17,8 +18,9 @@ const DEFAULT_STATUS = 'Ativo';
 // 'Bloqueado' não encerra: só suspende o acesso, e o aluno continua na turma.
 // 'Anonimizado' é a situação do cadastro anonimizado (H7c).
 const CLOSED_STUDENT_STATUSES = ['Inativo', 'Concluído', 'Transferido', 'Evadido', 'Anonimizado'];
+// Situação comparada pela mesma normalização da busca (utils/textSearch.js, CRIT-07).
 function foldStatus(value) {
-    return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+    return normalizeSearch(value);
 }
 const CLOSED_STATUS_KEYS = new Set(CLOSED_STUDENT_STATUSES.map(foldStatus));
 function isClosedStudentStatus(status) {

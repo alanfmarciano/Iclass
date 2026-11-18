@@ -10,6 +10,7 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { matchesSearch } from '../../lib/textSearch'
 
 // ---------------------------------------------------------------------------
 // Status exibido por ALUNO. O backend guarda status por AULA (presente/falta/
@@ -241,9 +242,8 @@ export default function ChamadaPage() {
   }, [roster, ui])
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase()
     return roster.filter((s) => {
-      if (q && !dispName(s).toLowerCase().includes(q)) return false
+      if (!matchesSearch(dispName(s), search)) return false
       const u = ui[s.email] || {}
       if (filtro === 'semmarcar') return !s.salvo
       if (filtro === 'atrasados') return u.st === 'a'

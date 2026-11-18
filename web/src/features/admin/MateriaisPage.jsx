@@ -10,6 +10,7 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { compareOrdinal } from '../../lib/textSearch'
 
 const TYPE_ICON = { 'Apostila': BookOpen, 'Prova online': ClipboardList, 'Gabarito': FileCheck2 }
 
@@ -55,7 +56,7 @@ const ACTIVE_EXAM_STATUSES = new Set(['waiting', 'running', 'paused'])
 export function examApplicationState(applications, examKey) {
   const own = (Array.isArray(applications) ? applications : [])
     .filter((application) => application && application.examKey === examKey)
-    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .sort((a, b) => compareOrdinal(b.createdAt, a.createdAt))
   const open = own.find((application) => OPEN_EXAM_STATUSES.has(application.status))
   if (open) return { status: open.status, applicationId: open.id }
   const finished = own.find((application) => application.status === 'finished')

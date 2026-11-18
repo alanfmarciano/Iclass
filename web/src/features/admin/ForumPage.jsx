@@ -17,6 +17,7 @@ import { useToast } from '../../context/ToastProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 import { usePolling } from '../../hooks/usePolling'
 import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM, clampText, formatCount, tooLongMessage } from '../../lib/textLimits'
+import { compareOrdinal, matchesSearch } from '../../lib/textSearch'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -62,6 +63,9 @@ export default function ForumPage() {
   const [tplForm, setTplForm] = useState({ title: '', text: '' })
   const [showTrash, setShowTrash] = useState(false)
   const [purgeTarget, setPurgeTarget] = useState(null)
+  // Edição aberta: { commentId, replyId?, text (o de antes), draft (o que está no campo) }.
+  const [editing, setEditing] = useState(null)
+  const [editSaving, setEditSaving] = useState(false)
 
   const templates = pref('forum.templates', [])
   const lastSeen = pref('forum.lastSeen', null)
@@ -112,14 +116,9 @@ export default function ForumPage() {
     if (c.deleted) return false
     if (filter && c.key !== filter) return false
     if (statusFilter !== 'all' && effectiveStatus(c) !== statusFilter) return false
-    if (search) {
-      const q = search.toLowerCase()
-      const inText = (c.text || '').toLowerCase().includes(q)
-      const inName = (c.studentName || '').toLowerCase().includes(q)
-      if (!inText && !inName) return false
-    }
+    if (search && !matchesSearch([c.text, c.studentName], search)) return false
     return true
-  }).sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')))
+  }).sort((a, b) => compareOrdinal(b.timestamp, a.timestamp))
 
   const stats = useMemo(() => {
     const total = courseComments.length
@@ -154,17 +153,25 @@ export default function ForumPage() {
       setDel(null); load()
     } catch (e) { toast.error(e.message) }
   }
-  async function editText(target) {
-    const text = prompt('Editar texto:', target.text)
-    if (!text || text === target.text) return
-    // O prompt do navegador não tem limite: o teto do servidor (5.000) é conferido aqui,
-    // com o motivo na tela, antes de mandar (H9b).
+  // Edição num diálogo da tela (fase 3: sem o prompt do navegador, que congelava a página).
+  function editText(target) {
+    setEditing({ ...target, draft: target.text || '' })
+  }
+  async function saveEdit() {
+    const target = editing
+    if (!target || editSaving) return
+    const text = target.draft
+    if (!text.trim() || text === target.text) { setEditing(null); return }
+    // Texto antigo maior que o teto aparece inteiro no campo: o teto do servidor (5.000)
+    // é conferido aqui, com o motivo na tela, antes de mandar (H9b).
     if (text.trim().length > FORUM_TEXT_MAX_CHARS) return toast.error(tooLongMessage(text.trim().length, FORUM_TEXT_MAX_CHARS))
+    setEditSaving(true)
     try {
       if (target.replyId) await api.post('/api/forum/reply/edit', { commentId: target.commentId, replyId: target.replyId, courseId: activeCourseId, studentClass: activeClassName, email: auth.email, text })
       else await api.post('/api/forum/comment/edit', { commentId: target.commentId, courseId: activeCourseId, studentClass: activeClassName, email: auth.email, text })
+      setEditing(null)
       load()
-    } catch (e) { toast.error(e.message) }
+    } catch (e) { toast.error(e.message) } finally { setEditSaving(false) }
   }
   async function resolveToggle(c) {
     try { await api.post('/api/admin/forum/resolve', { commentId: c.id, courseId: activeCourseId, studentClass: activeClassName, resolved: effectiveStatus(c) !== 'resolvida' }); load() }
@@ -368,6 +375,14 @@ export default function ForumPage() {
         </div>
       </Modal>
 
+      <Modal open={!!editing} onClose={() => !editSaving && setEditing(null)} title={editing?.replyId ? 'Editar resposta' : 'Editar dúvida'}
+        footer={<>
+          <Button variant="ghost" onClick={() => setEditing(null)} disabled={editSaving}>Cancelar</Button>
+          <Button onClick={saveEdit} loading={editSaving} disabled={!editing?.draft?.trim()}>Salvar</Button>
+        </>}>
+        <Textarea label="Texto da mensagem" value={editing?.draft || ''} onChange={(e) => setEditing((current) => current && { ...current, draft: e.target.value })}
+          maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} autoFocus className="min-h-[140px]" />
+      </Modal>
       <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger title="Excluir mensagem?" description="A mensagem vai para Excluidas e pode ser restaurada." confirmLabel="Excluir" />
       <ConfirmDialog open={!!purgeTarget} onClose={() => setPurgeTarget(null)} onConfirm={purgeItem} danger title="Apagar definitivamente?" description="Remove a mensagem para sempre. Não será possível restaurar." confirmLabel="Apagar de vez" />
     </div>

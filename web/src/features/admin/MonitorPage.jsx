@@ -28,6 +28,7 @@ import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
+import { compareText, matchesSearch } from '../../lib/textSearch'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -501,11 +502,10 @@ export default function MonitorPage() {
     .filter((item) => !['cancelled'].includes(item.status))
     .map((application) => ({ key: application.examKey, application, config: { status: application.status } })), [applications])
   const applicationCatalogGroups = useMemo(() => {
-    const query = applicationSearch.trim().toLocaleLowerCase('pt-BR')
     const groups = new Map()
     applicationCatalog
       .filter((application) => application.status !== 'cancelled')
-      .filter((application) => !query || `${application.studentClass || ''} ${application.examKey || ''} ${examStatusLabel(application.status)}`.toLocaleLowerCase('pt-BR').includes(query))
+      .filter((application) => matchesSearch([application.studentClass, application.examKey, examStatusLabel(application.status)], applicationSearch))
       .forEach((application) => {
         const key = `${application.courseId || ''}::${application.studentClass || 'Sem turma'}`
         if (!groups.has(key)) groups.set(key, { key, className: application.studentClass || 'Sem turma', applications: [] })
@@ -513,7 +513,7 @@ export default function MonitorPage() {
       })
     return [...groups.values()]
       .map((group) => ({ ...group, applications: group.applications.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) }))
-      .sort((a, b) => a.className.localeCompare(b.className, 'pt-BR'))
+      .sort((a, b) => compareText(a.className, b.className))
   }, [applicationCatalog, applicationSearch])
 
   useEffect(() => {
@@ -1443,7 +1443,7 @@ export default function MonitorPage() {
           </div>
           <p className="text-xs text-subtle">O tempo extra compensa os alunos que já tinham respondido à questão anulada.</p>
           <div className="max-h-[380px] space-y-2 overflow-auto">
-            {bankQuestions.filter((question) => !replaceIssue.search || String(question.questionText || '').toLowerCase().includes(replaceIssue.search.toLowerCase())).map((question) => (
+            {bankQuestions.filter((question) => matchesSearch(question.questionText, replaceIssue.search)).map((question) => (
               <label key={question.key} className={`block cursor-pointer rounded-lg border p-3 ${replaceIssue.bankQuestionKey === question.key ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}>
                 <div className="flex items-start gap-3">
                   <input type="radio" name="replacement-question" className="mt-1" checked={replaceIssue.bankQuestionKey === question.key} onChange={() => setReplaceIssue((current) => ({ ...current, bankQuestionKey: question.key }))} />
@@ -1451,7 +1451,7 @@ export default function MonitorPage() {
                 </div>
               </label>
             ))}
-            {bankQuestions.filter((question) => !replaceIssue.search || String(question.questionText || '').toLowerCase().includes(replaceIssue.search.toLowerCase())).length === 0 && (
+            {bankQuestions.filter((question) => matchesSearch(question.questionText, replaceIssue.search)).length === 0 && (
               <EmptyState icon={Library} title="Nenhuma questão compatível no banco" description="Importe ou crie questões em Provas antes de fazer a substituição." />
             )}
           </div>

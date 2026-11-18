@@ -10,6 +10,7 @@ import { Select } from '../../components/ui/Select'
 import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useApi } from '../../hooks/useApi'
+import { matchesSearch, normalizeSearch } from '../../lib/textSearch'
 import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
@@ -21,9 +22,8 @@ function isDeleted(course) {
   return course?.deleted === true || course?.status === 'deleted' || course?.status === 'inactive' || !!course?.deletedAt
 }
 
-function normalize(value) {
-  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-}
+// Texto sem acento e sem maiúscula: a regra única da busca (lib/textSearch.js, CRIT-07).
+const normalize = normalizeSearch
 
 function canonicalClassPeriod(value) {
   return CLASS_PERIODS.find(period => normalize(period) === normalize(value)) || 'Manhã'
@@ -76,7 +76,6 @@ export default function TurmasPage() {
   const filteredCourses = useMemo(() => courses.filter(course => {
     const courseClasses = classes.filter(cls => cls.courseId === course.id)
     const school = schools.find(item => item.id === course.schoolId)
-    const query = normalize(search)
     if (statusFilter === 'active' && isDeleted(course)) return false
     if (statusFilter === 'deleted' && !isDeleted(course)) return false
     if (schoolFilter && course.schoolId !== schoolFilter) return false
@@ -85,7 +84,7 @@ export default function TurmasPage() {
       if (!professor || !hasCourseAccess(professor, course)) return false
     }
     if (onlyUnassigned && !courseClasses.some(cls => Number(cls.professorCount || 0) === 0)) return false
-    if (query && !normalize(`${course.name} ${course.id} ${course.description || ''} ${school?.name || ''} ${courseClasses.map(cls => cls.name).join(' ')}`).includes(query)) return false
+    if (search && !matchesSearch([course.name, course.id, course.description, school?.name, courseClasses.map(cls => cls.name)], search)) return false
     return true
   }), [courses, classes, schools, professors, search, statusFilter, schoolFilter, professorFilter, onlyUnassigned])
 

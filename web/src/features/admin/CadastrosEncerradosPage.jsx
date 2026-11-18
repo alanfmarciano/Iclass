@@ -19,6 +19,7 @@ import {
   STUDENT_ANONYMIZE_KEEPS, STUDENT_ANONYMIZE_REMOVES, STUDENT_DB_LEFTOVER_NOTE, STUDENT_DELETE_KEEPS, STUDENT_DELETE_REMOVES,
   backupReminder, sameStatus,
 } from './studentDeletion'
+import { matchesSearch } from '../../lib/textSearch'
 
 // Cadastros encerrados (H7c; FUN-03, decisão 4 do Alan), só do administrador. Lista quem
 // foi desligado (Inativo, Transferido, Evadido, Concluído) e os anonimizados, do mais
@@ -73,14 +74,13 @@ export default function CadastrosEncerradosPage() {
   const items = useMemo(() => (Array.isArray(closed.data?.items) ? closed.data.items : []), [closed.data])
   const years = minYears === '' ? null : Math.max(0, Number(minYears) || 0)
   const filtered = useMemo(() => {
-    const term = query.trim().toLowerCase()
     return items.filter((row) => {
       if (status && !sameStatus(row.status, status)) return false
       if (years !== null) {
         const age = yearsSince(row.since, now)
         if (age === null || age < years) return false
       }
-      if (term && ![row.name, row.nomeSocial, row.email, row.matricula].some((value) => String(value || '').toLowerCase().includes(term))) return false
+      if (!matchesSearch([row.name, row.nomeSocial, row.email, row.matricula], query)) return false
       return true
     })
   }, [items, status, years, query, now])

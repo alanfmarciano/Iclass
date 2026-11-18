@@ -6,6 +6,8 @@
 // - apagar de vez: POST /api/admin/students/purge (a cascata do antigo delete-student).
 // Se uma rota mudar, mude aqui e as linhas UC-NOTAS-004 e UC-ENCERRADOS-* da matriz.
 
+import { normalizeSearch } from '../../lib/textSearch'
+
 // Situações de cadastro encerrado que o "Desligar aluno" oferece (Inativo é o padrão).
 export const CLOSE_STATUS_OPTIONS = ['Inativo', 'Transferido', 'Evadido', 'Concluído']
 // Situação do cadastro anonimizado: só aparece em Cadastros encerrados, nunca no seletor.
@@ -39,7 +41,7 @@ export function backupReminder(lastBackupAt) {
 // diferenciar acento nem maiúscula: "Concluido" de banco antigo também conta.
 const CLOSED_KEYS = new Set([...CLOSE_STATUS_OPTIONS, ANONYMIZED_STATUS].map(foldStatus))
 function foldStatus(value) {
-  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+  return normalizeSearch(value)
 }
 export function isClosedStatus(status) {
   return CLOSED_KEYS.has(foldStatus(status))
