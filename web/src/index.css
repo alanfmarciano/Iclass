@@ -107,6 +107,19 @@ button { -webkit-tap-highlight-color: transparent; }
 .prose-iclass table { border-collapse: collapse; width: 100%; margin: 1em 0; }
 .prose-iclass th,.prose-iclass td { border: 1px solid var(--border); padding: .5em .7em; text-align: left; }
 .prose-iclass img { max-width: 100%; height: auto; border-radius: 12px; display: block; margin: 1em auto; border: 1px solid var(--border); }
+.prose-iclass .iclass-minigame { margin: 1.2em 0; padding: .9em 1em; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-2); }
+.prose-iclass .iclass-minigame-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .6em; }
+.prose-iclass .iclass-minigame-title { font-weight: 700; flex: 1 1 14em; min-width: 0; }
+.prose-iclass .iclass-minigame-source { display: none; }
+.prose-iclass .iclass-minigame-btn { border: 0; border-radius: 10px; padding: .45em 1em; font-weight: 700; background: var(--primary); color: #fff; cursor: pointer; }
+.prose-iclass .iclass-minigame-btn.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.prose-iclass .iclass-minigame-btn:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.prose-iclass .iclass-minigame-btn:disabled { opacity: .6; cursor: progress; }
+.prose-iclass .iclass-minigame-status { font-size: .9em; color: var(--text-muted); }
+.prose-iclass .iclass-minigame-stage { margin-top: .8em; background: #fff; border-radius: 12px; overflow: hidden; }
+.prose-iclass .iclass-minigame-stage:fullscreen { border-radius: 0; }
+.prose-iclass .iclass-minigame-frame { display: block; width: 100%; height: min(80vh, 760px); border: 0; }
+.prose-iclass .iclass-minigame-stage:fullscreen .iclass-minigame-frame { height: 100vh; }
 .wysiwyg-editor { overflow-wrap: anywhere; }
 .wysiwyg-editor:empty::before { content: 'Digite o conteúdo da apostila...'; color: var(--text-subtle); }
 .wysiwyg-editor:focus { min-height: 520px; }

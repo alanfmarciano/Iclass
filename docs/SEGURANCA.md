@@ -26,6 +26,8 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 | CSV injection | `csvSafe()` neutraliza fórmulas (`= + - @`) e escapa delimitadores na exportação de notas | `routes/admin.js` |
 | Troca de senha | Exige senha atual (fora da troca obrigatória inicial `mustChangePassword`) | `routes/adminAccounts.js` |
 | Seed/reset | Só sob `TEST_MODE=1` | `routes/testmode.js` |
+| Imagens das apostilas | `/imagens/<curso>/cap<N>/<arquivo>` só serve png/jpg/gif/webp/svg de `content/imagens/`, recusa segmentos que começam com `.`, exige sessão e responde com `nosniff` e CSP `sandbox` (SVG sem scripts) | `sendContentImage` em `server.js` |
+| Minigames | `/minigames/<nome>.html` exige sessão por cabeçalho, sai como `text/plain` com `nosniff` e CSP `sandbox`; o leitor monta o jogo em `iframe sandbox="allow-scripts"` via `srcdoc` com CSP própria (sem rede, sem acesso à página, ao token ou ao `localStorage`) | `sendMinigame` em `server.js`, `web/src/lib/minigames.js` |
 | Integridade de build | Servidor recusa iniciar com build ausente/divergente | `utils/buildIntegrity.js` |
 
 ## Regras ao desenvolver
@@ -35,6 +37,7 @@ Rede local de sala de aula: os "atacantes" plausíveis são alunos na mesma LAN 
 - Nunca sirva arquivo por concatenação de path — use `safePath`.
 - Nunca coloque senha em query string ou em resposta.
 - Sanitize qualquer HTML derivado de Markdown (`marked` + `dompurify`).
+- Script de conteúdo (minigame) só roda em `iframe` com `sandbox="allow-scripts"` e sem `allow-same-origin`. Nunca some `allow-same-origin` a esse iframe: o jogo passaria a ler o token do aluno.
 - Ao exportar dados tabulares, passe pelos utilitários de escape.
 
 ## Histórico de correções

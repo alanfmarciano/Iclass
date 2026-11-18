@@ -13,4 +13,23 @@ describe('markdownToHtml', () => {
     expect(html).toContain('href="https://example.com"')
     expect(html).toContain('src="/uploads/foto.png"')
   })
+
+  it('transforma o parágrafo com link de minigame num bloco próprio', () => {
+    const html = markdownToHtml('Texto antes.\n\n👉 [Abrir o jogo](minigames/SREDS_1_cap1_servidor-dhcp.html)\n\nTexto depois.')
+    expect(html).toContain('<div class="iclass-minigame">')
+    expect(html).toContain('href="/minigames/SREDS_1_cap1_servidor-dhcp.html"')
+    expect(html).not.toMatch(/<p>[^<]*<a href="\/minigames/)
+    expect(html).toContain('<p>Texto antes.</p>')
+  })
+
+  it('não transforma links que não são minigames válidos', () => {
+    const html = markdownToHtml('[outro](minigames/../segredo.html) [pagina](paginas/x.html)')
+    expect(html).not.toContain('iclass-minigame')
+  })
+
+  it('mantém imagens em subpastas e SVG no caminho de imagens', () => {
+    const html = markdownToHtml('![agenda](imagens/fecop/cap1/agenda.svg)')
+    expect(html).toContain('src="/imagens/fecop/cap1/agenda.svg"')
+  })
 })
+

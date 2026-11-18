@@ -1,5 +1,6 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { minigameNameFromHref } from './minigames'
 
 const SAFE_URL_RE = /^(https?:|mailto:|tel:|#|\/)/i
 const SAFE_IMAGE_DATA_RE = /^data:image\/(png|jpe?g|gif|webp);base64,/i
@@ -62,6 +63,18 @@ function cleanGeneratedHtml(html) {
     if (href) anchor.setAttribute('href', href)
     else anchor.removeAttribute('href')
     if (anchor.getAttribute('target') === '_blank') anchor.setAttribute('rel', 'noopener noreferrer')
+  })
+
+  // Um parágrafo com o link de um minigame (minigames/<nome>.html) vira um
+  // bloco próprio. O leitor do aluno monta ali o jogo (lib/minigames.js).
+  // Fica um <div> e não um <p> para o bloco não entrar nas anotações.
+  root.querySelectorAll('p').forEach((paragraph) => {
+    const links = Array.from(paragraph.querySelectorAll('a')).filter((anchor) => minigameNameFromHref(anchor.getAttribute('href')))
+    if (links.length !== 1) return
+    const block = doc.createElement('div')
+    block.className = 'iclass-minigame'
+    while (paragraph.firstChild) block.appendChild(paragraph.firstChild)
+    paragraph.replaceWith(block)
   })
 
   return DOMPurify.sanitize(root.innerHTML, {

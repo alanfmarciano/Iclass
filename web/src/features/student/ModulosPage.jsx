@@ -9,6 +9,7 @@ import { Modal, ConfirmDialog } from '../../components/ui/Modal'
 import { Textarea } from '../../components/ui/Textarea'
 import { api } from '../../lib/api'
 import { markdownToHtml } from '../../lib/contentMarkdown'
+import { mountMinigames } from '../../lib/minigames'
 import { useApi } from '../../hooks/useApi'
 import { useToast } from '../../context/ToastProvider'
 import { useStudent } from './useStudent'
@@ -68,6 +69,12 @@ export default function ModulosPage() {
       .then((text) => setCourseData(parseDataJs(text)))
       .catch((e) => setDataError(e))
   }, [courseId, studentClass])
+
+  // Monta os minigames da apostila aberta (blocos .iclass-minigame do HTML).
+  useEffect(() => {
+    if (!openUnit || !html) return
+    mountMinigames(articleRef.current, (name) => api.get(`/minigames/${encodeURIComponent(name)}`, { raw: true }))
+  }, [openUnit, html])
 
   const released = (status.data && status.data.releasedItems) || {}
   const completed = (progress.data && progress.data.completedUnits) || {}
