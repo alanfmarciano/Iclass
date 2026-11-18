@@ -567,6 +567,10 @@ function buildStudentDataExport(memory, email, { audience = 'aluno', keystrokes 
         ? studentData.exportStudentDataSections(memory, studentData.studentContextFrom(student, ownership), audience)
         : {};
     Object.keys(extra).forEach(key => { data[key] = extra[key]; });
+    // Nome em português e colunas de cada seção nova, para a versão para imprimir (só
+    // quando há seção nova: sem handler, o arquivo é o de antes).
+    const extraSections = studentData.studentDataSectionsMeta(extra);
+    if (extraSections.length) data.extraSections = extraSections;
     data.examTitles = examTitlesSection(memory, student, data);
     data.counts = sectionCounts(data, Object.keys(extra));
     return data;

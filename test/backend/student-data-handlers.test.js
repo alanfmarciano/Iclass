@@ -107,7 +107,12 @@ test('[UC-FUNDACAO-003] registro: coleção e nome obrigatórios, funções de v
     assert.throws(() => handlers.registerStudentDataHandler({ collection: 'nova', label: 'Nova', exportKey: 'forum', exportSection: () => [] }), /já existe em Meus dados/);
     // O B16 passa o certificado ao handler assim.
     keep(handlers.registerStudentDataHandler({ collection: 'certificates', label: 'Certificados', replaceCore: true, exportSection: () => ['novo'] }));
-    assert.deepEqual(handlers.studentDataLabels(), { certificates: 'Certificados' });
+    // Seção de hoje trocada por replaceCore já tem nome na tela: fica fora de extraSections.
+    assert.deepEqual(handlers.studentDataSectionsMeta({ certificates: ['novo'] }), []);
+    assert.throws(() => handlers.registerStudentDataHandler({ collection: 'y', label: 'Y', printColumns: [] }), /lista de colunas/);
+    assert.throws(() => handlers.registerStudentDataHandler({ collection: 'y', label: 'Y', printColumns: [{ field: 'a' }] }), /sem field ou label/);
+    assert.throws(() => handlers.registerStudentDataHandler({ collection: 'y', label: 'Y', printColumns: [{ field: 'a', label: 'A', format: 'cor' }] }), /formato 'cor'/);
+    assert.throws(() => handlers.registerStudentDataHandler({ collection: 'nova', label: 'Nova', exportKey: 'extraSections', exportSection: () => [] }), /já existe em Meus dados/);
     // Mesma coleção de novo troca o handler.
     keep(handlers.registerStudentDataHandler({ collection: 'certificates', label: 'Certificados (2)', replaceCore: true }));
     assert.equal(handlers.studentDataHandlers().length, 1);
@@ -189,6 +194,99 @@ test('[UC-FUNDACAO-003] Cadastros encerrados e Meus dados trazem a coleção nov
     assert.ok(!('entregasTeste' in without.counts));
 });
 
+test('[UC-FUNDACAO-003] Meus dados leva o nome e as colunas da seção nova (extraSections); Cadastros encerrados leva o nome da contagem (countLabels)', async () => {
+    registerTestHandler({ printColumns: [{ field: 'tarefa', label: 'Tarefa' }, { field: 'texto', label: 'Texto', format: 'text' }] });
+    const forStudent = buildStudentDataExport(db.memory, ANA, { audience: 'aluno', now: NOW });
+    assert.deepEqual(forStudent.extraSections, [{ key: 'entregasTeste', label: 'Entregas de teste', columns: [
+        { field: 'tarefa', label: 'Tarefa', format: 'text' }, { field: 'texto', label: 'Texto', format: 'text' },
+    ] }]);
+    const keys = Object.keys(forStudent);
+    assert.equal(keys.indexOf('extraSections'), keys.indexOf('entregasTeste') + 1);
+    assert.ok(!('extraSections' in forStudent.counts));
+    const route = await request(app).get('/api/admin/students/closed').set(adminHeaders());
+    assert.deepEqual(route.body.countLabels, { entregasTeste: 'Entregas de teste' });
+    // Sem handler, nada disso aparece (a saída de hoje).
+    while (cleanups.length) cleanups.pop()();
+    assert.ok(!('extraSections' in buildStudentDataExport(db.memory, ANA, { audience: 'aluno', now: NOW })));
+    const plain = await request(app).get('/api/admin/students/closed').set(adminHeaders());
+    assert.ok(!('countLabels' in plain.body));
+});
+
+test('[UC-FUNDACAO-003] contagem com replaceCore substitui a de hoje igual em Cadastros encerrados, no anonimizar e no apagar', async () => {
+    db.memory.certificates = [{ id: 'c1', studentEmail: BIA, code: 'IC-1' }, { id: 'c2', studentEmail: CAIO, code: 'IC-2' }];
+    // Como o B16 vai contar o certificado: pelo handler, no lugar da contagem de hoje.
+    keep(handlers.registerStudentDataHandler({
+        collection: 'certificates',
+        label: 'Certificados',
+        replaceCore: true,
+        count: (memory, aluno) => (memory.certificates || []).filter(item => aluno.owns(item.studentEmail, item, 'renamed')).length,
+    }));
+    const rows = closedStudentRows(db.memory, { sinceOf: student => student.statusChangedAt || null });
+    assert.deepEqual(rows.map(row => [row.email, row.counts]), [
+        [BIA, { submissions: 0, attendance: 0, certificates: 1 }],
+        [CAIO, { submissions: 0, attendance: 0, certificates: 1 }],
+    ]);
+    const route = await request(app).get('/api/admin/students/closed').set(adminHeaders());
+    assert.ok(!('countLabels' in route.body), 'a contagem de hoje já tem nome na tela');
+    const anonymized = await request(app).post('/api/admin/students/anonymize').set(adminHeaders())
+        .send({ email: BIA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    assert.equal(anonymized.status, 200, JSON.stringify(anonymized.body));
+    assert.equal(anonymized.body.kept.certificates, 1);
+    const purged = await request(app).post('/api/admin/students/purge').set(adminHeaders())
+        .send({ email: CAIO, confirm: 'APAGAR', reason: 'Pedido do titular' });
+    assert.equal(purged.status, 200, JSON.stringify(purged.body));
+    assert.equal(purged.body.removed.certificates, 1);
+});
+
+test('[UC-FUNDACAO-003] handler que falha no anonimizar ou no apagar: a memória volta inteira, nada é gravado e o pedido é recusado', async () => {
+    db.memory.submissions = [{ id: 's1', examKey: 'P1', score: 70, student: { name: 'Bia Lima', email: BIA, studentClass: '1DES', courseId: 'DES' }, timestamp: new Date(NOW - 15 * DAY).toISOString() }];
+    db.memory.attendance = [{ id: 'a1', studentEmail: CAIO, date: '2026-10-01', studentClass: '1DES', courseId: 'DES', aulas: [] }];
+    db.memory.sessions[BIA] = { token: 'x', createdAt: NOW };
+    const savesBefore = [];
+    const originalSave = db.save;
+    db.save = (...args) => { savesBefore.push(args); return originalSave.apply(db, args); };
+    try {
+        registerTestHandler();
+        // Um handler depois do de teste, que falha: o de teste já mudou entregasTeste.
+        keep(handlers.registerStudentDataHandler({
+            collection: 'quebra',
+            label: 'Quebra',
+            anonymize() { throw new Error('falha de propósito'); },
+            purge() { throw new Error('falha de propósito'); },
+        }));
+        const before = structuredClone(Object.fromEntries(Object.entries(db.memory).filter(([, value]) => typeof value !== 'function')));
+        const anonymized = await request(app).post('/api/admin/students/anonymize').set(adminHeaders())
+            .send({ email: BIA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+        assert.equal(anonymized.status, 500, JSON.stringify(anonymized.body));
+        assert.equal(anonymized.body.code, 'student_data_handler_failed');
+        assert.match(anonymized.body.error, /Nada foi alterado/);
+        assert.deepEqual(db.memory.students, before.students, 'o cadastro não ficou no pseudônimo');
+        assert.deepEqual(db.memory.submissions, before.submissions, 'as notas não ficaram no pseudônimo');
+        assert.deepEqual(db.memory.entregasTeste, before.entregasTeste, 'o que o handler anterior mudou também voltou');
+        assert.deepEqual(db.memory.sessions, before.sessions);
+        assert.ok(!db.memory.auditLogs.some(entry => entry.action === 'student_anonymized'));
+
+        const purged = await request(app).post('/api/admin/students/purge').set(adminHeaders())
+            .send({ email: CAIO, confirm: 'APAGAR', reason: 'Pedido do titular' });
+        assert.equal(purged.status, 500, JSON.stringify(purged.body));
+        assert.match(purged.body.error, /Não foi possível apagar/);
+        assert.deepEqual(db.memory.students, before.students);
+        assert.deepEqual(db.memory.attendance, before.attendance);
+        assert.deepEqual(db.memory.entregasTeste, before.entregasTeste);
+        assert.ok(!db.memory.auditLogs.some(entry => entry.action === 'student_purged'));
+        assert.equal(savesBefore.length, 0, 'nada foi gravado');
+
+        // Sem o handler que falha, o mesmo pedido passa.
+        cleanups.pop()();
+        const again = await request(app).post('/api/admin/students/anonymize').set(adminHeaders())
+            .send({ email: BIA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+        assert.equal(again.status, 200, JSON.stringify(again.body));
+    } finally {
+        db.save = originalSave;
+        delete db.memory.sessions[BIA];
+    }
+});
+
 test('[UC-FUNDACAO-003] religar pelo e-mail: registro com id de aluno que não existe (ou sem id) ganha o id do aluno do mesmo e-mail', () => {
     db.memory.students[0].id = 'alu_0000000000000001';
     db.memory.students[1].id = 'alu_0000000000000002';
@@ -233,7 +331,9 @@ test('[UC-FUNDACAO-003] mesclar: entrega na mesma tarefa junta as versões no re
     assert.deepEqual({ moved: result.moved, joined: result.joined, archived: result.archived }, { moved: 1, joined: 2, archived: 0 });
     const f1 = result.records[0];
     assert.equal(f1.grade, 90, 'a nota do que fica vale');
-    assert.deepEqual(f1.versions.map(version => [version.n, version.requestAt]), [[1, 100], [2, 300], [3, 400], [4, 500]]);
+    // As versões do que sai entram ANTES das do que fica (entre si por requestAt), mesmo a
+    // de 400, mais nova que a 300 do que fica: a versão atual continua a do que fica (500).
+    assert.deepEqual(f1.versions.map(version => [version.n, version.requestAt]), [[1, 100], [2, 400], [3, 300], [4, 500]]);
     assert.deepEqual(f1.mergedFrom, [{ studentEmail: BIA, studentId: 'alu_sai', recordId: 's1', at: 1000, grade: 40 }]);
     const s2 = result.records[1];
     assert.equal(s2.studentEmail, ANA);
@@ -241,6 +341,29 @@ test('[UC-FUNDACAO-003] mesclar: entrega na mesma tarefa junta as versões no re
     assert.deepEqual(s2.versions.map(version => [version.n, version.requestAt]), [[1, 200], [2, 250]]);
     assert.deepEqual(s2.mergedFrom, [{ studentEmail: BIA, studentId: 'alu_sai', recordId: 's3', at: 1000, grade: null }]);
     assert.equal(result.records[2].studentEmail, CAIO, 'o registro de outro aluno não muda');
+});
+
+test('[UC-FUNDACAO-003] mesclar: versão do que sai mais nova que a do que fica não vira a atual nem leva a nota do que fica', () => {
+    const records = [
+        { id: 'fica', studentEmail: ANA, tarefa: 't1', grade: 90, versions: [{ requestAt: 100, file: 'f1' }] },
+        { id: 'sai', studentEmail: BIA, tarefa: 't1', grade: 30, versions: [{ requestAt: 200, file: 's-new' }, { requestAt: 50, file: 's-old' }] },
+    ];
+    const result = handlers.mergeOwnedRecords(records, {
+        isFica: item => item.studentEmail === ANA,
+        isSai: item => item.studentEmail === BIA,
+        keyOf: item => item.tarefa,
+        reassign: item => { item.studentEmail = ANA; },
+        versions: { field: 'versions', orderBy: 'requestAt', number: 'n' },
+        summary: item => ({ grade: item.grade }),
+        origin: { studentEmail: BIA },
+        at: 3000,
+    });
+    assert.deepEqual(result.records.map(item => item.id), ['fica']);
+    const [fica] = result.records;
+    assert.deepEqual(fica.versions.map(version => [version.n, version.file]), [[1, 's-old'], [2, 's-new'], [3, 'f1']]);
+    assert.equal(fica.versions[fica.versions.length - 1].file, 'f1', 'a versão atual é a do que fica');
+    assert.equal(fica.grade, 90);
+    assert.deepEqual(fica.mergedFrom, [{ studentEmail: BIA, studentId: null, recordId: 'sai', at: 3000, grade: 30 }]);
 });
 
 test('[UC-FUNDACAO-003] mesclar sem versões: o registro repetido do que sai muda de dono e fica arquivado com mergedFrom', () => {

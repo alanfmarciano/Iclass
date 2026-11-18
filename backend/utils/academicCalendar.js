@@ -16,6 +16,8 @@
 //   devolve false;
 // - sem res: devolve true ou lança ClassClosedError (status 409, code 'class_closed'),
 //   para quem está fora de uma rota (utilitário, teste).
+const { normalizeEmail, studentClassEntries } = require('./students.js');
+
 const CLASS_CLOSED_CODE = 'class_closed';
 const CLASS_CLOSED_MESSAGE = 'Esta turma foi encerrada. Para mudar notas ou presença, reabra a turma em Turmas.';
 
@@ -53,16 +55,26 @@ function assertClassOpen(target, { res } = {}) {
 }
 
 // Turma de uma entrega de prova (curso e turma da entrega ou do cadastro copiado nela).
-// Entrega antiga sem curso: a turma com aquele nome. null quando não há turma conhecida.
+// Entrega antiga sem curso: o curso da matrícula do aluno naquela turma (cadastro de
+// hoje, pelo e-mail) e, sem matrícula que resolva, a turma com aquele nome. null quando
+// não há turma conhecida.
 function classOfSubmission(memory, submission) {
     if (!submission || typeof submission !== 'object') return null;
     const student = submission.student && typeof submission.student === 'object' ? submission.student : {};
     const name = String(submission.studentClass || student.studentClass || '').trim();
     if (!name) return null;
-    const courseId = String(submission.courseId || student.courseId || '').trim();
     const classes = (memory && Array.isArray(memory.classes)) ? memory.classes : [];
-    if (courseId) return classes.find(cls => cls && cls.name === name && String(cls.courseId || '') === courseId) || null;
-    return classes.find(cls => cls && cls.name === name) || null;
+    const byCourse = courseId => classes.find(cls => cls && cls.name === name && String(cls.courseId || '') === courseId) || null;
+    const courseId = String(submission.courseId || student.courseId || '').trim();
+    if (courseId) return byCourse(courseId);
+    const sameName = classes.filter(cls => cls && cls.name === name);
+    if (sameName.length > 1) {
+        const email = normalizeEmail(student.email || submission.studentEmail);
+        const current = email ? ((memory && memory.students) || []).find(item => item && normalizeEmail(item.email) === email) : null;
+        const enrolled = [...new Set(studentClassEntries(current).filter(entry => entry.name === name && entry.courseId).map(entry => entry.courseId))];
+        if (enrolled.length === 1 && byCourse(enrolled[0])) return byCourse(enrolled[0]);
+    }
+    return sameName[0] || null;
 }
 
 // Turmas (sem repetir) das entregas de um pedido.

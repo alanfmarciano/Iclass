@@ -149,6 +149,52 @@ function focusEventLabel(item) {
 
 const ORIGIN_LABELS = { login: 'Automática (acesso)', chamada: 'Chamada', manual: 'Manual' }
 
+// Seções das coleções novas da fase 3 (tarefas, grupos, conversas...): o servidor manda
+// extraSections [{ key, label, columns }] (backend/utils/studentDataHandlers.js) e a
+// seção sai com o nome em português. Sem columns, as colunas são as chaves dos registros.
+const EXTRA_FORMATS = {
+  date: (value) => fmtDate(value),
+  datetime: (value) => fmtDateTime(value),
+  grade: (value) => fmtGrade(value),
+  count: (value) => (Array.isArray(value) ? value.length : value),
+  text: (value) => value,
+}
+
+function extraColumns(meta, rows) {
+  if (Array.isArray(meta.columns) && meta.columns.length) return meta.columns
+  const keys = []
+  rows.slice(0, PRINT_ROW_LIMIT).forEach((row) => {
+    if (row && typeof row === 'object' && !Array.isArray(row)) Object.keys(row).forEach((key) => { if (!keys.includes(key)) keys.push(key) })
+  })
+  return keys.map((key) => ({ field: key, label: key, format: 'text' }))
+}
+
+function extraCell(column, row) {
+  const value = row && typeof row === 'object' ? row[column.field] : row
+  return (EXTRA_FORMATS[column.format] || EXTRA_FORMATS.text)(value)
+}
+
+export function extraSectionsHtml(data) {
+  return list(data && data.extraSections)
+    .filter((meta) => meta && meta.key && Object.prototype.hasOwnProperty.call(data, meta.key))
+    .map((meta) => {
+      const value = data[meta.key]
+      const title = meta.label || meta.key
+      if (Array.isArray(value)) {
+        const columns = extraColumns(meta, value)
+        if (!columns.length) return section(title, table(['Registro'], value.map((item) => [item]), 'Nenhum registro.'))
+        return section(title, table(columns.map((column) => column.label), value.map((row) => columns.map((column) => extraCell(column, row))), 'Nenhum registro.'))
+      }
+      if (value && typeof value === 'object') {
+        const rows = Array.isArray(meta.columns) && meta.columns.length
+          ? meta.columns.map((column) => [column.label, extraCell(column, value)])
+          : Object.entries(value)
+        return section(title, rows.length ? pairs(rows) : '<p class="empty">Nenhum registro.</p>')
+      }
+      return section(title, pairs([[title, value]]))
+    })
+}
+
 export function dataExportHtml(data) {
   const admin = data && data.audience === 'admin'
   const profile = (data && data.profile) || {}
@@ -208,6 +254,7 @@ export function dataExportHtml(data) {
   if (list(data.examMessages).length) {
     sections.push(section('Mensagens recebidas durante a prova', table(['Data e hora', 'Prova', 'Mensagem'], list(data.examMessages).map((item) => [fmtDateTime(item.timestamp || item.createdAt), examName(item.examKey), item.messageText]), '')))
   }
+  extraSectionsHtml(data).forEach((html) => sections.push(html))
   sections.push(section('Alterações do cadastro', table(['Data e hora', 'Campo', 'Antes', 'Depois'], list(data.profileHistory).map((item) => [fmtDateTime(item.timestamp), item.field, item.oldValue, item.newValue]), 'Nenhuma alteração registrada.')))
   if (admin) {
     sections.push(section('Auditoria', table(['Data e hora', 'Ação', 'Quem', 'Campo'], list(data.audit).slice().reverse().map((item) => [fmtDateTime(item.timestamp), item.label || item.action, item.actor, item.field]), 'Nenhuma entrada.')))

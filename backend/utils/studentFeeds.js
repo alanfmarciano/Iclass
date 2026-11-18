@@ -5,7 +5,8 @@
 // sino e no calendário, dashboardAggregates.computeQueue na fila). Em vez disso, cada
 // grupo registra um provedor no próprio módulo, e os três pontos juntam os provedores
 // DEPOIS do que já montam. Sem provedor registrado a saída é a de antes (teste de
-// igualdade em test/backend/student-feeds.test.js).
+// igualdade em test/backend/igualdade-c0b.test.js; o resto dos provedores em
+// test/backend/student-feeds.test.js).
 //
 // - registerStudentNotificationProvider({ id, items(ctx) }): itens do sino do aluno.
 //   ctx = { memory, student, email, cls, courseId, studentClass, seenAt, today, now }.

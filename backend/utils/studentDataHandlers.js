@@ -5,14 +5,26 @@
 // contatos com responsáveis, histórico de matrícula, certificados novos...) registra
 // aqui, no próprio módulo, o que fazer com o aluno em cada passo do ciclo de vida. Os
 // pontos que já existem percorrem a lista DEPOIS dos blocos de hoje, sem mudar a saída
-// de hoje (teste de igualdade em test/backend/student-data-handlers.test.js):
+// de hoje (teste de igualdade em test/backend/igualdade-c0b.test.js; o resto do registro
+// em test/backend/student-data-handlers.test.js):
 // - troca de e-mail (renameStudentEmailEverywhere, admin.js): rename(memory, de, para);
 // - anonimizar e apagar de vez (studentLifecycle.applyCascade): anonymize(memory, aluno,
-//   pseudonimo) e purge(memory, aluno);
+//   pseudonimo) e purge(memory, aluno). Rodam depois dos blocos de hoje e antes da pasta
+//   do aluno ir para a lixeira; se um handler lança erro, a memória volta inteira ao que
+//   era antes do passo (nada fica pela metade) e o pedido é recusado. Por isso o handler
+//   mexe só na memória; arquivo em disco ele move por último, já sem chance de falhar;
 // - contagens (tela Cadastros encerrados, resposta e auditoria do anonimizar e do apagar,
-//   studentLifecycle.recordCounts e closedStudentRows): count(memory, aluno) => número;
+//   studentLifecycle.recordCounts e closedStudentRows): count(memory, aluno) => número.
+//   Com replaceCore, a contagem do handler substitui a de hoje com a mesma chave nos três
+//   lugares (o B16 conta os certificados assim);
 // - Meus dados (buildStudentDataExport, versões 'aluno' e 'admin'):
-//   exportSection(memory, aluno, audience) => a seção (undefined deixa de fora);
+//   exportSection(memory, aluno, audience) => a seção (undefined deixa de fora). O arquivo
+//   leva também extraSections ([{ key, label, columns }], só quando há seção nova), que a
+//   versão para imprimir (web/src/lib/dataExportPrint.js) usa para mostrar a seção com o
+//   nome em português; printColumns ([{ field, label, format: 'text'|'date'|'datetime'|
+//   'grade'|'count' }]) escolhe as colunas da tabela impressa (sem ele, as chaves do
+//   registro). A tela Cadastros encerrados recebe countLabels e mostra a contagem nova
+//   com o label;
 // - mesclar cadastros (mergeStudentRecords do P4-S4, depois da J3): merge(memory, fica,
 //   sai), com a regra de colisão de mergeOwnedRecords;
 // - religar depois de restaurar backup (ensureStudentIds do C1): relink(memory,
@@ -36,6 +48,7 @@ const { studentEmailOwnership } = require('./gradebook.js');
 const { normalizeEmail } = require('./students.js');
 
 const HANDLER_FUNCTIONS = ['rename', 'anonymize', 'purge', 'merge', 'relink', 'count', 'exportSection'];
+const PRINT_FORMATS = new Set(['text', 'date', 'datetime', 'grade', 'count']);
 
 // Seções e contagens que já existem hoje (buildStudentDataExport, sectionCounts,
 // recordCounts e closedStudentRows): handler só usa essas chaves com replaceCore.
@@ -44,8 +57,22 @@ const CORE_KEYS = new Set([
     'anonymized', 'profile', 'enrollments', 'acceptances', 'submissions', 'attendance', 'certificates',
     'observations', 'progress', 'notes', 'annotations', 'forum', 'moduleAccess', 'loginLogs', 'proctoring',
     'examRecords', 'examMessages', 'profileHistory', 'openAttempts', 'audit', 'examTitles', 'counts',
-    'forumQuestions', 'forumReplies', 'proctoringLogs', 'keystrokes',
+    'forumQuestions', 'forumReplies', 'proctoringLogs', 'keystrokes', 'extraSections',
 ]);
+
+// Colunas da seção impressa: [{ field, label, format }] ou null.
+function normalizePrintColumns(collection, columns) {
+    if (columns === undefined || columns === null) return null;
+    if (!Array.isArray(columns) || !columns.length) throw new TypeError(`studentDataHandlers: '${collection}.printColumns' precisa ser uma lista de colunas.`);
+    return Object.freeze(columns.map(column => {
+        const field = String((column && column.field) || '').trim();
+        const label = String((column && column.label) || '').trim();
+        const format = String((column && column.format) || 'text').trim();
+        if (!field || !label) throw new TypeError(`studentDataHandlers: coluna de '${collection}.printColumns' sem field ou label.`);
+        if (!PRINT_FORMATS.has(format)) throw new TypeError(`studentDataHandlers: formato '${format}' desconhecido em '${collection}.printColumns'.`);
+        return Object.freeze({ field, label, format });
+    }));
+}
 
 const handlers = new Map();
 
@@ -65,7 +92,8 @@ function registerStudentDataHandler(handler) {
         if (handler.exportSection && CORE_KEYS.has(exportKey)) throw new TypeError(`studentDataHandlers: a seção '${exportKey}' já existe em Meus dados (use replaceCore).`);
         if (handler.count && CORE_KEYS.has(collection)) throw new TypeError(`studentDataHandlers: a contagem '${collection}' já existe (use replaceCore).`);
     }
-    const entry = Object.freeze({ ...handler, collection, label, exportKey });
+    const printColumns = normalizePrintColumns(collection, handler.printColumns);
+    const entry = Object.freeze({ ...handler, collection, label, exportKey, printColumns });
     handlers.set(collection, entry);
     return () => { if (handlers.get(collection) === entry) handlers.delete(collection); };
 }
@@ -164,10 +192,25 @@ function exportStudentDataSections(memory, aluno, audience) {
     return out;
 }
 
-function studentDataLabels() {
+// { [collection]: label } dos handlers que contam (a tela Cadastros encerrados mostra a
+// contagem nova com este nome). Contagem de hoje trocada por replaceCore já tem nome na
+// tela e fica de fora.
+function studentDataCountLabels() {
     const out = {};
-    studentDataHandlers().forEach(handler => { out[handler.collection] = handler.label; });
+    withFunction('count').forEach(handler => {
+        if (!CORE_KEYS.has(handler.collection)) out[handler.collection] = handler.label;
+    });
     return out;
+}
+
+// [{ key, label, columns }] das seções novas de Meus dados que estão em sections (o que
+// exportStudentDataSections devolveu), na ordem de registro. Seção de hoje trocada por
+// replaceCore já tem lugar na impressão e fica de fora.
+function studentDataSectionsMeta(sections) {
+    const present = sections && typeof sections === 'object' ? sections : {};
+    return withFunction('exportSection')
+        .filter(handler => Object.prototype.hasOwnProperty.call(present, handler.exportKey) && !CORE_KEYS.has(handler.exportKey))
+        .map(handler => ({ key: handler.exportKey, label: handler.label, columns: handler.printColumns ? handler.printColumns.map(column => ({ ...column })) : null }));
 }
 
 // ------------------------------------------------------------ ajudas para os handlers
@@ -195,10 +238,14 @@ function relinkRecordsByEmail(memory, records, idsPorEmail, { emailField = 'stud
 // - registro do 'sai' sem chave composta ou sem par no 'fica': muda de dono (reassign);
 // - 'fica' e 'sai' com a mesma chave (keyOf: entrega na mesma tarefa), coleção com
 //   versões (versions: { field, orderBy, number }): não nasce linha repetida; as versões
-//   do 'sai' entram como versões anteriores do registro do 'fica', todas na ordem de
-//   orderBy (requestAt) e renumeradas em number (n) a partir de 1; o resto do registro
-//   do 'fica' (a nota, a devolução) vale, e ele ganha mergedFrom; o do 'sai' sai da
-//   lista (o que só ele tinha fica no mergedFrom, por summary);
+//   do 'sai' entram ANTES das do 'fica', como versões anteriores, entre si na ordem de
+//   orderBy (requestAt), e as do 'fica' continuam na ordem delas, por último, mesmo que
+//   uma versão do 'sai' seja mais nova: a versão atual da entrega continua a do 'fica',
+//   a que recebeu a nota dele. Todas são renumeradas em number (n) a partir de 1; o
+//   resto do registro do 'fica' (a nota, a devolução) vale, e ele ganha mergedFrom; o do
+//   'sai' sai da lista (o que só ele tinha fica no mergedFrom, por summary). Se o
+//   próprio 'sai' tinha duas entregas na mesma tarefa (e o 'fica' nenhuma), elas viram
+//   uma só com todas as versões por orderBy;
 // - mesma chave em coleção sem versões: o registro do 'sai' muda de dono e fica
 //   arquivado (archive) com mergedFrom.
 // mergedFrom é uma lista de { studentEmail, studentId, recordId, at, ...summary(sai) }.
@@ -240,6 +287,7 @@ function mergeOwnedRecords(records, {
         target.mergedFrom = [...(Array.isArray(target.mergedFrom) ? target.mergedFrom : []), mergedEntry(source)];
     };
     const dropped = new Set();
+    const movedFromSai = new Set();
     let moved = 0;
     let joined = 0;
     let archived = 0;
@@ -249,7 +297,7 @@ function mergeOwnedRecords(records, {
         const pair = key === null ? null : ficaByKey.get(key);
         if (!pair) {
             reassign(record);
-            if (key !== null) ficaByKey.set(key, record);
+            if (key !== null) { ficaByKey.set(key, record); movedFromSai.add(record); }
             moved++;
             return;
         }
@@ -261,12 +309,15 @@ function mergeOwnedRecords(records, {
                 const number = typeof value === 'number' ? value : Date.parse(value);
                 return Number.isFinite(number) ? number : 0;
             };
-            const combined = [
-                ...(Array.isArray(record[field]) ? record[field] : []),
-                ...(Array.isArray(pair[field]) ? pair[field] : []),
-            ].map((item, index) => ({ item, index }))
+            const byOrder = items => items
+                .map((item, index) => ({ item, index }))
                 .sort((a, b) => order(a.item) - order(b.item) || a.index - b.index)
                 .map(({ item }) => item);
+            const own = Array.isArray(record[field]) ? record[field] : [];
+            const kept = Array.isArray(pair[field]) ? pair[field] : [];
+            // Par que também veio do 'sai' (o 'sai' já tinha duas entregas na mesma tarefa):
+            // nenhuma das duas é a do 'fica', e todas as versões vão por requestAt.
+            const combined = movedFromSai.has(pair) ? byOrder([...kept, ...own]) : [...byOrder(own), ...kept];
             if (versions.number) combined.forEach((item, index) => { if (item && typeof item === 'object') item[versions.number] = index + 1; });
             pair[field] = combined;
             addMergedFrom(pair, record);
@@ -296,7 +347,8 @@ module.exports = {
     relinkStudentData,
     countStudentData,
     exportStudentDataSections,
-    studentDataLabels,
+    studentDataCountLabels,
+    studentDataSectionsMeta,
     relinkRecordsByEmail,
     mergeOwnedRecords,
 };

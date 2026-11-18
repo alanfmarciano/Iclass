@@ -53,3 +53,17 @@ export function sameStatus(a, b) {
 export function isAnonymizedStatus(status) {
   return foldStatus(status) === foldStatus(ANONYMIZED_STATUS)
 }
+
+// Contagens das coleções novas da fase 3 (entregas de tarefa, grupos, conversas...) em
+// Cadastros encerrados: o servidor manda o nome de cada uma em countLabels
+// (backend/utils/studentDataHandlers.js). Ex.: "Trabalhos entregues: 2". As de hoje
+// (notas, presenças, certificados) têm frase própria e ficam de fora.
+const CORE_COUNTS = new Set(['submissions', 'attendance', 'certificates'])
+export function extraCountsText(counts, labels) {
+  const source = counts && typeof counts === 'object' ? counts : {}
+  const names = labels && typeof labels === 'object' ? labels : {}
+  return Object.keys(names)
+    .filter((key) => !CORE_COUNTS.has(key) && names[key])
+    .map((key) => `${names[key]}: ${Number(source[key]) > 0 ? Number(source[key]) : 0}`)
+    .join(', ')
+}

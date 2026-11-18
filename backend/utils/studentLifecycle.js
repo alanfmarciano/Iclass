@@ -30,6 +30,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { isDeepStrictEqual } = require('util');
+const { logError } = require('./errorLog.js');
 const { recordAudit } = require('./audit.js');
 const {
     ANONYMIZED_STATUS,
@@ -307,6 +309,23 @@ function recordCounts(memory, owned, aluno) {
     };
 }
 
+// Cópia profunda da memória (só as coleções, sem funções) e a volta para ela: as chaves
+// que mudaram recebem a cópia de antes, as que não existiam saem e as que não mudaram
+// ficam como estão (mesmo objeto).
+function snapshotMemory(memory) {
+    return structuredClone(Object.fromEntries(Object.entries(memory).filter(([, value]) => typeof value !== 'function')));
+}
+
+function restoreMemory(memory, before) {
+    Object.keys(memory).forEach(key => {
+        if (typeof memory[key] === 'function') return;
+        if (!Object.prototype.hasOwnProperty.call(before, key)) delete memory[key];
+    });
+    Object.keys(before).forEach(key => {
+        if (!isDeepStrictEqual(memory[key], before[key])) memory[key] = before[key];
+    });
+}
+
 // Cascata única (os dois modos). Síncrona: chamada já com as teclas encontradas.
 function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reason, req, at, closedSince }) {
     const memory = db.memory;
@@ -320,6 +339,9 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
     // O aluno para os handlers das coleções novas (cadastro como estava antes do passo).
     const aluno = studentData.studentContextFrom(student, ownership);
     const counts = recordCounts(memory, (item, value) => ownedRecord(item, value), aluno);
+    // Cópia da memória antes do passo, para voltar atrás se um handler falhar (só quando
+    // há handler; sem handler, o passo é o de antes).
+    const before = studentData.hasStudentDataHandlers(anonymize ? 'anonymize' : 'purge') ? snapshotMemory(memory) : null;
     const pseudonym = anonymize ? newPseudonym(memory) : null;
     const replacement = anonymize ? pseudonym.email : '';
     // O motivo digitado pode citar o aluno ("pedido da Ana Souza"): o nome, o e-mail e a
@@ -448,6 +470,23 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         });
     });
 
+    // Coleções novas da fase 3 (entregas, grupos, conversas...): cada uma pelo handler
+    // dela, depois dos blocos de cima (utils/studentDataHandlers.js) e antes da pasta ir
+    // para a lixeira. Handler que falha não deixa a memória pela metade: ela volta ao
+    // que era antes do passo e o pedido é recusado (nada foi gravado nem movido).
+    if (before) {
+        try {
+            if (anonymize) studentData.anonymizeStudentData(memory, aluno, pseudonym);
+            else studentData.purgeStudentData(memory, aluno);
+        } catch (error) {
+            restoreMemory(memory, before);
+            logError(`studentLifecycle: handler de coleção nova falhou (${mode})`, error);
+            throw new StudentLifecycleError(500, anonymize
+                ? 'Não foi possível anonimizar o cadastro: uma parte dos dados não pôde ser tratada. Nada foi alterado.'
+                : 'Não foi possível apagar o cadastro: uma parte dos dados não pôde ser tratada. Nada foi alterado.', { code: 'student_data_handler_failed' });
+        }
+    }
+
     // Pasta do aluno vai para a lixeira de arquivos (no anonimizar, com o nome do
     // pseudônimo). Homônimo sem matrícula usa a mesma pasta (matrícula + nome): aí só os
     // arquivos ligados à presença deste aluno vão.
@@ -455,11 +494,6 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         deletedBy: actor,
         asName: anonymize ? fileStore.studentFolderName(memory.students[index]) : undefined,
     });
-
-    // Coleções novas da fase 3 (entregas, grupos, conversas...): cada uma pelo handler
-    // dela, depois dos blocos de cima (utils/studentDataHandlers.js).
-    if (anonymize) studentData.anonymizeStudentData(memory, aluno, pseudonym);
-    else studentData.purgeStudentData(memory, aluno);
 
     // Entrada da auditoria sem dado pessoal: no anonimizar, só o pseudônimo; no apagar,
     // nem isso (só as contagens e o motivo).
@@ -541,13 +575,6 @@ async function runStudentLifecycle(db, { mode, email, actor, reason, req, now = 
 function closedStudentRows(memory, { sinceOf }) {
     const closed = (memory.students || []).filter(student => student && student.email && (isClosedStudentStatus(student.status) || isAnonymizedStudent(student)));
     const byEmail = new Map(closed.map(student => [normalizeEmail(student.email), { submissions: 0, attendance: 0, certificates: 0 }]));
-    // Contagens das coleções novas (handlers com count), por aluno encerrado.
-    if (studentData.hasStudentDataHandlers('count')) {
-        closed.forEach(student => {
-            const aluno = studentData.studentDataContext(memory, student);
-            if (aluno) Object.assign(byEmail.get(normalizeEmail(student.email)), studentData.countStudentData(memory, aluno));
-        });
-    }
     const bump = (email, field) => {
         const counts = byEmail.get(normalizeEmail(email));
         if (counts) counts[field] += 1;
@@ -555,6 +582,14 @@ function closedStudentRows(memory, { sinceOf }) {
     (memory.submissions || []).forEach(item => { if (item && item.student) bump(item.student.email, 'submissions'); });
     (memory.attendance || []).forEach(item => { if (item) bump(item.studentEmail, 'attendance'); });
     (memory.certificates || []).forEach(item => { if (item) bump(item.studentEmail, 'certificates'); });
+    // Contagens das coleções novas (handlers com count), por aluno encerrado, depois das
+    // de hoje: com replaceCore, a do handler substitui a de hoje (como em recordCounts).
+    if (studentData.hasStudentDataHandlers('count')) {
+        closed.forEach(student => {
+            const aluno = studentData.studentDataContext(memory, student);
+            if (aluno) Object.assign(byEmail.get(normalizeEmail(student.email)), studentData.countStudentData(memory, aluno));
+        });
+    }
     return closed.map(student => {
         const anonymized = isAnonymizedStudent(student);
         return {
