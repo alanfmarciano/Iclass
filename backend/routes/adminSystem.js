@@ -667,7 +667,14 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             // outros aparelhos: o certificado existe E tem o IP recomendado. Com a rede da
             // escola fora das faixas locais, o https por IP não abriria em aparelho nenhum.
             const network = (hasAccess || hasStudents) ? networkHttpsStatus() : { usable: true };
-            const why = network.usable ? '' : ` ${network.reason}`;
+            // Com a CA funcionando mas o IP da rede fora do certificado (faixa que não é
+            // local, adaptador virtual), o https existe só neste computador: a recusa diz
+            // isso e onde conferir, em vez de parecer que a conexão segura não existe
+            // (decisões §12, sobra do H6c).
+            const onlyHere = !network.usable && httpsAvailable()
+                ? ' Agora a conexão segura só funciona neste computador (https://localhost). Confira o endereço da rede em Sistema → Rede e escolha de novo quando ele aparecer como endereço seguro.'
+                : '';
+            const why = network.usable ? '' : ` ${network.reason}${onlyHere}`;
             if (hasAccess && after.adminAccess === 'rede' && before.adminAccess !== 'rede' && !network.usable) {
                 return res.status(409).json({
                     success: false,

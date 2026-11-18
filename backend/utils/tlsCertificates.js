@@ -28,6 +28,11 @@
 // - Arquivo ilegível nunca é apagado: vira '<nome>.invalido-<AAAAMMDDhhmmss>'. Quando
 //   uma CA que existia é recriada, ca-recriada.json guarda quando e por quê, e a tela
 //   Sistema avisa para instalar de novo nos aparelhos.
+// - Pasta tls que sumiu inteira (antivírus, cópia da pasta do IClass sem ela, limpeza à
+//   mão) com uma CA já conhecida pelo banco: a CA nova é uma recriação, não a primeira
+//   (decisões §12, sobra do H6c). Quem sabe que havia uma é secureConnection
+//   (reconcileKnownCa, com a impressão digital em settings.network.caFingerprint), que
+//   grava ca-recriada.json por markCaRecreated. A primeira vez de verdade não avisa.
 // - O certificado do servidor é refeito quando falta, não é desta CA, vence em menos de
 //   30 dias ou muda o conjunto de nomes e IPs.
 // ---------------------------------------------------------------------------
@@ -329,6 +334,13 @@ function createCa(dir, now) {
     return { keyPem, certPem, privateKey, cert: new crypto.X509Certificate(certPem) };
 }
 
+// Anota em ca-recriada.json que a CA desta pasta substituiu outra (quando e por quê).
+function markCaRecreated(dir, { reason, now = Date.now() } = {}) {
+    const at = new Date(now).toISOString();
+    writeAtomic(path.join(dir, FILES.caRecreated), JSON.stringify({ at, reason: String(reason || '') }, null, 2));
+    return { at, reason: String(reason || '') };
+}
+
 function createServerCertificate(dir, ca, subject, now) {
     const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const der = buildCertificate({
@@ -438,6 +450,7 @@ module.exports = {
     SERVER_RENEW_BEFORE_MS,
     ensureTlsMaterial,
     isPermittedIp,
+    markCaRecreated,
     parseSubjectAltName,
     serverSubjectNames,
 };

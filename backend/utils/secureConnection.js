@@ -23,7 +23,7 @@
 // ---------------------------------------------------------------------------
 const path = require('path');
 const runtimePaths = require('../runtimePaths.js');
-const { ensureTlsMaterial } = require('./tlsCertificates.js');
+const { ensureTlsMaterial, markCaRecreated } = require('./tlsCertificates.js');
 const { logError } = require('./errorLog.js');
 
 const UNAVAILABLE_PREFIX = 'Conexão segura indisponível';
@@ -62,8 +62,11 @@ function fail(dir, error) {
     const text = describeError(error);
     // O detalhe (mensagem do sistema e caminho) vai só para o crash.log, uma vez por motivo:
     // o vigia de rede tenta de novo a cada 30 s.
+    // silent: o console mostra só a linha em português de quem chama ("Conexão segura
+    // indisponível: ..."), sem a mensagem crua do sistema nem o caminho completo
+    // (decisões §12, sobra do H6c).
     if (text !== state.error) {
-        logError('conexão segura (https)', error, { details: { motivo: text } });
+        logError('conexão segura (https)', error, { details: { motivo: text }, silent: true });
     }
     state = { available: false, error: text, dir, material: null, checkedAt: Date.now() };
     return null;
@@ -96,6 +99,36 @@ function refresh({ addresses = [], now } = {}) {
         }
         return fail(dir, error);
     }
+}
+
+// A CA conhecida pelo banco (settings.network.caFingerprint, lida por quem chama depois
+// de carregar os dados) e a de agora (decisões §12, sobra do H6c). Quando a pasta tls
+// sumiu inteira, ensureTlsMaterial cria uma CA como se fosse a primeira, sem aviso; se o
+// banco já conhecia outra, os aparelhos que instalaram a antiga precisam instalar esta:
+// vira CA recriada (ca-recriada.json, aviso na tela por 30 dias e no console). Só conta a
+// CA criada nesta leitura: uma pasta tls trazida de outro computador, com CA própria, não
+// é recriação. Devolve { fingerprint, recreatedNow, material }; fingerprint null sem
+// conexão segura.
+const CA_FOLDER_GONE_REASON = 'a pasta do certificado (tls) sumiu';
+
+function reconcileKnownCa(knownFingerprint, { now = Date.now() } = {}) {
+    if (!state.available || !state.material) return { fingerprint: null, recreatedNow: false, material: null };
+    const material = state.material;
+    const current = material.ca.fingerprintSha256;
+    const known = typeof knownFingerprint === 'string' && knownFingerprint ? knownFingerprint : null;
+    if (!known || known === current || !material.changed || !material.changed.ca || material.caRecreatedNow) {
+        return { fingerprint: current, recreatedNow: false, material };
+    }
+    try {
+        const mark = markCaRecreated(state.dir, { reason: CA_FOLDER_GONE_REASON, now });
+        material.ca = { ...material.ca, recreatedAt: mark.at, recreatedReason: mark.reason };
+    } catch (error) {
+        // Sem o arquivo, o aviso fica só nesta execução (a tela lê da memória).
+        logError('conexão segura (https): aviso de CA recriada', error, { silent: true });
+        material.ca = { ...material.ca, recreatedAt: new Date(now).toISOString(), recreatedReason: CA_FOLDER_GONE_REASON };
+    }
+    material.caRecreatedNow = true;
+    return { fingerprint: current, recreatedNow: true, material };
 }
 
 // O certificado do servidor vence em menos de 30 dias? (o vigia refaz sem esperar o IP mudar)
@@ -160,6 +193,7 @@ function resetForTests() {
 }
 
 module.exports = {
+    CA_FOLDER_GONE_REASON,
     CA_RECREATED_NOTICE_MS,
     PUBLIC_UNAVAILABLE_TEXT,
     UNAVAILABLE_PREFIX,
@@ -169,6 +203,7 @@ module.exports = {
     isAvailable,
     prepare,
     publicUnavailableText,
+    reconcileKnownCa,
     refresh,
     resetForTests,
     serverExpiresBefore,

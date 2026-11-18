@@ -140,6 +140,10 @@ function logError(kind, err, ctx = {}) {
             }
         } catch (error) { /* disco cheio ou sem permissão: o stack vai para o console abaixo */ }
         const summary = `🛑 ${header.slice(header.indexOf(']') + 2)}: ${errorSummary(err)}`;
+        // silent: quem chama já escreve no console a própria linha em português e não quer
+        // a mensagem crua do sistema (em inglês, com o caminho da pasta de dados) ao lado
+        // dela; o detalhe fica só no crash.log (conexão segura, decisões §12 do H6c).
+        if (context.silent === true) return written;
         if (written && context.printStack !== true) console.error(`${summary} (detalhes em crash.log)`);
         else console.error(`${summary}${written ? ' (também em crash.log)' : ' (crash.log indisponível)'}\n${detail}`);
     } catch (error) {

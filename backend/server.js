@@ -765,6 +765,30 @@ function warnCaRecreated(material) {
     console.warn(`⚠️ O certificado do IClass (CA) foi criado de novo${reason}. Os aparelhos que já tinham instalado o anterior precisam instalar este: veja /certificado.`);
 }
 
+// CA conhecida pelo banco (decisões §12, sobra do H6c): a impressão digital da CA fica em
+// settings.network.caFingerprint (a restauração mantém o settings.network de agora e o
+// backup nunca leva data/tls). Se a pasta tls sumiu inteira e a CA desta execução é outra,
+// os aparelhos que tinham a anterior precisam instalar esta: aviso no console e na tela,
+// como na CA danificada. Na primeira vez de verdade (banco sem a impressão digital), só
+// grava. Roda depois de os dados carregarem (o https é preparado antes, para a porta
+// responder "iniciando" também por https) e depois de cada certificado refeito.
+function reconcileSecureConnectionCa() {
+    try {
+        const config = db.memory.config && typeof db.memory.config === 'object' ? db.memory.config : null;
+        const settings = config && config.settings && typeof config.settings === 'object' ? config.settings : {};
+        const network = settings.network && typeof settings.network === 'object' ? settings.network : {};
+        const known = typeof network.caFingerprint === 'string' ? network.caFingerprint : null;
+        const result = secureConnection.reconcileKnownCa(known);
+        if (result.recreatedNow) warnCaRecreated(result.material);
+        if (!result.fingerprint || result.fingerprint === known) return;
+        if (!db.memory.config || typeof db.memory.config !== 'object') db.memory.config = {};
+        db.memory.config.settings = { ...settings, network: { ...network, caFingerprint: result.fingerprint } };
+        db.save({ detached: true }).catch(err => logCrash('conexão segura: impressão digital da CA', err));
+    } catch (err) {
+        logCrash('conexão segura: impressão digital da CA', err);
+    }
+}
+
 // Vigia da rede (H6a): a cada 30 s confere se o endereço recomendado ou os IPs da máquina
 // mudaram (notebook que trocou de Wi-Fi, roteador que deu outro IP) e avisa no console.
 // A tela Sistema, o QR e /endereco já releem a cada pedido. Com o IP novo, o certificado
@@ -779,6 +803,7 @@ function refreshSecureConnection(server, addresses, reason) {
     if (material && server && typeof server.updateTls === 'function') {
         server.updateTls(material);
         warnCaRecreated(material);
+        reconcileSecureConnectionCa();
         if (!wasAvailable) {
             console.log('🔒 Conexão segura (https) disponível agora.');
         } else {
@@ -1050,6 +1075,7 @@ async function startServer({ port = PORT, host = '0.0.0.0' } = {}) {
     // Pediram para desligar durante o boot: o desligamento já está em andamento.
     if (serverLifecycle.shutdownRequested()) return serverInstance;
 
+    reconcileSecureConnectionCa();
     const app = createApp();
     app.set('serverInstance', serverInstance);
     handler.set(app);
@@ -1072,6 +1098,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    reconcileSecureConnectionCa,
     createApp,
     createBootApp,
     createSwitchableHandler,

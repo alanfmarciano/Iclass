@@ -336,6 +336,7 @@ test('[UC-REDE-005] sem a conexão segura (pasta tls que não pode ser gravada):
         const refused = await send('http', local.port, { method: 'POST', path: '/api/admin/network-settings', headers: { 'x-admin-session': token }, body: { studentsHttps: true } });
         assert.equal(refused.status, 409);
         assert.match(refused.body.error, /Conexão segura indisponível: há um arquivo com o nome "tls"/);
+        assert.equal(/só funciona neste computador/.test(refused.body.error), false, 'sem CA, não há https nem aqui');
         const settings = await send('http', local.port, { path: '/api/admin/network-settings', headers: { 'x-admin-session': token } });
         assert.equal(settings.body.httpsReady, false);
         assert.equal(settings.body.httpsError, secureConnection.unavailableText());
@@ -378,9 +379,13 @@ test('[UC-REDE-005] IP da rede fora das faixas locais (192.0.2.2): a conexão se
         assert.equal(rede.status, 409);
         assert.equal(rede.body.field, 'adminAccess');
         assert.match(rede.body.error, /192\.0\.2\.2.*não é de uma faixa de rede local/);
+        // Com a CA funcionando, a recusa diz que o https vale só neste computador agora e
+        // aponta Sistema → Rede (decisões §12, sobra do H6c).
+        assert.match(rede.body.error, /Agora a conexão segura só funciona neste computador \(https:\/\/localhost\)\. Confira o endereço da rede em Sistema → Rede/);
         const students = await post({ studentsHttps: true });
         assert.equal(students.status, 409);
         assert.equal(students.body.field, 'studentsHttps');
+        assert.match(students.body.error, /só funciona neste computador/);
         assert.equal(settingsUtil.networkSettings().adminAccess, 'rede-sem-https');
         assert.equal(settingsUtil.networkSettings().studentsHttps, false);
 
