@@ -125,14 +125,18 @@ test('[UC-REDE-001] professor não troca a regra, nem com "Executar manutenção
 });
 
 test('[UC-REDE-001] o POST genérico de configurações não mexe nos blocos protegidos (rede, backup, retenção)', async () => {
-    assert.deepEqual([...settingsUtil.PROTECTED_SETTINGS_SECTIONS], ['backup', 'network', 'retention']);
-    seed({ network: { adminAccess: 'local' }, backup: { keep: 7 }, retention: { days: 30 } });
+    // 'install' (fase 3, A1): a identidade da instalação também é protegida (contrato C5).
+    assert.deepEqual([...settingsUtil.PROTECTED_SETTINGS_SECTIONS], ['backup', 'network', 'retention', 'install']);
+    const install = { id: '0f1e2d3c-4b5a-4968-8776-655443322110', criadaEm: 1763424000000 };
+    seed({ network: { adminAccess: 'local' }, backup: { keep: 7 }, retention: { days: 30 }, install });
     const res = await asAdmin(request(app).post('/api/admin/settings')).send({
         timezone: 'America/Manaus',
         network: { adminAccess: 'rede-sem-https' },
         backup: { keep: 1 },
         retention: { days: 1 },
+        install: { id: 'outra', criadaEm: 1 },
     }).expect(200);
+    assert.deepEqual(db.memory.config.settings.install, install, 'o POST genérico não apaga nem troca a identidade da instalação');
     assert.equal(res.body.success, true);
     assert.equal(db.memory.config.settings.timezone, 'America/Manaus');
     assert.deepEqual(db.memory.config.settings.network, { adminAccess: 'local' });

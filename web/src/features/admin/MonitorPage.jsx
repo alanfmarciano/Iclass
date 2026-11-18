@@ -1039,7 +1039,7 @@ export default function MonitorPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <PageHeader title="Monitor Online" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`}><RoomAddressButton /></PageHeader>
+      <PageHeader title="Monitor Online" helpTopic="monitor" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`}><RoomAddressButton /></PageHeader>
       {activeApplications.length > 0 && (
         <section className="border-y border-success/45 bg-success-soft/20" aria-labelledby="active-monitor-applications-title">
           <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">

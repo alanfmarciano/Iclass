@@ -48,6 +48,36 @@ const MIGRATIONS = Object.freeze([
             return false;
         },
     }),
+    // Identidade desta instalação (A1 / P6-S2: OPS-21, OPS-02): settings.install.id (UUID)
+    // e criadaEm (ms), quando faltam. Só isso: licenciadoPara e a licença são de outras
+    // subetapas (A21b), e o 'setup migrado' é a linha '2026-11-p6-setup-migrado' (A20). No
+    // banco que já existia, criadaEm é o momento desta migração (não há data de instalação
+    // gravada antes). Depois de restaurar um backup sem a seção, ela roda sobre o que foi
+    // restaurado, e o gancho 'protectedConfig' põe de volta a identidade de agora (um
+    // backup de outro computador não troca a identidade desta instalação).
+    Object.freeze({
+        id: '2026-11-p6-instalacao',
+        nome: 'Identifica esta instalação (código e data em settings.install)',
+        tipo: 'memoria',
+        run(memory, ctx) {
+            const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+            if (!isObject(memory.config)) memory.config = {};
+            if (!isObject(memory.config.settings)) memory.config.settings = {};
+            const settings = memory.config.settings;
+            const install = isObject(settings.install) ? settings.install : {};
+            let changed = !isObject(settings.install);
+            if (typeof install.id !== 'string' || !install.id.trim()) {
+                install.id = require('crypto').randomUUID();
+                changed = true;
+            }
+            if (!Number.isFinite(install.criadaEm) || install.criadaEm <= 0) {
+                install.criadaEm = Number.isFinite(ctx && ctx.now) ? ctx.now : Date.now();
+                changed = true;
+            }
+            settings.install = install;
+            return changed;
+        },
+    }),
 ]);
 
 const BOOT_NORMALIZATIONS = Object.freeze([]);

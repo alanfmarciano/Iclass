@@ -525,7 +525,8 @@ function currentNetworkSettings(memory = memoryDB) {
 }
 
 // Configuração protegida de agora (H4a): settings.backup (a rotina de backup deste
-// computador, que um backup de outro computador não pode trocar) e o segredo que embaralha
+// computador, que um backup de outro computador não pode trocar), settings.install (a
+// identidade desta instalação, fase 3, A1 / P6-S2, contrato C5) e o segredo que embaralha
 // os identificadores das alternativas da prova (config.examAnswerSecret). Lida antes da
 // restauração e posta de volta pelo gancho 'protectedConfig'.
 function currentProtectedConfig(memory = memoryDB) {
@@ -533,6 +534,7 @@ function currentProtectedConfig(memory = memoryDB) {
     const settings = config.settings && typeof config.settings === 'object' ? config.settings : {};
     return {
         backup: settings.backup === undefined ? undefined : structuredClone(settings.backup),
+        install: settings.install && typeof settings.install === 'object' && !Array.isArray(settings.install) ? structuredClone(settings.install) : undefined,
         examAnswerSecret: typeof config.examAnswerSecret === 'string' ? config.examAnswerSecret : undefined,
     };
 }
@@ -548,6 +550,10 @@ function keepProtectedConfig(memory, context = {}) {
     const settings = config.settings && typeof config.settings === 'object' ? config.settings : (config.settings = {});
     if (previous.backup === undefined) delete settings.backup;
     else settings.backup = structuredClone(previous.backup);
+    // A identidade desta instalação fica a de agora. Sem uma de antes (banco de antes da
+    // migração '2026-11-p6-instalacao'), fica a que a migração acabou de dar à memória
+    // restaurada: identidade nunca é apagada.
+    if (previous.install !== undefined) settings.install = structuredClone(previous.install);
     if ((typeof config.examAnswerSecret !== 'string' || config.examAnswerSecret.length < 32)
         && typeof previous.examAnswerSecret === 'string' && previous.examAnswerSecret.length >= 32) {
         config.examAnswerSecret = previous.examAnswerSecret;

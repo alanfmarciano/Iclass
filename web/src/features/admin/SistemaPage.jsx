@@ -6,6 +6,7 @@ import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { Modal } from '../../components/ui/Modal'
 import { TypedConfirm, typedConfirmMatches } from '../../components/ui/TypedConfirm'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { Badge } from '../../components/ui/Badge'
 import { useApi } from '../../hooks/useApi'
@@ -15,6 +16,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
 import { SaudeCard } from './sistema/SaudeCard'
+import { SobreCard } from './sistema/SobreCard'
 import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
 import { RedeCard } from './sistema/RedeCard'
 import { BackupCard, BackupHistory, NETWORK_KEPT_NOTE, legacyRestoreNote } from './sistema/BackupCard'
@@ -121,12 +123,15 @@ function TrashCard() {
   const toast = useToast()
   const list = items || []
   async function restore(id) { try { await api.post('/api/admin/trash/restore', { id }); toast.success('Item restaurado'); refetch() } catch (e) { toast.error(e.message) } }
-  async function del(id) { if (!confirm('Excluir definitivamente? Não dá para recuperar depois.')) return; try { await api.post('/api/admin/trash/delete', { id }); toast.success('Excluído definitivamente'); refetch() } catch (e) { toast.error(e.message) } }
-  async function empty() { if (!confirm('Esvaziar a lixeira? Todos os itens serão apagados definitivamente.')) return; try { const r = await api.post('/api/admin/trash/empty', {}); toast.success((r.removed || 0) + ' item(ns) apagados'); refetch() } catch (e) { toast.error(e.message) } }
+  // Excluir de vez e esvaziar passam pelo ConfirmDialog (C12 do P3), não pelo confirm do
+  // navegador; o erro aparece no próprio diálogo, que continua aberto.
+  const [pending, setPending] = useState(null)
+  async function del(id) { await api.post('/api/admin/trash/delete', { id }); toast.success('Excluído definitivamente'); setPending(null); refetch() }
+  async function empty() { const r = await api.post('/api/admin/trash/empty', {}); toast.success((r.removed || 0) + ' item(ns) apagados'); setPending(null); refetch() }
   return (
     <Card>
       <CardHeader title={<span className="inline-flex items-center gap-2"><Trash2 size={16} /> Lixeira</span>} subtitle="Itens excluídos — restaure ou apague de vez"
-        action={list.length > 0 ? <Button size="sm" variant="secondary" icon={Trash2} onClick={empty}>Esvaziar</Button> : null} />
+        action={list.length > 0 ? <Button size="sm" variant="secondary" icon={Trash2} onClick={() => setPending({ kind: 'empty' })}>Esvaziar</Button> : null} />
       <CardBody className="space-y-2">
         {loading ? <p className="text-sm text-muted">Carregando…</p> : list.length === 0 ? (
           <p className="text-sm text-muted">A lixeira está vazia.</p>
@@ -138,10 +143,19 @@ function TrashCard() {
               <p className="text-xs text-subtle truncate">de {e.originalRel} · excluído {_when(e.deletedAt)}{e.size ? ' · ' + _human(e.size) : ''}</p>
             </div>
             <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restore(e.id)}>Restaurar</Button>
-            <Button size="sm" variant="ghost" icon={Trash2} className="text-danger" onClick={() => del(e.id)}>Excluir</Button>
+            <Button size="sm" variant="ghost" icon={Trash2} className="text-danger" onClick={() => setPending({ kind: 'delete', id: e.id, name: e.originalName || e.name })}>Excluir</Button>
           </div>
         ))}
       </CardBody>
+      <ConfirmDialog
+        open={!!pending}
+        onClose={() => setPending(null)}
+        onConfirm={() => (pending?.kind === 'empty' ? empty() : del(pending.id))}
+        tone="danger"
+        title={pending?.kind === 'empty' ? 'Esvaziar a lixeira?' : 'Excluir definitivamente?'}
+        message={pending?.kind === 'empty' ? 'Todos os itens da lixeira serão apagados definitivamente.' : `${pending?.name ? `"${pending.name}" será apagado` : 'O item será apagado'} definitivamente. Não dá para recuperar depois.`}
+        confirmLabel={pending?.kind === 'empty' ? 'Esvaziar' : 'Excluir'}
+      />
     </Card>
   )
 }
@@ -258,7 +272,9 @@ export default function SistemaPage() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <PageHeader title="Sistema" subtitle="Rede, configurações e manutenção." />
+      <PageHeader title="Sistema" subtitle="Rede, configurações e manutenção." helpTopic="sistema" />
+
+      <SobreCard />
 
       <SaudeCard refreshKey={healthKey} />
 

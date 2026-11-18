@@ -2,7 +2,8 @@
   "name": "iclass-v3-web",
   "private": true,
   "version": "3.0.0",
-  "engines": { "node": ">=20.19.0" },
+  "engines": { "node": ">=20.19.0", "npm": ">=10" },
+  "packageManager": "npm@10.9.9",
   "type": "module",
   "scripts": {
     "dev": "vite",

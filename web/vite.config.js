@@ -1,9 +1,33 @@
+import fs from 'node:fs'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const require = createRequire(import.meta.url)
-const { computeSourceHash } = require('../backend/utils/buildIntegrity.js')
+const { appVersion, computeSourceHash } = require('../backend/utils/buildIntegrity.js')
+// Novidades (fase 3, A1 / P6-S2): o CHANGELOG.md da raiz entra no bundle como texto, pelo
+// módulo virtual:iclass-changelog (src/lib/changelog.js), e no hash do build
+// (ROOT_BUILD_FILES de backend/utils/buildIntegrity.js). Um módulo virtual em vez de
+// importar '../CHANGELOG.md?raw' de fora de web/: o Vite recusa ler arquivo fora da pasta
+// do projeto (server.fs) no servidor de desenvolvimento e nos testes.
+const CHANGELOG_FILE = fileURLToPath(new URL('../CHANGELOG.md', import.meta.url))
+const CHANGELOG_MODULE = 'virtual:iclass-changelog'
+
+function changelogModule() {
+  const resolvedId = `\0${CHANGELOG_MODULE}`
+  return {
+    name: 'iclass-changelog',
+    resolveId(source) {
+      return source === CHANGELOG_MODULE ? resolvedId : null
+    },
+    load(id) {
+      if (id !== resolvedId) return null
+      this.addWatchFile(CHANGELOG_FILE)
+      return `export default ${JSON.stringify(fs.readFileSync(CHANGELOG_FILE, 'utf8'))}\n`
+    },
+  }
+}
 const { toServableAssetName } = require('../backend/utils/staticAssets.js')
 
 // base '/' porque o Express serve o build na raiz (web/dist). Em dev, proxy /api, /uploads, /imagens e apostilas .md.
@@ -12,9 +36,12 @@ const { toServableAssetName } = require('../backend/utils/staticAssets.js')
 // depois de uma atualização (src/lib/buildVersion.js).
 export default defineConfig(({ command }) => ({
   base: '/',
-  plugins: [react()],
+  plugins: [react(), changelogModule()],
   define: {
     __ICLASS_BUILD__: JSON.stringify(command === 'build' ? computeSourceHash() : ''),
+    // Versão do IClass (package.json da raiz, fonte única; D7 do P6): a barra lateral e o
+    // cartão Sobre o IClass mostram a mesma que o servidor (/api/health, src/lib/appVersion.js).
+    __ICLASS_VERSION__: JSON.stringify(appVersion()),
   },
   build: {
     rollupOptions: {

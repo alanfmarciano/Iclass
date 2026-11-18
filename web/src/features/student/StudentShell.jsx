@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
@@ -26,6 +26,10 @@ const NAV = [
   { to: '/aluno/calendario', icon: CalendarDays, text: 'Calendário' },
   { to: '/aluno/conta', icon: UserRound, text: 'Minha conta' },
   { to: '/aluno/meus-dados', icon: ShieldCheck, text: 'Meus dados' },
+  // Ajuda do aluno (fase 3, A1, OPS-13): a página pública /ajuda/aluno, a mesma do
+  // "Problemas para entrar?" do login. Fica por último (os quatro primeiros itens vão para
+  // a barra de baixo do visual Lumen).
+  { to: '/ajuda/aluno', icon: CircleHelp, text: 'Ajuda' },
 ]
 // A tela da prova chega sob demanda (lib/lazyPage.js). Dois segundos depois de o portal
 // abrir, o navegador já busca o arquivo dela, uma vez: quando o professor libera a

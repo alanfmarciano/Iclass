@@ -1,10 +1,18 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive } from 'lucide-react'
+import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive, CircleHelp } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
 import { canAccessAdminPath } from '../../lib/adminPermissions'
 import { useBranding } from '../../context/BrandingProvider'
 import { useApi } from '../../hooks/useApi'
+import { ConnectionStatus } from './ConnectionStatus'
+
+// Ajuda (fase 3, A1 / P6-S9, OPS-13): o último grupo dos dois menus, para toda conta do
+// painel (sem permissão própria). /ajuda abre com ou sem curso escolhido
+// (AdminCourseGate INSTITUTION_PATHS).
+const HELP_GROUP = { label: 'Ajuda', items: [
+  { to: '/ajuda', icon: CircleHelp, text: 'Ajuda', always: true },
+] }
 
 const COURSE_GROUPS = [
   { label: 'Visão geral', items: [
@@ -30,6 +38,7 @@ const COURSE_GROUPS = [
     { to: '/calendario', icon: CalendarDays, text: 'Calendário' },
     { to: '/forum', icon: MessagesSquare, text: 'Fórum & Dúvidas' },
   ] },
+  HELP_GROUP,
 ]
 
 const INSTITUTION_GROUPS = [
@@ -47,6 +56,7 @@ const INSTITUTION_GROUPS = [
     { to: '/auditoria', icon: ScrollText, text: 'Auditoria', adminOnly: true },
     { to: '/lgpd', icon: ShieldCheck, text: 'Privacidade (LGPD)', adminOnly: true },
   ] },
+  HELP_GROUP,
 ]
 
 export function getAdminNavGroups(auth, pendingEnrollments = 0) {
@@ -96,7 +106,7 @@ export function Sidebar({ open, onNavigate }) {
         ))}
       </nav>
       <div className="border-t border-border px-5 py-4">
-        <div className="flex items-center gap-2 text-[11px] text-subtle"><span className="h-1.5 w-1.5 rounded-full bg-success shadow-[0_0_10px_var(--success)]" />Sistema ativo <span className="ml-auto">v3</span></div>
+        <div className="flex items-center gap-2 text-[11px] text-subtle"><ConnectionStatus /></div>
       </div>
     </aside>
   )

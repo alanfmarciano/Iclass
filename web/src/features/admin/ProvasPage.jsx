@@ -815,7 +815,7 @@ export default function ProvasPage() {
         />
       ) : (
       <>
-      <PageHeader title="Provas" subtitle={`Monte e aplique avaliações · ${courseName || selectedCourse?.name || activeCourseId} · ${activeClassName}.`}>
+      <PageHeader title="Provas" helpTopic="provas" subtitle={`Monte e aplique avaliações · ${courseName || selectedCourse?.name || activeCourseId} · ${activeClassName}.`}>
         <Button variant="secondary" icon={Plus} onClick={openNewEditor} disabled={!courseId || !activeModule}>Nova prova</Button>
         <div className="grid grid-cols-3 gap-2 min-w-[360px]">
           <div className="rounded-lg border border-border bg-surface px-3 py-2">

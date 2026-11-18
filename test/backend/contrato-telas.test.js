@@ -491,7 +491,6 @@ const NATIVE_DIALOGS_LEFT = {
     'features/admin/EditorPage.jsx': 2,
     'features/admin/IdentidadePage.jsx': 1,
     'features/admin/ResultadosPage.jsx': 1,
-    'features/admin/SistemaPage.jsx': 2,
     'features/admin/TurmaPresencaConfig.jsx': 1,
 };
 // Exceções combinadas no plano (a tela muda antes de quem troca a caixa dela).
