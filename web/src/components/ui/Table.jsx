@@ -1,7 +1,28 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Search, ArrowUpDown, MoreVertical } from 'lucide-react'
 import { EmptyState } from './EmptyState'
-// Tabela padrão: busca + ordenação + estado vazio + ações em linha (menu ⋯).
+import { compareText, matchesSearch } from '../../lib/textSearch'
+
+// Valor sem conteúdo para ordenar (fica no fim da lista nas duas direções).
+function isBlank(value) {
+  return value === null || value === undefined || (typeof value === 'string' && value.trim() === '')
+}
+
+// Ordem de duas linhas pela coluna: número com número pelo valor; o resto em ordem
+// alfabética do português (compareText: "ana, Ângela, Bruno", "Turma 2" antes de
+// "Turma 10"). Vazio vai para o fim nas duas direções; empate mantém a ordem recebida.
+export function compareTableValues(a, b, dir = 1) {
+  const blankA = isBlank(a)
+  const blankB = isBlank(b)
+  if (blankA || blankB) return blankA === blankB ? 0 : (blankA ? 1 : -1)
+  if (typeof a === 'number' && typeof b === 'number') return (a - b) * dir
+  if (typeof a === 'boolean' && typeof b === 'boolean') return (Number(a) - Number(b)) * dir
+  if (a instanceof Date && b instanceof Date) return ((a.getTime() || 0) - (b.getTime() || 0)) * dir
+  return compareText(a, b) * dir
+}
+
+// Tabela padrão: busca + ordenação + estado vazio + ações em linha (menu ⋯). Busca e
+// ordem pela regra única de web/src/lib/textSearch.js (CRIT-07).
 // Seleção (selectable) e paginação (paginated) são opcionais e desligadas por padrão,
 // para não alterar o comportamento das telas que já usam este componente.
 export function DataTable({
@@ -14,8 +35,10 @@ export function DataTable({
   const [page, setPage] = useState(1)
   const filtered = useMemo(() => {
     let r = rows
-    if (q && searchKeys.length) r = r.filter((x) => searchKeys.some((k) => String(x[k]).toLowerCase().includes(q.toLowerCase())))
-    if (sort.key) r = [...r].sort((a, b) => (a[sort.key] > b[sort.key] ? 1 : -1) * sort.dir)
+    // Busca sem acento e por palavras (matchesSearch): "joao" acha "João"; campo ausente
+    // não vira o texto 'undefined' (antes, "und" casava com toda linha sem o campo).
+    if (q && searchKeys.length) r = r.filter((x) => matchesSearch(searchKeys.map((k) => x[k]), q))
+    if (sort.key) r = [...r].sort((a, b) => compareTableValues(a[sort.key], b[sort.key], sort.dir))
     return r
   }, [rows, q, sort, searchKeys])
 

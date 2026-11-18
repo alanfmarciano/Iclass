@@ -70,6 +70,9 @@ describe('TurmasPage · cursos', () => {
 
     await user.click(screen.getByRole('button', { name: 'Excluir' }))
     const confirm = screen.getByRole('dialog', { name: 'Excluir curso?' })
+    // O curso excluído pode ser restaurado: o diálogo não diz mais que não tem volta (C0a).
+    expect(confirm).toHaveTextContent('O curso ficará desativado e poderá ser restaurado.')
+    expect(confirm).not.toHaveTextContent('não pode ser desfeita')
     await user.click(within(confirm).getByRole('button', { name: 'Excluir' }))
     await waitFor(() => expect(mocks.del).toHaveBeenCalledWith('/api/admin/courses/DES', { timeoutMs: 0 }))
   })

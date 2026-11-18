@@ -9,6 +9,7 @@ import { Input } from '../../components/ui/Input'
 import { Textarea } from '../../components/ui/Textarea'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { Modal } from '../../components/ui/Modal'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { RoomAddressButton } from './RoomAddress'
 import { useApi } from '../../hooks/useApi'
@@ -28,6 +29,7 @@ import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
+import { compareText, matchesSearch } from '../../lib/textSearch'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -421,6 +423,10 @@ export default function MonitorPage() {
   const [finishSummary, setFinishSummary] = useState(null)
   const [finishBusy, setFinishBusy] = useState(null)
   const [releaseBusy, setReleaseBusy] = useState(false)
+  // Diálogo aberto no lugar das caixas do navegador (C12 do P3, fundação C0a): o prompt e
+  // o confirm congelavam a página, e o polling do Monitor parava junto. { kind:
+  // 'message'|'time'|'version'|'release', email, name, value }.
+  const [actionDialog, setActionDialog] = useState(null)
   const [reportGroups, setReportGroups] = useState([])
   const [reportTotal, setReportTotal] = useState(0)
   const [previewIssue, setPreviewIssue] = useState(null)
@@ -501,11 +507,10 @@ export default function MonitorPage() {
     .filter((item) => !['cancelled'].includes(item.status))
     .map((application) => ({ key: application.examKey, application, config: { status: application.status } })), [applications])
   const applicationCatalogGroups = useMemo(() => {
-    const query = applicationSearch.trim().toLocaleLowerCase('pt-BR')
     const groups = new Map()
     applicationCatalog
       .filter((application) => application.status !== 'cancelled')
-      .filter((application) => !query || `${application.studentClass || ''} ${application.examKey || ''} ${examStatusLabel(application.status)}`.toLocaleLowerCase('pt-BR').includes(query))
+      .filter((application) => matchesSearch([application.studentClass, application.examKey, examStatusLabel(application.status)], applicationSearch))
       .forEach((application) => {
         const key = `${application.courseId || ''}::${application.studentClass || 'Sem turma'}`
         if (!groups.has(key)) groups.set(key, { key, className: application.studentClass || 'Sem turma', applications: [] })
@@ -513,7 +518,7 @@ export default function MonitorPage() {
       })
     return [...groups.values()]
       .map((group) => ({ ...group, applications: group.applications.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) }))
-      .sort((a, b) => a.className.localeCompare(b.className, 'pt-BR'))
+      .sort((a, b) => compareText(a.className, b.className))
   }, [applicationCatalog, applicationSearch])
 
   useEffect(() => {
@@ -855,15 +860,22 @@ export default function MonitorPage() {
     } catch (e) { toast.error(e.message) }
   }
 
-  async function broadcast(targetEmail = null) {
-    const messageText = prompt(targetEmail ? 'Mensagem para o aluno:' : 'Mensagem para a turma:')
+  function broadcast(targetEmail = null) {
+    setActionDialog({ kind: 'message', email: targetEmail, name: targetEmail ? studentLabel(targetEmail) : '' })
+  }
+
+  // Erro do envio aparece no próprio diálogo (ConfirmDialog), que continua aberto com o texto.
+  async function sendBroadcast(targetEmail, messageText) {
     if (!messageText) return
-    try {
-      await api.post('/api/admin/send-broadcast-message', { studentClass: className, courseId, examKey, applicationId, targetEmail, messageText })
-      toast.success('Aviso enviado')
-      loadMessageHistory()
-    }
-    catch (e) { toast.error(e.message) }
+    await api.post('/api/admin/send-broadcast-message', { studentClass: className, courseId, examKey, applicationId, targetEmail, messageText })
+    toast.success('Aviso enviado')
+    setActionDialog(null)
+    loadMessageHistory()
+  }
+
+  function studentLabel(email) {
+    const row = rows.find((item) => item.email === email)
+    return row?.name || email
   }
 
   async function loadMessageHistory() {
@@ -948,17 +960,30 @@ export default function MonitorPage() {
     catch (e) { toast.error(e.message) }
   }
 
-  async function adjustOne(email) {
-    const minutes = Number(prompt('Minutos para adicionar ou remover:', '5'))
-    if (!Number.isFinite(minutes)) return
-    addTime(email, minutes)
+  // Cancelar não envia nada (com o prompt, Cancelar virava um ajuste de 0 minutos).
+  function adjustOne(email) {
+    setActionDialog({ kind: 'time', email, name: studentLabel(email), value: '5' })
   }
 
-  async function assignVersion(email) {
-    const version = prompt('Versão do aluno:', 'A')
+  async function confirmAdjustOne() {
+    const minutes = parseAdjustMinutes(actionDialog?.value)
+    if (minutes === null) return
+    const email = actionDialog.email
+    setActionDialog(null)
+    await addTime(email, minutes)
+  }
+
+  function assignVersion(email, currentVersion) {
+    setActionDialog({ kind: 'version', email, name: studentLabel(email), value: currentVersion || 'A' })
+  }
+
+  async function confirmAssignVersion() {
+    const version = normalizeVersionInput(actionDialog?.value)
     if (!version) return
-    try { await api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() }); toast.success('Versão atribuída'); refreshMonitor() }
-    catch (e) { toast.error(e.message) }
+    await api.post('/api/admin/assign-student-version', { studentEmail: actionDialog.email, examKey, applicationId, version })
+    toast.success('Versão atribuída')
+    setActionDialog(null)
+    refreshMonitor()
   }
 
   async function loadAnalytics() {
@@ -975,9 +1000,13 @@ export default function MonitorPage() {
     navigate(qs ? `/resultados?${qs}` : '/resultados')
   }
 
-  async function releaseGrades() {
+  function releaseGrades() {
     if (!applicationId) return
-    if (!window.confirm('Liberar as notas desta aplicação para os alunos? Eles passarão a ver a nota no portal.')) return
+    setActionDialog({ kind: 'release' })
+  }
+
+  async function confirmReleaseGrades() {
+    if (!applicationId) return
     setReleaseBusy(true)
     try {
       const params = new URLSearchParams()
@@ -994,7 +1023,10 @@ export default function MonitorPage() {
       const res = await api.post('/api/admin/submissions/publish', { ids, published: true })
       toast.success(`${res.updated ?? ids.length} nota(s) liberada(s) para os alunos.`)
     } catch (e) { toast.error(e.message) }
-    finally { setReleaseBusy(false) }
+    finally {
+      setReleaseBusy(false)
+      setActionDialog(null)
+    }
   }
 
   const totalStudents = rows.length
@@ -1297,7 +1329,7 @@ export default function MonitorPage() {
                         {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
                         {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLocked ? 'Reaberta com o tempo extra da turma: desbloqueie para o aluno continuar' : 'Reaberta com o tempo extra da turma'}</p>}
                       </td>
-                      <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email)}>{r.assignedVersion || 'A'}</Button></td>
+                      <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email, r.assignedVersion)}>{r.assignedVersion || 'A'}</Button></td>
                       <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
                       <td className="px-4 py-3 font-mono text-muted">{r.progress || '-'}</td>
                       <td className="px-4 py-3">
@@ -1443,7 +1475,7 @@ export default function MonitorPage() {
           </div>
           <p className="text-xs text-subtle">O tempo extra compensa os alunos que já tinham respondido à questão anulada.</p>
           <div className="max-h-[380px] space-y-2 overflow-auto">
-            {bankQuestions.filter((question) => !replaceIssue.search || String(question.questionText || '').toLowerCase().includes(replaceIssue.search.toLowerCase())).map((question) => (
+            {bankQuestions.filter((question) => matchesSearch(question.questionText, replaceIssue.search)).map((question) => (
               <label key={question.key} className={`block cursor-pointer rounded-lg border p-3 ${replaceIssue.bankQuestionKey === question.key ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}>
                 <div className="flex items-start gap-3">
                   <input type="radio" name="replacement-question" className="mt-1" checked={replaceIssue.bankQuestionKey === question.key} onChange={() => setReplaceIssue((current) => ({ ...current, bankQuestionKey: question.key }))} />
@@ -1451,7 +1483,7 @@ export default function MonitorPage() {
                 </div>
               </label>
             ))}
-            {bankQuestions.filter((question) => !replaceIssue.search || String(question.questionText || '').toLowerCase().includes(replaceIssue.search.toLowerCase())).length === 0 && (
+            {bankQuestions.filter((question) => matchesSearch(question.questionText, replaceIssue.search)).length === 0 && (
               <EmptyState icon={Library} title="Nenhuma questão compatível no banco" description="Importe ou crie questões em Provas antes de fazer a substituição." />
             )}
           </div>
@@ -1511,6 +1543,80 @@ export default function MonitorPage() {
         applicationId={applicationId}
         onOpenResults={() => { setAnswersFor(null); goToResults() }}
       />
+      <MonitorActionDialog
+        dialog={actionDialog}
+        onChange={(value) => setActionDialog((current) => current && { ...current, value })}
+        onClose={() => setActionDialog(null)}
+        onSendMessage={(text) => sendBroadcast(actionDialog?.email || null, text)}
+        onAdjustTime={confirmAdjustOne}
+        onAssignVersion={confirmAssignVersion}
+        onReleaseGrades={confirmReleaseGrades}
+      />
     </div>
+  )
+}
+
+// Limites do ajuste de tempo por aluno no diálogo (D20 do P3): de 30 minutos a menos a
+// 120 a mais, em minutos inteiros e diferente de zero.
+export const ADJUST_MINUTES_MIN = -30
+export const ADJUST_MINUTES_MAX = 120
+export const MONITOR_MESSAGE_MAX = 500
+const VERSION_MAX_CHARS = 10
+
+export function parseAdjustMinutes(value) {
+  const text = String(value ?? '').trim().replace(/^\u2212/, '-')
+  if (!/^[+-]?\d+$/.test(text)) return null
+  const minutes = Number(text)
+  if (!Number.isInteger(minutes) || minutes === 0) return null
+  if (minutes < ADJUST_MINUTES_MIN || minutes > ADJUST_MINUTES_MAX) return null
+  return minutes
+}
+
+export function normalizeVersionInput(value) {
+  return String(value ?? '').trim().toUpperCase().slice(0, VERSION_MAX_CHARS)
+}
+
+// Os quatro diálogos de ação do Monitor (mensagem, tempo, versão e liberar notas), todos
+// no ConfirmDialog. Os diálogos próprios da D20 do P3 (modelos de mensagem, botões
+// −5/+5/+10, só versões existentes, contagem das notas) chegam no P3-S8 sobre estes.
+function MonitorActionDialog({ dialog, onChange, onClose, onSendMessage, onAdjustTime, onAssignVersion, onReleaseGrades }) {
+  const kind = dialog?.kind
+  const who = dialog?.name || dialog?.email || ''
+  if (kind === 'message') {
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onSendMessage} tone="primary"
+        title={dialog.email ? 'Mensagem para o aluno' : 'Aviso para a turma'}
+        message={dialog.email ? `Aparece na tela da prova de ${who}.` : 'Aparece na tela da prova de todos os alunos desta aplicação.'}
+        requireReason reasonLabel="Mensagem" reasonMaxLength={MONITOR_MESSAGE_MAX} confirmLabel="Enviar" />
+    )
+  }
+  if (kind === 'time') {
+    const minutes = parseAdjustMinutes(dialog.value)
+    const invalid = minutes === null
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onAdjustTime} tone="primary"
+        title="Ajustar o tempo do aluno" message={`Minutos a mais ou a menos para ${who}. Use um número negativo para tirar tempo.`}
+        confirmLabel="Ajustar tempo" confirmDisabled={invalid}>
+        <Input label="Minutos" type="number" inputMode="numeric" min={ADJUST_MINUTES_MIN} max={ADJUST_MINUTES_MAX} step={1}
+          value={dialog.value ?? ''} onChange={(event) => onChange(event.target.value)} autoFocus
+          error={invalid && String(dialog.value ?? '').trim() !== '' ? `Use um número inteiro de ${ADJUST_MINUTES_MIN} a ${ADJUST_MINUTES_MAX}, diferente de zero.` : undefined} />
+      </ConfirmDialog>
+    )
+  }
+  if (kind === 'version') {
+    const version = normalizeVersionInput(dialog.value)
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onAssignVersion} tone="primary"
+        title="Versão da prova do aluno" message={`A versão define a ordem das questões de ${who}.`}
+        confirmLabel="Atribuir versão" confirmDisabled={!version}>
+        <Input label="Versão" value={dialog.value ?? ''} maxLength={VERSION_MAX_CHARS} autoFocus
+          onChange={(event) => onChange(event.target.value)} />
+      </ConfirmDialog>
+    )
+  }
+  return (
+    <ConfirmDialog open={kind === 'release'} onClose={onClose} onConfirm={onReleaseGrades} tone="primary"
+      title="Liberar as notas desta aplicação?" message="Os alunos passarão a ver a nota no portal."
+      confirmLabel="Liberar notas" />
   )
 }

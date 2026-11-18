@@ -17,8 +17,9 @@ import { useToast } from '../../context/ToastProvider'
 import {
   ANONYMIZED_STATUS, CLOSE_STATUS_OPTIONS, LIFECYCLE_REASON_MIN, STATUS_REASON_MAX,
   STUDENT_ANONYMIZE_KEEPS, STUDENT_ANONYMIZE_REMOVES, STUDENT_DB_LEFTOVER_NOTE, STUDENT_DELETE_KEEPS, STUDENT_DELETE_REMOVES,
-  backupReminder, sameStatus,
+  backupReminder, extraCountsText, sameStatus,
 } from './studentDeletion'
+import { matchesSearch } from '../../lib/textSearch'
 
 // Cadastros encerrados (H7c; FUN-03, decisão 4 do Alan), só do administrador. Lista quem
 // foi desligado (Inativo, Transferido, Evadido, Concluído) e os anonimizados, do mais
@@ -73,14 +74,13 @@ export default function CadastrosEncerradosPage() {
   const items = useMemo(() => (Array.isArray(closed.data?.items) ? closed.data.items : []), [closed.data])
   const years = minYears === '' ? null : Math.max(0, Number(minYears) || 0)
   const filtered = useMemo(() => {
-    const term = query.trim().toLowerCase()
     return items.filter((row) => {
       if (status && !sameStatus(row.status, status)) return false
       if (years !== null) {
         const age = yearsSince(row.since, now)
         if (age === null || age < years) return false
       }
-      if (term && ![row.name, row.nomeSocial, row.email, row.matricula].some((value) => String(value || '').toLowerCase().includes(term))) return false
+      if (!matchesSearch([row.name, row.nomeSocial, row.email, row.matricula], query)) return false
       return true
     })
   }, [items, status, years, query, now])
@@ -146,6 +146,7 @@ export default function CadastrosEncerradosPage() {
             {filtered.map((row) => {
               const age = yearsSince(row.since, now)
               const counts = row.counts || {}
+              const extraCounts = extraCountsText(counts, closed.data?.countLabels)
               return (
                 <Card key={row.email} className="p-4 space-y-3" data-testid="cadastro-encerrado">
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -160,7 +161,7 @@ export default function CadastrosEncerradosPage() {
                     {row.anonymized && row.anonymizedAt && <p>Anonimizado em {fmtDate(row.anonymizedAt)}.</p>}
                     {row.reason && <p className="text-muted break-words">Motivo: {row.reason}</p>}
                     {Array.isArray(row.classes) && row.classes.length > 0 && <p className="text-muted break-words">Turmas: {row.classes.map((entry) => entry.name).join(', ')}</p>}
-                    <p className="text-muted">Guardados: {plural(counts.submissions || 0, 'nota', 'notas')}, {plural(counts.attendance || 0, 'presença', 'presenças')}, {plural(counts.certificates || 0, 'certificado', 'certificados')}.</p>
+                    <p className="text-muted">Guardados: {plural(counts.submissions || 0, 'nota', 'notas')}, {plural(counts.attendance || 0, 'presença', 'presenças')}, {plural(counts.certificates || 0, 'certificado', 'certificados')}{extraCounts ? `, ${extraCounts}` : ''}.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {!row.anonymized && <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => open('reactivate', row)}>Reativar</Button>}

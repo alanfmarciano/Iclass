@@ -294,19 +294,133 @@ describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
       return Promise.resolve({})
     })
     mocks.post.mockResolvedValue({ updated: 1 })
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirm = vi.spyOn(window, 'confirm').mockImplementation(() => { throw new Error('caixa do navegador') })
     try {
       renderMonitor()
       await tick(50)
       fireEvent.click(screen.getByText('Liberar nota para o aluno'))
+      // Fase 3, C0a: o diálogo da tela pergunta antes (o confirm do navegador parava o polling).
+      const dialog = screen.getByRole('dialog', { name: 'Liberar as notas desta aplicação?' })
+      expect(urls('/api/admin/submissions?')).toHaveLength(0)
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Liberar notas' }))
       await tick(50)
       expect(urls('/api/admin/submissions?')).toHaveLength(1)
       expect(urls('/api/admin/submissions?')[0]).toContain('applicationId=app-antiga')
       expect(mocks.post).toHaveBeenCalledWith('/api/admin/submissions/publish', { ids: ['s1'], published: true })
+      expect(screen.queryByRole('dialog', { name: 'Liberar as notas desta aplicação?' })).toBeNull()
+      expect(confirm).not.toHaveBeenCalled()
     } finally {
       confirm.mockRestore()
       mocks.liveApplications = null
     }
+  })
+})
+
+// Fase 3, C0a (contrato C12 do P3): mensagem, tempo, versão e liberar notas no
+// ConfirmDialog, sem prompt nem confirm do navegador. Cancelar não envia nada (com o
+// prompt, Cancelar no tempo virava um ajuste de 0 minutos).
+describe('[UC-CONFIRMACAO-001] MonitorPage · diálogos das ações por aluno', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'B' }
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+  const posts = (path) => mocks.post.mock.calls.filter(([url]) => url === path)
+  let nativeSpies = []
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/message-history?')) return { messages: [] }
+      return {}
+    })
+    mocks.post.mockResolvedValue({ success: true })
+    nativeSpies = ['prompt', 'confirm', 'alert'].map((name) => vi.spyOn(window, name).mockImplementation(() => { throw new Error(`window.${name}`) }))
+  })
+  afterEach(() => {
+    for (const spy of nativeSpies) {
+      expect(spy).not.toHaveBeenCalled()
+      spy.mockRestore()
+    }
+    cleanup()
+  })
+
+  it('Tempo: Cancelar não ajusta; zero e fora do limite não confirmam; -5 vai como -5', async () => {
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Tempo' }))
+    let dialog = screen.getByRole('dialog', { name: 'Ajustar o tempo do aluno' })
+    expect(dialog).toHaveTextContent('Elisa')
+    const field = within(dialog).getByLabelText('Minutos')
+    expect(field).toHaveValue(5)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }))
+    expect(screen.queryByRole('dialog', { name: 'Ajustar o tempo do aluno' })).toBeNull()
+    expect(posts('/api/admin/adjust-student-time')).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tempo' }))
+    dialog = screen.getByRole('dialog', { name: 'Ajustar o tempo do aluno' })
+    const confirm = within(dialog).getByRole('button', { name: 'Ajustar tempo' })
+    for (const value of ['0', '', '121', '-31', '2.5']) {
+      fireEvent.change(within(dialog).getByLabelText('Minutos'), { target: { value } })
+      expect(confirm).toBeDisabled()
+    }
+    fireEvent.change(within(dialog).getByLabelText('Minutos'), { target: { value: '-5' } })
+    expect(confirm).not.toBeDisabled()
+    await act(async () => { fireEvent.click(confirm) })
+    await waitFor(() => expect(posts('/api/admin/adjust-student-time')).toHaveLength(1))
+    expect(posts('/api/admin/adjust-student-time')[0][1]).toMatchObject({ targetEmail: 'elisa@x.local', adjustmentMinutes: -5, applicationId: 'app-antiga' })
+    expect(screen.queryByRole('dialog', { name: 'Ajustar o tempo do aluno' })).toBeNull()
+  })
+
+  it('Msg: só envia com texto, aparado; erro do servidor fica no diálogo com o texto', async () => {
+    mocks.post.mockRejectedValueOnce(new Error('Sem conexão com o servidor.'))
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Msg' }))
+    const dialog = screen.getByRole('dialog', { name: 'Mensagem para o aluno' })
+    const field = within(dialog).getByLabelText('Mensagem')
+    expect(field).toHaveAttribute('maxLength', '500')
+    const send = within(dialog).getByRole('button', { name: 'Enviar' })
+    expect(send).toBeDisabled()
+    fireEvent.change(field, { target: { value: '  Faltam 10 minutos  ' } })
+    await act(async () => { fireEvent.click(send) })
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Sem conexão com o servidor.')
+    expect(field).toHaveValue('  Faltam 10 minutos  ')
+    await act(async () => { fireEvent.click(send) })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Mensagem para o aluno' })).toBeNull())
+    const sent = posts('/api/admin/send-broadcast-message')
+    expect(sent).toHaveLength(2)
+    expect(sent[1][1]).toMatchObject({ targetEmail: 'elisa@x.local', messageText: 'Faltam 10 minutos', applicationId: 'app-antiga' })
+    expect(mocks.toast.success).toHaveBeenCalledWith('Aviso enviado')
+  })
+
+  it('Aviso turma: o diálogo diz que vai para todos e envia sem aluno', async () => {
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Aviso turma' }))
+    const dialog = screen.getByRole('dialog', { name: 'Aviso para a turma' })
+    fireEvent.change(within(dialog).getByLabelText('Mensagem'), { target: { value: 'Confira se respondeu todas' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar' })) })
+    await waitFor(() => expect(posts('/api/admin/send-broadcast-message')).toHaveLength(1))
+    expect(posts('/api/admin/send-broadcast-message')[0][1]).toMatchObject({ targetEmail: null, messageText: 'Confira se respondeu todas' })
+  })
+
+  it('Versão: começa na versão atual, vai em maiúscula e Cancelar não envia', async () => {
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'B' }))
+    let dialog = screen.getByRole('dialog', { name: 'Versão da prova do aluno' })
+    expect(within(dialog).getByLabelText('Versão')).toHaveValue('B')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }))
+    expect(posts('/api/admin/assign-student-version')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'B' }))
+    dialog = screen.getByRole('dialog', { name: 'Versão da prova do aluno' })
+    fireEvent.change(within(dialog).getByLabelText('Versão'), { target: { value: '   ' } })
+    expect(within(dialog).getByRole('button', { name: 'Atribuir versão' })).toBeDisabled()
+    fireEvent.change(within(dialog).getByLabelText('Versão'), { target: { value: ' c ' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Atribuir versão' })) })
+    await waitFor(() => expect(posts('/api/admin/assign-student-version')).toHaveLength(1))
+    expect(posts('/api/admin/assign-student-version')[0][1]).toMatchObject({ studentEmail: 'elisa@x.local', version: 'C', applicationId: 'app-antiga' })
   })
 })
 

@@ -18,6 +18,7 @@ import { WeekAgenda } from './dashboard/WeekAgenda'
 import { DataQualityNote } from './dashboard/DataQualityNote'
 import { csvCell } from '../../lib/csv'
 import { snoozedWith } from './dashboard/snooze'
+import { compareOrdinal } from '../../lib/textSearch'
 
 // Dashboard v3 — "fila de trabalho do dia", não relatório em miniatura.
 // São 4 endpoints com volatilidades diferentes; cada seção carrega, falha e
@@ -104,7 +105,7 @@ export default function DashboardPage() {
         eventos.push({ id: `app_${prox.id}`, eventDate: data, eventType: 'prova', title: prox.titulo, subtitle: 'aplicação agendada', startTime: '' })
       }
     }
-    return eventos.sort((a, b) => a.eventDate.localeCompare(b.eventDate) || String(a.startTime).localeCompare(String(b.startTime))).slice(0, 6)
+    return eventos.sort((a, b) => compareOrdinal(a.eventDate, b.eventDate) || compareOrdinal(a.startTime, b.startTime)).slice(0, 6)
   }, [calendar.data, now.data])
 
   // Qualidade dos dados — junto do conteúdo, não no porão da tela.

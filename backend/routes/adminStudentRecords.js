@@ -26,6 +26,7 @@ const {
     runStudentLifecycle,
     validateLifecycleRequest,
 } = require('../utils/studentLifecycle.js');
+const { studentDataCountLabels } = require('../utils/studentDataHandlers.js');
 
 const PERMISSION = 'students.destroy';
 
@@ -49,7 +50,9 @@ function createAdminStudentRecordsRouter() {
         validateAdminPermission(req, res, PERMISSION, () => {
             const index = lastStatusChangeIndex(db.memory.auditLogs);
             const items = closedStudentRows(db.memory, { sinceOf: student => studentStatusSince(student, index) });
-            res.json({ success: true, items, total: items.length, lastBackupAt: lastBackupAt() });
+            // Nome das contagens das coleções novas (handlers com count), para a tela.
+            const countLabels = studentDataCountLabels();
+            res.json({ success: true, items, total: items.length, lastBackupAt: lastBackupAt(), ...(Object.keys(countLabels).length ? { countLabels } : {}) });
         });
     });
 

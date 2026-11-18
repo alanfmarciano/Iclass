@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
-import { Button } from './Button'
+import { ConfirmDialog as BaseConfirmDialog } from './ConfirmDialog'
 const WIDTHS = {
   md: 'max-w-lg',
   lg: 'max-w-3xl',
@@ -76,15 +76,14 @@ export function Modal({ open, onClose, title, description, children, footer, siz
     document.body
   )
 }
-// note: texto opcional no lugar do aviso padrão (ex.: exclusão que vai para uma lixeira).
-export function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLabel = 'Confirmar', danger, note }) {
+// Chamadas antigas (fases 1 e 2) do diálogo de confirmação: o componente é o de
+// ConfirmDialog.jsx (fase 3, C0a), com o mesmo texto de antes no corpo. note: texto
+// opcional no lugar do aviso padrão (ex.: exclusão que vai para uma lixeira). Tela nova
+// importa de './ConfirmDialog' e usa message e tone.
+export function ConfirmDialog({ danger, note, tone, message, ...props }) {
   return (
-    <Modal open={open} onClose={onClose} title={title} description={description}
-      footer={<>
-        <Button variant="ghost" onClick={onClose}>Cancelar</Button>
-        <Button variant={danger ? 'destructive' : 'primary'} onClick={onConfirm}>{confirmLabel}</Button>
-      </>}>
-      <p className="text-sm text-muted">{note || `Esta ação ${danger ? 'não pode ser desfeita.' : 'será aplicada imediatamente.'}`}</p>
-    </Modal>
+    <BaseConfirmDialog {...props}
+      tone={tone || (danger ? 'danger' : 'primary')}
+      message={message ?? (note || `Esta ação ${danger ? 'não pode ser desfeita.' : 'será aplicada imediatamente.'}`)} />
   )
 }

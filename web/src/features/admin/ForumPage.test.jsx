@@ -72,19 +72,40 @@ describe('[UC-ERRO-003] Fórum do instrutor: modelo de resposta e edição respe
     expect(toastMock.warning).toHaveBeenCalledWith('O modelo foi cortado para a resposta caber em 5.000 caracteres.')
   })
 
-  it('a edição pelo prompt acima de 5.000 caracteres não é enviada e mostra o motivo', async () => {
+  // Fase 3 (C0a): a edição é um diálogo da tela, não o prompt do navegador. O campo tem o
+  // teto do servidor, e texto antigo maior que o teto (que o campo mostra inteiro) não é
+  // enviado: o motivo aparece na tela.
+  it('a edição acima de 5.000 caracteres não é enviada e mostra o motivo (diálogo, sem prompt)', async () => {
     renderWith([{ ...comment('c1', 'Dúvida da Ana'), replies: [{ id: 'r1', authorRole: 'Instrutor', authorName: 'Prof', text: 'Resposta', timestamp: '2026-11-10T10:00:00.000Z' }] }])
-    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('e'.repeat(5001))
+    const promptSpy = vi.spyOn(window, 'prompt')
     const replyRow = (await screen.findByText('Resposta')).parentElement.parentElement
     const editReply = within(replyRow).getByRole('button', { name: 'Editar' })
     fireEvent.click(editReply)
+    const dialog = await screen.findByRole('dialog', { name: 'Editar resposta' })
+    const field = within(dialog).getByLabelText('Texto da mensagem')
+    expect(field.value).toBe('Resposta')
+    expect(field).toHaveAttribute('maxLength', '5000')
+    fireEvent.change(field, { target: { value: 'e'.repeat(5001) } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Salvar' }))
     expect(toastMock.error).toHaveBeenCalledWith('O texto aceita no máximo 5.000 caracteres (este tem 5.001).')
     expect(apiMock.post).not.toHaveBeenCalledWith('/api/forum/reply/edit', expect.anything())
-    promptSpy.mockReturnValue('e'.repeat(5000))
-    fireEvent.click(editReply)
+    fireEvent.change(field, { target: { value: 'e'.repeat(5000) } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Salvar' }))
     await act(async () => {})
     expect(apiMock.post).toHaveBeenCalledWith('/api/forum/reply/edit', expect.objectContaining({ commentId: 'c1', replyId: 'r1', text: 'e'.repeat(5000) }))
+    expect(screen.queryByRole('dialog', { name: 'Editar resposta' })).not.toBeInTheDocument()
+    expect(promptSpy).not.toHaveBeenCalled()
     promptSpy.mockRestore()
+  })
+
+  it('Cancelar fecha a edição sem enviar nada', async () => {
+    renderWith([comment('c1', 'Dúvida da Ana')])
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Editar dúvida' })
+    fireEvent.change(within(dialog).getByLabelText('Texto da mensagem'), { target: { value: 'Outro texto' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }))
+    expect(screen.queryByRole('dialog', { name: 'Editar dúvida' })).not.toBeInTheDocument()
+    expect(apiMock.post).not.toHaveBeenCalledWith('/api/forum/comment/edit', expect.anything())
   })
 })
 
@@ -117,5 +138,25 @@ describe('[UC-ERRO-003] Fórum do instrutor: modelo de resposta recusado não li
     await act(async () => { release(true) })
     expect(screen.getByLabelText('Título')).toHaveValue('')
     expect(screen.getByLabelText('Texto')).toHaveValue('')
+  })
+})
+
+// Fase 3, C0a: textos da lixeira do Fórum com acento, e o diálogo de excluir não diz mais
+// que "não pode ser desfeita" (a mensagem vai para Excluídas e pode ser restaurada).
+describe('[UC-CONFIRMACAO-001] Fórum do instrutor: lixeira e diálogo de excluir', () => {
+  it('mostra "Excluídas" e o diálogo de excluir diz que dá para restaurar', async () => {
+    const comments = [
+      comment('c1', 'Dúvida ativa'),
+      { ...comment('c2', 'Dúvida apagada'), deleted: true, deletedAt: '2026-11-11T10:00:00.000Z' },
+    ]
+    apiMock.post.mockImplementation((url) => (url === '/api/admin/forum/all' ? Promise.resolve({ comments }) : Promise.resolve({ success: true })))
+    render(<MemoryRouter><ForumPage /></MemoryRouter>)
+    expect(await screen.findByText('Dúvida ativa')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Excluídas/ })).toBeInTheDocument()
+    expect(screen.queryByText(/Excluidas/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }))
+    const dialog = screen.getByRole('dialog', { name: 'Excluir mensagem?' })
+    expect(dialog).toHaveTextContent('A mensagem vai para Excluídas e pode ser restaurada.')
+    expect(dialog).not.toHaveTextContent('não pode ser desfeita')
   })
 })

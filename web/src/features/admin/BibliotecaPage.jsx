@@ -13,7 +13,9 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { copyText } from '../../lib/clipboard'
 import { ManualCopyModal } from '../../components/ui/ManualCopyModal'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { matchesSearch } from '../../lib/textSearch'
 
 const ICON = { image: ImageIcon, pdf: FileText, video: Film, link: Globe, zip: FileArchive, doc: FileText, sheet: FileText, other: File }
 function human(b) { if (!b) return ''; const u = ['B', 'KB', 'MB', 'GB']; let i = 0, n = b; while (n >= 1024 && i < 3) { n /= 1024; i++ } return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}` }
@@ -41,6 +43,8 @@ export default function BibliotecaPage() {
   const [copied, setCopied] = useState('')
   const [manualCopy, setManualCopy] = useState('')
   const [scope, setScope] = useState('class')
+  // Confirmação aberta (ConfirmDialog no lugar do confirm do navegador): { title, message, confirmLabel, tone, run }.
+  const [pendingConfirm, setPendingConfirm] = useState(null)
 
   const affectedClasses = useMemo(() => {
     const course = (summaries || []).find((item) => String(item.id) === String(courseId))
@@ -48,9 +52,9 @@ export default function BibliotecaPage() {
   }, [summaries, courseId])
 
   const rows = useMemo(() => {
-    const term = q.trim().toLowerCase()
+    // Busca sem acento, por palavras, no nome e nas etiquetas (lib/textSearch.js, CRIT-07).
     return (list || []).filter((e) => e.courseId === courseId)
-      .filter((e) => !term || (e.name || '').toLowerCase().includes(term) || (e.tags || []).some((t) => t.toLowerCase().includes(term)))
+      .filter((e) => matchesSearch([e.name, e.tags], q))
   }, [list, courseId, q])
 
   function reset() { setEditingId(null); setKind('file'); setFile(null); setName(''); setUrl(''); setTags(''); setDesc(''); setModuleId(''); setScope('class'); const i = document.getElementById('lib-file'); if (i) i.value = '' }
@@ -61,8 +65,27 @@ export default function BibliotecaPage() {
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  async function submit() {
-    if (scope === 'course' && !confirm(`Esta alteração substituirá este recurso em: ${affectedClasses.join(', ') || 'todas as turmas do curso'}. Deseja continuar?`)) return
+  const classesText = () => affectedClasses.join(', ') || 'todas as turmas do curso'
+
+  // Ao confirmar, a ação roda e o diálogo fecha (o erro já sai no aviso da própria ação).
+  async function runConfirmed() {
+    const current = pendingConfirm
+    if (!current) return
+    await current.run()
+    // A ação pode ter aberto outra confirmação (material usado em apostilas): só fecha esta.
+    setPendingConfirm((now) => (now === current ? null : now))
+  }
+
+  // Alteração no curso inteiro pede confirmação antes (vale para todas as turmas).
+  function submit() {
+    if (scope === 'course') {
+      setPendingConfirm({ title: 'Aplicar em todas as turmas do curso?', message: `Esta alteração substituirá este recurso em: ${classesText()}.`, confirmLabel: 'Continuar', tone: 'primary', run: save })
+      return
+    }
+    save()
+  }
+
+  async function save() {
     setBusy(true)
     try {
       const context = { courseId, studentClass: className, scope }
@@ -94,16 +117,30 @@ export default function BibliotecaPage() {
     else setManualCopy(u)
   }
 
-  async function remove(e) {
-    if (scope === 'course' && !confirm(`A exclusão será aplicada em: ${affectedClasses.join(', ') || 'todas as turmas do curso'}. Deseja continuar?`)) return
+  function remove(e) {
+    if (scope === 'course') {
+      setPendingConfirm({ title: 'Excluir em todas as turmas?', message: `A exclusão será aplicada em: ${classesText()}.`, confirmLabel: 'Excluir', tone: 'danger', run: () => removeNow(e) })
+      return
+    }
+    removeNow(e)
+  }
+
+  async function removeNow(e) {
     const context = { courseId, studentClass: className, scope }
     try { await api.post('/api/admin/library/delete', { id: e.id, ...context }); toast.success('Removido'); if (editingId === e.id) reset(); refetch() }
     catch (err) {
       if (err.status === 409) {
         const usados = (err.data && err.data.usedIn) || []
-        if (confirm(`Usado em ${usados.length} apostila(s): ${usados.join(', ')}. Excluir mesmo assim?`)) {
-          try { await api.post('/api/admin/library/delete', { id: e.id, force: true, ...context }); toast.success('Removido'); refetch() } catch (e2) { toast.error(e2.message) }
-        }
+        // Material citado em apostilas: a exclusão forçada pede outra confirmação.
+        setPendingConfirm({
+          title: 'Excluir material usado em apostilas?',
+          message: `Usado em ${usados.length} apostila(s): ${usados.join(', ')}.`,
+          confirmLabel: 'Excluir mesmo assim',
+          tone: 'danger',
+          run: async () => {
+            try { await api.post('/api/admin/library/delete', { id: e.id, force: true, ...context }); toast.success('Removido'); if (editingId === e.id) reset(); refetch() } catch (e2) { toast.error(e2.message) }
+          },
+        })
       } else toast.error(err.message)
     }
   }
@@ -154,7 +191,7 @@ export default function BibliotecaPage() {
 
       <div className="relative max-w-sm">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nome ou tag…" className="w-full h-9 pl-9 pr-3 rounded-md bg-surface border border-border text-text text-sm" />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nome ou tag…" aria-label="Buscar na biblioteca" className="w-full h-9 pl-9 pr-3 rounded-md bg-surface border border-border text-text text-sm" />
       </div>
 
       <PageState loading={loading} error={error} onRetry={refetch}>
@@ -187,6 +224,8 @@ export default function BibliotecaPage() {
         )}
       </PageState>
       <ManualCopyModal open={!!manualCopy} text={manualCopy} label="URL do material" onClose={() => setManualCopy('')} />
+      <ConfirmDialog open={!!pendingConfirm} onClose={() => setPendingConfirm(null)} onConfirm={runConfirmed}
+        title={pendingConfirm?.title} message={pendingConfirm?.message} confirmLabel={pendingConfirm?.confirmLabel} tone={pendingConfirm?.tone} />
     </div>
   )
 }

@@ -1,3 +1,5 @@
+import { compareText } from '../../lib/textSearch'
+
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
 export const VERSION_LABELS = LETTERS.slice(0, 10)
 
@@ -141,7 +143,7 @@ export function liveCorrectionDraft(question = {}) {
       text: alternative?.text || '',
       isCorrect: alternative?.isCorrect === true,
     }))
-    .sort((a, b) => a.letter.localeCompare(b.letter))
+    .sort((a, b) => compareText(a.letter, b.letter))
   const correctAnswer = String(question?.correctAnswer || alternatives.find((alternative) => alternative.isCorrect)?.letter || alternatives[0]?.letter || 'A').toUpperCase()
   return {
     text: question?.questionText || question?.text || '',

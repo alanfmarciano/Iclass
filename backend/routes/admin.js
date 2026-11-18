@@ -141,6 +141,8 @@ const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
 const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require('../utils/studentAnalytics.js');
 const { computeNow, computeQueue, computeTrends } = require('../utils/dashboardAggregates.js');
+const { assertClassOpen, classOfSubmission, classesOfSubmissions } = require('../utils/academicCalendar.js');
+const { renameStudentData } = require('../utils/studentDataHandlers.js');
 const attendanceUtil = require('../utils/attendance.js');
 const runtimePaths = require('../runtimePaths.js');
 const { isBlockedUploadName, validateUploadedFile } = require('../utils/uploadSecurity.js');
@@ -615,6 +617,8 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
         const before = groupResult().find(item => String(item.id) === String(target.id));
         if (!['archive', 'restore', 'select', 'policy'].includes(action)) return res.status(400).json({ error: 'Ação de resultado inválida.' });
         if (action === 'policy' && !VALID_POLICIES.has(policy)) return res.status(400).json({ error: 'Regra de cálculo inválida.' });
+        // Turma encerrada não muda a composição da nota (sem efeito até o B10).
+        if (!assertClassOpen(classesOfSubmissions(db.memory, group.map(groups.resolved)), { res })) return;
         // Grupo com alguma tentativa já publicada: o aluno já viu a nota, então mudar a
         // composição pede o motivo (CONF-09). Conferido antes de mexer em qualquer coisa.
         const motive = gradeChangeReason(req.body, { required: group.some(item => item.gradePublished === true) });
@@ -800,6 +804,8 @@ router.post('/api/admin/submissions/publish', (req, res) => {
         if (ids.size === 0) return res.status(400).json({ error: 'Selecione ao menos uma nota.' });
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
         const allowedIds = new Set(filterSubmissionsForAdmin(submissions, matchedAdmin).map(item => String(item.id)));
+        // Turma encerrada não publica nem oculta nota (sem efeito até o B10).
+        if (!assertClassOpen(classesOfSubmissions(db.memory, submissions.filter(item => ids.has(String(item.id)) && allowedIds.has(String(item.id)))), { res })) return;
         // Ocultar uma nota que o aluno já viu pede o motivo (CONF-09); publicar não. A
         // conferência vem antes de qualquer mudança: sem o motivo, nenhuma nota muda.
         const hidesPublished = !published && submissions.some(item => ids.has(String(item.id)) && allowedIds.has(String(item.id)) && item.gradePublished === true);
@@ -859,6 +865,8 @@ router.post('/api/admin/submissions/delete', (req, res) => {
             ));
         }
         if (removed.length === 0) return res.status(404).json({ error: 'Tentativa não encontrada.' });
+        // Turma encerrada não perde nota (sem efeito até o B10).
+        if (!assertClassOpen(classesOfSubmissions(db.memory, removed), { res })) return;
         // Excluir uma nota que o aluno já viu pede o motivo (CONF-09), antes de excluir.
         const motive = gradeChangeReason(req.body, { required: removed.some(item => item.gradePublished === true) });
         if (!motive.ok) return res.status(motive.status).json(motive.body);
@@ -1022,6 +1030,8 @@ router.post('/api/admin/submissions/restore', (req, res) => {
             restoredBy: matchedAdmin?.email || 'admin',
         };
         if (restored.student) restored.student.name = student.name || restored.student.name;
+        // Turma encerrada não recebe a nota de volta (sem efeito até o B10).
+        if (!assertClassOpen(classOfSubmission(db.memory, restored), { res })) return;
         const submissions = readJSON(DB_SUBMISSIONS_FILE);
 
         // A nota volta para o grupo de tentativas como ele está hoje: enquanto ela
@@ -1189,6 +1199,8 @@ router.post('/api/admin/submissions/create', (req, res) => {
         // Verifica configurações da prova para a turma
         const classes = readJSON(DB_CLASSES_FILE);
         const cls = findClassByNameAndCourse(classes, studentClass, studentCourseId) || classes.find(c => c.name === studentClass);
+        // Turma encerrada não recebe lançamento (sem efeito até o B10).
+        if (!assertClassOpen(cls, { res })) return;
         if (cls) {
             const course = getCourseForClass(cls);
             const structure = effectiveStructure(course?.id || cls.courseId, cls.name)?.structure || course?.structure || [];
@@ -1684,6 +1696,9 @@ function renameStudentEmailEverywhere(oldEmail, newEmail) {
             if (map && Object.prototype.hasOwnProperty.call(map, oldEmail)) { map[newEmail] = map[oldEmail]; delete map[oldEmail]; }
         });
     });
+    // Coleções novas da fase 3 (entregas, grupos, conversas...): cada uma pelo handler
+    // dela, depois dos blocos de cima (utils/studentDataHandlers.js).
+    renameStudentData(memory, oldEmail, newEmail);
 }
 
 // ---- Ações em lote (tela de Alunos) ----
@@ -2144,6 +2159,8 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
         // Marca presente em todas as aulas da grade do dia (fallback: 1 aula).
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)
             || (db.memory.classes || []).find(c => c.name === studentClass);
+        // Turma encerrada não recebe presença (sem efeito até o B10).
+        if (!assertClassOpen(cls, { res })) return;
         const gradeAulas = attendanceUtil.gradeForDate(cls, date);
         const aulas = (gradeAulas.length ? gradeAulas : [{ ordem: 1, inicio: '', disciplinaId: '' }])
             .map(a => ({ ordem: a.ordem, disciplinaId: a.disciplinaId || '', inicio: a.inicio || '', status: 'presente', hora: '' }));
@@ -2355,6 +2372,8 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         // `concluida` é só o marcador de workflow que a tela de chamada exibe.
         const concluida = req.body.concluida === true;
         if (!className || !courseId || !date || !entries) return res.status(400).json({ error: 'Curso, turma, data e lançamentos são obrigatórios.' });
+        // Turma encerrada não recebe chamada (sem efeito até o B10).
+        if (!assertClassOpen(findClassByNameAndCourse(db.memory.classes || [], className, courseId), { res })) return;
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
         const now = Date.now();
         const markedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
@@ -5393,7 +5412,11 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas, pendingEnrollments,
-        }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now) });
+        }, {
+            storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now),
+            // Pendências dos provedores da fase 3: só as que a permissão de quem vê alcança.
+            canAccess: permissao => canAccessAdminPermission(matchedAdmin, permissao),
+        });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};

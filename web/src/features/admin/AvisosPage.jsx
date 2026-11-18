@@ -15,6 +15,7 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { matchesSearch } from '../../lib/textSearch'
 
 function when(ts) { try { return new Date(ts).toLocaleString('pt-BR') } catch { return '' } }
 
@@ -51,16 +52,13 @@ export default function AvisosPage() {
   const [pendingDelete, setPendingDelete] = useState(null)
 
   const filtered = useMemo(() => {
-    const term = query.trim().toLowerCase()
     const today = new Date().toISOString().slice(0, 10)
     return visible.filter((a) => {
       if (view === 'fixados' && !a.pinned) return false
       if (view === 'alta' && a.priority !== 'alta') return false
       if (view === 'ativos' && a.expiresAt && a.expiresAt < today) return false
       if (view === 'expirados' && (!a.expiresAt || a.expiresAt >= today)) return false
-      if (!term) return true
-      return [a.title, a.message, a.authorName, a.author, a.targetValue]
-        .some((value) => String(value || '').toLowerCase().includes(term))
+      return matchesSearch([a.title, a.message, a.authorName, a.author, a.targetValue], query)
     })
   }, [visible, query, view])
   const pageSize = 10

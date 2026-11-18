@@ -25,6 +25,7 @@ const { normalizeEmail, studentClassEntries, isAnonymizedStudent, AUDITABLE_FIEL
 const legal = require('./legalDocuments.js');
 const { studentCourseId } = require('./legalAcceptance.js');
 const { keystrokeModeOf, keystrokeModeIsLegacy, KEYSTROKE_MODE_LABELS } = require('./keystrokePolicy.js');
+const studentData = require('./studentDataHandlers.js');
 
 const EXPORT_TYPE = 'iclass-dados-pessoais';
 const EXPORT_FORMAT_VERSION = 1;
@@ -492,7 +493,7 @@ function institutionOf(memory, student) {
     };
 }
 
-function sectionCounts(data) {
+function sectionCounts(data, extraKeys = []) {
     const size = value => (Array.isArray(value) ? value.length : isPlainObject(value) ? Object.keys(value).length : 0);
     const out = {
         submissions: size(data.submissions),
@@ -510,6 +511,8 @@ function sectionCounts(data) {
     };
     if (data.audit) out.audit = size(data.audit);
     if (data.openAttempts) out.openAttempts = size(data.openAttempts);
+    // Seções das coleções novas (handlers): itens da lista ou chaves do objeto.
+    extraKeys.forEach(key => { out[key] = size(data[key]); });
     return out;
 }
 
@@ -557,8 +560,19 @@ function buildStudentDataExport(memory, email, { audience = 'aluno', keystrokes 
         data.openAttempts = openAttemptsSection(memory, ownership);
         data.audit = auditEntries.map(auditEntryWithoutSecrets);
     }
+    // Seções das coleções novas da fase 3 (tarefas, grupos, conversas...), cada uma pelo
+    // handler dela, depois das de hoje (utils/studentDataHandlers.js). O handler recebe
+    // a versão (audience) e devolve só o que ela pode ver.
+    const extra = studentData.hasStudentDataHandlers('exportSection')
+        ? studentData.exportStudentDataSections(memory, studentData.studentContextFrom(student, ownership), audience)
+        : {};
+    Object.keys(extra).forEach(key => { data[key] = extra[key]; });
+    // Nome em português e colunas de cada seção nova, para a versão para imprimir (só
+    // quando há seção nova: sem handler, o arquivo é o de antes).
+    const extraSections = studentData.studentDataSectionsMeta(extra);
+    if (extraSections.length) data.extraSections = extraSections;
     data.examTitles = examTitlesSection(memory, student, data);
-    data.counts = sectionCounts(data);
+    data.counts = sectionCounts(data, Object.keys(extra));
     return data;
 }
 

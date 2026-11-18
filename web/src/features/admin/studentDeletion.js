@@ -6,6 +6,8 @@
 // - apagar de vez: POST /api/admin/students/purge (a cascata do antigo delete-student).
 // Se uma rota mudar, mude aqui e as linhas UC-NOTAS-004 e UC-ENCERRADOS-* da matriz.
 
+import { normalizeSearch } from '../../lib/textSearch'
+
 // Situações de cadastro encerrado que o "Desligar aluno" oferece (Inativo é o padrão).
 export const CLOSE_STATUS_OPTIONS = ['Inativo', 'Transferido', 'Evadido', 'Concluído']
 // Situação do cadastro anonimizado: só aparece em Cadastros encerrados, nunca no seletor.
@@ -39,7 +41,7 @@ export function backupReminder(lastBackupAt) {
 // diferenciar acento nem maiúscula: "Concluido" de banco antigo também conta.
 const CLOSED_KEYS = new Set([...CLOSE_STATUS_OPTIONS, ANONYMIZED_STATUS].map(foldStatus))
 function foldStatus(value) {
-  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+  return normalizeSearch(value)
 }
 export function isClosedStatus(status) {
   return CLOSED_KEYS.has(foldStatus(status))
@@ -50,4 +52,18 @@ export function sameStatus(a, b) {
 }
 export function isAnonymizedStatus(status) {
   return foldStatus(status) === foldStatus(ANONYMIZED_STATUS)
+}
+
+// Contagens das coleções novas da fase 3 (entregas de tarefa, grupos, conversas...) em
+// Cadastros encerrados: o servidor manda o nome de cada uma em countLabels
+// (backend/utils/studentDataHandlers.js). Ex.: "Trabalhos entregues: 2". As de hoje
+// (notas, presenças, certificados) têm frase própria e ficam de fora.
+const CORE_COUNTS = new Set(['submissions', 'attendance', 'certificates'])
+export function extraCountsText(counts, labels) {
+  const source = counts && typeof counts === 'object' ? counts : {}
+  const names = labels && typeof labels === 'object' ? labels : {}
+  return Object.keys(names)
+    .filter((key) => !CORE_COUNTS.has(key) && names[key])
+    .map((key) => `${names[key]}: ${Number(source[key]) > 0 ? Number(source[key]) : 0}`)
+    .join(', ')
 }

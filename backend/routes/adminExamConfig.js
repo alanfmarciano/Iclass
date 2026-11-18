@@ -20,6 +20,7 @@ const {
 } = require('../utils/examApplications.js');
 const { deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
+const { assertClassOpen } = require('../utils/academicCalendar.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     OPEN_APPLICATION_STATUSES,
@@ -722,6 +723,9 @@ function createAdminExamConfigRouter() {
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
                     return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
+                // Turma encerrada não tem gabarito corrigido nem nota recorrigida (sem efeito
+                // até o B10).
+                if (!assertClassOpen(cls, { res })) return;
                 if (!['waiting', 'running', 'paused'].includes(application.status)) {
                     return res.status(409).json({ error: 'A aplicação precisa estar ativa para corrigir a questão ao vivo.' });
                 }
@@ -764,6 +768,9 @@ function createAdminExamConfigRouter() {
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
                     return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
+                // Turma encerrada não tem questão anulada nem nota recorrigida (sem efeito até
+                // o B10).
+                if (!assertClassOpen(cls, { res })) return;
                 const number = Number(req.body.questionNumber);
                 const mode = req.body.mode === 'ponto_para_todos' ? 'ponto_para_todos' : 'remover_do_total';
                 if (!liveQuestion(application, number)) return res.status(404).json({ error: 'Questão não encontrada nesta aplicação.' });
@@ -804,6 +811,9 @@ function createAdminExamConfigRouter() {
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
                     return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
+                // Turma encerrada não tem questão trocada nem nota recorrigida (sem efeito até
+                // o B10).
+                if (!assertClassOpen(cls, { res })) return;
                 if (application.status !== 'running') {
                     return res.status(409).json({ error: 'A prova precisa estar em andamento para substituir uma questão.' });
                 }

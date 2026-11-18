@@ -30,6 +30,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { isDeepStrictEqual } = require('util');
+const { logError } = require('./errorLog.js');
 const { recordAudit } = require('./audit.js');
 const {
     ANONYMIZED_STATUS,
@@ -48,6 +50,7 @@ const {
 } = require('./gradebook.js');
 const { revokeStudentSession } = require('./authSessions.js');
 const fileStore = require('./storage.js');
+const studentData = require('./studentDataHandlers.js');
 
 const ANONYMIZE_WORD = 'ANONIMIZAR';
 const PURGE_WORD = 'APAGAR';
@@ -295,13 +298,32 @@ function anonymizedSubmission(submission, pseudonym) {
     return next;
 }
 
-// Contagens para a tela e para a entrada da auditoria (sem dado pessoal).
-function recordCounts(memory, owned) {
+// Contagens para a tela e para a entrada da auditoria (sem dado pessoal). Depois das de
+// hoje, as das coleções novas (handlers com count de studentDataHandlers.js).
+function recordCounts(memory, owned, aluno) {
     return {
         submissions: countBy(memory.submissions, item => item && item.student && owned(item, item.student.email)),
         attendance: countBy(memory.attendance, item => item && owned(item, item.studentEmail)),
         certificates: countBy(memory.certificates, item => item && owned(item, item.studentEmail)),
+        ...(aluno ? studentData.countStudentData(memory, aluno) : {}),
     };
+}
+
+// Cópia profunda da memória (só as coleções, sem funções) e a volta para ela: as chaves
+// que mudaram recebem a cópia de antes, as que não existiam saem e as que não mudaram
+// ficam como estão (mesmo objeto).
+function snapshotMemory(memory) {
+    return structuredClone(Object.fromEntries(Object.entries(memory).filter(([, value]) => typeof value !== 'function')));
+}
+
+function restoreMemory(memory, before) {
+    Object.keys(memory).forEach(key => {
+        if (typeof memory[key] === 'function') return;
+        if (!Object.prototype.hasOwnProperty.call(before, key)) delete memory[key];
+    });
+    Object.keys(before).forEach(key => {
+        if (!isDeepStrictEqual(memory[key], before[key])) memory[key] = before[key];
+    });
 }
 
 // Cascata única (os dois modos). Síncrona: chamada já com as teclas encontradas.
@@ -314,7 +336,12 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
     // Nos campos que a troca de e-mail renomeia ('renamed'), o e-mail atual é sempre
     // dele, mesmo em registro com data da época em que o e-mail era de outro aluno.
     const ownedRecord = (item, value, kind = 'renamed') => !!item && owns(value, item, kind);
-    const counts = recordCounts(memory, (item, value) => ownedRecord(item, value));
+    // O aluno para os handlers das coleções novas (cadastro como estava antes do passo).
+    const aluno = studentData.studentContextFrom(student, ownership);
+    const counts = recordCounts(memory, (item, value) => ownedRecord(item, value), aluno);
+    // Cópia da memória antes do passo, para voltar atrás se um handler falhar (só quando
+    // há handler; sem handler, o passo é o de antes).
+    const before = studentData.hasStudentDataHandlers(anonymize ? 'anonymize' : 'purge') ? snapshotMemory(memory) : null;
     const pseudonym = anonymize ? newPseudonym(memory) : null;
     const replacement = anonymize ? pseudonym.email : '';
     // O motivo digitado pode citar o aluno ("pedido da Ana Souza"): o nome, o e-mail e a
@@ -443,6 +470,23 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         });
     });
 
+    // Coleções novas da fase 3 (entregas, grupos, conversas...): cada uma pelo handler
+    // dela, depois dos blocos de cima (utils/studentDataHandlers.js) e antes da pasta ir
+    // para a lixeira. Handler que falha não deixa a memória pela metade: ela volta ao
+    // que era antes do passo e o pedido é recusado (nada foi gravado nem movido).
+    if (before) {
+        try {
+            if (anonymize) studentData.anonymizeStudentData(memory, aluno, pseudonym);
+            else studentData.purgeStudentData(memory, aluno);
+        } catch (error) {
+            restoreMemory(memory, before);
+            logError(`studentLifecycle: handler de coleção nova falhou (${mode})`, error);
+            throw new StudentLifecycleError(500, anonymize
+                ? 'Não foi possível anonimizar o cadastro: uma parte dos dados não pôde ser tratada. Nada foi alterado.'
+                : 'Não foi possível apagar o cadastro: uma parte dos dados não pôde ser tratada. Nada foi alterado.', { code: 'student_data_handler_failed' });
+        }
+    }
+
     // Pasta do aluno vai para a lixeira de arquivos (no anonimizar, com o nome do
     // pseudônimo). Homônimo sem matrícula usa a mesma pasta (matrícula + nome): aí só os
     // arquivos ligados à presença deste aluno vão.
@@ -538,6 +582,14 @@ function closedStudentRows(memory, { sinceOf }) {
     (memory.submissions || []).forEach(item => { if (item && item.student) bump(item.student.email, 'submissions'); });
     (memory.attendance || []).forEach(item => { if (item) bump(item.studentEmail, 'attendance'); });
     (memory.certificates || []).forEach(item => { if (item) bump(item.studentEmail, 'certificates'); });
+    // Contagens das coleções novas (handlers com count), por aluno encerrado, depois das
+    // de hoje: com replaceCore, a do handler substitui a de hoje (como em recordCounts).
+    if (studentData.hasStudentDataHandlers('count')) {
+        closed.forEach(student => {
+            const aluno = studentData.studentDataContext(memory, student);
+            if (aluno) Object.assign(byEmail.get(normalizeEmail(student.email)), studentData.countStudentData(memory, aluno));
+        });
+    }
     return closed.map(student => {
         const anonymized = isAnonymizedStudent(student);
         return {

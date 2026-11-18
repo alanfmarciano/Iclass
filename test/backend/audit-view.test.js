@@ -194,6 +194,19 @@ test('[UC-AUDITORIA-003] filtros: período no fuso, categoria, quem fez, aluno, 
     assert.deepEqual([page.body.total, page.body.items.map(item => item.id)], [5, ['a_nota', 'a_prova']]);
 });
 
+// Fase 3, C0a (CRIT-07): a Auditoria busca pela regra única de backend/utils/textSearch.js:
+// cada palavra em qualquer campo, sem acento e com os espaços juntados.
+test('[UC-BUSCA-001] Auditoria: busca e filtro de pessoa por palavras, sem acento, em campos diferentes', async () => {
+    const ids = async query => (await admin(request(app).get(`/api/admin/audit?${query}`))).body.items.map(item => item.id);
+    assert.deepEqual(await ids('q=revisao%20ana'), ['a_nota'], 'motivo e nome do aluno em campos diferentes');
+    assert.deepEqual(await ids('q=ALUNA%20%20%20revis%C3%A3o'), ['a_nota'], 'ordem trocada, maiúscula, acento e espaços repetidos');
+    assert.deepEqual(await ids('q=revisao%20telefone'), [], 'todas as palavras precisam aparecer');
+    assert.deepEqual(await ids('actor=julia%20professora'), ['a_nota', 'a_prova'], 'palavras do nome em outra ordem');
+    assert.deepEqual(await ids('student=souza%20ana'), ['a_nota', 'a_cadastro']);
+    assert.deepEqual(await ids('actor=prof@auditoria.local'), ['a_nota', 'a_prova'], 'com @ continua o e-mail exato');
+    assert.deepEqual(await ids('actor=prof@auditoria'), [], 'e-mail pela metade não casa');
+});
+
 test('[UC-AUDITORIA-003] filtro inválido responde 400 com o campo', async () => {
     for (const [query, field] of [['from=2026-02-30', 'from'], ['to=10/03/2026', 'to'], ['from=2026-03-10&to=2026-03-09', 'from'], ['category=qualquer', 'category']]) {
         const response = await admin(request(app).get(`/api/admin/audit?${query}`));

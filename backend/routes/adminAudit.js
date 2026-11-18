@@ -23,6 +23,7 @@ const {
 } = require('../utils/audit.js');
 const { buildCsv, examTitle } = require('../utils/gradebook.js');
 const settingsUtil = require('../utils/settings.js');
+const { normalizeSearch, matchesSearch } = require('../utils/textSearch.js');
 
 const AUDIT_PAGE_DEFAULT = 100;
 const AUDIT_PAGE_MAX = 500;
@@ -36,10 +37,9 @@ const CSV_VALUE_MAX = 2000;
 // Filtros de texto aceitos na query (todos opcionais).
 const TEXT_FILTERS = ['actor', 'student', 'category', 'action', 'courseId', 'studentClass', 'examKey', 'applicationId', 'q'];
 
-// Texto para comparar sem diferenciar maiúscula nem acento.
-function fold(value) {
-    return String(value ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-}
+// Texto para comparar sem diferenciar maiúscula nem acento: a normalização única da
+// busca (utils/textSearch.js, CRIT-07).
+const fold = normalizeSearch;
 
 function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -162,12 +162,13 @@ function personName(names, email) {
     return key ? names.get(key) || '' : '';
 }
 
-// Filtro de pessoa: com '@' é o e-mail exato; sem, um pedaço do e-mail ou do nome.
+// Filtro de pessoa: com '@' é o e-mail exato; sem, cada palavra num pedaço do e-mail ou
+// do nome ("joao silva" acha "João da Silva").
 function matchesPerson(filter, email, name) {
     if (!filter) return true;
     const wanted = fold(filter);
     if (wanted.includes('@')) return fold(email) === wanted;
-    return fold(email).includes(wanted) || fold(name).includes(wanted);
+    return matchesSearch([email, name], wanted);
 }
 
 function valueText(value) {
@@ -190,14 +191,11 @@ function entryMatches(item, filters, names) {
     if (filters.applicationId && String(item.applicationId || '') !== filters.applicationId) return false;
     if (filters.actor && !matchesPerson(filters.actor, item.actor, personName(names, item.actor))) return false;
     if (filters.student && !matchesPerson(filters.student, item.studentEmail, personName(names, item.studentEmail))) return false;
-    if (filters.q) {
-        const wanted = fold(filters.q);
-        const haystack = [
-            item.label, item.field, valueText(item.oldValue), valueText(item.newValue), item.reason,
-            item.actor, personName(names, item.actor), item.studentEmail, personName(names, item.studentEmail), item.targetEmail,
-        ].map(fold).join('\n');
-        if (!haystack.includes(wanted)) return false;
-    }
+    // Busca livre: cada palavra em qualquer um dos campos (sem acento, matchesSearch).
+    if (filters.q && !matchesSearch([
+        item.label, item.field, valueText(item.oldValue), valueText(item.newValue), item.reason,
+        item.actor, personName(names, item.actor), item.studentEmail, personName(names, item.studentEmail), item.targetEmail,
+    ], filters.q)) return false;
     return true;
 }
 

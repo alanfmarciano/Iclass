@@ -155,3 +155,44 @@ describe('Janela de impressão', () => {
     expect(open).not.toHaveBeenCalled()
   })
 })
+
+describe('[UC-FUNDACAO-003] Meus dados · seção de coleção nova (handler) na versão para imprimir', () => {
+  it('mostra a seção com o nome em português e as colunas do handler, com o texto escapado', () => {
+    const html = dataExportHtml(sample({
+      entregasTarefa: [{ tarefa: 'Relatório <i>final</i>', entregueEm: '2026-10-07T12:00:00Z', nota: 85, arquivos: ['a.pdf', 'b.pdf'] }],
+      extraSections: [{ key: 'entregasTarefa', label: 'Trabalhos entregues', columns: [
+        { field: 'tarefa', label: 'Tarefa', format: 'text' },
+        { field: 'entregueEm', label: 'Entregue em', format: 'date' },
+        { field: 'nota', label: 'Nota', format: 'grade' },
+        { field: 'arquivos', label: 'Arquivos', format: 'count' },
+      ] }],
+    }))
+    expect(html).toContain('<h2>Trabalhos entregues</h2>')
+    expect(html).toContain('<th>Tarefa</th><th>Entregue em</th><th>Nota</th><th>Arquivos</th>')
+    expect(html).toContain('Relatório &lt;i&gt;final&lt;/i&gt;')
+    expect(html).toContain('8,5')
+    expect(html).toContain('<td>2</td>')
+    expect(html).not.toContain('<i>final</i>')
+    // Antes de "Alterações do cadastro", como no arquivo (antes de examTitles).
+    expect(html.indexOf('Trabalhos entregues')).toBeLessThan(html.indexOf('Alterações do cadastro'))
+  })
+
+  it('sem colunas, usa as chaves dos registros; lista vazia diz que não há registro; arquivo sem extraSections fica como antes', () => {
+    const html = dataExportHtml(sample({
+      grupos: [{ grupo: 'Equipe A', papel: 'membro' }, { grupo: 'Equipe B', desde: '2026-10-01' }],
+      vazia: [],
+      perfilExtra: { apelido: 'Aninha' },
+      extraSections: [
+        { key: 'grupos', label: 'Grupos', columns: null },
+        { key: 'vazia', label: 'Conversas', columns: null },
+        { key: 'perfilExtra', label: 'Outros dados', columns: null },
+        { key: 'naoVeio', label: 'Não veio', columns: null },
+      ],
+    }))
+    expect(html).toContain('<th>grupo</th><th>papel</th><th>desde</th>')
+    expect(html).toContain('<h2>Conversas</h2><p class="empty">Nenhum registro.</p>')
+    expect(html).toContain('<th>apelido</th><td>Aninha</td>')
+    expect(html).not.toContain('Não veio')
+    expect(dataExportHtml(sample())).toBe(dataExportHtml(sample({ extraSections: [] })))
+  })
+})

@@ -6,6 +6,7 @@ import { Card, CardBody } from '../../components/ui/Card'
 import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useApi } from '../../hooks/useApi'
+import { compareText, matchesSearch } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 
@@ -16,10 +17,6 @@ export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identid
 
 function isDeleted(course) {
   return course?.deleted === true || course?.status === 'deleted' || course?.status === 'inactive' || !!course?.deletedAt
-}
-
-function normalized(value) {
-  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 }
 
 function contextKey(courseId, className) {
@@ -139,11 +136,11 @@ export function AdminCourseGate({ children }) {
     return allItems.filter(item => item.cls && item.course.id === value).map(item => item.key)
   }))
 
-  const query = normalized(search)
+  // Busca sem acento e por palavras (lib/textSearch.js, CRIT-07).
   const filtered = allItems.filter(item => {
-    if (!query) return true
+    if (!search) return true
     const schoolName = schoolMap.get(item.course.schoolId) || ''
-    return normalized(`${item.course.name} ${item.course.id} ${item.course.description || ''} ${schoolName} ${item.cls?.name || ''} ${item.cls?.period || ''}`).includes(query)
+    return matchesSearch([item.course.name, item.course.id, item.course.description, schoolName, item.cls?.name, item.cls?.period], search)
   })
 
   const groups = (() => {
@@ -154,8 +151,8 @@ export function AdminCourseGate({ children }) {
       map.get(schoolId).items.push(item)
     })
     return [...map.values()]
-      .map(group => ({ ...group, items: group.items.sort((a, b) => `${a.course.name} ${a.cls?.name || ''}`.localeCompare(`${b.course.name} ${b.cls?.name || ''}`, 'pt-BR')) }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+      .map(group => ({ ...group, items: group.items.sort((a, b) => compareText(a.course.name, b.course.name) || compareText(a.cls?.name, b.cls?.name)) }))
+      .sort((a, b) => compareText(a.name, b.name))
   })()
 
   const favoriteItems = filtered.filter(item => item.cls && expandedFavoriteKeys.has(item.key))

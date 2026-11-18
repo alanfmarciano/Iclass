@@ -14,6 +14,7 @@ import { consolidatedAverage, fmtGradeValue } from '../../lib/grades'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { usePolling } from '../../hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
+import { matchesSearch } from '../../lib/textSearch'
 
 // Nota e armazenada em escala 0-100 e exibida em 0-10.
 const toGrade = (score) => Number(score) / 10
@@ -446,10 +447,9 @@ export default function ProvasPage() {
   }, [statusFiltered])
 
   const visible = useMemo(() => {
-    const t = query.trim().toLowerCase()
     return statusFiltered.filter((s) => {
       if (mat !== 'all' && materiaOf(s.examKey) !== mat) return false
-      if (t && !`${s.examTitle || ''} ${s.examKey || ''}`.toLowerCase().includes(t)) return false
+      if (!matchesSearch([s.examTitle, s.examKey], query)) return false
       return true
     })
   }, [statusFiltered, mat, query])

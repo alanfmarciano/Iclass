@@ -14,6 +14,7 @@ import { TypedConfirm, typedConfirmMatches } from '../../../components/ui/TypedC
 import { useApi } from '../../../hooks/useApi'
 import { api } from '../../../lib/api'
 import { useToast } from '../../../context/ToastProvider'
+import { compareText } from '../../../lib/textSearch'
 
 export const ONEDRIVE_WARNING = 'A pasta de dados está dentro do OneDrive. Mova a pasta do IClass para fora dela (ex.: C:\\IClass) para evitar travas e cópias inconsistentes do banco.'
 
@@ -58,7 +59,7 @@ function formatMs(ms) {
 export function topCollections(rows, limit = 5) {
   return Object.entries(rows || {})
     .filter(([, count]) => Number(count) > 0)
-    .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
+    .sort((a, b) => Number(b[1]) - Number(a[1]) || compareText(a[0], b[0]))
     .slice(0, limit)
     .map(([name, count]) => ({ name, label: COLLECTION_LABELS[name] || name, rows: Number(count) }))
 }

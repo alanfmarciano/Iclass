@@ -62,6 +62,16 @@ describe('[UC-ENCERRADOS-003] Cadastros encerrados (/encerrados)', () => {
     expect(canAccessAdminPath({ accountRole: 'admin' }, '/encerrados')).toBe(true)
   })
 
+  it('[UC-FUNDACAO-003] contagem de coleção nova (handler) aparece com o nome que o servidor manda', () => {
+    mocks.data = {
+      ...mocks.data,
+      countLabels: { entregasTarefa: 'Trabalhos entregues' },
+      items: [row({ email: 'velha@x.local', name: 'Vera Velha', counts: { submissions: 2, attendance: 10, certificates: 1, entregasTarefa: 3 } })],
+    }
+    renderPage()
+    expect(within(cards()[0]).getByText('Guardados: 2 notas, 10 presenças, 1 certificado, Trabalhos entregues: 3.')).toBeTruthy()
+  })
+
   it('lista do mais antigo para o mais novo, com data, motivo e contagens; sem data aparece "data não registrada"', () => {
     renderPage()
     const list = cards()
