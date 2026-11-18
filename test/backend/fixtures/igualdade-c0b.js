@@ -111,7 +111,15 @@ function seedMemory() {
         name, email, status: 'Ativo', password, matricula: '', classes: [{ name: '1DES', courseId: 'DES' }], studentClass: '1DES', period: 'Manhã', ...extra,
     });
     db.memory.students = [
-        enrolled('Ana Souza', ANA, { matricula: '2026-001', phone: '11 98888-0000', notificationsSeenAt: BASE - 4 * DAY, notificationsSeenAtByContext: { 'DES::1DES': BASE - 3 * DAY } }),
+        // Pedido de matrícula pendente (e um já aprovado, que não conta): a fila do
+        // administrador traz o item Matrículas (J0: a única diferença declarada da fila).
+        enrolled('Ana Souza', ANA, {
+            matricula: '2026-001', phone: '11 98888-0000', notificationsSeenAt: BASE - 4 * DAY, notificationsSeenAtByContext: { 'DES::1DES': BASE - 3 * DAY },
+            enrollmentRequests: [
+                { id: 'req_ana_2des', courseId: 'DES', requestedClassName: '2DES', requestedPeriod: 'Tarde', status: 'pending', createdAt: BASE - 2 * DAY, updatedAt: BASE - 2 * DAY },
+                { id: 'req_ana_1des', courseId: 'DES', requestedClassName: '1DES', requestedPeriod: 'Manhã', status: 'approved', createdAt: BASE - 60 * DAY, updatedAt: BASE - 59 * DAY, reviewedBy: ADMIN },
+            ],
+        }),
         enrolled('Bia Lima', BIA, { matricula: '2026-002', status: 'Inativo', statusChangedAt: BASE - 30 * DAY, statusChangedBy: ADMIN, statusReason: 'Pedido da família da Bia Lima', guardian: { name: 'Rita Lima', phone: '11 9' } }),
         enrolled('Caio Prado', CAIO, { matricula: '2026-003', status: 'Transferido', statusChangedAt: BASE - 20 * DAY, statusChangedBy: ADMIN, statusReason: 'Mudou de escola' }),
         enrolled('Duda Reis', DUDA, { matricula: '2026-004' }),

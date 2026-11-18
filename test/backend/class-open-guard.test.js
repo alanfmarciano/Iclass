@@ -15,6 +15,15 @@
 // 2) sem efeito: a função deixa gravar mesmo numa turma com encerramento, e as rotas
 //    respondem como antes;
 // 3) o formato da recusa que o B10 vai usar (409, code 'class_closed', em português).
+//
+// Desvio declarado na J0 (não estava no relatório do C0b): FORA_DO_PORTAO também deixa de
+// fora rotas que gravam nota de forma indireta, ao entregar a tentativa vencida ou
+// encerrar a prova em andamento (control, access-token, time-adjustment,
+// server-exam-control, adjust-student-time, monitor-status, reset, sync, start-attempt e
+// validate-exam-token). Hoje não muda nada (a função não tem efeito); o B10, ao ligar o
+// efeito, confirma cada uma (continua fora com o motivo ou passa a chamar o portão). O
+// teste 'assertClassOpen está sem efeito' quebra quando o efeito for ligado, e é ali que
+// esta lista é revista.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

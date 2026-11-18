@@ -7,7 +7,10 @@
 // fixtures/igualdade-c0b.json é a saída do código de antes do C0b (222dcae), gerada por
 // fixtures/igualdade-c0b.js numa cópia daquele código (git archive 222dcae). O teste
 // roda o mesmo gerador no código de agora, sem nada registrado e com provedores e
-// handlers que não acrescentam nada, e compara.
+// handlers que não acrescentam nada, e compara. Na J0 o gerador ganhou um pedido de
+// matrícula pendente (o item Matrículas da fila) e a cópia foi gerada de novo, no 222dcae
+// e no 281029f (o main de antes da fase 3): as duas saídas são iguais byte a byte, então
+// a comparação vale também contra o código que o Alan tem hoje.
 //
 // Diferença de propósito: a subetapa que muda a saída de hoje acrescenta o caminho em
 // DIFERENCAS_ESPERADAS, com o motivo ('*' vale um nível; '**' no fim vale o resto). O
@@ -24,7 +27,14 @@ const GENERATOR = path.join(__dirname, 'fixtures/igualdade-c0b.js');
 const BEFORE = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/igualdade-c0b.json'), 'utf8'));
 
 // { caminho, motivo }
-const DIFERENCAS_ESPERADAS = [];
+const DIFERENCAS_ESPERADAS = [
+    {
+        // fila.2 é o item Matrículas (o teste de baixo confere que é ele e os dois textos).
+        caminho: 'fila.2.detalhe',
+        motivo: 'B0b (P4-S1): a Secretaria passou a ver e aprovar matrículas, e o texto '
+            + '"visível apenas para administrador" deixou de ser verdade; vale o do sino, "aguardando aprovação".',
+    },
+];
 
 function run(env = {}) {
     const result = spawnSync(process.execPath, [GENERATOR, ROOT], {
@@ -88,6 +98,22 @@ test('[UC-FUNDACAO-002] com provedores e handlers que não acrescentam nada, a s
     assert.equal(calls[1][1], 'bia@igualdade.local');
     assert.match(calls[1][2], /^anonimizado-[0-9a-f]{12}@anonimizado\.invalid$/);
     assert.deepEqual(calls[2], ['purge', 'caio@igualdade.local']);
+});
+
+test('[UC-FUNDACAO-002] fila: a única diferença da de antes é o texto do item Matrículas, igual ao do sino', () => {
+    const { output } = run();
+    const before = BEFORE.fila[2];
+    const after = output.fila[2];
+    assert.equal(before.id, 'matriculas');
+    assert.equal(before.detalhe, 'visível apenas para administrador · Matrículas');
+    assert.equal(after.detalhe, 'aguardando aprovação · Matrículas');
+    // Fora o texto, o item é o mesmo (contagem só do pedido pendente, destino e permissão).
+    assert.deepEqual({ ...after, detalhe: before.detalhe }, before);
+    assert.equal(before.count, 1);
+    // A diferença marcada vale só para este caminho: o resto da fila é igual.
+    assert.deepEqual(differences(BEFORE.fila, output.fila), ['2.detalhe']);
+    assert.equal(expected('fila.1.detalhe'), false);
+    assert.equal(expected('fila.2.titulo'), false);
 });
 
 test('o comparador acha diferença de valor, de chave e de ordem (não ficou cego)', () => {

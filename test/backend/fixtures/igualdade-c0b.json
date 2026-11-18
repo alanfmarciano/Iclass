@@ -107,6 +107,16 @@
    "permissao": "page.results"
   },
   {
+   "id": "matriculas",
+   "tipo": "matriculas",
+   "titulo": "Solicitações de matrícula pendentes",
+   "detalhe": "visível apenas para administrador · Matrículas",
+   "count": 1,
+   "tone": "early",
+   "href": "/matriculas",
+   "permissao": "page.students"
+  },
+  {
    "id": "conteudo_bloqueado",
    "tipo": "conteudo_bloqueado",
    "titulo": "Conteúdo de \"Unidade 1\" ainda bloqueado",
@@ -245,7 +255,26 @@
     }
    ],
    "period": "Manhã",
-   "requests": []
+   "requests": [
+    {
+     "id": "req_ana_2des",
+     "courseId": "DES",
+     "requestedClassName": "2DES",
+     "requestedPeriod": "Tarde",
+     "status": "pending",
+     "createdAt": 1792335600000,
+     "updatedAt": 1792335600000
+    },
+    {
+     "id": "req_ana_1des",
+     "courseId": "DES",
+     "requestedClassName": "1DES",
+     "requestedPeriod": "Manhã",
+     "status": "approved",
+     "createdAt": 1787324400000,
+     "updatedAt": 1787410800000
+    }
+   ]
   },
   "acceptances": {
    "terms": null,
@@ -479,7 +508,27 @@
     }
    ],
    "period": "Manhã",
-   "requests": []
+   "requests": [
+    {
+     "id": "req_ana_2des",
+     "courseId": "DES",
+     "requestedClassName": "2DES",
+     "requestedPeriod": "Tarde",
+     "status": "pending",
+     "createdAt": 1792335600000,
+     "updatedAt": 1792335600000
+    },
+    {
+     "id": "req_ana_1des",
+     "courseId": "DES",
+     "requestedClassName": "1DES",
+     "requestedPeriod": "Manhã",
+     "status": "approved",
+     "createdAt": 1787324400000,
+     "updatedAt": 1787410800000,
+     "reviewedBy": "adm@igualdade.local"
+    }
+   ]
   },
   "acceptances": {
    "terms": null,
@@ -849,7 +898,28 @@
     "notificationsSeenAt": 1792162800000,
     "notificationsSeenAtByContext": {
      "DES::1DES": 1792249200000
-    }
+    },
+    "enrollmentRequests": [
+     {
+      "id": "req_ana_2des",
+      "courseId": "DES",
+      "requestedClassName": "2DES",
+      "requestedPeriod": "Tarde",
+      "status": "pending",
+      "createdAt": 1792335600000,
+      "updatedAt": 1792335600000
+     },
+     {
+      "id": "req_ana_1des",
+      "courseId": "DES",
+      "requestedClassName": "1DES",
+      "requestedPeriod": "Manhã",
+      "status": "approved",
+      "createdAt": 1787324400000,
+      "updatedAt": 1787410800000,
+      "reviewedBy": "adm@igualdade.local"
+     }
+    ]
    },
    {
     "name": "Bia Lima",
@@ -1757,7 +1827,28 @@
     "notificationsSeenAt": 1792162800000,
     "notificationsSeenAtByContext": {
      "DES::1DES": 1792249200000
-    }
+    },
+    "enrollmentRequests": [
+     {
+      "id": "req_ana_2des",
+      "courseId": "DES",
+      "requestedClassName": "2DES",
+      "requestedPeriod": "Tarde",
+      "status": "pending",
+      "createdAt": 1792335600000,
+      "updatedAt": 1792335600000
+     },
+     {
+      "id": "req_ana_1des",
+      "courseId": "DES",
+      "requestedClassName": "1DES",
+      "requestedPeriod": "Manhã",
+      "status": "approved",
+      "createdAt": 1787324400000,
+      "updatedAt": 1787410800000,
+      "reviewedBy": "adm@igualdade.local"
+     }
+    ]
    },
    {
     "classes": [
@@ -2625,7 +2716,28 @@
     "notificationsSeenAt": 1792162800000,
     "notificationsSeenAtByContext": {
      "DES::1DES": 1792249200000
-    }
+    },
+    "enrollmentRequests": [
+     {
+      "id": "req_ana_2des",
+      "courseId": "DES",
+      "requestedClassName": "2DES",
+      "requestedPeriod": "Tarde",
+      "status": "pending",
+      "createdAt": 1792335600000,
+      "updatedAt": 1792335600000
+     },
+     {
+      "id": "req_ana_1des",
+      "courseId": "DES",
+      "requestedClassName": "1DES",
+      "requestedPeriod": "Manhã",
+      "status": "approved",
+      "createdAt": 1787324400000,
+      "updatedAt": 1787410800000,
+      "reviewedBy": "adm@igualdade.local"
+     }
+    ]
    },
    {
     "classes": [
