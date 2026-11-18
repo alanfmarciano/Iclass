@@ -416,3 +416,115 @@ test('[UC-PROVA-004] anulação e correção ao vivo recorrigem pelos pontos e m
         .expect(200);
     assert.equal(submission.pointsPossible, 9);
 });
+
+test('[UC-PROVA-004] editar a avaliação depois de aplicar não muda nota já dada; ao vivo o tipo não muda e o pedido passa pelo schema', async () => {
+    const app1 = await application();
+    const stored = db.memory.examApplications.find(item => item.id === app1.id);
+    // O servidor congelou no snapshot o tipo, os pontos e o gabarito (o navegador não manda).
+    const frozen = stored.versionSnapshots[0].questions;
+    assert.deepEqual(frozen.map(question => [question.type, question.points]), [
+        ['multiple_choice', 2], ['multiple_answer', 3], ['true_false', 1], ['numeric', 2], ['short_answer', 1], ['essay', 3],
+    ]);
+    assert.deepEqual(frozen[3].numeric, { value: 3.5, tolerance: 0.25, unit: 'ms' });
+    assert.deepEqual(frozen[4].acceptedAnswers, ['Máscara de sub-rede', 'máscara']);
+    const submission = db.memory.submissions.find(item => item.student?.email === students.ana.email && item.applicationId === app1.id);
+    const before = { score: submission.score, pointsEarned: submission.pointsEarned, pointsPossible: submission.pointsPossible };
+
+    // O professor edita a avaliação: a questão 1 passa a valer 20 e a 4 vira dissertativa.
+    const edited = QUESTIONS.map((question, index) => {
+        if (index === 0) return { ...question, points: 20 };
+        if (index === 3) return { type: 'essay', points: 5, text: 'Explique a latência.' };
+        return question;
+    });
+    await putEvaluation(edited).expect(200);
+    try {
+        // Anular a questão 1 recorrige a aplicação: a nota segue a prova que a aluna fez.
+        await request(app)
+            .post('/api/admin/annul-question')
+            .set('x-admin-session', adminToken)
+            .send({ applicationId: app1.id, questionNumber: 1, mode: 'ponto_para_todos', reason: 'recorreção depois de editar' })
+            .expect(200);
+        assert.deepEqual({ score: submission.score, pointsEarned: submission.pointsEarned, pointsPossible: submission.pointsPossible }, before);
+        const fourth = submission.gradedAnswers.find(answer => answer.questionNumber === 4);
+        assert.equal(fourth.type, 'numeric');
+        assert.equal(fourth.studentResponse, '3,6 ms');
+        assert.equal(fourth.pending, false);
+
+        // Correção ao vivo não troca o tipo de uma questão que os alunos estão respondendo.
+        const typeChange = await request(app)
+            .post('/api/admin/correct-live-question')
+            .set('x-admin-session', adminToken)
+            .send({ applicationId: app1.id, questionNumber: 4, question: { type: 'essay', text: 'Explique.', alternatives: [] } })
+            .expect(400);
+        assert.equal(typeChange.body.error, 'O tipo da questão (Numérica) não muda durante a aplicação.');
+        assert.equal(stored.versionSnapshots[0].questions[3].type, 'numeric');
+        // O pedido passa pelo schema da questão (antes não tinha nenhum).
+        const badType = await request(app)
+            .post('/api/admin/correct-live-question')
+            .set('x-admin-session', adminToken)
+            .send({ applicationId: app1.id, questionNumber: 4, question: { type: 7, text: 'x' } })
+            .expect(400);
+        assert.equal(badType.body.field, 'question.type');
+        const badQuestion = await request(app)
+            .post('/api/admin/correct-live-question')
+            .set('x-admin-session', adminToken)
+            .send({ applicationId: app1.id, questionNumber: 4, question: 'texto' })
+            .expect(400);
+        assert.equal(badQuestion.body.field, 'question');
+        const longText = await request(app)
+            .post('/api/admin/correct-live-question')
+            .set('x-admin-session', adminToken)
+            .send({ applicationId: app1.id, questionNumber: 4, question: { text: 'x'.repeat(20001) } })
+            .expect(400);
+        assert.equal(longText.body.field, 'question.text');
+        // O mesmo tipo, mandado de novo, passa.
+        await request(app)
+            .post('/api/admin/correct-live-question')
+            .set('x-admin-session', adminToken)
+            .send({ applicationId: app1.id, questionNumber: 4, question: { type: 'numeric', text: 'Latência média em ms?', alternatives: [] } })
+            .expect(200);
+        assert.deepEqual({ score: submission.score, pointsEarned: submission.pointsEarned, pointsPossible: submission.pointsPossible }, before);
+    } finally {
+        await putEvaluation(QUESTIONS).expect(200);
+    }
+});
+
+test('[UC-PROVA-004] estatística da prova escreve cada resposta por describeAnswer e não conta a dissertativa pendente como erro (contrato C3)', async () => {
+    const app1 = await application();
+    const analytics = await request(app)
+        .get(`/api/admin/exam-analytics/${encodeURIComponent(studentClass)}/${examKey}`)
+        .query({ applicationId: app1.id })
+        .set('x-admin-session', adminToken)
+        .expect(200);
+    const byNumber = Object.fromEntries(analytics.body.questions.map(question => [question.questionNumber, question]));
+    assert.deepEqual(byNumber[2].choices, { A: 1 });
+    assert.deepEqual(byNumber[4].choices, { '3,6 ms': 1 });
+    assert.deepEqual(byNumber[5].choices, { mascara: 1 });
+    assert.deepEqual(byNumber[6].choices, { 'Resposta escrita': 1 });
+    assert.deepEqual([byNumber[6].correct, byNumber[6].wrong, byNumber[6].pending], [0, 0, 1]);
+});
+
+test('[UC-PROVA-004] levar a avaliação para o banco deixa de fora os tipos que o banco ainda não guarda', async () => {
+    await application();
+    const before = (db.memory.questionBank || []).length;
+    const imported = await request(app)
+        .post('/api/admin/question-bank/import-evaluation')
+        .set('x-admin-session', adminToken)
+        .send({ examKey, category: 'Redes' })
+        .expect(200);
+    assert.equal(imported.body.importedCount, 2);
+    assert.deepEqual(imported.body.questions.map(question => question.originalNumber), [1, 3]);
+    assert.deepEqual(imported.body.skipped, [
+        { questionNumber: 2, type: 'multiple_answer' },
+        { questionNumber: 4, type: 'numeric' },
+        { questionNumber: 5, type: 'short_answer' },
+        { questionNumber: 6, type: 'essay' },
+    ]);
+    assert.equal(imported.body.message, '4 questões ficaram de fora: o banco de questões ainda guarda só questões de uma correta e de verdadeiro ou falso.');
+    const added = db.memory.questionBank.slice(before);
+    assert.equal(added.length, 2);
+    added.forEach(item => {
+        assert.equal(item.type, 'multiple_choice');
+        assert.equal(item.alternatives.filter(alternative => alternative.isCorrect).length, 1);
+    });
+});

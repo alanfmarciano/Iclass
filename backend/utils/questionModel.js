@@ -30,7 +30,7 @@
 // Questão antiga sem type é 'multiple_choice' e sem points vale 1 ponto (D1): o modelo só
 // é aplicado quando alguém salva; nada é reescrito no boot.
 const { QUESTION_TYPES, normalizeShortAnswer } = require('./examScoring.js');
-const { formatCount } = require('./inputSchema.js');
+const { bool, either, formatCount, list, num, shape, str } = require('./inputSchema.js');
 
 const LIMITS = Object.freeze({
     text: 20000,
@@ -367,11 +367,60 @@ function withLiveInheritance(raw, previous) {
     return merged;
 }
 
+// Tipo e tamanho de cada campo da questão no pedido (utils/inputSchema.js), o mesmo na
+// avaliação (PUT/POST /api/admin/evaluation) e na correção ao vivo
+// (/api/admin/correct-live-question). Os limites de verdade e as mensagens por questão
+// ("Questão 3: ...") são do modelo (normalizeQuestion); aqui os tetos são um pouco
+// maiores, para a mensagem do modelo aparecer no lugar da genérica.
+function questionInputSchema(options = {}) {
+    const text = (max, label) => str({ max, nullable: true, label });
+    const numberOrText = (label, max = 40) => either([num({ label }), str({ max, label })], { nullable: true, label });
+    return shape({
+        type: text(40, 'tipo da questão'),
+        points: numberOrText('pontos'),
+        text: text(20000, 'enunciado'),
+        questionText: text(20000, 'enunciado'),
+        alternatives: list(either([
+            str({ max: 2000, label: 'alternativa' }),
+            shape({ letter: text(5, 'letra da alternativa'), text: text(2000, 'alternativa'), isCorrect: bool({ nullable: true, label: 'alternativa correta' }) }, { label: 'alternativa' }),
+        ], { label: 'alternativas' }), { max: 26, nullable: true, label: 'alternativas' }),
+        correctAnswer: text(20, 'resposta correta'),
+        correctAnswers: list(str({ max: 5, label: 'respostas corretas' }), { max: 26, nullable: true, label: 'respostas corretas' }),
+        partialCredit: bool({ nullable: true, label: 'pontuação parcial' }),
+        numeric: shape({
+            value: numberOrText('valor da resposta numérica'),
+            tolerance: numberOrText('tolerância'),
+            unit: text(40, 'unidade'),
+        }, { nullable: true, label: 'resposta numérica' }),
+        acceptedAnswers: list(str({ max: 300, nullable: true, label: 'respostas aceitas' }), { max: 50, nullable: true, label: 'respostas aceitas' }),
+        review: text(20, 'revisão da resposta'),
+        expectedAnswer: text(5000, 'resposta esperada'),
+        rubric: list(shape({
+            id: text(40, 'critério da rubrica'),
+            nome: text(80, 'critério da rubrica'),
+            name: text(80, 'critério da rubrica'),
+            pontos: numberOrText('pontos do critério'),
+            points: numberOrText('pontos do critério'),
+        }, { label: 'rubrica' }), { max: 20, nullable: true, label: 'rubrica' }),
+        explanation: text(5000, 'explicação'),
+        difficulty: text(20, 'dificuldade'),
+        skills: list(str({ max: 80, nullable: true, label: 'habilidades' }), { max: 20, nullable: true, label: 'habilidades' }),
+        tags: list(str({ max: 40, nullable: true, label: 'etiquetas' }), { max: 20, nullable: true, label: 'etiquetas' }),
+        bankKey: text(100, 'questão do banco'),
+    }, { label: 'questão', ...options });
+}
+
 function normalizeQuestion(input, { index = 0, context = 'avaliacao', previous = null } = {}) {
     const fail = text => questionError(messageFor(context, index, text));
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('questão em formato inválido.');
     const raw = context === 'ao_vivo' ? withLiveInheritance(input, previous) : input;
     const type = normalizeType(raw.type, context === 'ao_vivo' ? previous : null, fail);
+    // Ao vivo o tipo é o da questão que os alunos estão respondendo: trocar descartaria as
+    // respostas já salvas no formato dele (letra, lista, número ou texto) e zeraria todos
+    // na recorreção. Questão de antes sem type é uma correta (D1).
+    if (context === 'ao_vivo' && previous && type !== normalizeType('', previous, fail)) {
+        throw fail(`o tipo da questão (${TYPE_LABELS[normalizeType('', previous, fail)]}) não muda durante a aplicação.`);
+    }
     const points = normalizePoints(raw.points, fail);
     const text = cleanText(raw.text || raw.questionText);
     if (!text) throw fail(context === 'ao_vivo' ? 'o enunciado da questão é obrigatório.' : 'informe o enunciado.');
@@ -425,4 +474,5 @@ module.exports = {
     TYPE_LABELS,
     normalizeEvaluationQuestions,
     normalizeQuestion,
+    questionInputSchema,
 };

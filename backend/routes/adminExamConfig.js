@@ -5,6 +5,8 @@ const { ensureExamToken, hashExamToken, normalizeExamToken } = require('../utils
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
 const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
 const {
+    attemptQuestion,
+    freezeSnapshotGrading,
     questionNumber,
     regradeSubmission,
     snapshotForAttempt,
@@ -21,7 +23,8 @@ const {
 const { deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
 const { assertClassOpen } = require('../utils/academicCalendar.js');
-const { normalizeQuestion } = require('../utils/questionModel.js');
+const { normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
+const { body, either, int, str } = require('../utils/inputSchema.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     OPEN_APPLICATION_STATUSES,
@@ -329,23 +332,30 @@ function liveQuestion(application, number, version = 'A') {
 
 // Questão corrigida ao vivo pelo modelo único (utils/questionModel.js, D3 do P3): as
 // letras são as do pedido (as originais) e o que o formulário do Monitor não manda
-// (tipo, pontos, gabarito da numérica e da resposta curta, explicação...) vem da questão
-// de antes (previous).
+// (pontos, gabarito da numérica e da resposta curta, explicação...) vem da questão de
+// antes (previous). O tipo não muda ao vivo (o modelo recusa com 400).
 function normalizeLiveQuestion(payload = {}, previous = null) {
     const question = normalizeQuestion(payload, { context: 'ao_vivo', previous });
     return { ...question, questionText: question.text };
 }
 
-// Questão da aplicação como a correção a vê: a do snapshot por cima da avaliação (o
-// snapshot montado pelo navegador traz só enunciado, alternativas e gabarito; o tipo e o
-// resto vêm da avaliação, como em questionsForAttempt).
+// Pedido da correção ao vivo: tipo e tamanho de cada campo (utils/inputSchema.js); a
+// questão passa pelo mesmo schema da avaliação.
+const LIVE_QUESTION_SCHEMA = body({
+    applicationId: str({ max: 100, nullable: true, label: 'aplicação' }),
+    questionNumber: either([int({ min: 1, max: 100000, label: 'número da questão' }), str({ max: 10, label: 'número da questão' })], { nullable: true, label: 'número da questão' }),
+    question: questionInputSchema({ nullable: true }),
+});
+
+// Questão da aplicação como a correção a vê: a do snapshot por cima da avaliação, com o
+// tipo, os pontos e o gabarito do snapshot (attemptQuestion, como em questionsForAttempt).
 function resolvedLiveQuestion(application, number) {
     const fromSnapshot = liveQuestion(application, number);
     if (!fromSnapshot) return null;
     const evaluation = db.memory.evaluations?.[application.examKey];
     const fromEvaluation = (Array.isArray(evaluation?.questions) ? evaluation.questions : [])
         .find((question, index) => questionNumber(question, index) === Number(number)) || null;
-    return { ...(fromEvaluation || {}), ...fromSnapshot };
+    return attemptQuestion(fromSnapshot, fromEvaluation, Number(number));
 }
 
 // Correção ao vivo de uma questão numa versão da prova: enunciado, textos e gabarito
@@ -723,6 +733,7 @@ function createAdminExamConfigRouter() {
     router.post('/api/admin/correct-live-question', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             try {
+                if (!LIVE_QUESTION_SCHEMA.check(req, res)) return;
                 const { application, cls } = applicationForAdminRequest(req.body.applicationId);
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
                     return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
@@ -1144,8 +1155,13 @@ function createAdminExamConfigRouter() {
                 questionNumbers: questionNumbers.map(Number),
                 examCode: examCode || null,
                 printSnapshot: printSnapshot || null,
+                // Tipo, pontos e gabarito de cada questão como estão na avaliação agora: a
+                // aplicação corrige por eles daqui em diante, mesmo que a avaliação mude.
                 versionSnapshots: Array.isArray(printSnapshot)
-                    ? printSnapshot.slice(0, VERSION_LABELS.length).map((snapshot, index) => ({ version: VERSION_LABELS[index], ...snapshot }))
+                    ? freezeSnapshotGrading(
+                        printSnapshot.slice(0, VERSION_LABELS.length).map((snapshot, index) => ({ version: VERSION_LABELS[index], ...snapshot })),
+                        Object.prototype.hasOwnProperty.call(db.memory.evaluations || {}, examKey) ? db.memory.evaluations[examKey] : null
+                    )
                     : [],
                 questionCount: parseInt(questionCount, 10) || questionNumbers.length,
                 excludedQuestions: Array.isArray(excludedQuestions) ? excludedQuestions.map(Number) : [],

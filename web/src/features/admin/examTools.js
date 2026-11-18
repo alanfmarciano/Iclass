@@ -131,6 +131,33 @@ export function buildExamVersions(evaluation, options = {}) {
   })
 }
 
+// Campos do modelo da questão (backend/utils/questionModel.js) que o editor da tela Provas
+// ainda não mostra: tipo, pontos e o gabarito dos tipos novos. Ficam guardados com a
+// questão do editor (question.model) e voltam no salvar, para uma avaliação com tipos não
+// virar "uma correta" de 1 ponto ao ser salva pela tela (o editor dos tipos é o A6). As
+// várias corretas seguem as marcas das alternativas, não a lista antiga (correctAnswers
+// fica de fora).
+const PRESERVED_MODEL_FIELDS = ['type', 'points', 'partialCredit', 'numeric', 'acceptedAnswers', 'review', 'expectedAnswer', 'rubric', 'explanation', 'difficulty', 'skills', 'tags', 'bankKey']
+
+export function preservedModelFields(source = {}) {
+  const origin = source?.model && typeof source.model === 'object' ? source.model : (source || {})
+  return PRESERVED_MODEL_FIELDS.reduce((fields, field) => {
+    if (origin[field] !== undefined && origin[field] !== null) fields[field] = origin[field]
+    return fields
+  }, {})
+}
+
+// Questão do editor no formato do PUT/POST /api/admin/evaluation.
+export function editorQuestionPayload(question = {}) {
+  const alternatives = Array.isArray(question.alternatives) ? question.alternatives : []
+  return {
+    ...preservedModelFields(question),
+    text: question.text,
+    alternatives,
+    correctAnswer: alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
+  }
+}
+
 // Formulário "Corrigir questão" do Monitor: alternativas na ordem original (A, B, C, D),
 // pelas letras do gabarito, qualquer que seja a versão em que a contestação chegou (a
 // versão embaralhada mostrava C, A, D, B). O servidor aplica a correção mantendo a

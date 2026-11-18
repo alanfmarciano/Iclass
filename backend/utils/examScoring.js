@@ -108,21 +108,41 @@ function escapeRegExp(text) {
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Número digitado pelo aluno ('3,5', '3.5', '-2', '1.234,5', '3,5 ms'). A unidade da
-// questão no fim é ignorada; qualquer outra coisa não é número (null).
+// Número digitado pelo aluno ('3,5', '3.5', '0.125', '-2', '1.234,5', '3,5 ms'). A
+// unidade da questão no fim é ignorada; qualquer outra coisa não é número (null).
+// Regra dos separadores, a mesma do valor que o professor digita (questionModel.js
+// parseNumberInput aceita um separador só, ponto ou vírgula, como decimal):
+// - um separador só, uma vez ('0.125', '2,5', '1.234'): é a casa decimal. Antes um ponto
+//   seguido de três dígitos virava milhar e '0.125' valia 125;
+// - ponto e vírgula juntos ('1.234,5' ou '1,234.5'): o último é a casa decimal e o outro
+//   separa os milhares, em grupos de três;
+// - o mesmo separador repetido ('1.234.567'): milhares, sem casa decimal.
 function parseNumericAnswer(raw, unit = '') {
     if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
     if (typeof raw !== 'string') return null;
-    let text = raw.trim().replace(/−/g, '-');
+    let text = raw.trim().replace(/\u2212/g, '-');
     const cleanUnit = typeof unit === 'string' ? unit.trim() : '';
     if (cleanUnit) text = text.replace(new RegExp(`\\s*${escapeRegExp(cleanUnit)}$`, 'i'), '').trim();
     text = text.replace(/\s+/g, '');
     if (!text) return null;
-    // Milhar com ponto e decimal com vírgula (1.234,5).
-    if (/^[+-]?\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(text)) text = text.replace(/\./g, '').replace(',', '.');
-    // Milhar com vírgula e decimal com ponto (1,234.5).
-    else if (/^[+-]?\d{1,3}(?:,\d{3})+\.\d+$/.test(text)) text = text.replace(/,/g, '');
-    else text = text.replace(',', '.');
+    const dots = (text.match(/\./g) || []).length;
+    const commas = (text.match(/,/g) || []).length;
+    if (dots && commas) {
+        const decimal = text.lastIndexOf('.') > text.lastIndexOf(',') ? '.' : ',';
+        const thousands = decimal === '.' ? ',' : '.';
+        const [whole, fraction, extra] = text.split(decimal);
+        if (extra !== undefined || !fraction || !/^\d+$/.test(fraction)) return null;
+        const grouped = new RegExp(`^[+-]?\\d{1,3}(?:\\${thousands}\\d{3})+$`);
+        if (!grouped.test(whole)) return null;
+        text = `${whole.split(thousands).join('')}.${fraction}`;
+    } else if (dots > 1 || commas > 1) {
+        const separator = dots > 1 ? '.' : ',';
+        const grouped = new RegExp(`^[+-]?\\d{1,3}(?:\\${separator}\\d{3})+$`);
+        if (!grouped.test(text)) return null;
+        text = text.split(separator).join('');
+    } else {
+        text = text.replace(',', '.');
+    }
     if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) return null;
     const value = Number(text);
     return Number.isFinite(value) ? value : null;
@@ -328,9 +348,11 @@ function answerFingerprint(value) {
     return `C:${String(value).trim().toUpperCase()}`;
 }
 
+// Número da resposta com vírgula, sem arredondar: '0.125' digitado aparece '0,125' (antes
+// o arredondamento dos pontos, em duas casas, mostrava '0,13').
 function formatNumberBR(value) {
     if (!Number.isFinite(value)) return '';
-    return String(roundPoints(value)).replace('.', ',');
+    return String(value).replace('.', ',');
 }
 
 function joinLetters(letters) {

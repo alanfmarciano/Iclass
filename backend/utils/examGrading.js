@@ -1,5 +1,13 @@
 const crypto = require('crypto');
-const { answersFromGradedAnswers, correctLetterFor, gradedAnswerFor, roundPoints } = require('./examScoring.js');
+const { answersFromGradedAnswers, correctLetterFor, gradedAnswerFor, questionPoints, questionType, roundPoints } = require('./examScoring.js');
+
+// Campos que decidem a nota de uma questão: o tipo, os pontos e o gabarito de cada tipo
+// (a letra de escolha única e as alternativas marcadas ficam no snapshot desde sempre).
+// Numa aplicação eles valem como estavam no snapshot dela, nunca como estão na avaliação
+// hoje: editar a avaliação depois de aplicar não muda nota já dada numa recorreção
+// (anulação, correção ao vivo, gabarito). Questão de snapshot sem type foi montada antes
+// dos tipos (281029f) e é uma correta de 1 ponto, como foi corrigida (D1 do P3).
+const GRADING_FIELDS = Object.freeze(['type', 'points', 'correctAnswers', 'partialCredit', 'numeric', 'acceptedAnswers', 'review', 'expectedAnswer', 'rubric']);
 
 function clone(value) {
     return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -24,6 +32,48 @@ function snapshotForAttempt(application, onlineConfig, assignedVersion = 'A') {
         || null;
 }
 
+// Questão da tentativa: a do snapshot por cima da avaliação, mas só o que não decide a
+// nota (explicação, metadados) pode vir da avaliação; o tipo, os pontos e o gabarito são
+// os do snapshot (GRADING_FIELDS). Sem snapshot, a avaliação é a própria questão.
+function attemptQuestion(question, fallback, number) {
+    const base = { ...(fallback || {}) };
+    if (question !== fallback) GRADING_FIELDS.forEach(field => { delete base[field]; });
+    const correctAnswer = correctAnswerFor(question) || correctAnswerFor(fallback);
+    return {
+        ...base,
+        ...question,
+        originalNumber: number,
+        correctAnswer,
+    };
+}
+
+// Grava no snapshot das versões o tipo, os pontos e o gabarito de cada questão como
+// estão na avaliação agora (exam-history/add: o navegador monta o snapshot só com
+// enunciado, alternativas e letra certa). O que o pedido trouxe nesses campos é
+// trocado pelo da avaliação: quem decide a correção é o servidor. Muda os snapshots no
+// lugar e devolve a mesma lista.
+function freezeSnapshotGrading(snapshots, evaluation) {
+    const evaluationQuestions = Array.isArray(evaluation?.questions) ? evaluation.questions : [];
+    const byNumber = new Map(evaluationQuestions.map((question, index) => [questionNumber(question, index), question]));
+    (Array.isArray(snapshots) ? snapshots : []).forEach(snapshot => {
+        if (!snapshot || !Array.isArray(snapshot.questions)) return;
+        snapshot.questions = snapshot.questions.map((question, index) => {
+            if (!question || typeof question !== 'object') return question;
+            const source = byNumber.get(questionNumber(question, index)) || null;
+            const frozen = { ...question };
+            GRADING_FIELDS.forEach(field => { delete frozen[field]; });
+            frozen.type = questionType(source);
+            frozen.points = questionPoints(source);
+            GRADING_FIELDS.forEach(field => {
+                if (field === 'type' || field === 'points') return;
+                if (source && source[field] !== undefined && source[field] !== null) frozen[field] = clone(source[field]);
+            });
+            return frozen;
+        });
+    });
+    return snapshots;
+}
+
 function questionsForAttempt({ application, onlineConfig, state, evaluation } = {}) {
     const assignedVersion = state?.assignedVersion || 'A';
     const snapshot = snapshotForAttempt(application, onlineConfig, assignedVersion);
@@ -33,14 +83,8 @@ function questionsForAttempt({ application, onlineConfig, state, evaluation } = 
     const sourceQuestions = snapshotQuestions.length ? snapshotQuestions : evaluationQuestions;
     const sourceByNumber = new Map(sourceQuestions.map((question, index) => {
         const number = questionNumber(question, index);
-        const fallback = evaluationByNumber.get(number);
-        const correctAnswer = correctAnswerFor(question) || correctAnswerFor(fallback);
-        return [number, {
-            ...(fallback || {}),
-            ...question,
-            originalNumber: number,
-            correctAnswer,
-        }];
+        const fallback = snapshotQuestions.length ? evaluationByNumber.get(number) : question;
+        return [number, attemptQuestion(question, fallback, number)];
     }));
 
     let assignedNumbers = Array.isArray(state?.assignedQuestionNumbers)
@@ -228,7 +272,10 @@ function regradeSubmission({ submission, application, onlineConfig, evaluation, 
 }
 
 module.exports = {
+    GRADING_FIELDS,
+    attemptQuestion,
     correctAnswerFor,
+    freezeSnapshotGrading,
     createSubmissionFromAttempt,
     gradeAttempt,
     questionNumber,

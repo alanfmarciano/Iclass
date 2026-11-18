@@ -23,9 +23,11 @@ import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescriptio
 import '../../styles/provas-board.css'
 import {
   buildExamVersions,
+  editorQuestionPayload,
   getQuestionUsageMap,
   normalizeEvaluation,
   openPrintWindow,
+  preservedModelFields,
   runningApplicationOf,
   snapshotsFromHistory,
 } from './examTools'
@@ -133,6 +135,7 @@ function editorQuestion(source = {}) {
     : [{ text: '', isCorrect: true }, { text: '', isCorrect: false }, { text: '', isCorrect: false }, { text: '', isCorrect: false }]
   const requestedCorrect = String(source.correctAnswer || '').toUpperCase()
   return {
+    model: preservedModelFields(source),
     text: source.text || source.questionText || '',
     alternatives: rawAlternatives.map((alternative, index) => ({
       letter: String.fromCharCode(65 + index),
@@ -694,11 +697,7 @@ export default function ProvasPage() {
       title: editor.title,
       theme: editor.theme,
       rubric: editor.rubric,
-      questions: editor.questions.map((question) => ({
-        text: question.text,
-        alternatives: question.alternatives,
-        correctAnswer: question.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
-      })),
+      questions: editor.questions.map(editorQuestionPayload),
     }
   }
 

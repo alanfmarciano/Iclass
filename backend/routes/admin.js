@@ -36,7 +36,7 @@ const {
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
-const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
+const { DEFAULT_POINTS, describeAnswer, isAnswered, isSingleChoiceType, questionType } = require('../utils/examScoring.js');
 
 // Resposta de uma questão para a revisão do professor (contrato C3 do P3): tipo, texto da
 // resposta pelas letras que o aluno viu, resposta digitada e pontos. labelsRecord diz que
@@ -194,8 +194,8 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
-const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
-const { normalizeEvaluationQuestions } = require('../utils/questionModel.js');
+const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
+const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
 
 // Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
 // H9b: ENG-03, ENG-04): só tipo e tamanho (utils/inputSchema.js), escritos a partir do
@@ -225,44 +225,10 @@ const questionBankFields = () => ({
     examKey: adminTextField(200, 'prova'),
 });
 // Avaliação (POST e PUT /api/admin/evaluation, fase 3, P3-S1): tipo e tamanho de cada
-// campo da questão. Os limites de verdade e as mensagens por questão ("Questão 3: ...")
-// são do modelo (utils/questionModel.js); aqui os tetos são um pouco maiores, para a
-// mensagem do modelo aparecer no lugar da genérica. Título, tema e rubrica geral não
-// tinham limite na tela: os tetos são largos.
-const numberOrText = (label, max = 40) => either([num({ label }), str({ max, label })], { nullable: true, label });
-const evaluationQuestionField = () => shape({
-    type: adminTextField(40, 'tipo da questão'),
-    points: numberOrText('pontos'),
-    text: adminTextField(20000, 'enunciado'),
-    questionText: adminTextField(20000, 'enunciado'),
-    alternatives: list(either([
-        str({ max: 2000, label: 'alternativa' }),
-        shape({ letter: adminTextField(5, 'letra da alternativa'), text: adminTextField(2000, 'alternativa'), isCorrect: bool({ nullable: true, label: 'alternativa correta' }) }, { label: 'alternativa' }),
-    ], { label: 'alternativas' }), { max: 26, nullable: true, label: 'alternativas' }),
-    correctAnswer: adminTextField(20, 'resposta correta'),
-    correctAnswers: list(str({ max: 5, label: 'respostas corretas' }), { max: 26, nullable: true, label: 'respostas corretas' }),
-    partialCredit: bool({ nullable: true, label: 'pontuação parcial' }),
-    numeric: shape({
-        value: numberOrText('valor da resposta numérica'),
-        tolerance: numberOrText('tolerância'),
-        unit: adminTextField(40, 'unidade'),
-    }, { nullable: true, label: 'resposta numérica' }),
-    acceptedAnswers: list(str({ max: 300, nullable: true, label: 'respostas aceitas' }), { max: 50, nullable: true, label: 'respostas aceitas' }),
-    review: adminTextField(20, 'revisão da resposta'),
-    expectedAnswer: adminTextField(5000, 'resposta esperada'),
-    rubric: list(shape({
-        id: adminTextField(40, 'critério da rubrica'),
-        nome: adminTextField(80, 'critério da rubrica'),
-        name: adminTextField(80, 'critério da rubrica'),
-        pontos: numberOrText('pontos do critério'),
-        points: numberOrText('pontos do critério'),
-    }, { label: 'rubrica' }), { max: 20, nullable: true, label: 'rubrica' }),
-    explanation: adminTextField(5000, 'explicação'),
-    difficulty: adminTextField(20, 'dificuldade'),
-    skills: list(str({ max: 80, nullable: true, label: 'habilidades' }), { max: 20, nullable: true, label: 'habilidades' }),
-    tags: list(str({ max: 40, nullable: true, label: 'etiquetas' }), { max: 20, nullable: true, label: 'etiquetas' }),
-    bankKey: adminTextField(100, 'questão do banco'),
-}, { label: 'questão' });
+// campo da questão pelo schema do modelo (questionInputSchema, utils/questionModel.js, o
+// mesmo da correção ao vivo). Título, tema e rubrica geral não tinham limite na tela: os
+// tetos são largos.
+const evaluationQuestionField = () => questionInputSchema();
 const evaluationFields = () => ({
     title: adminTextField(1000, 'título'),
     theme: adminTextField(QUESTION_CATEGORY_MAX_CHARS, 'tema'),
@@ -5056,6 +5022,11 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
         });
 
         submissions.forEach(sub => {
+            // Questão como a entrega foi corrigida (tipo e unidade da numérica), para o texto
+            // da resposta.
+            const snapshotQuestions = new Map((Array.isArray(sub.examSnapshot?.questions) ? sub.examSnapshot.questions : [])
+                .filter(question => question && typeof question === 'object')
+                .map((question, index) => [Number(question.originalNumber || question.number || index + 1), question]));
             (sub.gradedAnswers || []).forEach(answer => {
                 const qn = String(answer.questionNumber);
                 if (!byQuestion[qn]) {
@@ -5064,17 +5035,18 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
                         attempts: 0,
                         correct: 0,
                         wrong: 0,
+                        pending: 0,
                         choices: {}
                     };
                 }
                 byQuestion[qn].attempts++;
+                // Aguardando o professor (dissertativa, resposta para revisar) não é erro.
                 if (answer.isCorrect) byQuestion[qn].correct++;
+                else if (answer.pending === true) byQuestion[qn].pending++;
                 else byQuestion[qn].wrong++;
-                // Várias corretas: as letras juntas ('A, C'); resposta digitada: 'resposta escrita'.
-                const choice = answer.studentChoice
-                    || (Array.isArray(answer.studentChoices) && answer.studentChoices.length ? answer.studentChoices.join(', ') : '')
-                    || (answer.studentResponse != null && String(answer.studentResponse) !== '' ? 'resposta escrita' : '')
-                    || 'em branco';
+                // Texto da resposta só por describeAnswer (contrato C3 do P3): 'B', 'A e C',
+                // '3,5 ms', a resposta curta digitada ou 'Resposta escrita'.
+                const choice = describeAnswer(snapshotQuestions.get(Number(answer.questionNumber)) || null, answer, { blank: 'em branco' });
                 byQuestion[qn].choices[choice] = (byQuestion[qn].choices[choice] || 0) + 1;
             });
         });
@@ -5209,10 +5181,19 @@ router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.question
 
         const existingKeys = new Set((db.memory.questionBank || []).filter(Boolean).map(q => `${q.sourceExamKey}:${q.originalNumber}`));
         const imported = [];
+        // O banco de hoje guarda só questões de escolha única (enunciado, alternativas e a
+        // letra certa); várias corretas, numérica, resposta curta e dissertativa ficam fora
+        // até o banco ganhar o modelo da questão (A7, P3-S9a). Antes elas entravam como
+        // "uma correta" sem alternativas ou com várias certas.
+        const skipped = [];
         questions.filter(Boolean).forEach(question => {
             const originalNumber = Number(question.originalNumber || question.number || 0);
             const dedupeKey = `${examKey}:${originalNumber}`;
             if (existingKeys.has(dedupeKey)) return;
+            if (!isSingleChoiceType(questionType(question))) {
+                skipped.push({ questionNumber: originalNumber, type: questionType(question) });
+                return;
+            }
             const item = {
                 key: 'qb_' + Date.now() + '_' + originalNumber + '_' + Math.random().toString(36).slice(2, 5),
                 category: category || examKey.split('_')[1] || 'Geral',
@@ -5230,7 +5211,14 @@ router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.question
         });
 
         db.save();
-        res.json({ success: true, importedCount: imported.length, questions: imported.map(questionBankItemForScreen) });
+        res.json({
+            success: true,
+            importedCount: imported.length,
+            questions: imported.map(questionBankItemForScreen),
+            skippedCount: skipped.length,
+            skipped,
+            ...(skipped.length ? { message: `${skipped.length === 1 ? '1 questão ficou' : `${skipped.length} questões ficaram`} de fora: o banco de questões ainda guarda só questões de uma correta e de verdadeiro ou falso.` } : {}),
+        });
     });
 });
 

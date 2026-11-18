@@ -21,7 +21,8 @@ const {
     questionType,
     scoreQuestion,
 } = require('../../backend/utils/examScoring.js');
-const { gradeAttempt, regradeSubmission, createSubmissionFromAttempt } = require('../../backend/utils/examGrading.js');
+const { gradeAttempt, regradeSubmission, createSubmissionFromAttempt, freezeSnapshotGrading } = require('../../backend/utils/examGrading.js');
+const { normalizeQuestion } = require('../../backend/utils/questionModel.js');
 const { countAnswers } = require('../../backend/utils/examDeadline.js');
 
 // ------------------------------------------------------------------ corretor antigo
@@ -216,6 +217,89 @@ test('[UC-PROVA-004] número digitado e texto da resposta curta', () => {
     assert.equal(parseNumericAnswer('10 kg', 'ms'), null);
     assert.equal(parseNumericAnswer(''), null);
     assert.equal(normalizeShortAnswer('  Máscara   DE Rede '), 'mascara de rede');
+});
+
+test('[UC-PROVA-004] número com ponto e três casas é decimal, como no valor do professor (0.125 não vira 125)', () => {
+    // Um separador só, uma vez: casa decimal (antes '0.125' virava 125 e o aluno perdia a questão).
+    assert.equal(parseNumericAnswer('0.125'), 0.125);
+    assert.equal(parseNumericAnswer('2.125'), 2.125);
+    assert.equal(parseNumericAnswer('3.500'), 3.5);
+    assert.equal(parseNumericAnswer('1.234'), 1.234);
+    assert.equal(parseNumericAnswer('1,234'), 1.234);
+    assert.equal(parseNumericAnswer('0,125 s', 's'), 0.125);
+    assert.equal(parseNumericAnswer('.5'), 0.5);
+    assert.equal(parseNumericAnswer('\u22123,5'), -3.5);
+    // Os dois separadores: o último é a casa decimal e o outro separa milhares de três em três.
+    assert.equal(parseNumericAnswer('1.234.567'), 1234567);
+    assert.equal(parseNumericAnswer('1,234,567'), 1234567);
+    assert.equal(parseNumericAnswer('12.345,678'), 12345.678);
+    assert.equal(parseNumericAnswer('1.23.4'), null);
+    assert.equal(parseNumericAnswer('12,34.5'), null);
+    assert.equal(parseNumericAnswer('1.234,5,6'), null);
+    // O valor que o professor digita é lido do mesmo jeito (questionModel.js): o mesmo texto
+    // vale o mesmo número nos dois lados.
+    for (const typed of ['0.125', '2.125', '3.500', '1.234', '1,234', '2,5', '-0.75', '10']) {
+        const teacher = normalizeQuestion({ type: 'numeric', text: 'Valor?', numeric: { value: typed } }).numeric.value;
+        assert.equal(parseNumericAnswer(typed), teacher, `"${typed}" vale o mesmo para o professor e para o aluno`);
+    }
+    const question = { type: 'numeric', points: 2, numeric: { value: 0.125, tolerance: 0, unit: 's' } };
+    for (const typed of ['0.125', '0,125', '0.125 s', ' 0,125s ']) {
+        assert.equal(scoreQuestion(question, { numero: typed }).pointsEarned, 2, `"${typed}" acerta 0,125 s`);
+    }
+    assert.equal(scoreQuestion({ type: 'numeric', numeric: { value: 3500, tolerance: 0 } }, { numero: '3.500' }).pointsEarned, 0, '3.500 é três e meio, não três mil e quinhentos');
+    assert.equal(scoreQuestion({ type: 'numeric', numeric: { value: 3500, tolerance: 0 } }, { numero: '3.500,0' }).pointsEarned, 1);
+    // O professor vê o número como o aluno digitou, com vírgula e sem arredondar.
+    assert.equal(describeAnswer(question, gradedAnswerFor(question, 1, { numero: '0.125' })), '0,125 s');
+    assert.equal(describeAnswer(question, gradedAnswerFor(question, 1, { numero: '1.234.567' })), '1234567 s');
+});
+
+test('[UC-PROVA-004] tipo, pontos e gabarito valem como estavam no snapshot da aplicação: editar a avaliação depois não muda nota na recorreção', () => {
+    const original = { questions: [
+        { ...MC, originalNumber: 1, points: 1 },
+        { ...MC, originalNumber: 2, points: 1 },
+        { ...MC, originalNumber: 3, points: 1 },
+        { ...MC, originalNumber: 4, points: 1 },
+    ] };
+    // Snapshot como o navegador monta (sem tipo nem pontos), congelado pelo servidor.
+    const browser = [{ version: 'A', questions: original.questions.map((question, index) => ({
+        originalNumber: question.originalNumber, examNumber: index + 1, text: question.text, correctAnswer: 'B',
+        alternatives: question.alternatives.map(alternative => ({ ...alternative, displayLetter: alternative.letter })),
+    })) }];
+    const application = { versionSnapshots: freezeSnapshotGrading(JSON.parse(JSON.stringify(browser)), original) };
+    assert.deepEqual(application.versionSnapshots[0].questions.map(question => [question.type, question.points]), [['multiple_choice', 1], ['multiple_choice', 1], ['multiple_choice', 1], ['multiple_choice', 1]]);
+    const submission = createSubmissionFromAttempt({ application, evaluation: original, state: { assignedVersion: 'A' }, answers: { 1: 'B', 2: 'B', 3: 'B', 4: 'B' } });
+    assert.equal(submission.score, 100);
+    // O professor edita a avaliação: questão 1 vale 10, questão 3 vira dissertativa.
+    const edited = { questions: [
+        { ...MC, originalNumber: 1, points: 10 },
+        { ...MC, originalNumber: 2, points: 1 },
+        { ...ESSAY, originalNumber: 3, points: 5 },
+        { ...MC, originalNumber: 4, points: 1 },
+    ] };
+    application.annulledQuestions = [{ questionNumber: 2, mode: 'ponto_para_todos' }];
+    regradeSubmission({ submission, application, evaluation: edited, reason: 'anulação' });
+    assert.equal(submission.score, 100, 'a nota segue a prova que o aluno fez');
+    assert.equal(submission.pointsPossible, 4);
+    assert.deepEqual(submission.gradedAnswers.map(answer => answer.type), ['multiple_choice', 'multiple_choice', 'multiple_choice', 'multiple_choice']);
+    // Snapshot de antes dos tipos (281029f, sem type): uma correta de 1 ponto, mesmo com a
+    // avaliação editada para outros tipos e pontos.
+    const legacy = { versionSnapshots: JSON.parse(JSON.stringify(browser)) };
+    const old = createSubmissionFromAttempt({ application: legacy, evaluation: original, state: { assignedVersion: 'A' }, answers: { 1: 'B', 2: 'A', 3: 'B', 4: 'B' } });
+    assert.equal(old.score, 75);
+    legacy.annulledQuestions = [{ questionNumber: 4, mode: 'remover_do_total' }];
+    regradeSubmission({ submission: old, application: legacy, evaluation: edited, reason: 'anulação' });
+    assert.equal(old.score, 67);
+    assert.equal(old.pointsPossible, 3);
+    assert.deepEqual(old.gradedAnswers.map(answer => answer.type), ['multiple_choice', 'multiple_choice', 'multiple_choice', 'multiple_choice']);
+    // O que o pedido trouxe nesses campos é trocado pelo da avaliação: quem decide é o servidor.
+    const forged = [{ version: 'A', questions: [{ originalNumber: 3, text: 'x', type: 'essay', points: 50, alternatives: [] }] }];
+    freezeSnapshotGrading(forged, edited);
+    assert.equal(forged[0].questions[0].type, 'essay');
+    assert.equal(forged[0].questions[0].points, 5);
+    assert.deepEqual(forged[0].questions[0].rubric, ESSAY.rubric);
+    freezeSnapshotGrading(forged, original);
+    assert.equal(forged[0].questions[0].type, 'multiple_choice');
+    assert.equal(forged[0].questions[0].rubric, undefined);
 });
 
 test('[UC-PROVA-004] nota por pontos: soma de pontos, arredondamento e contagem de questões (D4)', () => {
