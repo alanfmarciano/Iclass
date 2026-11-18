@@ -301,8 +301,8 @@ export default function AlunosPage() {
         <Button icon={UserPlus} onClick={() => { setForm({ ...emptyForm(), courseId: activeCourseId, classes: [activeClassName] }); setOpen(true) }}>Novo aluno</Button>
       </div>
       <PageState loading={loading} error={error} onRetry={refetch}>
-        <DataTable columns={columns} rows={filteredStudents.map((s, i) => ({ id: s.email || i, ...s }))}
-          searchKeys={['name', 'nomeSocial', 'email', 'matricula', 'studentClass']} rowActions={(r) => setMenuRow(r)} onRowClick={(r) => nav('/alunos/' + studentRouteKey(r))}
+        <DataTable columns={columns} rows={filteredStudents.map((s, i) => ({ id: s.email || i, ...s, emailShown: displayEmail(s.email) }))}
+          searchKeys={['name', 'nomeSocial', 'emailShown', 'matricula', 'studentClass']} rowActions={(r) => setMenuRow(r)} onRowClick={(r) => nav('/alunos/' + studentRouteKey(r))}
           emptyTitle="Nenhum aluno" emptyDesc="Cadastre o primeiro aluno." />
       </PageState>
 
@@ -330,7 +330,7 @@ export default function AlunosPage() {
           {!isProfessor && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
           <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>
-          {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>}
+          {!isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email, matricula: menuRow.matricula || '' }); setMenuRow(null) }}>Redefinir senha</Button>}
           {menuRow?.loginProtection && <Button variant="secondary" icon={LockOpen} loading={unlocking} title={UNLOCK_LOGIN_HINT} onClick={() => unlockLogin(menuRow)}>Liberar login</Button>}
           {/* Desligar aluno (H7c): muda a situação; anonimizar ou apagar fica em Cadastros encerrados. */}
           {!isProfessor && menuRow && !isClosedStatus(menuRow.status) && <Button variant="destructive" icon={UserMinus} onClick={() => { setDel(menuRow); setMenuRow(null) }}>Desligar aluno</Button>}
@@ -588,7 +588,7 @@ export default function AlunosPage() {
 
       <StudentCloseDialog student={del} onClose={() => setDel(null)} onDone={refetch} />
 
-      <StudentPasswordResetDialog email={reset?.email || null} onClose={() => setReset(null)} onDone={refetch} />
+      <StudentPasswordResetDialog email={reset?.email || null} matricula={reset?.matricula || ''} onClose={() => setReset(null)} onDone={refetch} />
       <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} deferred={createdPassword?.deferred} onClose={() => setCreatedPassword(null)} />
     </div>
   )

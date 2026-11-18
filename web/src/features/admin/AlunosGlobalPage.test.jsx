@@ -51,4 +51,15 @@ describe('[UC-IDENT-002] Diretório: aviso de matrícula repetida e aluno sem e-
     expect(screen.getByText('sem e-mail')).toBeTruthy()
     expect(screen.queryByText(/sem-email\.invalid/)).toBeNull()
   })
+
+  it('a busca acha o aluno por "sem e-mail" e não pelo endereço interno', async () => {
+    renderPage()
+    const search = screen.getByLabelText('Buscar')
+    await userEvent.type(search, 'sem e-mail')
+    expect(screen.getByText('Bruno Sem Email')).toBeTruthy()
+    expect(screen.queryByText('Ana Ativa')).toBeNull()
+    await userEvent.clear(search)
+    await userEvent.type(search, 'invalid')
+    expect(screen.queryByText('Bruno Sem Email')).toBeNull()
+  })
 })

@@ -494,3 +494,30 @@ describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação'
     expect(keystrokeLiveTitle('eventos', true, 'Elisa')).toBe('Digitação ao vivo — Elisa')
   })
 })
+
+describe('[UC-IDENT-003] MonitorPage · aluno sem e-mail', () => {
+  const row = { email: 'aluno-alu_00000000000000f2@sem-email.invalid', name: 'Bruno Sem Email', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'A' }
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/message-history?')) return { messages: [] }
+      return {}
+    })
+    mocks.post.mockResolvedValue({ success: true })
+  })
+  afterEach(cleanup)
+
+  it('a linha do aluno mostra "sem e-mail", nunca o endereço interno', async () => {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('Bruno Sem Email')).toBeInTheDocument()
+    expect(screen.getAllByText('sem e-mail').length).toBeGreaterThan(0)
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+  })
+})

@@ -1370,7 +1370,7 @@ router.post('/api/student/recover', STUDENT_SCHEMAS.recover, (req, res) => {
         writeJSON(DB_STUDENTS_FILE, students);
     }
 
-    res.json({ success: true, message: 'Se o e-mail ou a matrícula estiver cadastrado, o instrutor receberá a solicitação.' });
+    res.json({ success: true, message: 'Se houver um cadastro com este e-mail ou matrícula, o instrutor receberá a solicitação.' });
 });
 
 

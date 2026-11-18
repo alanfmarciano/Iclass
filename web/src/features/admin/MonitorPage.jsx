@@ -30,6 +30,7 @@ import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspi
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
+import { displayEmail } from '../../lib/studentProfile'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -696,7 +697,7 @@ export default function MonitorPage() {
   })
 
   function openKeystrokeWatch(row) {
-    setKeystrokeWatch({ email: row.email, name: row.name || row.email })
+    setKeystrokeWatch({ email: row.email, name: row.name || displayEmail(row.email) })
     setKeystrokeEvents([])
     setKeystrokeLogs(null)
     setKeystrokeLoading(true)
@@ -1283,7 +1284,7 @@ export default function MonitorPage() {
                           </div>
                           <p className="mt-1 text-xs text-muted">{reasonSummary}</p>
                           <p className="mt-2 line-clamp-2 text-sm text-text">{group.question?.questionText || group.question?.text || 'Enunciado indisponível'}</p>
-                          <p className="mt-1 text-xs text-subtle">{group.reports.map((report) => report.studentName || report.studentEmail).join(', ')}</p>
+                          <p className="mt-1 text-xs text-subtle">{group.reports.map((report) => report.studentName || displayEmail(report.studentEmail)).join(', ')}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="ghost" icon={Eye} onClick={() => setPreviewIssue(group)}>Ver questão</Button>
@@ -1319,7 +1320,7 @@ export default function MonitorPage() {
                   const notStarted = rowTimerLabel(r, monitorTimer, fmt) === 'Não iniciou'
                   return (
                     <tr key={r.email || i} className="border-b border-border last:border-0">
-                      <td className="px-4 py-3"><div className="font-medium text-text">{r.name || r.email}</div><div className="text-xs text-muted">{r.email}</div></td>
+                      <td className="px-4 py-3"><div className="font-medium text-text">{r.name || displayEmail(r.email)}</div><div className="text-xs text-muted">{displayEmail(r.email)}</div></td>
                       <td className="px-4 py-3 font-mono text-xs text-muted">{r.ip || '-'}</td>
                       <td className="px-4 py-3">
                         <Badge tone={st[0]} dot>{st[1]}</Badge>
@@ -1408,7 +1409,7 @@ export default function MonitorPage() {
             <div className="space-y-2">
               {previewIssue.reports?.map((report) => (
                 <div key={report.id} className="rounded-md border border-border p-3 text-sm">
-                  <div className="flex flex-wrap items-center gap-2"><strong className="text-text">{report.studentName || report.studentEmail}</strong><Badge tone="warning">{REPORT_REASON_LABELS[report.reason] || report.reason}</Badge></div>
+                  <div className="flex flex-wrap items-center gap-2"><strong className="text-text">{report.studentName || displayEmail(report.studentEmail)}</strong><Badge tone="warning">{REPORT_REASON_LABELS[report.reason] || report.reason}</Badge></div>
                   {report.text && <p className="mt-2 text-muted">{report.text}</p>}
                 </div>
               ))}
@@ -1581,7 +1582,7 @@ export function normalizeVersionInput(value) {
 // −5/+5/+10, só versões existentes, contagem das notas) chegam no P3-S8 sobre estes.
 function MonitorActionDialog({ dialog, onChange, onClose, onSendMessage, onAdjustTime, onAssignVersion, onReleaseGrades }) {
   const kind = dialog?.kind
-  const who = dialog?.name || dialog?.email || ''
+  const who = dialog?.name || displayEmail(dialog?.email || '')
   if (kind === 'message') {
     return (
       <ConfirmDialog open onClose={onClose} onConfirm={onSendMessage} tone="primary"

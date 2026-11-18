@@ -102,6 +102,8 @@ export default function AlunosGlobalPage() {
     // A linha é do e-mail (seleção e ações em lote); a ficha abre pelo id estável.
     id: s.email,
     studentId: s.id || '',
+    // O e-mail como a tela mostra: a busca acha 'sem e-mail' e não o endereço interno.
+    emailShown: displayEmail(s.email),
     ov: overviewByEmail.get((s.email || '').toLowerCase()) || null,
     atividade: lastActivity(s),
   })), [students, overviewByEmail])
@@ -317,7 +319,7 @@ export default function AlunosGlobalPage() {
 
       <PageState loading={loading} error={error} onRetry={refetch}>
         <DataTable columns={columns} rows={rows}
-          searchKeys={['name', 'nomeSocial', 'email', 'matricula']}
+          searchKeys={['name', 'nomeSocial', 'emailShown', 'matricula']}
           selectable selectedIds={selectedIds} onSelectionChange={setSelectedIds}
           paginated pageSize={25}
           rowActions={(r) => openStudent(r)} onRowClick={(r) => openStudent(r)}

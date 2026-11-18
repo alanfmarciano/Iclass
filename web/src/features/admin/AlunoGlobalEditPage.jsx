@@ -182,7 +182,7 @@ export default function AlunoGlobalEditPage() {
         ) : null}
       </PageState>
       <StudentCloseDialog student={closing} onClose={() => setClosing(null)} onDone={afterClose} />
-      {!isNew && form && <StudentPasswordResetDialog email={resetOpen ? form.originalEmail : null} onClose={() => setResetOpen(false)} />}
+      {!isNew && form && <StudentPasswordResetDialog email={resetOpen ? form.originalEmail : null} matricula={student?.matricula || ''} onClose={() => setResetOpen(false)} />}
       <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} deferred={createdPassword?.deferred} onClose={() => { setCreatedPassword(null); nav('/diretorio') }} />
     </div>
   )

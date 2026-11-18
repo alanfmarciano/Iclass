@@ -179,6 +179,9 @@ function extractStudentFields(body) {
 // (allowPlaceholder).
 const PLACEHOLDER_EMAIL = /@sem-email\.invalid$/i;
 const NO_EMAIL_MATRICULA_REQUIRED = 'Para aluno sem e-mail, informe a matrícula.';
+// Aluno que vira 'sem e-mail' entra só pela matrícula; repetida (dado antigo), o login por
+// matrícula não vale para ela (C1 / P4-S3).
+const NO_EMAIL_MATRICULA_REPEATED = 'Esta matrícula também está no cadastro de outro aluno, e o aluno sem e-mail entra pela matrícula. Troque a matrícula antes de marcar "O aluno não tem e-mail".';
 
 // Matrícula comparada como o login por matrícula a procura: sem espaços e sem diferenciar
 // maiúscula ('2024 001' e '2024001' são a mesma).
@@ -406,6 +409,7 @@ module.exports = {
     extractStudentFields,
     validateStudentFields,
     NO_EMAIL_MATRICULA_REQUIRED,
+    NO_EMAIL_MATRICULA_REPEATED,
     matriculaKey,
     diffStudentForAudit,
     recordStudentAudit,

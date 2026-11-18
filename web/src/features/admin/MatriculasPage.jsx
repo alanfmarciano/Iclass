@@ -14,6 +14,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { matchesSearch } from '../../lib/textSearch'
+import { displayEmail } from '../../lib/studentProfile'
 
 const STATUS = {
   pending: { label: 'Aguardando aprovação', tone: 'warning' },
@@ -115,7 +116,7 @@ export default function MatriculasPage() {
                     <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary"><UserRoundCheck size={20} /></span>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold text-text">{request.studentName}</h2><Badge tone={state.tone}>{state.label}</Badge></div>
-                      <p className="mt-1 text-sm text-muted">{request.studentEmail}{request.studentPhone ? ` · ${request.studentPhone}` : ''}</p>
+                      <p className="mt-1 text-sm text-muted">{displayEmail(request.studentEmail)}{request.studentPhone ? ` · ${request.studentPhone}` : ''}</p>
                       <p className="mt-2 text-sm text-text">{request.courseName} · {request.requestedClassName}{request.requestedPeriod ? ` — ${request.requestedPeriod}` : ''}</p>
                       <p className="mt-1 flex items-center gap-1.5 text-xs text-subtle"><Clock3 size={13} /> Solicitada em {when(request.createdAt)}</p>
                       {request.status === 'rejected' && <p className="mt-2 text-sm text-danger">Motivo: {request.rejectionReason}</p>}

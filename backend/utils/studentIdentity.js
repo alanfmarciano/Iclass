@@ -45,10 +45,12 @@ function isStudentId(value) {
     return typeof value === 'string' && STUDENT_ID_PATTERN.test(value);
 }
 
-// Id que conta como dado (o formato pode mudar numa versão futura: qualquer texto não vazio
-// fica como está).
+// Id que conta como dado: só o formato do contrato ('alu_' + 16 hex minúsculos). Id fora
+// dele (banco editado à mão, 'foo', 'alu_ZZZ', número) é trocado por um novo, porque a
+// tela abre a ficha pelo id (/diretorio/:id reconhece só esse formato); os registros das
+// coleções novas que apontavam para o id velho são religados pelo e-mail na mesma passada.
 function hasStoredId(student) {
-    return !!student && typeof student.id === 'string' && student.id.trim() !== '';
+    return !!student && isStudentId(student.id);
 }
 
 function newStudentId(taken = new Set()) {
@@ -100,7 +102,7 @@ function previousIdsMap(value) {
 // boot). Ordem para quem não tem id: o id que o mesmo e-mail tinha antes (se ninguém mais
 // o usa), senão um novo. Id repetido entre dois cadastros (banco editado à mão): o
 // primeiro fica e os outros ganham id novo, para o backup seguinte não ser recusado pela
-// unicidade de students.id. Depois religa pelo e-mail os registros das coleções novas
+// unicidade de students.id. Id fora do formato 'alu_' + 16 hex também é trocado. Depois religa pelo e-mail os registros das coleções novas
 // (handler.relink). Devolve true se mudou alguma coisa.
 function ensureStudentIds(memory, ctx = {}) {
     if (!memory || !Array.isArray(memory.students)) return false;
@@ -121,7 +123,7 @@ function ensureStudentIds(memory, ctx = {}) {
     const reserved = new Set([...taken]);
     missing.forEach(student => {
         const prior = previous.get(normalizeEmail(student.email));
-        if (typeof prior === 'string' && prior.trim() && !reserved.has(prior)) {
+        if (isStudentId(prior) && !reserved.has(prior)) {
             student.id = prior;
             reserved.add(prior);
             changed = true;

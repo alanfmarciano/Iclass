@@ -59,6 +59,7 @@ const {
     lastStatusChangeIndex,
     studentStatusSince,
     NO_EMAIL_MATRICULA_REQUIRED,
+    NO_EMAIL_MATRICULA_REPEATED,
 } = require('../utils/students.js');
 
 // Recusas do cadastro anonimizado (H7c).
@@ -1629,6 +1630,16 @@ router.post('/api/admin/student/update', (req, res) => {
         const validation = validateStudentFields({ ...fields, classes: studentClasses }, students, originalEmailNorm, { allowPlaceholder: keepsPlaceholder || semEmailChoice === true });
         if (!validation.ok) {
             return res.status(400).json({ success: false, error: validation.error, field: validation.field });
+        }
+        // Virar 'sem e-mail' com a matrícula repetida de dados antigos (que a validação deixa
+        // passar quando não muda) deixaria o aluno sem nenhuma forma de entrar: o login por
+        // matrícula não vale para matrícula repetida. Recusa e pede outra matrícula.
+        if (semEmailChoice === true && !currentPlaceholder) {
+            const wanted = studentIdentity.normalizeMatricula(fields.matricula !== undefined ? fields.matricula : current.matricula);
+            const sharing = (studentIdentity.matriculaIndex(db.memory).get(wanted) || []).filter(other => other !== current);
+            if (sharing.length > 0) {
+                return res.status(400).json({ success: false, error: NO_EMAIL_MATRICULA_REPEATED, field: 'matricula' });
+            }
         }
 
         const before = students[studentIndex];

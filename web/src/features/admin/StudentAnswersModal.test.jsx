@@ -75,6 +75,16 @@ describe('[UC-PROVA-003] revisão das respostas no Monitor', () => {
   })
 })
 
+describe('[UC-IDENT-003] revisão das respostas de aluno sem e-mail', () => {
+  it('o subtítulo mostra "sem e-mail", nunca o endereço interno', async () => {
+    apiMock.get.mockResolvedValue(positionReview())
+    render(<StudentAnswersModal open onClose={() => {}} student={{ email: 'aluno-alu_00000000000000f2@sem-email.invalid', name: 'Bruno' }} className="1DES" courseId="curso" examKey="Avaliacao" applicationId="app-1" />)
+    expect(await screen.findByText(/Letras como apareceram para o aluno/)).toBeVisible()
+    expect(screen.getByText(/^sem e-mail · Versão A$/)).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+  })
+})
+
 describe('[UC-PROVA-003] registros de foco e saída no Monitor', () => {
   it('diz como o aluno saiu da prova e marca o aparelho sem tela cheia sem "pausou a prova" (AVA-12, UXA-02)', () => {
     expect(examLeftLabel('Saiu da prova pelo botão voltar do navegador')).toBe('Saiu pelo voltar do navegador')

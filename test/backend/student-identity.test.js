@@ -89,6 +89,35 @@ test('[UC-IDENT-001] ensureStudentIds reaproveita o id de antes do mesmo e-mail,
     assert.equal(plain.students[0].id, 'alu_00000000000000a1');
 });
 
+test('[UC-IDENT-001] ensureStudentIds troca id fora do formato alu_ + 16 hex (banco editado à mão) e religa os registros pelo e-mail', () => {
+    const remove = studentData.registerStudentDataHandler({
+        collection: 'colecaoDeTesteFormato',
+        label: 'Coleção de teste (formato)',
+        relink: (memory, ids) => studentData.relinkRecordsByEmail(memory, memory.colecaoDeTesteFormato, ids),
+    });
+    try {
+        const memory = {
+            students: [
+                { email: 'foo@x.local', id: 'foo' },
+                { email: 'zzz@x.local', id: 'alu_ZZZ' },
+                { email: 'num@x.local', id: 123 },
+                { email: 'mai@x.local', id: 'alu_00000000000000AB' },
+                { email: 'ok@x.local', id: 'alu_00000000000000a1' },
+            ],
+            colecaoDeTesteFormato: [{ id: 'r1', studentEmail: 'foo@x.local', studentId: 'foo' }],
+        };
+        // O id de antes fora do formato também não volta.
+        assert.equal(identity.ensureStudentIds(memory, { previousStudentIds: new Map([['foo@x.local', 'foo']]) }), true);
+        memory.students.forEach(item => assert.match(item.id, /^alu_[0-9a-f]{16}$/, item.email));
+        assert.equal(memory.students[4].id, 'alu_00000000000000a1', 'o id no formato fica');
+        assert.equal(new Set(memory.students.map(item => item.id)).size, memory.students.length);
+        assert.equal(memory.colecaoDeTesteFormato[0].studentId, memory.students[0].id, 'o registro segue o aluno pelo e-mail');
+        assert.equal(identity.ensureStudentIds(memory, {}), false);
+    } finally {
+        remove();
+    }
+});
+
 test('[UC-IDENT-001] ensureStudentIds religa pelo e-mail os registros das coleções novas cujo studentId não resolve (handler.relink)', () => {
     const remove = studentData.registerStudentDataHandler({
         collection: 'colecaoDeTeste',
@@ -505,5 +534,71 @@ test.describe('rotas', () => {
         const flagged = list.body.filter(item => item.matriculaRepetida).map(item => item.email).sort();
         assert.deepEqual(flagged, ['bia@ident.local', 'caio@ident.local']);
         assert.ok(list.body.every(item => typeof item.id === 'string' && item.id));
+    });
+    test('[UC-IDENT-002] login por matrícula: inexistente e repetida gastam a mesma conferência de senha (scrypt) da senha errada', async () => {
+        const original = db.verifyPasswordAsync;
+        let calls = 0;
+        db.verifyPasswordAsync = async (...args) => { calls += 1; return original.apply(db, args); };
+        try {
+            const count = async (login) => { calls = 0; await studentLogin(login, 'senha-errada-1').expect(401); return calls; };
+            const wrong = await count('ana@ident.local');
+            assert.equal(wrong, 1);
+            assert.equal(await count('99999'), wrong, 'matrícula inexistente');
+            assert.equal(await count('r7'), wrong, 'matrícula repetida');
+            assert.equal(await count('ninguem@ident.local'), wrong, 'e-mail inexistente');
+        } finally {
+            db.verifyPasswordAsync = original;
+        }
+    });
+
+    test('[UC-IDENT-002] Esqueci a senha responde com o texto de sempre para e-mail e matrícula', async () => {
+        const res = await request(app).post('/api/student/recover').send({ email: '2024001' }).expect(200);
+        assert.equal(res.body.message, 'Se houver um cadastro com este e-mail ou matrícula, o instrutor receberá a solicitação.');
+    });
+
+    test('[UC-IDENT-003] aluno sem e-mail: a tela Auditoria (GET /api/admin/audit) e as opções dos filtros mostram "sem e-mail", nunca o endereço interno', async () => {
+        const token = await adminToken();
+        const created = await request(app).post('/api/admin/student/create').set('x-admin-session', token)
+            .send({ name: 'Gil Sem Email', classes: [{ name: '1DES', courseId: 'DES' }], semEmail: true, matricula: '8080', studentPassword: 'Quadro-Verde-2024' }).expect(200);
+        await request(app).post('/api/admin/student/update').set('x-admin-session', token).send({
+            originalEmail: `aluno-${created.body.id}@sem-email.invalid`, name: 'Gil Sem Email Silva', matricula: '8080', semEmail: true, classes: [{ name: '1DES', courseId: 'DES' }],
+        }).expect(200);
+        // O próprio aluno como quem fez (troca de senha pelo portal, por exemplo).
+        db.memory.auditLogs.push({ timestamp: Date.now(), actor: `aluno-${created.body.id}@sem-email.invalid`, action: 'password_change', category: 'account', studentEmail: `aluno-${created.body.id}@sem-email.invalid`, details: { note: `conta aluno-${created.body.id}@sem-email.invalid` } });
+        const res = await request(app).get('/api/admin/audit?facets=1').set('x-admin-session', token).expect(200);
+        const text = JSON.stringify(res.body);
+        assert.ok(!text.includes('sem-email.invalid'), text);
+        const items = res.body.items.filter(item => item.studentName && item.studentName.startsWith('Gil'));
+        assert.ok(items.length >= 2);
+        items.forEach(item => assert.equal(item.studentEmail, 'sem e-mail'));
+        const actorOption = res.body.facets.actors.find(option => option.label === 'Gil Sem Email Silva (sem e-mail)');
+        assert.equal(actorOption && actorOption.value, created.body.id, 'o valor do filtro é o id do aluno');
+        // Filtrar por esse valor acha o evento do próprio aluno.
+        const byActor = await request(app).get(`/api/admin/audit?actor=${created.body.id}`).set('x-admin-session', token).expect(200);
+        assert.deepEqual(byActor.body.items.map(item => item.action), ['password_change']);
+        // A busca pelo nome do aluno continua achando os eventos dele.
+        const filtered = await request(app).get('/api/admin/audit?student=gil').set('x-admin-session', token).expect(200);
+        assert.ok(filtered.body.items.length >= 2);
+        assert.ok(!JSON.stringify(filtered.body).includes('sem-email.invalid'));
+    });
+
+    test('[UC-IDENT-003] marcar "sem e-mail" num cadastro antigo com matrícula repetida é recusado (o aluno ficaria sem como entrar)', async () => {
+        const token = await adminToken();
+        const refused = await request(app).post('/api/admin/student/update').set('x-admin-session', token).send({
+            originalEmail: 'bia@ident.local', name: 'bia', matricula: 'R 7', semEmail: true, classes: [{ name: '1DES', courseId: 'DES' }],
+        }).expect(400);
+        assert.equal(refused.body.field, 'matricula');
+        assert.match(refused.body.error, /matrícula também está no cadastro de outro aluno/);
+        assert.equal(db.memory.students.find(item => item.id === 'alu_00000000000000b1').email, 'bia@ident.local');
+        // Sem mudar a matrícula repetida, a edição comum continua aceita (dado antigo).
+        await request(app).post('/api/admin/student/update').set('x-admin-session', token).send({
+            originalEmail: 'bia@ident.local', name: 'Bia Souza', email: 'bia@ident.local', matricula: 'R 7', classes: [{ name: '1DES', courseId: 'DES' }],
+        }).expect(200);
+        // Com uma matrícula só dela, vira sem e-mail e entra por ela.
+        await request(app).post('/api/admin/student/update').set('x-admin-session', token).send({
+            originalEmail: 'bia@ident.local', name: 'Bia Souza', matricula: 'R 8', semEmail: true, classes: [{ name: '1DES', courseId: 'DES' }],
+        }).expect(200);
+        assert.equal(db.memory.students.find(item => item.id === 'alu_00000000000000b1').email, 'aluno-alu_00000000000000b1@sem-email.invalid');
+        await studentLogin('r8').expect(200);
     });
 });

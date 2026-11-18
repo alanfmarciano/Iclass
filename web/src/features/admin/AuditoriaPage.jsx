@@ -9,6 +9,7 @@ import { Badge } from '../../components/ui/Badge'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { api, downloadFile } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
+import { displayEmail } from '../../lib/studentProfile'
 
 // Tela Auditoria (H7a-2; SEG-07, FUN-04): a trilha inteira, do mais novo para o mais
 // antigo, com filtros no servidor (GET /api/admin/audit) e exportação em CSV com os
@@ -28,10 +29,13 @@ export function fmtAuditDateTime(timestamp) {
   return new Date(timestamp).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-function personText(email, name) {
+// O endereço interno do aluno sem e-mail aparece como 'sem e-mail' (C1 / P4-S3; o
+// servidor já manda assim, esta é a segunda linha de defesa).
+export function personText(email, name) {
   if (!email) return ''
   if (email === 'sistema') return 'Sistema'
-  return name ? `${name} (${email})` : email
+  const shown = displayEmail(email)
+  return name ? `${name} (${shown})` : shown
 }
 
 function valueText(value) {

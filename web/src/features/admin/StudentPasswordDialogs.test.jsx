@@ -54,6 +54,20 @@ describe('[UC-SENHA-001] redefinir senha do aluno pelo painel', () => {
   })
 })
 
+describe('[UC-IDENT-003] redefinir senha do aluno sem e-mail', () => {
+  it('o aviso da senha temporária mostra o login dele (a matrícula), não "sem e-mail" nem o endereço interno', async () => {
+    state.apiPost.mockResolvedValue({ success: true, mustChangePassword: true, temporaryPassword: 'abcde-fghjk' })
+    const user = userEvent.setup()
+    render(<StudentPasswordResetDialog email="aluno-alu_00000000000000f2@sem-email.invalid" matricula="7070" onClose={vi.fn()} />)
+    expect(screen.getByText('sem e-mail')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Redefinir' }))
+    expect(state.apiPost).toHaveBeenCalledWith('/api/admin/reset-password', { email: 'aluno-alu_00000000000000f2@sem-email.invalid' })
+    expect(await screen.findByTestId('temporary-password')).toHaveTextContent('abcde-fghjk')
+    expect(screen.getByText('Matrícula 7070')).toBeInTheDocument()
+    expect(screen.queryByText(/sem-email\.invalid/)).toBeNull()
+  })
+})
+
 describe('[UC-SENHA-001] aviso da senha temporária segue a troca pedida', () => {
   it('caixa "Pedir troca no primeiro acesso" desmarcada: não promete a troca', () => {
     render(<TemporaryPasswordNotice open email="ana@escola.local" password="abcde-fghjk" mustChangePassword={false} onClose={vi.fn()} />)
