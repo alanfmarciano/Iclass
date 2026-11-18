@@ -586,3 +586,44 @@ test('[UC-LGPD-010] o arquivo traz o nome de cada prova citada (examTitles), com
         Prova_3: 'Recuperação da turma',
     });
 });
+
+// Decisões §12 (sobra do H8c, MÉDIA): aplicação de antes do H8b (sem keystrokeMode) vale
+// 'eventos' daqui em diante, mas o código antigo da prova guardou toda a digitação. A
+// cópia dizia "Só atalhos suspeitos" para esses registros, nas duas versões.
+test('[UC-LGPD-010] aplicação anterior ao modo do teclado aparece como registro completo (versão anterior), aluno e admin', () => {
+    db.memory.examApplications.push({
+        id: 'app_antiga', examKey: 'Prova_2', studentClass: '1DES', courseId: 'DES', status: 'finished',
+        studentVersions: { [ANA]: 'A' },
+    });
+    for (const audience of ['aluno', 'admin']) {
+        const records = exporter.buildStudentDataExport(db.memory, ANA, { audience }).examRecords;
+        const byId = Object.fromEntries(records.map(item => [item.applicationId, item]));
+        assert.equal(byId.app_antiga.keystrokeMode, 'tudo-legado', audience);
+        assert.equal(byId.app_antiga.keystrokeModeLabel, 'Registro completo do teclado (versão anterior)', audience);
+        assert.equal(byId.app_1.keystrokeMode, 'eventos', audience);
+        assert.equal(byId.app_1.keystrokeModeLabel, 'Só atalhos suspeitos', audience);
+    }
+    const tudo = db.memory.examApplications.find(item => item.id === 'app_antiga');
+    tudo.keystrokeMode = 'tudo';
+    const records = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno' }).examRecords;
+    assert.equal(records.find(item => item.applicationId === 'app_antiga').keystrokeMode, 'tudo');
+});
+
+// Decisões §12 (sobra do H8c): o perfil da cópia do aluno é uma lista permitida. Antes ia o
+// cadastro inteiro menos alguns campos, com os controles internos do IClass.
+test('[UC-LGPD-010] perfil da cópia do aluno por lista permitida: sem seedDemo, loginTime, recoveryRequested, updatedAt, lastSeenAt', () => {
+    const ana = db.memory.students.find(item => item.email === ANA);
+    Object.assign(ana, {
+        seedDemo: true, loginTime: '10:00', recoveryRequested: true, updatedAt: NOW, lastSeenAt: NOW,
+        createdAt: NOW - 300 * DAY, nomeSocial: 'Ana', unidade: 'Sede', campoFuturo: 'interno',
+    });
+    const profile = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno' }).profile;
+    ['seedDemo', 'loginTime', 'recoveryRequested', 'updatedAt', 'lastSeenAt', 'campoFuturo', 'password', 'statusChangedBy', 'sessionsInvalidBefore', 'classes', 'termsAcceptance']
+        .forEach(field => assert.equal(field in profile, false, field));
+    assert.deepEqual(Object.keys(profile).sort(), ['accessibility', 'accessibilityNoteRestricted', 'birthDate', 'createdAt', 'email', 'guardian', 'matricula', 'name', 'nomeSocial', 'period', 'phone', 'status', 'unidade']);
+    // O administrador continua com o cadastro inteiro (menos senha e sessão).
+    const admin = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'admin' }).profile;
+    assert.equal(admin.seedDemo, true);
+    assert.equal(admin.campoFuturo, 'interno');
+    assert.equal(admin.password, undefined);
+});

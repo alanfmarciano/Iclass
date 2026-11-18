@@ -3,8 +3,10 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// H8c reduzido (SEG-14): "Meus dados" do aluno. Baixar e imprimir em seguida usam a
-// mesma cópia (o servidor aceita 5 por hora); a janela de impressão abre no clique.
+// H8c reduzido (SEG-14): "Meus dados" do aluno. O mesmo botão apertado de novo usa a
+// cópia já recebida (o servidor aceita 5 por hora); baixar e imprimir pedem cada um a sua,
+// para a auditoria registrar a finalidade (decisões §12); a janela de impressão abre no
+// clique.
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   download: vi.fn(() => 'meus-dados-2026-11-10.json'),
@@ -30,7 +32,9 @@ function renderPage() {
 }
 
 describe('[UC-LGPD-010] Meus dados', () => {
-  it('baixa a cópia e, para imprimir logo depois, reaproveita a mesma (um pedido só)', async () => {
+  // Contrato mudado (decisões §12, sobra do H8c): antes, imprimir logo depois de baixar
+  // reaproveitava a cópia e a impressão ficava sem lgpd_export 'imprimir' na auditoria.
+  it('baixa a cópia; imprimir depois pede a cópia com finalidade imprimir; repetir o mesmo botão reaproveita', async () => {
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByRole('button', { name: /Baixar meus dados/ }))
@@ -42,7 +46,14 @@ describe('[UC-LGPD-010] Meus dados', () => {
     await waitFor(() => expect(mocks.print).toHaveBeenCalled())
     expect(mocks.print.mock.calls[0][0]).toBe(DATA)
     expect(mocks.print.mock.calls[0][1]).toBe(mocks.openWindow.mock.results[0].value)
-    expect(mocks.get).toHaveBeenCalledTimes(1)
+    expect(mocks.get).toHaveBeenCalledTimes(2)
+    expect(mocks.get).toHaveBeenLastCalledWith('/api/student/my-data?finalidade=imprimir')
+
+    await user.click(screen.getByRole('button', { name: /Baixar meus dados/ }))
+    await waitFor(() => expect(mocks.download).toHaveBeenCalledTimes(2))
+    await user.click(screen.getByRole('button', { name: /Ver para imprimir/ }))
+    await waitFor(() => expect(mocks.print).toHaveBeenCalledTimes(2))
+    expect(mocks.get).toHaveBeenCalledTimes(2)
   })
 
   it('imprimir primeiro pede com finalidade imprimir e abre a janela antes da resposta', async () => {

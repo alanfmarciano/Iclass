@@ -24,7 +24,7 @@ const { studentEmailOwnership } = require('./gradebook.js');
 const { normalizeEmail, studentClassEntries, isAnonymizedStudent, AUDITABLE_FIELDS } = require('./students.js');
 const legal = require('./legalDocuments.js');
 const { studentCourseId } = require('./legalAcceptance.js');
-const { keystrokeModeOf, KEYSTROKE_MODE_LABELS } = require('./keystrokePolicy.js');
+const { keystrokeModeOf, keystrokeModeIsLegacy, KEYSTROKE_MODE_LABELS } = require('./keystrokePolicy.js');
 
 const EXPORT_TYPE = 'iclass-dados-pessoais';
 const EXPORT_FORMAT_VERSION = 1;
@@ -105,8 +105,26 @@ function findStudent(memory, email) {
 }
 
 // ------------------------------------------------------------ perfil e matrículas
+// Perfil na cópia do aluno: lista permitida explícita (decisões §12, sobra do H8c). Antes
+// ia o cadastro inteiro menos alguns campos, e saíam controles internos sem sentido para
+// o titular (seedDemo, loginTime, recoveryRequested, updatedAt, lastSeenAt...); campo
+// novo do cadastro só entra aqui de propósito. Turmas, matrículas e aceites são seções
+// próprias (SECTION_FIELDS). A versão do administrador continua com o cadastro inteiro
+// (menos senha e sessão).
+const STUDENT_PROFILE_FIELDS = Object.freeze([
+    'name', 'nomeSocial', 'email', 'matricula', 'phone', 'birthDate', 'guardian', 'guardianPhone',
+    'status', 'unidade', 'period', 'accessibility', 'createdAt', 'lastLoginAt', 'lastLoginIp',
+    'passwordChangedAt', 'anonymizedAt',
+]);
+
 function profileSection(student, audience) {
-    const copy = { ...student };
+    let copy = { ...student };
+    if (audience === 'aluno') {
+        copy = {};
+        STUDENT_PROFILE_FIELDS.forEach(field => {
+            if (Object.prototype.hasOwnProperty.call(student, field)) copy[field] = student[field];
+        });
+    }
     SECTION_FIELDS.forEach(field => { delete copy[field]; });
     Object.keys(copy).forEach(key => { if (SESSION_KEY.test(key)) delete copy[key]; });
     const profile = clean(copy, audience);
@@ -215,10 +233,13 @@ function byEmailSection(memory, collection, ownership, audience) {
 // aluno" (sem e-mail nem nome), e o trecho de resposta apagada (detail do delete_reply)
 // só fica quando foi ele mesmo que apagou: pode ser o texto da resposta de outro aluno.
 function forumSection(memory, ownership, audience) {
-    const isStudentReply = reply => !!reply && (reply.authorRole === 'Aluno' || reply.role === 'Aluno');
-    // authorEmailInferred: resposta antiga de aluno sem e-mail, que a migração do boot
-    // (server.js) preencheu com o e-mail do dono da dúvida. Não dá para saber quem
-    // escreveu: conta como "de outro aluno" (sem texto), nunca como dele.
+    // authorEmailInferred: resposta antiga sem e-mail que não era de instrutor, que a
+    // migração do boot (server.js) preencheu com o e-mail do dono da dúvida. Não dá para
+    // saber quem escreveu: conta como "de outro aluno" (sem texto), nunca como dele nem
+    // como da equipe, seja qual for o authorRole guardado (decisões §12, sobra do H8c: a
+    // resposta muito antiga sem papel, ou com outro texto no papel, aparecia como
+    // "Equipe" com o texto de quem escreveu).
+    const isStudentReply = reply => !!reply && (reply.authorRole === 'Aluno' || reply.role === 'Aluno' || reply.authorEmailInferred === true);
     const ownsReply = reply => isStudentReply(reply) && !reply.authorEmailInferred && ownership.owns(reply.authorEmail, reply, 'student');
     const eventView = event => {
         if (!isPlainObject(event)) return null;
@@ -263,6 +284,19 @@ function loginLogsSection(memory, ownership, audience) {
         .map(item => clean(item, audience));
 }
 
+// Registro do teclado de uma aplicação, como a cópia mostra. Aplicação gravada antes do
+// H8b (sem keystrokeMode) vale 'eventos' daqui em diante, mas o código antigo da prova
+// mandava toda a digitação: o que ela guardou é o registro completo (decisões §12, sobra
+// do H8c). Dizer "Só atalhos suspeitos" ali seria falso para o titular.
+const LEGACY_KEYSTROKE_MODE = 'tudo-legado';
+const LEGACY_KEYSTROKE_LABEL = 'Registro completo do teclado (versão anterior)';
+
+function keystrokeModeFields(application) {
+    if (keystrokeModeIsLegacy(application)) return { keystrokeMode: LEGACY_KEYSTROKE_MODE, keystrokeModeLabel: LEGACY_KEYSTROKE_LABEL };
+    const mode = keystrokeModeOf(application);
+    return { keystrokeMode: mode, keystrokeModeLabel: KEYSTROKE_MODE_LABELS[mode] };
+}
+
 // Contestações de questão, tempo extra e versão da prova de cada aplicação.
 function examRecordsSection(memory, ownership, audience) {
     const out = [];
@@ -283,8 +317,7 @@ function examRecordsSection(memory, ownership, audience) {
             examKey: application.examKey || null,
             studentClass: application.studentClass || null,
             courseId: application.courseId || null,
-            keystrokeMode: keystrokeModeOf(application),
-            keystrokeModeLabel: KEYSTROKE_MODE_LABELS[keystrokeModeOf(application)],
+            ...keystrokeModeFields(application),
             questionReports: reports,
             adjustment,
             assignedVersion: version,

@@ -11,7 +11,10 @@ import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/
 // uma cópia dos dados pessoais que o IClass guarda sobre ele (GET /api/student/my-data)
 // ou abre a versão para imprimir. O servidor decide o que entra; a tela só busca e mostra.
 // O servidor aceita 5 cópias por hora: a cópia recebida fica guardada nesta tela por
-// alguns minutos, para "baixar" e "imprimir" em seguida não gastarem duas.
+// alguns minutos, para o mesmo botão apertado de novo não gastar outra. "Baixar" e
+// "Imprimir" pedem cada um a sua: cada cópia entregue fica na auditoria com a finalidade
+// (lgpd_export, baixar ou imprimir), e imprimir com a cópia do "baixar" deixava a
+// impressão sem registro (decisões §12, sobra do H8c).
 const REUSE_MS = 10 * 60 * 1000
 
 export default function MeusDadosPage() {
@@ -19,14 +22,14 @@ export default function MeusDadosPage() {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const cache = useRef({ email: '', at: 0, data: null })
+  const cache = useRef({})
 
   const fetchData = async (purpose) => {
-    const cached = cache.current
-    if (cached.data && cached.email === auth.email && Date.now() - cached.at < REUSE_MS) return cached.data
+    const cached = cache.current[purpose]
+    if (cached && cached.email === auth.email && Date.now() - cached.at < REUSE_MS) return cached.data
     const data = await api.get(`/api/student/my-data?finalidade=${purpose}`)
     if (!data || typeof data !== 'object' || !data.profile) throw new Error('O servidor não mandou a cópia dos dados. Tente de novo.')
-    cache.current = { email: auth.email, at: Date.now(), data }
+    cache.current = { ...cache.current, [purpose]: { email: auth.email, at: Date.now(), data } }
     return data
   }
 
