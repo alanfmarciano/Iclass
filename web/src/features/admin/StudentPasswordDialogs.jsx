@@ -7,6 +7,7 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { passwordHint } from '../../lib/passwordPolicy'
 import { copyText } from '../../lib/clipboard'
+import { displayEmail } from '../../lib/studentProfile'
 
 // Senha do aluno pelo professor (H5a; SEG-06, UXA-13): o "Redefinir senha" com senha
 // temporária gerada pelo servidor (o padrão) ou definida pelo professor, e o aviso que
@@ -43,7 +44,7 @@ export function TemporaryPasswordNotice({ open, email, password, mustChangePassw
     else toast.error('Não foi possível copiar. Anote a senha.')
   }
   return (
-    <Modal open={open} onClose={onClose} title="Senha temporária" description={email}
+    <Modal open={open} onClose={onClose} title="Senha temporária" description={displayEmail(email || '')}
       footer={<Button onClick={onClose}>Pronto</Button>}>
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -91,7 +92,7 @@ export function StudentPasswordResetDialog({ email, onClose, onDone }) {
 
   if (temporary) return <TemporaryPasswordNotice open email={temporary.email} password={temporary.password} mustChangePassword={temporary.mustChangePassword} deferred={temporary.deferred} onClose={close} />
   return (
-    <Modal open={!!email} onClose={close} title="Redefinir senha" description={email}
+    <Modal open={!!email} onClose={close} title="Redefinir senha" description={displayEmail(email || '')}
       footer={<><Button variant="ghost" onClick={close}>Cancelar</Button><Button icon={KeyRound} loading={busy} onClick={submit}>Redefinir</Button></>}>
       <fieldset className="space-y-3">
         <legend className="sr-only">Como definir a senha nova</legend>

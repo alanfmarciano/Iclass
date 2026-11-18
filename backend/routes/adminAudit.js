@@ -22,6 +22,7 @@ const {
     recordAudit,
 } = require('../utils/audit.js');
 const { buildCsv, examTitle } = require('../utils/gradebook.js');
+const { maskPlaceholderEmails } = require('../utils/studentIdentity.js');
 const settingsUtil = require('../utils/settings.js');
 const { normalizeSearch, matchesSearch } = require('../utils/textSearch.js');
 
@@ -378,7 +379,8 @@ function auditCsv(items, { timeZone }) {
             shortText(after),
             item.reason || '',
             item.ip || '',
-        ];
+        // O endereço interno do aluno sem e-mail sai como 'sem e-mail' (C1 / P4-S3).
+        ].map(cell => maskPlaceholderEmails(cell));
     });
     return buildCsv([header, ...rows]);
 }

@@ -3,6 +3,7 @@ import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
 import { useApi } from '../../hooks/useApi'
 import { fmtGrade } from '../../lib/grades'
+import { displayEmail } from '../../lib/studentProfile'
 
 // Quadro de notas da turma (FUN-06): uma linha por aluno, uma coluna por prova
 // (ou por aplicação, quando a mesma prova foi aplicada mais de uma vez) e a média.
@@ -45,7 +46,7 @@ export function GradebookPanel({ courseId, studentClass, refreshKey, onExport, o
                       {onOpenStudent && (row.gradedCount > 0 || row.pendingCount > 0)
                         ? <button type="button" className="text-left text-text hover:text-primary" onClick={() => onOpenStudent(row.email)}>{row.name}</button>
                         : <span className="text-text">{row.name}</span>}
-                      <span className="block text-xs font-normal text-subtle">{row.email}</span>
+                      <span className="block text-xs font-normal text-subtle">{displayEmail(row.email)}</span>
                     </th>
                     {columns.map((column) => {
                       const cell = row.cells?.[column.id]

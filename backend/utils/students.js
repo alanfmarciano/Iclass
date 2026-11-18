@@ -173,7 +173,20 @@ function extractStudentFields(body) {
 // `students` é a lista atual; `selfEmail` é o e-mail original (para ignorar o próprio no update).
 // Cada recusa diz o campo do corpo (field), no formato dos 400 { success, error, field }
 // (H5a): o formulário marca o campo certo em vez de só mostrar a mensagem.
-function validateStudentFields(fields, students, selfEmail) {
+// Aluno sem e-mail (C1 / P4-S3, D23): o cadastro guarda o endereço interno
+// 'aluno-<id>@sem-email.invalid' (utils/studentIdentity.js). Ninguém digita um endereço
+// desse domínio: só a rota que cria ou altera o aluno sem e-mail o grava
+// (allowPlaceholder).
+const PLACEHOLDER_EMAIL = /@sem-email\.invalid$/i;
+const NO_EMAIL_MATRICULA_REQUIRED = 'Para aluno sem e-mail, informe a matrícula.';
+
+// Matrícula comparada como o login por matrícula a procura: sem espaços e sem diferenciar
+// maiúscula ('2024 001' e '2024001' são a mesma).
+function matriculaKey(value) {
+    return String(value === undefined || value === null ? '' : value).replace(/\s+/g, '').toLowerCase();
+}
+
+function validateStudentFields(fields, students, selfEmail, { allowPlaceholder = false } = {}) {
     const self = normalizeEmail(selfEmail);
 
     if (fields.name !== undefined && !fields.name) {
@@ -182,11 +195,18 @@ function validateStudentFields(fields, students, selfEmail) {
     if (fields.email !== undefined) {
         if (!fields.email) return { ok: false, error: 'E-mail é obrigatório.', field: 'email' };
         if (!isValidEmail(fields.email)) return { ok: false, error: 'E-mail em formato inválido.', field: 'email' };
+        if (!allowPlaceholder && PLACEHOLDER_EMAIL.test(fields.email)) return { ok: false, error: 'E-mail em formato inválido.', field: 'email' };
         const emailTaken = students.some(s => s.email && normalizeEmail(s.email) === fields.email && normalizeEmail(s.email) !== self);
         if (emailTaken) return { ok: false, error: 'E-mail já cadastrado para outro aluno.', field: 'email' };
     }
     if (fields.matricula) {
-        const matTaken = students.some(s => s.matricula && String(s.matricula).trim() === fields.matricula && normalizeEmail(s.email) !== self);
+        const wanted = matriculaKey(fields.matricula);
+        // Na edição, a matrícula que o cadastro já tinha passa: dados antigos com matrícula
+        // repetida continuam editáveis (o login por matrícula fica indisponível para eles e
+        // o Diretório avisa).
+        const own = self ? students.find(s => s && normalizeEmail(s.email) === self) : null;
+        const unchanged = own && matriculaKey(own.matricula) === wanted;
+        const matTaken = !unchanged && students.some(s => s.matricula && matriculaKey(s.matricula) === wanted && normalizeEmail(s.email) !== self);
         if (matTaken) return { ok: false, error: 'Matrícula/código interno já cadastrado para outro aluno.', field: 'matricula' };
     }
     if (fields.phone !== undefined && !isValidPhone(fields.phone)) {
@@ -319,11 +339,13 @@ function normalizeStoredStudentClasses(student) {
 // Registra apenas os campos escalares auditáveis que mudaram, mais 'classes' (turmas).
 function diffStudentForAudit(oldStudent, newFields) {
     const changes = [];
+    // O endereço interno do aluno sem e-mail aparece na auditoria como 'sem e-mail' (D23).
+    const shown = (key, value) => (key === 'email' && PLACEHOLDER_EMAIL.test(value) ? 'sem e-mail' : value);
     AUDITABLE_FIELDS.forEach(({ key, label }) => {
         if (newFields[key] === undefined) return;
         const before = oldStudent && oldStudent[key] !== undefined && oldStudent[key] !== null ? String(oldStudent[key]) : '';
         const after = newFields[key] !== null ? String(newFields[key]) : '';
-        if (before !== after) changes.push({ field: label, oldValue: before, newValue: after });
+        if (before !== after) changes.push({ field: label, oldValue: shown(key, before), newValue: shown(key, after) });
     });
     if (newFields.classes !== undefined) {
         const before = (oldStudent && Array.isArray(oldStudent.classes) ? oldStudent.classes : []).map(c => typeof c === 'string' ? c : c.name).join(', ');
@@ -383,6 +405,8 @@ module.exports = {
     displayName,
     extractStudentFields,
     validateStudentFields,
+    NO_EMAIL_MATRICULA_REQUIRED,
+    matriculaKey,
     diffStudentForAudit,
     recordStudentAudit,
     getClientIp,

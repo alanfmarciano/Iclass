@@ -11,6 +11,7 @@ const { CONTENT_DIR } = require('../runtimePaths.js');
 const { applicationToOnlineConfig, createExamApplication } = require('../utils/examApplications.js');
 const { markStudentPresence } = require('../utils/authSessions.js');
 const { modelDocumentId } = require('../utils/legalDocuments.js');
+const { assignStudentId } = require('../utils/studentIdentity.js');
 
 const TEST = process.env.TEST_MODE === '1';
 const TEST_ADMIN = DEMO_ACCOUNTS.admin;
@@ -219,7 +220,7 @@ function ensureStudents() {
     const accessibility = index === 2
       ? { fonteAmpliada: true, altoContraste: false, reducaoAnimacoes: false, leitorTela: false, tempoAdicional: true, tempoAdicionalPercent: 25, observacao: 'Prefere materiais com fonte ampliada.' }
       : { fonteAmpliada: false, altoContraste: false, reducaoAnimacoes: false, leitorTela: false, tempoAdicional: false, tempoAdicionalPercent: 0, observacao: '' };
-    upsert(db.memory.students, item => item.email && item.email.toLowerCase() === email, {
+    const seeded = upsert(db.memory.students, item => item.email && item.email.toLowerCase() === email, {
       ...(current || {}), name, nomeSocial: index === 8 ? 'Isa Rocha' : '', email, matricula, phone,
       unidade: 'Unidade Centro', status: 'Ativo',
       password: current && current.seedDemo && current.password ? current.password : db.hashPassword('teste'),
@@ -238,6 +239,8 @@ function ensureStudents() {
       updatedAt: now,
       seedDemo: true
     });
+    // Id estável do aluno (C1 / P4-S3), como no cadastro pelo painel.
+    assignStudentId(db.memory, seeded);
   });
 }
 

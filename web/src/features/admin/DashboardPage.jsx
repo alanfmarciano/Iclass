@@ -17,6 +17,7 @@ import { DisciplineFrequency } from './dashboard/DisciplineFrequency'
 import { WeekAgenda } from './dashboard/WeekAgenda'
 import { DataQualityNote } from './dashboard/DataQualityNote'
 import { csvCell } from '../../lib/csv'
+import { displayEmail } from '../../lib/studentProfile'
 import { snoozedWith } from './dashboard/snooze'
 import { compareOrdinal } from '../../lib/textSearch'
 
@@ -128,7 +129,7 @@ export default function DashboardPage() {
     const esc = csvCell
     const linhas = [
       ['Aluno', 'E-mail', 'Turma', 'Frequência (%)', 'Presenças', 'Aulas', 'Faltas', 'Média', 'Risco'].map(esc).join(';'),
-      ...rows.map((o) => [o.name, o.email, o.className, o.frequencia ?? 'sem dado', o.presentes, o.totalAulas, o.faltas, o.media ?? 'sem prova', o.riscoLevel].map(esc).join(';')),
+      ...rows.map((o) => [o.name, displayEmail(o.email), o.className, o.frequencia ?? 'sem dado', o.presentes, o.totalAulas, o.faltas, o.media ?? 'sem prova', o.riscoLevel].map(esc).join(';')),
     ]
     const blob = new Blob(['﻿' + linhas.join('\n')], { type: 'text/csv;charset=utf-8' })
     const a = document.createElement('a')

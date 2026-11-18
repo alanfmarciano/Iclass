@@ -58,6 +58,7 @@ const {
     STATUS_REASON_MAX,
     lastStatusChangeIndex,
     studentStatusSince,
+    NO_EMAIL_MATRICULA_REQUIRED,
 } = require('../utils/students.js');
 
 // Recusas do cadastro anonimizado (H7c).
@@ -143,6 +144,7 @@ const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require
 const { computeNow, computeQueue, computeTrends } = require('../utils/dashboardAggregates.js');
 const { assertClassOpen, classOfSubmission, classesOfSubmissions } = require('../utils/academicCalendar.js');
 const { renameStudentData } = require('../utils/studentDataHandlers.js');
+const studentIdentity = require('../utils/studentIdentity.js');
 const attendanceUtil = require('../utils/attendance.js');
 const runtimePaths = require('../runtimePaths.js');
 const { isBlockedUploadName, validateUploadedFile } = require('../utils/uploadSecurity.js');
@@ -1395,31 +1397,53 @@ router.post('/api/admin/submissions/create', (req, res) => {
 });
 
 // Obter alunos cadastrados e online
+// Ficha do aluno como a lista do painel mostra (GET /api/admin/students e
+// /api/admin/students/by-id/:id): sem senha, com presença, atraso de login e o aviso de
+// matrícula repetida (C1 / P4-S3: o login por matrícula fica indisponível para esses
+// cadastros; o Diretório avisa). repeated: studentIdentity.duplicateMatriculas, uma vez
+// por pedido.
+function adminStudentListEntry(s, matchedAdmin, { now = Date.now(), repeated = new Set() } = {}) {
+    // Só a presença (lastSeen): a sessão é { tokenHash, createdAt, lastSeen,
+    // lastActivityAt, ip } (utils/authSessions.js, sem o token cru), ou só
+    // { lastSeen } na semente do TEST_MODE. Também valem os formatos legados
+    // { token, lastSeen } e timestamp puro. Lida pelo authSessions (chave própria,
+    // e-mail em minúsculas).
+    const session = s.email ? studentSessionByEmail(db.memory, s.email) : null;
+    const lastSeen = sessionLastSeen(session);
+    const isOnline = isStudentSessionOnline(session, now);
+    const { password, sessionsInvalidBefore, ...safeStudent } = s;
+    const enriched = { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
+    // Atraso de login por senhas erradas (H5b): o selo e o "Liberar login" em Alunos.
+    const loginProtection = s.email ? loginGuard.protectionFor(loginGuard.accountKey('student', s.email), now) : null;
+    if (loginProtection) enriched.loginProtection = loginProtection;
+    const matricula = studentIdentity.normalizeMatricula(s.matricula);
+    if (matricula && repeated.has(matricula) && !isAnonymizedStudent(s)) enriched.matriculaRepetida = true;
+    return enriched;
+}
+
 router.get('/api/admin/students', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const students = readJSON(DB_STUDENTS_FILE);
         const now = Date.now();
-        const enrichedStudents = students.map(s => {
-            // Só a presença (lastSeen): a sessão é { tokenHash, createdAt, lastSeen,
-            // lastActivityAt, ip } (utils/authSessions.js, sem o token cru), ou só
-            // { lastSeen } na semente do TEST_MODE. Também valem os formatos legados
-            // { token, lastSeen } e timestamp puro. Lida pelo authSessions (chave própria,
-            // e-mail em minúsculas).
-            const session = s.email ? studentSessionByEmail(db.memory, s.email) : null;
-            const lastSeen = sessionLastSeen(session);
-            const isOnline = isStudentSessionOnline(session, now);
-            const { password, sessionsInvalidBefore, ...safeStudent } = s;
-            const enriched = { ...redactSensitiveStudentData(safeStudent, matchedAdmin), isOnline, lastSeenAt: lastSeen || null };
-            // Atraso de login por senhas erradas (H5b): o selo e o "Liberar login" em Alunos.
-            const loginProtection = s.email ? loginGuard.protectionFor(loginGuard.accountKey('student', s.email), now) : null;
-            if (loginProtection) enriched.loginProtection = loginProtection;
-            return enriched;
-        });
+        const repeated = studentIdentity.duplicateMatriculas(db.memory);
+        const enrichedStudents = students.map(s => adminStudentListEntry(s, matchedAdmin, { now, repeated }));
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
         res.json(filterStudentsForAdmin(enrichedStudents, matchedAdmin).filter(student => (
             (!courseId && !studentClass) || studentBelongsToClass(student, studentClass, courseId)
         )));
+    });
+});
+
+// Ficha de um aluno pelo id estável (C1 / P4-S3): a tela abre /alunos/:id e
+// /diretorio/:id sem o e-mail no endereço. Mesmo formato de um item de GET
+// /api/admin/students; escopo do professor pelas turmas do aluno.
+router.get('/api/admin/students/by-id/:id', (req, res) => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
+        const student = studentIdentity.findStudentById(db.memory, String(req.params.id || ''));
+        if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
+        if (!adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Aluno fora do seu escopo.' });
+        res.json(adminStudentListEntry(student, matchedAdmin, { repeated: studentIdentity.duplicateMatriculas(db.memory) }));
     });
 });
 
@@ -1432,10 +1456,17 @@ router.post('/api/admin/student/create', (req, res) => {
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
 
         const fields = extractStudentFields(req.body);
+        // Aluno sem e-mail (C1 / P4-S3, D23): o e-mail fica em branco, a matrícula é
+        // obrigatória e o cadastro ganha o endereço interno aluno-<id>@sem-email.invalid.
+        const semEmail = req.body.semEmail === true;
+        if (semEmail) delete fields.email;
 
-        if (!fields.name || !fields.email || studentClasses.length === 0) {
-            const field = !fields.name ? 'name' : (!fields.email ? 'email' : 'classes');
-            return res.status(400).json({ success: false, error: 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.', field });
+        if (!fields.name || (!semEmail && !fields.email) || studentClasses.length === 0) {
+            const field = !fields.name ? 'name' : (!semEmail && !fields.email ? 'email' : 'classes');
+            return res.status(400).json({ success: false, error: semEmail ? 'Dados incompletos. Informe nome e ao menos uma turma.' : 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.', field });
+        }
+        if (semEmail && !fields.matricula) {
+            return res.status(400).json({ success: false, error: NO_EMAIL_MATRICULA_REQUIRED, field: 'matricula' });
         }
         // Senha inicial (H5a; UXA-13, SEG-06): em branco, o servidor gera uma temporária e a
         // devolve só nesta resposta; digitada, passa pela política. A caixa "Pedir troca no
@@ -1447,7 +1478,7 @@ router.post('/api/admin/student/create', (req, res) => {
         const typedPassword = typeof studentPassword === 'string' ? studentPassword.trim() : '';
         if (typedPassword) {
             const policy = validateNewPassword(typedPassword, {
-                kind: 'student', email: fields.email, name: fields.name, nomeSocial: fields.nomeSocial, matricula: fields.matricula,
+                kind: 'student', email: fields.email || '', name: fields.name, nomeSocial: fields.nomeSocial, matricula: fields.matricula,
             });
             if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy, 'studentPassword'));
         }
@@ -1481,7 +1512,7 @@ router.post('/api/admin/student/create', (req, res) => {
         const newStudent = {
             name: fields.name,
             nomeSocial: fields.nomeSocial || '',
-            email: fields.email,
+            email: fields.email || '',
             matricula: fields.matricula || '',
             phone: fields.phone || '',
             guardianPhone: fields.guardianPhone || '',
@@ -1503,6 +1534,12 @@ router.post('/api/admin/student/create', (req, res) => {
             updatedAt: Date.now()
         };
         if (askPasswordChange) requirePasswordChange(newStudent, 'created');
+        // Id estável desde o cadastro (C1 / P4-S3): as coleções novas gravam studentId.
+        studentIdentity.assignStudentId(db.memory, newStudent);
+        if (semEmail) {
+            newStudent.email = studentIdentity.placeholderEmail(newStudent.id);
+            newStudent.semEmail = true;
+        }
         students.push(newStudent);
 
         recordStudentAudit(db.memory, {
@@ -1521,6 +1558,7 @@ router.post('/api/admin/student/create', (req, res) => {
         const mustChange = askPasswordChange && passwordChangeRuleActive();
         res.json({
             success: true,
+            id: newStudent.id,
             mustChangePassword: mustChange,
             passwordChangeDeferred: mustChange && studentHasExamInProgress(db.memory, newStudent.email, newStudent),
             ...(temporaryPassword ? { temporaryPassword } : {}),
@@ -1542,13 +1580,21 @@ router.post('/api/admin/student/update', (req, res) => {
 
         let studentClasses = normalizeClassEntriesForStorage(Array.isArray(classes) ? classes : (studentClass ? [studentClass] : []));
         const fields = extractStudentFields(req.body);
+        // Aluno sem e-mail (C1 / P4-S3, D23): semEmail true troca o e-mail pelo endereço
+        // interno (a matrícula passa a ser obrigatória); false com um e-mail de verdade é a
+        // troca de e-mail de sempre. Sem o campo (tela antiga), o cadastro sem e-mail
+        // continua assim enquanto o e-mail enviado for o interno dele.
+        const semEmailChoice = req.body.semEmail === true ? true : (req.body.semEmail === false ? false : undefined);
+        // O cadastro continua achado pelo e-mail de antes (originalEmail; no aluno sem
+        // e-mail, o endereço interno): é por ele que o guarda confere o escopo do professor.
+        const students = db.memory.students;
+        const originalEmailNorm = String(originalEmail || '').trim().toLowerCase();
 
-        if (!originalEmail || !fields.name || !fields.email || studentClasses.length === 0) {
-            return res.status(400).json({ error: 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.' });
+        if (semEmailChoice === true) delete fields.email;
+        if (!originalEmailNorm || !fields.name || (semEmailChoice !== true && !fields.email) || studentClasses.length === 0) {
+            return res.status(400).json({ error: semEmailChoice === true ? 'Dados incompletos. Informe nome e ao menos uma turma.' : 'Dados incompletos. Informe nome, e-mail e ao menos uma turma.' });
         }
 
-        const students = db.memory.students;
-        const originalEmailNorm = originalEmail.trim().toLowerCase();
         const studentIndex = students.findIndex(s => s.email && s.email.toLowerCase() === originalEmailNorm);
 
         if (studentIndex === -1) {
@@ -1557,6 +1603,19 @@ router.post('/api/admin/student/update', (req, res) => {
         // Cadastro anonimizado (H7c) não é editado: os dados pessoais não voltam por aqui.
         if (isAnonymizedStudent(students[studentIndex])) {
             return res.status(409).json({ success: false, code: 'student_anonymized', error: ANONYMIZED_EDIT_REFUSAL });
+        }
+        const current = students[studentIndex];
+        const currentPlaceholder = studentIdentity.hasPlaceholderEmail(current);
+        if (semEmailChoice === true) {
+            if (!(fields.matricula !== undefined ? fields.matricula : current.matricula)) {
+                return res.status(400).json({ success: false, error: NO_EMAIL_MATRICULA_REQUIRED, field: 'matricula' });
+            }
+            if (!current.id) studentIdentity.assignStudentId(db.memory, current);
+            fields.email = currentPlaceholder ? String(current.email).trim().toLowerCase() : studentIdentity.placeholderEmail(current.id);
+        }
+        const keepsPlaceholder = studentIdentity.isPlaceholderEmail(fields.email) && fields.email === String(current.email || '').trim().toLowerCase();
+        if (keepsPlaceholder && fields.matricula !== undefined && !fields.matricula) {
+            return res.status(400).json({ success: false, error: NO_EMAIL_MATRICULA_REQUIRED, field: 'matricula' });
         }
         // 'Anonimizado' não se aplica por edição: só em Cadastros encerrados.
         if (fields.status !== undefined && isAnonymizedStudent({ status: fields.status })) {
@@ -1567,7 +1626,7 @@ router.post('/api/admin/student/update', (req, res) => {
         }
 
         // Validações (e-mail válido/único, matrícula única, telefones, status) ignorando o próprio.
-        const validation = validateStudentFields({ ...fields, classes: studentClasses }, students, originalEmailNorm);
+        const validation = validateStudentFields({ ...fields, classes: studentClasses }, students, originalEmailNorm, { allowPlaceholder: keepsPlaceholder || semEmailChoice === true });
         if (!validation.ok) {
             return res.status(400).json({ success: false, error: validation.error, field: validation.field });
         }
@@ -1602,6 +1661,8 @@ router.post('/api/admin/student/update', (req, res) => {
             period: fields.period || before.period,
             updatedAt: Date.now()
         };
+        if (studentIdentity.isPlaceholderEmail(newEmailNormalized)) students[studentIndex].semEmail = true;
+        else delete students[studentIndex].semEmail;
 
         if (changes.length) {
             recordStudentAudit(db.memory, {
@@ -2085,7 +2146,8 @@ router.get('/api/admin/student/report', (req, res) => {
         res.json({
             generatedAt: Date.now(),
             institution: (school && (school.name || school.info?.tradeName)) || db.memory.branding?.displayName || db.memory.branding?.institutionName || 'IClass',
-            student: { name: student.name, nomeSocial: student.nomeSocial || '', email: student.email, matricula: student.matricula || '', status: student.status || '' },
+            // Boletim impresso: o aluno sem e-mail aparece com 'sem e-mail' (C1 / P4-S3).
+            student: { name: student.name, nomeSocial: student.nomeSocial || '', email: studentIdentity.publicStudentEmail(student), matricula: student.matricula || '', status: student.status || '' },
             course: { id: courseId, name: course?.name || courseId || '' },
             className,
             period: cls?.period || student.period || '',
@@ -2487,7 +2549,7 @@ router.get('/api/admin/attendance/export', (req, res) => {
             const justTxt = just ? (just.texto || just.tipo || '') : '';
             attendanceUtil.recordAulas(a).forEach(aula => {
                 lines.push([
-                    a.date, nameByEmail[a.studentEmail] || '', a.studentEmail, a.studentClass,
+                    a.date, nameByEmail[a.studentEmail] || '', studentIdentity.publicStudentEmail(a.studentEmail), a.studentClass,
                     aula.ordem, discNome[`${a.courseId}::${aula.disciplinaId}`] || aula.disciplinaId || '', aula.inicio || '',
                     stLabel[aula.status] || aula.status || '', aula.status === 'justificada' ? abonado : '',
                     aula.status === 'justificada' ? justTxt : '', ATT_ORIGIN_LABEL[a.origin] || a.origin || '',
@@ -4887,7 +4949,7 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
         const header = ['Aluno', 'E-mail', 'Turma', 'Avaliação', 'Aplicação', 'Tentativa', 'Versão', 'Acertos', 'Questões', 'Nota da tentativa', 'Compõe a nota', 'Nota da aplicação', 'Publicada', 'Data de envio'];
         const rows = submissions.map(sub => [
             sub.studentName || sub.student?.name || '',
-            sub.studentEmail || sub.student?.email || '',
+            studentIdentity.publicStudentEmail(sub.studentEmail || sub.student?.email || ''),
             sub.studentClass || sub.student?.studentClass || studentClass,
             title,
             scopeLabel({ attempts: [sub] }, applicationsById),
@@ -4939,7 +5001,8 @@ router.get('/api/admin/gradebook', (req, res) => {
             const stamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
             res.setHeader('Content-Type', 'text/csv; charset=utf-8');
             res.setHeader('Content-Disposition', `attachment; filename="planilha_notas_${safeFilePart(course?.name || courseId)}_${safeFilePart(studentClass)}_${stamp}.csv"`);
-            return res.status(200).send(gradebookCsv(gradebook));
+            // O endereço interno do aluno sem e-mail sai como 'sem e-mail' (C1 / P4-S3).
+            return res.status(200).send(gradebookCsv({ ...gradebook, rows: gradebook.rows.map(row => ({ ...row, email: studentIdentity.publicStudentEmail(row.email) })) }));
         }
         res.json({ courseId, courseName: course?.name || courseId, studentClass, generatedAt: Date.now(), ...gradebook });
     });

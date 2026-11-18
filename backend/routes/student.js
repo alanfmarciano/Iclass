@@ -63,6 +63,7 @@ const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 const { studentSessionProfile } = require('../utils/studentProfile.js');
+const studentIdentity = require('../utils/studentIdentity.js');
 const { passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const {
     passwordChangeRuleActive,
@@ -987,6 +988,8 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
         createdAt: Date.now(),
         updatedAt: Date.now()
     };
+    // Id estável do aluno (C1 / P4-S3) desde o cadastro: as coleções novas gravam studentId.
+    studentIdentity.assignStudentId(db.memory, studentObj);
     currentStudents.push(studentObj);
     recordAudit(db.memory, {
         req,
@@ -1214,7 +1217,11 @@ router.post('/api/student/login', STUDENT_SCHEMAS.login, async (req, res) => {
     // A senha errada não espera o banco (H5b): a falha fica em loginLogs na memória e a
     // gravação é agrupada (no máximo uma a cada 60 s, utils/security.js). Antes cada
     // senha errada fazia um db.save() inteiro.
-    const login = await attemptPasswordLogin({ kind: 'student', email: req.body.email, password: req.body.password, req });
+    // 'E-mail ou matrícula' (C1 / P4-S3, D22): texto sem '@' é a matrícula, trocada aqui
+    // pelo e-mail da conta. Matrícula de ninguém ou repetida segue como veio e dá o mesmo
+    // erro (e o mesmo tempo) da senha errada; o atraso progressivo conta a conta achada.
+    const resolved = typeof req.body.email === 'string' ? studentIdentity.resolveStudentLogin(db.memory, req.body.email) : null;
+    const login = await attemptPasswordLogin({ kind: 'student', email: resolved ? resolved.login : req.body.email, password: req.body.password, req });
     if (!login.ok) return res.status(login.status).json(login.body);
     const student = login.account;
     const normalizedEmail = login.email;
@@ -1342,7 +1349,7 @@ router.post('/api/student/login', STUDENT_SCHEMAS.login, async (req, res) => {
 router.post('/api/student/recover', STUDENT_SCHEMAS.recover, (req, res) => {
     const { email } = req.body;
     if (!email) {
-        return res.status(400).json({ error: 'E-mail é obrigatório.' });
+        return res.status(400).json({ error: 'Informe o e-mail ou a matrícula.' });
     }
 
     // 30 pedidos a cada 10 min por IP (H5b, DES-X2).
@@ -1353,16 +1360,17 @@ router.post('/api/student/recover', STUDENT_SCHEMAS.recover, (req, res) => {
     }
 
     const students = readJSON(DB_STUDENTS_FILE);
-    const normalizedEmail = String(email).trim().toLowerCase();
+    // E-mail ou matrícula, como no login (C1 / P4-S3): matrícula repetida não marca ninguém.
+    const normalizedEmail = studentIdentity.resolveStudentLogin(db.memory, String(email)).login.toLowerCase();
     const student = students.find(s => s.email && s.email.toLowerCase() === normalizedEmail);
 
-    // Resposta igual com ou sem cadastro: não revela quais e-mails existem.
+    // Resposta igual com ou sem cadastro: não revela quais e-mails ou matrículas existem.
     if (student) {
         student.recoveryRequested = true;
         writeJSON(DB_STUDENTS_FILE, students);
     }
 
-    res.json({ success: true, message: 'Se o e-mail estiver cadastrado, o instrutor receberá a solicitação.' });
+    res.json({ success: true, message: 'Se o e-mail ou a matrícula estiver cadastrado, o instrutor receberá a solicitação.' });
 });
 
 

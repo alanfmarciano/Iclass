@@ -12,6 +12,7 @@ import { StatCard } from '../../components/ui/StatCard'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { csvCell } from '../../lib/csv'
+import { displayEmail, isPlaceholderEmail } from '../../lib/studentProfile'
 import { ANONYMIZED_STATUS, sameStatus } from './studentDeletion'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
@@ -98,7 +99,9 @@ export default function AlunosGlobalPage() {
   // Base já recortada pelo servidor (curso/turma); aqui aplicamos escola, situação e foco.
   const base = useMemo(() => (students || []).map((s) => ({
     ...s,
+    // A linha é do e-mail (seleção e ações em lote); a ficha abre pelo id estável.
     id: s.email,
+    studentId: s.id || '',
     ov: overviewByEmail.get((s.email || '').toLowerCase()) || null,
     atividade: lastActivity(s),
   })), [students, overviewByEmail])
@@ -170,7 +173,7 @@ export default function AlunosGlobalPage() {
   function exportCsv() {
     const head = ['Nome', 'E-mail', 'Matrícula', 'Turmas', 'Situação', 'Risco', 'Frequência', 'Último acesso']
     const body = rows.map((s) => [
-      displayName(s), s.email, s.matricula || '', scn(s).join(' | '), s.status || 'Ativo',
+      displayName(s), displayEmail(s.email), s.matricula || '', scn(s).join(' | '), s.status || 'Ativo',
       s.ov ? RISCO_LABEL[s.ov.riscoLevel] || '' : '',
       temFrequencia(s.ov) ? `${s.ov.frequencia}%` : '',
       relativeDays(s.atividade),
@@ -185,7 +188,11 @@ export default function AlunosGlobalPage() {
     URL.revokeObjectURL(url)
   }
 
-  const openStudent = (email) => nav('/diretorio/' + encodeURIComponent(email))
+  // Ficha pelo id estável (C1 / P4-S3); cadastro ainda sem id, pelo e-mail.
+  const openStudent = (row) => nav('/diretorio/' + (row.studentId || encodeURIComponent(row.email)))
+  // Matrícula repetida (dados antigos): o login por matrícula fica indisponível para esses
+  // cadastros até a matrícula ser corrigida.
+  const repeatedCount = useMemo(() => base.filter((s) => s.matriculaRepetida).length, [base])
 
   const columns = [
     { key: 'name', label: 'Aluno', render: (r) => {
@@ -197,8 +204,8 @@ export default function AlunosGlobalPage() {
             {r.isOnline && <span className="absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full bg-success border-2 border-surface" title="Online agora" />}
           </span>
           <div className="min-w-0">
-            <span className="block truncate text-text">{displayName(r)}</span>
-            <span className="block text-xs text-subtle truncate">{hasSocial ? r.name : r.email}</span>
+            <span className="block truncate text-text">{displayName(r)}{r.matriculaRepetida && <Badge tone="warning" className="ml-2 whitespace-nowrap">matrícula repetida</Badge>}</span>
+            <span className={`block text-xs text-subtle truncate${!hasSocial && isPlaceholderEmail(r.email) ? ' italic' : ''}`}>{hasSocial ? r.name : displayEmail(r.email)}</span>
           </div>
         </div>)
     } },
@@ -282,6 +289,12 @@ export default function AlunosGlobalPage() {
         </div>
       )}
 
+      {repeatedCount > 0 && (
+        <p role="status" className="px-4 py-3 rounded-xl text-sm bg-warning-soft text-warning">
+          {repeatedCount === 1 ? '1 aluno está' : `${repeatedCount} alunos estão`} com a matrícula repetida: o login por matrícula não funciona para esses cadastros. Corrija a matrícula na ficha de cada um (eles continuam entrando pelo e-mail).
+        </p>
+      )}
+
       {selectedIds.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 px-4 py-3 rounded-xl bg-primary-soft border border-primary">
           <span className="text-sm font-semibold text-text">{selectedIds.length} aluno(s) selecionado(s)</span>
@@ -296,7 +309,7 @@ export default function AlunosGlobalPage() {
           {bulkMsg.text}
           {bulkMsg.skipped?.length > 0 && (
             <ul className="mt-1 text-xs opacity-90">
-              {bulkMsg.skipped.map((s, i) => <li key={i}>{s.email}: {s.reason}</li>)}
+              {bulkMsg.skipped.map((s, i) => <li key={i}>{displayEmail(s.email)}: {s.reason}</li>)}
             </ul>
           )}
         </div>
@@ -307,7 +320,7 @@ export default function AlunosGlobalPage() {
           searchKeys={['name', 'nomeSocial', 'email', 'matricula']}
           selectable selectedIds={selectedIds} onSelectionChange={setSelectedIds}
           paginated pageSize={25}
-          rowActions={(r) => openStudent(r.email)} onRowClick={(r) => openStudent(r.email)}
+          rowActions={(r) => openStudent(r)} onRowClick={(r) => openStudent(r)}
           emptyTitle="Nenhum aluno" emptyDesc="Nenhum aluno corresponde a este filtro." />
       </PageState>
 

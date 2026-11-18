@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AlunoDetailPage from './AlunoDetailPage'
 
@@ -307,5 +307,39 @@ describe('[UC-LGPD-011] Ficha do aluno · cópia dos dados pessoais', () => {
     await user.click(screen.getByRole('button', { name: 'Imprimir' }))
     expect(mocks.toast.error).toHaveBeenCalledWith(expect.stringContaining('bloqueou a janela'))
     expect(mocks.get.mock.calls.some(([path]) => String(path).startsWith('/api/admin/lgpd/students/export'))).toBe(false)
+  })
+})
+
+// P4-S3 (fase 3): a ficha abre pelo id estável; o endereço antigo, com o e-mail, troca pelo
+// do id. O aluno sem e-mail aparece como "sem e-mail" e a tela segue mandando o endereço
+// interno nas rotas (é a chave do cadastro).
+describe('[UC-IDENT-001] ficha do aluno pelo id', () => {
+  function Where() {
+    const location = useLocation()
+    return <p data-testid="where">{location.pathname}</p>
+  }
+  function renderAt(url) {
+    return render(
+      <MemoryRouter initialEntries={[url]}>
+        <Routes><Route path="/alunos/:id" element={<><AlunoDetailPage /><Where /></>} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  it('endereço antigo com o e-mail troca pelo do id', async () => {
+    mocks.students = [{ id: 'alu_00000000000000b1', name: 'Bia', email: 'bia@x.local', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }] }]
+    renderAt('/alunos/bia%40x.local')
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/alunos/alu_00000000000000b1'))
+  })
+
+  it('aluno sem e-mail: "sem e-mail" na tela e o boletim pede pelo endereço interno', async () => {
+    const user = userEvent.setup()
+    const internal = 'aluno-alu_00000000000000f2@sem-email.invalid'
+    mocks.students = [{ id: 'alu_00000000000000f2', name: 'Bruno', email: internal, matricula: 'R7', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }] }]
+    renderAt('/alunos/alu_00000000000000f2')
+    expect(await screen.findByText(/sem e-mail/)).toBeTruthy()
+    expect(screen.queryByText(/sem-email\.invalid/)).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Boletim (PDF)' }))
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith(`/api/admin/student/report?email=${encodeURIComponent(internal)}&courseId=DES&studentClass=1DES`))
   })
 })

@@ -134,7 +134,7 @@ export default function App() {
         <Route path="alunos" element={<RequireAdminPath path="/alunos"><AlunosPage /></RequireAdminPath>} />
         <Route path="matriculas" element={<RequireAdministrator><RequireAdminPath path="/matriculas"><MatriculasPage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="diretorio" element={<RequireAdminPath path="/diretorio"><AlunosGlobalPage /></RequireAdminPath>} />
-        <Route path="diretorio/:email" element={<RequireAdminPath path="/diretorio"><AlunoGlobalEditPage /></RequireAdminPath>} />
+        <Route path="diretorio/:id" element={<RequireAdminPath path="/diretorio"><AlunoGlobalEditPage /></RequireAdminPath>} />
         <Route path="alunos/:id" element={<RequireAdminPath path="/alunos"><AlunoDetailPage /></RequireAdminPath>} />
         <Route path="admins" element={<RequireAdminPath path="/admins"><AdminsPage /></RequireAdminPath>} />
         <Route path="admins/:email" element={<RequireAdminPath path="/admins"><AdminEditPage /></RequireAdminPath>} />

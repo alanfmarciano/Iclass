@@ -36,8 +36,9 @@
 // (tela e backup-cli), porque a versão 281029f não recusa um banco migrado e pode gravar
 // dado no formato antigo depois da migração (o Alan volta de versão, abre a pasta antiga).
 // Cada item: { id, nome, run(memory, ctx) => boolean }, idempotente; grava só se mudou. A
-// primeira será ensureStudentIds (P4-S3, trilha C). As normalizações antigas do init
-// (contas, senhas, studentClass, provas resetadas) continuam onde estão (D2 do P6).
+// primeira é ensureStudentIds (P4-S3, C1). As normalizações antigas do init (contas,
+// senhas, studentClass, provas resetadas) continuam onde estão (D2 do P6).
+const studentIdentity = require('../utils/studentIdentity.js');
 
 const MIGRATIONS = Object.freeze([
     Object.freeze({
@@ -48,8 +49,30 @@ const MIGRATIONS = Object.freeze([
             return false;
         },
     }),
+    // Identidade do aluno (C1 / P4-S3, CRIT-05): todo aluno ganha students[].id
+    // ('alu_' + 16 hex). Na restauração de um backup sem ids, o aluno reaproveita o id que o
+    // mesmo e-mail tinha antes (ctx.previousStudentIds).
+    Object.freeze({
+        id: '2026-11-p4-ids-alunos',
+        nome: 'Dá um identificador estável a cada aluno',
+        tipo: 'memoria',
+        run(memory, ctx) {
+            return studentIdentity.ensureStudentIds(memory, ctx);
+        },
+    }),
 ]);
 
-const BOOT_NORMALIZATIONS = Object.freeze([]);
+const BOOT_NORMALIZATIONS = Object.freeze([
+    // O mesmo ensureStudentIds em todo boot e depois de toda restauração: a versão 281029f
+    // pode ter aberto o banco já migrado e criado aluno sem id. Religa também os registros
+    // das coleções novas pelo e-mail (handler.relink).
+    Object.freeze({
+        id: '2026-11-p4-ids-alunos-sempre',
+        nome: 'Confere o identificador de todo aluno',
+        run(memory, ctx) {
+            return studentIdentity.ensureStudentIds(memory, ctx);
+        },
+    }),
+]);
 
 module.exports = { MIGRATIONS, BOOT_NORMALIZATIONS };

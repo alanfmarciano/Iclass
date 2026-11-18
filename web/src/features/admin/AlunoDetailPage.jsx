@@ -21,6 +21,7 @@ import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf 
 import { acceptanceText, birthDateText } from '../../lib/legalAcceptance'
 import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
+import { displayEmail, isStudentIdParam, studentRouteKey } from '../../lib/studentProfile'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -64,8 +65,9 @@ function CompareBar({ label, me, them, max = 100, suffix = '', format = (value) 
 }
 
 export default function AlunoDetailPage() {
-  const { id } = useParams()
-  const email = decodeURIComponent(id || '')
+  // /alunos/:id (C1 / P4-S3): o id estável do aluno; o formato antigo, com o e-mail no
+  // endereço (favorito, Dashboard), ainda abre e troca o endereço pelo do id.
+  const { id: param = '' } = useParams()
   const nav = useNavigate()
   const toast = useToast()
   const { auth } = useAuth()
@@ -129,7 +131,19 @@ export default function AlunoDetailPage() {
     }
   }
 
-  const student = useMemo(() => (students || []).find((s) => s.email && s.email.toLowerCase() === email.toLowerCase()), [students, email])
+  const legacyEmail = useMemo(() => {
+    if (isStudentIdParam(param)) return ''
+    try { return decodeURIComponent(param) } catch { return param }
+  }, [param])
+  const student = useMemo(() => (students || []).find((s) => (isStudentIdParam(param)
+    ? s.id === param
+    : s.email && s.email.toLowerCase() === legacyEmail.toLowerCase())), [students, param, legacyEmail])
+  // As rotas da ficha continuam pelo e-mail do cadastro (no aluno sem e-mail, o endereço
+  // interno, que não aparece na tela).
+  const email = student ? student.email : legacyEmail
+  useEffect(() => {
+    if (student && student.id && !isStudentIdParam(param)) nav(`/alunos/${student.id}`, { replace: true })
+  }, [student, param, nav])
 
   useEffect(() => {
     if (!email) return
@@ -185,11 +199,11 @@ export default function AlunoDetailPage() {
                   <Badge tone={STATUS_TONE[student.status] || 'neutral'}>{student.status || 'Ativo'}</Badge>
                   {student.isOnline && <Badge tone="success" dot>online</Badge>}
                 </div>
-                <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {student.email}</p>
+                <p className="text-xs text-muted mt-1">{student.matricula || 's/ matrícula'} · {cls || 's/ turma'} · {displayEmail(student.email)}</p>
               </div>
               <Button variant="secondary" icon={FileText} onClick={() => openBoletim()}>Boletim (PDF)</Button>
               {/* Cadastro anonimizado não se edita (o servidor responde 409): sem Editar. */}
-              {!(isAnonymizedStatus(student.status) || student.anonymizedAt) && <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + encodeURIComponent(student.email))}>Editar</Button>}
+              {!(isAnonymizedStatus(student.status) || student.anonymizedAt) && <Button variant="secondary" icon={Pencil} onClick={() => nav('/diretorio/' + studentRouteKey(student))}>Editar</Button>}
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

@@ -8,6 +8,7 @@ import { PasswordChangeForm } from '../../components/PasswordChangeForm'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { useApi } from '../../hooks/useApi'
+import { displayEmail } from '../../lib/studentProfile'
 
 // Minha conta (/aluno/conta, H5a; UXA-13): os dados da conta, só para ler (quem muda
 // nome, e-mail e turma é o professor), e o "Alterar senha", que pede a senha atual.
@@ -29,7 +30,7 @@ export default function ContaPage() {
   }
   const rows = [
     ['Nome', name],
-    ['E-mail', student.email || auth.email || ''],
+    ['E-mail', displayEmail(student.email || auth.email || '')],
     ...(matricula ? [['Matrícula', matricula]] : []),
     ...(classes.length ? [[classes.length > 1 ? 'Turmas' : 'Turma', classes.map(classLabel).join(', ')]] : []),
   ]

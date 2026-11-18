@@ -4,6 +4,12 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Aluno: entrar pela matrícula e cadastro sem e-mail
+- O aluno pode entrar com a matrícula no lugar do e-mail: o campo do login agora se chama "E-mail ou matrícula". Espaços e maiúsculas não importam ("2024 001" e "2024001" são a mesma matrícula). O "Esqueci a senha" também aceita a matrícula.
+- O professor pode cadastrar aluno que não tem e-mail: na ficha, marque "O aluno não tem e-mail" e preencha a matrícula, que passa a ser o login dele. Nas telas, nas planilhas e nas impressões aparece "sem e-mail". Quando o aluno ganhar um e-mail, é só desmarcar a caixa e informar o endereço.
+- Se dois alunos tiverem a mesma matrícula (cadastros antigos), o Diretório avisa e marca esses alunos: eles continuam entrando pelo e-mail, mas não pela matrícula até ela ser corrigida.
+- Cada aluno ganhou um código próprio, que não muda quando o e-mail muda. O endereço da ficha passa a usar esse código; favoritos antigos, com o e-mail no endereço, continuam abrindo a ficha certa. Na primeira vez que o IClass abrir depois da atualização, todos os alunos recebem o código, e quem restaurar um backup antigo recupera o mesmo código de antes.
+
 ### Busca e ordem das listas
 - Agora dá para buscar sem acento e sem se preocupar com maiúsculas: "joao" acha "João" e "avaliacao" acha "Avaliação". Vale nas tabelas do painel, na Biblioteca, em Matrículas, na Chamada, no Fórum, em Provas (do professor e do aluno), em Avisos, em Cadastros encerrados, no Monitor, em Turmas, no seletor de curso e na Auditoria.
 - A busca aceita mais de uma palavra, em qualquer ordem: "martins joão" acha "João Martins". Na Auditoria, as palavras podem estar em campos diferentes da mesma entrada.
