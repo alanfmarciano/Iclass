@@ -87,6 +87,18 @@ export function parseHelpDocument(markdown) {
   }
 }
 
+// Âncora pedida na URL (#tema). Hash malformado (%E0%A4%A, digitado ou cortado numa
+// mensagem) não derruba a tela: vira "sem âncora".
+export function anchorFromHash(hash) {
+  const raw = String(hash || '').replace(/^#/, '')
+  if (!raw) return ''
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return ''
+  }
+}
+
 // Só os temas com texto (os outros esperam o grupo dono).
 export function visibleSections(doc) {
   return (doc?.secoes || []).filter((section) => section.corpo)

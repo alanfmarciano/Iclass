@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HELP_DOCS, loadHelpDoc, parseHelpDocument, slugify, stripComments, visibleSections } from './helpDocs'
+import { HELP_DOCS, anchorFromHash, loadHelpDoc, parseHelpDocument, slugify, stripComments, visibleSections } from './helpDocs'
 import { helpMarkdownToHtml } from './HelpArticle'
 import instrutor from './conteudo/instrutor.md?raw'
 import aluno from './conteudo/aluno.md?raw'
@@ -74,5 +74,17 @@ describe('[UC-AJUDA-001] textos da ajuda', () => {
     expect(html).not.toContain('onerror')
     expect(html).toContain('<h4')
     expect(html).toContain('href="/sistema"')
+  })
+})
+
+describe('[UC-AJUDA-001] âncora da URL', () => {
+  it('decodifica o hash e ignora o malformado em vez de lançar URIError', () => {
+    expect(anchorFromHash('#monitor')).toBe('monitor')
+    expect(anchorFromHash('monitor')).toBe('monitor')
+    expect(anchorFromHash('#esqueci%20a%20senha')).toBe('esqueci a senha')
+    expect(anchorFromHash('')).toBe('')
+    expect(anchorFromHash(undefined)).toBe('')
+    expect(anchorFromHash('#%E0%A4%A')).toBe('')
+    expect(anchorFromHash('#%')).toBe('')
   })
 })

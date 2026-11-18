@@ -52,6 +52,13 @@ describe('[UC-AJUDA-001] tela Ajuda do painel', () => {
     expect(await screen.findByText('O texto sobre esta tela ainda está sendo escrito. Veja os outros temas abaixo.')).toBeInTheDocument()
   })
 
+  it('hash malformado na URL não derruba a tela: abre o manual sem âncora', async () => {
+    renderAt('/ajuda#%E0%A4%A')
+    expect(await screen.findByRole('heading', { level: 2, name: 'Manual do professor' }, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: 'Sistema' })).toBeInTheDocument()
+    expect(screen.queryByText(/ainda está sendo escrito/)).not.toBeInTheDocument()
+  })
+
   it('?doc= escolhe o texto; o seletor do celular troca de texto; as Novidades vêm do CHANGELOG', async () => {
     renderAt('/ajuda?doc=novidades')
     expect(await screen.findByRole('heading', { level: 2, name: 'Novidades do IClass' }, { timeout: 5000 })).toBeInTheDocument()

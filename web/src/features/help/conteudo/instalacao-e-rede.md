@@ -32,7 +32,7 @@ O endereço para os alunos e o QR code ficam em **Sistema > Rede** e em **Endere
 
 ## Backup {#backup}
 
-O IClass faz um backup completo por dia. Em **Sistema > Backup**, escolha um destino fora do computador (pendrive, HD externo ou pasta de rede) para ter uma cópia se o computador quebrar.
+Todo dia o IClass guarda no próprio computador um backup dos dados (contas, alunos, provas, notas, presença e configurações), sem os arquivos da Biblioteca. Em **Sistema > Backup**, escolha um destino fora do computador (pendrive, HD externo ou pasta de rede): a cópia que vai para lá é completa, com os arquivos da Biblioteca, e serve se o computador quebrar. O botão **Baixar completo (ZIP)** da mesma tela (só para o administrador) baixa na hora uma cópia com tudo.
 
 ## Nome na rede (iclass.local) {#nome-na-rede}
 

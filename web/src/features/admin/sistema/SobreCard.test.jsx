@@ -17,7 +17,7 @@ const ABOUT = {
   modo: 'desenvolvimento',
   node: 'v20.19.0',
   plataforma: 'Windows_NT 10.0.19045 (x64)',
-  esquema: { aplicadas: 2, ultima: { id: '2026-11-p6-instalacao', nome: 'Identifica esta instalação (código e data em settings.install)', em: Date.parse('2026-11-18T13:00:00Z') }, pendentes: 0, desconhecidas: 0 },
+  esquema: { aplicadas: 2, ultima: { id: '2026-11-p6-instalacao', nome: 'Dá um código e a data de criação a esta instalação', em: Date.parse('2026-11-18T13:00:00Z') }, pendentes: 0, desconhecidas: 0 },
   ultimaAtualizacao: { de: '3.0.0', para: '3.1.0', em: Date.parse('2026-11-18T13:00:00Z'), backup: 'pre-atualizacao_dados_20261118.zip', semBackup: false, instalacaoNova: false, migracoes: 2 },
   instalacao: { id: '9f1c2d3e-0000-4000-8000-123456789abc', criadaEm: Date.parse('2026-11-18T13:00:00Z'), licenciadoPara: null, licencaAceita: false },
 }
@@ -37,7 +37,7 @@ describe('[UC-VERSAO-003] Sobre o IClass na tela Sistema', () => {
     expect(screen.getByRole('heading', { name: 'Sobre o IClass' })).toBeInTheDocument()
     expect(screen.getByText('Versão').nextSibling).toHaveTextContent(APP_VERSION)
     expect(screen.getByText('Última atualização').nextSibling).toHaveTextContent('de 3.0.0; backup antes da atualização: pre-atualizacao_dados_20261118.zip')
-    expect(screen.getByText('Dados na versão').nextSibling).toHaveTextContent('2 atualizações aplicadas · última: Identifica esta instalação')
+    expect(screen.getByText('Dados na versão').nextSibling).toHaveTextContent('2 atualizações aplicadas · última: Dá um código e a data de criação a esta instalação')
     expect(screen.getByText('Instalação').nextSibling).toHaveTextContent('9F1C2D3E')
     expect(screen.getByText('Licenciado para').nextSibling).toHaveTextContent('Não informado')
     expect(screen.getByText('Modo').nextSibling).toHaveTextContent('Pasta de desenvolvimento (git)')

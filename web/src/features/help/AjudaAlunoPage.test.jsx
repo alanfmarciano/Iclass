@@ -42,5 +42,21 @@ describe('[UC-AJUDA-001] ajuda do aluno', () => {
     await waitFor(() => expect(document.getElementById('prova-e-conexao')?.open).toBe(true), { timeout: 5000 })
     expect(document.getElementById('endereco').open).toBe(false)
     expect(screen.getByRole('link', { name: 'Voltar ao portal' })).toHaveAttribute('href', '/aluno')
+    expect(screen.queryByText(/ainda está sendo escrito/)).not.toBeInTheDocument()
+  })
+
+  it('âncora de tema ainda sem texto avisa e mostra os outros temas', async () => {
+    renderAt('/ajuda/aluno#atividades')
+    const notice = await screen.findByText('O texto sobre este assunto ainda está sendo escrito. Veja os outros temas abaixo.', {}, { timeout: 5000 })
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(screen.getByText('Esqueci a senha', { selector: 'summary span' })).toBeInTheDocument()
+  })
+
+  it('hash malformado na URL não derruba a tela: abre a ajuda sem âncora', async () => {
+    renderAt('/ajuda/aluno#%E0%A4%A')
+    await screen.findByText('Esqueci a senha', { selector: 'summary span' }, { timeout: 5000 })
+    expect(screen.getByRole('heading', { level: 1, name: 'Ajuda para o aluno' })).toBeInTheDocument()
+    expect(screen.queryByText(/ainda está sendo escrito/)).not.toBeInTheDocument()
+    expect(document.getElementById('esqueci-a-senha').open).toBe(false)
   })
 })

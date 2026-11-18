@@ -4,7 +4,7 @@ import { ArrowLeft, ChevronDown } from 'lucide-react'
 import { useAuth } from '../../context/AuthProvider'
 import { PageLoading } from '../../components/ui/PageLoading'
 import { Button } from '../../components/ui/Button'
-import { loadHelpDoc, visibleSections } from './helpDocs'
+import { anchorFromHash, loadHelpDoc, visibleSections } from './helpDocs'
 import { HelpArticle } from './HelpArticle'
 
 // Ajuda do aluno, /ajuda/aluno (fase 3, A1 / P6-S9: OPS-13; D20 do P6). Pública: abre
@@ -17,7 +17,7 @@ export const STUDENT_HELP_TITLE = 'Ajuda para o aluno'
 export default function AjudaAlunoPage() {
   const { auth } = useAuth()
   const location = useLocation()
-  const anchor = decodeURIComponent((location.hash || '').replace(/^#/, ''))
+  const anchor = anchorFromHash(location.hash)
   const [state, setState] = useState({ doc: null, error: '' })
   const [attempt, setAttempt] = useState(0)
   const [open, setOpen] = useState(() => new Set(anchor ? [anchor] : []))
@@ -48,6 +48,8 @@ export default function AjudaAlunoPage() {
   }, [state.doc, anchor])
 
   const sections = visibleSections(state.doc)
+  // Âncora de um tema ainda sem texto (ou que não existe): avisa, como a Ajuda do painel.
+  const anchorMissing = !!(state.doc && anchor && !sections.some((section) => section.id === anchor))
   const back = auth?.role === 'student' ? { to: '/aluno', label: 'Voltar ao portal' } : auth?.role === 'admin' ? { to: '/', label: 'Voltar ao painel' } : { to: '/login', label: 'Voltar para a entrada' }
 
   function toggle(id, isOpen) {
@@ -78,6 +80,8 @@ export default function AjudaAlunoPage() {
             <Button variant="secondary" onClick={() => setAttempt((value) => value + 1)}>Tentar de novo</Button>
           </div>
         )}
+
+        {anchorMissing && <p className="mt-4 text-sm text-muted" role="status">O texto sobre este assunto ainda está sendo escrito. Veja os outros temas abaixo.</p>}
 
         {state.doc && (
           <div ref={listRef} className="mt-5 space-y-3">

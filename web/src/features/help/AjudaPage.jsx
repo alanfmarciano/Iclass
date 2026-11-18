@@ -6,7 +6,7 @@ import { PageLoading } from '../../components/ui/PageLoading'
 import { Button } from '../../components/ui/Button'
 import { cn } from '../../lib/cn'
 import { matchesSearch } from '../../lib/textSearch'
-import { DEFAULT_HELP_DOC, HELP_DOCS, findHelpDoc, loadHelpDoc, visibleSections } from './helpDocs'
+import { DEFAULT_HELP_DOC, HELP_DOCS, anchorFromHash, findHelpDoc, loadHelpDoc, visibleSections } from './helpDocs'
 import { HelpArticle } from './HelpArticle'
 
 // Tela /ajuda do painel (fase 3, A1 / P6-S9: OPS-13, UXI-04; D20 do P6): o índice dos
@@ -65,7 +65,7 @@ export default function AjudaPage() {
   const { doc, error, retry } = useHelpDoc(entry.id)
   const [term, setTerm] = useState('')
   const results = useHelpSearch(term)
-  const anchor = decodeURIComponent((location.hash || '').replace(/^#/, ''))
+  const anchor = anchorFromHash(location.hash)
   const sections = useMemo(() => visibleSections(doc), [doc])
   const articleRef = useRef(null)
 

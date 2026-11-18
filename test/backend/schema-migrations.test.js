@@ -201,8 +201,9 @@ test('[UC-ESQUEMA-001] migrações publicadas são imutáveis: o código de cada
     // A primeira é a base 281029f e não muda nada.
     assert.equal(MIGRATIONS[0].id, '2026-11-p6-base');
     assert.equal(MIGRATIONS[0].run({}, {}), false);
-    // BOOT_NORMALIZATIONS: vazia até o C1 (ensureStudentIds).
-    assert.deepEqual([...BOOT_NORMALIZATIONS], []);
+    // BOOT_NORMALIZATIONS: a da identidade da instalação (A1). O C1 põe a ensureStudentIds
+    // na frente dela.
+    assert.deepEqual(BOOT_NORMALIZATIONS.map(row => row.id), ['2026-11-p6-instalacao-sempre']);
     assert.ok(Object.isFrozen(MIGRATIONS) && Object.isFrozen(BOOT_NORMALIZATIONS));
     // O hash não depende do fim de linha (checkout no Windows com CRLF).
     const row = { id: '2026-11-teste-crlf', tipo: 'memoria', run: { toString: () => 'run() {\r\n    return false;\r\n}' } };

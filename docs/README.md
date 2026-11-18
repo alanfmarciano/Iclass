@@ -41,7 +41,13 @@ Dê um duplo clique em **`ligarIclassV3.bat`** e use o menu:
 1. Opção **[4] Instalar Dependências e Compilar Interface** (primeira vez, ou quando mudar a interface).
 2. Opção **[1] Iniciar Servidor** — abre `http://localhost:3000`.
 
-Outras opções: `[2]` parar, `[3]` reiniciar, `[6]` modo demonstração, `[7]` backup ZIP, `[8]` sair.
+Outras opções: `[2]` parar, `[3]` reiniciar, `[5]` instalar, compilar e abrir o modo administrativo, `[6]` modo demonstração, `[7]` fazer backup (ZIP do projeto), `[8]` central de testes, `[S]` redefinir senha do administrador, `[9]` sair.
+
+O `npm run test:docs` confere esta lista com o menu do `ligarIclassV3.bat`.
+
+## Manual de uso (Ajuda)
+
+O manual para quem usa o IClass fica dentro do próprio sistema: item **Ajuda** no menu do painel (`/ajuda`) e, para o aluno, `/ajuda/aluno`, que abre sem login (link "Problemas para entrar?" na tela de entrada). Os textos estão em [`web/src/features/help/conteudo/`](../web/src/features/help/conteudo/): manual do professor (`instrutor.md`), do aluno (`aluno.md`), instalação e rede para o técnico de TI, perguntas frequentes e problemas. As Novidades de cada versão vêm do [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Início rápido (linha de comando)
 

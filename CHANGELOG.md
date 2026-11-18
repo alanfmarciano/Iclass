@@ -28,6 +28,6 @@ A versão das fases 1 e 2, a que está hoje nos computadores das escolas.
 
 - Prova mais segura e notas certas: uma aplicação por turma, com token, sala de espera, Monitor ao vivo, regra de foco, tempo devolvido quando o servidor cai e notas conferidas no servidor.
 - Permissões por conta: o professor vê só as turmas dele, e cada ação importante fica na Auditoria.
-- Dados protegidos: backup completo diário em ZIP, com prévia antes de restaurar e cópia num destino externo (pendrive ou HD).
+- Dados protegidos: backup diário dos dados em ZIP, com prévia antes de restaurar e cópia completa (com os arquivos da Biblioteca) num destino externo (pendrive ou HD).
 - Senhas com regras e troca obrigatória da senha temporária, atraso depois de senhas erradas e conexão segura (https) com o guia do certificado.
 - Endereço da sala com QR code, Termos de Uso e Política de Privacidade da escola, Meus dados para o aluno e desligar ou anonimizar o cadastro de quem saiu.

@@ -36,7 +36,8 @@
 // (tela e backup-cli), porque a versão 281029f não recusa um banco migrado e pode gravar
 // dado no formato antigo depois da migração (o Alan volta de versão, abre a pasta antiga).
 // Cada item: { id, nome, run(memory, ctx) => boolean }, idempotente; grava só se mudou. A
-// primeira será ensureStudentIds (P4-S3, trilha C). As normalizações antigas do init
+// primeira será ensureStudentIds (P4-S3, trilha C); a da identidade da instalação (A1) vem
+// depois dela. As normalizações antigas do init
 // (contas, senhas, studentClass, provas resetadas) continuam onde estão (D2 do P6).
 
 const MIGRATIONS = Object.freeze([
@@ -57,7 +58,7 @@ const MIGRATIONS = Object.freeze([
     // backup de outro computador não troca a identidade desta instalação).
     Object.freeze({
         id: '2026-11-p6-instalacao',
-        nome: 'Identifica esta instalação (código e data em settings.install)',
+        nome: 'Dá um código e a data de criação a esta instalação',
         tipo: 'memoria',
         run(memory, ctx) {
             const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -80,6 +81,67 @@ const MIGRATIONS = Object.freeze([
     }),
 ]);
 
-const BOOT_NORMALIZATIONS = Object.freeze([]);
+// Identidade da instalação em todo boot (A1 / P6-S2, rodada de ajuste): a versão 281029f
+// não conhece settings.install e, ao salvar Configurações (mergeSettings só com as chaves
+// dela), apaga a seção; ao restaurar um backup pela tela dela, a seção vem do backup (de
+// outro computador, talvez). A linha '2026-11-p6-instalacao' roda uma vez só, então a
+// conferência fica aqui. A cópia em schemaMeta.instalacao ({ id, criadaEm }) é a
+// referência: a tabela schema_meta não existe para a 281029f, que nunca a lê nem grava, e
+// a restauração mantém a desta instalação (schemaMeta tem restore 'keep'). Regra:
+// - com a cópia: settings.install.id e criadaEm voltam a ser os dela (o resto da seção,
+//   como a licença do A21b, fica como está);
+// - sem a cópia (primeiro boot depois da migração): vale o que está em settings.install, e
+//   o que faltar ganha um código novo e a data de agora, como na migração;
+// - no fim, a cópia fica igual a settings.install. Idempotente: grava só se mudou.
+function isPlainObjectValue(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
-module.exports = { MIGRATIONS, BOOT_NORMALIZATIONS };
+function validInstallId(value) {
+    return typeof value === 'string' && value.trim() !== '';
+}
+
+function validInstallTime(value) {
+    return Number.isFinite(value) && value > 0;
+}
+
+function ensureInstallIdentity(memory, ctx) {
+    let changed = false;
+    if (!isPlainObjectValue(memory.config)) { memory.config = {}; changed = true; }
+    if (!isPlainObjectValue(memory.config.settings)) { memory.config.settings = {}; changed = true; }
+    const settings = memory.config.settings;
+    if (!isPlainObjectValue(settings.install)) { settings.install = {}; changed = true; }
+    const install = settings.install;
+    if (!isPlainObjectValue(memory.schemaMeta)) { memory.schemaMeta = { aplicadas: [], atualizacoes: [] }; changed = true; }
+    const meta = memory.schemaMeta;
+    const copy = isPlainObjectValue(meta.instalacao) && validInstallId(meta.instalacao.id) && validInstallTime(meta.instalacao.criadaEm)
+        ? meta.instalacao
+        : null;
+    if (copy) {
+        if (install.id !== copy.id) { install.id = copy.id; changed = true; }
+        if (install.criadaEm !== copy.criadaEm) { install.criadaEm = copy.criadaEm; changed = true; }
+    } else {
+        if (!validInstallId(install.id)) { install.id = require('crypto').randomUUID(); changed = true; }
+        if (!validInstallTime(install.criadaEm)) {
+            install.criadaEm = Number.isFinite(ctx && ctx.now) ? ctx.now : Date.now();
+            changed = true;
+        }
+    }
+    if (!copy || copy.id !== install.id || copy.criadaEm !== install.criadaEm || Object.keys(copy).length !== 2) {
+        meta.instalacao = { id: install.id, criadaEm: install.criadaEm };
+        changed = true;
+    }
+    return changed;
+}
+
+const BOOT_NORMALIZATIONS = Object.freeze([
+    Object.freeze({
+        id: '2026-11-p6-instalacao-sempre',
+        nome: 'Confere o código desta instalação',
+        run(memory, ctx) {
+            return ensureInstallIdentity(memory, ctx);
+        },
+    }),
+]);
+
+module.exports = { MIGRATIONS, BOOT_NORMALIZATIONS, ensureInstallIdentity };

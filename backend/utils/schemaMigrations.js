@@ -354,11 +354,14 @@ async function afterRestore(memory, context = {}, { guard, reg = registry() } = 
     const now = Date.now();
     const ctx = { origem: 'restauracao', now, versaoApp, previousStudentIds: idsMap(context.previousStudentIds) };
     const ran = await runMigrationRows(memory, plan.pending.filter(row => row.tipo === 'memoria'), ctx, { guard });
-    await runNormalizations(memory, ctx, { guard, reg });
     const current = normalizeSchemaMeta(context.previousSchemaMeta !== undefined ? context.previousSchemaMeta : memory[SCHEMA_COLLECTION]);
     const fromBackup = appliedEntries(context.backupSchema);
     const entries = [...fromBackup, ...ran.map(item => ({ id: item.id, em: now, versaoApp, naRestauracao: true }))];
     memory[SCHEMA_COLLECTION] = { ...current, aplicadas: sortApplied(entries, reg), versaoApp };
+    // As normalizações rodam depois de schemaMeta voltar a ser o desta instalação: a da
+    // identidade (A1) lê a cópia de schemaMeta.instalacao, que é a desta instalação, não a
+    // do backup.
+    await runNormalizations(memory, ctx, { guard, reg });
     if (ran.length) {
         recordAudit(memory, {
             actor: 'sistema',
