@@ -110,11 +110,14 @@ function findStudent(memory, email) {
 // o titular (seedDemo, loginTime, recoveryRequested, updatedAt, lastSeenAt...); campo
 // novo do cadastro só entra aqui de propósito. Turmas, matrículas e aceites são seções
 // próprias (SECTION_FIELDS). A versão do administrador continua com o cadastro inteiro
-// (menos senha e sessão).
+// (menos senha e sessão). A mudança de situação vai com o motivo e a data
+// (statusReason, statusChangedAt, gravados por students.applyStudentStatus), que saíam
+// antes da lista; quem mudou (statusChangedBy) continua de fora, como todo campo de quem
+// da equipe fez (withoutActors).
 const STUDENT_PROFILE_FIELDS = Object.freeze([
     'name', 'nomeSocial', 'email', 'matricula', 'phone', 'birthDate', 'guardian', 'guardianPhone',
-    'status', 'unidade', 'period', 'accessibility', 'createdAt', 'lastLoginAt', 'lastLoginIp',
-    'passwordChangedAt', 'anonymizedAt',
+    'status', 'statusReason', 'statusChangedAt', 'unidade', 'period', 'accessibility', 'createdAt',
+    'lastLoginAt', 'lastLoginIp', 'passwordChangedAt', 'anonymizedAt',
 ]);
 
 function profileSection(student, audience) {

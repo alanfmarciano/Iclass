@@ -616,11 +616,16 @@ test('[UC-LGPD-010] perfil da cópia do aluno por lista permitida: sem seedDemo,
     Object.assign(ana, {
         seedDemo: true, loginTime: '10:00', recoveryRequested: true, updatedAt: NOW, lastSeenAt: NOW,
         createdAt: NOW - 300 * DAY, nomeSocial: 'Ana', unidade: 'Sede', campoFuturo: 'interno',
+        statusReason: 'Pediu trancamento', statusChangedAt: NOW - 2 * DAY, statusChangedBy: 'prof@meusdados.local',
     });
     const profile = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno' }).profile;
     ['seedDemo', 'loginTime', 'recoveryRequested', 'updatedAt', 'lastSeenAt', 'campoFuturo', 'password', 'statusChangedBy', 'sessionsInvalidBefore', 'classes', 'termsAcceptance']
         .forEach(field => assert.equal(field in profile, false, field));
-    assert.deepEqual(Object.keys(profile).sort(), ['accessibility', 'accessibilityNoteRestricted', 'birthDate', 'createdAt', 'email', 'guardian', 'matricula', 'name', 'nomeSocial', 'period', 'phone', 'status', 'unidade']);
+    assert.deepEqual(Object.keys(profile).sort(), ['accessibility', 'accessibilityNoteRestricted', 'birthDate', 'createdAt', 'email', 'guardian', 'matricula', 'name', 'nomeSocial', 'period', 'phone', 'status', 'statusChangedAt', 'statusReason', 'unidade']);
+    // O motivo e a data da mudança de situação são do titular e saíam antes da lista; quem
+    // mudou (statusChangedBy) fica de fora, como os outros campos de quem da equipe fez.
+    assert.equal(profile.statusReason, 'Pediu trancamento');
+    assert.equal(profile.statusChangedAt, NOW - 2 * DAY);
     // O administrador continua com o cadastro inteiro (menos senha e sessão).
     const admin = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'admin' }).profile;
     assert.equal(admin.seedDemo, true);

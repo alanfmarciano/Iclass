@@ -209,6 +209,44 @@ test('[UC-BACKUP-003] "Baixar só os dados": ZIP formato 2 sem a biblioteca, com
     assert.deepEqual(json.body.data.examKeystrokes.map(row => row.id), ['d1']);
 });
 
+// Contrato do registro: authSessions tem backup: false. O VACUUM INTO copia o banco
+// inteiro, e antes cada ZIP formato 2 (manual, automático, de segurança e o baixado) levava
+// a tabela auth_sessions com o e-mail, o IP e o hash de cada sessão ativa; a restauração as
+// zerava, mas o dado ficava parado dentro de cada ZIP.
+test('[UC-BACKUP-003] ZIP formato 2 sai sem as sessões (auth_sessions vazia e sem resto no arquivo); o banco de agora fica com elas', async () => {
+    await resetState();
+    const authSessions = require('../../backend/utils/authSessions.js');
+    const token = authSessions.createStudentSession(db.memory, 'ana@h4a.local', { ip: '198.51.100.77' });
+    const hash = authSessions.hashSessionToken(token);
+    await db.save();
+    const live = await dbFile.openDatabaseFile(db.dbPath);
+    try {
+        const row = await dbFile.getOn(live, 'SELECT COUNT(*) AS n FROM auth_sessions WHERE key = ?', [hash]);
+        assert.equal(row.n, 1, 'a sessão está gravada no banco de agora');
+    } finally {
+        await dbFile.closeDatabaseFile(live);
+    }
+
+    for (const variante of ['dados', 'completo']) {
+        const saved = await backup.createBackup({ origem: 'manual', variante });
+        const zip = new AdmZip(fs.readFileSync(saved.file));
+        const manifest = JSON.parse(zip.readAsText('iclass-backup.json'));
+        assert.equal(manifest.banco.tabelas.auth_sessions, 0, `${variante}: o manifesto conta 0 sessões`);
+        assert.ok(manifest.banco.tabelas.students >= 2);
+        const copy = zip.getEntry('data/database.db').getData();
+        assert.equal(manifest.banco.sha256, sha256(copy), `${variante}: a soma confere depois de esvaziar`);
+        const text = copy.toString('latin1');
+        assert.equal(text.includes(hash), false, `${variante}: o hash da sessão não fica nas páginas livres`);
+        assert.equal(text.includes('198.51.100.77'), false, `${variante}: o IP da sessão não fica no arquivo`);
+        const extracted = tempFile(`sem-sessoes-${variante}.db`);
+        fs.writeFileSync(extracted, copy);
+        const info = await dbFile.inspectDatabaseFile(extracted);
+        assert.equal(info.quickCheck, 'ok');
+        assert.equal(info.tabelas.auth_sessions, 0);
+    }
+    assert.ok(authSessions.findStudentSession(db.memory, token), 'a sessão de agora continua valendo');
+});
+
 test('[UC-BACKUP-003] snapshotTo: cópia consistente com 30 gravações ao mesmo tempo', async () => {
     await resetState();
     const target = tempFile('snapshot.db');

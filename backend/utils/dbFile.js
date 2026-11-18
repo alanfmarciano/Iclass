@@ -107,9 +107,39 @@ async function inspectDatabaseFile(file) {
     return { file, bytes: stat.size, sha256: await fileSha256(file), tabelas: counts, quickCheck: 'ok' };
 }
 
+// Esvazia, numa cópia do banco feita para o backup, as tabelas que o registro deixa fora
+// do backup (backup: false; hoje só auth_sessions: e-mail, IP e hash de cada sessão
+// ativa). O VACUUM INTO copia o banco inteiro: sem isso, cada ZIP formato 2 levava as
+// sessões, que a restauração zera de qualquer jeito. secure_delete grava zeros por cima
+// das linhas apagadas, para o conteúdo não ficar nas páginas livres do arquivo. A tabela
+// continua no arquivo (vazia), como o schema espera.
+function runOn(connection, sql, params = []) {
+    return new Promise((resolve, reject) => connection.run(sql, params, err => (err ? reject(err) : resolve())));
+}
+
+async function clearTablesInCopy(file, tables) {
+    const wanted = Array.from(new Set((tables || []).map(String).filter(Boolean)));
+    if (!wanted.length) return [];
+    const connection = await openDatabaseFile(file, { readOnly: false });
+    const cleared = [];
+    try {
+        await runOn(connection, 'PRAGMA secure_delete = ON');
+        const present = new Set(await tableNames(connection));
+        for (const name of wanted) {
+            if (!present.has(name)) continue;
+            await runOn(connection, `DELETE FROM "${name.replace(/"/g, '""')}"`);
+            cleared.push(name);
+        }
+    } finally {
+        await closeDatabaseFile(connection);
+    }
+    return cleared;
+}
+
 module.exports = {
     CORRUPT_SQLITE_CODES,
     allOn,
+    clearTablesInCopy,
     closeDatabaseFile,
     corruptDatabaseError,
     fileSha256,

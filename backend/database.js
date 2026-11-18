@@ -429,6 +429,10 @@ const COLLECTION_TABLES = Object.freeze([
     tableEntry('legalDocuments', 'legal_documents', 'array', 'id', { restore: 'merge' }),
 ]);
 
+// Tabelas que o registro deixa fora do backup (backup: false): a cópia do banco para o
+// ZIP formato 2 (snapshotTo e a backup-cli) sai com elas vazias.
+const TABLES_OUTSIDE_BACKUP = Object.freeze(COLLECTION_TABLES.filter(entry => entry.backup === false).map(entry => entry.table));
+
 const TABLE_BY_COLLECTION = new Map(COLLECTION_TABLES.map(entry => [entry.collection, entry]));
 
 // Linhas das tabelas derivadas lidas no boot (coleção -> Map(chave -> texto JSON)), até
@@ -1850,9 +1854,13 @@ async function compactDatabase({ beforeVacuum = null } = {}) {
 // disco; se ela falhar, a cópia não é feita), depois VACUUM INTO pela fila
 // (db.runExclusive: nenhuma gravação no meio, fora de transação, que o VACUUM recusa).
 // Gravações pedidas durante a cópia esperam e entram logo depois. A cópia sai em modo
-// journal normal (sem -wal), legível sozinha. O destino não pode existir. Depois, numa
-// conexão só de leitura da cópia: quick_check exatamente 'ok', contagem de cada tabela e
-// SHA-256 por stream. Devolve { file, bytes, sha256, tabelas, quickCheck, ms }.
+// journal normal (sem -wal), legível sozinha. O destino não pode existir. Na cópia, as
+// tabelas fora do backup (TABLES_OUTSIDE_BACKUP: as sessões) ficam vazias, fora da fila
+// (o arquivo é só da cópia). Depois, numa conexão só de leitura da cópia: quick_check
+// exatamente 'ok', contagem de cada tabela e SHA-256 por stream. Devolve
+// { file, bytes, sha256, tabelas, quickCheck, ms }. A cópia de antes de uma restauração
+// (antes.db) também sai sem as sessões: a restauração, feita ou desfeita, pede que todos
+// entrem de novo.
 async function snapshotTo(file) {
     const target = path.resolve(String(file || ''));
     if (!file || fs.existsSync(target)) throw new Error(`O arquivo da cópia do banco já existe ou não foi informado: ${target}`);
@@ -1862,6 +1870,7 @@ async function snapshotTo(file) {
     await writer.runExclusive(connection => vacuumExclusive(() => new Promise((resolve, reject) => {
         connection.run('VACUUM INTO ?', [target], err => (err ? reject(err) : resolve()));
     }), { beforeRetry: () => fs.rmSync(target, { force: true }) }));
+    await dbFile.clearTablesInCopy(target, TABLES_OUTSIDE_BACKUP);
     const ms = Date.now() - started;
     const info = await dbFile.inspectDatabaseFile(target);
     return { ...info, ms };
@@ -2053,6 +2062,7 @@ module.exports = {
     currentNetworkSettings,
     currentProtectedConfig,
     COLLECTION_TABLES,
+    TABLES_OUTSIDE_BACKUP,
     emptyCollectionValue,
     // Leitura das coleções de um arquivo de banco (boot e backup formato 2) e cópia
     // consistente pelo VACUUM INTO (H4a).

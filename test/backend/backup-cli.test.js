@@ -266,3 +266,38 @@ test('[UC-BACKUP-004] criar sem --destino grava na pasta deste computador no des
         fs.rmSync(pendrive, { recursive: true, force: true });
     }
 });
+
+// Contrato do registro (authSessions com backup: false): o criar da CLI também copia o
+// banco inteiro pelo VACUUM INTO; antes o ZIP levava a tabela auth_sessions com o e-mail,
+// o IP e o hash de cada sessão gravada.
+test('[UC-BACKUP-002] criar sai sem as sessões gravadas (auth_sessions vazia) e o banco parado continua com elas', async () => {
+    const dataDir = makeDataDir('sem-sessoes');
+    const authSessionsModule = JSON.stringify(require.resolve('../../backend/utils/authSessions.js'));
+    const seeded = withDatabase(dataDir, `
+        const authSessions = require(${authSessionsModule});
+        const token = authSessions.createStudentSession(db.memory, 'ana@cli.local', { ip: '203.0.113.45' });
+        return { hash: authSessions.hashSessionToken(token) };
+    `);
+    assert.ok(seeded && seeded.hash);
+    const port = await proc.freePort();
+    const created = runCli(dataDir, port, ['criar', '--dados']);
+    assert.equal(created.code, 0, created.output);
+    const [zip] = zipsIn(dataDir);
+    const AdmZip = require('adm-zip');
+    const archived = new AdmZip(path.join(dataDir, 'backups', zip));
+    const manifest = JSON.parse(archived.readAsText('iclass-backup.json'));
+    assert.equal(manifest.banco.tabelas.auth_sessions, 0);
+    const copy = archived.getEntry('data/database.db').getData().toString('latin1');
+    assert.equal(copy.includes(seeded.hash), false, 'o hash da sessão não vai no ZIP');
+    assert.equal(copy.includes('203.0.113.45'), false, 'o IP da sessão não vai no ZIP');
+    const dbFile = require('../../backend/utils/dbFile.js');
+    const live = await dbFile.openDatabaseFile(path.join(dataDir, 'database.db'));
+    try {
+        const row = await dbFile.getOn(live, 'SELECT COUNT(*) AS n FROM auth_sessions WHERE key = ?', [seeded.hash]);
+        assert.equal(row.n, 1, 'o banco de verdade continua com a sessão');
+    } finally {
+        await dbFile.closeDatabaseFile(live);
+    }
+    const verified = runCli(dataDir, port, ['verificar', path.join(dataDir, 'backups', zip)]);
+    assert.equal(verified.code, 0, verified.output);
+});
