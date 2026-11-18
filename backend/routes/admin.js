@@ -36,6 +36,44 @@ const {
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
+const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
+
+// Resposta de uma questão para a revisão do professor (contrato C3 do P3): tipo, texto da
+// resposta pelas letras que o aluno viu, resposta digitada e pontos. labelsRecord diz que
+// letras o aluno viu (a entrega ou a tentativa).
+function reviewAnswerFields(labelsRecord, question, graded, rawAlternatives) {
+    const type = graded?.type || questionType(question);
+    const seen = letter => seenLetterFor(labelsRecord, { alternatives: rawAlternatives }, letter);
+    const seenGraded = graded ? {
+        ...graded,
+        type,
+        studentChoice: graded.studentChoice ? seen(String(graded.studentChoice).toUpperCase()) : null,
+        studentChoices: Array.isArray(graded.studentChoices) ? graded.studentChoices.map(letter => seen(String(letter).toUpperCase())).sort() : [],
+    } : null;
+    const correctLetters = Array.isArray(graded?.correctAnswers) ? graded.correctAnswers : [];
+    return {
+        type,
+        answerText: seenGraded ? describeAnswer(question, seenGraded) : '',
+        studentChoices: seenGraded ? seenGraded.studentChoices : [],
+        studentResponse: graded && graded.studentResponse != null ? String(graded.studentResponse) : null,
+        correctAnswersSeen: correctLetters.map(letter => seen(String(letter).toUpperCase())).sort(),
+        ...reviewPoints(graded),
+        pending: graded?.pending === true,
+    };
+}
+
+// Pontos da questão na revisão. Entrega de antes do A2 não guardou pontos: vale como uma
+// correta de 1 ponto (D1), pelo isCorrect e pela anulação gravados nela, como a nota dela
+// foi calculada (mesmo que a questão valha outros pontos hoje).
+function reviewPoints(graded) {
+    if (!graded) return { pointsEarned: null, pointsPossible: null };
+    const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    if (finite(graded.pointsEarned) && finite(graded.pointsPossible)) {
+        return { pointsEarned: Number(graded.pointsEarned), pointsPossible: Number(graded.pointsPossible) };
+    }
+    if (graded.annulled && graded.annulmentMode === 'remover_do_total') return { pointsEarned: 0, pointsPossible: 0 };
+    return { pointsEarned: graded.isCorrect === true ? DEFAULT_POINTS : 0, pointsPossible: DEFAULT_POINTS };
+}
 const { canAccessAdminPermission, hasAdminCapability } = require('../utils/adminPermissions.js');
 const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
@@ -108,7 +146,7 @@ const {
     transitionExamApplication,
 } = require('../utils/examApplications.js');
 const { collectMonitorActivity, monitorKeystrokeEmail } = require('../utils/monitorActivity.js');
-const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { attemptOverdueMs, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
 
@@ -156,7 +194,8 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
-const { body, either, list, shape, str } = require('../utils/inputSchema.js');
+const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
+const { normalizeEvaluationQuestions } = require('../utils/questionModel.js');
 
 // Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
 // H9b: ENG-03, ENG-04): só tipo e tamanho (utils/inputSchema.js), escritos a partir do
@@ -185,7 +224,57 @@ const questionBankFields = () => ({
     sourceExamKey: adminTextField(200, 'prova de origem'),
     examKey: adminTextField(200, 'prova'),
 });
+// Avaliação (POST e PUT /api/admin/evaluation, fase 3, P3-S1): tipo e tamanho de cada
+// campo da questão. Os limites de verdade e as mensagens por questão ("Questão 3: ...")
+// são do modelo (utils/questionModel.js); aqui os tetos são um pouco maiores, para a
+// mensagem do modelo aparecer no lugar da genérica. Título, tema e rubrica geral não
+// tinham limite na tela: os tetos são largos.
+const numberOrText = (label, max = 40) => either([num({ label }), str({ max, label })], { nullable: true, label });
+const evaluationQuestionField = () => shape({
+    type: adminTextField(40, 'tipo da questão'),
+    points: numberOrText('pontos'),
+    text: adminTextField(20000, 'enunciado'),
+    questionText: adminTextField(20000, 'enunciado'),
+    alternatives: list(either([
+        str({ max: 2000, label: 'alternativa' }),
+        shape({ letter: adminTextField(5, 'letra da alternativa'), text: adminTextField(2000, 'alternativa'), isCorrect: bool({ nullable: true, label: 'alternativa correta' }) }, { label: 'alternativa' }),
+    ], { label: 'alternativas' }), { max: 26, nullable: true, label: 'alternativas' }),
+    correctAnswer: adminTextField(20, 'resposta correta'),
+    correctAnswers: list(str({ max: 5, label: 'respostas corretas' }), { max: 26, nullable: true, label: 'respostas corretas' }),
+    partialCredit: bool({ nullable: true, label: 'pontuação parcial' }),
+    numeric: shape({
+        value: numberOrText('valor da resposta numérica'),
+        tolerance: numberOrText('tolerância'),
+        unit: adminTextField(40, 'unidade'),
+    }, { nullable: true, label: 'resposta numérica' }),
+    acceptedAnswers: list(str({ max: 300, nullable: true, label: 'respostas aceitas' }), { max: 50, nullable: true, label: 'respostas aceitas' }),
+    review: adminTextField(20, 'revisão da resposta'),
+    expectedAnswer: adminTextField(5000, 'resposta esperada'),
+    rubric: list(shape({
+        id: adminTextField(40, 'critério da rubrica'),
+        nome: adminTextField(80, 'critério da rubrica'),
+        name: adminTextField(80, 'critério da rubrica'),
+        pontos: numberOrText('pontos do critério'),
+        points: numberOrText('pontos do critério'),
+    }, { label: 'rubrica' }), { max: 20, nullable: true, label: 'rubrica' }),
+    explanation: adminTextField(5000, 'explicação'),
+    difficulty: adminTextField(20, 'dificuldade'),
+    skills: list(str({ max: 80, nullable: true, label: 'habilidades' }), { max: 20, nullable: true, label: 'habilidades' }),
+    tags: list(str({ max: 40, nullable: true, label: 'etiquetas' }), { max: 20, nullable: true, label: 'etiquetas' }),
+    bankKey: adminTextField(100, 'questão do banco'),
+}, { label: 'questão' });
+const evaluationFields = () => ({
+    title: adminTextField(1000, 'título'),
+    theme: adminTextField(QUESTION_CATEGORY_MAX_CHARS, 'tema'),
+    rubric: str({ max: 200000, trim: false, nullable: true, label: 'rubrica' }),
+    questions: list(evaluationQuestionField(), { max: 1000, nullable: true, label: 'questões' }),
+    courseId: adminIdField('curso'),
+    studentClass: adminTextField(200, 'turma'),
+    moduleId: either([str({ max: 200, label: 'módulo' }), num({ label: 'módulo' })], { nullable: true, label: 'módulo' }),
+    scope: adminTextField(20, 'escopo'),
+});
 const ADMIN_SCHEMAS = {
+    evaluation: body(evaluationFields()),
     resetPassword: body({ email: adminEmailField(), newPassword: str({ max: 200, trim: false, nullable: true, label: 'nova senha' }) }),
     examStudent: body({
         studentEmail: adminEmailField('e-mail do aluno'),
@@ -749,6 +838,8 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
                     studentChoiceSeen: seenLetterFor(submission, { alternatives: rawAlternatives }, studentChoice),
                     correctAnswerSeen: seenLetterFor(submission, { alternatives: rawAlternatives }, correctAnswer),
                     isCorrect: graded.isCorrect === true,
+                    // Tipos da fase 3 (P3-S1): texto da resposta, pontos e "aguardando correção".
+                    ...reviewAnswerFields(submission, question, graded, rawAlternatives),
                     alternatives: rawAlternatives.map((alternative, alternativeIndex) => {
                         const canonicalLetter = String(alternative.letter || String.fromCharCode(65 + alternativeIndex)).toUpperCase();
                         return {
@@ -756,7 +847,8 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
                             letter: seenAlternativeLetter(submission, alternative, alternativeIndex),
                             canonicalLetter,
                             text: alternative.text ?? alternative.label ?? String(alternative),
-                            selectedByStudent: canonicalLetter === studentChoice,
+                            selectedByStudent: canonicalLetter === studentChoice
+                                || (Array.isArray(graded.studentChoices) && graded.studentChoices.map(letter => String(letter).toUpperCase()).includes(canonicalLetter)),
                             correct: canonicalLetter === correctAnswer || alternative.isCorrect === true
                         };
                     })
@@ -3251,43 +3343,12 @@ router.post('/api/admin/material/create', (req, res) => {
     });
 });
 
-// Obter avaliação estruturada
+// Avaliação estruturada: título, tema, rubrica e as questões pelo modelo único da
+// questão (utils/questionModel.js, D3 do P3): tipos, pontos, explicação e rubrica.
 function normalizeEvaluationPayload(payload) {
     const title = String(payload?.title || '').trim();
     if (!title) throw Object.assign(new Error('Título da avaliação é obrigatório.'), { status: 400 });
-    if (!Array.isArray(payload.questions) || payload.questions.length === 0) {
-        throw Object.assign(new Error('A avaliação deve ter pelo menos uma questão.'), { status: 400 });
-    }
-    const questions = payload.questions.map((question, index) => {
-        const text = String(question?.text || question?.questionText || '').trim();
-        if (!text) throw Object.assign(new Error(`Informe o texto da questão ${index + 1}.`), { status: 400 });
-        const rawAlternatives = Array.isArray(question.alternatives) ? question.alternatives : [];
-        if (rawAlternatives.length < 2 || rawAlternatives.length > 8) {
-            throw Object.assign(new Error(`A questão ${index + 1} deve ter entre 2 e 8 alternativas.`), { status: 400 });
-        }
-        const requestedCorrect = String(question.correctAnswer || '').trim().toUpperCase();
-        const alternatives = rawAlternatives.map((alternative, alternativeIndex) => ({
-            letter: String.fromCharCode(65 + alternativeIndex),
-            text: String(typeof alternative === 'string' ? alternative : alternative?.text || '').trim(),
-            isCorrect: alternative?.isCorrect === true
-                || String(alternative?.letter || '').toUpperCase() === requestedCorrect,
-        }));
-        if (alternatives.some(alternative => !alternative.text)) {
-            throw Object.assign(new Error(`Preencha todas as alternativas da questão ${index + 1}.`), { status: 400 });
-        }
-        if (alternatives.filter(alternative => alternative.isCorrect).length !== 1) {
-            throw Object.assign(new Error(`Marque exatamente uma alternativa correta na questão ${index + 1}.`), { status: 400 });
-        }
-        const correctAnswer = alternatives.find(alternative => alternative.isCorrect).letter;
-        return {
-            ...question,
-            number: index + 1,
-            originalNumber: index + 1,
-            text,
-            alternatives,
-            correctAnswer,
-        };
-    });
+    const questions = normalizeEvaluationQuestions(payload.questions);
     return {
         title,
         theme: String(payload.theme || '').trim(),
@@ -3296,7 +3357,7 @@ function normalizeEvaluationPayload(payload) {
     };
 }
 
-router.post('/api/admin/evaluation', (req, res) => {
+router.post('/api/admin/evaluation', ADMIN_SCHEMAS.evaluation, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const courseId = String(req.body.courseId || '').trim();
         const moduleId = String(req.body.moduleId || '').trim();
@@ -3365,7 +3426,7 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
 });
 
 // Salvar avaliação estruturada
-router.put('/api/admin/evaluation/:key', (req, res) => {
+router.put('/api/admin/evaluation/:key', ADMIN_SCHEMAS.evaluation, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const requestedKey = req.params.key;
         const evaluationData = req.body;
@@ -4607,7 +4668,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     ? (Number.isFinite(Number(submission.answeredCount)) && submission.answeredCount !== null
                         ? Number(submission.answeredCount)
                         : (Array.isArray(submission.gradedAnswers)
-                            ? countAnswers(Object.fromEntries(submission.gradedAnswers.map(item => [item.questionNumber, item.studentChoice])))
+                            ? submission.gradedAnswers.filter(isAnswered).length
                             : 0))
                     : Object.keys(state.answers || {}).length;
                 const questionsInAttempt = submission ? (Number(submission.totalCount) || totalQuestions) : totalQuestions;
@@ -4803,7 +4864,7 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             } else {
                 const rawChoice = answers[question.number] != null ? answers[question.number]
                     : (answers[questionNumber] != null ? answers[questionNumber] : null);
-                studentChoice = rawChoice != null ? String(rawChoice).toUpperCase() : null;
+                studentChoice = typeof rawChoice === 'string' && rawChoice ? rawChoice.toUpperCase() : null;
                 correctAnswer = getCorrectAnswer(question) || null;
                 isCorrect = !!studentChoice && studentChoice === correctAnswer;
             }
@@ -4824,7 +4885,9 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                 isCorrect,
                 annulled: !!(graded && graded.annulled),
                 annulmentMode: (graded && graded.annulmentMode) || null,
-                answered: !!studentChoice,
+                // Tipos da fase 3 (P3-S1): várias corretas e resposta digitada contam como respondidas.
+                answered: graded ? isAnswered(graded) : !!studentChoice,
+                ...reviewAnswerFields(labelsRecord, question, graded || (studentChoice ? { studentChoice } : null), rawAlternatives),
                 alternatives: rawAlternatives.map((alternative, alternativeIndex) => {
                     const canonicalLetter = String(alternative.letter || String.fromCharCode(65 + alternativeIndex)).toUpperCase();
                     return {
@@ -4832,7 +4895,8 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                         letter: seenAlternativeLetter(labelsRecord, alternative, alternativeIndex),
                         canonicalLetter,
                         text: alternative.text ?? alternative.label ?? String(alternative),
-                        selectedByStudent: canonicalLetter === studentChoice,
+                        selectedByStudent: canonicalLetter === studentChoice
+                            || !!(graded && Array.isArray(graded.studentChoices) && graded.studentChoices.map(letter => String(letter).toUpperCase()).includes(canonicalLetter)),
                         correct: canonicalLetter === correctAnswer || alternative.isCorrect === true,
                     };
                 }),
@@ -5006,7 +5070,11 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
                 byQuestion[qn].attempts++;
                 if (answer.isCorrect) byQuestion[qn].correct++;
                 else byQuestion[qn].wrong++;
-                const choice = answer.studentChoice || 'em branco';
+                // Várias corretas: as letras juntas ('A, C'); resposta digitada: 'resposta escrita'.
+                const choice = answer.studentChoice
+                    || (Array.isArray(answer.studentChoices) && answer.studentChoices.length ? answer.studentChoices.join(', ') : '')
+                    || (answer.studentResponse != null && String(answer.studentResponse) !== '' ? 'resposta escrita' : '')
+                    || 'em branco';
                 byQuestion[qn].choices[choice] = (byQuestion[qn].choices[choice] || 0) + 1;
             });
         });

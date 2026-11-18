@@ -97,6 +97,7 @@ const {
 } = require('../utils/examDeadline.js');
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
+const { isAnswered } = require('../utils/examScoring.js');
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
@@ -366,7 +367,7 @@ function attemptOutcomeFor(application, studentEmail, attemptId) {
         submittedAt: submission.timestamp || null,
         answeredCount: Number.isFinite(Number(submission.answeredCount))
             ? Number(submission.answeredCount)
-            : (submission.gradedAnswers || []).filter(item => item?.studentChoice).length,
+            : (submission.gradedAnswers || []).filter(isAnswered).length,
         lateBySeconds: Number(submission.lateBySeconds || 0),
     };
 }
@@ -1723,7 +1724,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
             finalizedByServer: previousSameAttempt.submissionSource === SERVER_DEADLINE_SOURCE,
             answeredCount: Number.isFinite(Number(previousSameAttempt.answeredCount))
                 ? Number(previousSameAttempt.answeredCount)
-                : (previousSameAttempt.gradedAnswers || []).filter(item => item?.studentChoice).length,
+                : (previousSameAttempt.gradedAnswers || []).filter(isAnswered).length,
             message: 'Esta tentativa já havia sido enviada.',
             examConfigVersion: previousSameAttempt.examConfigVersion || null,
         });

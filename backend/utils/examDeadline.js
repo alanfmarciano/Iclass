@@ -6,6 +6,7 @@
 // dentro de uma janela de tolerância, com o atraso registrado para o professor.
 const { filterStudentExamAttempts, normalizeMaxAttempts } = require('./examAttempts.js');
 const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js');
+const { answerFingerprint, answersFromGradedAnswers, hasAnswer } = require('./examScoring.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
@@ -50,9 +51,10 @@ function normalizedEmail(value) {
     return String(value || '').trim().toLowerCase();
 }
 
+// Questões respondidas no estado da tentativa (letra, lista de letras ou resposta digitada).
 function countAnswers(answers) {
     return Object.values(answers && typeof answers === 'object' ? answers : {})
-        .filter(value => value !== null && value !== undefined && value !== '').length;
+        .filter(hasAnswer).length;
 }
 
 // Estado da tentativa guardado na entrega automática do fim do tempo, para o "+N min"
@@ -333,14 +335,10 @@ function latestDeliveryByStudent(memory, applicationId) {
     return latest;
 }
 
-// Respostas da entrega (letra original por questão), como ficam no estado da tentativa.
+// Respostas da entrega como ficam no estado da tentativa: letra original, lista de letras
+// (várias corretas) ou o objeto da resposta digitada (utils/examScoring.js).
 function answersFromDelivery(submission) {
-    const answers = {};
-    (Array.isArray(submission?.gradedAnswers) ? submission.gradedAnswers : []).forEach(item => {
-        const number = Number(item?.questionNumber);
-        if (Number.isFinite(number) && item.studentChoice) answers[number] = String(item.studentChoice).toUpperCase();
-    });
-    return answers;
+    return answersFromGradedAnswers(submission?.gradedAnswers);
 }
 
 // A entrega manual (o aluno apertou "Enviar") só conta como "ficou sem o tempo extra"
@@ -585,12 +583,14 @@ function markLateSubmission(submission, { deadlineAt, lateMs } = {}) {
 
 function sameAnswers(gradedAnswers, answers) {
     const fromSubmission = {};
-    (Array.isArray(gradedAnswers) ? gradedAnswers : []).forEach(item => {
-        if (item?.studentChoice) fromSubmission[Number(item.questionNumber)] = String(item.studentChoice).toUpperCase();
+    Object.entries(answersFromGradedAnswers(gradedAnswers)).forEach(([number, value]) => {
+        const print = answerFingerprint(value);
+        if (print) fromSubmission[Number(number)] = print;
     });
     const fromClient = {};
-    Object.entries(answers || {}).forEach(([number, choice]) => {
-        if (choice !== null && choice !== undefined && choice !== '') fromClient[Number(number)] = String(choice).toUpperCase();
+    Object.entries(answers && typeof answers === 'object' ? answers : {}).forEach(([number, value]) => {
+        const print = answerFingerprint(value);
+        if (print) fromClient[Number(number)] = print;
     });
     const keys = new Set([...Object.keys(fromSubmission), ...Object.keys(fromClient)]);
     return [...keys].every(number => fromSubmission[number] === fromClient[number]);
@@ -630,6 +630,8 @@ function replaceServerFinalization(submission, { application, onlineConfig, eval
     submission.score = grade.score;
     submission.correctCount = grade.correctCount;
     submission.totalCount = grade.totalCount;
+    submission.pointsEarned = grade.pointsEarned;
+    submission.pointsPossible = grade.pointsPossible;
     submission.gradedAnswers = grade.gradedAnswers;
     if (grade.examSnapshot) submission.examSnapshot = grade.examSnapshot;
     submission.answeredCount = countAnswers(answers);

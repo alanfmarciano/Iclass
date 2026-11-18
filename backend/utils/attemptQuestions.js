@@ -10,6 +10,7 @@
 const crypto = require('crypto');
 const { questionNumber, questionsForAttempt } = require('./examGrading.js');
 const { answerIdScope, studentAlternatives } = require('./examAnswerIds.js');
+const { ANSWER_LIMITS, isChoiceType, questionPoints, questionType } = require('./examScoring.js');
 
 const CLOSED_ATTEMPT_STATUSES = new Set(['submitted', 'expired', 'invalidated']);
 const LEGACY_BLOCKED_CONFIG_STATUSES = new Set(['draft', 'prepared', 'paused', 'finished', 'cancelled']);
@@ -41,21 +42,33 @@ function attemptQuestionsAvailable({ application, onlineConfig, state, now = Dat
 // Lista do que o aluno pode ver de cada questão (lista branca: campo novo no
 // snapshot não vaza por acidente). scope: escopo dos identificadores das alternativas
 // (a aplicação; answerIdScope).
+// Tipos da fase 3 (contrato C4 do P3): vão o tipo, os pontos, a unidade da numérica e o
+// tamanho máximo da resposta digitada. Nunca vão o gabarito de nenhum tipo (correctAnswer,
+// correctAnswers, isCorrect, numeric.value e tolerance, acceptedAnswers, review), nem a
+// explicação, a resposta esperada ou a rubrica da dissertativa.
 function studentQuestion(question, index, scope) {
     const number = questionNumber(question, index);
     const text = typeof question?.text === 'string' && question.text
         ? question.text
         : (typeof question?.questionText === 'string' ? question.questionText : '');
     const examNumber = Number(question?.examNumber);
+    const type = questionType(question);
+    const unit = type === 'numeric' && typeof question?.numeric?.unit === 'string' ? question.numeric.unit.trim().slice(0, 20) : '';
     return {
         originalNumber: number,
         examNumber: Number.isFinite(examNumber) && examNumber > 0 ? examNumber : index + 1,
         text,
         questionText: text,
+        type,
+        points: questionPoints(question),
+        ...(unit ? { unit } : {}),
+        ...(ANSWER_LIMITS[type] ? { maxLength: ANSWER_LIMITS[type] } : {}),
         isAdditional: question?.isAdditional === true,
         replacedQuestionNumber: question?.replacedQuestionNumber ? Number(question.replacedQuestionNumber) : null,
-        alternatives: studentAlternatives({ ...question, originalNumber: number }, scope, index)
-            .map(alternative => ({ id: alternative.id, letter: alternative.letter, text: String(alternative.text ?? '') })),
+        alternatives: isChoiceType(type)
+            ? studentAlternatives({ ...question, originalNumber: number }, scope, index)
+                .map(alternative => ({ id: alternative.id, letter: alternative.letter, text: String(alternative.text ?? '') }))
+            : [],
     };
 }
 

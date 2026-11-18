@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { answersFromGradedAnswers, correctLetterFor, gradedAnswerFor, roundPoints } = require('./examScoring.js');
 
 function clone(value) {
     return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -8,10 +9,9 @@ function questionNumber(question, index = 0) {
     return Number(question?.originalNumber || question?.number || index + 1);
 }
 
+// Letra correta de uma questão de escolha única (utils/examScoring.js).
 function correctAnswerFor(question) {
-    if (question?.correctAnswer) return String(question.correctAnswer).toUpperCase();
-    const alternative = (question?.alternatives || []).find(item => item?.isCorrect === true);
-    return alternative?.letter ? String(alternative.letter).toUpperCase() : '';
+    return correctLetterFor(question);
 }
 
 function snapshotForAttempt(application, onlineConfig, assignedVersion = 'A') {
@@ -63,33 +63,49 @@ function annulmentMap(application, onlineConfig) {
     return new Map(entries.map(entry => [Number(entry.questionNumber), entry]));
 }
 
-function gradeAttempt({ application, onlineConfig, state, evaluation, answers = {} } = {}) {
+// Itens da correção do professor por número da questão (submission.correcao.itens, D8
+// do P3): { pontos } vale por cima da conta automática da questão.
+function manualItemsMap(manual) {
+    if (!manual || typeof manual !== 'object') return new Map();
+    const entries = manual instanceof Map ? [...manual.entries()] : Object.entries(manual);
+    return new Map(entries
+        .filter(([, item]) => item && typeof item === 'object')
+        .map(([number, item]) => [Number(number), item])
+        .filter(([number]) => Number.isFinite(number)));
+}
+
+// Corrige uma tentativa pelo corretor por tipo (utils/examScoring.js, D4 do P3): cada
+// questão vale os seus pontos (1 quando não tem) e a nota é round(obtidos / possíveis *
+// 100). correctCount e totalCount continuam a contagem de questões (as telas "18/19"),
+// com a questão removida do total fora das duas. Com todas valendo 1 ponto a nota é a
+// mesma de antes (teste de compatibilidade com o corretor antigo congelado).
+// manual: os itens da correção do professor ({ [número]: { pontos } }).
+function gradeAttempt({ application, onlineConfig, state, evaluation, answers = {}, manual = null } = {}) {
     const resolved = questionsForAttempt({ application, onlineConfig, state, evaluation });
     const annulled = annulmentMap(application, onlineConfig);
+    const manualItems = manualItemsMap(manual);
+    const source = answers && typeof answers === 'object' ? answers : {};
     let correctCount = 0;
     let totalCount = 0;
+    let pointsEarned = 0;
+    let pointsPossible = 0;
+    let pendingCount = 0;
     const gradedAnswers = resolved.questions.map(question => {
         const number = Number(question.originalNumber);
-        const correctAnswer = correctAnswerFor(question);
-        const studentChoice = answers[number] == null ? null : String(answers[number]).toUpperCase();
         const annulment = annulled.get(number) || null;
-        const removed = annulment?.mode === 'remover_do_total';
-        const awarded = annulment?.mode === 'ponto_para_todos';
-        const isCorrect = awarded || (!removed && !!correctAnswer && studentChoice === correctAnswer);
-        if (!removed) {
+        const graded = gradedAnswerFor(question, number, source[number], { annulment, manual: manualItems.get(number) || null });
+        if (annulment?.mode !== 'remover_do_total') {
             totalCount += 1;
-            if (isCorrect) correctCount += 1;
+            if (graded.isCorrect === true) correctCount += 1;
         }
-        return {
-            questionNumber: number,
-            studentChoice,
-            correctAnswer,
-            isCorrect,
-            annulled: !!annulment,
-            annulmentMode: annulment?.mode || null,
-        };
+        if (graded.pending) pendingCount += 1;
+        pointsEarned += graded.pointsEarned;
+        pointsPossible += graded.pointsPossible;
+        return graded;
     });
-    const score = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : 100;
+    pointsEarned = roundPoints(pointsEarned);
+    pointsPossible = roundPoints(pointsPossible);
+    const score = pointsPossible > 0 ? Math.round((pointsEarned / pointsPossible) * 100) : 100;
     const examSnapshot = resolved.snapshot ? clone({
         version: resolved.snapshot.version || resolved.assignedVersion,
         examCode: resolved.snapshot.examCode || null,
@@ -99,6 +115,9 @@ function gradeAttempt({ application, onlineConfig, state, evaluation, answers = 
         score,
         correctCount,
         totalCount,
+        pointsEarned,
+        pointsPossible,
+        pendingCount,
         gradedAnswers,
         assignedVersion: resolved.assignedVersion,
         assignedQuestionNumbers: resolved.assignedNumbers,
@@ -142,6 +161,9 @@ function createSubmissionFromAttempt({
         score: grade.score,
         correctCount: grade.correctCount,
         totalCount: grade.totalCount,
+        // Pontos da tentativa (D4 do P3): a nota é obtidos / possíveis.
+        pointsEarned: grade.pointsEarned,
+        pointsPossible: grade.pointsPossible,
         gradedAnswers: grade.gradedAnswers,
         assignedVersion: grade.assignedVersion,
         activeHistoryId: application?.historyId || onlineConfig?.activeHistoryId || null,
@@ -168,17 +190,19 @@ function createSubmissionFromAttempt({
 }
 
 // Recorrige uma entrega (anulação, correção ou troca de questão). Quando a nota
-// muda, a anterior fica em submission.scoreHistory com o motivo (AVA-08).
+// muda, a anterior fica em submission.scoreHistory com o motivo (AVA-08). As respostas
+// saem de gradedAnswers por tipo (letra, lista de letras, número ou texto) e a correção
+// do professor (submission.correcao, D8 do P3) continua valendo: os pontos lançados por
+// ele entram por cima da conta automática e o registro da correção não é tocado.
 function regradeSubmission({ submission, application, onlineConfig, evaluation, reason = '', by = '' } = {}) {
     const existing = Array.isArray(submission?.gradedAnswers) ? submission.gradedAnswers : [];
-    const answers = Object.fromEntries(existing
-        .filter(answer => answer?.studentChoice)
-        .map(answer => [Number(answer.questionNumber), answer.studentChoice]));
+    const answers = answersFromGradedAnswers(existing);
     const state = {
         assignedVersion: submission?.assignedVersion || 'A',
         assignedQuestionNumbers: existing.map(answer => Number(answer.questionNumber)).filter(Number.isFinite),
     };
-    const grade = gradeAttempt({ application, onlineConfig, state, evaluation, answers });
+    const manual = submission?.correcao && typeof submission.correcao === 'object' ? submission.correcao.itens : null;
+    const grade = gradeAttempt({ application, onlineConfig, state, evaluation, answers, manual });
     const previous = { score: submission.score, correctCount: submission.correctCount, totalCount: submission.totalCount };
     if (previous.score !== grade.score || previous.correctCount !== grade.correctCount || previous.totalCount !== grade.totalCount) {
         if (!Array.isArray(submission.scoreHistory)) submission.scoreHistory = [];
@@ -195,6 +219,8 @@ function regradeSubmission({ submission, application, onlineConfig, evaluation, 
     submission.score = grade.score;
     submission.correctCount = grade.correctCount;
     submission.totalCount = grade.totalCount;
+    submission.pointsEarned = grade.pointsEarned;
+    submission.pointsPossible = grade.pointsPossible;
     submission.gradedAnswers = grade.gradedAnswers;
     submission.examSnapshot = grade.examSnapshot;
     submission.regradedAt = new Date().toISOString();

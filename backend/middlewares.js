@@ -1060,6 +1060,9 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
         delete safeGrade.score;
         delete safeGrade.correctCount;
         delete safeGrade.totalCount;
+        // Pontos da entrega (fase 3, P3-S1): são a nota também.
+        delete safeGrade.pointsEarned;
+        delete safeGrade.pointsPossible;
         delete safeGrade.consolidatedScore;
         safeGrade.countsTowardResult = false;
     }
@@ -1088,7 +1091,11 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
         gradedAnswers: Array.isArray(submission.gradedAnswers)
             ? submission.gradedAnswers.map(ans => ({
                 questionNumber: ans.questionNumber,
-                studentChoice: ans.studentChoice || null
+                studentChoice: ans.studentChoice || null,
+                // Tipos da fase 3 (P3-S1): a resposta do próprio aluno (várias corretas e
+                // digitada), sem gabarito nem pontos.
+                ...(Array.isArray(ans.studentChoices) && ans.studentChoices.length ? { studentChoices: ans.studentChoices } : {}),
+                ...(ans.studentResponse != null && ans.studentResponse !== '' ? { studentResponse: String(ans.studentResponse) } : {}),
             }))
             : []
     };

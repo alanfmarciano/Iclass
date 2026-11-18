@@ -21,6 +21,7 @@ const {
 const { deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
 const { assertClassOpen } = require('../utils/academicCalendar.js');
+const { normalizeQuestion } = require('../utils/questionModel.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     OPEN_APPLICATION_STATUSES,
@@ -326,22 +327,25 @@ function liveQuestion(application, number, version = 'A') {
     return (snapshot?.questions || []).find((question, index) => questionNumber(question, index) === Number(number)) || null;
 }
 
-function normalizeLiveQuestion(payload = {}) {
-    const text = String(payload.text || payload.questionText || '').trim();
-    const alternatives = (Array.isArray(payload.alternatives) ? payload.alternatives : []).map((alternative, index) => ({
-        letter: String(alternative?.letter || String.fromCharCode(65 + index)).toUpperCase(),
-        text: String(alternative?.text || '').trim(),
-        isCorrect: alternative?.isCorrect === true,
-    })).filter(alternative => alternative.text);
-    let correctAnswer = String(payload.correctAnswer || '').toUpperCase();
-    if (!correctAnswer) correctAnswer = alternatives.find(alternative => alternative.isCorrect)?.letter || '';
-    alternatives.forEach(alternative => { alternative.isCorrect = alternative.letter === correctAnswer; });
-    if (!text) throw Object.assign(new Error('O enunciado da questão é obrigatório.'), { status: 400 });
-    if (alternatives.length < 2) throw Object.assign(new Error('Informe pelo menos duas alternativas.'), { status: 400 });
-    if (!alternatives.some(alternative => alternative.letter === correctAnswer)) {
-        throw Object.assign(new Error('Selecione uma alternativa correta válida.'), { status: 400 });
-    }
-    return { text, questionText: text, alternatives, correctAnswer };
+// Questão corrigida ao vivo pelo modelo único (utils/questionModel.js, D3 do P3): as
+// letras são as do pedido (as originais) e o que o formulário do Monitor não manda
+// (tipo, pontos, gabarito da numérica e da resposta curta, explicação...) vem da questão
+// de antes (previous).
+function normalizeLiveQuestion(payload = {}, previous = null) {
+    const question = normalizeQuestion(payload, { context: 'ao_vivo', previous });
+    return { ...question, questionText: question.text };
+}
+
+// Questão da aplicação como a correção a vê: a do snapshot por cima da avaliação (o
+// snapshot montado pelo navegador traz só enunciado, alternativas e gabarito; o tipo e o
+// resto vêm da avaliação, como em questionsForAttempt).
+function resolvedLiveQuestion(application, number) {
+    const fromSnapshot = liveQuestion(application, number);
+    if (!fromSnapshot) return null;
+    const evaluation = db.memory.evaluations?.[application.examKey];
+    const fromEvaluation = (Array.isArray(evaluation?.questions) ? evaluation.questions : [])
+        .find((question, index) => questionNumber(question, index) === Number(number)) || null;
+    return { ...(fromEvaluation || {}), ...fromSnapshot };
 }
 
 // Correção ao vivo de uma questão numa versão da prova: enunciado, textos e gabarito
@@ -730,7 +734,7 @@ function createAdminExamConfigRouter() {
                     return res.status(409).json({ error: 'A aplicação precisa estar ativa para corrigir a questão ao vivo.' });
                 }
                 const number = Number(req.body.questionNumber);
-                const normalized = normalizeLiveQuestion(req.body.question || {});
+                const normalized = normalizeLiveQuestion(req.body.question || {}, resolvedLiveQuestion(application, number));
                 let updatedSnapshots = 0;
                 (application.versionSnapshots || []).forEach(snapshot => {
                     snapshot.questions = (snapshot.questions || []).map((question, index) => {
@@ -738,10 +742,11 @@ function createAdminExamConfigRouter() {
                         updatedSnapshots += 1;
                         const corrected = correctedVersionQuestion(question, normalized, number);
                         // Gabarito impresso da versão (letra da posição) acompanha a correção.
+                        // Várias corretas: as letras impressas das certas, juntas ('AC').
                         if (snapshot.answerKey && typeof snapshot.answerKey === 'object') {
                             const position = Number(question.examNumber) > 0 ? Number(question.examNumber) : index + 1;
-                            const correct = corrected.alternatives.find(alternative => alternative.isCorrect);
-                            if (correct) snapshot.answerKey[position] = correct.displayLetter;
+                            const correct = corrected.alternatives.filter(alternative => alternative.isCorrect);
+                            if (correct.length) snapshot.answerKey[position] = correct.map(alternative => alternative.displayLetter).join('');
                         }
                         return corrected;
                     });
