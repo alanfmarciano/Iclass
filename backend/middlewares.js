@@ -6,6 +6,7 @@ const {
     isProfessorAccount,
     canAccessAdminPermission,
     resolveAdminApiPermission,
+    resolveAdminApiExtraPermission,
     trimAdminPath,
     canonicalAdminPath,
 } = require('./utils/adminPermissions.js');
@@ -916,6 +917,11 @@ function adminRbacGuard(req, res, next) {
                 : 'Esta operação administrativa é só do administrador.' });
         }
         if (!canAccessAdminPermission(matchedAdmin, permission)) {
+            return refuse({ error: 'Sua conta não possui permissão para esta operação.' });
+        }
+        // Ação do corpo que pede mais que a regra (anular no attempt-action pede page.results).
+        const extraPermission = resolveAdminApiExtraPermission(req.method, req.path, req.body);
+        if (extraPermission && !canAccessAdminPermission(matchedAdmin, extraPermission)) {
             return refuse({ error: 'Sua conta não possui permissão para esta operação.' });
         }
         const scopeError = validateProfessorRequestScope(req, matchedAdmin);

@@ -469,12 +469,14 @@ test('[UC-PAPEIS-002] o que era "só administrador" continua só dele: acessibil
     const adminView = await as('admin', request(app).get('/api/admin/students')).expect(200);
     assert.equal(adminView.body.find(student => student.email === 'ana@papeis.local').accessibility.observacao, 'Laudo médico');
 
-    // Aprovar matrícula: administrador sim, professor não; a secretaria só quando a
-    // permissão enrollments.approve existir (bloco 'fase 3' do B0b).
+    // Aprovar matrícula: administrador sim, professor não; a secretaria tem
+    // enrollments.approve (bloco 'fase 3' do B0b), só nas escolas dela (teste abaixo).
     await as('admin', request(app).get('/api/admin/enrollment-requests')).expect(200);
-    assert.equal((await as('professor', request(app).get('/api/admin/enrollment-requests'))).status, 403);
-    const secretaria = await as('secretaria', request(app).get('/api/admin/enrollment-requests'));
-    assert.equal(secretaria.status, ADMIN_PERMISSION_VALUES.includes('enrollments.approve') ? 200 : 403);
+    const professorRefused = await as('professor', request(app).get('/api/admin/enrollment-requests'));
+    assert.equal(professorRefused.status, 403);
+    assert.equal(professorRefused.body.error, 'Sua conta não pode analisar pedidos de matrícula.');
+    assert.ok(ADMIN_PERMISSION_VALUES.includes('enrollments.approve'));
+    await as('secretaria', request(app).get('/api/admin/enrollment-requests')).expect(200);
 
     // Baixar backup e status com o destino: só o administrador (a secretaria nem passa
     // do guarda: não tem system.manage).
@@ -482,6 +484,98 @@ test('[UC-PAPEIS-002] o que era "só administrador" continua só dele: acessibil
     // Papel desconhecido gravado na conta (versão mais nova, dado editado): nada passa.
     assert.equal((await as('desconhecido', request(app).get('/api/admin/students'))).status, 403);
     assert.equal(getEffectiveAdminPermissions(account('desconhecido')).size, 0);
+});
+
+// Pedidos de matrícula com a Secretaria (escopo 'escolas'): antes do ajuste, com
+// enrollments.approve ligada, ela via, aprovava (sem className no corpo nada passava pelo
+// escopo) e recusava pedidos de curso de outra escola, com telefone e responsável.
+function seedEnrollmentRequests() {
+    const pending = (id, courseId, requestedClassName, createdAt) => ({
+        id, courseId, requestedClassName, requestedPeriod: '', status: 'pending', createdAt, updatedAt: createdAt,
+    });
+    const ana = db.memory.students.find(student => student.email === 'ana@papeis.local');
+    const bia = db.memory.students.find(student => student.email === 'bia@papeis.local');
+    ana.phone = '11 90000-0001';
+    ana.guardian = { name: 'Responsável da Ana', phone: '11 90000-0002' };
+    // Ana (escola A) pede o curso da escola B; Bia (escola B) pede o da escola A; Caio
+    // acabou de se cadastrar (sem turma) e pede o da escola A.
+    ana.enrollmentRequests = [pending('req_ana_b', COURSE_B, '1B', 1000)];
+    bia.enrollmentRequests = [pending('req_bia_a', COURSE_A, '1A', 2000)];
+    db.memory.students.push({
+        name: 'Caio', email: 'caio@papeis.local', status: 'Ativo', password: db.hashPassword('123'), classes: [], studentClass: '',
+        enrollmentRequests: [pending('req_caio_a', COURSE_A, '1A', 3000)],
+    });
+}
+
+test('[UC-PAPEIS-002] matrícula pela Secretaria: só pedidos de curso das escolas dela, na lista, no aprovar, no recusar e na fila', async () => {
+    seedEnrollmentRequests();
+    const list = await as('secretaria', request(app).get('/api/admin/enrollment-requests')).expect(200);
+    assert.deepEqual(list.body.requests.map(item => item.id).sort(), ['req_bia_a', 'req_caio_a']);
+    assert.equal(list.body.pendingCount, 2);
+    assert.equal(JSON.stringify(list.body).includes('90000-0001'), false, 'telefone do aluno de fora do escopo');
+    // O administrador continua vendo todos; o filtro pela turma da outra escola é recusado.
+    const all = await as('admin', request(app).get('/api/admin/enrollment-requests')).expect(200);
+    assert.deepEqual(all.body.requests.map(item => item.id).sort(), ['req_ana_b', 'req_bia_a', 'req_caio_a']);
+    assert.equal((await as('secretaria', request(app).get(`/api/admin/enrollment-requests?courseId=${COURSE_B}`))).status, 403);
+    // Secretaria sem escola atribuída: lista vazia.
+    const none = await as('semEscola', request(app).get('/api/admin/enrollment-requests')).expect(200);
+    assert.deepEqual(none.body.requests, []);
+
+    // Fila do Dashboard: a contagem da Secretaria é a da tela Matrículas (2), sem o texto
+    // "visível apenas para administrador"; o professor não vê o item.
+    const queueOf = async name => (await as(name, request(app).get('/api/admin/dashboard/queue')).expect(200)).body
+        .find(item => item.id === 'matriculas');
+    const secQueue = await queueOf('secretaria');
+    assert.equal(secQueue.count, 2);
+    assert.equal(secQueue.detalhe, 'aguardando aprovação · Matrículas');
+    assert.equal((await queueOf('admin')).count, 3);
+    assert.equal(await queueOf('professor'), undefined);
+
+    // Aprovar e recusar pedido da outra escola: 403, com ou sem turma no corpo, e nada muda.
+    for (const body of [{}, { className: '1B' }]) {
+        const approve = await as('secretaria', request(app).post('/api/admin/enrollment-requests/req_ana_b/approve')).send(body);
+        assert.equal(approve.status, 403, JSON.stringify(body));
+    }
+    const reject = await as('secretaria', request(app).post('/api/admin/enrollment-requests/req_ana_b/reject')).send({ reason: 'Fora do prazo' });
+    assert.equal(reject.status, 403);
+    assert.match(reject.body.error, /escola/);
+    const ana = db.memory.students.find(student => student.email === 'ana@papeis.local');
+    assert.equal(ana.enrollmentRequests[0].status, 'pending');
+    assert.equal(ana.enrollmentRequests[0].reviewedBy, undefined);
+    assert.deepEqual(ana.classes, [{ name: '1A', courseId: COURSE_A }]);
+
+    // Na escola dela, aprova (Caio entra na 1A) e recusa (Bia).
+    const ok = await as('secretaria', request(app).post('/api/admin/enrollment-requests/req_caio_a/approve')).send({}).expect(200);
+    assert.equal(ok.body.request.status, 'approved');
+    assert.equal(ok.body.request.reviewedBy, ACCOUNTS.secretaria.email);
+    assert.deepEqual(db.memory.students.find(student => student.email === 'caio@papeis.local').classes.map(item => item.name), ['1A']);
+    await as('secretaria', request(app).post('/api/admin/enrollment-requests/req_bia_a/reject')).send({ reason: 'Turma cheia' }).expect(200);
+    // O administrador aprova o da outra escola.
+    await as('admin', request(app).post('/api/admin/enrollment-requests/req_ana_b/approve')).send({}).expect(200);
+});
+
+// Professor auxiliar no Monitor (shared_contracts.rbac.papeis: sem notas): recolher,
+// reabrir e tentativa extra passam; anular, desfazer a anulação e corrigir o gabarito
+// depois da prova (recorrige notas) não. Só o guarda (as rotas entram nas trilhas).
+test('[UC-PAPEIS-001] professor auxiliar não muda nota pelas ações novas do Monitor', async () => {
+    const post = (name, url, body = {}) => as(name, request(guardApp).post(`/api/admin${url}`)).send(body);
+    const attempt = '/exam-applications/app_x/attempt-action';
+    for (const action of ['recolher', 'reabrir', 'tentativa_extra']) {
+        assert.equal((await post('monitor', attempt, { action, studentEmail: 'ana@papeis.local' })).status, 200, action);
+        assert.equal((await post('professor', attempt, { action, studentEmail: 'ana@papeis.local' })).status, 200, action);
+    }
+    for (const [variant, action] of [[attempt, 'anular'], [attempt, 'desfazer_anulacao'], [`${attempt}/`, 'Anular'], [attempt.toUpperCase(), ' anular ']]) {
+        const refused = await post('monitor', variant, { action, studentEmail: 'ana@papeis.local' });
+        assert.equal(refused.status, 403, `${variant} ${action}`);
+        assert.equal(refused.body.error, 'Sua conta não possui permissão para esta operação.');
+        assert.equal((await post('professor', variant, { action, studentEmail: 'ana@papeis.local' })).status, 200, `${variant} ${action}`);
+        assert.equal((await post('admin', variant, { action })).status, 200, `${variant} ${action}`);
+    }
+    assert.equal((await post('secretaria', attempt, { action: 'recolher' })).status, 403);
+    const correction = '/exam-applications/app_x/answer-key-correction';
+    assert.equal((await post('monitor', correction, { motivo: 'Gabarito errado' })).status, 403);
+    assert.equal((await post('professor', correction, { motivo: 'Gabarito errado' })).status, 200);
+    assert.equal((await post('secretaria', correction, { motivo: 'Gabarito errado' })).status, 403);
 });
 
 // Qualquer identificador terminado em role/Role (account.role, actualRole, nextRole...)

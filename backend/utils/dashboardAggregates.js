@@ -147,7 +147,9 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 
 // ---------------------------------------------------------------------------
 // PRECISA DE VOCÊ — cada item é uma pendência com destino clicável.
-// `canSeeMatriculas` vem da rota (admin pleno); snooze é aplicado na rota.
+// `canSeeMatriculas` vem da rota (quem aprova matrícula); `pendingEnrollments`, quando
+// vem, é a contagem já filtrada pelo escopo de quem vê (Secretaria: só os cursos das
+// escolas dela) e substitui a soma dos pedidos de `students`; snooze é aplicado na rota.
 // `extras` (contrato da fase 2): blocos montados pela rota, cada um já filtrado pelo
 // escopo de quem vê. storage (H1-c): { freeBytes, allocatedBytes } quando o banco tem
 // espaço a recuperar e quem vê é administrador (db.storageStatus().compactSuggested).
@@ -159,7 +161,7 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // backup (H4b, OPS-03): { falha, atrasado, externoAtrasado, semDestino } de
 // utils/backup.js backupAlerts, só para administrador com system.manage.
 // ---------------------------------------------------------------------------
-function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas }, extras = {}) {
+function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas, pendingEnrollments }, extras = {}) {
     const emails = emailSet(students);
     const items = [];
 
@@ -214,15 +216,15 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
         });
     }
 
-    // 4. Matrículas pendentes — visível apenas para administrador pleno.
+    // 4. Matrículas pendentes — só para quem aprova (administrador e Secretaria).
     if (canSeeMatriculas) {
-        const pendentes = students.reduce((sum, s) =>
+        const pendentes = Number.isFinite(pendingEnrollments) ? pendingEnrollments : students.reduce((sum, s) =>
             sum + ((s.enrollmentRequests || []).filter(r => r.status === 'pending').length), 0);
         if (pendentes) {
             items.push({
                 id: 'matriculas', tipo: 'matriculas',
                 titulo: 'Solicitações de matrícula pendentes',
-                detalhe: 'visível apenas para administrador · Matrículas',
+                detalhe: 'aguardando aprovação · Matrículas',
                 count: pendentes, tone: 'early', href: '/matriculas', permissao: 'page.students',
             });
         }

@@ -71,6 +71,7 @@ const {
     roleGrantablePermissions,
     canAccessAdminPermission,
     parseAdditionalPermissions,
+    resolveAdminApiExtraPermission,
 } = require('../../backend/utils/adminPermissions.js');
 
 const PHASE3_ROUTES = [
@@ -122,7 +123,8 @@ const PHASE3_ROUTES = [
     ['POST', '/submissions/sub_1/review-requests/rev_1_abcdef/answer', 'page.results'],
     ['POST', '/exam-applications/app_1/attempt-action', 'page.monitor'],
     ['GET', '/exam-applications/app_1/access-token', 'page.monitor'],
-    ['POST', '/exam-applications/app_1/answer-key-correction', ['page.results', 'page.monitor']],
+    // Recorrige as notas: page.results (o professor auxiliar não muda nota).
+    ['POST', '/exam-applications/app_1/answer-key-correction', 'page.results'],
     ['POST', '/exam-applications/app_1/schedule', 'page.exams'],
     ['POST', '/exam-applications/app_1/participants', 'page.exams'],
     ['POST', '/question-bank/import/preview', 'page.exams'],
@@ -300,7 +302,7 @@ test('fase 3: quem passa no guarda em cada rota nova, por papel (sem escopo)', (
         'POST /certificates/issue': { admin: true, professor: false, monitor: false, secretaria: true, coordenacao: false },
         'POST /exam-applications/app_1/attempt-action': { admin: true, professor: true, monitor: true, secretaria: false, coordenacao: false },
         'GET /exam-applications/app_1/access-token': { admin: true, professor: true, monitor: true, secretaria: false, coordenacao: false },
-        'POST /exam-applications/app_1/answer-key-correction': { admin: true, professor: true, monitor: true, secretaria: false, coordenacao: true },
+        'POST /exam-applications/app_1/answer-key-correction': { admin: true, professor: true, monitor: false, secretaria: false, coordenacao: true },
         'POST /grading/criteria': { admin: true, professor: false, monitor: false, secretaria: false, coordenacao: false },
         'POST /academic/terms/create': { admin: true, professor: false, secretaria: false },
         'POST /accounts/reset-password': { admin: true, professor: false, secretaria: false, coordenacao: false },
@@ -317,4 +319,51 @@ test('fase 3: quem passa no guarda em cada rota nova, por papel (sem escopo)', (
         }
     }
     assert.deepEqual(wrong, [], wrong.join('\n'));
+});
+
+// attempt-action junta ações do Monitor (recolher, reabrir, tentativa extra) com anular
+// e desfazer a anulação, que mudam nota. O papel do professor auxiliar é "sem notas"
+// (shared_contracts.rbac.papeis): as duas pedem page.results além de page.monitor.
+test('fase 3: anular e desfazer a anulação pelo Monitor pedem page.results; recolher, reabrir e tentativa extra, não', () => {
+    const route = '/exam-applications/app_1/attempt-action';
+    for (const action of ['recolher', 'reabrir', 'tentativa_extra', 'Recolher', ' reabrir ']) {
+        assert.equal(resolveAdminApiExtraPermission('POST', route, { action }), null, action);
+    }
+    // Sem ação: a rota recusa (400); o guarda não pede nada a mais.
+    for (const body of [{}, { action: '' }, { action: null }, undefined, null]) {
+        assert.equal(resolveAdminApiExtraPermission('POST', route, body), null, JSON.stringify(body));
+    }
+    // Anular, desfazer, outra caixa, espaço, barra no fim, lista e ação desconhecida.
+    for (const [variant, body] of [
+        [route, { action: 'anular' }],
+        [route, { action: 'desfazer_anulacao' }],
+        [route, { action: 'ANULAR' }],
+        [`${route}/`, { action: ' anular ' }],
+        [route.toUpperCase(), { action: 'anular' }],
+        [route, { action: ['anular'] }],
+        [route, { action: 'zerar' }],
+    ]) assert.equal(resolveAdminApiExtraPermission('POST', variant, body), 'page.results', `${variant} ${JSON.stringify(body)}`);
+    // Outras rotas não têm parte do corpo na decisão.
+    assert.equal(resolveAdminApiExtraPermission('POST', '/exam-applications/app_1/answer-key-correction', { action: 'anular' }), null);
+    assert.equal(resolveAdminApiExtraPermission('POST', '/student/update', { action: 'anular' }), null);
+    assert.equal(resolveAdminApiExtraPermission('GET', '/whoami', { action: 'anular' }), null);
+
+    const accounts = {
+        admin: { email: 'admin@rbac.local', role: 'admin' },
+        professor: { email: 'prof@rbac.local', role: 'professor' },
+        monitor: { email: 'monitor@rbac.local', role: 'monitor' },
+        secretaria: { email: 'sec@rbac.local', role: 'secretaria' },
+    };
+    const passes = (name, action) => {
+        const body = { action };
+        if (!canAccessAdminPermission(accounts[name], resolveAdminApiPermission('POST', route))) return false;
+        const extra = resolveAdminApiExtraPermission('POST', route, body);
+        return !extra || canAccessAdminPermission(accounts[name], extra);
+    };
+    for (const action of ['recolher', 'reabrir', 'tentativa_extra']) {
+        assert.deepEqual(['admin', 'professor', 'monitor', 'secretaria'].map(name => passes(name, action)), [true, true, true, false], action);
+    }
+    for (const action of ['anular', 'desfazer_anulacao']) {
+        assert.deepEqual(['admin', 'professor', 'monitor', 'secretaria'].map(name => passes(name, action)), [true, true, false, false], action);
+    }
 });

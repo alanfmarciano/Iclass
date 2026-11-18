@@ -282,7 +282,9 @@ function gradeScope(courseId, studentClass) {
 // ROTAS DE API DO INSTRUTOR (ADMINISTRADOR)
 // ----------------------------------------------------
 
-function enrollmentRows(courseId = '', studentClass = '') {
+// `account`: só os pedidos de curso do escopo de quem vê (a Secretaria vê as escolas
+// dela; o administrador, todos).
+function enrollmentRows(courseId = '', studentClass = '', account = null) {
     const courses = db.memory.courses || [];
     const classes = db.memory.classes || [];
     return (db.memory.students || []).flatMap(student => (student.enrollmentRequests || []).map(request => {
@@ -297,7 +299,8 @@ function enrollmentRows(courseId = '', studentClass = '') {
             courseName: course?.name || request.courseId,
             requestedPeriod: request.requestedPeriod || requestedClass?.period || '',
         };
-    })).filter(request => (!courseId || request.courseId === courseId)
+    })).filter(request => (!account || adminCanAccessCourse(account, request.courseId))
+        && (!courseId || request.courseId === courseId)
         && (!studentClass || request.requestedClassName === studentClass || request.assignedClassName === studentClass))
         .sort((a, b) => {
             if (a.status === 'pending' && b.status !== 'pending') return -1;
@@ -314,21 +317,29 @@ function findEnrollmentRequest(requestId) {
     return null;
 }
 
-// Aprovar matrícula (D16 do P4): o administrador e, quando a permissão
-// enrollments.approve existir, quem a tiver (Secretaria); o professor continua sem.
+// Aprovar matrícula (D16 do P4): o administrador e quem tiver enrollments.approve
+// (Secretaria); o professor continua sem. Quem não é o administrador só vê, aprova e
+// recusa pedido de curso do próprio escopo (as escolas da Secretaria).
 function canApproveEnrollments(account) {
     return hasAdminCapability(account, 'enrollments.approve');
 }
 
+const ENROLLMENT_APPROVAL_DENIED = 'Sua conta não pode analisar pedidos de matrícula.';
+
+// Pedido de curso fora do escopo: a mesma recusa do guarda (403, sem dizer o que há lá).
+function enrollmentRequestOutOfScope(account, request) {
+    return !adminCanAccessCourse(account, request && request.courseId);
+}
+
 router.get('/api/admin/enrollment-requests', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
-        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
+        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: ENROLLMENT_APPROVAL_DENIED });
         const courseId = String(req.query.courseId || '').trim();
         const studentClass = String(req.query.studentClass || '').trim();
         if (studentClass && !findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)) {
             return res.status(404).json({ error: 'Turma não encontrada.' });
         }
-        const rows = enrollmentRows(courseId, studentClass);
+        const rows = enrollmentRows(courseId, studentClass, matchedAdmin);
         res.json({ requests: rows, pendingCount: rows.filter(item => item.status === 'pending').length });
     });
 });
@@ -337,9 +348,12 @@ router.post('/api/admin/enrollment-requests/:id/approve', (req, res) => {
     // validateAdmin entrega (config, conta): com um só parâmetro a conta era o config e o
     // bloqueio de professor nunca valia.
     validateAdmin(req, res, async (config, matchedAdmin) => {
-        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
+        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: ENROLLMENT_APPROVAL_DENIED });
         const found = findEnrollmentRequest(req.params.id);
         if (!found) return res.status(404).json({ error: 'Solicitação não encontrada.' });
+        if (enrollmentRequestOutOfScope(matchedAdmin, found.request)) {
+            return res.status(403).json({ error: outOfScopeMessage(matchedAdmin, 'O curso solicitado') });
+        }
         if (found.request.status !== 'pending') return res.status(409).json({ error: 'Esta solicitação já foi analisada.' });
         const className = String(req.body.className || found.request.requestedClassName || '').trim();
         const cls = (db.memory.classes || []).find(item => item.courseId === found.request.courseId && item.name === className);
@@ -379,9 +393,12 @@ router.post('/api/admin/enrollment-requests/:id/reject', (req, res) => {
     // validateAdmin entrega (config, conta): com um só parâmetro a conta era o config e o
     // bloqueio de professor nunca valia.
     validateAdmin(req, res, async (config, matchedAdmin) => {
-        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: 'Aprovação de matrícula é exclusiva do administrador.' });
+        if (!canApproveEnrollments(matchedAdmin)) return res.status(403).json({ error: ENROLLMENT_APPROVAL_DENIED });
         const found = findEnrollmentRequest(req.params.id);
         if (!found) return res.status(404).json({ error: 'Solicitação não encontrada.' });
+        if (enrollmentRequestOutOfScope(matchedAdmin, found.request)) {
+            return res.status(403).json({ error: outOfScopeMessage(matchedAdmin, 'O curso solicitado') });
+        }
         if (found.request.status !== 'pending') return res.status(409).json({ error: 'Esta solicitação já foi analisada.' });
         const reason = String(req.body.reason || '').trim();
         if (!reason) return res.status(400).json({ error: 'Informe o motivo da recusa.' });
@@ -5367,11 +5384,15 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         const scope = _dashboardScope(req, matchedAdmin);
         const now = Date.now();
         // Matrículas a aprovar: só quem aprova (o administrador e, com enrollments.approve,
-        // a Secretaria); o professor não vê (antes o teste era page.accounts).
+        // a Secretaria); o professor não vê (antes o teste era page.accounts). Fora o
+        // administrador, a contagem é a da tela Matrículas: só pedidos de curso do escopo.
         const canSeeMatriculas = canApproveEnrollments(matchedAdmin);
+        const pendingEnrollments = canSeeMatriculas && !isFullAdmin(matchedAdmin)
+            ? enrollmentRows(scope.courseId, scope.studentClass, matchedAdmin).filter(item => item.status === 'pending').length
+            : undefined;
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
-            today: settingsUtil.today(), now, canSeeMatriculas,
+            today: settingsUtil.today(), now, canSeeMatriculas, pendingEnrollments,
         }, { storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now) });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());

@@ -249,12 +249,24 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     // Fase 3 (B0b, P3): ações da prova de um aluno, ver o token e corrigir o gabarito depois
     // da prova. Ficam aqui, e não no bloco 'fase 3' do fim, porque são mais específicas que
     // a regra genérica de exam-applications logo abaixo (a primeira que casa é a que vale).
-    // Recolher, anular, reabrir e tentativa extra: no Monitor (o professor auxiliar também).
-    { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/attempt-action$/, permission: 'page.monitor' },
+    // Recolher, reabrir e tentativa extra: no Monitor (o professor auxiliar também). Anular
+    // e desfazer a anulação mudam nota: além de page.monitor, pedem page.results (o
+    // professor tem as duas; o professor auxiliar, que não lança nem muda nota, só a
+    // primeira), como corrigir e anular questão na prova ao vivo, mais abaixo. Qualquer
+    // ação que não seja uma das três do Monitor pede as duas (bodyExtra).
+    {
+        methods: ['POST'],
+        pattern: /^\/exam-applications\/[^/]+\/attempt-action$/,
+        permission: 'page.monitor',
+        bodyExtra: { field: 'action', exempt: ['recolher', 'reabrir', 'tentativa_extra'], permission: 'page.results' },
+    },
     // Ver o token selado da aplicação (o botão fica no Monitor).
     { methods: ['GET'], pattern: /^\/exam-applications\/[^/]+\/access-token$/, permission: 'page.monitor' },
-    // Corrigir o gabarito depois da prova: por Resultados ou pelo Monitor.
-    { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/answer-key-correction$/, permission: ['page.results', 'page.monitor'] },
+    // Corrigir o gabarito depois da prova recorrige as notas: page.results. O professor
+    // corrige por Resultados ou pelo Monitor (tem as duas); o professor auxiliar, não.
+    // O plano dizia ['page.results', 'page.monitor'], o que deixava o professor auxiliar
+    // mudar nota; vale o papel (shared_contracts.rbac.papeis: monitor sem notas).
+    { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/answer-key-correction$/, permission: 'page.results' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-applications(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-history(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/release-item$/, permission: 'page.materials' },
@@ -409,11 +421,29 @@ function canonicalAdminPath(path) {
     return trimAdminPath(path).toLowerCase();
 }
 
-function resolveAdminApiPermission(method, path) {
+function findAdminApiRule(method, path) {
     const normalizedMethod = String(method || 'GET').toUpperCase();
     const normalizedPath = canonicalAdminPath(path);
-    const rule = ADMIN_API_PERMISSION_RULES.find(item => item.methods.includes(normalizedMethod) && item.pattern.test(normalizedPath));
+    return ADMIN_API_PERMISSION_RULES.find(item => item.methods.includes(normalizedMethod) && item.pattern.test(normalizedPath));
+}
+
+function resolveAdminApiPermission(method, path) {
+    const rule = findAdminApiRule(method, path);
     return rule ? rule.permission : undefined;
+}
+
+// Permissão a mais que o corpo do pedido exige, além da regra (bodyExtra): numa rota que
+// junta ações de peso diferente (attempt-action: recolher no Monitor x anular, que muda
+// nota). O valor do campo é comparado sem caixa nem espaço; campo ausente ou vazio não
+// pede nada a mais (a rota recusa a ação que falta). Devolve null quando não há.
+function resolveAdminApiExtraPermission(method, path, body) {
+    const rule = findAdminApiRule(method, path);
+    if (!rule || !rule.bodyExtra) return null;
+    const raw = body && typeof body === 'object' ? body[rule.bodyExtra.field] : undefined;
+    if (raw === undefined || raw === null) return null;
+    const value = String(raw).trim().toLowerCase();
+    if (!value || rule.bodyExtra.exempt.includes(value)) return null;
+    return rule.bodyExtra.permission;
 }
 
 module.exports = {
@@ -434,6 +464,7 @@ module.exports = {
     canAccessAdminPermission,
     hasAnyAdminPermission,
     resolveAdminApiPermission,
+    resolveAdminApiExtraPermission,
     trimAdminPath,
     canonicalAdminPath,
 };
