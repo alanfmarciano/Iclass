@@ -301,8 +301,13 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
 
     // 10. Pendências dos provedores da fase 3 (entregas para corrigir, correção
     // pendente, revisão aberta, chamada não cobrada...), depois das de hoje
-    // (utils/studentFeeds.js). Sem provedor, a fila é a de antes.
+    // (utils/studentFeeds.js). Sem provedor, a fila é a de antes. Cada item do provedor
+    // traz a permissão (permissao); com extras.canAccess (a rota da fila e a do sino
+    // passam a de quem vê), fica de fora o item de quem não a tem. Os itens de hoje
+    // continuam como eram (cada bloco acima já decide quem os vê).
+    const canAccess = extras && typeof extras.canAccess === 'function' ? extras.canAccess : null;
     collectInstructorQueue({ memory, cls, course, students, emails, today, now, canSeeMatriculas: !!canSeeMatriculas })
+        .filter(item => !canAccess || canAccess(item.permissao))
         .forEach(item => items.push(item));
 
     return items;

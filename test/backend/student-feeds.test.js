@@ -205,3 +205,30 @@ test('[UC-FUNDACAO-001] sino do instrutor reaproveita a fila: o item do provedor
     assert.equal(queue.status, 200);
     assert.ok(queue.body.some(item => item.id === 'entregas_para_corrigir'));
 });
+
+test('[UC-FUNDACAO-001] fila "Precisa de você": o item do provedor só aparece para quem tem a permissão dele', async () => {
+    keep(feeds.registerInstructorQueueProvider({
+        id: 'mensagens',
+        items: ctx => (ctx.cls ? [
+            { id: 'entregas_para_corrigir', titulo: 'Entregas para corrigir', count: 2, tone: 'warning', href: '/tarefas', permissao: 'page.dashboard' },
+            { id: 'so_admin', titulo: 'Só para quem cuida das contas', count: 1, href: '/admins', permissao: 'page.accounts' },
+        ] : []),
+    }));
+    const admin = await request(app).get(`/api/admin/dashboard/queue${CONTEXT}`).set(adminHeaders());
+    assert.equal(admin.status, 200, JSON.stringify(admin.body));
+    const adminIds = admin.body.map(item => item.id);
+    assert.ok(adminIds.includes('entregas_para_corrigir'), adminIds.join(', '));
+    assert.ok(adminIds.includes('so_admin'), adminIds.join(', '));
+    const prof = await request(app).get(`/api/admin/dashboard/queue${CONTEXT}`).set(adminHeaders(PROF));
+    assert.equal(prof.status, 200, JSON.stringify(prof.body));
+    const profIds = prof.body.map(item => item.id);
+    assert.ok(profIds.includes('entregas_para_corrigir'), profIds.join(', '));
+    assert.ok(!profIds.includes('so_admin'), 'o professor não vê o item de permissão que não tem');
+    // Sem canAccess (chamada direta), computeQueue devolve tudo, como antes.
+    const memory = db.memory;
+    const all = computeQueue({ memory, cls: memory.classes[0], course: memory.courses[0], students: memory.students, today: '2026-11-18', now: NOW, canSeeMatriculas: false });
+    assert.ok(all.some(item => item.id === 'so_admin'));
+    const filtered = computeQueue({ memory, cls: memory.classes[0], course: memory.courses[0], students: memory.students, today: '2026-11-18', now: NOW, canSeeMatriculas: false }, { canAccess: permissao => permissao !== 'page.accounts' });
+    assert.ok(!filtered.some(item => item.id === 'so_admin'));
+    assert.ok(filtered.some(item => item.id === 'entregas_para_corrigir'));
+});

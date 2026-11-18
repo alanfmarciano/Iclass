@@ -366,6 +366,52 @@ test('[UC-FUNDACAO-003] mesclar: versão do que sai mais nova que a do que fica 
     assert.deepEqual(fica.mergedFrom, [{ studentEmail: BIA, studentId: null, recordId: 'sai', at: 3000, grade: 30 }]);
 });
 
+test('[UC-FUNDACAO-003] mesclar: duas entregas do que sai na tarefa em que o que fica tem uma, versões do que sai entre si por requestAt', () => {
+    const options = {
+        isFica: item => item.owner === 'fica',
+        isSai: item => item.owner === 'sai',
+        keyOf: item => item.k,
+        reassign: item => { item.owner = 'fica'; },
+        versions: { field: 'v', orderBy: 'requestAt', number: 'n' },
+        summary: item => ({ id: item.id }),
+        origin: { studentEmail: BIA },
+        at: 4000,
+    };
+    const records = [
+        { id: 'f', owner: 'fica', k: 't1', v: [{ requestAt: 300 }] },
+        { id: 's1', owner: 'sai', k: 't1', v: [{ requestAt: 100 }] },
+        { id: 's2', owner: 'sai', k: 't1', v: [{ requestAt: 50 }, { requestAt: 120 }] },
+    ];
+    const result = handlers.mergeOwnedRecords(records, options);
+    assert.deepEqual(result.records.map(item => item.id), ['f']);
+    assert.deepEqual({ moved: result.moved, joined: result.joined, archived: result.archived }, { moved: 0, joined: 2, archived: 0 });
+    const [fica] = result.records;
+    assert.deepEqual(fica.v.map(version => [version.n, version.requestAt]), [[1, 50], [2, 100], [3, 120], [4, 300]]);
+    assert.deepEqual(fica.mergedFrom.map(entry => entry.recordId), ['s1', 's2']);
+    // O caso do revisor: fica [300], sai [50] e sai [100], em qualquer ordem na lista.
+    const again = [
+        { id: 'f', owner: 'fica', k: 't1', v: [{ requestAt: 300 }] },
+        { id: 's1', owner: 'sai', k: 't1', v: [{ requestAt: 50 }] },
+        { id: 's2', owner: 'sai', k: 't1', v: [{ requestAt: 100 }] },
+    ];
+    assert.deepEqual(handlers.mergeOwnedRecords(again, options).records[0].v.map(version => version.requestAt), [50, 100, 300]);
+    const reversed = [
+        { id: 's2', owner: 'sai', k: 't1', v: [{ requestAt: 100 }] },
+        { id: 'f', owner: 'fica', k: 't1', v: [{ requestAt: 300 }] },
+        { id: 's1', owner: 'sai', k: 't1', v: [{ requestAt: 50 }] },
+    ];
+    assert.deepEqual(handlers.mergeOwnedRecords(reversed, options).records[0].v.map(version => version.requestAt), [50, 100, 300]);
+    // Três entregas do que sai, sem entrega do que fica: uma só, todas por requestAt.
+    const onlySai = [
+        { id: 's1', owner: 'sai', k: 't2', v: [{ requestAt: 90 }] },
+        { id: 's2', owner: 'sai', k: 't2', v: [{ requestAt: 30 }] },
+        { id: 's3', owner: 'sai', k: 't2', v: [{ requestAt: 60 }] },
+    ];
+    const single = handlers.mergeOwnedRecords(onlySai, options);
+    assert.deepEqual(single.records.map(item => item.id), ['s1']);
+    assert.deepEqual(single.records[0].v.map(version => [version.n, version.requestAt]), [[1, 30], [2, 60], [3, 90]]);
+});
+
 test('[UC-FUNDACAO-003] mesclar sem versões: o registro repetido do que sai muda de dono e fica arquivado com mergedFrom', () => {
     const records = [
         { id: 'g1', membro: ANA, grupo: 'g' },

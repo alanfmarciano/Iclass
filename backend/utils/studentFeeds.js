@@ -22,7 +22,8 @@
 //   instrutor. ctx = { memory, cls, course, students, emails (Set dos e-mails do escopo),
 //   today, now, canSeeMatriculas }; os alunos já vêm no escopo de quem vê. Cada item:
 //   { id, tipo, titulo, detalhe?, count, tone, href, permissao, at?, adiavel? }; a rota
-//   aplica o adiamento de 24 h e, no sino, a permissão de cada item.
+//   da fila aplica o adiamento de 24 h, e a fila e o sino mostram cada item só a quem
+//   tem a permissão dele (permissao).
 //
 // Um provedor que falha não derruba o sino, o calendário nem a fila: o erro vai para o
 // crash.log e os itens dele ficam de fora daquela vez. Item sem id ou sem título é

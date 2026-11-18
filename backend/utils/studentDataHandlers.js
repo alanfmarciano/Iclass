@@ -244,8 +244,9 @@ function relinkRecordsByEmail(memory, records, idsPorEmail, { emailField = 'stud
 //   a que recebeu a nota dele. Todas são renumeradas em number (n) a partir de 1; o
 //   resto do registro do 'fica' (a nota, a devolução) vale, e ele ganha mergedFrom; o do
 //   'sai' sai da lista (o que só ele tinha fica no mergedFrom, por summary). Se o
-//   próprio 'sai' tinha duas entregas na mesma tarefa (e o 'fica' nenhuma), elas viram
-//   uma só com todas as versões por orderBy;
+//   próprio 'sai' tinha duas entregas na mesma tarefa, todas as versões dele (das duas)
+//   vão juntas por orderBy, antes das do 'fica' (se o 'fica' tiver entrega nessa tarefa)
+//   ou sozinhas (se não tiver);
 // - mesma chave em coleção sem versões: o registro do 'sai' muda de dono e fica
 //   arquivado (archive) com mergedFrom.
 // mergedFrom é uma lista de { studentEmail, studentId, recordId, at, ...summary(sai) }.
@@ -288,6 +289,10 @@ function mergeOwnedRecords(records, {
     };
     const dropped = new Set();
     const movedFromSai = new Set();
+    // Por registro que recebe versões: as do 'sai' juntadas até agora e as do próprio
+    // 'fica' (vazias quando o registro também veio do 'sai'). A cada junção a lista é
+    // refeita inteira: todas as do 'sai' por orderBy, depois as do 'fica' na ordem delas.
+    const versionParts = new Map();
     let moved = 0;
     let joined = 0;
     let archived = 0;
@@ -314,10 +319,15 @@ function mergeOwnedRecords(records, {
                 .sort((a, b) => order(a.item) - order(b.item) || a.index - b.index)
                 .map(({ item }) => item);
             const own = Array.isArray(record[field]) ? record[field] : [];
-            const kept = Array.isArray(pair[field]) ? pair[field] : [];
-            // Par que também veio do 'sai' (o 'sai' já tinha duas entregas na mesma tarefa):
-            // nenhuma das duas é a do 'fica', e todas as versões vão por requestAt.
-            const combined = movedFromSai.has(pair) ? byOrder([...kept, ...own]) : [...byOrder(own), ...kept];
+            if (!versionParts.has(pair)) {
+                const current = Array.isArray(pair[field]) ? pair[field] : [];
+                // Par que também veio do 'sai' (o 'sai' já tinha duas entregas na mesma
+                // tarefa): nenhuma versão é do 'fica'.
+                versionParts.set(pair, movedFromSai.has(pair) ? { sai: [...current], fica: [] } : { sai: [], fica: [...current] });
+            }
+            const parts = versionParts.get(pair);
+            parts.sai.push(...own);
+            const combined = [...byOrder(parts.sai), ...parts.fica];
             if (versions.number) combined.forEach((item, index) => { if (item && typeof item === 'object') item[versions.number] = index + 1; });
             pair[field] = combined;
             addMergedFrom(pair, record);
