@@ -34,7 +34,7 @@ const {
     adminCanAccessItem,
     sendInternalError
 } = require('../middlewares.js');
-const { isFullAdmin, accountScopeKind } = require('../utils/adminRoles.js');
+const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClassEntries, primaryStudentClassName } = require('../utils/students.js');
 const { recordLoginLog } = require('../utils/security.js');
 const legalAcceptance = require('../utils/legalAcceptance.js');
@@ -2420,7 +2420,7 @@ router.use('/api/forum', (req, res, next) => {
             key = comment && comment.key;
         }
         if (key && !adminCanAccessItem(matchedAdmin, key)) {
-            return res.status(403).json({ error: 'O tópico solicitado não pertence às turmas atribuídas a esta conta.' });
+            return res.status(403).json({ error: outOfScopeMessage(matchedAdmin, 'O tópico solicitado') });
         }
         req.auth = { role: 'admin', email: matchedAdmin.email, admin: matchedAdmin };
         next();

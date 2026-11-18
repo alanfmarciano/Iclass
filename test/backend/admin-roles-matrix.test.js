@@ -349,6 +349,18 @@ test('[UC-PAPEIS-002] recusa de escopo fala da escola para a secretaria e a coor
     assert.equal(profClass.body.error, 'A turma solicitada não está atribuída a esta conta.');
 });
 
+test('[UC-PAPEIS-002] recusa de escopo no Fórum (padrão da Coordenação) também fala da escola (J0)', async () => {
+    // Fórum pelo painel (page.forum, padrão da Coordenação): tópico de uma apostila do
+    // curso da outra escola.
+    db.memory.courses.find(course => course.id === COURSE_B).structure = [{ name: 'Módulo B', units: [{ name: 'Unidade B', apostilaKey: 'Apostila_Fora_Do_Escopo_1' }] }];
+    const coord = await as('coordenacao', request(app).get('/api/forum?key=Apostila_Fora_Do_Escopo_1'));
+    assert.equal(coord.status, 403);
+    assert.equal(coord.body.error, 'O tópico solicitado não pertence às escolas desta conta.');
+    const prof = await as('professor', request(app).get('/api/forum?key=Apostila_Fora_Do_Escopo_1'));
+    assert.equal(prof.status, 403);
+    assert.equal(prof.body.error, 'O tópico solicitado não pertence às turmas atribuídas a esta conta.');
+});
+
 test('[UC-PAPEIS-001] conteúdo pelo painel (/data.js e /:key.md): só quem mexe em conteúdo; professor auxiliar, secretaria e coordenação não leem apostila nem avaliação', async () => {
     const contentDir = process.env.ICLASS_CONTENT_DIR;
     fs.mkdirSync(contentDir, { recursive: true });
