@@ -6,6 +6,7 @@ import { AdminCourseGate } from '../../features/admin/AdminCourseGate'
 import { getAdminNavGroups } from './Sidebar'
 import { LumenShell } from './LumenShell'
 import { NotificationBell } from '../ui/NotificationBell'
+import { useAdminNotificationOpener } from './useAdminNotificationOpener'
 import { useApi } from '../../hooks/useApi'
 
 export function LumenAdminShell() {
@@ -20,6 +21,7 @@ export function LumenAdminShell() {
   const accountLabel = auth.accountRole === 'professor' ? 'Professor' : 'Administrador'
   const enrollmentPath = workspace?.courseId && auth.accountRole !== 'professor' ? `/api/admin/enrollment-requests?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : null
   const enrollments = useApi(enrollmentPath, [workspace?.courseId, workspace?.className], { pollMs: 15000 })
+  const openNotification = useAdminNotificationOpener()
 
   return (
     <LumenShell
@@ -37,7 +39,7 @@ export function LumenAdminShell() {
         onClick: clearActiveWorkspace,
       } : null}
       onLogout={() => { logout(); navigate('/login') }}
-      notifications={<NotificationBell buttonClassName="lumen-icon-button relative" endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'} seenEndpoint="/api/admin/notifications/seen" />}
+      notifications={<NotificationBell buttonClassName="lumen-icon-button relative" endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'} seenEndpoint="/api/admin/notifications/seen" onOpenItem={openNotification} />}
     >
       <div key={pathname} className="app-enter"><AdminCourseGate><Outlet /></AdminCourseGate></div>
     </LumenShell>

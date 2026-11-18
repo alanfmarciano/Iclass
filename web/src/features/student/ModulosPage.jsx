@@ -24,7 +24,7 @@ function normalizeUnit(mod, unit, index) {
     examKey: unit.avaliacaoKey,
     title: unit.name || unit.title || `Unidade ${index + 1}`,
     moduleKey: mod.id || mod.key || mod.title || mod.name || 'module',
-    moduleTitle: mod.title || mod.name || mod.id || 'Modulo',
+    moduleTitle: mod.title || mod.name || mod.id || 'Módulo',
   }
 }
 
@@ -85,7 +85,14 @@ export default function ModulosPage() {
 
   async function openReader(unit) {
     setOpenUnit(unit)
-    setHtml(markdownToHtml(courseData[unit.key] || ''))
+    let text = courseData[unit.key]
+    if (typeof text !== 'string') {
+      // O data.js só traz apostilas já liberadas; se o professor liberou esta unidade
+      // depois que a página abriu, busca só ela (o servidor confere a liberação).
+      text = await api.get(`/${encodeURIComponent(unit.key)}.md`, { raw: true }).catch(() => '')
+      if (text) setCourseData((current) => ({ ...current, [unit.key]: text }))
+    }
+    setHtml(markdownToHtml(text || ''))
     api.post('/api/student/track-access', { email, key: unit.key, moduleKey: unit.moduleKey || '', courseId }).catch(() => {})
     await Promise.all([loadNote(unit.key), loadComments(unit.key), loadAnnotations(unit.key)])
   }
@@ -107,7 +114,7 @@ export default function ModulosPage() {
     try {
       await api.post('/api/student/progress', { email, completedUnits: next })
       progress.refetch()
-      toast.success(done ? 'Unidade concluida' : 'Conclusao removida')
+      toast.success(done ? 'Unidade concluída' : 'Conclusão removida')
     } catch (e) {
       toast.error(e.message)
     }
@@ -115,7 +122,8 @@ export default function ModulosPage() {
 
   async function loadAnnotations(key) {
     try {
-      const r = await api.get(`/api/student/annotations?email=${encodeURIComponent(email)}&key=${encodeURIComponent(key)}`, { auth: false })
+      // Com a sessão do aluno: sem ela a rota responde 401 e as anotações nunca aparecem (UXA-10).
+      const r = await api.get(`/api/student/annotations?email=${encodeURIComponent(email)}&key=${encodeURIComponent(key)}`)
       paintAnnotations(r.annotations || {})
     } catch {
       paintAnnotations({})
@@ -142,7 +150,7 @@ export default function ModulosPage() {
       await api.post('/api/student/annotation', { email, key: openUnit.key, ...annotation })
       setAnnotation(null)
       loadAnnotations(openUnit.key)
-      toast.success('Anotacao salva')
+      toast.success('Anotação salva')
     } catch (e) {
       toast.error(e.message)
     }
@@ -160,7 +168,7 @@ export default function ModulosPage() {
   }
 
   async function loadComments(key) {
-    try { setComments((await api.get(`/api/forum?key=${encodeURIComponent(key)}&courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`, { auth: false })).comments || []) } catch { setComments([]) }
+    try { setComments((await api.get(`/api/forum?key=${encodeURIComponent(key)}&courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`)).comments || []) } catch { setComments([]) }
   }
 
   async function postComment() {
@@ -202,7 +210,7 @@ export default function ModulosPage() {
     <div className="max-w-6xl mx-auto space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" icon={ArrowLeft} onClick={() => setOpenUnit(null)}>Voltar aos módulos</Button>
-        <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluida' : 'Em estudo'}</Badge>
+        <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluída' : 'Em estudo'}</Badge>
         <Button size="sm" variant="secondary" icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
       </div>
 
@@ -213,7 +221,7 @@ export default function ModulosPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-text">Progresso deste módulo</p>
-                <p className="text-xs text-muted">{openModuleDone} de {openModuleTotal} topicos concluidos em {openUnit.moduleTitle}</p>
+                <p className="text-xs text-muted">{openModuleDone} de {openModuleTotal} tópicos concluídos em {openUnit.moduleTitle}</p>
               </div>
               <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{openModulePct}%</Badge>
             </div>
@@ -222,7 +230,7 @@ export default function ModulosPage() {
             </div>
             <div className="mt-4 flex justify-end">
               <Button icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>
-                {completed[openUnit.key] ? 'Desmarcar topico' : 'Marcar topico como concluido'}
+                {completed[openUnit.key] ? 'Desmarcar tópico' : 'Marcar tópico como concluído'}
               </Button>
             </div>
           </div>
@@ -265,7 +273,7 @@ export default function ModulosPage() {
         </div>
       </div>
 
-      <Modal open={!!annotation} onClose={() => setAnnotation(null)} title="Anotacao do paragrafo" description={annotation?.highlightedText?.slice(0, 120)}>
+      <Modal open={!!annotation} onClose={() => setAnnotation(null)} title="Anotação do parágrafo" description={annotation?.highlightedText?.slice(0, 120)}>
         <Textarea id="ann" value={annotation?.note || ''} onChange={(e) => setAnnotation((a) => ({ ...a, note: e.target.value }))} className="min-h-[140px]" />
         <div className="mt-3 flex justify-end gap-2">
           <Button variant="destructive" icon={Trash2} onClick={deleteAnnotation}>Excluir</Button>

@@ -93,8 +93,15 @@ function getEffectiveAdminPermissions(account) {
     ]);
 }
 
+// A regra pode aceitar mais de uma permissão (lista): basta ter uma delas.
+function hasAnyAdminPermission(permissions, required) {
+    if (!required) return true;
+    const list = Array.isArray(required) ? required : [required];
+    return list.some(permission => permissions.has(permission));
+}
+
 function canAccessAdminPermission(account, permission) {
-    return !permission || getEffectiveAdminPermissions(account).has(permission);
+    return hasAnyAdminPermission(getEffectiveAdminPermissions(account), permission);
 }
 
 const ADMIN_API_PERMISSION_RULES = Object.freeze([
@@ -104,11 +111,16 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/teacher-assignments$/, permission: 'accounts.manage' },
     { methods: ['GET'], pattern: /^\/network-info$/, permission: 'page.system' },
     { methods: ['POST'], pattern: /^\/(flush-exam-state|server\/restart|reset)$/, permission: 'system.manage' },
+    { methods: ['GET'], pattern: /^\/maintenance\/preview$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/settings$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/trash(?:\/.*)?$/, permission: 'system.manage' },
     { methods: ['GET', 'POST'], pattern: /^\/backup(?:\/.*)?$/, permission: 'system.manage' },
     { methods: ['POST'], pattern: /^\/config$/, permission: 'page.dashboard' },
     { methods: ['POST'], pattern: /^\/(exam-config|online-exam-config)$/, permission: 'page.exams' },
+    // Gerar novo token: o botão fica no Monitor (e a aplicação nasce em Provas).
+    { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/access-token$/, permission: ['page.monitor', 'page.exams'] },
+    // Registro da aplicação é lido na tela Resultados (AVA-08).
+    { methods: ['GET'], pattern: /^\/exam-applications\/[^/]+\/audit$/, permission: 'page.results' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-applications(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-history(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/release-item$/, permission: 'page.materials' },
@@ -146,6 +158,7 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/(correct-live-question|annul-question|replace-question)$/, permission: 'page.monitor' },
     { methods: ['GET'], pattern: /^\/(monitor-status|monitor-review|proctoring-logs|exam-keystrokes)\/.*$/, permission: 'page.monitor' },
     { methods: ['GET'], pattern: /^\/export-grades\/.*$/, permission: 'page.results' },
+    { methods: ['GET'], pattern: /^\/gradebook$/, permission: 'page.results' },
     { methods: ['GET'], pattern: /^\/exam-analytics\/.*$/, permission: 'page.results' },
     { methods: ['GET', 'POST'], pattern: /^\/question-bank(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/forum\/all$/, permission: 'page.forum' },
@@ -173,5 +186,6 @@ module.exports = {
     isProfessorAccount,
     getEffectiveAdminPermissions,
     canAccessAdminPermission,
+    hasAnyAdminPermission,
     resolveAdminApiPermission,
 };

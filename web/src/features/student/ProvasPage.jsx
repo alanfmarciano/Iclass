@@ -10,6 +10,7 @@ import { MiniLineChart } from '../../components/ui/MiniLineChart'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
+import { consolidatedAverage, fmtGradeValue } from '../../lib/grades'
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -28,7 +29,8 @@ const materiaOf = (key = '') => (String(key).replace(/^Avaliacao_?/i, '').match(
 const groupKeyOf = (s) => String(s.applicationId || s.examKey || '')
 const POLICY_LABEL = { highest: 'Maior nota', latest: 'Última tentativa', average: 'Média das tentativas', selected: 'Selecionada pelo professor' }
 const MOD_ACCENTS = ['var(--info)', 'var(--success)', 'var(--warning)', 'var(--primary)', 'var(--danger)']
-const fmtGrade = (n) => (n == null ? '—' : Number(n).toFixed(1).replace('.', ','))
+// Mesmo arredondamento do boletim e de Resultados (7,35 -> 7,4).
+const fmtGrade = (n) => fmtGradeValue(n)
 const gradeBand = (g) => (g == null ? '' : g >= 9 ? 'g-success' : g >= 7 ? 'g-info' : g >= 6 ? 'g-warning' : 'g-danger')
 const fmtDate = (t) => (t ? new Date(t).toLocaleDateString('pt-BR') : '')
 
@@ -49,8 +51,8 @@ function ExamCard({ s, onOpen }) {
         {archived
           ? <span className="pvb-st neutral"><span className="pvb-sdot" />Não considerada</span>
           : counts
-            ? <span className="pvb-st info"><span className="pvb-sdot" />Compoe o resultado</span>
-            : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />Em revisao</span> : null}
+            ? <span className="pvb-st info"><span className="pvb-sdot" />Compõe o resultado</span>
+            : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />Em revisão</span> : null}
       </div>
     </button>
   )
@@ -60,9 +62,9 @@ function ExamCard({ s, onOpen }) {
 function AttemptFormula({ policy, considered, consolidated }) {
   if (policy === 'average') {
     const parts = considered.map((a) => fmtGrade(toGrade(a.score))).join(' + ')
-    return <><b>Como entra na sua média:</b> politica de <b>media</b> — ({parts}) ÷ {considered.length} = <b>{fmtGrade(consolidated)}</b>. Cada tentativa conta individualmente entre as que compoem sua média.</>
+    return <><b>Como entra na sua média:</b> regra da <b>média</b> — ({parts}) ÷ {considered.length} = <b>{fmtGrade(consolidated)}</b>. Esse resultado entra na sua média como uma prova só.</>
   }
-  if (policy === 'latest') return <><b>Como entra na sua média:</b> vale a <b>ultima tentativa</b>. As anteriores ficam registradas, mas não entram no cálculo.</>
+  if (policy === 'latest') return <><b>Como entra na sua média:</b> vale a <b>última tentativa</b>. As anteriores ficam registradas, mas não entram no cálculo.</>
   if (policy === 'selected') return <><b>Como entra na sua média:</b> o professor <b>selecionou</b> a tentativa que vale. As demais ficam descartadas.</>
   return <><b>Como entra na sua média:</b> vale a <b>maior nota</b> entre as tentativas. As menores ficam registradas, mas não entram no cálculo.</>
 }
@@ -129,7 +131,9 @@ function useCountUp(target, { duration = 900, decimals = 0 } = {}) {
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
   }, [target, duration])
-  return decimals ? Number(val).toFixed(decimals) : Math.round(val)
+  if (!decimals) return Math.round(val)
+  // Nota com vírgula; o valor final usa o arredondamento do boletim (fmtGradeValue).
+  return val === Number(target) ? fmtGradeValue(val) : Number(val).toFixed(decimals).replace('.', ',')
 }
 
 function MetricRing({ value }) {
@@ -166,7 +170,7 @@ function StatValue({ target, decimals = 0, className = '' }) {
 
 const FILTERS = [
   { key: 'all', label: 'Todas' },
-  { key: 'compoe', label: 'Compoem resultado' },
+  { key: 'compoe', label: 'Compõem o resultado' },
   { key: 'nao', label: 'Não consideradas' },
 ]
 
@@ -175,8 +179,9 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '
 
 // Gera um documento imprimivel (print -> Salvar como PDF) com o cabecalho,
 // as questoes completas e o gabarito-resumo. Roda 100% no cliente, sem libs.
-function buildExamPrintHtml(detail, questions, answerByNumber) {
-  const nota = detail?.gradePublished === true ? (Number(detail.score || 0) / 10).toFixed(1) : '—'
+// Nota com vírgula, como no resto do portal (fmtGrade).
+export function buildExamPrintHtml(detail, questions, answerByNumber) {
+  const nota = detail?.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : '—'
   const acertos = detail?.gradePublished === true ? `${detail.correctCount ?? '-'}/${detail.totalCount ?? '-'}` : '-'
   const versao = detail?.assignedVersion || '-'
   const titulo = detail?.examTitle || detail?.examKey || 'Prova'
@@ -271,7 +276,7 @@ function FullExamView({ detail, questions, answers }) {
               <div className="mb-2.5 flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-2 text-xs font-semibold text-muted">
                   <span className="grid h-6 w-6 place-items-center rounded-md border border-border bg-surface text-text">{q.number}</span>
-                  Questao {q.number}
+                  Questão {q.number}
                 </span>
                 <Badge tone={isCorrect ? 'success' : 'danger'}>{isCorrect ? 'Correta' : 'Errada'}</Badge>
               </div>
@@ -364,10 +369,11 @@ export default function ProvasPage() {
   // Metricas derivadas das submissoes concluidas.
   const metrics = useMemo(() => {
     const published = mine.filter(isPublished)
-    const considered = published.filter(isConsidered)
     const grades = published.map((s) => toGrade(s.score))
-    const consideredGrades = considered.map((s) => toGrade(s.score))
-    const avg = consideredGrades.length ? consideredGrades.reduce((a, b) => a + b, 0) / consideredGrades.length : null
+    // Uma nota por prova (a consolidada pela regra do professor), como no painel e no
+    // boletim: com a regra "média", duas tentativas contam como uma prova só.
+    const avgScore = consolidatedAverage(mine)
+    const avg = avgScore == null ? null : avgScore / 10
     const best = grades.length ? Math.max(...grades) : null
     const bestSub = best != null ? published.find((s) => toGrade(s.score) === best) : null
     const compoem = mine.filter(isConsidered).length
@@ -376,10 +382,11 @@ export default function ProvasPage() {
       .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
       .map((s) => ({ value: Number(toGrade(s.score).toFixed(1)), label: shortLabel(s.examKey) }))
     const buckets = [
-      { k: '9-10', lo: 9, hi: 10.01, cls: 'bg-success' },
-      { k: '7-8.9', lo: 7, hi: 9, cls: 'bg-info' },
-      { k: '6-6.9', lo: 6, hi: 7, cls: 'bg-warning' },
-      { k: '0-5.9', lo: 0, hi: 6, cls: 'bg-danger' },
+      // Rótulos com vírgula decimal (pt-BR), como as notas do resto do portal.
+      { k: '9–10', lo: 9, hi: 10.01, cls: 'bg-success' },
+      { k: '7–8,9', lo: 7, hi: 9, cls: 'bg-info' },
+      { k: '6–6,9', lo: 6, hi: 7, cls: 'bg-warning' },
+      { k: '0–5,9', lo: 0, hi: 6, cls: 'bg-danger' },
     ].map((b) => ({ ...b, n: grades.filter((g) => g >= b.lo && b.hi > g).length }))
     const maxBucket = Math.max(1, ...buckets.map((b) => b.n))
     return { avg, best, bestSub, compoem, total: mine.length, chartPoints, buckets, maxBucket, hasData: mine.length > 0 }
@@ -422,10 +429,10 @@ export default function ProvasPage() {
     const groupsMap = new Map()
     subs.forEach((s) => { const k = groupKeyOf(s); if (!groupsMap.has(k)) groupsMap.set(k, []); groupsMap.get(k).push(s) })
     const groups = [...groupsMap.values()].map((atts) => atts.slice().sort((a, b) => (Number(a.attemptNumber || 0) - Number(b.attemptNumber || 0)) || ((a.timestamp || 0) - (b.timestamp || 0))))
-    // Media do modulo = media das que compoem (mesma regra da metrica geral),
-    // e nao de todas as publicadas — senao tentativas descartadas inflam o valor.
-    const considered = subs.filter((s) => isPublished(s) && isConsidered(s))
-    const modAvg = considered.length ? considered.reduce((sum, s) => sum + toGrade(s.score), 0) / considered.length : null
+    // Media da materia = uma nota por prova (a consolidada), mesma regra da metrica
+    // geral — tentativas descartadas ou refeitas nao contam em dobro.
+    const modScore = consolidatedAverage(subs)
+    const modAvg = modScore == null ? null : modScore / 10
     return { m, accent: accentOf(m), groups, modAvg, contam: subs.filter(isConsidered).length, tentativas: subs.length }
   }).filter(Boolean), [materias, visible])
 
@@ -460,7 +467,7 @@ export default function ProvasPage() {
                 <StatValue target={metrics.best} decimals={1} className={metrics.best != null ? gradeText(metrics.best) : ''} />
               </MetricCard>
 
-              <MetricCard label="Compoem o resultado" icon={Target} tone="text-info" badge={<Badge tone="info">de {metrics.total}</Badge>}>
+              <MetricCard label="Compõem o resultado" icon={Target} tone="text-info" badge={<Badge tone="info">de {metrics.total}</Badge>}>
                 <StatValue target={metrics.compoem} />
               </MetricCard>
             </div>
@@ -470,7 +477,7 @@ export default function ProvasPage() {
                 <h2 className="flex items-center gap-2 font-semibold text-text"><TrendingUp size={17} className="text-primary" /> Evolução das notas</h2>
                 <p className="mt-0.5 text-xs text-muted">Desempenho ao longo das avaliações</p>
                 <div className="mt-3">
-                  {metrics.chartPoints.length ? <MiniLineChart points={metrics.chartPoints} min={0} max={10} height={170} /> : <p className="grid h-[170px] place-items-center text-sm text-muted">Notas ainda em revisao.</p>}
+                  {metrics.chartPoints.length ? <MiniLineChart points={metrics.chartPoints} min={0} max={10} height={170} /> : <p className="grid h-[170px] place-items-center text-sm text-muted">Notas ainda em revisão.</p>}
                 </div>
               </Card>
 
@@ -549,7 +556,7 @@ export default function ProvasPage() {
                   <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar avaliação..." aria-label="Buscar avaliação" />
                 </label>
                 <div className="pvb-filter">
-                  <span className="pvb-flabel">Materia</span>
+                  <span className="pvb-flabel">Matéria</span>
                   <button type="button" className={`pvb-chip ${mat === 'all' ? 'active' : ''}`} onClick={() => setMat('all')}>Todas <span className="pvb-count">{statusFiltered.length}</span></button>
                   {materias.map((m) => (
                     <button type="button" key={m} className={`pvb-chip ${mat === m ? 'active' : ''}`} style={{ '--sc': accentOf(m) }} onClick={() => setMat(m)}>
@@ -563,7 +570,7 @@ export default function ProvasPage() {
                 </div>
               </div>
 
-              <div className="pvb-resultmeta">Mostrando <b>{visible.length}</b> tentativa{visible.length !== 1 ? 's' : ''} em <b>{board.length}</b> materia{board.length !== 1 ? 's' : ''}</div>
+              <div className="pvb-resultmeta">Mostrando <b>{visible.length}</b> tentativa{visible.length !== 1 ? 's' : ''} em <b>{board.length}</b> matéria{board.length !== 1 ? 's' : ''}</div>
 
               {board.length === 0 ? (
                 <Card><EmptyState icon={ClipboardList} title="Nenhuma prova nesta categoria" description="Ajuste os filtros para ver outras avaliações." /></Card>
@@ -578,7 +585,7 @@ export default function ProvasPage() {
                           <span className="pvb-msub">{sec.tentativas} tentativa{sec.tentativas !== 1 ? 's' : ''}</span>
                         </span>
                         <span className="pvb-msummary">
-                          <span className="pvb-mstat"><span className="pvb-mv">{fmtGrade(sec.modAvg)}</span><span className="pvb-mk">media</span></span>
+                          <span className="pvb-mstat"><span className="pvb-mv">{fmtGrade(sec.modAvg)}</span><span className="pvb-mk">média</span></span>
                           <span className="pvb-mcount">{sec.contam} conta{sec.contam !== 1 ? 'm' : ''}</span>
                           <span className="pvb-chev"><ChevronRight size={16} /></span>
                         </span>
@@ -603,11 +610,11 @@ export default function ProvasPage() {
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-3 sm:grid-cols-4">
               <div>
                 <dt className="text-xs text-muted">Nota</dt>
-                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? (Number(detail.score || 0) / 10).toFixed(1) : 'Em revisao'}</dd>
+                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : 'Em revisão'}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">Resultado</dt>
-                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true && detail.consolidatedScore != null ? (Number(detail.consolidatedScore) / 10).toFixed(1) : '-'}</dd>
+                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true && detail.consolidatedScore != null ? fmtGrade(toGrade(detail.consolidatedScore)) : '-'}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">Acertos</dt>

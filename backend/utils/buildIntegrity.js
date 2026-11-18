@@ -43,4 +43,35 @@ function verifyBuild() {
     return meta;
 }
 
-module.exports = { computeSourceHash, verifyBuild };
+// Versão do build que este servidor serve (sourceHash de web/dist/build-meta.json). Vai
+// no cabeçalho X-IClass-Build de toda resposta da API: o navegador compara com a versão
+// gravada no bundle dele e, se for outra (o IClass foi atualizado com a página aberta),
+// recarrega sozinho. O arquivo é relido quando muda (o build pode ser refeito com o
+// servidor ligado), assim o servidor nunca anuncia uma versão que não está servindo.
+const BUILD_ID_HEADER = 'X-IClass-Build';
+const BUILD_ID_RECHECK_MS = 2000;
+let buildIdCache = { checkedAt: 0, mtimeMs: null, id: null };
+
+function currentBuildId(now = Date.now()) {
+    if (buildIdCache.checkedAt && now - buildIdCache.checkedAt < BUILD_ID_RECHECK_MS) return buildIdCache.id;
+    buildIdCache.checkedAt = now;
+    const metaPath = path.join(runtimePaths.WEB_DIST_DIR, 'build-meta.json');
+    try {
+        const { mtimeMs } = fs.statSync(metaPath);
+        if (mtimeMs !== buildIdCache.mtimeMs) {
+            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+            buildIdCache.mtimeMs = mtimeMs;
+            buildIdCache.id = typeof meta.sourceHash === 'string' && /^[0-9a-f]{16,128}$/.test(meta.sourceHash) ? meta.sourceHash : null;
+        }
+    } catch (error) {
+        buildIdCache.mtimeMs = null;
+        buildIdCache.id = null;
+    }
+    return buildIdCache.id;
+}
+
+function resetBuildIdCache() {
+    buildIdCache = { checkedAt: 0, mtimeMs: null, id: null };
+}
+
+module.exports = { BUILD_ID_HEADER, computeSourceHash, currentBuildId, resetBuildIdCache, verifyBuild };

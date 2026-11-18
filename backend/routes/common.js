@@ -8,10 +8,23 @@ const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
+    SAFE_CONTENT_KEY,
+    classStructure,
+    findContentFile,
+    isRestrictedContentKey,
+    readApostila,
+    releasedApostilaKeysForClass,
+    stripStoredAccessTokens,
+} = require('../utils/contentAccess.js');
+const {
     sanitizeEvaluationForStudent,
     localIpAddresses,
+    validateAdmin,
     validateAdminPermission,
-    validateAnySession
+    validateAnySession,
+    studentBelongsToClass,
+    findClassByNameAndCourse,
+    getReleasedItemsForClass
 } = require('../middlewares.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
@@ -34,10 +47,12 @@ router.get('/api/session/status', (req, res) => {
 
 
 // Rota dinamica para servir data.js com conteudo atualizado em tempo real.
-// Exige sessão (aluno ou instrutor): o arquivo carrega os enunciados das avaliações
-// do curso e ficava aberto a qualquer um na rede.
+// Exige sessão (aluno ou instrutor). Para o aluno, só entram as apostilas liberadas
+// para a turma em que ele está matriculado e a estrutura desse curso; avaliações
+// (questões e gabarito) nunca vão por aqui — a prova chega só pela tentativa iniciada.
 router.get(['/data.js', '/api/data.js'], validateAnySession, async (req, res) => {
     res.set('Content-Type', 'application/javascript');
+    if (req.requester.role === 'student') return sendStudentCourseData(req, res);
     const courseId = String(req.query.courseId || '').trim();
     const studentClass = String(req.query.studentClass || '').trim();
     const dataObj = {};
@@ -119,25 +134,87 @@ router.get(['/data.js', '/api/data.js'], validateAnySession, async (req, res) =>
     res.send(fileContent);
 });
 
-// Serve apostilas e avaliacoes Markdown usadas pelo editor de conteudo.
+// data.js do aluno: curso obrigatório, matrícula aprovada numa turma desse curso e
+// só as apostilas liberadas para ela. Curso excluído não é servido.
+async function sendStudentCourseData(req, res) {
+    const courseId = String(req.query.courseId || '').trim();
+    const studentClass = String(req.query.studentClass || '').trim();
+    if (!courseId) {
+        return res.status(400).type('application/json').json({ error: 'Informe o curso para carregar os materiais.' });
+    }
+    const course = (db.memory.courses || []).find(item => item.id === courseId);
+    if (!course || isCourseDeleted(course)) {
+        return res.status(404).type('application/json').json({ error: 'Curso não encontrado.' });
+    }
+    const classes = db.memory.classes || [];
+    const cls = studentClass
+        ? findClassByNameAndCourse(classes, studentClass, courseId)
+        : classes.find(item => item.courseId === courseId && studentBelongsToClass(req.studentAccount, item));
+    if (!cls || !studentBelongsToClass(req.studentAccount, cls)) {
+        return res.status(403).type('application/json').json({ error: 'Turma não autorizada para este estudante.' });
+    }
+
+    const dataObj = {};
+    const releasedKeys = releasedApostilaKeysForClass(cls, req.studentEmail, getReleasedItemsForClass);
+    await Promise.all(releasedKeys.map(async (key) => {
+        const content = await readApostila(key, { ownHosts: [req.get('host')] });
+        if (content !== null) dataObj[key] = content;
+    }));
+    dataObj.courseStructure = [];
+    dataObj.courses = [{
+        id: course.id,
+        name: course.name || '',
+        description: course.description || '',
+        structure: classStructure(cls),
+    }];
+    dataObj.branding = db.memory.branding || {};
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.send(`const courseData = ${JSON.stringify(dataObj, null, 2)};`);
+}
+
+// Serve apostilas em Markdown (editor de conteúdo do instrutor e leitura do aluno).
+// Exige sessão. A chave digitada nunca vira caminho: o aluno só recebe apostila que
+// esteja liberada para uma turma em que está matriculado; o instrutor recebe o
+// arquivo existente de mesmo nome. Avaliações e gabaritos nunca saem por esta rota,
+// em nenhuma grafia (o Windows não diferencia maiúsculas de minúsculas).
 router.get('/:key.md', async (req, res, next) => {
     const { key } = req.params;
-    if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
+    if (!SAFE_CONTENT_KEY.test(key)) {
         return next();
     }
+    return validateAnySession(req, res, async () => {
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        if (isRestrictedContentKey(key)) {
+            return res.status(403).type('text/plain').send('Avaliação não disponível por esta rota.');
+        }
 
-    if (key.startsWith('Avaliacao_')) {
-        return res.status(403).type('text/plain').send('Avaliação não disponível por esta rota.');
-    }
+        if (req.requester.role === 'student') {
+            const wanted = key.toLowerCase();
+            const canonicalKey = (db.memory.classes || [])
+                .filter(cls => studentBelongsToClass(req.studentAccount, cls))
+                .flatMap(cls => releasedApostilaKeysForClass(cls, req.studentEmail, getReleasedItemsForClass))
+                .find(item => item.toLowerCase() === wanted);
+            if (!canonicalKey) {
+                return res.status(403).type('text/plain').send('Material não liberado para a sua turma.');
+            }
+            const content = await readApostila(canonicalKey, { ownHosts: [req.get('host')] });
+            if (content === null) return res.status(404).type('text/plain').send('');
+            return res.type('text/markdown').send(content);
+        }
 
-    const filePath = path.join(CONTENT_DIR, `${key}.md`);
-    try {
-        const content = await fs.promises.readFile(filePath, 'utf8');
-        res.type('text/markdown').send(content);
-    } catch (err) {
-        console.error("DEBUG ERROR LOADING MD:", err, "filePath:", filePath);
-        return res.status(404).type('text/plain').send('');
-    }
+        const filePath = await findContentFile(key);
+        if (!filePath || isRestrictedContentKey(path.basename(filePath, '.md'))) {
+            return res.status(404).type('text/plain').send('');
+        }
+        try {
+            // Links antigos com a sessão de outro instrutor gravada saem limpos (UXA-X2).
+            const content = stripStoredAccessTokens(await fs.promises.readFile(filePath, 'utf8'), { ownHosts: [req.get('host')] });
+            res.type('text/markdown').send(content);
+        } catch (err) {
+            console.error('Erro ao ler apostila:', err && err.message, 'filePath:', filePath);
+            return res.status(404).type('text/plain').send('');
+        }
+    });
 });
 
 // Retorna os IPs da rede local
@@ -193,10 +270,22 @@ function isCourseDeleted(course) {
     return course && (course.deleted === true || course.status === 'deleted' || course.status === 'inactive' || !!course.deletedAt);
 }
 
+// Lista completa de cursos (estrutura, chaves de unidades e avaliações, excluídos)
+// só para o instrutor. Sem sessão de instrutor, devolve apenas id e nome dos cursos
+// ativos com turma aberta para cadastro.
 router.get('/api/courses', (req, res) => {
-    const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
-    const courses = db.memory.courses || [];
-    res.json(includeDeleted ? courses : courses.filter(c => !isCourseDeleted(c)));
+    const hasAdminCredentials = !!(req.get('x-admin-session') || req.headers.authorization);
+    if (!hasAdminCredentials) {
+        const openCourseIds = new Set((db.memory.classes || []).filter(cls => cls.registrationEnabled).map(cls => cls.courseId));
+        return res.json((db.memory.courses || [])
+            .filter(course => !isCourseDeleted(course) && openCourseIds.has(course.id))
+            .map(course => ({ id: course.id, name: course.name || '' })));
+    }
+    validateAdmin(req, res, () => {
+        const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
+        const courses = db.memory.courses || [];
+        res.json(includeDeleted ? courses : courses.filter(c => !isCourseDeleted(c)));
+    });
 });
 
 router.post('/api/courses', (req, res) => {
@@ -248,7 +337,7 @@ router.delete('/api/courses/:id', (req, res) => {
         if (!db.memory.courses) db.memory.courses = [];
         const idx = db.memory.courses.findIndex(c => c.id === courseId);
         if (idx === -1) {
-            return res.status(404).json({ error: 'Curso nÃ£o encontrado.' });
+            return res.status(404).json({ error: 'Curso não encontrado.' });
         }
         db.memory.courses[idx] = {
             ...db.memory.courses[idx],

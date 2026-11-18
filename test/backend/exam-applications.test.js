@@ -329,6 +329,9 @@ test('monitor calcula o tempo individual pelo prazo do aluno sem depender do hea
         .expect(200);
 
     const state = Object.values(db.memory.studentExamState).find(item => item?.attemptId === started.body.attemptId);
+    // O prazo é sempre início + duração (30 min) + ajustes: começou há 30 min - 125 s.
+    // timerRemaining guardado fica velho de propósito (heartbeat atrasado).
+    state.startedAt = Date.now() - (30 * 60000 - 125000);
     state.deadlineAt = Date.now() + 125000;
     state.timerRemaining = 1800;
 
@@ -405,6 +408,14 @@ test('isola tentativas e estado entre duas aplicações consecutivas da mesma pr
     assert.deepEqual(secondSync.body.state.answers, {});
     assert.equal(secondSync.body.state.status, 'instructions');
     assert.equal(db.memory.submissions[0].applicationId, first.id);
+
+    // Uma nova preparação não encerra mais em silêncio a aplicação em andamento: o
+    // professor encerra a segunda antes de o próximo teste preparar outra.
+    await request(app)
+        .post(`/api/admin/exam-applications/${second.id}/control`)
+        .set('x-admin-session', adminToken)
+        .send({ action: 'finish', inProgressPolicy: 'discard' })
+        .expect(200);
 });
 
 test('cria e edita prova com validação e mantém banco de questões editável', async () => {
@@ -501,12 +512,13 @@ test('aluno contesta e professor corrige a questao ao vivo antes do envio', asyn
         reason: 'sem_resposta_correta',
         text: 'A alternativa correta parece ausente.',
     }).expect(201);
-    await request(app).post('/api/student/report-question').set('x-session-token', studentToken).send({
+    const duplicate = await request(app).post('/api/student/report-question').set('x-session-token', studentToken).send({
         applicationId: application.id,
         attemptId: started.body.attemptId,
         questionNumber: 1,
         reason: 'outro',
     }).expect(409);
+    assert.equal(duplicate.body.error, 'Você já reportou esta questão.');
 
     const reports = await request(app)
         .get(`/api/admin/question-reports/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
@@ -526,9 +538,13 @@ test('aluno contesta e professor corrige a questao ao vivo antes do envio', asyn
     assert.equal(corrected.body.question.correctAnswer, 'B');
 
     const afterCorrection = await syncApplication(application.id);
-    const studentQuestion = afterCorrection.body.onlineExamConfigs[examKey].versionSnapshots[0].questions[0];
+    // As questões da tentativa vêm em `questions` (a config da turma não leva mais snapshots).
+    assert.equal(afterCorrection.body.onlineExamConfigs[examKey].versionSnapshots, undefined);
+    const studentQuestion = afterCorrection.body.questions[0];
     assert.equal(studentQuestion.text, 'Questao corrigida durante a prova');
     assert.equal(Object.prototype.hasOwnProperty.call(studentQuestion, 'correctAnswer'), false);
+    assert.equal(studentQuestion.alternatives.some(alternative => Object.prototype.hasOwnProperty.call(alternative, 'isCorrect')), false);
+    assert.notEqual(afterCorrection.body.questionsVersion, started.body.questionsVersion, 'a correção ao vivo muda a versão das questões');
     assert.equal(afterCorrection.body.questionReports[0].status, 'reviewed');
 
     await request(app).post('/api/student/submit').set('x-session-token', studentToken).send({
@@ -539,6 +555,44 @@ test('aluno contesta e professor corrige a questao ao vivo antes do envio', asyn
     const submission = db.memory.submissions.find(item => item.applicationId === application.id);
     assert.equal(submission.score, 100);
     assert.equal(submission.gradedAnswers[0].correctAnswer, 'B');
+    await request(app).post(`/api/admin/exam-applications/${application.id}/control`)
+        .set('x-admin-session', adminToken).send({ action: 'finish' }).expect(200);
+});
+
+test('[UC-APLICACAO-001] correção ao vivo mantém a ordem embaralhada de cada versão', async () => {
+    const history = await request(app).post('/api/admin/exam-history/add').set('x-admin-session', adminToken).send({
+        studentClass, courseId, examKey, type: 'online', questionNumbers: [1],
+        printSnapshot: [
+            { version: 'A', answerKey: { 1: 'A' }, questions: [{ originalNumber: 1, examNumber: 1, text: 'Questão de isolamento', correctAnswer: 'A',
+                alternatives: [{ letter: 'A', displayLetter: 'A', text: 'Correta' }, { letter: 'B', displayLetter: 'B', text: 'Incorreta' }] }] },
+            // Versão B com as alternativas embaralhadas: a original B aparece primeiro.
+            { version: 'B', answerKey: { 1: 'B' }, questions: [{ originalNumber: 1, examNumber: 1, text: 'Questão de isolamento', correctAnswer: 'A',
+                alternatives: [{ letter: 'B', displayLetter: 'A', text: 'Incorreta' }, { letter: 'A', displayLetter: 'B', text: 'Correta' }] }] },
+        ],
+        durationMinutes: 30, waitingRoomMinutes: 0, maxAttempts: 1,
+    }).expect(200);
+    const application = await createAndStartApplication(history.body.entry.id);
+    const versionB = () => db.memory.examApplications.find(item => item.id === application.id).versionSnapshots.find(snapshot => snapshot.version === 'B');
+    assert.deepEqual(versionB().questions[0].alternatives.map(alternative => alternative.letter), ['B', 'A'], 'versão B embaralhada antes da correção');
+
+    // O formulário manda as alternativas na ordem original (A, B) e troca o gabarito para B.
+    await request(app).post('/api/admin/correct-live-question').set('x-admin-session', adminToken).send({
+        applicationId: application.id,
+        questionNumber: 1,
+        question: { text: 'Enunciado corrigido', alternatives: [{ letter: 'A', text: 'Agora incorreta' }, { letter: 'B', text: 'Agora correta' }], correctAnswer: 'B' },
+    }).expect(200);
+
+    const stored = db.memory.examApplications.find(item => item.id === application.id);
+    const [snapA, snapB] = ['A', 'B'].map(version => stored.versionSnapshots.find(snapshot => snapshot.version === version));
+    assert.deepEqual(snapA.questions[0].alternatives.map(alternative => [alternative.letter, alternative.displayLetter, alternative.text, alternative.isCorrect]),
+        [['A', 'A', 'Agora incorreta', false], ['B', 'B', 'Agora correta', true]]);
+    // Antes a versão B voltava para A, B: o aluno via as alternativas trocarem de lugar.
+    assert.deepEqual(snapB.questions[0].alternatives.map(alternative => [alternative.letter, alternative.displayLetter, alternative.text, alternative.isCorrect]),
+        [['B', 'A', 'Agora correta', true], ['A', 'B', 'Agora incorreta', false]]);
+    assert.equal(snapB.questions[0].text, 'Enunciado corrigido');
+    assert.equal(snapB.questions[0].correctAnswer, 'B');
+    assert.deepEqual([snapA.answerKey[1], snapB.answerKey[1]], ['B', 'A'], 'gabarito impresso de cada versão acompanha a correção');
+
     await request(app).post(`/api/admin/exam-applications/${application.id}/control`)
         .set('x-admin-session', adminToken).send({ action: 'finish' }).expect(200);
 });
@@ -562,11 +616,17 @@ test('anula e substitui questao para tentativas ativas com tempo extra', async (
     assert.equal(replaced.body.replacementNumber, 2);
     assert.equal(state.assignedQuestionNumbers.includes(2), true);
     assert.equal(state.deadlineAt, oldDeadline + 300000);
+    // Mensagem que o aluno lê durante a prova: português com acentos (sobra G5).
+    const notice = db.memory.broadcastMessages.filter(item => item.applicationId === application.id).at(-1);
+    assert.equal(notice.messageText, 'A questão 1 foi anulada e uma questão adicional foi inserida no final da prova. Foram acrescentados 5 minutos.');
+    const annulment = db.memory.examApplications.find(item => item.id === application.id).annulledQuestions.find(item => item.questionNumber === 1);
+    assert.equal(annulment.reason, 'Questão substituída durante a aplicação.');
 
     const sync = await syncApplication(application.id);
     const cfg = sync.body.onlineExamConfigs[examKey];
-    assert.equal(cfg.versionSnapshots[0].questions.length, 2);
-    assert.equal(cfg.versionSnapshots[0].questions[1].isAdditional, true);
+    assert.equal(sync.body.questions.length, 2);
+    assert.equal(sync.body.questions[1].isAdditional, true);
+    assert.equal(sync.body.questions[1].replacedQuestionNumber, 1);
     assert.equal(cfg.annulledQuestions[0].questionNumber, 1);
     await request(app).post('/api/student/submit').set('x-session-token', studentToken).send({
         studentClass, courseId, examKey, applicationId: application.id,

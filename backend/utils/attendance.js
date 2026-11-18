@@ -149,6 +149,31 @@ function deriveAulasFromArrival(gradeAulas, horaChegada, toleranciaMin) {
     });
 }
 
+// Janela das aulas do dia para a presença automática (FUN-X2, CRIT-02): do início da
+// primeira aula menos a tolerância da turma até o fim da última. A grade guarda só o
+// início de cada aula; a duração é o menor intervalo entre inícios (50 min se houver
+// uma aula só). Sem horário na grade não há janela: o acesso não marca nada.
+const DEFAULT_AULA_MIN = 50;
+function classDayWindow(gradeAulas, toleranciaMin) {
+    const starts = (gradeAulas || []).map(a => hhmmToMin(a && a.inicio)).filter(v => v != null).sort((x, y) => x - y);
+    if (!starts.length) return null;
+    const gaps = [];
+    for (let i = 1; i < starts.length; i++) {
+        const gap = starts[i] - starts[i - 1];
+        if (gap > 0) gaps.push(gap);
+    }
+    const duracao = gaps.length ? Math.min(...gaps) : DEFAULT_AULA_MIN;
+    const tol = Number.isFinite(Number(toleranciaMin)) && Number(toleranciaMin) >= 0 ? Number(toleranciaMin) : 10;
+    return { inicioMin: Math.max(0, starts[0] - tol), fimMin: starts[starts.length - 1] + duracao };
+}
+
+// O horário (HH:MM) está dentro da janela das aulas do dia?
+function withinClassDayWindow(gradeAulas, toleranciaMin, hhmm) {
+    const janela = classDayWindow(gradeAulas, toleranciaMin);
+    const agora = hhmmToMin(hhmm);
+    return !!janela && agora != null && agora >= janela.inicioMin && agora <= janela.fimMin;
+}
+
 // Uma aula justificada só deixa de contar como falta quando a justificativa
 // do dia está abonada. Falta pura sempre conta.
 function aulaCountsAsFalta(aula, justificativa) {
@@ -256,6 +281,7 @@ module.exports = {
     configDefault, sanitizeDisciplinas, sanitizeGradeTemplates, sanitizeAttendanceConfig,
     effectiveAttendanceConfig, weekdayOf, gradeForDate,
     hhmmToMin, deriveAulasFromArrival, aulaCountsAsFalta, recordAulas,
+    classDayWindow, withinClassDayWindow,
     sanitizeAulas, sanitizeJustificativa, recordHasPresence, computeAttendanceStats,
     dedupeByDate,
 };

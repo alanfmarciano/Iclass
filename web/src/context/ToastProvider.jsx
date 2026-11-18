@@ -16,13 +16,14 @@ export function ToastProvider({ children }) {
   return (
     <ToastCtx.Provider value={toast}>
       {children}
-      <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2" aria-live="polite">
+      {/* Em tela estreita (celular com zoom de 200%) o aviso ocupa a largura da tela, sem sair dela. */}
+      <div className="fixed bottom-4 left-4 right-4 sm:left-auto z-[9999] flex flex-col gap-2" aria-live="polite">
         {toasts.map((t) => {
           const Icon = ICONS[t.type]
           return (
-            <div key={t.id} className="flex items-center gap-3 bg-surface border border-border rounded-lg shadow-lg px-4 py-3 min-w-[260px]">
+            <div key={t.id} className="flex items-center gap-3 bg-surface border border-border rounded-lg shadow-lg px-4 py-3 sm:min-w-[260px]">
               <Icon size={20} className={ICON_COLOR[t.type] || 'text-info'} aria-hidden />
-              <span className="text-sm text-text flex-1">{t.msg}</span>
+              <span className="min-w-0 text-sm text-text flex-1 break-words">{t.msg}</span>
               <button onClick={() => remove(t.id)} aria-label="Fechar" className="text-subtle hover:text-text"><X size={16} /></button>
             </div>
           )

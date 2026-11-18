@@ -126,13 +126,15 @@ export default function EditorPage() {
 
     setLoading(true)
     try {
-      const res = await fetch(`/${nextKey}.md`)
-      const text = res.ok ? await res.text() : ''
-      setMarkdown(text)
-      setHtml(markdownToHtml(text))
-    } catch {
+      // A rota de apostilas exige sessão: passa pelo cliente de API (envia o token do instrutor).
+      const text = await api.get(`/${encodeURIComponent(nextKey)}.md`, { raw: true })
+      setMarkdown(text || '')
+      setHtml(markdownToHtml(text || ''))
+    } catch (error) {
       setMarkdown('')
       setHtml('')
+      // 404 = apostila nova (arquivo ainda não existe); outro erro não pode parecer apostila vazia.
+      if (error?.status !== 404) toast.error(error?.message || 'Não foi possível carregar a apostila.')
     } finally {
       setLoading(false)
     }
@@ -215,15 +217,17 @@ export default function EditorPage() {
     try {
       const res = await fetch('/api/admin/upload-image', {
         method: 'POST',
-        headers: auth.adminAuth ? { Authorization: auth.adminAuth } : {},
+        // Login atual guarda só a sessão (x-admin-session); a credencial legada fica de reserva.
+        headers: auth.adminSession ? { 'x-admin-session': auth.adminSession } : (auth.adminAuth ? { Authorization: auth.adminAuth } : {}),
         body: form,
       })
       const data = await res.json().catch(() => null)
       if (!res.ok) throw new Error(data?.error || 'Falha no upload da imagem')
 
+      // No Markdown vai o endereço limpo; a sessão só entra na imagem exibida no editor.
       const url = resolveContentUrl(data.url)
       if (mode === 'markdown') {
-        onMarkdownChange(`${markdown.trimEnd()}\n\n![${file.name}](${url})\n`)
+        onMarkdownChange(`${markdown.trimEnd()}\n\n![${file.name}](${data.url})\n`)
       } else {
         editorRef.current?.focus()
         document.execCommand('insertHTML', false, `<p><img src="${escapeAttr(url)}" alt="${escapeAttr(file.name)}"></p>`)
@@ -269,7 +273,7 @@ export default function EditorPage() {
         <Card>
           <CardHeader
             title={loading ? 'Carregando...' : key.replace(/_/g, ' ')}
-            subtitle={mode === 'visual' ? 'Editor visual' : 'Codigo Markdown'}
+            subtitle={mode === 'visual' ? 'Editor visual' : 'Código Markdown'}
             action={<div className="flex gap-2"><Button variant="secondary" icon={Plus} onClick={() => setCreateOpen(true)}>Novo</Button><Button icon={Save} loading={saving} onClick={save}>Salvar</Button></div>}
           />
           <CardBody className="space-y-4">
@@ -280,14 +284,14 @@ export default function EditorPage() {
               </div>
 
               <div className="flex flex-wrap gap-1">
-                <ToolButton icon={Type} label="Paragrafo" disabled={mode !== 'visual'} onClick={() => setBlock('p')} />
-                <ToolButton icon={Heading1} label="Titulo 1" disabled={mode !== 'visual'} onClick={() => setBlock('h1')} />
-                <ToolButton icon={Heading2} label="Titulo 2" disabled={mode !== 'visual'} onClick={() => setBlock('h2')} />
+                <ToolButton icon={Type} label="Parágrafo" disabled={mode !== 'visual'} onClick={() => setBlock('p')} />
+                <ToolButton icon={Heading1} label="Título 1" disabled={mode !== 'visual'} onClick={() => setBlock('h1')} />
+                <ToolButton icon={Heading2} label="Título 2" disabled={mode !== 'visual'} onClick={() => setBlock('h2')} />
                 <ToolButton icon={Bold} label="Negrito" disabled={mode !== 'visual'} onClick={() => runCommand('bold')} />
                 <ToolButton icon={Italic} label="Italico" disabled={mode !== 'visual'} onClick={() => runCommand('italic')} />
                 <ToolButton icon={List} label="Lista" disabled={mode !== 'visual'} onClick={() => runCommand('insertUnorderedList')} />
                 <ToolButton icon={ListOrdered} label="Lista numerada" disabled={mode !== 'visual'} onClick={() => runCommand('insertOrderedList')} />
-                <ToolButton icon={Quote} label="Citacao" disabled={mode !== 'visual'} onClick={() => setBlock('blockquote')} />
+                <ToolButton icon={Quote} label="Citação" disabled={mode !== 'visual'} onClick={() => setBlock('blockquote')} />
                 <ToolButton icon={Link} label="Link" disabled={mode !== 'visual'} onClick={addLink} />
                 <ToolButton icon={Undo2} label="Desfazer" disabled={mode !== 'visual'} onClick={() => runCommand('undo')} />
                 <ToolButton icon={Redo2} label="Refazer" disabled={mode !== 'visual'} onClick={() => runCommand('redo')} />
@@ -329,7 +333,7 @@ export default function EditorPage() {
 
             <div className="flex items-center gap-2 text-xs text-subtle">
               <Code2 size={14} />
-              <span>O conteudo visual e convertido para Markdown ao salvar.</span>
+              <span>O conteúdo visual é convertido para Markdown ao salvar.</span>
             </div>
           </CardBody>
         </Card>
@@ -338,7 +342,7 @@ export default function EditorPage() {
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Novo material" description="Cria uma apostila e avaliação vazia vinculadas ao módulo."
         footer={<><Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancelar</Button><Button onClick={createMaterial}>Criar</Button></>}>
         <div className="space-y-3">
-          <Select label="Modulo" value={newUnit.moduleId} onChange={(e) => setNewUnit({ ...newUnit, moduleId: e.target.value })} disabled={!courseId}>
+          <Select label="Módulo" value={newUnit.moduleId} onChange={(e) => setNewUnit({ ...newUnit, moduleId: e.target.value })} disabled={!courseId}>
             <option value="">Selecione...</option>
             {structure.map((mod) => <option key={mod.id} value={mod.id}>{mod.name || mod.title || mod.id}</option>)}
           </Select>

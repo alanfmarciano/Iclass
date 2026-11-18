@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Bell, BellOff, CheckCheck, ChevronRight } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -14,6 +14,18 @@ const TONE = {
   sem_avaliacao: 'bg-info-soft text-info',
   matriculas: 'bg-early-soft text-early',
   conteudo_bloqueado: 'bg-surface-2 text-subtle',
+  provas_recuperadas: 'bg-warning-soft text-warning',
+}
+
+// Painel: até 360px de largura, a 16px das bordas da tela.
+const PANEL_WIDTH = 360
+const PANEL_EDGE = 16
+
+// Deslocamento horizontal do painel (ancorado à direita do sino) para ele caber na
+// tela: no celular o sino não fica na borda e o painel saía cortado à esquerda.
+function panelShift(bellRight, viewportWidth) {
+  const width = Math.min(PANEL_WIDTH, Math.max(0, viewportWidth - 2 * PANEL_EDGE))
+  return Math.max(PANEL_EDGE + width - bellRight, Math.min(0, viewportWidth - PANEL_EDGE - bellRight))
 }
 
 function timeAgo(at) {
@@ -30,9 +42,12 @@ function timeAgo(at) {
 // Sino de notificações real: busca `endpoint` (lista + contador de não lidas),
 // mostra um painel e "marca como lidas" via `seenEndpoint`. O badge só aparece
 // quando há algo novo, em vez do ponto vermelho fixo que existia antes.
-export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName }) {
+// `onOpenItem(item)` (opcional) abre o item: troca de turma no painel do instrutor,
+// marca o aviso como lido no do aluno. Se devolver true, o item fica lido na hora.
+export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName, onOpenItem }) {
   const [data, setData] = useState({ items: [], unread: 0 })
   const [open, setOpen] = useState(false)
+  const [shift, setShift] = useState(0)
   const rootRef = useRef(null)
   const navigate = useNavigate()
 
@@ -59,15 +74,42 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
   }, [open])
 
+  useLayoutEffect(() => {
+    if (!open) return undefined
+    const place = () => {
+      const root = rootRef.current
+      if (!root) return
+      const viewport = window.innerWidth || document.documentElement.clientWidth || 0
+      setShift(panelShift(root.getBoundingClientRect().right, viewport))
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [open])
+
   async function markAllSeen() {
-    const keys = data.items.map((item) => `${item.id}:${item.count || 0}`)
+    // `key` vem do servidor (curso + turma + item); `ids` deixa o aluno marcar os avisos.
+    const keys = data.items.map((item) => item.key || `${item.id}:${item.count || 0}`)
+    const ids = data.items.map((item) => item.id)
     setData((current) => ({ ...current, unread: 0, items: current.items.map((item) => ({ ...item, unread: false })) }))
-    try { await api.post(seenEndpoint, { keys }) } catch { /* silencioso */ }
+    try { await api.post(seenEndpoint, { keys, ids }) } catch { /* silencioso */ }
   }
 
-  function openItem(item) {
+  async function openItem(item) {
     setOpen(false)
-    if (item.href) navigate(item.href)
+    if (!onOpenItem) {
+      if (item.href) navigate(item.href)
+      return
+    }
+    let markedRead = false
+    try { markedRead = await onOpenItem(item) } catch { /* a navegação já aconteceu */ }
+    if (markedRead && item.unread) {
+      setData((current) => ({
+        ...current,
+        unread: Math.max(0, Number(current.unread || 0) - 1),
+        items: current.items.map((other) => (other.id === item.id ? { ...other, unread: false } : other)),
+      }))
+    }
   }
 
   const unread = Number(data.unread || 0)
@@ -89,7 +131,7 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
         )}
       </button>
       {open && (
-        <div role="dialog" aria-label="Notificações" className="absolute right-0 top-12 z-50 w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-float)]">
+        <div role="dialog" aria-label="Notificações" style={{ right: -shift }} className="absolute top-12 z-50 w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-float)]">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <p className="text-sm font-semibold text-text">Notificações</p>
             {data.items.length > 0 && (
@@ -112,8 +154,10 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
                   {item.count ? item.count : <Bell size={14} />}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className={cn('block truncate text-sm', item.unread ? 'font-semibold text-text' : 'font-medium text-text')}>{item.title}</span>
-                  {item.text && <span className="mt-0.5 block truncate text-xs text-muted">{item.text}</span>}
+                  {/* Modo instituição: curso e turma em linha própria, sem esconder a descrição. */}
+                  {item.context && <span className="block truncate text-[11px] font-medium text-subtle">{item.context}</span>}
+                  <span className={cn('line-clamp-2 text-sm', item.unread ? 'font-semibold text-text' : 'font-medium text-text')}>{item.title}</span>
+                  {item.text && <span className="mt-0.5 line-clamp-2 text-xs text-muted">{item.text}</span>}
                 </span>
                 <span className="flex shrink-0 items-center gap-1 text-[11px] text-subtle">{timeAgo(item.at)}<ChevronRight size={13} /></span>
               </button>

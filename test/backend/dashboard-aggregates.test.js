@@ -57,8 +57,9 @@ function baseMemory() {
             { id: 'app_fut', examKey: 'Avaliacao_TI_2', studentClass: '1DES', courseId: 'TI', status: 'prepared', startsAt: NOW + 3 * 86400000, endsAt: null },
         ],
         submissions: [
-            { id: 's1', examKey: 'Avaliacao_TI_1', score: 80, timestamp: new Date(NOW - 5 * 86400000).toISOString(), student: { email: 'a@t.local', courseId: 'TI' } },
-            { id: 's2', examKey: 'Avaliacao_TI_1', score: 60, timestamp: new Date(NOW - 40 * 86400000).toISOString(), student: { email: 'a@t.local', courseId: 'TI' } },
+            // Duas aplicações da mesma prova (cada uma é uma nota consolidada própria).
+            { id: 's1', examKey: 'Avaliacao_TI_1', applicationId: 'app_u1_b', score: 80, timestamp: new Date(NOW - 5 * 86400000).toISOString(), student: { email: 'a@t.local', courseId: 'TI' } },
+            { id: 's2', examKey: 'Avaliacao_TI_1', applicationId: 'app_u1_a', score: 60, timestamp: new Date(NOW - 40 * 86400000).toISOString(), student: { email: 'a@t.local', courseId: 'TI' } },
         ],
         attendance: [
             { id: 'd1', studentEmail: 'a@t.local', courseId: 'TI', studentClass: '1DES', date: dias(3), origin: 'chamada', concluida: true, aulas: [{ ordem: 1, disciplinaId: 'LOG', status: 'presente' }] },
@@ -155,6 +156,25 @@ test('[UC-DASH-003] trends: janelas móveis de 30 dias e "sem dado" nunca vira z
     assert.equal(t.engajamento.semAcessoMais14d, 1, 'c@ está sem acesso há 20 dias');
     assert.equal(t.frequencia.serie.length, 6);
     assert.equal(t.media.serie.length, 6);
+});
+
+test('[UC-DASH-003] trends: a média das provas usa a nota consolidada (várias tentativas contam uma vez)', () => {
+    const memory = baseMemory();
+    const recente = (dias, minutos = 0) => new Date(NOW - dias * 86400000 - minutos * 60000).toISOString();
+    // Aluno A: 10 tentativas de 20 na mesma aplicação (consolidada pela maior nota = 20).
+    // Aluno B: uma tentativa de 100. A média consolidada é (20 + 100) / 2 = 60 → 6,0; a
+    // média simples das 11 entregas (antes) daria (10 × 20 + 100) / 11 ≈ 27 → 2,7.
+    memory.submissions = [
+        ...Array.from({ length: 10 }, (_, i) => ({
+            id: `a${i}`, examKey: 'Avaliacao_TI_1', applicationId: 'app_u1', attemptNumber: i + 1,
+            score: 20, timestamp: recente(3, i), student: { email: 'a@t.local', courseId: 'TI' },
+        })),
+        { id: 'b1', examKey: 'Avaliacao_TI_1', applicationId: 'app_u1', attemptNumber: 1, score: 100, timestamp: recente(2), student: { email: 'b@t.local', courseId: 'TI' } },
+    ];
+    const t = computeTrends({ memory, students: memory.students, course: memory.courses[0], cls: memory.classes[0], now: NOW });
+    assert.equal(t.media.atual, 6, 'cada aluno conta uma vez na aplicação');
+    assert.equal(t.media.base.provas, 2, 'base = notas consolidadas, não entregas');
+    assert.equal(t.media.base.alunos, 2);
 });
 
 test('[UC-DASH-003] trends: turma sem histórico devolve null, não zero', () => {

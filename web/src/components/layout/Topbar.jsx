@@ -3,6 +3,7 @@ import { ThemeToggle } from '../ui/ThemeToggle'
 import { Badge } from '../ui/Badge'
 import { useAuth } from '../../context/AuthProvider'
 import { NotificationBell } from '../ui/NotificationBell'
+import { useAdminNotificationOpener } from './useAdminNotificationOpener'
 
 function initials(s = '') {
   return s.split(/[ @.]/).filter(Boolean).slice(0, 2).map((x) => x[0]?.toUpperCase()).join('')
@@ -11,6 +12,7 @@ function initials(s = '') {
 export function Topbar({ onMenu, breadcrumb }) {
   const { auth, logout, clearActiveWorkspace } = useAuth()
   const workspace = auth.activeWorkspace
+  const openNotification = useAdminNotificationOpener()
   const courseLabel = workspace ? `${workspace.courseName || workspace.courseId} · ${workspace.className}` : ''
 
   return (
@@ -38,6 +40,7 @@ export function Topbar({ onMenu, breadcrumb }) {
       <NotificationBell
         endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'}
         seenEndpoint="/api/admin/notifications/seen"
+        onOpenItem={openNotification}
       />
       <ThemeToggle />
       <Badge className="hidden lg:inline-flex" tone={auth.accountRole === 'professor' ? 'info' : 'neutral'}>

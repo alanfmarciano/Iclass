@@ -4,11 +4,15 @@ const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
 const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
+const { normalizeStoredStudentClasses } = require('./utils/students.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     applicationToOnlineConfig,
     createExamApplication,
     findExamApplication,
+    normalizeLegacyApplicationPause,
+    normalizeLegacyStudentAdjustments,
+    openApplicationPause,
 } = require('./utils/examApplications.js');
 const { hashExamToken } = require('./utils/examToken.js');
 const { DATA_DIR, CONTENT_DIR } = require('./runtimePaths.js');
@@ -48,11 +52,24 @@ function isHashed(password) {
 
 function needsPasswordRehash(password) { return typeof password === 'string' && !password.startsWith('scrypt$'); }
 
+// Turmas atribuídas sem repetição e numa ordem fixa (curso, depois turma). A ordem
+// não depende mais da ordem em que as turmas foram lidas do banco: depois de restaurar
+// um backup (turmas regravadas em outra ordem) cada boot reordenava a lista e regravava
+// as contas, e o boot deixava de ser idempotente.
+function compareCodeUnits(a, b) {
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+function uniqueSortedAssignments(assignments) {
+    return [...new Map(assignments.map(item => [`${item.courseId}::${item.className}`, item])).values()]
+        .sort((a, b) => compareCodeUnits(a.courseId, b.courseId) || compareCodeUnits(a.className, b.className));
+}
+
 function allClassAssignments() {
     const assignments = (memoryDB.classes || [])
         .filter(cls => cls && cls.courseId && cls.name)
         .map(cls => ({ courseId: String(cls.courseId), className: String(cls.name) }));
-    return [...new Map(assignments.map(item => [`${item.courseId}::${item.className}`, item])).values()];
+    return uniqueSortedAssignments(assignments);
 }
 
 function syncAdminClassAssignments() {
@@ -88,11 +105,10 @@ function syncProfessorAssignmentReferences() {
         if (!account || account.role !== 'professor') return;
         const nextSchools = [...new Set((account.assignedSchoolIds || []).map(value => String(value || '').trim()).filter(id => id && schoolIds.has(id)))];
         const nextCourses = [...new Set((account.assignedCourseIds || []).map(value => String(value || '').trim()).filter(id => id && courseIds.has(id)))];
-        const nextClasses = [...new Map((account.assignedClasses || [])
+        const nextClasses = uniqueSortedAssignments((account.assignedClasses || [])
             .filter(value => value && typeof value === 'object')
             .map(value => ({ courseId: String(value.courseId || '').trim(), className: String(value.className || value.name || '').trim() }))
-            .filter(value => classKeys.has(`${value.courseId}::${value.className}`))
-            .map(value => [`${value.courseId}::${value.className}`, value])).values()];
+            .filter(value => classKeys.has(`${value.courseId}::${value.className}`)));
 
         if (JSON.stringify(account.assignedSchoolIds || []) !== JSON.stringify(nextSchools)) { account.assignedSchoolIds = nextSchools; changed = true; }
         if (JSON.stringify(account.assignedCourseIds || []) !== JSON.stringify(nextCourses)) { account.assignedCourseIds = nextCourses; changed = true; }
@@ -452,16 +468,99 @@ function populateDefaultsIfEmpty() {
     }
 }
 
+// Matrícula do aluno na turma (nome, e curso quando a matrícula o traz).
+function studentRecordInClass(email, cls) {
+    const student = (memoryDB.students || []).find(item => item && String(item.email || '').trim().toLowerCase() === email);
+    if (!student || !cls) return false;
+    const memberships = Array.isArray(student.classes) && student.classes.length
+        ? student.classes
+        : (student.studentClass ? [student.studentClass] : []);
+    return memberships.some(item => (typeof item === 'string'
+        ? item === cls.name
+        : !!item && (item.name || item.className) === cls.name && (!item.courseId || !cls.courseId || String(item.courseId) === String(cls.courseId))));
+}
+
+// Versão escolhida no Monitor antes de o aluno começar: a versão anterior (5b69148)
+// gravava a escolha na aplicação e num estado avulso "<email>_<prova>" com
+// versionAssigned. O backup daquela versão não levava as aplicações; a escolha volta
+// pelo estado avulso (só o desta preparação da prova e de aluno da turma). O estado
+// avulso deixa de marcar a versão (ela fica na aplicação, que a tentativa nova lê);
+// sem isso ele virava uma "tentativa em uso" que era reiniciada com outra versão e sem
+// o "+N min" que o aluno tinha ganhado antes de começar. Devolve as versões escolhidas
+// e quantos estados avulsos deixaram de marcar a versão.
+function legacyMonitorVersions(cls, examKey, cfg) {
+    const versions = new Set((Array.isArray(cfg.versionSnapshots) ? cfg.versionSnapshots : [])
+        .map(snapshot => String((snapshot && snapshot.version) || '').trim().toUpperCase())
+        .filter(Boolean));
+    const configVersion = cfg.updatedAt || cfg.preparedAt || cfg.activeHistoryId || null;
+    const chosen = {};
+    let released = 0;
+    Object.entries(memoryDB.studentExamState || {}).forEach(([key, state]) => {
+        if (!state || typeof state !== 'object' || state.applicationId || state.versionAssigned !== true) return;
+        const email = String(state.studentEmail || '').trim().toLowerCase();
+        if (!email || String(state.examKey || '').trim() !== examKey || key !== `${email}_${examKey}`) return;
+        if (state.examConfigVersion && configVersion && state.examConfigVersion !== configVersion) return;
+        const version = String(state.assignedVersion || '').trim().toUpperCase();
+        if (!versions.has(version) || !studentRecordInClass(email, cls)) return;
+        chosen[email] = version;
+        const onlyTheChoice = !(Number(state.startedAt) > 0)
+            && typeof state.timerRemaining !== 'number'
+            && !(state.answers && typeof state.answers === 'object' && Object.keys(state.answers).length)
+            && state.tokenValidated !== true;
+        if (onlyTheChoice) {
+            state.versionAssigned = false;
+            released += 1;
+        }
+    });
+    return { chosen, released };
+}
+
+// Momento aproximado do encerramento de uma aplicação refeita de um backup antigo: a
+// última entrega dela; sem entrega, o último salvamento de uma tentativa; sem nada, a
+// preparação. Nunca antes do início.
+function approximateFinishedAt(applicationId, cfg) {
+    const times = [];
+    (memoryDB.submissions || []).forEach(sub => {
+        if (!sub || String(sub.applicationId || '') !== applicationId) return;
+        const at = Date.parse(sub.timestamp || sub.submittedAt || '');
+        if (Number.isFinite(at)) times.push(at);
+    });
+    if (!times.length) {
+        Object.values(memoryDB.studentExamState || {}).forEach(state => {
+            if (!state || String(state.applicationId || '') !== applicationId) return;
+            const at = Date.parse(state.savedAt || state.updatedAt || '');
+            if (Number.isFinite(at)) times.push(at);
+        });
+    }
+    if (!times.length) {
+        const prepared = Date.parse(cfg.updatedAt || cfg.preparedAt || '');
+        if (Number.isFinite(prepared)) times.push(prepared);
+    }
+    const start = Number(cfg.startTime) || 0;
+    return times.length ? Math.max(start, ...times) : (start || null);
+}
+
 // Inicialização Assíncrona do Banco
-function migrateLegacyExamApplications() {
+// options.pausedAt: na restauração de um backup de versão anterior, o momento do
+// backup (a aplicação pausada nele fica pausada desde então: o cronômetro não anda
+// durante a pausa e ninguém ganha o tempo de novo). No boot, sem esse dado, "agora".
+function migrateLegacyExamApplications(options = {}) {
     if (!Array.isArray(memoryDB.examApplications)) memoryDB.examApplications = [];
     let changed = false;
+    // Aplicações pausadas por versões antigas passam a registrar o início da pausa
+    // (o cronômetro fica congelado a partir dele). "+N min" de aluno duplicado na
+    // aplicação vale só para a tentativa em que foi dado. Idempotente.
+    memoryDB.examApplications.forEach(application => {
+        if (normalizeLegacyApplicationPause(application)) changed = true;
+        if (normalizeLegacyStudentAdjustments(application, memoryDB.studentExamState)) changed = true;
+    });
     (memoryDB.classes || []).forEach(cls => {
         if (!cls.onlineExamConfigs) return;
         Object.keys(cls.onlineExamConfigs).forEach(examKey => {
             const cfg = cls.onlineExamConfigs[examKey];
             if (!cfg) return;
             let application = findExamApplication(memoryDB.examApplications, cfg.applicationId);
+            const existed = !!application;
             const hasPreparedContent = cfg.activeHistoryId
                 && Array.isArray(cfg.versionSnapshots)
                 && cfg.versionSnapshots.length > 0;
@@ -476,18 +575,71 @@ function migrateLegacyExamApplications() {
                     historyId: cfg.activeHistoryId,
                     config: {
                         ...cfg,
-                        accessTokenHash: hashExamToken(cfg.accessToken),
-                        tokenEnabled: !!cfg.accessToken,
+                        // A versão anterior (5b69148) guardava só o hash do token, com
+                        // accessToken null: o token continua exigido. Antes o hash era
+                        // descartado e qualquer aluno começava sem token.
+                        accessTokenHash: cfg.accessTokenHash || hashExamToken(cfg.accessToken),
+                        tokenEnabled: cfg.tokenEnabled === true || !!cfg.accessTokenHash || !!cfg.accessToken,
+                        studentVersions: { ...(cfg.studentVersions || {}), ...legacyMonitorVersions(cls, examKey, cfg).chosen },
                     },
                     actor: 'migração automática',
                     status: legacyStatus,
                     now: cfg.startTime || Date.now(),
                 });
                 if (cfg.startTime) application.startsAt = Number(cfg.startTime);
+                // Preparada quando a configuração diz (o Monitor lista as aplicações por essa
+                // data). Antes ficava a hora da restauração, ou a do início da prova.
+                const preparedAt = Date.parse(cfg.preparedAt || '');
+                if (Number.isFinite(preparedAt) && preparedAt > 0 && preparedAt <= Date.parse(application.createdAt)) {
+                    application.createdAt = new Date(preparedAt).toISOString();
+                    application.preparedAt = application.createdAt;
+                }
+                if (legacyStatus === 'paused') {
+                    // Pausada desde o momento do backup (ou de agora): nunca desde o
+                    // início da prova, que devolveria a todos o tempo já usado.
+                    const hint = Number(options.pausedAt);
+                    const pausedAt = Math.max(Number(application.startsAt) || 0, Number.isFinite(hint) && hint > 0 ? hint : Date.now());
+                    openApplicationPause(application, pausedAt);
+                    application.updatedAt = new Date(pausedAt).toISOString();
+                }
+                if (legacyStatus === 'finished') {
+                    const previousId = String(cfg.applicationId || '').trim();
+                    const finishedAt = approximateFinishedAt(previousId || application.id, cfg);
+                    if (finishedAt) {
+                        application.finishedAt = new Date(finishedAt).toISOString();
+                        application.endsAt = application.endsAt || finishedAt;
+                        application.updatedAt = application.finishedAt;
+                    }
+                }
+                // A configuração ainda aponta para a aplicação que sumiu (backup de versão
+                // anterior, que não trazia as aplicações): ela volta com o mesmo
+                // identificador, e as tentativas e entregas gravadas com ele continuam dela.
+                const previousId = String(cfg.applicationId || '').trim();
+                if (previousId) application.id = previousId;
                 memoryDB.examApplications.push(application);
                 changed = true;
             }
             if (!application) return;
+            // Banco da versão anterior atualizado (a aplicação existe): a versão escolhida
+            // no Monitor para quem ainda não tinha começado fica na aplicação e o estado
+            // avulso deixa de marcá-la, como na restauração do backup. Antes ele virava a
+            // tentativa do aluno, que era reiniciada com outra versão sorteada e sem o
+            // "+N min" dado antes de começar (que ficava parado na aplicação). Idempotente.
+            if (existed && application.status !== 'finished' && application.status !== 'cancelled') {
+                const legacy = legacyMonitorVersions(cls, examKey, {
+                    ...cfg,
+                    versionSnapshots: Array.isArray(application.versionSnapshots) && application.versionSnapshots.length
+                        ? application.versionSnapshots
+                        : cfg.versionSnapshots,
+                });
+                if (legacy.released) changed = true;
+                Object.entries(legacy.chosen).forEach(([email, version]) => {
+                    if (!application.studentVersions || typeof application.studentVersions !== 'object') application.studentVersions = {};
+                    if (application.studentVersions[email]) return;
+                    application.studentVersions[email] = version;
+                    changed = true;
+                });
+            }
             cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cfg);
             const active = ACTIVE_APPLICATION_STATUSES.has(application.status);
             if (!cls.releasedItems) cls.releasedItems = {};
@@ -499,6 +651,59 @@ function migrateLegacyExamApplications() {
         });
     });
     return changed;
+}
+
+// Configuração da prova em cada turma conforme a aplicação dela; configuração sem
+// aplicação (versões antigas) volta bloqueada e parada. Usada no boot e ao restaurar um
+// backup de versão anterior. Devolve true quando mudou alguma coisa.
+function syncOnlineExamConfigsWithApplications() {
+    if (!Array.isArray(memoryDB.classes)) return false;
+    let resetSomething = false;
+    memoryDB.classes.forEach(cls => {
+        if (cls.activeExamKey) { cls.activeExamKey = null; resetSomething = true; }
+        if (cls.onlineExamConfigs) {
+            Object.keys(cls.onlineExamConfigs).forEach(examKey => {
+                const cfg = cls.onlineExamConfigs[examKey];
+                if (!cfg) return;
+                const application = findExamApplication(memoryDB.examApplications, cfg.applicationId);
+                if (application) {
+                    cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cfg);
+                    if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+                        cls.activeExamKey = examKey;
+                        cls.activeApplicationId = application.id;
+                    }
+                    return;
+                }
+                cfg.onlineActive = false;
+                cfg.status = 'not_applied';
+                cfg.startTime = null;
+                cfg.waitingRoomStartTimestamp = null;
+                resetSomething = true;
+            });
+        }
+        if (cls.releasedItems) {
+            Object.keys(cls.releasedItems).forEach(key => {
+                if (key.startsWith('Avaliacao_') && cls.releasedItems[key] === true && !cls.onlineExamConfigs?.[key]?.applicationId) {
+                    cls.releasedItems[key] = false;
+                    resetSomething = true;
+                }
+            });
+        }
+    });
+    return resetSomething;
+}
+
+// Restaurar um backup de versão anterior (sem a coleção examApplications) é voltar
+// àquele momento: as aplicações atuais (inclusive as criadas depois do backup) saem e
+// são refeitas a partir das turmas do backup pelo mesmo caminho do boot para dados
+// antigos. Antes as atuais ficavam: aplicação "finalizada" com as tentativas "em
+// andamento" que vieram do backup, e aplicações posteriores ao backup sobrando.
+function rebuildExamApplicationsFromClasses({ backupAt = null } = {}) {
+    const discarded = Array.isArray(memoryDB.examApplications) ? memoryDB.examApplications.length : 0;
+    memoryDB.examApplications = [];
+    migrateLegacyExamApplications({ pausedAt: backupAt });
+    syncOnlineExamConfigsWithApplications();
+    return { discarded, rebuilt: memoryDB.examApplications.length };
 }
 
 async function init() {
@@ -619,7 +824,7 @@ async function init() {
                 });
             }
             const uniqueAssignments = normalizedRole === 'professor'
-                ? [...new Map(normalizedAssignedClasses.map(item => [`${item.courseId}::${item.className}`, item])).values()]
+                ? uniqueSortedAssignments(normalizedAssignedClasses)
                 : allClassAssignments();
             if (!Array.isArray(admin.assignedClasses) || JSON.stringify(admin.assignedClasses) !== JSON.stringify(uniqueAssignments)) {
                 admin.assignedClasses = uniqueAssignments;
@@ -682,10 +887,20 @@ async function init() {
                 student.status = "Ativo";
                 needsSave = true;
             }
+            // DES-03: `studentClass` gravado como objeto (aprovação + matrícula em lote)
+            // volta a ser o nome da turma; idempotente.
+            if (normalizeStoredStudentClasses(student)) needsSave = true;
         });
     }
     if (memoryDB.config && memoryDB.config.adminPassword && !isHashed(memoryDB.config.adminPassword)) {
         memoryDB.config.adminPassword = hashPassword(memoryDB.config.adminPassword);
+        needsSave = true;
+    }
+    // Segredo dos identificadores opacos das alternativas da prova (AVA-05). Gerado uma
+    // vez e gravado antes de servir: os identificadores não mudam ao reiniciar.
+    if (memoryDB.config && typeof memoryDB.config === 'object'
+        && (typeof memoryDB.config.examAnswerSecret !== 'string' || memoryDB.config.examAnswerSecret.length < 32)) {
+        memoryDB.config.examAnswerSecret = crypto.randomBytes(32).toString('hex');
         needsSave = true;
     }
     if (needsSave) {
@@ -723,43 +938,9 @@ async function init() {
     // Zera o estado transitório das provas (liberação, status e cronômetro) para que o
     // professor libere/inicie manualmente quando a turma for fazer. Apostilas e gabaritos
     // mantêm sua liberação; só as avaliações são bloqueadas.
-    if (Array.isArray(memoryDB.classes)) {
-        let resetSomething = false;
-        memoryDB.classes.forEach(cls => {
-            if (cls.activeExamKey) { cls.activeExamKey = null; resetSomething = true; }
-            if (cls.onlineExamConfigs) {
-                Object.keys(cls.onlineExamConfigs).forEach(examKey => {
-                    const cfg = cls.onlineExamConfigs[examKey];
-                    if (!cfg) return;
-                    const application = findExamApplication(memoryDB.examApplications, cfg.applicationId);
-                    if (application) {
-                        cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cfg);
-                        if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
-                            cls.activeExamKey = examKey;
-                            cls.activeApplicationId = application.id;
-                        }
-                        return;
-                    }
-                    cfg.onlineActive = false;
-                    cfg.status = 'not_applied';
-                    cfg.startTime = null;
-                    cfg.waitingRoomStartTimestamp = null;
-                    resetSomething = true;
-                });
-            }
-            if (cls.releasedItems) {
-                Object.keys(cls.releasedItems).forEach(key => {
-                    if (key.startsWith('Avaliacao_') && cls.releasedItems[key] === true && !cls.onlineExamConfigs?.[key]?.applicationId) {
-                        cls.releasedItems[key] = false;
-                        resetSomething = true;
-                    }
-                });
-            }
-        });
-        if (resetSomething) {
-            console.log("🔒 Provas online resetadas para BLOQUEADAS/PARADAS no início do servidor.");
-            await saveToDisk();
-        }
+    if (syncOnlineExamConfigsWithApplications()) {
+        console.log("🔒 Provas online resetadas para BLOQUEADAS/PARADAS no início do servidor.");
+        await saveToDisk();
     }
 
     console.log("💾 Banco de dados SQLite inicializado e carregado na memória.");
@@ -923,6 +1104,7 @@ module.exports = {
     needsPasswordRehash,
     allClassAssignments,
     syncAdminClassAssignments,
+    rebuildExamApplicationsFromClasses,
     classStorageKey,
     isHashed
 };

@@ -113,7 +113,7 @@ export default function LoginPage() {
         nav('/aluno')
       } else if (studentAction === 'recover') {
         await api.post('/api/student/recover', { email }, { auth: false })
-        toast.success('Solicitacao enviada ao instrutor')
+        toast.success('Solicitação enviada ao instrutor')
         setStudentAction('login')
       } else {
         await loginStudent(email, password); nav('/aluno')

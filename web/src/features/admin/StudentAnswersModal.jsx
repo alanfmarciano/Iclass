@@ -4,6 +4,7 @@ import { Modal } from '../../components/ui/Modal'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { api } from '../../lib/api'
+import { OriginalLetter, reviewLettersNote, seenWithOriginal } from './reviewLetters'
 
 const STATUS_LABEL = {
   finished: { tone: 'success', text: 'Finalizada' },
@@ -97,6 +98,7 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
             {review.status !== 'not_started' && <Badge tone="danger">{Math.max(0, review.answeredCount - review.correctCount)} erradas</Badge>}
             {review.examCode && <span className="text-xs text-subtle">Código {review.examCode}</span>}
           </div>
+          {reviewLettersNote(review.alternativeLabels) && <p className="text-xs text-subtle">{reviewLettersNote(review.alternativeLabels)}</p>}
 
           {(!review.questions || review.questions.length === 0) && (
             <div className="border-y border-border py-6 text-center text-sm text-muted">
@@ -135,6 +137,7 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
                           return (
                             <div key={`${question.position}-${alternative.canonicalLetter || alternative.letter}`} className={`flex flex-wrap items-center gap-3 px-2 py-2.5 ${optionStyle}`}>
                               <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
+                              <OriginalLetter seen={alternative.letter} original={alternative.canonicalLetter} />
                               <span className="min-w-0 flex-1 text-sm text-text">{alternative.text}</span>
                               {alternative.selectedByStudent && (
                                 <span className={`inline-flex items-center gap-1 text-xs font-semibold ${alternative.correct ? 'text-success' : 'text-danger'}`}>
@@ -153,8 +156,8 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
                       </div>
                     ) : (
                       <div className="mt-3 flex flex-wrap gap-4 text-sm">
-                        <span className="text-muted">Aluno: <b className="font-mono text-text">{question.studentChoice || '—'}</b></span>
-                        <span className="text-muted">Gabarito: <b className="font-mono text-success">{question.correctAnswer || '—'}</b></span>
+                        <span className="text-muted">Aluno: <b className="font-mono text-text">{seenWithOriginal(question.studentChoiceSeen, question.studentChoice)}</b></span>
+                        <span className="text-muted">Gabarito: <b className="font-mono text-success">{seenWithOriginal(question.correctAnswerSeen, question.correctAnswer)}</b></span>
                       </div>
                     )}
 

@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthProvider'
 import { canAccessAdminPath } from './lib/adminPermissions'
 import { AppShell } from './components/layout/AppShell'
 import { StudentShell } from './features/student/StudentShell'
+import { StudentExamShell } from './features/student/StudentExamShell'
 import { Input } from './components/ui/Input'
 import { Button } from './components/ui/Button'
 import { api } from './lib/api'
@@ -115,11 +116,14 @@ export default function App() {
       </Route>
 
       {/* Aluno */}
+      {/* Prova online em layout próprio, sem o menu, o sino e os links do portal (AVA-12). */}
+      <Route path="/aluno/prova/:examKey" element={<RequireRole role="student"><StudentExamShell /></RequireRole>}>
+        <Route index element={<ExamRunner />} />
+      </Route>
       <Route path="/aluno" element={<RequireRole role="student"><StudentShell /></RequireRole>}>
         <Route index element={<InicioPage />} />
         <Route path="modulos" element={<ModulosPage />} />
         <Route path="provas" element={<ProvasStudentPage />} />
-        <Route path="prova/:examKey" element={<ExamRunner />} />
         <Route path="caderno" element={<CadernoPage />} />
         <Route path="duvidas" element={<DuvidasPage />} />
         <Route path="avisos" element={<AvisosStudentPage />} />

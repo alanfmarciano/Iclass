@@ -47,8 +47,8 @@ export function MonthCalendar({ month, onMonthChange, events = [], onDayClick, o
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-3">
         <div className="flex items-center gap-2">
           <Button size="sm" variant="secondary" onClick={() => onMonthChange(firstOfMonth())}>Hoje</Button>
-          <Button size="sm" variant="ghost" icon={ChevronLeft} aria-label="Mes anterior" onClick={() => move(-1)} />
-          <Button size="sm" variant="ghost" icon={ChevronRight} aria-label="Proximo mes" onClick={() => move(1)} />
+          <Button size="sm" variant="ghost" icon={ChevronLeft} aria-label="Mês anterior" onClick={() => move(-1)} />
+          <Button size="sm" variant="ghost" icon={ChevronRight} aria-label="Próximo mês" onClick={() => move(1)} />
           <h2 className="ml-1 text-base font-semibold capitalize text-text">{title}</h2>
         </div>
         <span className="inline-flex items-center gap-2 text-xs text-muted"><CalendarDays size={15} /> {events.length} evento(s)</span>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ClipboardCheck, Download, Check, X, Clock, LogOut, FileText, Paperclip, Users,
-  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2,
+  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -144,7 +144,10 @@ export default function ChamadaPage() {
         }
       })
       setUi(next); setDirty(false)
-      setSavedAt((r.roster || []).some((s) => s.salvo) ? 'carregado' : null)
+      // Registro só da presença automática (acesso do aluno) não é rascunho do professor:
+      // a tela pede para conferir e concluir (CRIT-02).
+      const rows = r.roster || []
+      setSavedAt(rows.some((s) => s.salvo && s.origin !== 'login') ? 'carregado' : rows.some((s) => s.salvo) ? 'automatica' : null)
     } catch (e) { setError(e) } finally { setLoading(false) }
   }
   useEffect(() => { api.get('/api/settings/public', { auth: false }).then((r) => { if (r && r.today) setDate(r.today) }).catch(() => {}) }, [])
@@ -358,6 +361,8 @@ export default function ChamadaPage() {
                     <span className="inline-flex items-center gap-1.5 text-muted"><Loader2 size={13} className="animate-spin" /> Salvando…</span>
                   ) : dirty ? (
                     <span className="inline-flex items-center gap-1.5 text-warning font-semibold"><span className="w-2 h-2 rounded-full bg-warning" /> Alterações não salvas</span>
+                  ) : savedAt === 'automatica' ? (
+                    <span className="inline-flex items-center gap-1.5 text-info font-semibold"><Wifi size={13} /> Só presença automática: confira e conclua</span>
                   ) : savedAt ? (
                     <span className="inline-flex items-center gap-1.5 text-success font-semibold"><Check size={13} /> {savedAt === 'carregado' ? 'Rascunho salvo' : `Salvo ${savedAt}`}</span>
                   ) : null}
@@ -432,6 +437,11 @@ export default function ChamadaPage() {
                             {lvMissing(u) && <Tag tone="danger" Icon={AlertTriangle}>falta a hora da saída</Tag>}
                             {jMissing(u) && <Tag tone="danger" Icon={AlertTriangle}>justificativa incompleta</Tag>}
                             {u.st === 'j' && u.just?.arquivoNome && <Tag tone="info" Icon={Paperclip}>{u.just.arquivoNome}{u.just.abonado ? ' · abona' : ' · não abona'}</Tag>}
+                            {s.origin === 'login' && (
+                              <span title="Registro criado pelo acesso do aluno ao sistema. Confira antes de concluir a chamada.">
+                                <Tag tone="info" Icon={Wifi}>Automática{s.acessoAutomatico?.hora ? ` · acesso às ${s.acessoAutomatico.hora}` : ''}{s.acessoAutomatico?.ip ? ` · IP ${s.acessoAutomatico.ip}` : ''}</Tag>
+                              </span>
+                            )}
                           </div>
                         </div>
 

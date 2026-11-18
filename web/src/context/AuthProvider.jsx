@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { api, setAuthProvider } from '../lib/api'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
+import { clearAllExamDrafts } from '../lib/examDrafts'
 
 const AuthCtx = createContext()
 const LS = 'iclass-v3-auth'
@@ -43,6 +44,7 @@ export function AuthProvider({ children }) {
   const doLogout = useCallback((reason) => {
     try { if (reason) sessionStorage.setItem('iclass-logout-reason', reason) } catch {}
     try { sessionStorage.removeItem('iclass-workspace-switch') } catch {}
+    clearAllExamDrafts() // cópia local das respostas da prova não fica para o próximo usuário
     try {
       const cur = JSON.parse(localStorage.getItem(LS)) || {}
       if (cur.role === 'admin' && cur.adminSession) {
@@ -72,11 +74,11 @@ export function AuthProvider({ children }) {
         if (serverInst && auth.serverInstanceId && serverInst !== auth.serverInstanceId) { if (!cancelled) doLogout('restart'); return }
 
         if (auth.role === 'student') {
-          if (!auth.email || !auth.sessionToken) throw Object.assign(new Error('Sessao incompleta'), { status: 401 })
+          if (!auth.email || !auth.sessionToken) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
           await api.get(`/api/ping?email=${encodeURIComponent(auth.email)}`)
           if (!cancelled && serverInst && !auth.serverInstanceId) setAuth((c) => ({ ...c, serverInstanceId: serverInst }))
         } else if (auth.role === 'admin') {
-          if (!auth.adminSession && !auth.adminAuth) throw Object.assign(new Error('Sessao incompleta'), { status: 401 })
+          if (!auth.adminSession && !auth.adminAuth) throw Object.assign(new Error('Sessão incompleta'), { status: 401 })
           const who = await api.get('/api/admin/whoami')
           if (!cancelled) {
             setAuth((current) => ({

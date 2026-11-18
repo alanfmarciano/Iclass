@@ -4,8 +4,19 @@ import DOMPurify from 'dompurify'
 const SAFE_URL_RE = /^(https?:|mailto:|tel:|#|\/)/i
 const SAFE_IMAGE_DATA_RE = /^data:image\/(png|jpe?g|gif|webp);base64,/i
 
-function withFileAccess(value) {
+// Tira ?access=<sessão> de links internos de arquivo. A sessão é acrescentada só na
+// hora de exibir e nunca pode ir para o Markdown salvo (o editor antigo gravava a
+// sessão do instrutor dentro da apostila).
+export function stripFileAccess(value) {
   const url = String(value || '')
+  const match = /^(\/(?:uploads|imagens)\/[^?#]*)\?([^#]*)(#.*)?$/.exec(url)
+  if (!match) return url
+  const kept = match[2].split('&').filter((part) => part && !/^access=/i.test(part))
+  return `${match[1]}${kept.length ? `?${kept.join('&')}` : ''}${match[3] || ''}`
+}
+
+function withFileAccess(value) {
+  const url = stripFileAccess(value)
   if (!/^\/(uploads|imagens)\//.test(url) || typeof localStorage === 'undefined') return url
   try {
     const auth = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}
@@ -84,9 +95,17 @@ function srcForMarkdown(src) {
   if (!src) return ''
   try {
     const url = new URL(src, window.location.origin)
-    if (url.origin === window.location.origin) return `${url.pathname}${url.search}${url.hash}`
+    if (url.origin === window.location.origin) return stripFileAccess(`${url.pathname}${url.search}${url.hash}`)
   } catch {}
   return src
+}
+
+// Link do texto: endereço absoluto do próprio site vira caminho; âncora (#), mailto e
+// caminho relativo ficam como estão. Em qualquer caso a sessão sai do link de arquivo.
+function hrefForMarkdown(href) {
+  const value = String(href || '')
+  if (/^https?:/i.test(value)) return srcForMarkdown(value)
+  return stripFileAccess(value)
 }
 
 function serializeChildren(node) {
@@ -126,7 +145,7 @@ function serializeNode(node) {
       .map((line) => `> ${line}`)
       .join('\n') + '\n\n'
   }
-  if (tag === 'a') return `[${serializeChildren(node).trim() || node.getAttribute('href')}](${node.getAttribute('href') || ''})`
+  if (tag === 'a') return `[${serializeChildren(node).trim() || node.getAttribute('href')}](${hrefForMarkdown(node.getAttribute('href') || '')})`
   if (tag === 'img') return `\n\n![${node.getAttribute('alt') || ''}](${srcForMarkdown(node.getAttribute('src') || '')})\n\n`
   if (tag === 'li') return serializeChildren(node)
 
