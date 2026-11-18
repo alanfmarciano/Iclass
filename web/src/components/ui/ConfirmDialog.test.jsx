@@ -95,6 +95,19 @@ describe('[UC-CONFIRMACAO-001] ConfirmDialog', () => {
     expect(onConfirm).toHaveBeenLastCalledWith(undefined)
   })
 
+  it('confirmDisabled trava só o confirmar; Cancelar e Esc continuam fechando', () => {
+    const onConfirm = vi.fn()
+    render(<Harness onConfirm={onConfirm} confirmDisabled><input aria-label="Minutos" defaultValue="" autoFocus /></Harness>)
+    expect(screen.getByLabelText('Minutos')).toHaveFocus()
+    const confirm = screen.getByRole('button', { name: 'Excluir' })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(confirm)
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Cancelar' })).not.toBeDisabled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByTestId('estado')).toHaveTextContent('fechado')
+  })
+
   it('texto do aluno na mensagem aparece como texto, nunca como HTML', () => {
     render(<Harness onConfirm={vi.fn()} message={'Excluir "<img src=x onerror=alert(1)>"?'} />)
     expect(screen.getByRole('dialog')).toHaveTextContent('Excluir "<img src=x onerror=alert(1)>"?')

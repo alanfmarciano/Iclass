@@ -344,7 +344,9 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
     // MonitorPage: versão em maiúscula e liberar foco (a aplicação já foi encerrada pela
     // entrega; a rota responde pela regra, nunca pelo schema).
     const application = db.memory.examApplications.find(item => item.seedDemo === true && item.examKey === EXAM_KEY);
-    screen('features/admin/MonitorPage.jsx', "api.post('/api/admin/assign-student-version', { studentEmail: email, examKey, applicationId, version: version.toUpperCase() })");
+    // A versão sai do diálogo já aparada e em maiúscula (normalizeVersionInput, fase 3 C0a).
+    screen('features/admin/MonitorPage.jsx', "api.post('/api/admin/assign-student-version', { studentEmail: actionDialog.email, examKey, applicationId, version })");
+    screen('features/admin/MonitorPage.jsx', "return String(value ?? '').trim().toUpperCase().slice(0, VERSION_MAX_CHARS)");
     const version = await asInstructor('/api/admin/assign-student-version').send({ studentEmail: student, examKey: EXAM_KEY, applicationId: application.id, version: 'B' });
     assert.ok(version.status < 500 && version.body.field === undefined, JSON.stringify(version.body));
     screen('features/admin/MonitorPage.jsx', "api.post('/api/admin/unlock-student-focus', { studentEmail: email, studentClass: className, courseId, examKey, applicationId })");
@@ -480,19 +482,38 @@ test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem locale
 // Caixas do navegador (window.confirm, prompt e alert) congelam a página (o polling para)
 // e não dizem o que vai acontecer: tela tocada na fase 3 usa o ConfirmDialog
 // (web/src/components/ui/ConfirmDialog.jsx, contrato C12 do P3). As que ainda existem
-// estão na lista abaixo, com quantas há em cada arquivo; a lista só diminui (as do Monitor
-// e de Provas saem no P3, a da Biblioteca e a do Fórum saíram no C0a). Arquivo novo ou
-// chamada nova reprova.
+// estão na lista abaixo, com quantas há em cada arquivo; a lista só diminui (a Biblioteca,
+// o Fórum, o Monitor e Provas do professor saíram no C0a). Arquivo novo ou chamada nova
+// reprova. E, onde há o histórico do git, arquivo da lista que mudou desde o começo da
+// fase 3 (PHASE3_BASE) também reprova: quem toca a tela troca as caixas dela.
 const NATIVE_DIALOGS_LEFT = {
     'features/admin/CalendarioPage.jsx': 1,
     'features/admin/EditorPage.jsx': 2,
     'features/admin/IdentidadePage.jsx': 1,
-    'features/admin/MonitorPage.jsx': 4,
-    'features/admin/ProvasPage.jsx': 2,
     'features/admin/ResultadosPage.jsx': 1,
     'features/admin/SistemaPage.jsx': 2,
     'features/admin/TurmaPresencaConfig.jsx': 1,
 };
+// Exceções combinadas no plano (a tela muda antes de quem troca a caixa dela).
+const NATIVE_DIALOGS_TOUCH_EXCEPTIONS = {
+    // K15: até a J2 a ResultadosPage é da trilha B; o confirm dela sai no P3-S8 (trilha A).
+    'features/admin/ResultadosPage.jsx': 'K15 do plano: o confirm sai no P3-S8',
+};
+// Main de onde a fase 3 partiu (281029f, 18/11/2026).
+const PHASE3_BASE = '281029f1846543c2b33b181f6d9a9bb304aa6f0a';
+
+// Arquivos da lista que mudaram desde PHASE3_BASE (conteúdo da pasta, com o que ainda não
+// foi para commit). null quando não há git ou o commit não está no clone (pacote de
+// release, clone raso): aí vale só a lista.
+function filesChangedSincePhase3(files) {
+    const repo = path.join(__dirname, '..', '..');
+    const { spawnSync } = require('node:child_process');
+    const known = spawnSync('git', ['-C', repo, 'cat-file', '-e', `${PHASE3_BASE}^{commit}`], { encoding: 'utf8' });
+    if (known.error || known.status !== 0) return null;
+    const diff = spawnSync('git', ['-C', repo, 'diff', '--name-only', PHASE3_BASE, '--', ...files.map(file => `web/src/${file}`)], { encoding: 'utf8' });
+    if (diff.error || diff.status !== 0) return null;
+    return diff.stdout.split(/\r?\n/).filter(Boolean).map(file => file.replace(/^web\/src\//, ''));
+}
 
 function nativeDialogCalls({ text }) {
     const calls = [];
@@ -526,8 +547,24 @@ test('[UC-CONFIRMACAO-001] guarda: nenhuma caixa nova do navegador (confirm, pro
         if (lines.length > allowed) problems.push(`${source.file}: ${lines.length} (linhas ${lines.join(', ')}); o máximo é ${allowed}`);
     }
     assert.deepEqual(problems, [], `use o ConfirmDialog (web/src/components/ui/ConfirmDialog.jsx):\n${problems.join('\n')}`);
-    // A Biblioteca e o Fórum (tocados no C0a) não usam mais as caixas do navegador.
-    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx']) {
+    // As telas tocadas no C0a não usam mais as caixas do navegador.
+    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx']) {
         assert.equal(nativeDialogCalls({ text: fs.readFileSync(path.join(WEB_SRC, file), 'utf8') }).length, 0, file);
+        assert.equal(NATIVE_DIALOGS_LEFT[file], undefined, file);
     }
+});
+
+test('[UC-CONFIRMACAO-001] guarda: tela com caixa do navegador que mudou na fase 3 troca as caixas pelo ConfirmDialog', (t) => {
+    for (const file of Object.keys(NATIVE_DIALOGS_TOUCH_EXCEPTIONS)) assert.ok(NATIVE_DIALOGS_LEFT[file], file);
+    const changed = filesChangedSincePhase3(Object.keys(NATIVE_DIALOGS_LEFT));
+    if (changed === null) {
+        t.diagnostic(`sem o histórico do git até ${PHASE3_BASE.slice(0, 7)}: vale só a lista NATIVE_DIALOGS_LEFT`);
+        return;
+    }
+    const problems = changed
+        .filter(file => !NATIVE_DIALOGS_TOUCH_EXCEPTIONS[file])
+        .map(file => ({ file, lines: nativeDialogCalls({ text: fs.readFileSync(path.join(WEB_SRC, file), 'utf8') }) }))
+        .filter(item => item.lines.length > 0)
+        .map(item => `${item.file}: mudou na fase 3 e ainda tem ${item.lines.length} (linhas ${item.lines.join(', ')}); troque pelo ConfirmDialog e tire o arquivo de NATIVE_DIALOGS_LEFT`);
+    assert.deepEqual(problems, []);
 });

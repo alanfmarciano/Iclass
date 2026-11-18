@@ -140,3 +140,23 @@ describe('[UC-ERRO-003] Fórum do instrutor: modelo de resposta recusado não li
     expect(screen.getByLabelText('Texto')).toHaveValue('')
   })
 })
+
+// Fase 3, C0a: textos da lixeira do Fórum com acento, e o diálogo de excluir não diz mais
+// que "não pode ser desfeita" (a mensagem vai para Excluídas e pode ser restaurada).
+describe('[UC-CONFIRMACAO-001] Fórum do instrutor: lixeira e diálogo de excluir', () => {
+  it('mostra "Excluídas" e o diálogo de excluir diz que dá para restaurar', async () => {
+    const comments = [
+      comment('c1', 'Dúvida ativa'),
+      { ...comment('c2', 'Dúvida apagada'), deleted: true, deletedAt: '2026-11-11T10:00:00.000Z' },
+    ]
+    apiMock.post.mockImplementation((url) => (url === '/api/admin/forum/all' ? Promise.resolve({ comments }) : Promise.resolve({ success: true })))
+    render(<MemoryRouter><ForumPage /></MemoryRouter>)
+    expect(await screen.findByText('Dúvida ativa')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Excluídas/ })).toBeInTheDocument()
+    expect(screen.queryByText(/Excluidas/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }))
+    const dialog = screen.getByRole('dialog', { name: 'Excluir mensagem?' })
+    expect(dialog).toHaveTextContent('A mensagem vai para Excluídas e pode ser restaurada.')
+    expect(dialog).not.toHaveTextContent('não pode ser desfeita')
+  })
+})

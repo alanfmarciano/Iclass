@@ -304,7 +304,7 @@ export default function ForumPage() {
         <div className="space-y-2">
           <button type="button" onClick={() => setShowTrash((v) => !v)} className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm font-semibold text-text hover:bg-surface-2">
             <ChevronDown size={16} className={`transition ${showTrash ? 'rotate-180' : ''}`} />
-            Excluidas
+            Excluídas
             <Badge tone="neutral">{trashCount}</Badge>
           </button>
           {showTrash && (
@@ -383,8 +383,8 @@ export default function ForumPage() {
         <Textarea label="Texto da mensagem" value={editing?.draft || ''} onChange={(e) => setEditing((current) => current && { ...current, draft: e.target.value })}
           maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} autoFocus className="min-h-[140px]" />
       </Modal>
-      <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger title="Excluir mensagem?" description="A mensagem vai para Excluidas e pode ser restaurada." confirmLabel="Excluir" />
-      <ConfirmDialog open={!!purgeTarget} onClose={() => setPurgeTarget(null)} onConfirm={purgeItem} danger title="Apagar definitivamente?" description="Remove a mensagem para sempre. Não será possível restaurar." confirmLabel="Apagar de vez" />
+      <ConfirmDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger title="Excluir mensagem?" message="A mensagem vai para Excluídas e pode ser restaurada." confirmLabel="Excluir" />
+      <ConfirmDialog open={!!purgeTarget} onClose={() => setPurgeTarget(null)} onConfirm={purgeItem} danger title="Apagar definitivamente?" message="Remove a mensagem para sempre. Não será possível restaurar." confirmLabel="Apagar de vez" />
     </div>
   )
 }

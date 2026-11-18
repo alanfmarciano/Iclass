@@ -15,6 +15,10 @@ import { Textarea } from './Textarea'
 // - tone: 'danger' (botão vermelho, para o que apaga ou não tem volta) ou 'primary'.
 // - requireReason: pede o motivo e só confirma com ele preenchido; askReason: pede o
 //   motivo sem obrigar. reasonLabel, reasonPlaceholder e reasonMaxLength (padrão 500).
+// - children: campos a mais no corpo (ex.: os minutos do ajuste de tempo no Monitor);
+//   confirmDisabled trava só o botão de confirmar enquanto esses campos não valem
+//   (Cancelar e Esc continuam fechando). Com children, o foco vai para o campo com
+//   autoFocus, e não para o Cancelar.
 // - onConfirm(motivo): pode ser assíncrona. Enquanto roda, os botões ficam travados
 //   (não há clique duplo) e o diálogo não fecha; se der erro, a mensagem aparece no
 //   diálogo e ele continua aberto para tentar de novo. Quem fecha depois do sucesso é a
@@ -43,6 +47,7 @@ export function ConfirmDialog({
   reasonPlaceholder,
   reasonMaxLength = REASON_MAX_DEFAULT,
   busy = false,
+  confirmDisabled = false,
 }) {
   const [reason, setReason] = useState('')
   const [pending, setPending] = useState(false)
@@ -73,7 +78,7 @@ export function ConfirmDialog({
   }
 
   async function confirm() {
-    if (runningRef.current || locked || missingReason) return
+    if (runningRef.current || locked || missingReason || confirmDisabled) return
     runningRef.current = true
     setPending(true)
     setError('')
@@ -90,9 +95,9 @@ export function ConfirmDialog({
   return (
     <Modal open={open} onClose={close} title={title} description={description}
       footer={<>
-        <Button variant="ghost" onClick={close} disabled={locked} autoFocus={!showReason}>{cancelLabel}</Button>
+        <Button variant="ghost" onClick={close} disabled={locked} autoFocus={!showReason && !children}>{cancelLabel}</Button>
         <Button variant={resolvedTone === 'danger' ? 'destructive' : 'primary'} onClick={confirm}
-          loading={pending} disabled={busy || missingReason}>{confirmLabel}</Button>
+          loading={pending} disabled={busy || missingReason || confirmDisabled}>{confirmLabel}</Button>
       </>}>
       <div className="space-y-3">
         {body !== null && body !== undefined && body !== '' && (

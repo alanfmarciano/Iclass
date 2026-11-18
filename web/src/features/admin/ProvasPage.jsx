@@ -161,6 +161,10 @@ export default function ProvasPage() {
   const [viewApplication, setViewApplication] = useState(null)
   const [mode, setMode] = useState('online')
   const [deleteHistory, setDeleteHistory] = useState(null)
+  // Confirmações no ConfirmDialog, no lugar do confirm do navegador (C12 do P3, C0a):
+  // salvar a prova do curso que substitui a das turmas e excluir questão do banco.
+  const [scopeConfirm, setScopeConfirm] = useState(null)
+  const [bankDelete, setBankDelete] = useState(null)
   const [applyHistory, setApplyHistory] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [excluded, setExcluded] = useState([])
@@ -698,11 +702,21 @@ export default function ProvasPage() {
     }
   }
 
-  async function saveEvaluationEditor() {
+  function saveEvaluationEditor() {
     if (editor.scope === 'course') {
       const names = affectedClassNames.length ? affectedClassNames.join(', ') : 'todas as turmas do curso'
-      if (!window.confirm(`Esta alteração substituirá esta prova em: ${names}. Deseja continuar?`)) return
+      setScopeConfirm({ names })
+      return
     }
+    return persistEvaluationEditor()
+  }
+
+  async function confirmScopeSave() {
+    await persistEvaluationEditor()
+    setScopeConfirm(null)
+  }
+
+  async function persistEvaluationEditor() {
     setEditorBusy(true)
     try {
       const payload = { ...evaluationPayload(), courseId, studentClass: className, scope: editor.scope || 'class' }
@@ -766,14 +780,19 @@ export default function ProvasPage() {
     } catch (error) { toast.error(error.message) }
   }
 
-  async function deleteBankQuestion(question) {
-    if (!window.confirm(`Excluir a questão do banco: "${question.questionText}"?`)) return
-    try {
-      await api.post('/api/admin/question-bank/delete', { key: question.key })
-      setBankQuestions((items) => items.filter((item) => item.key !== question.key))
-      if (bankEditor?.key === question.key) setBankEditor(null)
-      toast.success('Questão excluída do banco')
-    } catch (error) { toast.error(error.message) }
+  function deleteBankQuestion(question) {
+    setBankDelete(question)
+  }
+
+  // Erro da exclusão aparece no próprio diálogo, que continua aberto.
+  async function confirmDeleteBankQuestion() {
+    const question = bankDelete
+    if (!question) return
+    await api.post('/api/admin/question-bank/delete', { key: question.key })
+    setBankQuestions((items) => items.filter((item) => item.key !== question.key))
+    if (bankEditor?.key === question.key) setBankEditor(null)
+    setBankDelete(null)
+    toast.success('Questão excluída do banco')
   }
 
   const loading = courses.loading || classes.loading
@@ -1297,6 +1316,12 @@ export default function ProvasPage() {
       </Modal>
 
       <ConfirmDialog open={!!deleteHistory} onClose={() => setDeleteHistory(null)} onConfirm={removeHistory} danger title="Excluir histórico?" description={deleteHistory?.label || deleteHistory?.id} confirmLabel="Excluir" />
+      <ConfirmDialog open={!!scopeConfirm} onClose={() => setScopeConfirm(null)} onConfirm={confirmScopeSave} tone="primary"
+        title="Substituir a prova nas turmas?" message={`Esta alteração substituirá esta prova em: ${scopeConfirm?.names || ''}.`}
+        confirmLabel="Salvar prova" />
+      <ConfirmDialog open={!!bankDelete} onClose={() => setBankDelete(null)} onConfirm={confirmDeleteBankQuestion} tone="danger"
+        title="Excluir a questão do banco?" message={bankDelete ? `"${bankDelete.questionText}"` : ''}
+        confirmLabel="Excluir" />
       <FinishApplicationModal
         open={!!finishApplication}
         onClose={() => setFinishApplication(null)}
