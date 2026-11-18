@@ -40,6 +40,27 @@ const ADMIN_PERMISSION_VALUES = Object.freeze([
     // Entra aqui, e não no bloco do B0b, porque a divisão de /student(/.*) precisa vir
     // antes da regra genérica de aluno. O professor e a Secretaria têm por padrão.
     'students.edit',
+    // ---------------------------------------------------------------- fase 3 (B0b)
+    // Valores novos da fase 3 (seção rbac do plano). Entram no fim, para a ordem das
+    // listas de hoje (effectivePermissions, catálogo da tela de contas) não mudar. Quem
+    // recebe cada um sai do catálogo de papéis (adminRoles.js), que já os cita:
+    // - page.assignments (P1, Tarefas): professor e coordenação (consulta);
+    // - page.messages (P5, Mensagens): professor; não é do professor auxiliar nem da
+    //   coordenação;
+    // - messages.readAll (P5): só o administrador pleno lê qualquer conversa (resposta
+    //   do Alan: "Sim, com registro"; cada leitura vai para a auditoria);
+    // - reports.view (P4, Relatórios): professor (turmas dele), secretaria e coordenação;
+    // - students.import (P4, importar planilha): professor (turma dele) e secretaria;
+    // - enrollments.approve (P4, aprovar matrícula): secretaria; o professor continua sem
+    //   (NEVER_FOR_PROFESSOR) e o administrador sempre tem (hasAdminCapability);
+    // - students.merge (P4, mesclar cadastros): só o administrador pleno.
+    'page.assignments',
+    'page.messages',
+    'messages.readAll',
+    'reports.view',
+    'students.import',
+    'enrollments.approve',
+    'students.merge',
 ]);
 
 const ADMIN_PERMISSION_SET = new Set(ADMIN_PERMISSION_VALUES);
@@ -225,6 +246,15 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/access-token$/, permission: ['page.monitor', 'page.exams'] },
     // Registro da aplicação é lido na tela Resultados (AVA-08).
     { methods: ['GET'], pattern: /^\/exam-applications\/[^/]+\/audit$/, permission: 'page.results' },
+    // Fase 3 (B0b, P3): ações da prova de um aluno, ver o token e corrigir o gabarito depois
+    // da prova. Ficam aqui, e não no bloco 'fase 3' do fim, porque são mais específicas que
+    // a regra genérica de exam-applications logo abaixo (a primeira que casa é a que vale).
+    // Recolher, anular, reabrir e tentativa extra: no Monitor (o professor auxiliar também).
+    { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/attempt-action$/, permission: 'page.monitor' },
+    // Ver o token selado da aplicação (o botão fica no Monitor).
+    { methods: ['GET'], pattern: /^\/exam-applications\/[^/]+\/access-token$/, permission: 'page.monitor' },
+    // Corrigir o gabarito depois da prova: por Resultados ou pelo Monitor.
+    { methods: ['POST'], pattern: /^\/exam-applications\/[^/]+\/answer-key-correction$/, permission: ['page.results', 'page.monitor'] },
     { methods: ['GET', 'POST'], pattern: /^\/exam-applications(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['GET', 'POST'], pattern: /^\/exam-history(?:\/.*)?$/, permission: 'page.exams' },
     { methods: ['POST'], pattern: /^\/release-item$/, permission: 'page.materials' },
@@ -298,6 +328,69 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET'], pattern: /^\/schools$/, permission: ['schools.scope', 'page.classes'] },
     { methods: ['POST'], pattern: /^\/schools\/update$/, permission: 'schools.scope' },
     { methods: ['POST'], pattern: /^\/schools\/(create|delete)$/, permission: 'branding.manage' },
+
+    // ---------------------------------------------------------------- fase 3 (B0b)
+    // Regras das rotas novas da fase 3 já desenhadas (seção rbac do plano), todas de uma
+    // vez, para as trilhas não disputarem este arquivo. Nenhuma casa com rota que já
+    // existe. O escopo (turma, curso, escola) continua no guarda e em cada rota.
+    // Rotas novas que as regras de cima já cobrem com a permissão certa (não precisam de
+    // linha aqui; o teste admin-rbac-catalog.test.js confere a decisão de cada uma):
+    // /attendance/diary e /attendance/diary/month (page.students), /submissions/import e
+    // /submissions/:id/correction|review-requests/... (page.results), /exam-applications/
+    // :id/schedule|participants e /question-bank/import|export (page.exams) e
+    // /backup/entregas/recuperar (system.manage). As três de exam-applications que pedem
+    // outra permissão ficam antes da regra genérica, lá em cima.
+    // Regra mais específica antes da genérica do mesmo prefixo, também dentro do bloco.
+
+    // P1 Tarefas: cadastro, correção, devolução, prazo e entregas (escopo pela turma e
+    // pelo curso da tarefa).
+    { methods: ['GET', 'POST'], pattern: /^\/assignments(?:\/.*)?$/, permission: 'page.assignments' },
+
+    // P2 Notas e calendário: critérios do curso (alterar é de quem mexe no curso), plano
+    // e avaliações manuais da turma, período letivo, encerrar turma e dias não letivos.
+    { methods: ['GET'], pattern: /^\/grading\/criteria$/, permission: 'page.results' },
+    { methods: ['POST'], pattern: /^\/grading\/criteria$/, permission: 'course.manage' },
+    { methods: ['GET', 'POST'], pattern: /^\/grading\/(plan|preview|manual-items(?:\/.*)?)$/, permission: 'page.results' },
+    { methods: ['GET'], pattern: /^\/academic\/terms$/, permission: 'page.dashboard' },
+    { methods: ['POST'], pattern: /^\/academic\/terms(?:\/.*)?$/, permission: 'classes.manage' },
+    { methods: ['POST'], pattern: /^\/class\/(close|reopen)$/, permission: 'classes.manage' },
+    // A mesma permissão do Calendário; quem pode cadastrar dia de toda a escola, do curso
+    // ou da turma a rota decide pelo escopo do dia.
+    { methods: ['GET', 'POST'], pattern: /^\/calendar\/non-school-days(?:\/.*)?$/, permission: 'page.forum' },
+    { methods: ['GET'], pattern: /^\/calendar\/ics$/, permission: 'page.forum' },
+
+    // P3 Correção: fila de correção (as rotas de uma entrega ficam na regra /submissions).
+    { methods: ['GET', 'POST'], pattern: /^\/corrections(?:\/.*)?$/, permission: 'page.results' },
+
+    // P4 Secretaria: relatórios, importação e mesclagem de alunos, aluno pelo id,
+    // certificados, pacote de curso, Minha conta e redefinir a senha de outra conta.
+    { methods: ['GET', 'POST'], pattern: /^\/reports(?:\/.*)?$/, permission: 'reports.view' },
+    { methods: ['GET', 'POST'], pattern: /^\/students\/import(?:\/.*)?$/, permission: 'students.import' },
+    { methods: ['GET', 'POST'], pattern: /^\/students\/merge(?:\/.*)?$/, permission: 'students.merge' },
+    { methods: ['GET'], pattern: /^\/students\/by-id\/[^/]+$/, permission: 'page.students' },
+    { methods: ['GET', 'POST'], pattern: /^\/certificates(?:\/.*)?$/, permission: 'students.certificates' },
+    { methods: ['GET'], pattern: /^\/courses\/[^/]+\/package$/, permission: 'course.manage' },
+    { methods: ['POST'], pattern: /^\/course-packages\/(preview|import)$/, permission: 'course.manage' },
+    // Autoatendimento da própria conta: todo papel tem page.dashboard (e o somente leitura
+    // deixa passar, adminRoles.READ_ONLY_EXCEPTIONS).
+    { methods: ['POST'], pattern: /^\/account\/(profile|end-other-sessions)$/, permission: 'page.dashboard' },
+    { methods: ['POST'], pattern: /^\/accounts\/reset-password$/, permission: 'accounts.manage' },
+
+    // P5 Alunos e comunicação: grupos, ver como aluno, mensagens e responsáveis. Abrir a
+    // conversa dos outros (admin-open) é só de quem lê todas; vem antes da genérica.
+    { methods: ['GET', 'POST'], pattern: /^\/class-groups(?:\/.*)?$/, permission: 'page.students' },
+    { methods: ['POST'], pattern: /^\/preview-sessions(?:\/end)?$/, permission: ['page.materials', 'page.classes'] },
+    { methods: ['POST'], pattern: /^\/conversations\/[^/]+\/admin-open$/, permission: 'messages.readAll' },
+    { methods: ['GET', 'POST'], pattern: /^\/conversations(?:\/.*)?$/, permission: 'page.messages' },
+    { methods: ['GET'], pattern: /^\/guardian-notices(?:\/.*)?$/, permission: 'page.students' },
+    { methods: ['GET', 'POST'], pattern: /^\/guardian-contacts(?:\/.*)?$/, permission: 'page.students' },
+
+    // P6 Instalação: Sobre o IClass, primeiros passos, assistente e curso de exemplo (as
+    // pastas, o assistente e o curso de exemplo são só do administrador, na rota).
+    { methods: ['GET'], pattern: /^\/system\/about$/, permission: 'page.system' },
+    { methods: ['GET'], pattern: /^\/setup\/checklist$/, permission: 'page.dashboard' },
+    { methods: ['POST'], pattern: /^\/setup\/wizard$/, permission: 'system.manage' },
+    { methods: ['POST'], pattern: /^\/setup\/example-course$/, permission: 'course.manage' },
 ]);
 
 // Caminho de /api/admin como o Express 5 o casa com as rotas: sem a query string, sem
