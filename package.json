@@ -40,6 +40,6 @@
   "devDependencies": {
     "@playwright/test": "^1.54.1",
     "axe-core": "^4.12.1",
-    "supertest": "^7.1.4"
+    "supertest": "^7.3.2"
   }
 }
