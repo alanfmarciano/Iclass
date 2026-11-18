@@ -232,3 +232,36 @@ test('[UC-FUNDACAO-001] fila "Precisa de você": o item do provedor só aparece 
     assert.ok(!filtered.some(item => item.id === 'so_admin'));
     assert.ok(filtered.some(item => item.id === 'entregas_para_corrigir'));
 });
+
+test('[UC-FUNDACAO-001] item do provedor com permissão em lista: qualquer uma basta, na fila e no sino (permissoes_compostas)', async () => {
+    keep(feeds.registerInstructorQueueProvider({
+        id: 'lista',
+        items: ctx => (ctx.cls ? [
+            { id: 'gabarito', titulo: 'Gabarito para corrigir', count: 1, tone: 'warning', href: '/resultados', permissao: ['page.results', 'page.monitor'] },
+            { id: 'contas_ou_sistema', titulo: 'Só contas ou sistema', count: 1, href: '/admins', permissao: ['page.accounts', ' system.manage ', ''] },
+            { id: 'lista_vazia', titulo: 'Lista vazia', count: 1, href: '/', permissao: [] },
+        ] : []),
+    }));
+    // A lista continua lista depois de normalizada (antes virava 'page.results,page.monitor').
+    const memory = db.memory;
+    const raw = computeQueue({ memory, cls: memory.classes[0], course: memory.courses[0], students: memory.students, today: '2026-11-18', now: NOW, canSeeMatriculas: false });
+    assert.deepEqual(raw.find(item => item.id === 'gabarito').permissao, ['page.results', 'page.monitor']);
+    assert.deepEqual(raw.find(item => item.id === 'contas_ou_sistema').permissao, ['page.accounts', 'system.manage']);
+    assert.equal(raw.find(item => item.id === 'lista_vazia').permissao, 'page.dashboard');
+    const admin = await request(app).get(`/api/admin/dashboard/queue${CONTEXT}`).set(adminHeaders());
+    assert.equal(admin.status, 200, JSON.stringify(admin.body));
+    const adminIds = admin.body.map(item => item.id);
+    assert.ok(adminIds.includes('gabarito'), adminIds.join(', '));
+    assert.ok(adminIds.includes('contas_ou_sistema'), adminIds.join(', '));
+    const prof = await request(app).get(`/api/admin/dashboard/queue${CONTEXT}`).set(adminHeaders(PROF));
+    assert.equal(prof.status, 200, JSON.stringify(prof.body));
+    const profIds = prof.body.map(item => item.id);
+    assert.ok(profIds.includes('gabarito'), profIds.join(', '));
+    assert.ok(!profIds.includes('contas_ou_sistema'), profIds.join(', '));
+    const bell = await request(app).get(`/api/admin/notifications${CONTEXT}`).set(adminHeaders());
+    assert.equal(bell.status, 200, JSON.stringify(bell.body));
+    assert.ok(bell.body.items.some(item => item.id === 'gabarito@DES::1DES'), bell.body.items.map(item => item.id).join(', '));
+    const profBell = await request(app).get(`/api/admin/notifications${CONTEXT}`).set(adminHeaders(PROF));
+    assert.ok(profBell.body.items.some(item => item.id === 'gabarito@DES::1DES'));
+    assert.ok(!profBell.body.items.some(item => item.id === 'contas_ou_sistema@DES::1DES'));
+});

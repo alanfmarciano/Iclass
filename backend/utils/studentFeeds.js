@@ -21,7 +21,8 @@
 // - registerInstructorQueueProvider({ id, items(ctx) }): pendências da fila e do sino do
 //   instrutor. ctx = { memory, cls, course, students, emails (Set dos e-mails do escopo),
 //   today, now, canSeeMatriculas }; os alunos já vêm no escopo de quem vê. Cada item:
-//   { id, tipo, titulo, detalhe?, count, tone, href, permissao, at?, adiavel? }; a rota
+//   { id, tipo, titulo, detalhe?, count, tone, href, permissao (texto ou lista: qualquer
+//   uma basta), at?, adiavel? }; a rota
 //   da fila aplica o adiamento de 24 h, e a fila e o sino mostram cada item só a quem
 //   tem a permissão dele (permissao).
 //
@@ -141,6 +142,17 @@ function normalizeCalendarEvent(item, providerId) {
 
 const QUEUE_TONES = new Set(['danger', 'warning', 'info', 'early', 'neutral', 'success']);
 
+// Permissão do item da fila: um valor ou uma lista (qualquer uma basta, como em
+// ADMIN_API_PERMISSION_RULES; nomes_e_formatos.permissoes_compostas do plano). A lista
+// continua lista: virar texto ('page.results,page.monitor') escondia o item de todos.
+function queuePermission(value) {
+    if (Array.isArray(value)) {
+        const list = [...new Set(value.map(entry => text(entry, 80).trim()).filter(Boolean))].slice(0, 10);
+        return list.length ? list : 'page.dashboard';
+    }
+    return text(value, 80).trim() || 'page.dashboard';
+}
+
 function normalizeQueueItem(item) {
     if (!isPlain(item)) return null;
     const id = text(item.id, 200).trim();
@@ -155,7 +167,7 @@ function normalizeQueueItem(item) {
         count: Number.isFinite(count) && count > 0 ? Math.floor(count) : 0,
         tone: QUEUE_TONES.has(item.tone) ? item.tone : 'info',
         href: text(item.href, 500),
-        permissao: text(item.permissao || 'page.dashboard', 80),
+        permissao: queuePermission(item.permissao),
     };
     const at = Number(item.at);
     if (Number.isFinite(at) && at > 0) out.at = at;
