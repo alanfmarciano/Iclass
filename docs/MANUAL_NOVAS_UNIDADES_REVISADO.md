@@ -572,7 +572,7 @@ IclassV3/content/imagens/<curso>/cap<N>/<arquivo>
 - `cap<N>` → o capítulo da apostila ao qual a imagem pertence (`cap1`, `cap2`, ...).
 - `<arquivo>` → nome descritivo, em minúsculas, sem acentos e sem espaços (usar hífen). Ex.: `modelo-osi.svg`, `cpu-hardware.jpg`.
 
-Formatos aceitos: `.svg` (preferido para diagramas), `.png` e `.jpg`.
+Formatos aceitos: `.svg` (preferido para diagramas), `.png`, `.jpg`, `.gif` e `.webp`. O SVG é exibido como imagem: scripts dentro dele não rodam.
 
 ### Como referenciar dentro do markdown da apostila
 
@@ -606,6 +606,34 @@ content/imagens/futec/cap2/modelo-osi.svg   (arquivo no disco)
 - [ ] Os nomes estão em minúsculas, sem acento e sem espaço.
 - [ ] Cada `![...](imagens/...)` da apostila aponta para um arquivo existente.
 - [ ] A imagem aparece no portal do aluno e na prévia do editor.
+
+## 14.2 Minigames dentro da apostila
+
+Um minigame é um arquivo HTML único, que funciona sozinho e sem internet (CSS e JavaScript dentro do próprio arquivo, imagens em `data:`). Ele roda dentro da apostila, numa área isolada: não acessa a rede, a conta do aluno nem o resto da página.
+
+### Onde o minigame fica
+
+```txt
+IclassV3/content/minigames/<arquivo>.html
+```
+
+O nome usa só letras sem acento, números, ponto, hífen e sublinhado, e termina em `.html`. Ex.: `SREDS_1_cap1_servidor-dhcp.html`. Não há subpastas.
+
+### Como colocar na apostila
+
+Um parágrafo só com o link para o jogo:
+
+```markdown
+[Abrir o jogo "Servidor DHCP por um turno"](minigames/SREDS_1_cap1_servidor-dhcp.html)
+```
+
+No portal do aluno esse parágrafo vira um quadro com os botões **Jogar aqui** e **Tela cheia**. O jogo só carrega quando o aluno clica. Se o arquivo não estiver em `content/minigames/`, o quadro avisa que o minigame ainda não está no IClass.
+
+### Regras
+
+- O jogo não pode depender de internet, de outro arquivo nem de `localStorage` (no isolamento ele não existe).
+- O link precisa estar sozinho no parágrafo; um link no meio do texto continua sendo só um link.
+- Teste o jogo abrindo o arquivo direto no navegador antes de colocá-lo na pasta.
 
 ---
 

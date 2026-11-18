@@ -81,7 +81,7 @@ res.json(questao);
 
 ## Arquivos controlados
 
-`/uploads/:filename` e `/imagens/:filename` passam por `sendControlledFile` com resolução segura de caminho (`utils/safePath.js`) — nunca sirva arquivo por concatenação direta de path.
+`/uploads/:filename` passa por `sendControlledFile`; `/imagens/*caminho` (subpastas, png/jpg/gif/webp/svg) por `sendContentImage`; `/minigames/:filename` (só `.html`, token só no cabeçalho, resposta `text/plain`) por `sendMinigame`. Todos usam resolução segura de caminho (`utils/safePath.js`) — nunca sirva arquivo por concatenação direta de path.
 
 ## Modo de teste
 

@@ -56,6 +56,76 @@ app.use((req, res, next) => {
     next();
 });
 
+// Sessão de quem pede um arquivo: instrutor ou aluno logado. O token vem pelo
+// cabeçalho (cliente de API) ou, para <img>, pela query `access`.
+function findFileSession(req, { allowQueryToken = true } = {}) {
+    const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || (allowQueryToken ? req.query.access : '') || '');
+    if (!accessToken) return { adminSession: null, studentEmail: null };
+    const adminSession = (db.memory.adminSessions && db.memory.adminSessions[accessToken]) || null;
+    const studentEmail = Object.keys(db.memory.sessions || {}).find(email => {
+        const session = db.memory.sessions[email];
+        return session && typeof session === 'object' && session.token === accessToken;
+    }) || null;
+    return { adminSession, studentEmail };
+}
+
+// Imagens das apostilas (content/imagens). Aceita subpastas, como
+// imagens/fecop/cap1/agenda.svg, e SVG. Um SVG servido aqui é aberto como
+// imagem: o <img> nunca executa script, e a CSP com sandbox bloqueia script
+// se alguém abrir o arquivo direto numa aba.
+const CONTENT_IMAGE_TYPES = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+};
+function sendContentImage(req, res) {
+    const segments = [].concat(req.params.caminho || []).map(String);
+    const invalid = !segments.length || segments.some(segment => !segment || segment.startsWith('.') || /[\\\x00-\x1f]/.test(segment));
+    const relative = segments.join('/');
+    const ext = path.extname(relative).toLowerCase();
+    let target;
+    try {
+        if (invalid) throw new Error('Nome inválido');
+        target = resolveInside(path.join(runtimePaths.CONTENT_DIR, 'imagens'), relative);
+    } catch (e) {
+        return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
+    }
+    if (!CONTENT_IMAGE_TYPES[ext]) return res.status(415).json({ error: 'Este formato não pode ser servido pela aplicação.' });
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return res.status(404).json({ error: 'Arquivo não encontrado.' });
+    const { adminSession, studentEmail } = findFileSession(req, { allowQueryToken: true });
+    if (!adminSession && !studentEmail) return res.status(401).json({ error: 'Autenticação necessária para acessar este arquivo.' });
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Security-Policy', ext === '.svg'
+        ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox"
+        : "default-src 'none'; sandbox");
+    res.set('Cache-Control', 'private, no-store');
+    res.type(CONTENT_IMAGE_TYPES[ext]);
+    return res.sendFile(target);
+}
+
+// Minigames das apostilas (content/minigames/<nome>.html). O leitor busca o
+// arquivo pelo cliente de API (token só no cabeçalho, nunca na URL) e o roda
+// num iframe com sandbox="allow-scripts", sem a origem do IClass. Por isso a
+// resposta é texto puro: aberta direto numa aba, não vira página.
+const MINIGAME_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.html$/;
+function sendMinigame(req, res) {
+    const filename = String(req.params.filename || '');
+    let target;
+    try {
+        if (!MINIGAME_NAME.test(filename) || filename.includes('..')) throw new Error('Nome inválido');
+        target = resolveInside(path.join(runtimePaths.CONTENT_DIR, 'minigames'), filename);
+    } catch (e) {
+        return res.status(400).json({ error: 'Nome de minigame inválido.' });
+    }
+    const { adminSession, studentEmail } = findFileSession(req, { allowQueryToken: false });
+    if (!adminSession && !studentEmail) return res.status(401).json({ error: 'Autenticação necessária para acessar este arquivo.' });
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return res.status(404).json({ error: 'Minigame não encontrado.' });
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Content-Type', 'text/plain; charset=utf-8');
+    return res.sendFile(target);
+}
+
 function sendControlledFile(baseDir, req, res) {
     let target;
     try {
@@ -65,12 +135,7 @@ function sendControlledFile(baseDir, req, res) {
         return res.status(400).json({ error: 'Caminho de arquivo inválido.' });
     }
     if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return res.status(404).json({ error: 'Arquivo não encontrado.' });
-    const accessToken = String(req.get('x-admin-session') || req.get('x-session-token') || req.query.access || '');
-    const adminSession = accessToken && db.memory.adminSessions && db.memory.adminSessions[accessToken];
-    const studentEmail = Object.keys(db.memory.sessions || {}).find(email => {
-        const session = db.memory.sessions[email];
-        return session && typeof session === 'object' && session.token === accessToken;
-    });
+    const { adminSession, studentEmail } = findFileSession(req, { allowQueryToken: true });
     const publicBrandingFile = Object.values(db.memory.branding || {}).some(value => {
         if (typeof value !== 'string' || !value.startsWith('/uploads/')) return false;
         return path.basename(value.split('?')[0]) === req.params.filename;
@@ -108,7 +173,8 @@ function sendControlledFile(baseDir, req, res) {
 }
 
 app.get('/uploads/:filename', (req, res) => sendControlledFile(runtimePaths.UPLOADS_DIR, req, res));
-app.get('/imagens/:filename', (req, res) => sendControlledFile(path.join(runtimePaths.CONTENT_DIR, 'imagens'), req, res));
+app.get('/imagens/*caminho', sendContentImage);
+app.get('/minigames/:filename', sendMinigame);
 // IclassV3: serve o build da nova interface React (Vite -> web/dist).
 // Em desenvolvimento o Vite roda em :5173 com proxy para /api; para uso local
 // normal, rode `npm run build` na pasta web/ e o Express entrega tudo aqui.
@@ -154,7 +220,7 @@ app.use(adminRoutes);
 // Fallback SPA: qualquer rota que não seja /api ou /uploads devolve o index.html
 // da nova interface, e o React Router resolve a navegação (instrutor/aluno).
 app.use((req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/uploads') || req.path.startsWith('/imagens')) return next();
+    if (req.path.startsWith('/api') || req.path.startsWith('/uploads') || req.path.startsWith('/imagens') || req.path.startsWith('/minigames')) return next();
     res.sendFile(path.join(WEB_DIST, 'index.html'));
 });
 
