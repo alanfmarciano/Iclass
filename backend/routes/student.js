@@ -395,6 +395,10 @@ router.get('/api/ping', validateStudentSession, (req, res) => {
         success: true,
         passwordChangeRequired: passwordChange.required === true,
         ...(passwordChange.required ? { passwordChangeReason: passwordChange.reason } : {}),
+        // Versão publicada dos documentos, a mesma do sino (notifications): o aluno sem
+        // turma (autocadastro pendente) não tem sino, e o portão de primeiro acesso dele
+        // só via os Termos novos quando a guarda de 10 min vencia.
+        legalVersion: legalAcceptance.publishedLegalVersion(db.memory),
     });
 });
 

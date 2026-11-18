@@ -27,7 +27,9 @@ import { PageLoading } from '../../components/ui/PageLoading'
 // por conta (STATUS_TTL_MS) para o portão não consultar o servidor a cada clique. A
 // guarda cai antes do prazo quando a escola publica outra versão dos documentos
 // (decisões §12, sobra do H8a-2): o sino do aluno traz a versão publicada (legalVersion,
-// "<id dos termos>|<id da política>") e o StudentShell a passa a notePublishedLegalVersion;
+// "<id dos termos>|<id da política>"), o ping do aluno (a cada 15 s, também para quem
+// ainda não tem turma e por isso não tem sino) traz a mesma versão, e o StudentShell a
+// passa a notePublishedLegalVersion;
 // diferente da que o status guardado mostrava, o portão consulta de novo na hora.
 // Consulta pendurada não prende o aluno em "Carregando": passados STATUS_TIMEOUT_MS, o
 // portal abre (política 'ciência') e a próxima navegação pergunta de novo.

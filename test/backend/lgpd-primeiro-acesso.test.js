@@ -426,3 +426,31 @@ test('[UC-LGPD-007] o sino do aluno traz a versão publicada dos documentos, a m
     await publish('privacidade');
     assert.equal((await bell()).body.legalVersion, 'termos_v1|privacidade_v1');
 });
+
+// Revisão da J3: o legalVersion só vinha pelo sino, que exige a turma. O aluno sem turma
+// (autocadastro pendente) recebia 403 no sino e só via os Termos novos quando a guarda de
+// 10 min do portão vencia. O ping (a cada 15 s, sem turma) traz a mesma versão.
+test('[UC-LGPD-007] o ping do aluno traz a versão publicada dos documentos, também sem turma', async () => {
+    const headers = studentHeaders(ANA.email);
+    const ping = () => request(app).get(`/api/ping?email=${encodeURIComponent(ANA.email)}`).set(headers);
+    const bell = () => request(app).get('/api/student/notifications?courseId=DES&studentClass=1DES').set(headers);
+    const first = await ping();
+    assert.equal(first.status, 200, first.body.error);
+    assert.equal(typeof first.body.legalVersion, 'string');
+    assert.equal(first.body.legalVersion, (await bell()).body.legalVersion);
+    await publish('termos');
+    const second = await ping();
+    assert.notEqual(second.body.legalVersion, first.body.legalVersion);
+    assert.equal(second.body.legalVersion, (await bell()).body.legalVersion);
+    // Sem turma: o sino recusa e o ping continua trazendo a versão.
+    const ana = db.memory.students.find(item => item.email === ANA.email);
+    const savedClasses = ana.classes;
+    ana.classes = [];
+    try {
+        const noClass = await ping();
+        assert.equal(noClass.status, 200, noClass.body.error);
+        assert.equal(noClass.body.legalVersion, second.body.legalVersion);
+    } finally {
+        ana.classes = savedClasses;
+    }
+});

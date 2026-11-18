@@ -83,7 +83,7 @@ export function StudentShell() {
   const onNotifications = (data) => notePublishedLegalVersion(studentEmail, data?.legalVersion)
   const notifications = <NotificationBell endpoint={passwordChangePending ? null : notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} onData={onNotifications} />
   const examAvailability = passwordChangePending ? null : <StudentExamAvailability />
-  useStudentHeartbeat()
+  useStudentHeartbeat({ onPresence: onNotifications })
   usePrefetchExamScreen()
 
   if (interfacePreset === 'lumen') {

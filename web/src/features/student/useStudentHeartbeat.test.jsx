@@ -12,8 +12,10 @@ vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { role: '
 
 import { HEARTBEAT_MS, useStudentHeartbeat } from './useStudentHeartbeat'
 
+const presence = vi.hoisted(() => ({ onPresence: null }))
+
 function Portal() {
-  useStudentHeartbeat()
+  useStudentHeartbeat(presence.onPresence ? { onPresence: presence.onPresence } : undefined)
   return <p>Portal</p>
 }
 
@@ -40,6 +42,7 @@ beforeEach(() => {
   authMock.endSessionFromError.mockReset()
   authMock.endSessionFromError.mockResolvedValue(undefined)
   authMock.syncPasswordChange.mockReset()
+  presence.onPresence = null
   setHidden(false)
 })
 
@@ -148,5 +151,17 @@ describe('[UC-AUTH-003] presença com a sessão encerrada no servidor', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(HEARTBEAT_MS) })
     expect(authMock.endSessionFromError).not.toHaveBeenCalled()
   })
-})
 
+  // Revisão da J3: o ping traz a versão publicada dos documentos (legalVersion), e o
+  // portal a repassa ao portão de primeiro acesso, também para o aluno sem turma.
+  it('entrega a resposta do ping a onPresence; sem ele, segue como antes', async () => {
+    presence.onPresence = vi.fn()
+    apiGet.mockResolvedValue({ success: true, passwordChangeRequired: false, legalVersion: 'termos_v2|privacidade_v1' })
+    renderPortal()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(presence.onPresence).toHaveBeenCalledWith({ success: true, passwordChangeRequired: false, legalVersion: 'termos_v2|privacidade_v1' })
+    apiGet.mockRejectedValue(Object.assign(new Error('Sem conexão'), { status: 0, network: true }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(HEARTBEAT_MS) })
+    expect(presence.onPresence).toHaveBeenCalledTimes(1)
+  })
+})

@@ -632,3 +632,35 @@ test('[UC-LGPD-010] perfil da cópia do aluno por lista permitida: sem seedDemo,
     assert.equal(admin.campoFuturo, 'interno');
     assert.equal(admin.password, undefined);
 });
+
+// Revisão da J3: a lista permitida valia só para o perfil. A entrega antiga feita pelo
+// aluno (versão anterior à fase 2) guardava em submission.student o cadastro inteiro da
+// hora do envio, e a cópia do aluno trazia de volta seedDemo, loginTime, updatedAt,
+// lastSeenAt e os aceites.
+test('[UC-LGPD-010] entrega antiga com o cadastro inteiro copiado: na cópia do aluno o student segue a lista do perfil', () => {
+    db.memory.submissions.push({
+        id: 'sub_snapshot', examKey: 'Prova_3', score: 70, gradePublished: true, submissionSource: 'student',
+        student: {
+            name: 'Ana Souza', email: ANA, matricula: 'M-1', studentClass: '1DES', courseId: 'DES', classes: [{ name: '1DES', courseId: 'DES' }],
+            seedDemo: true, loginTime: '10:00', updatedAt: NOW, lastSeenAt: NOW, recoveryRequested: true, password: 'x',
+            termsAcceptance: { version: 'termos_v1' }, privacyAcceptance: { version: 'privacidade_v1' }, statusChangedBy: PROF,
+            accessibility: { tempoExtra: true, observacao: 'laudo' },
+        },
+    });
+    try {
+        const aluno = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno' }).submissions.find(item => item.id === 'sub_snapshot');
+        assert.ok(aluno, 'a entrega continua na cópia');
+        ['seedDemo', 'loginTime', 'updatedAt', 'lastSeenAt', 'recoveryRequested', 'password', 'termsAcceptance', 'privacyAcceptance', 'classes', 'statusChangedBy']
+            .forEach(field => assert.equal(field in aluno.student, false, field));
+        assert.deepEqual(Object.keys(aluno.student).sort(), ['accessibility', 'accessibilityNoteRestricted', 'courseId', 'email', 'matricula', 'name', 'studentClass']);
+        assert.equal(aluno.student.accessibility.observacao, undefined, 'o texto de acessibilidade é só do administrador');
+        // A entrega nova (só nome, e-mail, turma e curso) sai igual.
+        const nova = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'aluno' }).submissions.find(item => item.id === 'sub_pub');
+        assert.deepEqual(nova.student, { name: 'Ana Souza', email: ANA, studentClass: '1DES', courseId: 'DES' });
+        // O administrador continua com a entrega como está gravada (menos a senha).
+        const admin = exporter.buildStudentDataExport(db.memory, ANA, { audience: 'admin' }).submissions.find(item => item.id === 'sub_snapshot');
+        assert.equal(admin.student.seedDemo, true);
+    } finally {
+        db.memory.submissions = db.memory.submissions.filter(item => item.id !== 'sub_snapshot');
+    }
+});

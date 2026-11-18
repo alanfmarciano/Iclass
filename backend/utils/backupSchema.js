@@ -13,6 +13,13 @@
 
 const BACKUP_FORMAT = 2;
 
+// Tabelas que o registro deixa fora do backup (entradas com backup: false; hoje só as
+// sessões). database.js calcula a mesma lista do registro (db.TABLES_OUTSIDE_BACKUP), e um
+// teste confere que as duas são iguais. Ela fica repetida aqui para a backup-cli limpar a
+// cópia do "criar" sem carregar o database.js, que ao ser carregado abre o banco de
+// verdade em leitura e escrita (e o cria, se não existir).
+const TABLES_OUTSIDE_BACKUP = Object.freeze(['auth_sessions']);
+
 // Recusa prevista do arquivo enviado para restaurar: status 400 e mensagem em português,
 // que a rota devolve como está (sendRouteError).
 function backupRefusal(message) {
@@ -172,6 +179,7 @@ function compareManifestWithDatabase(manifest, info) {
 
 module.exports = {
     BACKUP_FORMAT,
+    TABLES_OUTSIDE_BACKUP,
     backupRefusal,
     compareManifestWithDatabase,
     isPlainObject,

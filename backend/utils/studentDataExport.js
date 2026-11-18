@@ -188,7 +188,22 @@ function submissionForStudent(submission, email) {
     EXAM_CONTENT_KEYS.forEach(key => { delete view[key]; });
     view.answerKeyReleased = answerKeyReleased;
     if (view.gradePublished !== true) view.resultStatus = 'em_revisao';
+    if (isPlainObject(view.student)) view.student = submissionStudentSnapshot(view.student);
     return withoutActors(stripSecrets(view));
+}
+
+// Cadastro copiado na entrega (submission.student): a entrega antiga feita pelo aluno
+// guardava o cadastro inteiro da hora do envio, com os controles internos que a lista
+// permitida do perfil tira (seedDemo, loginTime, updatedAt, lastSeenAt) e os aceites. Na
+// cópia do aluno vai a mesma lista do perfil, mais a turma e o curso daquela entrega.
+const SUBMISSION_SNAPSHOT_EXTRA_FIELDS = ['studentClass', 'courseId'];
+
+function submissionStudentSnapshot(snapshot) {
+    const copy = profileSection(snapshot, 'aluno');
+    SUBMISSION_SNAPSHOT_EXTRA_FIELDS.forEach(field => {
+        if (Object.prototype.hasOwnProperty.call(snapshot, field)) copy[field] = snapshot[field];
+    });
+    return copy;
 }
 
 function submissionsSection(memory, ownership, email, audience) {

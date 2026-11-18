@@ -11,7 +11,8 @@ const loads = vi.hoisted(() => ({ examRunner: 0, examShell: 0 }))
 vi.mock('./exam/ExamRunner', () => { loads.examRunner += 1; return { default: () => null } })
 vi.mock('./StudentExamShell', () => { loads.examShell += 1; return { StudentExamShell: () => null } })
 const apiPost = vi.hoisted(() => vi.fn())
-vi.mock('../../lib/api', () => ({ api: { get: vi.fn().mockResolvedValue({}), post: apiPost }, hasActiveSession: () => true }))
+const apiGet = vi.hoisted(() => vi.fn())
+vi.mock('../../lib/api', () => ({ api: { get: apiGet, post: apiPost }, hasActiveSession: () => true }))
 const branding = vi.hoisted(() => ({ interfacePreset: 'classic' }))
 vi.mock('../../context/BrandingProvider', () => ({ useBranding: () => ({ branding: {}, interfacePreset: branding.interfacePreset }) }))
 vi.mock('../../context/AuthProvider', () => ({
@@ -28,12 +29,14 @@ vi.mock('../../context/AuthProvider', () => ({
 }))
 vi.mock('./StudentCourseGate', () => ({ StudentCourseGate: ({ children }) => children }))
 vi.mock('./StudentExamAvailability', () => ({ StudentExamAvailability: () => null }))
-vi.mock('./useStudentHeartbeat', () => ({ useStudentHeartbeat: () => {} }))
+const heartbeat = vi.hoisted(() => ({ options: null }))
+vi.mock('./useStudentHeartbeat', () => ({ useStudentHeartbeat: (options) => { heartbeat.options = options } }))
 vi.mock('../../components/ui/NotificationBell', () => ({ NotificationBell: () => null }))
 vi.mock('../../components/ui/ThemeToggle', () => ({ ThemeToggle: () => null }))
 
 import { EXAM_PREFETCH_DELAY_MS, StudentShell } from './StudentShell'
 import { resetClientErrorReportsForTests } from '../../lib/clientErrors'
+import { resetPrivacyGateCache } from './StudentPrivacyGate'
 
 function renderPortal(child = <p>Início do aluno</p>) {
   return render(
@@ -50,6 +53,9 @@ function renderPortal(child = <p>Início do aluno</p>) {
 beforeEach(() => {
   apiPost.mockReset()
   apiPost.mockResolvedValue({})
+  apiGet.mockReset()
+  apiGet.mockResolvedValue({})
+  heartbeat.options = null
   branding.interfacePreset = 'classic'
   resetClientErrorReportsForTests()
   window.matchMedia = vi.fn().mockImplementation((query) => ({ matches: true, media: query, addEventListener() {}, removeEventListener() {} }))
@@ -130,4 +136,21 @@ describe('[UC-ERRO-002] portal do aluno · erro de tela dentro do layout', () =>
       }
     })
   }
+})
+
+// Revisão da J3: o legalVersion só vinha pelo sino, que o aluno sem turma não tem. O ping
+// do portal (useStudentHeartbeat) traz a mesma versão, e o StudentShell a passa ao portão.
+describe('[UC-LGPD-007] portal do aluno · versão dos documentos pelo ping', () => {
+  it('versão diferente vinda do ping faz o portão de primeiro acesso consultar de novo', async () => {
+    resetPrivacyGateCache()
+    renderPortal()
+    await act(async () => {})
+    const statusCalls = () => apiGet.mock.calls.filter(([path]) => String(path).startsWith('/api/student/privacy/status')).length
+    expect(statusCalls()).toBe(1)
+    expect(typeof heartbeat.options?.onPresence).toBe('function')
+    await act(async () => { heartbeat.options.onPresence({ success: true, legalVersion: '|' }) })
+    expect(statusCalls()).toBe(1)
+    await act(async () => { heartbeat.options.onPresence({ success: true, legalVersion: 'termos_v2|privacidade_v1' }) })
+    expect(statusCalls()).toBe(2)
+  })
 })

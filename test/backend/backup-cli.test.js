@@ -301,3 +301,28 @@ test('[UC-BACKUP-002] criar sai sem as sessões gravadas (auth_sessions vazia) e
     const verified = runCli(dataDir, port, ['verificar', path.join(dataDir, 'backups', zip)]);
     assert.equal(verified.code, 0, verified.output);
 });
+
+// Revisão da J3: o criar carregava o database.js só para ler a lista das tabelas fora do
+// backup, e o database.js, ao ser carregado, abre data/database.db em leitura e escrita
+// (e o cria se faltar). A CLI existe para o banco parado, que pode estar com problema:
+// fora os modos internos do processo filho, ela não abre o banco pelo database.js.
+test('[UC-BACKUP-002] criar não carrega o database.js (não abre o banco parado em leitura e escrita); a lista fora do backup é a do registro', async () => {
+    const schema = require('../../backend/utils/backupSchema.js');
+    const dataDir = makeDataDir('sem-database-js');
+    // A lista do registro é lida num processo próprio, sobre a pasta descartável.
+    const registry = JSON.parse(execFileSync(process.execPath, ['-e', `process.stdout.write(JSON.stringify(require(${databaseModule}).TABLES_OUTSIDE_BACKUP)); process.exit(0);`], { env: envFor(dataDir, 1), encoding: 'utf8' }));
+    assert.deepEqual([...schema.TABLES_OUTSIDE_BACKUP], registry);
+    const marker = path.join(tempRoot, 'modulos-carregados.json');
+    const preload = path.join(tempRoot, 'anota-modulos.js');
+    fs.writeFileSync(preload, `process.on('exit', () => require('fs').writeFileSync(${JSON.stringify(marker)}, JSON.stringify(Object.keys(require.cache))));`);
+    const port = await proc.freePort();
+    const result = spawnSync(process.execPath, ['--require', preload, cli, 'criar', '--dados'], { env: envFor(dataDir, port), encoding: 'utf8', input: '' });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const loaded = JSON.parse(fs.readFileSync(marker, 'utf8'));
+    assert.ok(loaded.some(file => file.endsWith(path.join('scripts', 'backup-cli.js'))), 'o preload viu a CLI');
+    assert.equal(loaded.includes(require.resolve('../../backend/database.js')), false, 'o database.js não foi carregado');
+    const [zip] = zipsIn(dataDir);
+    const AdmZip = require('adm-zip');
+    const manifest = JSON.parse(new AdmZip(path.join(dataDir, 'backups', zip)).readAsText('iclass-backup.json'));
+    assert.equal(manifest.banco.tabelas.auth_sessions, 0);
+});

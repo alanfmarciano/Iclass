@@ -14,7 +14,10 @@ export const HEARTBEAT_MS = 15000
 
 // O ping também diz se a troca de senha obrigatória vale para esta sessão (H5a): o
 // professor redefiniu a senha com o aluno no portal, ou a prova que adiava a troca acabou.
-export function useStudentHeartbeat() {
+// onPresence (opcional) recebe a resposta de cada ping: o portal passa a versão publicada
+// dos documentos (legalVersion) ao portão de primeiro acesso (StudentPrivacyGate), também
+// para o aluno sem turma, que não tem o sino.
+export function useStudentHeartbeat({ onPresence } = {}) {
   const { auth, endSessionFromError, syncPasswordChange } = useAuth()
   const nav = useNavigate()
   const email = auth.email
@@ -25,6 +28,7 @@ export function useStudentHeartbeat() {
       if (syncPasswordChange && presence && typeof presence.passwordChangeRequired === 'boolean') {
         syncPasswordChange(presence.passwordChangeRequired, presence.passwordChangeReason)
       }
+      if (onPresence && presence) onPresence(presence)
       return true
     } catch (err) {
       if (err?.status === 401 || err?.data?.sessionRevoked === true) {
@@ -37,6 +41,6 @@ export function useStudentHeartbeat() {
       }
       return false
     }
-  }, [email, endSessionFromError, nav, syncPasswordChange])
+  }, [email, endSessionFromError, nav, syncPasswordChange, onPresence])
   usePolling(ping, { intervalMs: HEARTBEAT_MS, enabled: !!email })
 }

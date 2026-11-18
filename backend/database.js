@@ -430,7 +430,9 @@ const COLLECTION_TABLES = Object.freeze([
 ]);
 
 // Tabelas que o registro deixa fora do backup (backup: false): a cópia do banco para o
-// ZIP formato 2 (snapshotTo e a backup-cli) sai com elas vazias.
+// ZIP formato 2 (snapshotTo e a backup-cli) sai com elas vazias. A backup-cli usa a cópia
+// desta lista em utils/backupSchema.js (sem carregar este módulo, que abre o banco); um
+// teste confere que as duas são iguais.
 const TABLES_OUTSIDE_BACKUP = Object.freeze(COLLECTION_TABLES.filter(entry => entry.backup === false).map(entry => entry.table));
 
 const TABLE_BY_COLLECTION = new Map(COLLECTION_TABLES.map(entry => [entry.collection, entry]));

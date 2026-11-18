@@ -207,8 +207,9 @@ async function snapshotDatabase(target) {
         await dbFile.closeDatabaseFile(connection);
     }
     // As sessões (tabelas fora do backup no registro) não vão para o ZIP, como no backup
-    // pela tela (db.snapshotTo). O require só lê o registro: não abre o banco.
-    await dbFile.clearTablesInCopy(target, require('../database.js').TABLES_OUTSIDE_BACKUP);
+    // pela tela (db.snapshotTo). A lista vem do backupSchema.js, igual à do registro: o
+    // database.js abriria o banco parado em leitura e escrita só por ser carregado.
+    await dbFile.clearTablesInCopy(target, schema.TABLES_OUTSIDE_BACKUP);
     return dbFile.inspectDatabaseFile(target);
 }
 
