@@ -25,6 +25,7 @@
 const crypto = require('crypto');
 const { findPreviewSession, PREVIEW_TTL_MS } = require('./authSessions.js');
 const { canAccessAdminPermission } = require('./adminPermissions.js');
+const { activeGroupsForClass } = require('./classGroups.js');
 
 const PREVIEW_HEADER = 'x-preview-session';
 // Regra do guarda (rbac.regras_por_grupo do plano): qualquer uma basta para chegar na rota.
@@ -115,10 +116,13 @@ function sendPreviewReadOnly(res) {
 
 // Fim da prévia (401 preview_ended). reason continua 'expired' (o motivo genérico de
 // sessão terminada que o cliente já trata); previewReason diz a causa, com o texto dela:
-// 'expired' (60 min), 'admin_session' (a sessão do painel acabou: Sair, prazo, troca de
-// senha em outro aparelho), 'account' (senha trocada ou conta apagada), 'permission'
-// (perdeu a permissão ou a turma saiu do escopo), 'class' (turma ou curso apagados) e
-// 'missing' (encerrada, reinício do servidor, backup restaurado ou token desconhecido).
+// 'expired' (60 min), 'admin_session' (a sessão do painel que abriu a prévia acabou: Sair
+// ou prazo absoluto), 'account' (senha trocada, nesta sessão ou em outro aparelho, ou
+// conta apagada), 'permission' (perdeu a permissão ou a turma saiu do escopo), 'class'
+// (turma ou curso apagados) e 'missing' (encerrada pelo painel, reinício do servidor,
+// backup restaurado ou token desconhecido). A prévia de uma sessão do painel que saiu
+// continua no mapa até o prazo dela (utils/authSessions.js) justamente para o motivo
+// chegar ao portal; depois dos 60 min, vale 'expired'.
 const PREVIEW_ENDED_MESSAGES = Object.freeze({
     expired: 'A pré-visualização terminou (ela dura 60 minutos). Abra de novo pelo painel.',
     admin_session: 'A pré-visualização terminou porque a sua sessão no painel acabou. Entre de novo e abra a pré-visualização.',
@@ -163,15 +167,12 @@ function courseIsDeleted(course) {
     return !course || course.deleted === true || course.status === 'deleted' || course.status === 'inactive' || !!course.deletedAt;
 }
 
-// Grupo da turma que a prévia pode simular: só um grupo ativo da mesma turma
-// (classGroups, P5-S4). Sem a coleção, nenhum grupo existe.
+// Grupo da turma que a prévia pode simular: só um grupo ativo (sem arquivadoEm) da mesma
+// turma, lido por utils/classGroups.js (contrato "classGroups": grupos só por lá). Sem
+// grupos na coleção (antes do P5-S4), nenhum grupo existe e o pedido com groupId dá 404.
 function findPreviewGroup(memory, { courseId, studentClass, groupId }) {
     if (!groupId) return null;
-    return (Array.isArray(memory && memory.classGroups) ? memory.classGroups : []).find(group => group
-        && String(group.id) === String(groupId)
-        && String(group.courseId || '') === String(courseId || '')
-        && String(group.studentClass || '') === String(studentClass || '')
-        && !group.archivedAt && group.status !== 'arquivado') || null;
+    return activeGroupsForClass(memory, { courseId, studentClass }).find(group => String(group.id) === String(groupId)) || null;
 }
 
 // Aluno virtual (D19 do P5): o mesmo formato do cadastro que as rotas do portal leem,
@@ -205,18 +206,23 @@ function previewLabel(studentClass, group) {
 
 // Confere a prévia deste token: { ok: true, session, student, cls, account } ou
 // { ok: false, reason } com reason 'missing', 'expired', 'admin_session' (a sessão do
-// instrutor acabou ou passou do prazo), 'account' (conta apagada ou senha trocada),
+// instrutor acabou ou passou do prazo, com a mesma senha), 'account' (conta apagada ou
+// senha trocada, mesmo quando a troca encerrou a sessão do painel),
 // 'permission' (perdeu page.materials ou a turma saiu do escopo dele) ou 'class' (turma ou curso apagados).
 // canAccessClass(account, className, courseId) vem de middlewares.js (adminCanAccessClass).
 // Sem efeito colateral.
 function resolvePreviewSession(memory, raw, { now = Date.now(), canAccessClass } = {}) {
     if (typeof raw !== 'string' || !raw) return { ok: false, reason: 'missing' };
     const found = findPreviewSession(memory, raw, now);
-    if (found.reason) return { ok: false, reason: found.reason };
     const { session } = found;
-    const account = (Array.isArray(memory.admins) ? memory.admins : [])
-        .find(item => item && item.email && String(item.email).toLowerCase() === session.adminEmail);
-    if (!account || accountStamp(account) !== session.accountStamp) return { ok: false, reason: 'account' };
+    const account = session ? (Array.isArray(memory.admins) ? memory.admins : [])
+        .find(item => item && item.email && String(item.email).toLowerCase() === session.adminEmail) : null;
+    const accountChanged = !account || accountStamp(account) !== (session && session.accountStamp);
+    // Sessão do painel encerrada junto com a troca de senha (outro aparelho) ou com a conta
+    // apagada: o motivo que o instrutor entende é a conta, não a sessão.
+    if (found.reason === 'admin_session' && accountChanged) return { ok: false, reason: 'account' };
+    if (found.reason) return { ok: false, reason: found.reason };
+    if (accountChanged) return { ok: false, reason: 'account' };
     if (!canAccessAdminPermission(account, PREVIEW_PERMISSIONS) || !canAccessAdminPermission(account, PREVIEW_CONTENT_PERMISSION)) {
         return { ok: false, reason: 'permission' };
     }

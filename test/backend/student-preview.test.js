@@ -137,9 +137,18 @@ function seed() {
     db.memory.annotations = {};
     db.memory.attendance = [];
     db.memory.moduleAccess = [];
+    // Formato do modelo do P5 (modelo_de_dados.classGroups): membros com e-mail e id,
+    // arquivadoEm em ms (null = ativo).
+    const member = (email, studentId) => ({ email, studentId, adicionadoEm: now - 5000, adicionadoPor: 'prof@previa.local' });
+    const groupRow = (id, nome, extra = {}) => ({
+        id, schemaVersion: 1, courseId: COURSE, studentClass: CLASS, nome, conjunto: 'Laboratório', tipo: 'subturma',
+        membros: [member(BIA, 'alu_00000000000000b2')], criadoEm: now - 6000, criadoPor: 'prof@previa.local',
+        atualizadoEm: now - 6000, atualizadoPor: 'prof@previa.local', arquivadoEm: null, arquivadoPor: null, ...extra,
+    });
     db.memory.classGroups = [
-        { id: 'grp_1', courseId: COURSE, studentClass: CLASS, nome: 'Laboratório A', conjunto: 'Laboratório', membros: [BIA], schemaVersion: 1 },
-        { id: 'grp_arq', courseId: COURSE, studentClass: CLASS, nome: 'Arquivado', conjunto: 'Laboratório', membros: [], archivedAt: now - 1, schemaVersion: 1 },
+        groupRow('grp_1', 'Laboratório A'),
+        groupRow('grp_arq', 'Arquivado', { arquivadoEm: now - 1, arquivadoPor: 'prof@previa.local' }),
+        groupRow('grp_outra', 'Da 2DES', { studentClass: OTHER_CLASS }),
     ];
     db.memory.auditLogs = [];
     delete db.memory.previewSessions;
@@ -236,7 +245,7 @@ test('[UC-PREVIA-001] escopo: professor de outra turma 403, coordenação só co
     assert.equal(withGroup.body.rotulo, 'Pré-visualização como aluno de 1DES · grupo Laboratório A');
     assert.equal(withGroup.body.aluno.previewGroupId, 'grp_1');
     assert.equal(db.memory.auditLogs.filter(item => item.action === 'content_preview_started').pop().details.groupId, 'grp_1');
-    for (const groupId of ['grp_arq', 'grp_inexistente']) {
+    for (const groupId of ['grp_arq', 'grp_outra', 'grp_inexistente']) {
         const refused = await openPreview(tokens.prof, { courseId: COURSE, studentClass: CLASS, groupId });
         assert.equal(refused.status, 404, groupId);
         assert.equal(refused.body.field, 'groupId');
@@ -256,7 +265,12 @@ test('[UC-PREVIA-001] a prévia acaba com o Sair do instrutor', async () => {
     assert.equal(after.status, 401);
     assert.equal(after.body.code, 'preview_ended');
     assert.equal(after.body.sessionRevoked, true);
-    assert.deepEqual(db.memory.previewSessions, {}, 'a prévia da sessão encerrada sai da memória');
+    // Ajuste 2: a prévia fica no mapa (sem valer) para o portal saber o motivo.
+    assert.equal(after.body.previewReason, 'admin_session');
+    assert.equal(after.body.error, previewAccess.PREVIEW_ENDED_MESSAGES.admin_session);
+    // Entrar de novo no painel não a revive.
+    db.memory.adminSessions['prof-token-nova'] = { email: 'prof@previa.local', createdAt: Date.now(), lastSeen: Date.now() };
+    assert.equal((await stillWorks(token)).status, 401);
 });
 
 test('[UC-PREVIA-001] a prévia acaba com a troca de senha do instrutor (também a da própria sessão)', async () => {
@@ -701,10 +715,11 @@ test('[UC-PREVIA-001] o 401 preview_ended diz a causa (previewReason) e mantém 
     }
     assert.match(previewAccess.PREVIEW_ENDED_MESSAGES.expired, /60 minutos/);
 
-    // O Sair do instrutor tira a prévia da memória: depois disso, 'missing'.
+    // O Sair do instrutor encerra a prévia com o motivo 'admin_session' (antes da rodada
+    // de ajuste 2, a prévia saía da memória e o portal recebia o genérico 'missing').
     assert.equal((await stillWorks(scoped)).status, 200);
     await request(app).post('/api/session/logout').set('x-admin-session', tokens.admin).send({});
-    assert.equal((await stillWorks(scoped)).body.previewReason, 'missing');
+    assert.equal((await stillWorks(scoped)).body.previewReason, 'admin_session');
 });
 
 test('[UC-PREVIA-001] Professor auxiliar e Secretaria (sem conteúdo) não abrem a prévia; quem perde page.materials perde a prévia', async () => {
@@ -793,4 +808,93 @@ test('[UC-PREVIA-003] HEAD vale como GET nas rotas de leitura e o aviso de erro 
     // Corpo inválido continua 400 e prévia desconhecida, 401.
     assert.equal((await request(app).post('/api/client-error').set('x-preview-session', token).send({ area: 'x', message: 'a' })).status, 400);
     assert.equal((await request(app).post('/api/client-error').set('x-preview-session', 'nao-existe').send({ area: 'aluno', message: 'a' })).status, 401);
+});
+
+// ---------------------------------------------------------------------------
+// Rodada de ajuste 2 do C2
+// ---------------------------------------------------------------------------
+
+test('[UC-PREVIA-001] grupo arquivado (arquivadoEm, formato do P5) não abre a prévia; o grupo é lido por classGroups.js', async () => {
+    const classGroups = require('../../backend/utils/classGroups.js');
+    // Antes: findPreviewGroup conferia archivedAt e status 'arquivado', campos que o modelo
+    // do P5 não tem, e o grupo com arquivadoEm abria a prévia com 200.
+    db.memory.classGroups.push({ ...db.memory.classGroups[1], id: 'grp_arq_ms', arquivadoEm: 1763500000000 });
+    for (const groupId of ['grp_arq', 'grp_arq_ms']) {
+        const refused = await openPreview(tokens.prof, { courseId: COURSE, studentClass: CLASS, groupId });
+        assert.equal(refused.status, 404, groupId);
+        assert.equal(refused.body.field, 'groupId');
+        assert.ok(classGroups.findGroup(db.memory, groupId), 'o grupo existe, só está arquivado');
+    }
+    assert.equal(db.memory.previewSessions, undefined, 'nada aberto');
+    assert.deepEqual(classGroups.activeGroupsForClass(db.memory, { courseId: COURSE, name: CLASS }).map(group => group.id), ['grp_1']);
+    assert.deepEqual(classGroups.activeGroupsForClass(db.memory, { courseId: COURSE, studentClass: OTHER_CLASS }).map(group => group.id), ['grp_outra']);
+    assert.equal(classGroups.findGroup(db.memory, 'grp_inexistente'), null);
+    assert.equal(classGroups.findGroup(db.memory, ''), null);
+    // Leitura tolerante: sem arquivadoEm é ativo; um valor estranho conta como arquivado.
+    assert.equal(classGroups.isGroupArchived({ id: 'x' }), false);
+    assert.equal(classGroups.isGroupArchived({ id: 'x', arquivadoEm: null }), false);
+    assert.equal(classGroups.isGroupArchived({ id: 'x', arquivadoEm: 'sim' }), true);
+    // Sem a coleção (antes do P5-S4 ou backup antigo), nenhum grupo existe.
+    assert.deepEqual(classGroups.activeGroupsForClass({}, { courseId: COURSE, name: CLASS }), []);
+    assert.equal(previewAccess.findPreviewGroup({}, { courseId: COURSE, studentClass: CLASS, groupId: 'grp_1' }), null);
+
+    // O grupo ativo da turma abre, com o nome no rótulo; ler não muda a coleção.
+    const before = JSON.stringify(db.memory.classGroups);
+    const opened = await openPreview(tokens.prof, { courseId: COURSE, studentClass: CLASS, groupId: 'grp_1' });
+    assert.equal(opened.status, 200);
+    assert.equal(opened.body.rotulo, 'Pré-visualização como aluno de 1DES · grupo Laboratório A');
+    assert.equal(JSON.stringify(db.memory.classGroups), before);
+});
+
+test('[UC-PREVIA-001] troca de senha em outro aparelho e conta apagada encerram a prévia com previewReason "account"', async () => {
+    const now = Date.now();
+    // A professora tem outra sessão no painel (outro aparelho) e abre a prévia por ela.
+    db.memory.adminSessions['prof-outro-aparelho'] = { email: 'prof@previa.local', createdAt: now, lastSeen: now };
+    const { previewToken: token } = await previewToken('prof-outro-aparelho');
+    assert.equal((await stillWorks(token)).status, 200);
+    const change = await request(app).post('/api/admin/change-password').set('x-admin-session', tokens.prof)
+        .send({ currentPassword: 'Senha-Antiga-2026', newPassword: 'Trocada#Segura-2026' });
+    assert.equal(change.status, 200, JSON.stringify(change.body));
+    assert.equal(db.memory.adminSessions['prof-outro-aparelho'], undefined, 'a troca encerra a outra sessão do painel');
+    const after = await stillWorks(token);
+    assert.equal(after.status, 401);
+    assert.equal(after.body.code, 'preview_ended');
+    // Antes: 'missing', com o texto genérico.
+    assert.equal(after.body.previewReason, 'account');
+    assert.equal(after.body.error, previewAccess.PREVIEW_ENDED_MESSAGES.account);
+
+    // Conta apagada (as sessões do painel saem junto): também 'account'.
+    const { previewToken: adminPreview } = await previewToken(tokens.admin);
+    db.memory.admins = db.memory.admins.filter(item => item.email !== 'admin@previa.local');
+    delete db.memory.adminSessions[tokens.admin];
+    assert.equal((await stillWorks(adminPreview)).body.previewReason, 'account');
+});
+
+test('[UC-PREVIA-001] prévias de sessões do painel encerradas saem da memória no prazo delas', async () => {
+    const { previewToken: old } = await previewToken(tokens.prof);
+    await request(app).post('/api/session/logout').set('x-admin-session', tokens.prof).send({});
+    assert.equal(Object.keys(db.memory.previewSessions).length, 1, 'fica até o prazo, sem valer');
+    db.memory.previewSessions[sha256(old)].expiresAt = Date.now() - 1;
+    assert.equal((await stillWorks(old)).body.previewReason, 'expired');
+    // Abrir uma prévia nova limpa as vencidas.
+    const { previewToken: fresh } = await previewToken(tokens.admin);
+    assert.deepEqual(Object.keys(db.memory.previewSessions), [sha256(fresh)]);
+});
+
+test('[UC-PREVIA-001] contrato classGroups: fora de utils/classGroups.js, nenhum arquivo do servidor lê memory.classGroups direto', () => {
+    const backendRoot = path.join(__dirname, '..', '..', 'backend');
+    const offenders = [];
+    const walk = dir => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (entry.name === 'node_modules') continue;
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) walk(full);
+            else if (entry.name.endsWith('.js') && full !== path.join(backendRoot, 'utils', 'classGroups.js')) {
+                const text = fs.readFileSync(full, 'utf8');
+                if (/\.classGroups\b|\[\s*['"`]classGroups['"`]\s*\]/.test(text)) offenders.push(path.relative(backendRoot, full));
+            }
+        }
+    };
+    walk(backendRoot);
+    assert.deepEqual(offenders, [], 'grupos só por findGroup/activeGroupsForClass (e os leitores que o P5-S4 acrescentar)');
 });

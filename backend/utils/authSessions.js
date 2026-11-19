@@ -386,7 +386,6 @@ function revokeAdminSession(memory, raw, { reason, now = Date.now() } = {}) {
     const entry = adminSessionEntry(memory, raw);
     if (!entry) return false;
     if (reason) rememberRevocation(adminKeyHash(entry.key), reason, now);
-    dropPreviewsOfAdminHash(memory, adminKeyHash(entry.key));
     delete memory.adminSessions[entry.key];
     return true;
 }
@@ -405,7 +404,6 @@ function revokeAdminSessions(memory, email, { exceptToken, reason, now = Date.no
         if (!isAdminSessionValue(value) || value.email.toLowerCase() !== normalizedEmail) return;
         if (kept && kept.key === key) return;
         if (reason) rememberRevocation(adminKeyHash(key), reason, now);
-        dropPreviewsOfAdminHash(memory, adminKeyHash(key));
         delete map[key];
         removed += 1;
     });
@@ -453,6 +451,11 @@ function clearSessions(memory) {
 // (Sair ou troca de senha em outro aparelho a encerram) e a senha da conta não mudou
 // (accountStamp, conferido em utils/previewAccess.js). Usá-la não muda nada aqui: a
 // leitura do portal na prévia não pode alterar a memória.
+// Quando a sessão do instrutor sai (Sair, troca de senha, conta apagada), a prévia fica
+// no mapa até o prazo dela, já sem valer: assim o portal recebe o motivo certo
+// ('admin_session' ou 'account') em vez de 'missing'. Ela sai na limpeza da próxima
+// prévia aberta (prunePreviewSessions) ou no limite de 500; o encerramento explícito
+// (POST /api/admin/preview-sessions/end) e a restauração tiram na hora.
 // ---------------------------------------------------------------------------
 const PREVIEW_TTL_MS = 60 * 60 * 1000;
 const PREVIEW_MAX_PER_ADMIN_SESSION = 5;
@@ -582,15 +585,6 @@ function endPreviewSessionsOf(memory, adminEmail) {
         removed += 1;
     });
     return removed;
-}
-
-// As prévias abertas por uma sessão de instrutor que acabou de sair.
-function dropPreviewsOfAdminHash(memory, adminSessionHash) {
-    const map = previewMap(memory);
-    if (!map || !adminSessionHash) return;
-    Object.keys(map).forEach(key => {
-        if (!isPreviewValue(map[key]) || map[key].adminSessionHash === adminSessionHash) delete map[key];
-    });
 }
 
 // Limpeza periódica: remove as sessões que passaram do prazo absoluto (aluno e
