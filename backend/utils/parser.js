@@ -5,16 +5,21 @@
 // colada no texto da d) e o gabarito "E" sumia). Letra depois de e) não é aceita:
 // a alternativa fica de fora, mas nunca em silêncio. Cada recusa vira um aviso em
 // português, devolvido por parseEvaluationMarkdownWithWarnings (registro do boot e
-// tela de Provas, a cada abertura enquanto a prova não for salva no editor). Também
-// avisa a questão que fica de fora por ter menos de duas alternativas reconhecidas.
+// tela de Provas, a cada abertura enquanto a prova não for salva no editor, por
+// importWarningsFor). Também avisa a questão que fica de fora por ter menos de duas
+// alternativas reconhecidas.
 const LETRAS_ACEITAS = 'ABCDE';
 const ULTIMA_LETRA = LETRAS_ACEITAS[LETRAS_ACEITAS.length - 1];
 
 // Início de uma alternativa: a letra minúscula e o parêntese no começo da linha
 // ("a) texto"), com marcador de lista ("- a) texto") ou negrito ("**a)** texto",
 // "**a) texto**") opcionais. Qualquer letra é reconhecida aqui para que a f) não se
-// cole no texto da e); quem decide se ela vale é LETRAS_ACEITAS.
-const INICIO_ALTERNATIVA = /(^|\n)[ \t]*(?:[-*+][ \t]+)?(\*\*|__)?([a-z])\)(?:\*\*|__)?[ \t]*/g;
+// cole no texto da e); quem decide se ela vale é LETRAS_ACEITAS. Grupos: 2 = negrito
+// que abre antes da letra, 3 = letra, 4 = negrito que fecha logo depois de "a)".
+const INICIO_ALTERNATIVA = /(^|\n)[ \t]*(?:[-*+][ \t]+)?(\*\*|__)?([a-z])\)(\*\*|__)?[ \t]*/g;
+// Uma alternativa escrita dentro do texto de outra (mesmo começo de linha que acima):
+// é o que a versão antiga (só a-d) gravava quando a prova tinha e).
+const ALTERNATIVA_COLADA = /(?:^|\n)[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?([a-z])\)/;
 // Fim do texto da última alternativa: separador, próxima questão, título ou HTML.
 const FIM_DO_BLOCO = /\n---|\n\*\*|\n##|\n</;
 
@@ -33,7 +38,15 @@ function lerGabarito(markdownText) {
     // Detalhado: "1. **C**". Compacto: "1. C" (só quando não há o detalhado).
     const detalhado = [...detailsContent.matchAll(/(\d+)\.\s*\*\*([A-Za-z])\*\*/g)];
     const marcas = detalhado.length ? detalhado : [...detailsContent.matchAll(/(\d+)\.\s*([A-Za-z])\b/g)];
-    marcas.forEach(m => { gabarito[parseInt(m[1], 10)] = m[2].toUpperCase(); });
+    // Por número, vale a primeira letra aceita (de A a E); um texto livre depois do
+    // gabarito ("Nota: a questão 2. O enunciado...") não apaga o "2. C" que veio antes.
+    // Sem nenhuma letra aceita, fica a primeira escrita, para a questão avisar a recusa.
+    marcas.forEach(m => {
+        const numero = parseInt(m[1], 10);
+        const letra = m[2].toUpperCase();
+        const atual = gabarito[numero];
+        if (atual === undefined || (!letraAceita(atual) && letraAceita(letra))) gabarito[numero] = letra;
+    });
     return gabarito;
 }
 
@@ -48,9 +61,10 @@ function lerAlternativas(bloco, numero, avisos) {
         const fim = texto.search(FIM_DO_BLOCO);
         if (fim >= 0) texto = texto.slice(0, fim);
         texto = texto.trim();
-        // "**a) texto**": o negrito que abriu antes da letra fecha no fim do texto.
+        // "**a) texto**": o negrito que abriu antes da letra fecha no fim do texto. Em
+        // "**a)** usa **ls**" ele já fechou logo depois de "a)" e o fim é do texto.
         const negrito = marca[2];
-        if (negrito && texto.endsWith(negrito)) texto = texto.slice(0, -negrito.length).trim();
+        if (negrito && !marca[4] && texto.endsWith(negrito)) texto = texto.slice(0, -negrito.length).trim();
         const letra = marca[3].toUpperCase();
         if (!texto) return;
         if (!letraAceita(letra)) {
@@ -132,8 +146,49 @@ function parseEvaluationMarkdown(markdownText, examKey) {
     return parseEvaluationMarkdownWithWarnings(markdownText, examKey).evaluation;
 }
 
+// Questões comparáveis (número, enunciado, gabarito e alternativas), sem os campos
+// que outras telas acrescentam depois.
+function questoesComparaveis(evaluation) {
+    return JSON.stringify((Array.isArray(evaluation?.questions) ? evaluation.questions : []).map(question => [
+        Number(question?.originalNumber),
+        String(question?.text ?? ''),
+        String(question?.correctAnswer ?? ''),
+        (Array.isArray(question?.alternatives) ? question.alternatives : []).map(alt => [String(alt?.letter ?? ''), String(alt?.text ?? '')]),
+    ]));
+}
+
+// O que a avaliação GRAVADA tem de errado, sem olhar o arquivo: alternativa com outra
+// colada no texto (a versão antiga, só de a) a d), gravava a e) dentro da d) e perdia o
+// gabarito "E").
+function avisosDaAvaliacaoGravada(evaluation) {
+    const avisos = [];
+    (Array.isArray(evaluation?.questions) ? evaluation.questions : []).forEach((question, index) => {
+        const numero = question?.originalNumber ?? index + 1;
+        (Array.isArray(question?.alternatives) ? question.alternatives : []).forEach(alt => {
+            const colada = String(alt?.text ?? '').match(ALTERNATIVA_COLADA);
+            if (!colada) return;
+            const semGabarito = String(question?.correctAnswer ?? '').trim() ? '' : ', escolha o gabarito';
+            avisos.push(`Questão ${numero}: a alternativa ${colada[1]}) ficou colada no texto da ${String(alt?.letter ?? '').toLowerCase()}) (a prova foi lida por uma versão que só aceitava de a) a d)). Abra a prova no editor, separe as alternativas${semGabarito} e salve.`);
+        });
+    });
+    return avisos;
+}
+
+// Avisos de importação de uma avaliação gravada que veio do .md (ainda não salva no
+// editor). Os avisos do arquivo só valem quando a avaliação gravada é a que o arquivo
+// dá hoje; se ela é outra (gravada por uma versão anterior ou por outro caminho, como
+// o seed de demonstração), o aviso sai dela mesma, nunca de um arquivo que não é o dela.
+function importWarningsFor(storedEvaluation, markdownText, examKey) {
+    if (!storedEvaluation) return [];
+    const parsed = markdownText ? parseEvaluationMarkdownWithWarnings(markdownText, examKey) : { evaluation: null, avisos: [] };
+    if (parsed.evaluation && questoesComparaveis(parsed.evaluation) === questoesComparaveis(storedEvaluation)) return parsed.avisos;
+    return avisosDaAvaliacaoGravada(storedEvaluation);
+}
+
 module.exports = {
     LETRAS_ACEITAS,
+    avisosDaAvaliacaoGravada,
+    importWarningsFor,
     parseEvaluationMarkdown,
     parseEvaluationMarkdownWithWarnings,
 };

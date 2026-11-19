@@ -346,3 +346,48 @@ describe('Ficha do aluno · professor auxiliar sem notas', () => {
     expect(mocks.get).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/admin\/student\/audit/))
   })
 })
+
+describe('Ficha do aluno · critério de nota', () => {
+  function renderWith(criterio) {
+    const fallback = mocks.get.getMockImplementation()
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/student/academic')) {
+        return {
+          submissions: [{ id: 's1', examKey: 'Avaliacao_IRCOM_1', score: 55, timestamp: '2026-03-01T12:00:00.000Z' }],
+          progress: { completedCount: 0 }, moduleAccess: [], attendance: { count: 0, recent: [] }, certificates: [],
+        }
+      }
+      if (path.startsWith('/api/admin/student/dashboard')) {
+        return {
+          kpis: { media: 5.5, provasFeitas: 1, provasTotais: 1, frequencia: 90, progresso: 10 },
+          comparativo: {}, risco: { level: 'baixo', reasons: [] }, engajamento: { weeks: [] }, streak: {}, temporal: {}, modulos: [],
+          ...(criterio ? { criterio } : {}),
+        }
+      }
+      return fallback(path)
+    })
+    return render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  it('[UC-TENTATIVA-003] a cor da nota no Acadêmico segue o criterio que vem com a ficha (C1), não um 6 fixo', async () => {
+    const user = userEvent.setup()
+    renderWith({ mediaMinima: 5, mencoes: null, regraAntiga: true })
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/admin\/student\/dashboard/)))
+    await user.click(await screen.findByRole('button', { name: 'Acadêmico' }))
+    const linha = (await screen.findByText('Avaliacao_IRCOM_1')).closest('div').parentElement
+    await waitFor(() => expect(within(linha).getByText('5,5')).toHaveClass('text-success'))
+  })
+
+  it('[UC-TENTATIVA-003] sem criterio na resposta, a média mínima padrão (6,0): 5,5 fica em atenção', async () => {
+    const user = userEvent.setup()
+    renderWith(null)
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/admin\/student\/dashboard/)))
+    await user.click(await screen.findByRole('button', { name: 'Acadêmico' }))
+    const linha = (await screen.findByText('Avaliacao_IRCOM_1')).closest('div').parentElement
+    expect(within(linha).getByText('5,5')).toHaveClass('text-warning')
+  })
+})

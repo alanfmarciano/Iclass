@@ -12,7 +12,7 @@ import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api, downloadFile } from '../../lib/api'
-import { CRITERIO_PADRAO, fmtGrade, fmtGradeValue, gradeOf, gradeTone, isPassingGrade, isValidScore, previewQuickGrade, scoreBand, validateQuickGrade } from '../../lib/grades'
+import { CRITERIO_PADRAO, countByBand, fmtGrade, fmtGradeValue, gradeBandRanges, gradeOf, gradeTone, isPassingGrade, isValidScore, previewQuickGrade, scoreBand, validateQuickGrade } from '../../lib/grades'
 import { GradebookPanel } from './GradebookPanel'
 import { ApplicationAuditModal, DeletedGradesModal } from './GradeAuditPanels'
 import { printBoletim } from './boletimPrint'
@@ -90,6 +90,8 @@ const criterio = CRITERIO_PADRAO
 const BAND_CLASS = { excelente: 'rb-g9', bom: 'rb-g7', suficiente: 'rb-g6', abaixo: 'rb-g0', muito_abaixo: 'rb-g0' }
 const gradeBandClass = (score) => BAND_CLASS[scoreBand(score, criterio)] || 'rb-gmuted'
 const TONE_COLOR = { success: 'var(--success)', warning: 'var(--warning)', danger: 'var(--danger)', neutral: 'var(--border)' }
+// Cor de cada barra da "Distribuição de notas" (faixas de gradeBand, da mais baixa à mais alta).
+const DISTRIBUTION_COLOR = { muito_abaixo: 'var(--danger)', abaixo: 'var(--warning)', suficiente: 'var(--info)', bom: 'var(--primary)', excelente: 'var(--success)' }
 
 // Estado de uma tentativa dentro do grupo (fonte: campos enriquecidos do backend).
 // 'count' = compõe a nota · 'off' = desconsiderada (arquivada) · 'disc' = ativa mas a regra não usa.
@@ -364,10 +366,12 @@ export default function ResultadosPage() {
     const scores = consolidatedScores(filteredRows)
     const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0
     const approved = scores.filter((x) => isPassingGrade(gradeOf(x), criterio)).length
-    const buckets = [0, 0, 0, 0]
-    scores.forEach((x) => { const i = x < 50 ? 0 : x < 70 ? 1 : x < 90 ? 2 : 3; buckets[i]++ })
+    // Uma barra por faixa de gradeBand, pela nota como aparece (4,96 é 5,0): a barra e a
+    // cor da nota na lista contam a mesma faixa.
+    const counts = countByBand(scores.map(gradeOf), criterio)
+    const buckets = gradeBandRanges(criterio).map((range) => ({ ...range, n: counts[range.band], color: DISTRIBUTION_COLOR[range.band] }))
     // Sem nota válida (só registros antigos inválidos), a média fica "-", não 0,0.
-    return { avg: scores.length ? avg / 10 : null, aprov: scores.length ? Math.round((approved / scores.length) * 100) : 0, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets) }
+    return { avg: scores.length ? avg / 10 : null, aprov: scores.length ? Math.round((approved / scores.length) * 100) : 0, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets.map((b) => b.n)) }
   }, [filteredRows])
   const avgCount = useCountUp(analytics.avg)
   const aprovCount = useCountUp(analytics.aprov)
@@ -865,13 +869,13 @@ export default function ResultadosPage() {
             <span className="text-xs font-medium text-muted">Distribuição de notas</span>
           </div>
           <div className="mt-3 flex h-20 items-stretch gap-2">
-            {[['0-4', 'var(--danger)'], ['5-6', 'var(--warning)'], ['7-8', 'var(--primary)'], ['9-10', 'var(--success)']].map(([lbl, col], i) => (
-              <div key={lbl} className="flex flex-1 flex-col items-center">
-                <span className="text-[10px] font-semibold tabular-nums text-muted">{analytics.buckets[i]}</span>
+            {analytics.buckets.map((bucket, i) => (
+              <div key={bucket.band} className="flex min-w-0 flex-1 flex-col items-center" title={`${bucket.n} nota(s) de ${bucket.label}`}>
+                <span className="text-[10px] font-semibold tabular-nums text-muted">{bucket.n}</span>
                 <div className="flex w-full flex-1 items-end">
-                  <div className="bar-grow w-full rounded transition-[filter] hover:brightness-125" style={{ height: `${(analytics.buckets[i] / analytics.maxBucket) * 100}%`, background: col, minHeight: '3px', animationDelay: `${i * 0.09}s` }} />
+                  <div className="bar-grow w-full rounded transition-[filter] hover:brightness-125" style={{ height: `${(bucket.n / analytics.maxBucket) * 100}%`, background: bucket.color, minHeight: '3px', animationDelay: `${i * 0.09}s` }} />
                 </div>
-                <span className="mt-1 text-[10px] text-subtle">{lbl}</span>
+                <span className="mt-1 whitespace-nowrap text-[10px] text-subtle">{bucket.label}</span>
               </div>
             ))}
           </div>

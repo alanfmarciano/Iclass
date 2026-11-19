@@ -14,7 +14,7 @@ process.env.ICLASS_CONTENT_DIR = path.join(tempRoot, 'content');
 process.env.ICLASS_ARCHIVE_DIR = path.join(tempRoot, 'archives');
 process.env.TEST_MODE = '1';
 
-const { parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../../backend/utils/parser.js');
+const { avisosDaAvaliacaoGravada, importWarningsFor, parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../../backend/utils/parser.js');
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 
@@ -152,6 +152,65 @@ test('[UC-TENTATIVA-003] alternativas em negrito ou em lista são lidas, sem os 
     assert.equal(lista.evaluation.questions[0].correctAnswer, 'C');
 });
 
+test('[UC-TENTATIVA-003] "**a)** texto em **negrito**": o negrito do fim do texto continua fechado', () => {
+    // Antes o "**" do fim saía mesmo quando o negrito já tinha fechado logo depois de "a)".
+    const md = prova({ questoes: ['**1. Qual comando lista arquivos?**\n**a)** usa o comando **ls**\n**b)** usa **cd**\n__c)__ usa __pwd__\n**d) tudo em negrito**\n'], gabarito: '1. **A**' });
+    const { evaluation, avisos } = parseEvaluationMarkdownWithWarnings(md, 'x');
+    assert.deepEqual(avisos, []);
+    assert.deepEqual(evaluation.questions[0].alternatives.map(a => a.text), ['usa o comando **ls**', 'usa **cd**', 'usa __pwd__', 'tudo em negrito']);
+});
+
+test('[UC-TENTATIVA-003] gabarito compacto: texto livre depois não apaga a letra da questão', () => {
+    // "Nota: a questão 2. O enunciado..." casava como "2. O" e, com o último valendo,
+    // a questão 2 perdia o "C" (o parser antigo, só A-D, mantinha).
+    const q2 = '**2. Qual camada roteia pacotes?**\na) Física\nb) Enlace\nc) Rede\nd) Transporte\n';
+    const md = prova({ questoes: [Q1, q2], gabarito: '1. B\n2. C\n\nNota: a questão 2. O enunciado foi revisto.' });
+    const { evaluation, avisos } = parseEvaluationMarkdownWithWarnings(md, 'x');
+    assert.deepEqual(evaluation.questions.map(q => q.correctAnswer), ['B', 'C']);
+    assert.deepEqual(avisos, []);
+    // Igual ao parser antigo nesse caso; com só letra recusada, a recusa continua avisada.
+    const soRecusada = parseEvaluationMarkdownWithWarnings(prova({ questoes: [Q1], gabarito: '1. F' }), 'x');
+    assert.equal(soRecusada.evaluation.questions[0].correctAnswer, '');
+    assert.match(soRecusada.avisos[0], /^Questão 1: o gabarito "F" não é aceito/);
+    // A primeira letra aceita vale também quando a recusada vem antes.
+    const depois = parseEvaluationMarkdownWithWarnings(prova({ questoes: [Q1], gabarito: '1. F\n1. B' }), 'x');
+    assert.equal(depois.evaluation.questions[0].correctAnswer, 'B');
+    assert.deepEqual(depois.avisos, []);
+});
+
+test('[UC-TENTATIVA-003] aviso de importação vem da avaliação gravada, não de um .md que não é o dela', () => {
+    const md = prova({ questoes: ['**1. Porta do HTTPS?**\na) 21\nb) 22\nc) 80\nd) 8080\ne) 8443\nf) 443\n'], gabarito: '1. **E**' });
+    const doArquivo = parseEvaluationMarkdown(md, 'x');
+    // Gravada a partir deste arquivo: os avisos do arquivo valem.
+    assert.deepEqual(importWarningsFor(doArquivo, md, 'x'), ['Questão 1: a alternativa f) não é aceita (use de a) a e)) e ficou de fora.']);
+    // Outros campos que as telas acrescentam (revisão não, mas weight, title) não contam.
+    assert.equal(importWarningsFor({ ...doArquivo, title: 'Outro título', courseId: 'c1' }, md, 'x').length, 1);
+    // Avaliação gravada com outro conteúdo (seed de demonstração, prova editada por outro
+    // caminho): o aviso do arquivo não tem a ver com ela.
+    const outra = { key: 'x', title: 'Seed', questions: [{ originalNumber: 1, text: 'Outra?', correctAnswer: 'B', alternatives: [{ letter: 'A', text: 'um' }, { letter: 'B', text: 'dois' }] }] };
+    assert.deepEqual(importWarningsFor(outra, md, 'x'), []);
+    assert.deepEqual(importWarningsFor(outra, '', 'x'), []);
+    assert.deepEqual(importWarningsFor(null, md, 'x'), []);
+
+    // Gravada pela versão antiga (só a-d): a e) entrou no texto da d) e o gabarito "E"
+    // sumiu. O arquivo de hoje é lido sem problema, mas a gravada continua quebrada e avisa.
+    const comE = prova({ questoes: [Q2], gabarito: '2. **E**' });
+    const antiga = { key: 'x', title: 'Redes', questions: [{ originalNumber: 2, text: 'Qual camada roteia pacotes?', weight: 1, correctAnswer: '', alternatives: [
+        { letter: 'A', text: 'Física', isCorrect: false }, { letter: 'B', text: 'Enlace', isCorrect: false },
+        { letter: 'C', text: 'Rede', isCorrect: false }, { letter: 'D', text: 'Transporte\ne) Aplicação', isCorrect: false },
+    ] }] };
+    assert.deepEqual(parseEvaluationMarkdownWithWarnings(comE, 'x').avisos, []);
+    const aviso = ['Questão 2: a alternativa e) ficou colada no texto da d) (a prova foi lida por uma versão que só aceitava de a) a d)). Abra a prova no editor, separe as alternativas, escolha o gabarito e salve.'];
+    assert.deepEqual(importWarningsFor(antiga, comE, 'x'), aviso);
+    assert.deepEqual(avisosDaAvaliacaoGravada(antiga), aviso);
+    // Com gabarito gravado, o aviso não pede para escolher o gabarito.
+    const comGabarito = { ...antiga, questions: [{ ...antiga.questions[0], correctAnswer: 'C' }] };
+    assert.match(avisosDaAvaliacaoGravada(comGabarito)[0], /separe as alternativas e salve\.$/);
+    // Parêntese no meio da linha não é alternativa colada.
+    assert.deepEqual(avisosDaAvaliacaoGravada({ questions: [{ originalNumber: 1, alternatives: [{ letter: 'A', text: 'veja o item b) acima' }] }] }), []);
+    assert.deepEqual(avisosDaAvaliacaoGravada({}), []);
+});
+
 test('[UC-TENTATIVA-003] letra estranha no gabarito de questão que não existe não gera aviso', () => {
     // "2. O gabarito..." numa observação do <details> compacto não é a questão 2.
     const md = prova({ questoes: [Q3], gabarito: '3. A\nObs.: 2. O gabarito foi revisado.' });
@@ -202,6 +261,29 @@ test('[UC-TENTATIVA-003] abrir no painel prova antiga em .md com f): avisa a cad
     assert.equal('avisosImportacao' in db.memory.evaluations.Avaliacao_Antiga_F, false);
     const depois = await request(app).get('/api/admin/evaluation/Avaliacao_Antiga_F').set('x-admin-session', adminToken).expect(200);
     assert.equal('avisosImportacao' in depois.body, false);
+
+    // Avaliação do banco sem revision com conteúdo diferente do .md (o seed de
+    // demonstração com a FUTEC_1 de 4 questões): o aviso do arquivo não aparece.
+    fs.writeFileSync(path.join(process.env.ICLASS_CONTENT_DIR, 'Avaliacao_Seed_H.md'), md);
+    db.memory.evaluations.Avaliacao_Seed_H = { key: 'Avaliacao_Seed_H', title: 'Seed', questions: [
+        { originalNumber: 1, text: 'Outra pergunta', correctAnswer: 'A', alternatives: [{ letter: 'A', text: 'um', isCorrect: true }, { letter: 'B', text: 'dois', isCorrect: false }] },
+    ] };
+    const doSeed = await request(app).get('/api/admin/evaluation/Avaliacao_Seed_H').set('x-admin-session', adminToken).expect(200);
+    assert.equal('avisosImportacao' in doSeed.body, false);
+    // Importada pela versão antiga (e) colada na d), gabarito vazio): avisa, mesmo com o
+    // .md de hoje lido sem problema.
+    const comE = prova({ questoes: [Q2], gabarito: '2. **E**' });
+    fs.writeFileSync(path.join(process.env.ICLASS_CONTENT_DIR, 'Avaliacao_Antiga_I.md'), comE);
+    db.memory.evaluations.Avaliacao_Antiga_I = { key: 'Avaliacao_Antiga_I', title: 'Redes', questions: [
+        { originalNumber: 2, text: 'Qual camada roteia pacotes?', weight: 1, correctAnswer: '', alternatives: [
+            { letter: 'A', text: 'Física', isCorrect: false }, { letter: 'B', text: 'Enlace', isCorrect: false },
+            { letter: 'C', text: 'Rede', isCorrect: false }, { letter: 'D', text: 'Transporte\ne) Aplicação', isCorrect: false },
+        ] },
+    ] };
+    const daVersaoAntiga = await request(app).get('/api/admin/evaluation/Avaliacao_Antiga_I').set('x-admin-session', adminToken).expect(200);
+    assert.equal(daVersaoAntiga.body.avisosImportacao.length, 1);
+    assert.match(daVersaoAntiga.body.avisosImportacao[0], /^Questão 2: a alternativa e\) ficou colada no texto da d\)/);
+    assert.equal('avisosImportacao' in db.memory.evaluations.Avaliacao_Antiga_I, false);
 
     // Prova sem .md (criada no painel) e chave com caminho não leem arquivo.
     db.memory.evaluations.Prova_Do_Painel = { key: 'Prova_Do_Painel', title: 'Nova', questions: [] };

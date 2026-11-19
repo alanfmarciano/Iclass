@@ -33,7 +33,7 @@ const {
     sendRouteError,
     validateAdminPermission
 } = require('../middlewares.js');
-const { parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../utils/parser.js');
+const { importWarningsFor, parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { canAccessAdminPermission, canReadStudentGrades, hasAdminCapability } = require('../utils/adminPermissions.js');
@@ -3367,6 +3367,9 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
         // cada abertura enquanto a prova é a que saiu do arquivo, inclusive quando outra
         // tela (lançamento de nota, prova do aluno) ou o boot a gravou primeiro. Ao salvar
         // no editor (revision), o professor já revisou e o aviso some. Não ficam gravados.
+        // importWarningsFor só usa os avisos do arquivo quando a avaliação gravada é a
+        // que o arquivo dá hoje; senão o aviso sai da própria avaliação gravada (e) colada
+        // na d) por uma versão anterior), nunca de um .md que não é o dela.
         let avisos = [];
         const mdPath = path.join(runtimePaths.CONTENT_DIR, `${key}.md`);
         const fromMarkdownFile = /^[A-Za-z0-9_-]+$/.test(key) && fs.existsSync(mdPath);
@@ -3380,11 +3383,15 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
                 avisos = parsed.avisos;
                 if (evaluation) {
                     db.memory.evaluations[key] = evaluation;
-                    db.save();
+                    db.save({ only: ['evaluations'] });
                 }
             } catch(e) {}
-        } else if (evaluation && fromMarkdownFile && !evaluation.revision && !evaluation.updatedAt) {
-            try { avisos = parseEvaluationMarkdownWithWarnings(fs.readFileSync(mdPath, 'utf8'), key).avisos; } catch (e) {}
+        } else if (evaluation && !evaluation.revision && !evaluation.updatedAt) {
+            let mdContent = '';
+            if (fromMarkdownFile) {
+                try { mdContent = fs.readFileSync(mdPath, 'utf8'); } catch (e) {}
+            }
+            avisos = importWarningsFor(evaluation, mdContent, key);
         }
 
         if (!evaluation) {

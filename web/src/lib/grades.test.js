@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CRITERIO_PADRAO, boletimChoiceOptions, boletimContext, consolidatedAverage, fmtGrade, fmtGradeValue, fmtMinimumGrade, gradeBand, gradeOf, gradeTone, isPassingGrade, isValidScore, parseGradeInput, previewQuickGrade, roundGrade, scoreBand, scoreFromGrade, validateQuickGrade } from './grades'
+import { CRITERIO_PADRAO, boletimChoiceOptions, boletimContext, consolidatedAverage, countByBand, fmtGrade, fmtGradeValue, fmtMinimumGrade, gradeBand, gradeBandRanges, gradeOf, gradeRangeLabel, gradeTone, isPassingGrade, isValidScore, parseGradeInput, previewQuickGrade, roundGrade, scoreBand, scoreFromGrade, validateQuickGrade } from './grades'
 
 describe('notas na interface', () => {
   it('[UC-NOTAS-001] formata 0 a 100 como 0 a 10 com vírgula e esconde nota inválida', () => {
@@ -173,5 +173,29 @@ describe('faixas da nota pelo critério (regra única)', () => {
     expect(isValidScore('  ')).toBe(false)
     expect(fmtGrade(' ')).toBe('—')
     expect(gradeOf('85')).toBe(8.5)
+  })
+})
+
+describe('faixas para gráficos de distribuição (gradeBandRanges)', () => {
+  it('[UC-TENTATIVA-003] com a mínima padrão, os intervalos e rótulos de sempre; cada décimo cai na faixa de gradeBand', () => {
+    expect(gradeBandRanges(CRITERIO_PADRAO).map((r) => [r.band, r.label])).toEqual([
+      ['muito_abaixo', '0–3,9'], ['abaixo', '4–5,9'], ['suficiente', '6–6,9'], ['bom', '7–8,9'], ['excelente', '9–10'],
+    ])
+    for (const mediaMinima of [5, 6, 7, 8, 9.5]) {
+      const ranges = gradeBandRanges({ mediaMinima })
+      for (let d = 0; d <= 100; d += 1) {
+        const nota = d / 10
+        expect(ranges.find((r) => nota >= r.min - 1e-9 && nota <= r.max + 1e-9).band).toBe(gradeBand(nota, { mediaMinima }))
+      }
+    }
+    // Mínima 7,0: não há faixa "suficiente" (de 7 a 6,9) e o rótulo de baixo acompanha.
+    expect(gradeBandRanges({ mediaMinima: 7 }).map((r) => r.label)).toEqual(['0–4,9', '5–6,9', '7–8,9', '9–10'])
+    expect(gradeRangeLabel(10, 10)).toBe('10')
+    expect(gradeRangeLabel(7.5, 9.4)).toBe('7,5–9,4')
+  })
+
+  it('[UC-TENTATIVA-003] countByBand conta pela nota como aparece e ignora nota sem faixa', () => {
+    expect(countByBand([5.96, 5.94, 8.95, '', null, 12], CRITERIO_PADRAO)).toEqual({ excelente: 1, bom: 0, suficiente: 1, abaixo: 1, muito_abaixo: 0 })
+    expect(countByBand([5.5], { mediaMinima: 5 })).toEqual({ excelente: 0, bom: 0, suficiente: 1, abaixo: 0, muito_abaixo: 0 })
   })
 })

@@ -103,6 +103,44 @@ export function isPassingGrade(grade, criterio) {
   return band !== 'abaixo' && band !== 'muito_abaixo'
 }
 
+// Faixas como intervalos da nota mostrada (0 a 10, uma casa), na ordem da mais baixa
+// para a mais alta, para gráficos de distribuição: [{ band, min, max, label }] com min e
+// max incluídos ("6–6,9"). Faixa vazia com a mínima do critério (ex.: 'suficiente' com
+// mínima 7,0) não aparece. Os limites são os de gradeBand (grades.test.js confere).
+function fmtBound(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace('.', ',')
+}
+// Intervalo de notas para rótulo: "6–6,9" (ou "10" quando começa e termina igual).
+export function gradeRangeLabel(min, max) {
+  return min === max ? fmtBound(min) : `${fmtBound(min)}–${fmtBound(max)}`
+}
+const tenth = (value) => Math.round(value * 10) / 10
+export function gradeBandRanges(criterio) {
+  const { mediaMinima } = normalizeCriterio(criterio)
+  const alerta = Math.max(0, tenth(mediaMinima - DISTANCIA_DE_ALERTA))
+  const ranges = [
+    { band: 'muito_abaixo', min: 0, max: tenth(alerta - 0.1) },
+    { band: 'abaixo', min: alerta, max: tenth(mediaMinima - 0.1) },
+    { band: 'suficiente', min: mediaMinima, max: tenth(FAIXA_BOM - 0.1) },
+    { band: 'bom', min: Math.max(FAIXA_BOM, mediaMinima), max: tenth(FAIXA_EXCELENTE - 0.1) },
+    { band: 'excelente', min: Math.max(FAIXA_EXCELENTE, mediaMinima), max: GRADE_MAX },
+  ]
+  return ranges
+    .filter((range) => range.max >= range.min)
+    .map((range) => ({ ...range, label: gradeRangeLabel(range.min, range.max) }))
+}
+
+// Quantas notas (0 a 10) caem em cada faixa: { excelente: n, bom: n, ... }. Nota sem
+// faixa (vazia ou fora de 0 a 10) não conta.
+export function countByBand(grades, criterio) {
+  const counts = Object.fromEntries(GRADE_BANDS.map((band) => [band, 0]))
+  ;(grades || []).forEach((grade) => {
+    const band = gradeBand(grade, criterio)
+    if (band) counts[band] += 1
+  })
+  return counts
+}
+
 // Média mínima para texto ("6,0").
 export function fmtMinimumGrade(criterio) {
   return normalizeCriterio(criterio).mediaMinima.toFixed(1).replace('.', ',')

@@ -263,6 +263,33 @@ describe('Resultados · regra de nota única', () => {
     gradePublished: true, timestamp: '2026-03-01T10:00:00Z', ...extra,
   })
 
+  it('[UC-TENTATIVA-003] Distribuição de notas: 49,6 (5,0) e 89,6 (9,0) caem na faixa da nota como aparece', async () => {
+    const original = mocks.stable.submissions
+    const matchMedia = window.matchMedia
+    window.matchMedia = (query) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+    mocks.stable.submissions = [
+      entrega('a1', 'ana@x.local', 'Ana', 49.6, 49.6),
+      entrega('b1', 'bia@x.local', 'Bia', 89.6, 89.6),
+      entrega('d1', 'davi@x.local', 'Davi', 35, 35),
+    ]
+    try {
+      renderPage()
+      const dist = screen.getByText('Distribuição de notas').closest('div').parentElement
+      const barra = (label) => within(dist).getByText(label).parentElement.firstChild.textContent
+      // Antes: 49,6 entrava em "0-4" (vermelho) e 89,6 em "7-8".
+      await waitFor(() => expect(barra('9–10')).toBe('1'))
+      expect(barra('4–5,9')).toBe('1')
+      expect(barra('0–3,9')).toBe('1')
+      expect(barra('7–8,9')).toBe('0')
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).getByText('5,0').className).toMatch(/text-warning/)
+    } finally {
+      mocks.stable.submissions = original
+      window.matchMedia = matchMedia
+    }
+  })
+
+
   it('[UC-TENTATIVA-003] usa só a nota consolidada do servidor e a média mínima de 6,0 na nota como aparece', async () => {
     const original = mocks.stable.submissions
     const matchMedia = window.matchMedia
@@ -289,6 +316,11 @@ describe('Resultados · regra de nota única', () => {
       expect(within(bia).getByText('4,0').className).toMatch(/text-warning/)
       const caio = screen.getByText('Caio').closest('tr')
       expect(within(caio).getByText('-')).toBeInTheDocument()
+      // "Distribuição de notas" pelas faixas de gradeBand: 59,6 (6,0) em "6–6,9" e 40 em
+      // "4–5,9", como as cores da lista (antes as barras eram 0-4/5-6/7-8/9-10 sobre a nota crua).
+      const dist = screen.getByText('Distribuição de notas').closest('div').parentElement
+      const barra = (label) => within(dist).getByText(label).parentElement.firstChild.textContent
+      expect(['0–3,9', '4–5,9', '6–6,9', '7–8,9', '9–10'].map(barra)).toEqual(['0', '1', '1', '0', '0'])
     } finally {
       mocks.stable.submissions = original
       window.matchMedia = matchMedia
