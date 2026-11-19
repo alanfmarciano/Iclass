@@ -21,6 +21,7 @@
 // anonimizar, o apagar de vez e a mesclagem passam pelo handler registrado aqui
 // (utils/studentDataHandlers.js, contrato C7).
 const { normalizeMaxAttempts } = require('./examAttempts.js');
+const { examFamilyKeys } = require('./examFamily.js');
 const { dict, either, int, list, oneOf, shape, str } = require('./inputSchema.js');
 const { registerStudentDataHandler } = require('./studentDataHandlers.js');
 const { displayName, normalizeEmail, studentInClass } = require('./students.js');
@@ -128,6 +129,15 @@ function formatSchoolDateTime(ms) {
     return `${String(parts.day).padStart(2, '0')}/${String(parts.month).padStart(2, '0')} às ${parts.time}`;
 }
 
+// Prazo do aluno para começar, para as telas dele (lista de provas e instruções):
+// { startDeadlineAt, startDeadlineLabel } com o horário no relógio da escola ("20/11 às
+// 08:00"), ou nulos sem exceção com prazo ou fora do cronômetro por aluno.
+function studentStartDeadlineInfo(application, email) {
+    const override = application && application.timerMode === 'per_attempt' ? studentOverrideFor(application, email) : null;
+    const at = override && override.prazoAte ? override.prazoAte : null;
+    return { startDeadlineAt: at, startDeadlineLabel: at ? formatSchoolDateTime(at) || null : null };
+}
+
 function notParticipantMessage(application) {
     return applicationFinalidade(application) === 'segunda_chamada'
         ? 'Esta é a segunda chamada da prova, só para os alunos indicados pelo professor.'
@@ -178,21 +188,26 @@ function consideredSubmission(submission) {
 }
 
 // Quem já fez a prova numa aplicação regular (ou pela interface antiga, sem aplicação)
-// desta turma: o conjunto dos e-mails.
+// desta turma: o conjunto dos e-mails. Vale a família da prova (utils/examFamily.js): a
+// prova do curso e a variante "só desta turma" criada ao editar a prova para a turma
+// (Avaliacao_X__turma_<hash>) são a mesma prova. Sem isso, quem fez a regular na chave do
+// curso voltava marcado na segunda chamada da variante, sem "Já fez".
 function emailsWithRegularDelivery(memory, { studentClass, courseId, examKey, excludeApplicationId = null } = {}) {
     const className = String(studentClass || '').trim().toLowerCase();
     const course = String(courseId || '').trim();
+    const family = examFamilyKeys(memory, examKey);
+    const inFamily = key => family.has(String(key || '').trim());
     const regular = new Set(((memory && memory.examApplications) || [])
         .filter(application => application
             && application.id !== excludeApplicationId
-            && String(application.examKey || '') === String(examKey || '')
+            && inFamily(application.examKey)
             && String(application.studentClass || '').trim().toLowerCase() === className
             && (!application.courseId || !course || String(application.courseId) === course)
             && applicationFinalidade(application) === 'regular')
         .map(application => application.id));
     const done = new Set();
     ((memory && memory.submissions) || []).forEach(submission => {
-        if (!submission || String(submission.examKey || '') !== String(examKey || '') || !consideredSubmission(submission)) return;
+        if (!submission || !inFamily(submission.examKey) || !consideredSubmission(submission)) return;
         if (submission.applicationId) {
             if (!regular.has(submission.applicationId)) return;
         } else {
@@ -233,9 +248,16 @@ const OVERRIDE_INPUT = shape({
     motivo: str({ max: OVERRIDE_REASON_MAX, nullable: true, label: 'motivo da exceção' }),
 }, { nullable: true, label: 'exceção do aluno' });
 
+// E-mail do aluno na lista: até 254 caracteres, sem espaço, vírgula, ponto e vírgula nem
+// <> (nome colado junto, duas listas numa só). Não exige o formato completo nome@dominio:
+// cadastro antigo pode ter um e-mail fora do formato e ainda é aluno da turma; quem não é
+// aluno ativo da turma é recusado pela regra de negócio.
+const STUDENT_EMAIL_PATTERN = /^[^\s,;<>]+$/u;
+const emailField = (label = 'aluno') => str({ max: 254, pattern: STUDENT_EMAIL_PATTERN, label });
+
 const AUDIENCE_INPUT_FIELDS = Object.freeze({
     finalidade: oneOf(APPLICATION_PURPOSES, { nullable: true, label: 'finalidade' }),
-    participants: list(str({ max: 254, label: 'aluno' }), { max: MAX_PARTICIPANTS, nullable: true, label: 'alunos' }),
+    participants: list(emailField(), { max: MAX_PARTICIPANTS, nullable: true, label: 'alunos' }),
     studentOverrides: dict(OVERRIDE_INPUT, { maxKeys: MAX_PARTICIPANTS, keyMax: 254, nullable: true, label: 'exceções por aluno' }),
 });
 
@@ -569,5 +591,6 @@ module.exports = {
     secondCallEmails,
     startDeadlineResponse,
     studentOverrideFor,
+    studentStartDeadlineInfo,
     studentStartDeadlinePassed,
 };

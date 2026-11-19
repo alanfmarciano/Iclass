@@ -207,6 +207,11 @@ export default function ExamRunner() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [saveState, setSaveState] = useState({ status: 'idle', at: null })
   const [attemptLimit, setAttemptLimit] = useState(null)
+  // Limite de tentativas do próprio aluno (o sync já soma as tentativas extras da exceção
+  // dele) e quantas ele já usou, para as instruções; o prazo dele para começar (exceção com
+  // prazo), já formatado no relógio da escola.
+  const [studentAttempts, setStudentAttempts] = useState({ limit: null, used: 0 })
+  const [startDeadlineLabel, setStartDeadlineLabel] = useState(null)
   const [attemptId, setAttemptId] = useState(null)
   const [extraMinutes, setExtraMinutes] = useState(0) // tempo adicional de acessibilidade
   const [instructionsAccepted, setInstructionsAccepted] = useState(false)
@@ -872,6 +877,11 @@ export default function ExamRunner() {
       setProctoringRetentionDays(Number(r.proctoringRetentionDays) || 0)
       setExamConfigVersion(r.examConfigVersion || null)
       setExtraMinutes(Number(r.accessibilityExtraMinutes) || 0)
+      {
+        const limit = optionalNumber(r.maxAttempts ?? c.maxAttempts)
+        setStudentAttempts({ limit: Number.isInteger(limit) && limit >= 1 ? limit : null, used: Number(r.attemptsUsed) || 0 })
+      }
+      setStartDeadlineLabel(r.startDeadlineLabel || null)
       if (r.examTitle) setExamTitle(r.examTitle)
       if (r.tokenAccepted === true) setTokenOk(true)
 
@@ -1456,8 +1466,17 @@ export default function ExamRunner() {
         <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Duração</p><p className="font-semibold text-text">{untimed ? 'Sem tempo limite' : `${cfg?.durationMinutes || '-'} min`}</p>{!untimed && extraMinutes > 0 && <p className="text-xs font-medium text-success">+{extraMinutes} min de tempo adicional</p>}</div>
           <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Cronômetro</p><p className="font-semibold text-text">{untimed ? 'Desligado' : cfg?.timerMode === 'per_attempt' ? 'Ao iniciar' : 'Coletivo'}</p></div>
-          <div className="rounded-lg border border-border p-3"><p className="text-xs text-subtle">Tentativas</p><p className="font-semibold text-text">{cfg?.maxAttempts || 'Sem limite'}</p></div>
+          <div className="rounded-lg border border-border p-3" data-testid="attempts-info">
+            {studentAttempts.limit
+              ? <><p className="text-xs text-subtle">Tentativa</p><p className="font-semibold text-text">{Math.min(studentAttempts.used + 1, studentAttempts.limit)} de {studentAttempts.limit}</p></>
+              : <><p className="text-xs text-subtle">Tentativas</p><p className="font-semibold text-text">Sem limite</p></>}
+          </div>
         </div>
+        {startDeadlineLabel && (
+          <p className="mt-3 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text" data-testid="start-deadline">
+            Você pode começar esta prova até <strong>{startDeadlineLabel}</strong>. Depois disso, só com o professor.
+          </p>
+        )}
         <ul className="mt-5 space-y-2 text-sm text-muted list-disc pl-5">
           <li>Suas respostas são salvas automaticamente durante a prova.</li>
           {noFullscreen

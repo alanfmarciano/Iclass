@@ -260,6 +260,35 @@ test('[UC-PROVA-006] lista pré-marcada: entrega arquivada não conta como feita
     assert.match(refused.body.error, /já fizeram/);
 });
 
+test('[UC-PROVA-006] lista pré-marcada vale para a família da prova: a regular na prova do curso conta na segunda chamada da variante "só desta turma" e vice-versa', async () => {
+    const historyId = await createHistory();
+    await regularDoneByAlice(historyId);
+    // O professor editou a prova só para a turma depois da regular: nasce a variante.
+    const variant = `${examKey}__turma_abc123`;
+    db.memory.evaluations[variant] = { ...db.memory.evaluations[examKey], key: variant, sourceEvaluationKey: examKey };
+    const candidates = await admin(request(app).get('/api/admin/exam-applications/participant-candidates'))
+        .query({ studentClass, courseId, examKey: variant }).expect(200);
+    assert.deepEqual(candidates.body.segundaChamada.sort(), [BRUNO, CARLA], 'quem fez na prova do curso não volta marcado');
+    assert.equal(candidates.body.students.find(item => item.email === ALICE).fezRegular, true, 'a Alice aparece com "Já fez"');
+
+    // O contrário: a regular foi na variante (vínculo pelo mapa da turma) e a segunda
+    // chamada é preparada na prova do curso.
+    delete db.memory.evaluations[variant].sourceEvaluationKey;
+    db.memory.classes.find(item => item.name === studentClass).contentOverrides = { evaluations: { [examKey]: variant } };
+    db.memory.submissions.push({ id: 'sub_variante', examKey: variant, applicationId: 'app_variante', student: { email: BRUNO, studentClass, courseId }, score: 70 });
+    db.memory.examApplications.push({ id: 'app_variante', examKey: variant, studentClass, courseId, status: 'finished' });
+    const base = await admin(request(app).get('/api/admin/exam-applications/participant-candidates'))
+        .query({ studentClass, courseId, examKey }).expect(200);
+    assert.deepEqual(base.body.segundaChamada, [CARLA]);
+
+    // Prova sem parentesco não entra: a entrega de outra prova não conta.
+    db.memory.submissions.push({ id: 'sub_outra', examKey: 'Avaliacao_Outra', applicationId: 'app_outra', student: { email: CARLA, studentClass, courseId }, score: 70 });
+    db.memory.examApplications.push({ id: 'app_outra', examKey: 'Avaliacao_Outra', studentClass, courseId, status: 'finished' });
+    const again = await admin(request(app).get('/api/admin/exam-applications/participant-candidates'))
+        .query({ studentClass, courseId, examKey }).expect(200);
+    assert.deepEqual(again.body.segundaChamada, [CARLA]);
+});
+
 test('[UC-PROVA-006] alunos escolhidos: e-mail de fora da turma, lista vazia e finalidade inválida são recusados; a recuperação é gravada', async () => {
     const historyId = await createHistory();
     const outside = await prepare(historyId, { participants: [BRUNO, DIEGO] }, 400);
@@ -331,13 +360,29 @@ test('[UC-PROVA-006] prazo para começar: vencido recusa o início; prazo no pas
     const application = prepared.body.application;
     assert.ok(application.studentOverrides[BRUNO].prazoAte > Date.now());
     await start(application.id);
+    // A lista e o sync levam o prazo do próprio aluno, no relógio da escola, para as telas
+    // dele (cartão da prova e instruções); quem não tem prazo recebe null.
+    const brunoList = await asStudent(request(app).get('/api/student/exam-applications'), BRUNO).query({ studentClass, courseId }).expect(200);
+    const brunoItem = brunoList.body.applications.find(item => item.id === application.id);
+    assert.equal(brunoItem.startDeadlineAt, application.studentOverrides[BRUNO].prazoAte);
+    assert.equal(brunoItem.startDeadlineLabel, '01/12 às 08:00');
+    const carlaList = await asStudent(request(app).get('/api/student/exam-applications'), CARLA).query({ studentClass, courseId }).expect(200);
+    assert.equal(carlaList.body.applications.find(item => item.id === application.id).startDeadlineLabel, null);
+    const brunoBefore = await sync(BRUNO, application.id).expect(200);
+    assert.equal(brunoBefore.body.startDeadlineLabel, '01/12 às 08:00');
+    assert.equal(brunoBefore.body.startDeadlinePassed, false);
+    // "Alunos desta aplicação" mostra o prazo atual no relógio da escola.
+    const candidates = await admin(request(app).get('/api/admin/exam-applications/participant-candidates')).query({ applicationId: application.id }).expect(200);
+    assert.equal(candidates.body.students.find(item => item.email === BRUNO).override.prazoAteLabel, '01/12 às 08:00');
+    assert.equal(candidates.body.students.find(item => item.email === CARLA).override, null);
     // O prazo passou (o relógio andou).
     db.memory.examApplications.find(item => item.id === application.id).studentOverrides[BRUNO].prazoAte = Date.now() - 1000;
 
     const synced = await sync(BRUNO, application.id).expect(200);
     assert.equal(synced.body.startDeadlinePassed, true);
     assert.match(synced.body.startDeadlineMessage, /prazo para começar/);
-    assert.equal(Object.values(db.memory.studentExamState).some(state => state.applicationId === application.id && state.studentEmail === BRUNO), false, 'nenhuma tentativa nasce depois do prazo');
+    // O sync de antes do prazo já criou a tentativa nas instruções; depois do prazo ela não começa.
+    assert.equal(Object.values(db.memory.studentExamState).some(state => state.applicationId === application.id && state.studentEmail === BRUNO && state.startedAt), false, 'nenhuma tentativa começa depois do prazo');
     const refused = await startAttempt(BRUNO, application.id).expect(409);
     assert.equal(refused.body.code, 'start_deadline_passed');
     // A Carla, sem prazo, começa normalmente.
@@ -393,11 +438,17 @@ test('[UC-PROVA-006] rota de participantes: acrescenta em andamento, não tira, 
     // Professor de outra turma: 403. Formato errado: 400 do schema.
     await request(app).post(route).set('x-admin-session', otherProfessorToken).send({ participants: [BRUNO] }).expect(403);
     await admin(request(app).post(route)).send({ participants: [BRUNO, 42] }).expect(400);
+    // Item que não é um e-mail (nome colado, duas listas numa só) para no schema.
+    const pasted = await admin(request(app).post(route)).send({ participants: [BRUNO, 'Carla Dias <carla@participantes.local>'] }).expect(400);
+    assert.match(pasted.body.error, /caracteres não permitidos/);
+    assert.match(pasted.body.field, /^participants/);
+    await admin(request(app).post(route)).send({ participants: [`${BRUNO},${CARLA}`] }).expect(400);
     await admin(request(app).post(route)).send({ studentOverrides: { [CARLA]: { extraAttempts: 9 } } }).expect(400);
 
     await finish(id);
     const closed = await admin(request(app).post(route)).send({ participants: [BRUNO, CARLA, ALICE] }).expect(409);
     assert.equal(closed.body.applicationClosed, true);
+    assert.equal(closed.body.code, 'application_closed', 'o 409 tem code, como not_participant e start_deadline_passed');
 });
 
 test('[UC-PROVA-006] aplicação antiga sem os campos novos é da turma inteira', async () => {

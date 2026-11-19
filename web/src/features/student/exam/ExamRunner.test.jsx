@@ -1920,4 +1920,21 @@ describe('[UC-PROVA-006] ExamRunner: aplicação só para alguns alunos e prazo 
     await user.click(screen.getByRole('button', { name: 'Iniciar prova' }))
     expect(await screen.findByText(/O seu prazo para começar esta prova terminou/)).toBeVisible()
   })
+
+  it('instruções mostram o limite do próprio aluno (com a tentativa extra) e o prazo dele para começar', async () => {
+    // A turma tem 1 tentativa; o Bruno ganhou 1 extra e já usou 1: o sync traz 2.
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null }), attemptsUsed: 1, maxAttempts: 2, startDeadlineAt: Date.now() + 3600000, startDeadlineLabel: '20/11 às 08:00' })
+    renderRunner()
+    const attempts = await screen.findByTestId('attempts-info')
+    expect(attempts).toHaveTextContent('Tentativa')
+    expect(attempts).toHaveTextContent('2 de 2')
+    expect(screen.getByTestId('start-deadline')).toHaveTextContent('Você pode começar esta prova até 20/11 às 08:00')
+  })
+
+  it('instruções sem exceção: o limite da turma e nenhum prazo', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
+    renderRunner()
+    expect(await screen.findByTestId('attempts-info')).toHaveTextContent('1 de 1')
+    expect(screen.queryByTestId('start-deadline')).not.toBeInTheDocument()
+  })
 })

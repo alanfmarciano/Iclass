@@ -105,6 +105,69 @@ describe('[UC-PROVA-006] Para quem da aplicação', () => {
     expect(payload().studentOverrides).toEqual({ 'carla@x.local': { extraAttempts: 1, prazoAte: null, motivo: '' } })
   })
 
+  it('nomes da tela batem com a Ajuda do professor ("Escolher alunos")', async () => {
+    const help = (await import('../help/conteudo/instrutor.md?raw')).default
+    for (const label of ['Turma inteira', 'Segunda chamada', 'Escolher alunos', 'Já fez', 'Alunos desta aplicação', 'Exceção por aluno', 'Pode começar até', 'Tirar o prazo']) {
+      expect(help).toContain(`**${label}**`)
+    }
+    expect(help).not.toContain('Alunos escolhidos')
+  })
+
+  it('a lista de alunos recolhe e o resumo continua dizendo quantos estão marcados', () => {
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Segunda chamada' }))
+    const list = screen.getByTestId('audience-list')
+    expect(list).toHaveAttribute('open')
+    const summary = within(list).getByText(/2 de 3 alunos marcados/)
+    fireEvent.click(summary)
+    expect(list).not.toHaveAttribute('open')
+    expect(summary).toBeVisible()
+  })
+
+  it('lista atualizada com a tela aberta: quem entregou a regular sai da segunda chamada, com aviso', () => {
+    const onRetry = vi.fn()
+    function Live({ candidates }) {
+      const [value, setValue] = useState(initialAudience())
+      return (
+        <>
+          <ApplicationAudienceFields value={value} onChange={setValue} candidates={candidates} timerMode="per_attempt" onRetry={onRetry} />
+          <output data-testid="payload">{JSON.stringify(audiencePayload(value, { timerMode: 'per_attempt' }))}</output>
+        </>
+      )
+    }
+    const { rerender } = render(<Live candidates={CANDIDATES} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Segunda chamada' }))
+    // O professor marca a Alice de propósito (já fez): ela fica.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice Souza' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    expect(onRetry).toHaveBeenCalled()
+    // Chega a lista nova: o Bruno entregou a regular enquanto a tela estava aberta.
+    rerender(<Live candidates={{ ...CANDIDATES, students: CANDIDATES.students.map((student) => student.email === 'bruno@x.local' ? { ...student, fezRegular: true } : student), segundaChamada: ['carla@x.local'] }} />)
+    expect(screen.getByRole('checkbox', { name: 'Bruno Lima' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Alice Souza' })).toBeChecked()
+    expect(screen.getByTestId('late-deliveries')).toHaveTextContent('Bruno Lima entregou a prova regular agora há pouco')
+    expect(payload().participants).toEqual(['carla@x.local', 'alice@x.local'])
+  })
+
+  it('Alunos desta aplicação: "Tirar o prazo" retira só o prazo e mantém a tentativa extra', async () => {
+    mocks.get.mockResolvedValue({
+      ...CANDIDATES,
+      students: CANDIDATES.students.map((student) => student.email === 'bruno@x.local' ? { ...student, override: { extraAttempts: 1, prazoAte: Date.UTC(2099, 11, 1, 11, 0), prazoAteLabel: '01/12 às 08:00', motivo: 'Atestado' } } : student),
+      application: { id: 'app_3', status: 'prepared', timerMode: 'per_attempt', finalidade: 'regular', participants: null },
+    })
+    mocks.post.mockResolvedValue({ success: true, application: { id: 'app_3' } })
+    const toast = { success: vi.fn(), error: vi.fn() }
+    render(<ApplicationAudienceModal open application={{ id: 'app_3', status: 'prepared' }} onClose={vi.fn()} toast={toast} />)
+    const row = await screen.findByTestId('exception-bruno@x.local')
+    // O prazo atual vem no relógio da escola (do servidor), não no fuso do aparelho.
+    expect(within(row).getByText('Prazo atual: até 01/12 às 08:00. Escolha outra data para mudar.')).toBeVisible()
+    fireEvent.click(within(row).getByRole('button', { name: 'Tirar o prazo de Bruno Lima' }))
+    expect(within(row).queryByRole('button', { name: /Tirar o prazo/ })).not.toBeInTheDocument()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Salvar' })) })
+    await waitFor(() => expect(mocks.post).toHaveBeenCalled())
+    expect(mocks.post.mock.calls[0][1].studentOverrides).toEqual({ 'bruno@x.local': { extraAttempts: 1, prazoAte: null, motivo: 'Atestado' } })
+  })
+
   it('Alunos desta aplicação: com a prova em andamento só acrescenta; salva pela rota de participantes', async () => {
     mocks.get.mockResolvedValue({
       ...CANDIDATES,

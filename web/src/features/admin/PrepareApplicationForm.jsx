@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, UserPlus, Users, X } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -60,6 +60,7 @@ export function audienceFromApplication(data) {
     overrides[student.email] = {
       extraAttempts: String(student.override.extraAttempts || 0),
       prazoAte: student.override.prazoAte || null,
+      prazoAteLabel: student.override.prazoAteLabel || '',
       prazoAteLocal: '',
       motivo: student.override.motivo || '',
     }
@@ -115,24 +116,57 @@ export function audiencePayload(audience, { timerMode } = {}) {
   return payload
 }
 
+// Intervalo mínimo entre duas buscas da lista ao voltar para a janela.
+const REFRESH_ON_FOCUS_MS = 10000
+
 // Alunos da turma para o "Para quem" (GET participant-candidates). Só busca quando
-// enabled: a tela que nunca abre o "Para quem" não faz o pedido.
+// enabled: a tela que nunca abre o "Para quem" não faz o pedido. A lista se atualiza ao
+// voltar para a janela (uma entrega pode ter chegado com a tela aberta) e pelo botão
+// "Atualizar"; a atualização mantém a lista na tela enquanto busca (refreshing) e, se
+// falhar, fica com a que já tinha.
 export function useParticipantCandidates({ studentClass, courseId, examKey, applicationId, enabled = true }) {
-  const [state, setState] = useState({ data: null, loading: false, error: '' })
+  const [state, setState] = useState({ data: null, loading: false, refreshing: false, error: '' })
   const [reload, setReload] = useState(0)
+  const lastFetchRef = useRef(0)
   const query = applicationId
     ? `applicationId=${encodeURIComponent(applicationId)}`
     : `studentClass=${encodeURIComponent(studentClass || '')}&courseId=${encodeURIComponent(courseId || '')}&examKey=${encodeURIComponent(examKey || '')}`
   const ready = enabled && (applicationId || (studentClass && examKey))
+  const queryRef = useRef(query)
   useEffect(() => {
     if (!ready) return undefined
     let alive = true
-    setState((current) => ({ ...current, loading: true, error: '' }))
+    // Outra prova ou turma: começa do zero; a mesma: atualiza sem tirar a lista da tela.
+    const sameQuery = queryRef.current === query
+    queryRef.current = query
+    lastFetchRef.current = Date.now()
+    setState((current) => (sameQuery && current.data
+      ? { ...current, refreshing: true, error: '' }
+      : { data: null, loading: true, refreshing: false, error: '' }))
     api.get(`/api/admin/exam-applications/participant-candidates?${query}`)
-      .then((data) => { if (alive) setState({ data: data || null, loading: false, error: '' }) })
-      .catch((e) => { if (alive) setState({ data: null, loading: false, error: e?.message || 'Não foi possível carregar os alunos da turma.' }) })
+      .then((data) => { if (alive) setState({ data: data || null, loading: false, refreshing: false, error: '' }) })
+      .catch((e) => {
+        if (!alive) return
+        setState((current) => (current.data
+          ? { ...current, refreshing: false }
+          : { data: null, loading: false, refreshing: false, error: e?.message || 'Não foi possível carregar os alunos da turma.' }))
+      })
     return () => { alive = false }
   }, [ready, query, reload])
+  useEffect(() => {
+    if (!ready) return undefined
+    const refresh = () => {
+      if (document.visibilityState === 'hidden') return
+      if (Date.now() - lastFetchRef.current < REFRESH_ON_FOCUS_MS) return
+      setReload((value) => value + 1)
+    }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [ready])
   return { ...state, refetch: () => setReload((value) => value + 1) }
 }
 
@@ -148,9 +182,11 @@ function formatDeadline(ms) {
 // "Para quem" da aplicação. value/onChange: o estado de initialAudience. candidates: a
 // resposta de participant-candidates. lockedEmails: quem não pode sair da lista (prova em
 // andamento). lockMode: a finalidade não muda mais (prova já começou).
-export function ApplicationAudienceFields({ value, onChange, candidates, loading = false, error = '', onRetry, timerMode, lockedEmails = [], lockMode = false }) {
+export function ApplicationAudienceFields({ value, onChange, candidates, loading = false, refreshing = false, error = '', onRetry, timerMode, lockedEmails = [], lockMode = false }) {
   const [query, setQuery] = useState('')
   const [adding, setAdding] = useState('')
+  const [lateDeliveries, setLateDeliveries] = useState([])
+  const previousCandidatesRef = useRef(candidates)
   const audience = value || initialAudience()
   const students = useMemo(() => candidates?.students || [], [candidates])
   const nameOf = useMemo(() => new Map(students.map((student) => [student.email, student.name || student.email])), [students])
@@ -164,9 +200,29 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
   useEffect(() => {
     if (audience.pendingSeed && candidates) onChange({ ...audience, selected: [...(candidates.segundaChamada || [])], pendingSeed: false, touched: true })
   }, [audience, candidates, onChange])
+  // A lista chegou de novo (voltar para a janela, "Atualizar") e alguém que estava marcado
+  // na segunda chamada entregou a prova regular nesse meio tempo: sai da lista, com aviso.
+  // Quem o professor marcou já com "Já fez" fica como ele deixou.
+  useEffect(() => {
+    const previous = previousCandidatesRef.current
+    previousCandidatesRef.current = candidates
+    if (!previous || !candidates || previous === candidates || audience.mode !== 'segunda_chamada') return
+    const before = new Map((previous.students || []).map((student) => [student.email, student.fezRegular]))
+    const nowDone = (candidates.students || [])
+      .filter((student) => student.fezRegular && before.get(student.email) === false && audience.selected.includes(student.email) && !locked.has(student.email))
+      .map((student) => student.email)
+    if (!nowDone.length) return
+    setLateDeliveries(nowDone)
+    onChange({
+      ...audience,
+      selected: audience.selected.filter((email) => !nowDone.includes(email)),
+      overrides: Object.fromEntries(Object.entries(audience.overrides || {}).filter(([email]) => !nowDone.includes(email))),
+      touched: true,
+    })
+  }, [audience, candidates, locked, onChange])
   const eligible = students.filter((student) => !exceptionEmails.includes(student.email) && (!restricted || selected.has(student.email)))
 
-  function update(next) { onChange({ ...audience, ...next, touched: true }) }
+  function update(next) { setLateDeliveries([]); onChange({ ...audience, ...next, touched: true }) }
 
   function chooseMode(mode) {
     if (lockMode || mode === audience.mode) return
@@ -245,14 +301,27 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
         </div>
       )}
 
+      {lateDeliveries.length > 0 && (
+        <p role="status" className="rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text" data-testid="late-deliveries">
+          {lateDeliveries.length === 1
+            ? `${nameOf.get(lateDeliveries[0]) || lateDeliveries[0]} entregou a prova regular agora há pouco e saiu da segunda chamada. Marque de novo se precisar.`
+            : `${lateDeliveries.length} alunos entregaram a prova regular agora há pouco e saíram da segunda chamada. Marque de novo se precisar.`}
+        </p>
+      )}
+
       {restricted && !loading && !error && (
-        <div className="space-y-2 rounded-lg border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-semibold text-text"><Users size={15} className="inline mr-1" aria-hidden />{audience.selected.length} de {students.length} {students.length === 1 ? 'aluno marcado' : 'alunos marcados'}</p>
-            <div className="flex gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setAll(true)}>Marcar todos</Button>
-              <Button size="sm" variant="ghost" onClick={() => setAll(false)}>Desmarcar todos</Button>
-            </div>
+        // Recolhível (no celular a lista longa empurra o resto da preparação para baixo); o
+        // resumo continua dizendo quantos estão marcados.
+        <details className="group rounded-lg border border-border p-3" open data-testid="audience-list">
+          <summary className="flex min-h-[44px] cursor-pointer list-none items-center justify-between gap-2 text-sm font-semibold text-text">
+            <span><Users size={15} className="inline mr-1" aria-hidden />{audience.selected.length} de {students.length} {students.length === 1 ? 'aluno marcado' : 'alunos marcados'}</span>
+            <span className="text-xs font-normal text-subtle"><span className="group-open:hidden">Mostrar a lista</span><span className="hidden group-open:inline">Recolher</span></span>
+          </summary>
+          <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {onRetry && <Button size="sm" variant="ghost" icon={RefreshCw} loading={refreshing} onClick={onRetry}>Atualizar</Button>}
+            <Button size="sm" variant="ghost" onClick={() => setAll(true)}>Marcar todos</Button>
+            <Button size="sm" variant="ghost" onClick={() => setAll(false)}>Desmarcar todos</Button>
           </div>
           <Input label="Buscar aluno" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nome ou e-mail" />
           {students.length === 0 && <p className="text-sm text-muted">Nenhum aluno ativo nesta turma.</p>}
@@ -281,7 +350,8 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
               )
             })}
           </ul>
-        </div>
+          </div>
+        </details>
       )}
 
       <details className="rounded-lg border border-border p-3" open={shownExceptions.length > 0 || undefined}>
@@ -302,13 +372,18 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Input label="Tentativas extras" type="number" min="0" max={MAX_EXTRA_ATTEMPTS} step="1" value={entry.extraAttempts} onChange={(e) => changeException(email, { extraAttempts: e.target.value })} />
                   {timerMode === 'per_attempt' && (
-                    <Input
-                      label="Pode começar até"
-                      type="datetime-local"
-                      value={entry.prazoAteLocal}
-                      helper={entry.prazoAte && !entry.prazoAteLocal ? `Hoje: até ${formatDeadline(entry.prazoAte)}` : 'Deixe em branco para não ter prazo.'}
-                      onChange={(e) => changeException(email, { prazoAteLocal: e.target.value })}
-                    />
+                    <div className="space-y-1">
+                      <Input
+                        label="Pode começar até"
+                        type="datetime-local"
+                        value={entry.prazoAteLocal}
+                        helper={entry.prazoAte && !entry.prazoAteLocal ? `Prazo atual: até ${entry.prazoAteLabel || formatDeadline(entry.prazoAte)}. Escolha outra data para mudar.` : 'Deixe em branco para não ter prazo.'}
+                        onChange={(e) => changeException(email, { prazoAteLocal: e.target.value })}
+                      />
+                      {(entry.prazoAte || entry.prazoAteLocal) && (
+                        <Button size="sm" variant="ghost" icon={X} aria-label={`Tirar o prazo de ${nameOf.get(email) || email}`} onClick={() => changeException(email, { prazoAte: null, prazoAteLabel: '', prazoAteLocal: '' })}>Tirar o prazo</Button>
+                      )}
+                    </div>
                   )}
                 </div>
                 <Input label="Motivo (opcional)" value={entry.motivo} maxLength={MAX_REASON_CHARS} counterFrom={250} onChange={(e) => changeException(email, { motivo: e.target.value })} />
@@ -392,6 +467,7 @@ export function PrepareApplicationForm({ value, onChange, candidates, tokenTools
         onChange={(audience) => set({ audience })}
         candidates={candidates.data}
         loading={candidates.loading}
+        refreshing={candidates.refreshing}
         error={candidates.error}
         onRetry={candidates.refetch}
         timerMode={value.timerMode}
@@ -449,6 +525,8 @@ export function ApplicationAudienceModal({ open, application, onClose, onSaved, 
           onChange={setAudience}
           candidates={candidates.data}
           loading={false}
+          refreshing={candidates.refreshing}
+          onRetry={candidates.refetch}
           timerMode={timerMode}
           lockedEmails={lockedEmails}
           lockMode={started}

@@ -56,10 +56,9 @@ const {
     findExamApplication,
     findOpenAttemptState,
     listExamApplications,
-    studentOverrideFor,
     studentStartDeadlinePassed,
 } = require('../utils/examApplications.js');
-const { notParticipantResponse, startDeadlineResponse } = require('../utils/examParticipants.js');
+const { notParticipantResponse, startDeadlineResponse, studentStartDeadlineInfo } = require('../utils/examParticipants.js');
 const {
     countStudentExamAttempts,
     filterStudentExamAttempts,
@@ -596,7 +595,6 @@ function applicationForStudent(application, cls, studentEmail) {
         applicationId: application.id,
         studentEmail,
     });
-    const override = studentOverrideFor(application, studentEmail);
     const safeApplication = {};
     STUDENT_APPLICATION_FIELDS.forEach(field => {
         if (application[field] !== undefined) safeApplication[field] = application[field];
@@ -613,7 +611,7 @@ function applicationForStudent(application, cls, studentEmail) {
         attemptsExhausted: maxAttempts !== null && attemptsUsed >= maxAttempts && !openAttempt,
         // Para quem (P3-S7): a finalidade e, só do próprio aluno, o prazo para começar.
         finalidade: applicationFinalidade(application),
-        startDeadlineAt: override && override.prazoAte && application.timerMode === 'per_attempt' ? override.prazoAte : null,
+        ...studentStartDeadlineInfo(application, studentEmail),
     };
 }
 
@@ -906,6 +904,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             // Prazo do aluno para começar já passou (exceção por aluno): a tela mostra o aviso.
             startDeadlinePassed: !!startDeadlinePassedAt,
             startDeadlineMessage: startDeadlinePassedAt ? startDeadlineResponse(startDeadlinePassedAt).error : null,
+            // Prazo do aluno para começar (exceção com prazo), para as instruções da prova.
+            ...(application ? studentStartDeadlineInfo(application, email) : { startDeadlineAt: null, startDeadlineLabel: null }),
             localCopyKey,
             // Prazo de guarda do monitoramento da prova (settings.retention, H8b), para as
             // instruções: 0 = sem prazo automático (até a escola apagar).

@@ -31,6 +31,7 @@ const {
     applicationParticipantList,
     changedOverrides,
     describeAudienceAudit,
+    formatSchoolDateTime,
     parseApplicationAudience,
     participantCandidates,
 } = require('../utils/examParticipants.js');
@@ -500,6 +501,9 @@ function createAdminExamConfigRouter() {
                     override: override ? {
                         extraAttempts: Number(override.extraAttempts) || 0,
                         prazoAte: Number(override.prazoAte) > 0 ? Number(override.prazoAte) : null,
+                        // O prazo no relógio da escola ("01/12 às 08:00"): a tela não usa o
+                        // fuso do aparelho de quem abre.
+                        prazoAteLabel: Number(override.prazoAte) > 0 ? formatSchoolDateTime(Number(override.prazoAte)) || null : null,
                         motivo: String(override.motivo || ''),
                     } : null,
                 };
@@ -687,7 +691,7 @@ function createAdminExamConfigRouter() {
                 return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
             }
             if (['finished', 'cancelled'].includes(application.status)) {
-                return res.status(409).json({ error: 'Esta aplicação já foi encerrada; a lista de alunos não muda mais.', applicationClosed: true });
+                return res.status(409).json({ error: 'Esta aplicação já foi encerrada; a lista de alunos não muda mais.', code: 'application_closed', applicationClosed: true });
             }
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
             if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });

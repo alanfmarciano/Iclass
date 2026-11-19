@@ -1078,7 +1078,7 @@ export default function ProvasPage() {
                           <span className="w-8 h-8 grid place-items-center rounded-md bg-surface-2 text-muted"><Users size={17} /></span>
                           <div>
                             <h3 className="text-sm font-bold text-text">Para quem</h3>
-                            <p className="text-xs text-muted">Turma inteira, segunda chamada ou alunos escolhidos</p>
+                            <p className="text-xs text-muted">Turma inteira, segunda chamada ou só os alunos que você escolher</p>
                           </div>
                         </div>
                         <ApplicationAudienceFields
@@ -1086,6 +1086,7 @@ export default function ProvasPage() {
                           onChange={setAudience}
                           candidates={audienceCandidates.data}
                           loading={audienceCandidates.loading}
+                          refreshing={audienceCandidates.refreshing}
                           error={audienceCandidates.error}
                           onRetry={audienceCandidates.refetch}
                           timerMode={form.timerMode}
