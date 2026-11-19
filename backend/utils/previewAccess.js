@@ -27,7 +27,13 @@ const { findPreviewSession, PREVIEW_TTL_MS } = require('./authSessions.js');
 const { canAccessAdminPermission } = require('./adminPermissions.js');
 
 const PREVIEW_HEADER = 'x-preview-session';
+// Regra do guarda (rbac.regras_por_grupo do plano): qualquer uma basta para chegar na rota.
 const PREVIEW_PERMISSIONS = Object.freeze(['page.materials', 'page.classes']);
+// A prévia mostra o conteúdo das turmas (apostilas, biblioteca, provas abertas, fórum):
+// abrir e usar pede também a permissão de conteúdo. Sem ela, o Professor auxiliar e a
+// Secretaria, que têm page.classes, liam pela prévia as apostilas que o painel nega a
+// eles (rbac.papeis: monitor "sem conteúdo"; secretaria "não mexe em conteúdo").
+const PREVIEW_CONTENT_PERMISSION = 'page.materials';
 const PREVIEW_STUDENT_NAME = 'Pré-visualização';
 const PREVIEW_READ_ONLY = Object.freeze({ error: 'Na pré-visualização nada é gravado.', code: 'preview_read_only' });
 
@@ -43,6 +49,9 @@ const PREVIEW_READ_ONLY = Object.freeze({ error: 'Na pré-visualização nada é
 // caderno e anotações (gravar), progresso (gravar), track-access, fórum (escrever),
 // matrícula, troca de senha, aceite dos Termos, Meus dados (download auditado) e o
 // histórico de mensagens da prova.
+// O aviso de erro de tela (/api/client-error) passa: vira uma linha no registro de erros da pasta
+// de dados e não toca no banco nem na memória; sem ele, o erro da tela vista na prévia
+// sumia do registro. HEAD vale como GET (o Express responde HEAD pela rota GET).
 const PREVIEW_READ_ROUTES = Object.freeze([
     { method: 'GET', pattern: /^\/(?:api\/)?data\.js$/i, label: 'data.js da turma (apostilas liberadas)' },
     { method: 'GET', pattern: /^\/[^/]+\.md$/i, label: 'apostila liberada (/:key.md)' },
@@ -70,6 +79,7 @@ const PREVIEW_READ_ROUTES = Object.freeze([
     { method: 'GET', pattern: /^\/api\/connection$/i, label: 'conexão' },
     { method: 'GET', pattern: /^\/api\/legal\/documents$/i, label: 'Termos e Política publicados' },
     { method: 'GET', pattern: /^\/api\/branding$/i, label: 'identidade visual' },
+    { method: 'POST', pattern: /^\/api\/client-error$/i, label: 'aviso de erro de tela (só o registro de erros, nunca o banco)' },
 ].map(entry => Object.freeze(entry)));
 
 // Caminho inteiro do pedido, sem a query e sem a barra do fim (como o Express casa).
@@ -80,7 +90,8 @@ function previewRequestPath(req) {
 }
 
 function isPreviewReadRoute(method, requestPath) {
-    const verb = String(method || '').toUpperCase();
+    const upper = String(method || '').toUpperCase();
+    const verb = upper === 'HEAD' ? 'GET' : upper;
     const pathName = String(requestPath || '');
     return PREVIEW_READ_ROUTES.some(entry => entry.method === verb && entry.pattern.test(pathName));
 }
@@ -100,6 +111,30 @@ function hasPreviewHeader(req) {
 
 function sendPreviewReadOnly(res) {
     return res.status(403).json({ ...PREVIEW_READ_ONLY });
+}
+
+// Fim da prévia (401 preview_ended). reason continua 'expired' (o motivo genérico de
+// sessão terminada que o cliente já trata); previewReason diz a causa, com o texto dela:
+// 'expired' (60 min), 'admin_session' (a sessão do painel acabou: Sair, prazo, troca de
+// senha em outro aparelho), 'account' (senha trocada ou conta apagada), 'permission'
+// (perdeu a permissão ou a turma saiu do escopo), 'class' (turma ou curso apagados) e
+// 'missing' (encerrada, reinício do servidor, backup restaurado ou token desconhecido).
+const PREVIEW_ENDED_MESSAGES = Object.freeze({
+    expired: 'A pré-visualização terminou (ela dura 60 minutos). Abra de novo pelo painel.',
+    admin_session: 'A pré-visualização terminou porque a sua sessão no painel acabou. Entre de novo e abra a pré-visualização.',
+    account: 'A pré-visualização terminou porque a senha da sua conta mudou. Abra de novo pelo painel.',
+    permission: 'A pré-visualização terminou porque a sua conta não tem mais acesso a esta turma.',
+    class: 'A pré-visualização terminou porque a turma ou o curso não existem mais.',
+    missing: 'A pré-visualização terminou. Abra de novo pelo painel.',
+});
+
+function previewEndedBody(previewReason) {
+    const cause = Object.prototype.hasOwnProperty.call(PREVIEW_ENDED_MESSAGES, previewReason) ? previewReason : 'missing';
+    return { error: PREVIEW_ENDED_MESSAGES[cause], sessionRevoked: true, reason: 'expired', code: 'preview_ended', previewReason: cause };
+}
+
+function sendPreviewEnded(res, previewReason) {
+    return res.status(401).json(previewEndedBody(previewReason));
 }
 
 // Guarda global (server.js, depois do adminRbacGuard e antes de proctoringRoutes): com
@@ -170,8 +205,8 @@ function previewLabel(studentClass, group) {
 
 // Confere a prévia deste token: { ok: true, session, student, cls, account } ou
 // { ok: false, reason } com reason 'missing', 'expired', 'admin_session' (a sessão do
-// instrutor acabou), 'account' (conta apagada ou senha trocada), 'permission' (perdeu
-// a permissão ou a turma saiu do escopo dele) ou 'class' (turma ou curso apagados).
+// instrutor acabou ou passou do prazo), 'account' (conta apagada ou senha trocada),
+// 'permission' (perdeu page.materials ou a turma saiu do escopo dele) ou 'class' (turma ou curso apagados).
 // canAccessClass(account, className, courseId) vem de middlewares.js (adminCanAccessClass).
 // Sem efeito colateral.
 function resolvePreviewSession(memory, raw, { now = Date.now(), canAccessClass } = {}) {
@@ -182,7 +217,9 @@ function resolvePreviewSession(memory, raw, { now = Date.now(), canAccessClass }
     const account = (Array.isArray(memory.admins) ? memory.admins : [])
         .find(item => item && item.email && String(item.email).toLowerCase() === session.adminEmail);
     if (!account || accountStamp(account) !== session.accountStamp) return { ok: false, reason: 'account' };
-    if (!canAccessAdminPermission(account, PREVIEW_PERMISSIONS)) return { ok: false, reason: 'permission' };
+    if (!canAccessAdminPermission(account, PREVIEW_PERMISSIONS) || !canAccessAdminPermission(account, PREVIEW_CONTENT_PERMISSION)) {
+        return { ok: false, reason: 'permission' };
+    }
     const cls = findClass(memory, session.courseId, session.studentClass);
     const course = (Array.isArray(memory.courses) ? memory.courses : []).find(item => item && String(item.id) === String(session.courseId));
     if (!cls || courseIsDeleted(course)) return { ok: false, reason: 'class' };
@@ -191,6 +228,8 @@ function resolvePreviewSession(memory, raw, { now = Date.now(), canAccessClass }
 }
 
 module.exports = {
+    PREVIEW_CONTENT_PERMISSION,
+    PREVIEW_ENDED_MESSAGES,
     PREVIEW_HEADER,
     PREVIEW_PERMISSIONS,
     PREVIEW_READ_ONLY,
@@ -203,10 +242,12 @@ module.exports = {
     hasPreviewHeader,
     isPreviewReadRequest,
     isPreviewReadRoute,
+    previewEndedBody,
     previewLabel,
     previewRequestPath,
     previewSessionGuard,
     previewToken,
     resolvePreviewSession,
+    sendPreviewEnded,
     sendPreviewReadOnly,
 };

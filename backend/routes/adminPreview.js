@@ -4,8 +4,10 @@
 //   corpo { courseId, studentClass, groupId? }; resposta { success, previewToken, expiraEm,
 //   rotulo, aluno } (aluno no formato do perfil do login, com preview: true). Permissão
 //   ['page.materials', 'page.classes'] e escopo da turma (adminRbacGuard e de novo aqui);
-//   a coordenação (só consulta) recebe 403 read_only_account no guarda. Auditoria
-//   content_preview_started.
+//   a coordenação (só consulta) recebe 403 read_only_account no guarda. Aqui, a conta
+//   precisa também de page.materials (PREVIEW_CONTENT_PERMISSION): a prévia mostra o
+//   conteúdo da turma, e o Professor auxiliar e a Secretaria (só page.classes) não leem
+//   conteúdo no painel. Auditoria content_preview_started.
 // POST /api/admin/preview-sessions/end  encerra a prévia do cabeçalho x-preview-session
 //   (se for desta conta) ou, sem ele, todas as prévias da conta; fora da auditoria.
 //
@@ -17,8 +19,10 @@ const db = require('../database.js');
 const { adminCanAccessClass, findClassByNameAndCourse, validateAdmin } = require('../middlewares.js');
 const { outOfScopeMessage } = require('../utils/adminRoles.js');
 const { recordAudit } = require('../utils/audit.js');
+const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
 const { createPreviewSession, endPreviewSession, endPreviewSessionsOf } = require('../utils/authSessions.js');
 const {
+    PREVIEW_CONTENT_PERMISSION,
     accountStamp,
     buildPreviewStudent,
     findPreviewGroup,
@@ -42,6 +46,9 @@ function createAdminPreviewRouter() {
     const router = express.Router();
 
     router.post('/api/admin/preview-sessions', PREVIEW_SCHEMAS.create, (req, res) => validateAdmin(req, res, async (config, account) => {
+        if (!canAccessAdminPermission(account, PREVIEW_CONTENT_PERMISSION)) {
+            return res.status(403).json({ success: false, error: 'A pré-visualização mostra o conteúdo da turma, e a sua conta não tem acesso ao conteúdo.' });
+        }
         const courseId = String(req.body.courseId || '').trim();
         const studentClass = String(req.body.studentClass || '').trim();
         const groupId = req.body.groupId ? String(req.body.groupId).trim() : '';

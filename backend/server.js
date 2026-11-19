@@ -286,7 +286,13 @@ app.use((req, res, next) => {
     const isStudentFlow = req.path.startsWith('/api/student') || req.path.startsWith('/api/forum')
         || req.path === '/api/ping' || req.path === '/data.js' || req.path === '/api/data.js'
         || (/^\/[^/]+\.md$/.test(req.path) && !isAuthenticatedAdmin);
-    if (isStudentFlow && st.maintenance && st.maintenance.enabled && !isAuthenticatedAdmin) {
+    // A pré-visualização (P5-S6a) é do instrutor: com a prévia válida, ele vê o portal
+    // também em manutenção (o cliente não manda x-admin-session nas rotas do aluno, D21);
+    // o previewSessionGuard, logo abaixo, continua só deixando passar a leitura.
+    const maintenanceOn = !!(st.maintenance && st.maintenance.enabled);
+    const previewHeader = maintenanceOn && isStudentFlow && !isAuthenticatedAdmin ? String(req.get(PREVIEW_HEADER) || '') : '';
+    const isInstructorPreview = !!previewHeader && checkPreviewToken(previewHeader).ok;
+    if (isStudentFlow && maintenanceOn && !isAuthenticatedAdmin && !isInstructorPreview) {
         return res.status(503).json({ error: st.maintenance.message || 'Sistema em manutenção.', maintenance: true });
     }
     next();

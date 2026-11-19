@@ -29,6 +29,7 @@ const {
     isPreviewReadRequest,
     previewToken,
     resolvePreviewSession,
+    sendPreviewEnded,
 } = require('./utils/previewAccess.js');
 const {
     findStudentSession,
@@ -115,19 +116,13 @@ function checkPreviewToken(raw, now = Date.now()) {
     return resolvePreviewSession(db.memory, raw, { now, canAccessClass: adminCanAccessClass });
 }
 
-const PREVIEW_ENDED_MESSAGE = 'A pré-visualização terminou. Abra de novo pelo painel.';
-
-function sendPreviewEnded(res) {
-    return res.status(401).json({ error: PREVIEW_ENDED_MESSAGE, sessionRevoked: true, reason: 'expired', code: 'preview_ended' });
-}
-
 // Pedido do portal com x-preview-session: monta o aluno virtual da turma (D19 do P5) sem
 // tocar em nada (sem presença, touchSession, IP ou troca de senha). Fora da lista branca,
 // 403 preview_read_only, também quando o router não passou pelo previewSessionGuard.
 function validatePreviewSession(req, res, next, token) {
     if (!isPreviewReadRequest(req)) return res.status(403).json({ ...PREVIEW_READ_ONLY });
     const preview = checkPreviewToken(token);
-    if (!preview.ok) return sendPreviewEnded(res);
+    if (!preview.ok) return sendPreviewEnded(res, preview.reason);
     const student = preview.student;
     const claimed = [
         req.body && req.body.email,
@@ -324,7 +319,8 @@ function resolveRequester(req) {
 function validateAnySession(req, res, next) {
     const requester = resolveRequester(req);
     if (!requester && previewToken(req)) {
-        return isPreviewReadRequest(req) ? sendPreviewEnded(res) : res.status(403).json({ ...PREVIEW_READ_ONLY });
+        if (!isPreviewReadRequest(req)) return res.status(403).json({ ...PREVIEW_READ_ONLY });
+        return sendPreviewEnded(res, checkPreviewToken(previewToken(req)).reason);
     }
     if (!requester) {
         // Sessão encerrada há pouco por uma ação (Sair, "Redefinir senha", troca de senha):

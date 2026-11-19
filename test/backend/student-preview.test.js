@@ -437,7 +437,8 @@ function decisions(virtualEmail) {
         'GET /api/connection': read('/api/connection'),
         'GET /iclass-ca.crt': 'recusada',
         'GET /api/connection/certificate': 'recusada',
-        'POST /api/client-error': 'recusada',
+        // Só o crash.log (fora do banco e da memória); responde 204.
+        'POST /api/client-error': read('/api/client-error', { method: 'POST', body: { area: 'aluno', message: 'Erro de teste na prévia' }, status: 204 }),
         'GET /data.js': read(`/data.js?${Q}`),
         'GET /api/data.js': read(`/api/data.js?${Q}`),
         'GET /:key.md': read('/Ap_3.md'),
@@ -538,7 +539,8 @@ test('[UC-PREVIA-003] passeio: toda rota fora de /api/admin tem decisão; fora d
                 if (response.status !== 403 || response.body.code !== 'preview_read_only') problems.push(`${route}: esperado 403 preview_read_only, veio ${response.status} ${response.text.slice(0, 120)}`);
                 if (isPreviewReadRoute(method, sample.url.split('?')[0])) problems.push(`${route}: recusada na tabela, mas casa com PREVIEW_READ_ROUTES`);
             } else {
-                if (response.status !== 200) problems.push(`${route}: esperado 200, veio ${response.status} ${response.text.slice(0, 160)}`);
+                const expected = decision.status || 200;
+                if (response.status !== expected) problems.push(`${route}: esperado ${expected}, veio ${response.status} ${response.text.slice(0, 160)}`);
                 if (!isPreviewReadRoute(sample.method, sample.url.split('?')[0])) problems.push(`${route}: na tabela como leitura, mas fora de PREVIEW_READ_ROUTES`);
             }
             if (memoryHash() !== before) problems.push(`${route}: a memória mudou`);
@@ -637,4 +639,158 @@ test('[UC-PREVIA-003] prévia vencida ou desconhecida: 401 preview_ended nas rot
     assert.equal(write.body.code, 'preview_read_only');
     const file = await request(app).get('/uploads/material.pdf?access=nao-existe');
     assert.equal(file.status, 401);
+});
+
+// ---------------------------------------------------------------------------
+// Rodada de ajuste 1 do C2
+// ---------------------------------------------------------------------------
+
+test('[UC-PREVIA-001] a prévia acaba quando a sessão do instrutor passa do prazo absoluto, antes da limpeza periódica', async () => {
+    const { previewToken: token } = await previewToken(tokens.prof);
+    assert.equal((await stillWorks(token)).status, 200);
+    // Sessão do painel aberta há 9 h (prazo padrão de 8 h), ainda na memória: nem a limpeza
+    // de 15 min nem um pedido do painel a removeram.
+    db.memory.adminSessions[tokens.prof].createdAt = Date.now() - 9 * 3600000;
+    const before = memoryHash();
+    const after = await stillWorks(token);
+    assert.equal(after.status, 401, JSON.stringify(after.body));
+    assert.equal(after.body.code, 'preview_ended');
+    assert.equal(after.body.previewReason, 'admin_session');
+    assert.equal(memoryHash(), before, 'a recusa não muda nada');
+    // Na manutenção também não vale como sessão de instrutor.
+    db.memory.config.settings = { ...(db.memory.config.settings || {}), maintenance: { enabled: true, message: 'Em manutenção.' } };
+    try {
+        assert.equal((await stillWorks(token)).status, 503);
+    } finally {
+        delete db.memory.config.settings.maintenance;
+    }
+    // A sessão do painel vencida também dá 401 lá.
+    assert.equal((await request(app).get('/api/admin/whoami').set('x-admin-session', tokens.prof)).status, 401);
+});
+
+test('[UC-PREVIA-001] o 401 preview_ended diz a causa (previewReason) e mantém reason "expired"', async () => {
+    // Abre todas antes de mudar qualquer coisa: abrir uma prévia limpa as vencidas.
+    const { previewToken: expired } = await previewToken(tokens.prof);
+    const { previewToken: outOfScope } = await previewToken(tokens.prof);
+    const { previewToken: scoped } = await previewToken(tokens.admin);
+    const { previewToken: deleted } = await previewToken(tokens.admin, { courseId: COURSE, studentClass: OTHER_CLASS });
+    const { previewToken: password } = await previewToken(tokens.prof2, { courseId: COURSE, studentClass: OTHER_CLASS });
+
+    db.memory.previewSessions[sha256(expired)].expiresAt = Date.now() - 1;
+    db.memory.admins.find(item => item.email === 'prof@previa.local').assignedClasses = [];
+    db.memory.admins.find(item => item.email === 'prof2@previa.local').password = db.hashPassword('Outra-Senha-2026#');
+    db.memory.classes = db.memory.classes.filter(cls => cls.name !== OTHER_CLASS);
+    const cases = [
+        [expired, 'expired'],
+        [outOfScope, 'permission'],
+        [deleted, 'class'],
+        [password, 'account'],
+        ['nao-existe', 'missing'],
+    ];
+
+    for (const [token, cause] of cases) {
+        for (const url of [`/api/student/dashboard?${Q}`, `/api/data.js?${Q}`]) {
+            const response = await request(app).get(url).set('x-preview-session', token);
+            assert.equal(response.status, 401, `${cause} ${url}`);
+            assert.equal(response.body.code, 'preview_ended');
+            assert.equal(response.body.reason, 'expired');
+            assert.equal(response.body.sessionRevoked, true);
+            assert.equal(response.body.previewReason, cause, url);
+            assert.equal(response.body.error, previewAccess.PREVIEW_ENDED_MESSAGES[cause]);
+        }
+    }
+    assert.match(previewAccess.PREVIEW_ENDED_MESSAGES.expired, /60 minutos/);
+
+    // O Sair do instrutor tira a prévia da memória: depois disso, 'missing'.
+    assert.equal((await stillWorks(scoped)).status, 200);
+    await request(app).post('/api/session/logout').set('x-admin-session', tokens.admin).send({});
+    assert.equal((await stillWorks(scoped)).body.previewReason, 'missing');
+});
+
+test('[UC-PREVIA-001] Professor auxiliar e Secretaria (sem conteúdo) não abrem a prévia; quem perde page.materials perde a prévia', async () => {
+    const now = Date.now();
+    db.memory.admins.push(
+        { email: 'monitor@previa.local', name: 'Auxiliar', role: 'monitor', password: db.hashPassword('Senha-Antiga-2026'),
+            assignedClasses: [{ courseId: COURSE, className: CLASS }] },
+        { email: 'sec@previa.local', name: 'Secretaria', role: 'secretaria', password: db.hashPassword('Senha-Antiga-2026'),
+            assignedSchoolIds: ['escola_a'] },
+    );
+    db.memory.adminSessions['monitor-token-previa'] = { email: 'monitor@previa.local', createdAt: now, lastSeen: now };
+    db.memory.adminSessions['sec-token-previa'] = { email: 'sec@previa.local', createdAt: now, lastSeen: now };
+
+    for (const adminToken of ['monitor-token-previa', 'sec-token-previa']) {
+        // O painel nega o conteúdo da turma a essas contas...
+        const panelData = await request(app).get(`/api/data.js?${Q}`).set('x-admin-session', adminToken);
+        assert.equal(panelData.status, 403, adminToken);
+        // ...e a prévia, que o mostraria, não abre.
+        const refused = await openPreview(adminToken);
+        assert.equal(refused.status, 403, `${adminToken}: ${JSON.stringify(refused.body)}`);
+        assert.match(refused.body.error, /conteúdo/);
+    }
+    assert.equal(db.memory.previewSessions, undefined, 'nenhuma prévia aberta');
+    assert.equal(db.memory.auditLogs.filter(item => item.action === 'content_preview_started').length, 0);
+
+    // A prévia aberta pela professora acaba se a conta deixa de ter page.materials.
+    const { previewToken: token } = await previewToken(tokens.prof);
+    assert.equal((await stillWorks(token)).status, 200);
+    const prof = db.memory.admins.find(item => item.email === 'prof@previa.local');
+    prof.role = 'monitor';
+    const after = await stillWorks(token);
+    assert.equal(after.status, 401);
+    assert.equal(after.body.previewReason, 'permission');
+});
+
+test('[UC-PREVIA-003] em manutenção, a prévia válida lê o portal (e continua sem gravar); aluno e prévia inválida recebem 503', async () => {
+    const { previewToken: token } = await previewToken(tokens.prof);
+    db.memory.config.settings = { ...(db.memory.config.settings || {}), maintenance: { enabled: true, message: 'Em manutenção.' } };
+    try {
+        const before = memoryHash();
+        const read = await stillWorks(token);
+        assert.equal(read.status, 200, JSON.stringify(read.body));
+        assert.equal((await request(app).get(`/data.js?${Q}`).set('x-preview-session', token)).status, 200);
+        const write = await request(app).post('/api/student/progress').set('x-preview-session', token).send({ completedUnits: { Ap_3: true } });
+        assert.equal(write.status, 403);
+        assert.equal(write.body.code, 'preview_read_only');
+        assert.equal((await request(app).get('/api/ping').set('x-preview-session', token)).status, 403);
+        assert.equal(memoryHash(), before);
+
+        const student = await request(app).get(`/api/student/dashboard?${Q}`).set('x-session-token', tokens.bia);
+        assert.equal(student.status, 503);
+        assert.equal(student.body.maintenance, true);
+        const unknown = await request(app).get(`/api/student/dashboard?${Q}`).set('x-preview-session', 'nao-existe');
+        assert.equal(unknown.status, 503);
+    } finally {
+        delete db.memory.config.settings.maintenance;
+    }
+});
+
+test('[UC-PREVIA-003] HEAD vale como GET nas rotas de leitura e o aviso de erro de tela vai só para o crash.log', async () => {
+    const { previewToken: token } = await previewToken(tokens.prof);
+    const before = memoryHash();
+    const head = await request(app).head(`/api/student/dashboard?${Q}`).set('x-preview-session', token);
+    assert.equal(head.status, 200);
+    const headWrite = await request(app).head('/api/ping').set('x-preview-session', token);
+    assert.equal(headWrite.status, 403);
+    assert.equal(previewAccess.isPreviewReadRoute('HEAD', '/api/student/library'), true);
+    assert.equal(previewAccess.isPreviewReadRoute('HEAD', '/api/student/progress/x'), false);
+
+    const crashLog = path.join(tempRoot, 'crash.log');
+    const sizeBefore = fs.existsSync(crashLog) ? fs.statSync(crashLog).size : 0;
+    const originalSave = db.save;
+    let saves = 0;
+    db.save = function spiedSave(...args) { saves += 1; return originalSave.apply(this, args); };
+    try {
+        const report = await request(app).post('/api/client-error').set('x-preview-session', token)
+            .send({ area: 'aluno', message: 'Falha ao desenhar a unidade', path: '/aluno/unidade' });
+        assert.equal(report.status, 204, report.text);
+    } finally {
+        db.save = originalSave;
+    }
+    assert.equal(saves, 0, 'db.save não é chamado');
+    assert.equal(memoryHash(), before);
+    const logText = fs.existsSync(crashLog) ? fs.readFileSync(crashLog, 'utf8').slice(sizeBefore) : '';
+    assert.match(logText, /Falha ao desenhar a unidade/);
+    // Corpo inválido continua 400 e prévia desconhecida, 401.
+    assert.equal((await request(app).post('/api/client-error').set('x-preview-session', token).send({ area: 'x', message: 'a' })).status, 400);
+    assert.equal((await request(app).post('/api/client-error').set('x-preview-session', 'nao-existe').send({ area: 'aluno', message: 'a' })).status, 401);
 });

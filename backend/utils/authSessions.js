@@ -543,16 +543,19 @@ function createPreviewSession(memory, { adminToken, courseId, studentClass, grou
 
 // { hash, session, adminSession } da prévia deste token, ou { reason } quando ela não vale:
 // 'missing' (token desconhecido), 'expired' (passou dos 60 min) ou 'admin_session' (a
-// sessão do instrutor que a abriu acabou). Sem efeito colateral: não apaga nem atualiza
-// nada (a conferência da conta, da permissão e da turma é de utils/previewAccess.js).
-function findPreviewSession(memory, raw, now = Date.now()) {
+// sessão do instrutor que a abriu acabou: saiu da memória ou passou do prazo absoluto,
+// como em checkAdminSessionToken). Sem efeito colateral: não apaga nem atualiza nada (a
+// conferência da conta, da permissão e da turma é de utils/previewAccess.js). Antes, a
+// sessão do painel vencida pelo prazo e ainda não removida (limpeza de 15 min ou pedido
+// do painel com aquele token) mantinha a prévia aberta.
+function findPreviewSession(memory, raw, now = Date.now(), { absoluteTtlMs = sessionAbsoluteTtlMs() } = {}) {
     const hash = hashSessionToken(raw);
     const map = previewMap(memory);
     const session = hash && map ? ownValue(map, hash) : undefined;
     if (!isPreviewValue(session)) return { reason: 'missing' };
     if (!(Number(session.expiresAt) > now)) return { reason: 'expired', hash, session };
     const admin = adminSessionByHash(memory, session.adminSessionHash);
-    if (!admin) return { reason: 'admin_session', hash, session };
+    if (!admin || isSessionExpired(admin.session, now, absoluteTtlMs)) return { reason: 'admin_session', hash, session };
     return { hash, session, adminSession: admin.session };
 }
 
