@@ -127,6 +127,7 @@ const PHASE3_ROUTES = [
     ['POST', '/exam-applications/app_1/answer-key-correction', 'page.results'],
     ['POST', '/exam-applications/app_1/schedule', 'page.exams'],
     ['POST', '/exam-applications/app_1/participants', 'page.exams'],
+    ['GET', '/exam-applications/participant-candidates', 'page.exams'],
     ['POST', '/question-bank/import/preview', 'page.exams'],
     ['POST', '/question-bank/import', 'page.exams'],
     ['GET', '/question-bank/export', 'page.exams'],

@@ -26,7 +26,7 @@
 // troca, a saída e o registro de erro da tela). A tela do portal mostra o formulário de
 // troca no lugar da página.
 
-const { ACTIVE_APPLICATION_STATUSES, CLOSED_ATTEMPT_STATUSES, findExamApplication } = require('./examApplications.js');
+const { ACTIVE_APPLICATION_STATUSES, CLOSED_ATTEMPT_STATUSES, applicationParticipant, findExamApplication } = require('./examApplications.js');
 
 const PASSWORD_CHANGE_REASONS = new Set(['created', 'reset', 'weak']);
 
@@ -220,6 +220,8 @@ function studentHasExamInProgress(memory, email, student, now = Date.now()) {
     return applications.some(application => application && ACTIVE_APPLICATION_STATUSES.has(application.status)
         && !attemptedApplications.has(application.id)
         && studentInApplicationClass(record, application)
+        // Segunda chamada e lista escolhida: só quem está na lista está em prova (P3-S7).
+        && applicationParticipant(application, target)
         && now <= classExamWindowEnd(application, now));
 }
 

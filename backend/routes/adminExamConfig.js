@@ -24,7 +24,16 @@ const { deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAtt
 const { examFamilyKeys } = require('../utils/examFamily.js');
 const { assertClassOpen } = require('../utils/academicCalendar.js');
 const { normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
-const { body, either, int, str } = require('../utils/inputSchema.js');
+const { body, either, int, shape, str } = require('../utils/inputSchema.js');
+const {
+    AUDIENCE_INPUT_FIELDS,
+    applicationFinalidade,
+    applicationParticipantList,
+    changedOverrides,
+    describeAudienceAudit,
+    parseApplicationAudience,
+    participantCandidates,
+} = require('../utils/examParticipants.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 const {
     OPEN_APPLICATION_STATUSES,
@@ -204,9 +213,11 @@ function openExamFamilyApplication(cls, examKey) {
     }).find(application => family.has(String(application.examKey || ''))) || null;
 }
 
-function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req) {
+function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req, audience = null) {
     const options = applicationOptions || {};
     const preparedConfig = buildPreparedOnlineExamConfig(historyEntry, cls.onlineExamConfigs?.[examKey] || {}, options);
+    // Para quem (P3-S7): já conferido pela rota (parseApplicationAudience).
+    if (audience) Object.assign(preparedConfig, audience);
     const rawToken = preparedConfig.accessToken;
     preparedConfig.accessTokenHash = hashExamToken(rawToken);
     preparedConfig.tokenEnabled = !!preparedConfig.accessTokenHash;
@@ -230,6 +241,7 @@ function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOp
         status: 'prepared',
     });
     db.memory.examApplications.push(application);
+    recordAudienceAudit(application, actor, { participantsChanged: true, before: { finalidade: 'regular', participants: null, studentOverrides: {} }, onlyWhenRestricted: true });
     cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cls.onlineExamConfigs?.[examKey] || {});
     cls.releasedItems[examKey] = false;
     if (cls.activeExamKey === examKey) cls.activeExamKey = null;
@@ -246,9 +258,44 @@ function finishSummary(application) {
     return sharedFinishSummary(db.memory, application);
 }
 
-function recordExamAudit(type, application, actor, details = {}) {
-    sharedRecordExamAudit(db.memory, type, application, actor, details);
+function recordExamAudit(type, application, actor, details = {}, extra = {}) {
+    sharedRecordExamAudit(db.memory, type, application, actor, details, extra);
 }
+
+// Auditoria do "Para quem" (P3-S7): exam_application_participants_set com a finalidade e a
+// quantidade de alunos (sem a lista de e-mails) e uma exam_attempt_extra_granted por aluno
+// cuja exceção mudou, com o e-mail dele no registro (a anonimização acha a linha). Na
+// preparação (onlyWhenRestricted) só grava quando a aplicação não é a de sempre.
+function recordAudienceAudit(application, actor, { participantsChanged = false, before = {}, onlyWhenRestricted = false } = {}) {
+    const finalidade = applicationFinalidade(application);
+    const list = applicationParticipantList(application);
+    const restricted = finalidade !== 'regular' || list !== null;
+    if (participantsChanged && (!onlyWhenRestricted || restricted)) {
+        const previousList = Array.isArray(before.participants) ? before.participants : null;
+        recordExamAudit('exam_application_participants_set', application, actor, {
+            finalidade,
+            finalidadeAntes: before.finalidade || 'regular',
+            quantidade: list === null ? null : list.length,
+            quantidadeAntes: previousList === null ? null : previousList.length,
+            status: application.status,
+        });
+    }
+    changedOverrides(before.studentOverrides || {}, application.studentOverrides || {}).forEach(change => {
+        recordExamAudit('exam_attempt_extra_granted', application, actor, {
+            extraAttempts: change.depois ? change.depois.extraAttempts : 0,
+            prazoAte: change.depois ? change.depois.prazoAte : null,
+            motivo: change.depois ? change.depois.motivo : '',
+            antes: change.antes,
+        }, { studentEmail: change.email });
+    });
+}
+
+// Tipo e tamanho do "Para quem" dentro das opções da preparação e no corpo da rota de
+// participantes (utils/inputSchema.js); as regras vêm em parseApplicationAudience.
+const PREPARE_AUDIENCE_SCHEMA = body({
+    applicationOptions: shape(AUDIENCE_INPUT_FIELDS, { nullable: true, label: 'opções da aplicação' }),
+});
+const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
 
 function pushExamMessage(application, actor, messageText) {
     if (!Array.isArray(db.memory.broadcastMessages)) db.memory.broadcastMessages = [];
@@ -399,8 +446,79 @@ function applicationSummary(application) {
     return summary;
 }
 
+// Linhas do "Para quem" no registro da aplicação (o texto vem de examParticipants.js;
+// gradebook.js é da trilha B até a J2 e devolveria só 'Evento da prova').
+function describeAudienceEntries(rows) {
+    const byId = new Map((db.memory.auditLogs || [])
+        .filter(entry => entry && (entry.type === 'exam_application_participants_set' || entry.type === 'exam_attempt_extra_granted'))
+        .map(entry => [entry.id, entry]));
+    if (!byId.size) return rows;
+    const nameByEmail = new Map((db.memory.students || []).map(student => [String(student.email || '').trim().toLowerCase(), (student.nomeSocial && student.nomeSocial.trim()) || student.name || student.email]));
+    return rows.map(row => {
+        const entry = byId.get(row.id);
+        const described = entry ? describeAudienceAudit(entry, nameByEmail) : null;
+        return described ? { ...row, ...described } : row;
+    });
+}
+
+// Escopo do professor na turma da aplicação (o guarda já conferiu a permissão).
+function canManageApplication(matchedAdmin, application) {
+    return adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId);
+}
+
 function createAdminExamConfigRouter() {
     const router = express.Router();
+
+    // Alunos da turma para o "Para quem" da preparação (P3-S7): cada um com fezRegular
+    // (já tem entrega que conta numa aplicação regular da prova) e, com applicationId, se
+    // está na lista dela e a exceção dele. segundaChamada é a lista pré-marcada: quem não
+    // fez. Declarada antes de /exam-applications/:applicationId.
+    router.get('/api/admin/exam-applications/participant-candidates', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const studentClass = String(req.query.studentClass || '').trim();
+            const examKey = String(req.query.examKey || '').trim();
+            const applicationId = String(req.query.applicationId || '').trim();
+            const application = applicationId ? findExamApplication(db.memory.examApplications, applicationId) : null;
+            if (applicationId && !application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            const cls = application
+                ? findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId)
+                : findClassByNameAndCourse(db.memory.classes || [], studentClass, req.query.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
+            const key = application ? application.examKey : examKey;
+            if (!key) return res.status(400).json({ error: 'Informe a prova.' });
+            if (!adminCanAccessClass(matchedAdmin, cls.name, cls.courseId)) {
+                return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
+            }
+            const scope = { studentClass: cls.name, courseId: cls.courseId, examKey: key, excludeApplicationId: application ? application.id : null };
+            const list = application ? applicationParticipantList(application) : null;
+            const overrides = (application && application.studentOverrides) || {};
+            const students = participantCandidates(db.memory, scope).map(student => {
+                const override = overrides[student.email] || null;
+                return {
+                    ...student,
+                    naLista: application ? (list === null || list.includes(student.email)) : null,
+                    override: override ? {
+                        extraAttempts: Number(override.extraAttempts) || 0,
+                        prazoAte: Number(override.prazoAte) > 0 ? Number(override.prazoAte) : null,
+                        motivo: String(override.motivo || ''),
+                    } : null,
+                };
+            });
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                success: true,
+                students,
+                segundaChamada: students.filter(student => !student.fezRegular).map(student => student.email),
+                application: application ? {
+                    id: application.id,
+                    status: application.status,
+                    timerMode: application.timerMode || 'collective',
+                    finalidade: applicationFinalidade(application),
+                    participants: list,
+                } : null,
+            });
+        });
+    });
 
     router.get('/api/admin/exam-applications', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
@@ -456,7 +574,7 @@ function createAdminExamConfigRouter() {
                     status: application.status,
                     createdAt: application.createdAt || null,
                 },
-                entries: buildApplicationAuditTrail(application, db.memory.auditLogs || [], { students: db.memory.students || [] }),
+                entries: describeAudienceEntries(buildApplicationAuditTrail(application, db.memory.auditLogs || [], { students: db.memory.students || [] })),
             });
         });
     });
@@ -510,7 +628,8 @@ function createAdminExamConfigRouter() {
     });
 
     router.post('/api/admin/exam-applications', (req, res) => {
-        validateAdmin(req, res, async () => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (!PREPARE_AUDIENCE_SCHEMA.check(req, res)) return;
             const { studentClass, courseId, examKey, historyId } = req.body || {};
             if (!studentClass || !examKey || !historyId) {
                 return res.status(400).json({ error: 'Turma, prova e configuração salva são obrigatórias.' });
@@ -534,11 +653,72 @@ function createAdminExamConfigRouter() {
             // professor decide no Monitor o que fazer com as respostas (AVA-04).
             const running = activeExamApplication(db.memory, { studentClass: cls.name, courseId: cls.courseId, examKey });
             if (running) return res.status(409).json(activeApplicationConflict(running));
+            // Para quem (P3-S7, D15 e D16): turma inteira (padrão), segunda chamada ou alunos
+            // escolhidos, e as exceções por aluno. Sem os campos, tudo como antes.
+            const audience = parseApplicationAudience(db.memory, {
+                finalidade: options.finalidade,
+                participants: options.participants,
+                studentOverrides: options.studentOverrides,
+            }, {
+                cls,
+                examKey,
+                timerMode: options.timerMode === 'per_attempt' ? 'per_attempt' : 'collective',
+                actor: adminActor(req),
+            });
+            if (!audience.ok) return res.status(400).json({ success: false, error: audience.error, field: audience.field ? `applicationOptions.${audience.field}` : undefined });
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             if (!cls.releasedItems) cls.releasedItems = {};
-            const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req);
+            const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req, audience.value);
             await persistClasses(db.memory.classes || []);
             res.status(201).json({ success: true, ...prepared, onlineExamConfig: cls.onlineExamConfigs[examKey] });
+        });
+    });
+
+    // Para quem da aplicação já preparada (P3-S7): a lista de alunos (null = turma inteira),
+    // a finalidade (só antes de a prova começar) e as exceções por aluno (tentativas extras
+    // e prazo para começar). Com a prova em andamento a lista só cresce. Não mexe em nota:
+    // grava só a aplicação e a auditoria.
+    router.post('/api/admin/exam-applications/:applicationId/participants', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (!PARTICIPANTS_SCHEMA.check(req, res)) return;
+            const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            if (!canManageApplication(matchedAdmin, application)) {
+                return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
+            }
+            if (['finished', 'cancelled'].includes(application.status)) {
+                return res.status(409).json({ error: 'Esta aplicação já foi encerrada; a lista de alunos não muda mais.', applicationClosed: true });
+            }
+            const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });
+            const input = req.body || {};
+            const actor = adminActor(req);
+            const parsed = parseApplicationAudience(db.memory, {
+                finalidade: input.finalidade,
+                participants: input.participants,
+                studentOverrides: input.studentOverrides,
+            }, { cls, examKey: application.examKey, application, actor });
+            if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: parsed.field });
+            const before = {
+                finalidade: applicationFinalidade(application),
+                participants: applicationParticipantList(application),
+                studentOverrides: JSON.parse(JSON.stringify(application.studentOverrides || {})),
+            };
+            const next = parsed.value;
+            const participantsChanged = before.finalidade !== next.finalidade
+                || JSON.stringify(before.participants) !== JSON.stringify(next.participants);
+            const overridesChanged = changedOverrides(before.studentOverrides, next.studentOverrides).length > 0;
+            if (!participantsChanged && !overridesChanged) {
+                return res.json({ success: true, unchanged: true, application: withKeystrokeMode(application) });
+            }
+            application.finalidade = next.finalidade;
+            application.participants = next.participants;
+            application.studentOverrides = next.studentOverrides;
+            application.updatedAt = new Date().toISOString();
+            application.updatedBy = actor;
+            recordAudienceAudit(application, actor, { participantsChanged, before });
+            await db.save({ only: ['examApplications', 'auditLogs'] });
+            res.json({ success: true, application: withKeystrokeMode(application) });
         });
     });
 

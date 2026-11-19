@@ -138,7 +138,9 @@ const loginGuard = require('../utils/loginGuard.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
+    applicationParticipant,
     applicationToOnlineConfig,
+    effectiveMaxAttempts,
     examStateKey,
     findExamApplication,
     findOpenAttemptState,
@@ -4539,7 +4541,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         // Um único aluno com a turma gravada em formato inesperado não pode derrubar o
         // Monitor de todas as turmas (DES-03): a leitura passa pelo helper normalizado.
         const monitorCourseId = String((cls && cls.courseId) || courseId || '').trim();
-        const students = (db.memory.students || []).filter(s => s && s.email && studentInClass(s, studentClass, monitorCourseId));
+        const classStudents = (db.memory.students || []).filter(s => s && s.email && studentInClass(s, studentClass, monitorCourseId));
 
         const monitorMaxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? currentConfig.maxAttempts);
         const perAttemptTimer = (application?.timerMode || currentConfig.timerMode) === 'per_attempt';
@@ -4548,6 +4550,17 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         // e-mail (DES-04), DEPOIS da varredura dos prazos acima. Antes cada aluno percorria
         // o histórico inteiro da escola.
         const activity = collectMonitorActivity(db.memory, { application, examKey, keystrokes: db.keystrokes });
+
+        // Segunda chamada e lista escolhida (P3-S7): só quem está na lista aparece (quem
+        // não está não é "ausente"); quem já tem tentativa ou entrega nela aparece sempre.
+        const students = application && Array.isArray(application.participants)
+            ? classStudents.filter(s => {
+                const email = s.email.toLowerCase();
+                return applicationParticipant(application, email)
+                    || (activity.attemptsByEmail.get(email) || []).length > 0
+                    || (activity.deliveriesByEmail.get(email) || []).length > 0;
+            })
+            : classStudents;
 
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
@@ -4687,9 +4700,10 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 name: s.name,
                 ip: session ? session.ip : '',
                 status,
-                // Tentativa que a linha mostra ("tentativa N de M") e o limite da aplicação.
+                // Tentativa que a linha mostra ("tentativa N de M") e o limite do aluno (o da
+                // aplicação mais as tentativas extras dele, D16).
                 attemptNumber,
-                maxAttempts: monitorMaxAttempts,
+                maxAttempts: application ? effectiveMaxAttempts(application, email, currentConfig.maxAttempts) : monitorMaxAttempts,
                 deliveredAttempts,
                 attemptInProgress,
                 attemptStarted,

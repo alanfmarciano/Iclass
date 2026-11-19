@@ -4,13 +4,14 @@
 // respostas salvas ("entregue automaticamente no fim do tempo"). O envio automático
 // do navegador que chega atrasado (celular sem rede, por exemplo) ainda é aceito
 // dentro de uma janela de tolerância, com o atraso registrado para o professor.
-const { filterStudentExamAttempts, normalizeMaxAttempts } = require('./examAttempts.js');
+const { filterStudentExamAttempts } = require('./examAttempts.js');
 const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js');
 const { answerFingerprint, answersFromGradedAnswers, hasAnswer } = require('./examScoring.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
     SERVER_OUTAGE_PAUSE_REASON,
+    effectiveMaxAttempts,
     examStateKey,
     extendDeadlineByPauses,
     findExamApplication,
@@ -558,7 +559,8 @@ function deliveredWithoutAttemptsLeft(memory, application, studentEmail) {
         applicationId: application.id,
     }).length;
     if (!delivered) return false;
-    const maxAttempts = normalizeMaxAttempts(application.maxAttempts);
+    // O limite do aluno: o da aplicação mais as tentativas extras dele (P3-S7, D16).
+    const maxAttempts = effectiveMaxAttempts(application, email);
     return maxAttempts !== null && delivered >= maxAttempts;
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, ChevronRight, ClipboardList, Copy, Edit3, FileText, Layers, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, ChevronRight, ClipboardList, Copy, Edit3, FileText, Layers, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock, Users } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -19,7 +19,17 @@ import { FinishApplicationModal } from './FinishApplicationModal'
 import { rememberApplicationToken } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { ExamApplicationDetail } from './ExamApplicationDetail'
-import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
+import { DEFAULT_KEYSTROKE_MODE } from '../../lib/keystrokeModes'
+import {
+  ApplicationAudienceFields,
+  ApplicationAudienceModal,
+  KeystrokeModeSelect,
+  PrepareApplicationForm,
+  audiencePayload,
+  audienceProblem,
+  initialAudience,
+  useParticipantCandidates,
+} from './PrepareApplicationForm'
 import '../../styles/provas-board.css'
 import {
   buildExamVersions,
@@ -84,19 +94,6 @@ const DEFAULT_FORM = {
   keystrokeMode: DEFAULT_KEYSTROKE_MODE,
 }
 
-// Campo "Registro do teclado" das duas telas de preparar (H8b, CRIT-04): vale para a
-// aplicação inteira e não muda depois de preparada.
-function KeystrokeModeSelect({ value, onChange }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <Select label="Registro do teclado" value={value || DEFAULT_KEYSTROKE_MODE} onChange={(e) => onChange(e.target.value)}>
-        {KEYSTROKE_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </Select>
-      <span className="text-xs text-subtle">{keystrokeModeDescription(value)}</span>
-    </div>
-  )
-}
-
 function statusTone(status) {
   if (status === 'running') return 'success'
   if (status === 'waiting' || status === 'paused') return 'warning'
@@ -123,6 +120,14 @@ const MODULE_ACCENTS = ['var(--primary)', 'var(--info)', 'var(--violet, #a78bfa)
 
 function clampCount(value, max) {
   return Math.max(1, Math.min(Number(value) || 1, Math.max(1, max || 1)))
+}
+
+// "Segunda chamada · 3 alunos" da aplicação preparada ou em andamento.
+function audienceLabel(application) {
+  const list = Array.isArray(application?.participants) ? application.participants : null
+  const purpose = application?.finalidade === 'segunda_chamada' ? 'Segunda chamada' : 'Para quem'
+  if (!list) return `${purpose}: turma inteira`
+  return `${purpose}: ${list.length} ${list.length === 1 ? 'aluno' : 'alunos'}`
 }
 
 function historyLabel(entry, index) {
@@ -169,6 +174,9 @@ export default function ProvasPage() {
   const [scopeConfirm, setScopeConfirm] = useState(null)
   const [bankDelete, setBankDelete] = useState(null)
   const [applyHistory, setApplyHistory] = useState(null)
+  // "Para quem" da montagem online e "Alunos desta aplicação" (P3-S7, PrepareApplicationForm.jsx).
+  const [audience, setAudience] = useState(initialAudience)
+  const [audienceApplication, setAudienceApplication] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [excluded, setExcluded] = useState([])
   const [unusedOnly, setUnusedOnly] = useState(false)
@@ -242,6 +250,9 @@ export default function ProvasPage() {
     return applications.find((item) => item.id === configuredId) || applications[0] || null
   }, [applications, onlineConfig])
   const runningApplication = useMemo(() => runningApplicationOf(applications), [applications])
+  // Alunos da turma para o "Para quem" (só com a prova e a turma escolhidas, no modo online).
+  const audienceCandidates = useParticipantCandidates({ studentClass: className, courseId, examKey, enabled: mode === 'online' && !!examKey && !!className })
+  const historyCandidates = useParticipantCandidates({ studentClass: className, courseId, examKey, enabled: !!applyHistory && !!examKey && !!className })
   const RUNNING_MESSAGE = 'Há uma aplicação em andamento desta prova; encerre-a pelo Monitor antes de preparar outra.'
   const normalizedEval = useMemo(() => evaluation ? normalizeEvaluation(evaluation) : null, [evaluation])
   const usage = useMemo(() => getQuestionUsageMap(history), [history])
@@ -299,6 +310,9 @@ export default function ProvasPage() {
     setHistory(historyRes.history || [])
     setApplications(applicationsRes.applications || [])
   }
+
+  // Outra prova ou turma: o "Para quem" volta para a turma inteira.
+  useEffect(() => { setAudience(initialAudience()) }, [examKey, className, courseId])
 
   useEffect(() => {
     if (activeCourseId && courseId !== activeCourseId) setCourseId(activeCourseId)
@@ -428,6 +442,8 @@ export default function ProvasPage() {
     if (form.tokenEnabled && !/^[A-Z]{5}$/.test(form.accessToken)) return toast.error('O token deve ter exatamente 5 letras maiúsculas')
     const parsedMaxAttempts = parseMaxAttemptsInput(form.maxAttempts)
     if (!parsedMaxAttempts.valid) return toast.error('Tentativas deve ser um número entre 1 e 10.')
+    const audienceIssue = prepare ? audienceProblem(audience) : null
+    if (audienceIssue) return toast.error(audienceIssue)
     setBusy(prepare ? 'prepare' : 'saveOnline')
     try {
       const saved = await addHistory('online', currentVersions, { questionCount: currentVersions[0].count, maxAttempts: parsedMaxAttempts.value })
@@ -447,6 +463,7 @@ export default function ProvasPage() {
             accessToken: form.tokenEnabled ? form.accessToken : null,
             maxAttempts: parsedMaxAttempts.value,
             keystrokeMode: form.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
+            ...audiencePayload(audience, { timerMode: form.timerMode }),
           },
         })
         rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -499,6 +516,7 @@ export default function ProvasPage() {
         ? (entry.maxAttempts == null ? '' : String(entry.maxAttempts))
         : String(DEFAULT_MAX_ATTEMPTS),
       keystrokeMode: DEFAULT_KEYSTROKE_MODE,
+      audience: initialAudience(),
     })
   }
 
@@ -507,6 +525,8 @@ export default function ProvasPage() {
     if (applyHistory.tokenEnabled && !/^[A-Z]{5}$/.test(applyHistory.accessToken)) return toast.error('O token deve ter exatamente 5 letras maiúsculas')
     const parsedMaxAttempts = parseMaxAttemptsInput(applyHistory.maxAttempts)
     if (!parsedMaxAttempts.valid) return toast.error('Tentativas deve ser um número entre 1 e 10.')
+    const audienceIssue = audienceProblem(applyHistory.audience)
+    if (audienceIssue) return toast.error(audienceIssue)
     const durationMinutes = Math.max(1, Number(applyHistory.durationMinutes) || 60)
     const waitingRoomMinutes = parseWaitingRoomInput(applyHistory.waitingRoomMinutes)
     setBusy('applyHistory')
@@ -526,6 +546,7 @@ export default function ProvasPage() {
           accessToken: applyHistory.tokenEnabled ? applyHistory.accessToken : null,
           maxAttempts: parsedMaxAttempts.value,
           keystrokeMode: applyHistory.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
+          ...audiencePayload(applyHistory.audience, { timerMode: applyHistory.timerMode }),
         },
       })
       rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -1051,6 +1072,27 @@ export default function ProvasPage() {
                       </div>
                     </Card>
 
+                    {mode === 'online' && (
+                      <Card className="p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="w-8 h-8 grid place-items-center rounded-md bg-surface-2 text-muted"><Users size={17} /></span>
+                          <div>
+                            <h3 className="text-sm font-bold text-text">Para quem</h3>
+                            <p className="text-xs text-muted">Turma inteira, segunda chamada ou alunos escolhidos</p>
+                          </div>
+                        </div>
+                        <ApplicationAudienceFields
+                          value={audience}
+                          onChange={setAudience}
+                          candidates={audienceCandidates.data}
+                          loading={audienceCandidates.loading}
+                          error={audienceCandidates.error}
+                          onRetry={audienceCandidates.refetch}
+                          timerMode={form.timerMode}
+                        />
+                      </Card>
+                    )}
+
                     {mode === 'online' ? (
                       <Card className="p-4 space-y-3">
                         <div className="flex items-center gap-2">
@@ -1071,6 +1113,12 @@ export default function ProvasPage() {
                           <Button icon={Play} loading={busy === 'prepare'} disabled={!!runningApplication} title={runningApplication ? RUNNING_MESSAGE : undefined} onClick={() => saveOnline(true)}>Preparar e abrir monitor</Button>
                         </div>
                         <p className="text-xs text-warning">Preparar ainda não libera a prova. No monitor, clique em “Iniciar prova e avisar alunos” ou abra a sala de espera.</p>
+                        {activeApplication && !['finished', 'cancelled'].includes(activeApplication.status) && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge tone={activeApplication.finalidade === 'segunda_chamada' || Array.isArray(activeApplication.participants) ? 'info' : 'neutral'}>{audienceLabel(activeApplication)}</Badge>
+                            <Button size="sm" variant="secondary" icon={Users} onClick={() => setAudienceApplication(activeApplication)}>Alunos desta aplicação</Button>
+                          </div>
+                        )}
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="secondary" icon={Pause} loading={busy === 'paused'} onClick={() => control('paused')}>Pausar</Button>
                           <Button size="sm" variant="secondary" icon={Play} loading={busy === 'running'} onClick={() => control('running')}>Retomar</Button>
@@ -1275,45 +1323,22 @@ export default function ProvasPage() {
         </>}
       >
         {applyHistory && (
-          <div className="space-y-4">
-            <div className="rounded-lg border border-border bg-surface-2/60 p-3">
-              <p className="text-sm font-semibold text-text">{applyHistory.entry.label || 'Aplicação salva'}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Badge tone="neutral">{applyHistory.entry.questionCount || applyHistory.entry.questionNumbers?.length || 0} questões fixas</Badge>
-                <Badge tone="info">{applyHistory.availableVersions} {applyHistory.availableVersions === 1 ? 'versão disponível' : 'versões disponíveis'}</Badge>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Input label="Versões online" type="number" min="1" max={applyHistory.availableVersions} value={applyHistory.onlineVersions} onChange={(e) => setApplyHistory({ ...applyHistory, onlineVersions: Math.max(1, Math.min(applyHistory.availableVersions, Number(e.target.value) || 1)) })} />
-              <Input label="Duração (min)" type="number" min="1" value={applyHistory.durationMinutes} onChange={(e) => setApplyHistory({ ...applyHistory, durationMinutes: e.target.value })} />
-              <Input label="Sala de espera (min)" type="number" min="0" value={applyHistory.waitingRoomMinutes} helper="Padrão: 10 minutos" onChange={(e) => setApplyHistory({ ...applyHistory, waitingRoomMinutes: e.target.value })} />
-              <Select label="Início do cronômetro" value={applyHistory.timerMode} onChange={(e) => setApplyHistory({ ...applyHistory, timerMode: e.target.value })}>
-                <option value="per_attempt">Quando cada aluno iniciar</option>
-                <option value="collective">Junto com a turma</option>
-              </Select>
-              <div className="sm:col-span-2">
-                <Input label="Tentativas permitidas" type="number" min="1" max="10" step="1" placeholder="Ilimitadas" value={applyHistory.maxAttempts} onChange={(e) => setApplyHistory({ ...applyHistory, maxAttempts: e.target.value })} helper="Padrão: 1 tentativa. Deixe em branco para não limitar." />
-              </div>
-              <div className="sm:col-span-2">
-                <KeystrokeModeSelect value={applyHistory.keystrokeMode} onChange={(keystrokeMode) => setApplyHistory({ ...applyHistory, keystrokeMode })} />
-              </div>
-              {applyHistory.tokenEnabled && <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
-                <Input label="Token de acesso" value={applyHistory.accessToken} maxLength={5} autoComplete="off" spellCheck={false} className="font-mono text-base font-semibold tracking-[0.2em]" helper="Obrigatório · 5 letras" onChange={(e) => setApplyHistory({ ...applyHistory, accessToken: normalizeTokenInput(e.target.value) })} />
-                <Button type="button" variant="secondary" icon={RefreshCw} aria-label="Gerar novo token" onClick={() => setApplyHistory({ ...applyHistory, accessToken: generateExamToken() })}>Novo</Button>
-              </div>}
-            </div>
-
-            <div className="rounded-lg border border-border p-3">
-              <div className="space-y-3">
-                <Switch label="Cronômetro ativo" checked={applyHistory.timerEnabled} onChange={(value) => setApplyHistory({ ...applyHistory, timerEnabled: value })} />
-                <Switch label="Exigir token de acesso" checked={applyHistory.tokenEnabled} onChange={(value) => setApplyHistory({ ...applyHistory, tokenEnabled: value, accessToken: applyHistory.accessToken || generateExamToken() })} />
-              </div>
-            </div>
-          </div>
+          <PrepareApplicationForm
+            value={applyHistory}
+            onChange={setApplyHistory}
+            candidates={historyCandidates}
+            tokenTools={{ normalize: normalizeTokenInput, generate: generateExamToken }}
+          />
         )}
       </Modal>
 
+      <ApplicationAudienceModal
+        open={!!audienceApplication}
+        application={audienceApplication}
+        onClose={() => setAudienceApplication(null)}
+        onSaved={() => loadExamState().catch(() => {})}
+        toast={toast}
+      />
       <ConfirmDialog open={!!deleteHistory} onClose={() => setDeleteHistory(null)} onConfirm={removeHistory} danger title="Excluir histórico?" description={deleteHistory?.label || deleteHistory?.id} confirmLabel="Excluir" />
       <ConfirmDialog open={!!scopeConfirm} onClose={() => setScopeConfirm(null)} onConfirm={confirmScopeSave} tone="primary"
         title="Substituir a prova nas turmas?" message={`Esta alteração substituirá esta prova em: ${scopeConfirm?.names || ''}.`}

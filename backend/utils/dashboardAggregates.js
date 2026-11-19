@@ -11,6 +11,7 @@ const attendanceUtil = require('./attendance.js');
 const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js');
 const { studentSessionByEmail } = require('./authSessions.js');
 const { collectInstructorQueue } = require('./studentFeeds.js');
+const { applicationParticipant } = require('./examApplications.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -113,12 +114,18 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
     const ativa = apps.find(a => ACTIVE_APP.has(a.status));
     let aplicacao = null;
     if (ativa) {
+        // Aplicação só para alguns alunos (segunda chamada, lista escolhida; P3-S7): o
+        // total é o da lista e só contam as entregas desta aplicação.
+        const restrita = Array.isArray(ativa.participants);
+        const alvo = restrita ? students.filter(s => applicationParticipant(ativa, s.email)) : students;
+        const alvoEmails = restrita ? emailSet(alvo) : emails;
         const entregues = new Set((memory.submissions || [])
-            .filter(s => s.examKey === ativa.examKey && s.student && emails.has(lower(s.student.email)))
+            .filter(s => s.examKey === ativa.examKey && s.student && alvoEmails.has(lower(s.student.email))
+                && (!restrita || s.applicationId === ativa.id))
             .map(s => lower(s.student.email))).size;
         aplicacao = {
             id: ativa.id, examKey: ativa.examKey, titulo: evalTitle(memory, ativa.examKey),
-            status: ativa.status, entregues, total: students.length, endsAt: ativa.endsAt || null,
+            status: ativa.status, entregues, total: alvo.length, endsAt: ativa.endsAt || null,
         };
     }
     // `startsAt` da aplicação, nunca o estado ativo da turma — database.js reseta

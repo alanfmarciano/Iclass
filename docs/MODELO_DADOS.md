@@ -36,7 +36,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `branding` | objeto | identidade white-label global |
 | `schools` | array | escolas/instituições (white-label, compartilháveis) |
 | `submissions` | array | submissões de prova |
-| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável); `keystrokeMode` (`eventos`\|`tudo`\|`nada`, H8b; ausente nas de antes vale `eventos`), copiado também para a configuração online da turma |
+| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável); `keystrokeMode` (`eventos`\|`tudo`\|`nada`, H8b; ausente nas de antes vale `eventos`), copiado também para a configuração online da turma; `finalidade`, `participants` e `studentOverrides` (fase 3, A3; ver "Para quem é a aplicação") |
 | `questionBank` | array | banco de questões reutilizáveis |
 | `evaluations` | objeto | avaliações |
 | `courseStructure` | array | estrutura legada (**em obsolescência**, migrada para `courses[].structure`) |
@@ -220,6 +220,14 @@ Antes, toda questão era "uma correta" (2 a 8 alternativas, `correctAnswer` com 
 - **Número digitado** (resposta numérica e valor do professor): um separador só, ponto ou vírgula, uma vez, é a casa decimal (`0.125`, `0,125` e `1.234` valem 0,125 e 1,234); com ponto e vírgula juntos, o último é a casa decimal e o outro separa milhares de três em três (`1.234,5`, `1,234.5`); o mesmo separador repetido é milhar (`1.234.567`). A unidade da questão no fim é ignorada. O professor vê o número com vírgula, sem arredondar.
 - **Banco de questões**: até o banco ganhar o modelo da questão (A7), `POST /api/admin/question-bank/import-evaluation` leva só as questões de uma correta e de verdadeiro ou falso; as outras voltam em `skipped[{ questionNumber, type }]`, com `skippedCount` e `message`.
 - **Voltar de versão** (decisão X7 do plano): voltar para a versão anterior é restaurar, nela, o backup `pre-atualizacao` que esta versão cria antes de migrar (os dados voltam ao momento da atualização). Nunca troque só a versão da pasta mantendo o banco: o 281029f abre o banco novo sem aviso e lê uma questão de outro tipo como "uma correta", corrigindo errado.
+
+## Para quem é a aplicação (fase 3, A3)
+
+- **`examApplications[].finalidade`** (novo, opcional): `regular` | `segunda_chamada` | `recuperacao`; ausente = `regular`. A combinação das notas da segunda chamada e da recuperação é do gradebook (P2, depois da J2); até lá cada aplicação continua um grupo de nota próprio, e a tela esconde a recuperação.
+- **`examApplications[].participants`** (novo, opcional): `null` (a turma inteira, como toda aplicação de antes) ou a lista de e-mails minúsculos (até 500). Quem pode fazer a aplicação sai só de `applicationParticipant` (`utils/examApplications.js`, regras em `utils/examParticipants.js`).
+- **`examApplications[].studentOverrides`** (novo, opcional): `{ [email]: { extraAttempts 0..5, prazoAte ms|null, motivo, por, em } }`. O limite do aluno é `maxAttempts + extraAttempts` (`effectiveMaxAttempts`); `prazoAte` é até quando ele pode começar (só no cronômetro por aluno). O "+N min" por aluno continua em `studentAdjustments`.
+- Nenhuma migração: aplicação sem os campos é regular, da turma inteira e sem exceções (leitura com padrão). As preparadas desta versão em diante gravam os três campos. Voltar para o 281029f pelo backup `pre-atualizacao` não tem problema; abrir o banco novo no 281029f faria a segunda chamada aparecer para a turma inteira.
+- **Ciclo de vida do aluno** (handler `examParticipation` em `utils/studentDataHandlers.js`): troca de e-mail renomeia a lista e as exceções; anonimizar e apagar de vez tiram o aluno das duas; mesclar passa o que era do que sai para o que fica; Meus dados ganha a seção "Participação e exceções em provas" (o administrador vê também quem concedeu e quando).
 
 ## Servidor fora do ar durante a prova (fase 2, H3b)
 

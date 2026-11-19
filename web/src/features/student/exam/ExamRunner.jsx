@@ -990,6 +990,14 @@ export default function ExamRunner() {
         setPhase('exhausted')
         return
       }
+      // Prazo do aluno para começar (exceção dada pelo professor) já passou: não há o que
+      // iniciar; a tentativa já começada continua.
+      if (r.startDeadlinePassed && !st.startedAt) {
+        timeOverScreenRef.current = false
+        setFatal(r.startDeadlineMessage || 'O seu prazo para começar esta prova terminou. Procure o professor.')
+        setPhase('error')
+        return
+      }
       if (r.timeOver && !st.startedAt) {
         timeOverScreenRef.current = true
         setFatal('O tempo desta aplicação já terminou. Procure o professor se precisar de uma nova oportunidade.')
@@ -1120,7 +1128,7 @@ export default function ExamRunner() {
     } catch (e) {
       toast.error(e.message)
       // Tentativas esgotadas, tempo acabado ou aplicação fora de andamento: a tela segue o servidor.
-      if (e.data?.attemptsExhausted || e.data?.timeOver || e.data?.notStarted || e.data?.applicationClosed) sync()
+      if (e.data?.attemptsExhausted || e.data?.timeOver || e.data?.notStarted || e.data?.applicationClosed || e.data?.notParticipant || e.data?.startDeadlinePassed) sync()
     }
   }
 
@@ -1146,6 +1154,13 @@ export default function ExamRunner() {
         // O cronômetro coletivo acabou enquanto o aluno lia as instruções.
         timeOverScreenRef.current = true
         setFatal('O tempo desta aplicação já terminou. Procure o professor se precisar de uma nova oportunidade.')
+        setPhase('error')
+        return
+      }
+      // Fora da lista desta aplicação (segunda chamada) ou com o prazo para começar vencido.
+      if (error.data?.notParticipant || error.data?.startDeadlinePassed) {
+        timeOverScreenRef.current = false
+        setFatal(error.message)
         setPhase('error')
         return
       }

@@ -4,6 +4,12 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Segunda chamada e exceção por aluno
+- Em Provas, o cartão "Para quem" escolhe se a aplicação é para a turma inteira, para a segunda chamada ou para alunos escolhidos. Na segunda chamada, a lista já vem marcada com quem ainda não fez a prova regular, e quem já fez aparece com "Já fez".
+- Quem não está na lista não vê a prova e não consegue começar; quem já tinha começado continua vendo a própria tentativa. O Monitor e o Dashboard contam só os alunos da lista.
+- O botão "Alunos desta aplicação" muda a lista depois de preparar, enquanto a aplicação não terminar. "Aplicar prova novamente" também pergunta para quem é.
+- Exceção por aluno: até 5 tentativas extras e, com tempo por tentativa, um prazo "Pode começar até" só para aquele aluno, com motivo. Cada mudança fica na Auditoria.
+
 ### Versão, Novidades e Ajuda
 - O rodapé do menu mostra a versão de verdade do IClass (por exemplo, "v3.0.0") e se a tela está falando com o servidor: "Conectado", "Sem conexão" ou "Servidor reiniciando". Antes ficava "Sistema ativo" e "v3", mesmo com o servidor fora do ar.
 - Na tela Sistema, o cartão novo "Sobre o IClass" mostra a versão instalada, a última atualização (com o nome do backup feito antes dela), a versão dos dados, o código desta instalação e o botão "Novidades", que abre esta lista.

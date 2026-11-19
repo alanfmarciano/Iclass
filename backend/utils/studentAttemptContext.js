@@ -10,11 +10,14 @@ const db = require('../database.js');
 const { accessibilityExtraMinutes } = require('../middlewares.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
+    applicationParticipant,
     createAttemptState,
+    effectiveMaxAttempts,
     examStateKey,
     findOpenAttemptState,
+    studentStartDeadlinePassed,
 } = require('./examApplications.js');
-const { countStudentExamAttempts, filterStudentExamAttempts, normalizeMaxAttempts } = require('./examAttempts.js');
+const { countStudentExamAttempts, filterStudentExamAttempts } = require('./examAttempts.js');
 const { SERVER_FINALIZE_DELAY_MS, computeAttemptDeadline, settleExpiredAttempts } = require('./examDeadline.js');
 
 function normalizedEmail(value) {
@@ -63,9 +66,11 @@ function collectiveTimeOverForNewAttempt(application, studentEmail, now = Date.n
 }
 
 // O aluno pode começar uma tentativa NOVA nesta aplicação? (Só vale quando ele não tem
-// tentativa aberta; a aberta é sempre a que continua.) Mesmas regras em todas as rotas.
+// tentativa aberta; a aberta é sempre a que continua.) Mesmas regras em todas as rotas:
+// ele precisa estar na lista da aplicação (applicationParticipant), o limite é o dele
+// (com as tentativas extras) e o prazo dele para começar não pode ter passado (P3-S7).
 function newAttemptGate(application, { studentEmail, onlineConfig = null, courseId = null, now = Date.now() } = {}) {
-    const maxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? onlineConfig?.maxAttempts);
+    const maxAttempts = effectiveMaxAttempts(application, studentEmail, onlineConfig?.maxAttempts);
     const attemptsUsed = application
         ? countStudentExamAttempts(db.memory.submissions, {
             studentEmail,
@@ -77,13 +82,17 @@ function newAttemptGate(application, { studentEmail, onlineConfig = null, course
     const attemptsExhausted = maxAttempts !== null && attemptsUsed >= maxAttempts;
     const timeOver = !!application && collectiveTimeOverForNewAttempt(application, studentEmail, now);
     const applicationActive = !!application && ACTIVE_APPLICATION_STATUSES.has(application.status);
+    const notParticipant = !!application && !applicationParticipant(application, studentEmail);
+    const startDeadlinePassedAt = application ? studentStartDeadlinePassed(application, studentEmail, now) : null;
     return {
         maxAttempts,
         attemptsUsed,
         attemptsExhausted,
         timeOver,
         applicationActive,
-        allowed: applicationActive && !attemptsExhausted && !timeOver,
+        notParticipant,
+        startDeadlinePassedAt,
+        allowed: applicationActive && !notParticipant && !startDeadlinePassedAt && !attemptsExhausted && !timeOver,
     };
 }
 

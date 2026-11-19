@@ -1889,3 +1889,35 @@ describe('[UC-LGPD-009] ExamRunner: registro do teclado conforme a aplicação',
     expect(none).toHaveTextContent('As saídas da tela são apagadas 30 dias depois')
   })
 })
+
+// Segunda chamada e exceção por aluno (fase 3, P3-S7: AVA-09).
+describe('[UC-PROVA-006] ExamRunner: aplicação só para alguns alunos e prazo para começar', () => {
+  it('fora da lista da segunda chamada: o sync recusa e a tela diz que a aplicação é só para os indicados', async () => {
+    apiMock.get.mockRejectedValue(Object.assign(new Error('Esta é a segunda chamada da prova, só para os alunos indicados pelo professor.'), { status: 403, data: { code: 'not_participant', notParticipant: true } }))
+    renderRunner()
+    expect(await screen.findByText(/segunda chamada da prova, só para os alunos indicados/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Iniciar prova' })).not.toBeInTheDocument()
+  })
+
+  it('prazo para começar vencido: o sync avisa e não há "Iniciar prova"', async () => {
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null }), startDeadlinePassed: true, startDeadlineMessage: 'O seu prazo para começar esta prova terminou em 20/11 às 08:00. Procure o professor.' })
+    renderRunner()
+    expect(await screen.findByText(/prazo para começar esta prova terminou em 20\/11 às 08:00/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Iniciar prova' })).not.toBeInTheDocument()
+  })
+
+  it('o prazo vence enquanto o aluno lê as instruções: Iniciar mostra o aviso do servidor', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url.endsWith('/start-attempt')) {
+        throw Object.assign(new Error('O seu prazo para começar esta prova terminou. Procure o professor.'), { status: 409, data: { code: 'start_deadline_passed', startDeadlinePassed: true } })
+      }
+      return { success: true }
+    })
+    renderRunner()
+    await user.click(await screen.findByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: 'Iniciar prova' }))
+    expect(await screen.findByText(/O seu prazo para começar esta prova terminou/)).toBeVisible()
+  })
+})

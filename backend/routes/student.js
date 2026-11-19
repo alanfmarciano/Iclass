@@ -48,11 +48,18 @@ const { normalizeExamToken } = require('../utils/examToken.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
+    applicationFinalidade,
+    applicationParticipant,
+    effectiveMaxAttempts,
     examStateKey,
+    extraAttemptsFor,
     findExamApplication,
     findOpenAttemptState,
     listExamApplications,
+    studentOverrideFor,
+    studentStartDeadlinePassed,
 } = require('../utils/examApplications.js');
+const { notParticipantResponse, startDeadlineResponse } = require('../utils/examParticipants.js');
 const {
     countStudentExamAttempts,
     filterStudentExamAttempts,
@@ -557,9 +564,28 @@ const STUDENT_APPLICATION_FIELDS = [
     'updatedAt',
 ];
 
+// O aluno tem tentativa (aberta ou entregue) nesta aplicação? Quem tem continua vendo a
+// aplicação mesmo fora da lista de participantes (nunca some uma prova que ele fez).
+function hasOwnAttemptIn(application, studentEmail, cls) {
+    if (findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail })) return true;
+    return countStudentExamAttempts(db.memory.submissions, {
+        studentEmail,
+        examKey: application.examKey,
+        courseId: application.courseId || cls?.courseId,
+        applicationId: application.id,
+    }) > 0;
+}
+
+// Aplicação que o aluno pode ver: está na lista dela (applicationParticipant; sem lista,
+// a turma inteira) ou já tem tentativa nela (P3-S7, D15).
+function applicationVisibleToStudent(application, studentEmail, cls) {
+    return applicationParticipant(application, studentEmail) || hasOwnAttemptIn(application, studentEmail, cls);
+}
+
 function applicationForStudent(application, cls, studentEmail) {
     const config = studentExamConfigSummary(cls.onlineExamConfigs?.[application.examKey]);
-    const maxAttempts = normalizeMaxAttempts(application.maxAttempts ?? config?.maxAttempts);
+    // O limite dele: o da aplicação mais as tentativas extras que o professor deu (D16).
+    const maxAttempts = effectiveMaxAttempts(application, studentEmail, config?.maxAttempts);
     const attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
         studentEmail,
         examKey: application.examKey,
@@ -570,6 +596,7 @@ function applicationForStudent(application, cls, studentEmail) {
         applicationId: application.id,
         studentEmail,
     });
+    const override = studentOverrideFor(application, studentEmail);
     const safeApplication = {};
     STUDENT_APPLICATION_FIELDS.forEach(field => {
         if (application[field] !== undefined) safeApplication[field] = application[field];
@@ -584,6 +611,9 @@ function applicationForStudent(application, cls, studentEmail) {
         attemptsUsed,
         maxAttempts,
         attemptsExhausted: maxAttempts !== null && attemptsUsed >= maxAttempts && !openAttempt,
+        // Para quem (P3-S7): a finalidade e, só do próprio aluno, o prazo para começar.
+        finalidade: applicationFinalidade(application),
+        startDeadlineAt: override && override.prazoAte && application.timerMode === 'per_attempt' ? override.prazoAte : null,
     };
 }
 
@@ -611,10 +641,11 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
             courseId: cls.courseId,
             statuses: ['waiting', 'running', 'paused'],
         }).map(application => ({ application, cls })))
-        .filter(({ application }) => {
+        .filter(({ application, cls }) => {
             if (seen.has(application.id)) return false;
             seen.add(application.id);
-            return true;
+            // Segunda chamada e lista escolhida: só quem está nela vê a aplicação.
+            return applicationVisibleToStudent(application, req.studentEmail, cls);
         })
         .sort((a, b) => String(b.application.createdAt || '').localeCompare(String(a.application.createdAt || '')))
         .map(({ application, cls }) => applicationForStudent(application, cls, req.studentEmail));
@@ -685,6 +716,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         let finishOutcome = null;
         let attemptOutcome = null;
         let timeOver = false;
+        let startDeadlinePassedAt = null;
         let localCopyKey = null;
         let questions = null;
         let questionsVersion = null;
@@ -706,7 +738,14 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             // Tentativa vencida vira entrega (com as respostas salvas) antes de qualquer
             // outra decisão: assim ela conta como usada e nunca é recriada vazia.
             settleStudentAttempt(application, email);
-            maxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? onlineCfg?.maxAttempts);
+            // Aplicação só para alguns alunos (segunda chamada, lista escolhida): quem não
+            // está na lista nem tem tentativa nela não sincroniza (nada é criado).
+            if (application && !applicationVisibleToStudent(application, email, cls)) {
+                return res.status(403).json(notParticipantResponse(application));
+            }
+            maxAttempts = application
+                ? effectiveMaxAttempts(application, email, onlineCfg?.maxAttempts)
+                : normalizeMaxAttempts(onlineCfg?.maxAttempts);
             attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
                 studentEmail: email,
                 examKey,
@@ -720,6 +759,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
                 : null;
             timeOver = !!application && !openAttempt?.state?.startedAt && collectiveTimeOverForNewAttempt(application, email, Date.now(), openAttempt?.state || null);
+            // Prazo do aluno para começar (exceção por aluno, D16): passou e a tentativa não
+            // começou, então não há o que iniciar (a já começada continua).
+            startDeadlinePassedAt = application && !openAttempt?.state?.startedAt
+                ? studentStartDeadlinePassed(application, email)
+                : null;
             const context = application
                 ? attemptContextForStudent({
                     application,
@@ -727,7 +771,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                     examKey,
                     studentClass: cls.name,
                     courseId: cls.courseId,
-                    create: !attemptsExhausted && !timeOver && ['waiting', 'running', 'paused'].includes(application.status),
+                    create: !attemptsExhausted && !timeOver && !startDeadlinePassedAt && ['waiting', 'running', 'paused'].includes(application.status),
                 })
                 : attemptContextForStudent({ studentEmail: email, examKey });
             const stateKey = context.key || examStateKey({ studentEmail: email, examKey });
@@ -859,6 +903,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             finishOutcome,
             attemptOutcome,
             timeOver,
+            // Prazo do aluno para começar já passou (exceção por aluno): a tela mostra o aviso.
+            startDeadlinePassed: !!startDeadlinePassedAt,
+            startDeadlineMessage: startDeadlinePassedAt ? startDeadlineResponse(startDeadlinePassedAt).error : null,
             localCopyKey,
             // Prazo de guarda do monitoramento da prova (settings.retention, H8b), para as
             // instruções: 0 = sem prazo automático (até a escola apagar).
@@ -1457,7 +1504,18 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         courseId: application.courseId,
         applicationId: application.id,
     });
-    const maxAttempts = normalizeMaxAttempts(application.maxAttempts);
+    const openBefore = findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: req.studentEmail });
+    // Segunda chamada e lista escolhida (P3-S7): só quem está na lista começa. A tentativa
+    // já aberta continua sempre.
+    if (!openBefore && !applicationParticipant(application, req.studentEmail)) {
+        return res.status(403).json(notParticipantResponse(application));
+    }
+    // Prazo do aluno para começar (exceção por aluno, D16): vale para a tentativa que
+    // ainda não começou.
+    const startDeadlinePassedAt = openBefore?.state?.startedAt ? null : studentStartDeadlinePassed(application, req.studentEmail, now);
+    if (startDeadlinePassedAt) return res.status(409).json(startDeadlineResponse(startDeadlinePassedAt));
+    // O limite dele: o da aplicação mais as tentativas extras (D16).
+    const maxAttempts = effectiveMaxAttempts(application, req.studentEmail);
     if (maxAttempts !== null && previousAttempts.length >= maxAttempts) {
         return res.status(403).json({
             error: 'Limite de tentativas atingido.',
@@ -1743,7 +1801,9 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
     if (onlineConfig.onlineActive !== true || (!emAndamento && !applicationPaused)) {
         return res.status(403).json({ error: 'Esta prova online ainda não está em andamento para a sua turma.' });
     }
-    const maxAttempts = normalizeMaxAttempts(onlineConfig.maxAttempts);
+    // Com as tentativas extras do aluno nesta aplicação (exceção por aluno, D16).
+    const baseMaxAttempts = normalizeMaxAttempts(onlineConfig.maxAttempts);
+    const maxAttempts = baseMaxAttempts === null ? null : baseMaxAttempts + (application ? extraAttemptsFor(application, studentEmail) : 0);
     if (maxAttempts !== null && previousAttempts.length >= maxAttempts) {
         return res.status(403).json({
             error: 'Limite de tentativas atingido.',
@@ -2110,6 +2170,8 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
         });
 
     listExamApplications(db.memory.examApplications, { studentClass: cls.name, courseId: cls.courseId, statuses: ['waiting', 'running', 'paused'] })
+        // Segunda chamada e lista escolhida: o sino só toca para quem está na lista.
+        .filter(application => applicationVisibleToStudent(application, email, cls))
         .forEach(application => {
             const at = Date.parse(application.startedAt || application.updatedAt || application.createdAt) || 0;
             items.push({

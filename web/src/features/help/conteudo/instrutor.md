@@ -36,6 +36,10 @@ Aqui você monta as avaliações do curso e aplica na turma. Escolha a prova, pr
 
 <!-- P3 escreve aqui: editor de questões, tipos novos, preparar aplicação, segunda chamada e agendamento. -->
 
+**Para quem é a aplicação.** No cartão **Para quem**, escolha **Turma inteira** (o normal), **Segunda chamada** ou **Alunos escolhidos**. Na segunda chamada, o IClass já marca quem ainda não fez a prova regular; quem já fez aparece com a etiqueta **Já fez**. Só os alunos marcados veem a prova e conseguem começar. Depois de preparar, o botão **Alunos desta aplicação** muda a lista enquanto a aplicação não terminar.
+
+**Exceção por aluno.** Em **Exceção por aluno**, dê até 5 tentativas extras para um aluno ou, quando o tempo é contado por tentativa, um prazo **Pode começar até** só para ele. Escreva o motivo: ele fica na Auditoria.
+
 ## Banco de questões {#banco-de-questoes}
 
 <!-- P3 (A7 e A13) escreve aqui: metadados, estatística, importar e exportar GIFT e CSV. -->

@@ -9,6 +9,7 @@ const { createSubmissionFromAttempt } = require('./examGrading.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
+    applicationParticipant,
     applicationToOnlineConfig,
     checkExamApplicationTransition,
     listExamApplications,
@@ -42,7 +43,9 @@ function activeStudentAccount(student) {
 // iniciada nem entrega nesta aplicação, mais quem está nas instruções e já saiu da lista.
 // Quem entregou a tentativa 1 e está na tela de envio (com 2+ tentativas a seguinte nasce
 // nas instruções) já começou; quem nunca abriu a prova ainda não. Antes a conta era só a
-// das tentativas paradas nas instruções e trocava um caso pelo outro.
+// das tentativas paradas nas instruções e trocava um caso pelo outro. Na aplicação só
+// para alguns alunos (segunda chamada, lista escolhida), quem não está na lista não
+// conta (P3-S7).
 function notStartedCount(memory, application, entries) {
     const begun = new Set();
     entries.forEach(([, state]) => { if (state.startedAt) begun.add(normalizedEmail(state.studentEmail)); });
@@ -55,6 +58,7 @@ function notStartedCount(memory, application, entries) {
     (memory?.students || []).forEach(student => {
         if (!student?.email || !activeStudentAccount(student)) return;
         if (!studentInClass(student, application.studentClass, application.courseId)) return;
+        if (!applicationParticipant(application, student.email)) return;
         const email = normalizedEmail(student.email);
         if (!begun.has(email)) waiting.add(email);
     });
@@ -91,7 +95,9 @@ function finishSummary(memory, application, now = Date.now()) {
     };
 }
 
-function recordExamAudit(memory, type, application, actor, details = {}) {
+// studentEmail (opcional): o aluno de um evento que é de um aluno só (a exceção por aluno
+// do P3-S7), para a anonimização e o filtro da Auditoria acharem a linha.
+function recordExamAudit(memory, type, application, actor, details = {}, { studentEmail = null } = {}) {
     if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
     memory.auditLogs.push({
         id: `audit_exam_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
@@ -101,6 +107,7 @@ function recordExamAudit(memory, type, application, actor, details = {}) {
         examKey: application.examKey,
         studentClass: application.studentClass,
         courseId: application.courseId || null,
+        ...(studentEmail ? { studentEmail: String(studentEmail).trim().toLowerCase() } : {}),
         details,
         timestamp: new Date().toISOString(),
     });
