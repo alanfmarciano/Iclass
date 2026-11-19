@@ -152,10 +152,13 @@ function listTrash() {
 // restaurá-lo não serve ao professor de qualquer forma.
 // Pasta de aluno (alunos/...: documentos e atestados, que vão para a lixeira ao excluir o
 // aluno) também é só do administrador, como "Excluir aluno" e os atestados.
+// Arquivo de entrega de tarefa (entregas/..., fase 3, P1 D14: anonimizar ou apagar o aluno
+// manda os arquivos dele para a lixeira com nome neutro) é trabalho de aluno: também só do
+// administrador, mesmo que a entrada tenha curso e turma.
 function isAdminOnlyTrashEntry(entry) {
     if (!entry) return false;
     const rel = String(entry.originalRel || '').split('\\').join('/').replace(/^\/+/, '');
-    return /^uploads\/[^/]+\.(json|zip)$/i.test(rel) || /^alunos(\/|$)/i.test(rel);
+    return /^uploads\/[^/]+\.(json|zip)$/i.test(rel) || /^alunos(\/|$)/i.test(rel) || /^entregas(\/|$)/i.test(rel);
 }
 
 // Registro do manifesto de um item (sem tocar no disco).

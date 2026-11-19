@@ -468,6 +468,14 @@ async function prepareServer() {
     sweepTrash();
     serverLifecycle.registerTimer('trash', setInterval(sweepTrash, 6 * 3600000));
 
+    // 5b) Envios de tarefa que caíram no meio (fase 3, P1): o que sobrou em
+    // data/entregas/.recebendo com mais de 1 h sai. Arrumação de arquivo, não migração;
+    // nunca toca os arquivos já gravados das entregas. Falha aqui não impede o boot.
+    try {
+        const removed = await require('./utils/assignmentFiles.js').cleanupReceivingDir();
+        if (removed) console.log(`🧹 Entregas: ${removed} envio(s) interrompido(s) removido(s) de .recebendo.`);
+    } catch (e) { logCrash('limpeza de envios interrompidos', e); }
+
     // 6) e 7) O tempo em que o servidor ficou fora do ar (do último heartbeat até agora)
     // vira pausa das provas em andamento, até 15 min (utils/serverLifecycle.js), e é
     // gravado antes da primeira varredura. Falha de gravação não impede o boot: a memória
