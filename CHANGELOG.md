@@ -14,9 +14,9 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Em Identidade (excluir tema) e Sistema (esvaziar a lixeira e excluir de vez), a pergunta abre na janela do IClass, e não na caixa do navegador.
 
 ### Notas com uma regra só
-- As cores das notas (verde, amarelo e vermelho), a "Aprovação" de Resultados, a nota em vermelho do boletim impresso e o motivo "média abaixo de 6,0" do Dashboard e da ficha do aluno seguem a mesma regra, pela média mínima de 6,0. A comparação é feita com a nota como ela aparece: quem tem 5,96 (mostrado como 6,0) não aparece mais como abaixo da média, e a ficha do aluno arredonda a média como o boletim. (ENG-02)
+- As cores das notas (verde, amarelo e vermelho), a "Aprovação" de Resultados, a nota em vermelho do boletim impresso e o motivo "média abaixo de 6,0" do Dashboard e da ficha do aluno seguem a mesma regra (a média do motivo aparece com uma casa, como "5,0"), pela média mínima de 6,0. A comparação é feita com a nota como ela aparece: quem tem 5,96 (mostrado como 6,0) não aparece mais como abaixo da média, e a ficha do aluno arredonda a média como o boletim. (ENG-02)
 - Resultados mostra sempre a nota da prova calculada pelo servidor (maior, última, média ou escolhida), sem refazer a conta na tela. (ENG-02)
-- Provas antigas em Markdown aceitam a alternativa e) e o gabarito "E" (antes a e) ficava colada no texto da d)). Letra depois de e) fica de fora com um aviso em Provas, nunca some sem avisar. (ENG-02)
+- Provas antigas em Markdown aceitam a alternativa e) e o gabarito "E" (antes a e) ficava colada no texto da d)), e também alternativas em lista ("- a) texto") ou em negrito ("**a)** texto"). Letra depois de e) e questão com menos de duas alternativas ficam de fora com um aviso em Provas, que aparece toda vez que a prova é aberta até ela ser salva no editor, mesmo que ela tenha sido aberta antes em Resultados ou pelo aluno; nunca somem sem avisar. (ENG-02)
 - Nota gravada só com espaços conta como nota vazia (antes valia 0). (ENG-02)
 
 ### Busca e ordem das listas

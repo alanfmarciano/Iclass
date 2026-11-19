@@ -102,4 +102,12 @@ describe('[UC-PAPEIS-001] Dashboard por papel', () => {
     expect(texts(5, { mediaMinima: 5 })).toEqual([])
     expect(texts(4.5, { mediaMinima: 5 })).toEqual(['média 4,5 — abaixo de 5,0'])
   })
+
+  it('[UC-TENTATIVA-003] riskReasons usa o critério que vem do servidor em cada linha', () => {
+    const row = { frequencia: 90, faltas: 0, media: 5.5, criterio: { mediaMinima: 5, mencoes: null, regraAntiga: false } }
+    expect(riskReasons(row, 75).map((item) => item.text)).toEqual([])
+    expect(riskReasons({ ...row, media: 4.5 }, 75).map((item) => item.text)).toEqual(['média 4,5 — abaixo de 5,0'])
+    // Sem o campo (resposta antiga), o padrão 6,0.
+    expect(riskReasons({ ...row, criterio: undefined }, 75).map((item) => item.text)).toEqual(['média 5,5 — abaixo de 6,0'])
+  })
 })

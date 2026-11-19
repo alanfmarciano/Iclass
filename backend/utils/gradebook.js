@@ -105,9 +105,21 @@ const GRADE_BANDS = ['excelente', 'bom', 'suficiente', 'abaixo', 'muito_abaixo']
 
 // Uma casa, "metade para cima", como roundGrade (8,99 -> 9,0; 5,96 -> 6,0): a faixa
 // é a da nota que aparece na tela.
+// Texto vazio ou só com espaços não é nota (Number('  ') daria 0); "5,5" com vírgula
+// vale 5,5, como a nota digitada.
+function gradeNumber(grade) {
+    if (grade === null || grade === undefined || typeof grade === 'boolean') return null;
+    if (typeof grade === 'string') {
+        const text = grade.trim();
+        if (!text) return null;
+        return Number(/^-?\d+,\d+$/.test(text) ? text.replace(',', '.') : text);
+    }
+    return Number(grade);
+}
+
 function roundGradeValue(grade) {
-    if (grade === null || grade === undefined || grade === '' || typeof grade === 'boolean') return null;
-    const number = Number(grade);
+    const number = gradeNumber(grade);
+    if (number === null) return null;
     if (!Number.isFinite(number) || number < 0 || number > GRADE_MAX) return null;
     return Math.round(Number((number * 10).toFixed(6))) / 10;
 }

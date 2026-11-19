@@ -203,4 +203,8 @@ test('[UC-TENTATIVA-003] risco por nota usa a média mínima do critério na not
     memory.submissions = [sub('m3', email, 'CURSO-A', 55, '2026-07-01T10:00:00.000Z')];
     const baixo = computeStudentDashboard(memory, email, { courseId: 'CURSO-A' });
     assert.ok(baixo.risco.reasons.includes('Média abaixo de 6,0 (5,5)'), baixo.risco.reasons.join(' | '));
+    // Média inteira com uma casa, como no Dashboard ("média 5,0"); antes saía "(5)".
+    memory.submissions = [sub('m4', email, 'CURSO-A', 50, '2026-07-01T10:00:00.000Z')];
+    const inteira = computeStudentDashboard(memory, email, { courseId: 'CURSO-A' });
+    assert.ok(inteira.risco.reasons.includes('Média abaixo de 6,0 (5,0)'), inteira.risco.reasons.join(' | '));
 });

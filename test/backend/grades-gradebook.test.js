@@ -1719,3 +1719,23 @@ test('[UC-NOTAS-003] ficha do aluno em dois cursos mostra a média do curso ativ
     const reportB = await admin(request(app).get(`/api/admin/student/report?email=bia@notas.local&courseId=${COURSE_B}`)).expect(200);
     assert.equal(reportB.body.overallAverage, 3);
 });
+
+test('[UC-TENTATIVA-003] quadro, boletim e ficha mandam o critério de nota junto dos dados (padrão: média mínima 6,0)', async () => {
+    // Contrato C1 do P2: a tela pinta a nota pela média mínima que vem do servidor.
+    // Sem critérios configurados (P2-S3), o critério é o padrão de sempre.
+    const padrao = { mediaMinima: 6, mencoes: null, regraAntiga: true };
+    const quadro = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.deepEqual(quadro.body.criterio, padrao);
+    const boletim = await admin(request(app).get(`/api/admin/student/report?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.deepEqual(boletim.body.criterio, padrao);
+    const ficha = await admin(request(app).get(`/api/admin/student/dashboard?email=ana@notas.local&courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.deepEqual(ficha.body.criterio, padrao);
+    // O Dashboard (students-overview) manda o critério em cada linha, para o motivo
+    // "média abaixo de X" da tela usar a mesma mínima do risco calculado no servidor.
+    const overview = await admin(request(app).get(`/api/admin/dashboard/students-overview?courseId=${COURSE_A}&studentClass=1DES`)).expect(200);
+    assert.ok(overview.body.length > 0);
+    for (const row of overview.body) assert.deepEqual(row.criterio, padrao);
+    // O CSV do quadro não muda (o critério não é coluna).
+    const csv = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES&format=csv`)).expect(200);
+    assert.doesNotMatch(csv.text, /mediaMinima|criterio/);
+});

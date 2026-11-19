@@ -2103,6 +2103,9 @@ router.get('/api/admin/student/report', (req, res) => {
             period: cls?.period || student.period || '',
             modules,
             overallAverage,
+            // Critério de nota da matrícula (C1 do P2): a nota em vermelho do boletim é a
+            // que fica abaixo de criterio.mediaMinima (sem critérios, o padrão 6,0).
+            criterio: gradeCriterionFor(db.memory, { courseId, studentClass: className }),
             attendance: { frequency: stats.frequenciaGeral, presentes: stats.presentes, faltas: stats.faltasContam, totalAulas: stats.totalAulas, days: attendanceRows.length, disciplines, riskThreshold: attendanceUtil.effectiveAttendanceConfig(cls).limiarRiscoPct },
             progress: { completedUnits, totalUnits: unitKeys.length },
             issuedBy: (matchedAdmin && (matchedAdmin.name || matchedAdmin.email)) || 'Instrutor',
@@ -3360,25 +3363,28 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
         const { key } = req.params;
         if (!adminCanAccessItem(matchedAdmin, key)) return res.status(403).json({ error: 'Recurso não autorizado.' });
         let evaluation = db.memory.evaluations[key];
-        // Avisos da leitura do .md (alternativa ou gabarito fora de a-e): voltam só na
-        // primeira abertura, quando a prova sai do arquivo; não ficam gravados.
+        // Avisos da leitura do .md (alternativa, gabarito ou questão fora de a-e): voltam a
+        // cada abertura enquanto a prova é a que saiu do arquivo, inclusive quando outra
+        // tela (lançamento de nota, prova do aluno) ou o boot a gravou primeiro. Ao salvar
+        // no editor (revision), o professor já revisou e o aviso some. Não ficam gravados.
         let avisos = [];
+        const mdPath = path.join(runtimePaths.CONTENT_DIR, `${key}.md`);
+        const fromMarkdownFile = /^[A-Za-z0-9_-]+$/.test(key) && fs.existsSync(mdPath);
 
-        if (!evaluation) {
+        if (!evaluation && fromMarkdownFile) {
             // Tenta carregar e migrar se houver arquivo .md legando em disco
-            const mdPath = path.join(runtimePaths.CONTENT_DIR, `${key}.md`);
-            if (fs.existsSync(mdPath)) {
-                try {
-                    const mdContent = fs.readFileSync(mdPath, 'utf8');
-                    const parsed = parseEvaluationMarkdownWithWarnings(mdContent, key);
-                    evaluation = parsed.evaluation;
-                    avisos = parsed.avisos;
-                    if (evaluation) {
-                        db.memory.evaluations[key] = evaluation;
-                        db.save();
-                    }
-                } catch(e) {}
-            }
+            try {
+                const mdContent = fs.readFileSync(mdPath, 'utf8');
+                const parsed = parseEvaluationMarkdownWithWarnings(mdContent, key);
+                evaluation = parsed.evaluation;
+                avisos = parsed.avisos;
+                if (evaluation) {
+                    db.memory.evaluations[key] = evaluation;
+                    db.save();
+                }
+            } catch(e) {}
+        } else if (evaluation && fromMarkdownFile && !evaluation.revision && !evaluation.updatedAt) {
+            try { avisos = parseEvaluationMarkdownWithWarnings(fs.readFileSync(mdPath, 'utf8'), key).avisos; } catch (e) {}
         }
 
         if (!evaluation) {
@@ -4983,7 +4989,8 @@ router.get('/api/admin/gradebook', (req, res) => {
             res.setHeader('Content-Disposition', `attachment; filename="planilha_notas_${safeFilePart(course?.name || courseId)}_${safeFilePart(studentClass)}_${stamp}.csv"`);
             return res.status(200).send(gradebookCsv(gradebook));
         }
-        res.json({ courseId, courseName: course?.name || courseId, studentClass, generatedAt: Date.now(), ...gradebook });
+        // criterio (C1 do P2): a tela pinta a nota pela média mínima que vem daqui.
+        res.json({ courseId, courseName: course?.name || courseId, studentClass, generatedAt: Date.now(), ...gradebook, criterio: gradeCriterionFor(db.memory, { courseId, studentClass }) });
     });
 });
 

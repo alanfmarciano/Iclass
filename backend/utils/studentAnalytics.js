@@ -7,6 +7,7 @@ const {
     buildStudentReportModules,
     consolidatedStudentAverage,
     createSubmissionContextResolver,
+    formatGradeBR,
     formatMinimumGrade,
     gradeCriterionFor,
     isPassingGrade,
@@ -227,7 +228,7 @@ function computeStudentDashboard(memory, email, options = {}) {
     if (disciplinasEmRisco.length) reasons.push(`Baixa frequência em ${disciplinasEmRisco.map(d => d.nome).join(', ')}`);
     // Média abaixo da mínima do critério (padrão 6,0), comparada como aparece na tela.
     const criterio = gradeCriterionFor(memory, scope);
-    if (isPassingGrade(media, criterio) === false) reasons.push(`Média abaixo de ${formatMinimumGrade(criterio)} (${String(kpis.media).replace('.', ',')})`);
+    if (isPassingGrade(media, criterio) === false) reasons.push(`Média abaixo de ${formatMinimumGrade(criterio)} (${formatGradeBR(kpis.media * 10)})`);
     const lastAccess = student && (student.lastLoginAt || student.lastSeenAt);
     const daysSince = lastAccess ? Math.floor((Date.now() - lastAccess) / 86400000) : null;
     if (daysSince !== null && daysSince > 14) reasons.push(`Sem acesso há ${daysSince} dias`);
@@ -288,7 +289,8 @@ function computeStudentDashboard(memory, email, options = {}) {
     const notas = [...validSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
         .map(s => ({ label: (s.examKey || '').split('_').slice(1).join(' '), value: normalizeScore(s.score) / 10 }));
 
-    const result = { kpis, comparativo, risco, engajamento, streak, temporal, notas, modulos, frequenciaDisciplinas, faltas: stats.faltasContam, limiarRisco: limiar };
+    // criterio (C1 do P2): a média mínima com que a ficha compara a média do aluno.
+    const result = { kpis, comparativo, risco, engajamento, streak, temporal, notas, modulos, frequenciaDisciplinas, faltas: stats.faltasContam, limiarRisco: limiar, criterio };
     return withGrades ? result : { ...result, gradesHidden: true };
 }
 
@@ -318,7 +320,8 @@ function studentOverview(memory, student, options = {}) {
     const reasons = [];
     if (frequencia != null && frequencia < limiar) reasons.push('freq');
     if (disciplinasEmRisco) reasons.push('disciplina');
-    if (isPassingGrade(media, gradeCriterionFor(memory, { courseId, studentClass: options.studentClass || '' })) === false) reasons.push('media');
+    const criterio = gradeCriterionFor(memory, { courseId, studentClass: options.studentClass || '' });
+    if (isPassingGrade(media, criterio) === false) reasons.push('media');
     const lastAccess = student.lastLoginAt || student.lastSeenAt;
     const daysSince = lastAccess ? Math.floor((Date.now() - lastAccess) / 86400000) : null;
     if (daysSince !== null && daysSince > 14) reasons.push('acesso');
@@ -326,7 +329,8 @@ function studentOverview(memory, student, options = {}) {
     if ((frequencia != null && frequencia < Math.max(0, limiar - 25)) || reasons.length >= 2) riscoLevel = 'alto';
     else if (reasons.length === 1) riscoLevel = 'medio';
     // presentes/totalAulas expõem o denominador: 90% de 10 aulas não é 90% de 100.
-    return { frequencia, presentes: stats.presentes, totalAulas: stats.totalAulas, faltas, media, riscoLevel, disciplinasEmRisco };
+    // criterio (C1 do P2): o motivo "média abaixo de X" da tela usa a mesma mínima.
+    return { frequencia, presentes: stats.presentes, totalAulas: stats.totalAulas, faltas, media, riscoLevel, disciplinasEmRisco, criterio };
 }
 
 module.exports = { computeStudentDashboard, studentOverview, absenceCount, buildOverviewIndex };

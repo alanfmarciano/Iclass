@@ -11,8 +11,9 @@ const RISK_TONE = { alto: 'danger', medio: 'warning', baixo: 'neutral' }
 // da lista única, não uma segunda lista. "Sem dado" nunca aparece como 0.
 // gradesHidden: quem não lê nota (Professor auxiliar) recebe a média vazia do servidor;
 // ela não vira o motivo "nenhuma prova entregue".
-// criterio: média mínima do critério de nota (sem critérios configurados, 6,0).
-export function riskReasons(o, limiar = 75, gradesHidden = false, criterio = undefined) {
+// criterio: média mínima do critério de nota que vem do servidor em cada linha do
+// students-overview (o.criterio); sem ele, o padrão 6,0.
+export function riskReasons(o, limiar = 75, gradesHidden = false, criterio = o?.criterio) {
   const reasons = []
   if (o.frequencia != null && o.frequencia < limiar) {
     reasons.push({ text: `${o.presentes} ${o.presentes === 1 ? 'presença' : 'presenças'} em ${o.totalAulas} aulas · ${o.frequencia}%`, tone: 'danger' })

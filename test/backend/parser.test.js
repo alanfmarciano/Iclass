@@ -127,10 +127,37 @@ test('[UC-TENTATIVA-003] questão com menos de duas alternativas fica fora; rubr
         extra: '## Parte 2: Prática\n\nMonte a rede da figura.\n',
         gabarito: '3. **A**',
     });
-    const avaliacao = parseEvaluationMarkdown(md, 'Avaliacao_R');
+    const { evaluation: avaliacao, avisos } = parseEvaluationMarkdownWithWarnings(md, 'Avaliacao_R');
     assert.deepEqual(avaliacao.questions.map(q => q.originalNumber), [3]);
     assert.match(avaliacao.rubric, /^## Parte 2: Prática/);
+    // A questão que fica de fora sai com aviso (D21: nunca descartada em silêncio).
+    assert.deepEqual(avisos, ['Questão 1: só 1 alternativa reconhecida (escreva cada uma no começo da linha, como "a) texto"). A questão ficou de fora.']);
     assert.equal(parseEvaluationMarkdown('sem título', 'x').title, 'Avaliação');
+    // Alternativas na mesma linha não são reconhecidas: aviso, não sumiço.
+    const naMesmaLinha = parseEvaluationMarkdownWithWarnings(prova({ questoes: ['**1. Qual?**\na) um   b) dois   c) três\n'], gabarito: '1. **B**' }), 'x');
+    assert.deepEqual(naMesmaLinha.evaluation.questions, []);
+    assert.equal(naMesmaLinha.avisos.length, 1);
+    assert.match(naMesmaLinha.avisos[0], /^Questão 1: só 1 alternativa reconhecida .* A questão ficou de fora\.$/);
+    const semNenhuma = parseEvaluationMarkdownWithWarnings(prova({ questoes: ['**1. Explique o modelo OSI.**\nResposta livre.\n'] }), 'x');
+    assert.deepEqual(semNenhuma.avisos, ['Questão 1: nenhuma alternativa reconhecida (escreva cada uma no começo da linha, como "a) texto"). A questão ficou de fora.']);
+});
+
+test('[UC-TENTATIVA-003] alternativas em negrito ou em lista são lidas, sem os asteriscos no texto', () => {
+    const negrito = parseEvaluationMarkdownWithWarnings(prova({ questoes: ['**1. Pergunta?**\n**a)** um\n**b)** dois\n**c) três**\n'], gabarito: '1. **A**' }), 'x');
+    assert.deepEqual(negrito.avisos, []);
+    assert.deepEqual(negrito.evaluation.questions[0].alternatives.map(a => [a.letter, a.text, a.isCorrect]), [['A', 'um', true], ['B', 'dois', false], ['C', 'três', false]]);
+    const lista = parseEvaluationMarkdownWithWarnings(prova({ questoes: ['**2. Pergunta?**\n- a) um\n- b) dois\n* c) três\n'], gabarito: '2. **C**' }), 'x');
+    assert.deepEqual(lista.avisos, []);
+    assert.deepEqual(lista.evaluation.questions[0].alternatives.map(a => [a.letter, a.text]), [['A', 'um'], ['B', 'dois'], ['C', 'três']]);
+    assert.equal(lista.evaluation.questions[0].correctAnswer, 'C');
+});
+
+test('[UC-TENTATIVA-003] letra estranha no gabarito de questão que não existe não gera aviso', () => {
+    // "2. O gabarito..." numa observação do <details> compacto não é a questão 2.
+    const md = prova({ questoes: [Q3], gabarito: '3. A\nObs.: 2. O gabarito foi revisado.' });
+    const { evaluation, avisos } = parseEvaluationMarkdownWithWarnings(md, 'x');
+    assert.equal(evaluation.questions[0].correctAnswer, 'A');
+    assert.deepEqual(avisos, []);
 });
 
 test('[UC-TENTATIVA-003] as avaliações de exemplo do repositório são lidas sem aviso', () => {
@@ -148,18 +175,37 @@ test('[UC-TENTATIVA-003] as avaliações de exemplo do repositório são lidas s
     }
 });
 
-test('[UC-TENTATIVA-003] abrir no painel prova antiga em .md com f): avisa na resposta e não grava o aviso', async () => {
+test('[UC-TENTATIVA-003] abrir no painel prova antiga em .md com f): avisa a cada abertura até salvar no editor, sem gravar o aviso', async () => {
     const md = prova({ questoes: ['**1. Porta do HTTPS?**\na) 21\nb) 22\nc) 80\nd) 8080\ne) 8443\nf) 443\n'], gabarito: '1. **E**' });
     fs.mkdirSync(process.env.ICLASS_CONTENT_DIR, { recursive: true });
     fs.writeFileSync(path.join(process.env.ICLASS_CONTENT_DIR, 'Avaliacao_Antiga_F.md'), md);
+    const aviso = ['Questão 1: a alternativa f) não é aceita (use de a) a e)) e ficou de fora.'];
     const primeira = await request(app).get('/api/admin/evaluation/Avaliacao_Antiga_F').set('x-admin-session', adminToken).expect(200);
     assert.deepEqual(primeira.body.questions[0].alternatives.map(a => a.letter), ['A', 'B', 'C', 'D', 'E']);
     assert.equal(primeira.body.questions[0].correctAnswer, 'E');
-    assert.deepEqual(primeira.body.avisosImportacao, ['Questão 1: a alternativa f) não é aceita (use de a) a e)) e ficou de fora.']);
-    // A avaliação gravada não leva os avisos; a segunda abertura lê o banco, sem aviso.
+    assert.deepEqual(primeira.body.avisosImportacao, aviso);
+    // A avaliação gravada não leva os avisos; a segunda abertura (já do banco) avisa de novo.
     assert.equal('avisosImportacao' in db.memory.evaluations.Avaliacao_Antiga_F, false);
     const segunda = await request(app).get('/api/admin/evaluation/Avaliacao_Antiga_F').set('x-admin-session', adminToken).expect(200);
-    assert.equal('avisosImportacao' in segunda.body, false);
+    assert.deepEqual(segunda.body.avisosImportacao, aviso);
     assert.equal(segunda.body.questions.length, 1);
-});
 
+    // Quem gravou primeiro foi outra tela ou o boot (registro sem revision): o aviso vem.
+    fs.writeFileSync(path.join(process.env.ICLASS_CONTENT_DIR, 'Avaliacao_Antiga_G.md'), md);
+    db.memory.evaluations.Avaliacao_Antiga_G = parseEvaluationMarkdown(md, 'Avaliacao_Antiga_G');
+    const doBoot = await request(app).get('/api/admin/evaluation/Avaliacao_Antiga_G').set('x-admin-session', adminToken).expect(200);
+    assert.deepEqual(doBoot.body.avisosImportacao, aviso);
+
+    // Salvar no editor é a revisão do professor: o aviso some.
+    await request(app).put('/api/admin/evaluation/Avaliacao_Antiga_F').set('x-admin-session', adminToken)
+        .send({ ...segunda.body, avisosImportacao: undefined }).expect(200);
+    assert.equal('avisosImportacao' in db.memory.evaluations.Avaliacao_Antiga_F, false);
+    const depois = await request(app).get('/api/admin/evaluation/Avaliacao_Antiga_F').set('x-admin-session', adminToken).expect(200);
+    assert.equal('avisosImportacao' in depois.body, false);
+
+    // Prova sem .md (criada no painel) e chave com caminho não leem arquivo.
+    db.memory.evaluations.Prova_Do_Painel = { key: 'Prova_Do_Painel', title: 'Nova', questions: [] };
+    const doPainel = await request(app).get('/api/admin/evaluation/Prova_Do_Painel').set('x-admin-session', adminToken).expect(200);
+    assert.equal('avisosImportacao' in doPainel.body, false);
+    await request(app).get('/api/admin/evaluation/..%2Fsegredo').set('x-admin-session', adminToken).expect(404);
+});

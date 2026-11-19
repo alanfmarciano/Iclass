@@ -140,6 +140,18 @@ describe('faixas da nota pelo critério (regra única)', () => {
     // Mínima inválida cai no padrão.
     expect(gradeBand(5.5, { mediaMinima: 'abc' })).toBe('abaixo')
     expect(gradeBand(5.5, { mediaMinima: 12 })).toBe('abaixo')
+    // Mínima digitada com vírgula vale; texto só com espaços cai no padrão.
+    expect(gradeBand(5.5, { mediaMinima: '5,5' })).toBe('suficiente')
+    expect(fmtMinimumGrade({ mediaMinima: '5,5' })).toBe('5,5')
+    expect(fmtMinimumGrade({ mediaMinima: '  ' })).toBe('6,0')
+  })
+
+  it('[UC-TENTATIVA-003] nota só com espaços não tem faixa (antes virava 0 e "muito abaixo")', () => {
+    expect(gradeBand('  ')).toBeNull()
+    expect(gradeBand(' ')).toBeNull()
+    expect(isPassingGrade('  ')).toBeNull()
+    expect(gradeTone('  ', undefined, 'aprovacao', 'neutral')).toBe('neutral')
+    expect(gradeBand(' 7 ')).toBe('bom')
   })
 
   it('[UC-TENTATIVA-003] tom do Badge por escala, sem comparar nota com número na tela', () => {

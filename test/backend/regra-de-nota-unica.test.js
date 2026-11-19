@@ -3,7 +3,10 @@
 // web/src/lib/grades.js (telas), e as duas dão sempre a mesma resposta. Nenhuma tela
 // ou rota compara nota com 6, 7, 9, 40 ou 60 escritos no código, o gabarito sai só de
 // examGrading.correctAnswerFor e Resultados não recalcula a regra das tentativas.
-// (A média do portal do aluno, consolidatedAverage, sai na tela Minhas notas do P2-S4.)
+// Pendências com dono, listadas aqui para não crescerem: a média do portal do aluno
+// (consolidatedAverage e a "matéria" por prefixo em student/ProvasPage.jsx) e o
+// critério fixo (CRITERIO_PADRAO) nas telas que ainda leem listas sem critério saem
+// no P2-S4 (B9), quando o servidor manda o critério e o resumo do aluno.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -45,7 +48,7 @@ function linhasComFaixaFixa(files) {
 }
 
 test('[UC-TENTATIVA-003] gradeBand do servidor e da tela dão a mesma faixa em toda nota e mínima', () => {
-    const minimas = [undefined, null, 'abc', -1, 11, 0, 4, 5, 5.5, 6, 6.05, 7, 8.5, 9.5, 10];
+    const minimas = [undefined, null, 'abc', '', '  ', '5,5', ' 7 ', -1, 11, 0, 4, 5, 5.5, 6, 6.05, 7, 8.5, 9.5, 10];
     for (const mediaMinima of minimas) {
         const criterio = mediaMinima === undefined ? undefined : { mediaMinima };
         for (let centesimos = -5; centesimos <= 1005; centesimos += 1) {
@@ -53,7 +56,7 @@ test('[UC-TENTATIVA-003] gradeBand do servidor e da tela dão a mesma faixa em t
             assert.equal(web.gradeBand(nota, criterio), gradebook.gradeBand(nota, criterio), `nota ${nota}, mínima ${mediaMinima}`);
             assert.equal(web.isPassingGrade(nota, criterio), gradebook.isPassingGrade(nota, criterio), `aprovação ${nota}, mínima ${mediaMinima}`);
         }
-        for (const estranha of [null, undefined, '', '  ', true, NaN, '7', 'sete']) {
+        for (const estranha of [null, undefined, '', '  ', '\t', true, NaN, '7', ' 7 ', '5,5', '5.5', '5,', ',5', '1e1', 'sete']) {
             assert.equal(web.gradeBand(estranha, criterio), gradebook.gradeBand(estranha, criterio), `nota ${JSON.stringify(estranha)}`);
         }
         assert.equal(web.fmtMinimumGrade(criterio), gradebook.formatMinimumGrade(criterio));
@@ -62,6 +65,23 @@ test('[UC-TENTATIVA-003] gradeBand do servidor e da tela dão a mesma faixa em t
     assert.deepEqual(web.GRADE_BANDS, gradebook.GRADE_BANDS);
     assert.deepEqual({ ...web.CRITERIO_PADRAO }, { ...gradebook.DEFAULT_GRADE_CRITERION });
     assert.deepEqual(gradebook.gradeCriterionFor({}, { courseId: 'qualquer' }), { ...gradebook.DEFAULT_GRADE_CRITERION });
+});
+
+test('[UC-TENTATIVA-003] nota só com espaços não tem faixa; mínima "5,5" com vírgula vale 5,5', () => {
+    for (const lado of [gradebook, null]) {
+        const gradeBand = lado ? lado.gradeBand : web.gradeBand;
+        const normalize = lado ? lado.normalizeGradeCriterion : web.normalizeCriterio;
+        // Antes Number('  ') = 0 dava "muito_abaixo" para nota vazia.
+        assert.equal(gradeBand('  '), null);
+        assert.equal(gradeBand(' '), null);
+        assert.equal(gradeBand('\t'), null);
+        assert.equal(gradeBand(' 7 '), 'bom');
+        assert.equal(gradeBand('5,5'), 'abaixo');
+        assert.equal(gradeBand('5,5', { mediaMinima: '5,5' }), 'suficiente');
+        assert.equal(normalize({ mediaMinima: '5,5' }).mediaMinima, 5.5);
+        assert.equal(normalize({ mediaMinima: '  ' }).mediaMinima, 6);
+        assert.equal(normalize({ mediaMinima: '5,5,5' }).mediaMinima, 6);
+    }
 });
 
 test('[UC-TENTATIVA-003] nenhuma tela compara nota com 6, 7, 9, 40, 60 ou 85 escritos no código', () => {
@@ -108,4 +128,24 @@ test('[UC-TENTATIVA-003] gabarito só por correctAnswerFor e Resultados sem rec�
     // A nota do grupo é a consolidatedScore do servidor, sem regra maior/última/média local.
     assert.doesNotMatch(resultados, /Math\.max\(\.\.\.considered/);
     assert.doesNotMatch(resultados, /selectedForResult\s*\|\|/);
+});
+
+test('[UC-TENTATIVA-003] pendências do B9 não crescem: critério fixo e média no navegador só onde já estavam', () => {
+    const telas = walk(path.join(ROOT, 'web', 'src'), file => /\.(jsx?|mjs)$/.test(file)
+        && !/\.test\.(jsx?|mjs)$/.test(file)
+        && rel(file) !== 'web/src/lib/grades.js');
+    const usam = nome => telas.filter(file => new RegExp(`\\b${nome}\\b`).test(fs.readFileSync(file, 'utf8'))).map(rel).sort();
+    // Tela nova recebe o critério do servidor (gradebook, boletim e ficha já mandam
+    // "criterio"); CRITERIO_PADRAO fica só nas telas que leem listas sem critério.
+    assert.deepEqual(usam('CRITERIO_PADRAO'), [
+        'web/src/features/admin/AlunoDetailPage.jsx',
+        'web/src/features/admin/AlunosPage.jsx',
+        'web/src/features/admin/ResultadosPage.jsx',
+        'web/src/features/student/ProvasPage.jsx',
+    ]);
+    // D3 do P2: o navegador não recalcula média. A única exceção é a do portal do aluno,
+    // que passa a ler /api/student/grades-summary no B9.
+    assert.deepEqual(usam('consolidatedAverage'), ['web/src/features/student/ProvasPage.jsx']);
+    const boletim = fs.readFileSync(path.join(ROOT, 'web', 'src', 'features', 'admin', 'boletimPrint.js'), 'utf8');
+    assert.match(boletim, /report\.criterio/, 'o boletim usa o critério que vem com o boletim');
 });
