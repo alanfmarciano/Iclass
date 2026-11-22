@@ -36,6 +36,7 @@ const {
 const { examFamilyKeys } = require('../utils/examFamily.js');
 const { assertClassOpen } = require('../utils/academicCalendar.js');
 const { normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
+const { bankItemQuestion } = require('../utils/questionBank.js');
 const { body, either, int, shape, str } = require('../utils/inputSchema.js');
 const {
     AUDIENCE_INPUT_FIELDS,
@@ -1383,11 +1384,9 @@ function createAdminExamConfigRouter() {
                 const allNumbers = (application.versionSnapshots || []).flatMap(snapshot =>
                     (snapshot.questions || []).map((question, index) => questionNumber(question, index)).filter(Number.isFinite));
                 const replacementNumber = Math.max(0, ...allNumbers) + 1;
-                const replacement = normalizeLiveQuestion({
-                    text: bank.questionText,
-                    alternatives: bank.alternatives,
-                    correctAnswer: bank.correctAnswer,
-                });
+                // A questão do banco inteira, pelo modelo (P3-S9a): tipo, pontos, gabarito do
+                // tipo e explicação; antes ia só o enunciado, as alternativas e a letra.
+                const replacement = normalizeLiveQuestion(bankItemQuestion(bank));
                 (application.versionSnapshots || []).forEach(snapshot => {
                     if (!Array.isArray(snapshot.questions)) snapshot.questions = [];
                     snapshot.questions.push({

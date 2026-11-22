@@ -75,6 +75,29 @@ function fillFirstQuestion(editor, text = 'Qual protocolo usa a porta 80?') {
   return card
 }
 
+describe('[UC-BANCO-001] ProvasPage do professor · banco de questões', () => {
+  it('"Ver banco de questões" abre o banco sem "Adicionar"; no editor, a questão adicionada vem com "Do banco"', async () => {
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Ver banco de questões' })) })
+    let bank = await screen.findByRole('dialog', { name: 'Banco de questões' })
+    await within(bank).findByRole('button', { name: 'Editar' })
+    expect(within(bank).queryByRole('button', { name: 'Adicionar' })).toBeNull()
+    fireEvent.click(within(bank).getByRole('button', { name: 'Fechar' }))
+    cleanup()
+
+    const editor = await openEditor()
+    // Com o editor aberto, o banco abre pelo botão do editor.
+    expect(screen.queryByRole('button', { name: 'Ver banco de questões' })).toBeNull()
+    await act(async () => { fireEvent.click(within(editor).getByRole('button', { name: 'Banco de questões' })) })
+    bank = await screen.findByRole('dialog', { name: 'Banco de questões' })
+    fireEvent.click(await within(bank).findByRole('button', { name: 'Adicionar' }))
+    const added = within(editor).getByRole('group', { name: 'Questão 2' })
+    expect(within(added).getByText('Do banco')).toBeTruthy()
+    expect(within(added).getByRole('button', { name: 'Salvar no banco (questão 2)' })).toBeDisabled()
+    expect(within(within(editor).getByRole('group', { name: 'Questão 1' })).getByRole('button', { name: 'Salvar no banco (questão 1)' })).not.toBeDisabled()
+  })
+})
+
 describe('[UC-CONFIRMACAO-001] ProvasPage do professor · confirmações no diálogo da tela', () => {
   it('excluir questão do banco: Cancelar não exclui; Excluir exclui e tira da lista', async () => {
     await openEditor()

@@ -46,6 +46,10 @@ import {
 // - total de pontos da prova no topo; excluir uma questão preenchida pede confirmação
 //   (ConfirmDialog, contrato C12 do P3).
 // Trocar o tipo não apaga o que já foi escrito (questionEditorModel.js).
+// "Salvar no banco" vale para os seis tipos desde o banco no modelo único (P3-S9a); a
+// questão que já está no banco (bankKey) mostra "Do banco" e não é salva de novo. O cartão
+// (QuestionCard) também é o editor de um item do banco (QuestionBankPanel.jsx): sem
+// onMove, onDuplicate, onRemove e onSaveToBank, os botões deles não aparecem.
 
 const fieldClass = 'w-full min-w-0 rounded-md border border-border bg-surface px-3 py-2 text-sm text-text'
 const IMAGE_TYPES = 'image/png,image/jpeg,image/gif,image/webp'
@@ -409,7 +413,7 @@ function TypeFields({ question, index, update }) {
   )
 }
 
-function QuestionCard({ question, index, count, onChange, onMove, onDuplicate, onRemove, onSaveToBank, showProblems }) {
+export function QuestionCard({ question, index, count = 1, onChange, onMove, onDuplicate, onRemove, onSaveToBank, showProblems, label }) {
   const [tab, setTab] = useState('editar')
   const [details, setDetails] = useState(() => !!(question.difficulty || question.skills || question.tags))
   const typeSelectId = useId()
@@ -428,24 +432,28 @@ function QuestionCard({ question, index, count, onChange, onMove, onDuplicate, o
   const problems = showProblems ? questionProblems(question) : []
   const typeOption = QUESTION_TYPE_OPTIONS.find((option) => option.value === question.type) || QUESTION_TYPE_OPTIONS[0]
   const points = editorPointsValue(question)
-  const bankAvailable = question.type === 'multiple_choice'
+  const inBank = !!question.bankKey
+  const cardLabel = label || `Questão ${index + 1}`
   return (
-    <Card id={`questao-editor-${index + 1}`} className={`min-w-0 space-y-3 p-3 sm:p-4 ${problems.length ? 'border-warning/60' : ''}`} aria-label={`Questão ${index + 1}`} role="group">
+    <Card id={`questao-editor-${index + 1}`} className={`min-w-0 space-y-3 p-3 sm:p-4 ${problems.length ? 'border-warning/60' : ''}`} aria-label={cardLabel} role="group">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone="info">Questão {index + 1}</Badge>
+        <Badge tone="info">{cardLabel}</Badge>
         <Badge tone="neutral">{questionTypeLabel(question.type)}</Badge>
+        {inBank && onSaveToBank && <Badge tone="neutral">Do banco</Badge>}
         <span className="text-xs text-muted">{Number.isFinite(points) ? formatPointsLabel(points) : 'pontos inválidos'}</span>
         <div className="flex-1" />
         <div className="flex flex-wrap gap-1">
-          <Button type="button" size="sm" variant="ghost" icon={ArrowUp} onClick={() => onMove(-1)} disabled={index === 0} aria-label={`Subir (questão ${index + 1})`}><span className="hidden md:inline">Subir</span></Button>
-          <Button type="button" size="sm" variant="ghost" icon={ArrowDown} onClick={() => onMove(1)} disabled={index === count - 1} aria-label={`Descer (questão ${index + 1})`}><span className="hidden md:inline">Descer</span></Button>
-          <Button type="button" size="sm" variant="ghost" icon={Copy} onClick={onDuplicate} aria-label={`Duplicar (questão ${index + 1})`}><span className="hidden md:inline">Duplicar</span></Button>
-          <Button
-            type="button" size="sm" variant="ghost" icon={Library} onClick={() => onSaveToBank(question)} disabled={!bankAvailable}
-            aria-label={`Salvar no banco (questão ${index + 1})`}
-            title={bankAvailable ? 'Salvar no banco de questões' : 'Por enquanto o banco de questões guarda só questões de "Uma correta".'}
-          ><span className="hidden md:inline">Salvar no banco</span></Button>
-          <Button type="button" size="sm" variant="ghost" icon={Trash2} onClick={onRemove} disabled={count <= 1} aria-label={`Excluir (questão ${index + 1})`}><span className="hidden md:inline">Excluir</span></Button>
+          {onMove && <Button type="button" size="sm" variant="ghost" icon={ArrowUp} onClick={() => onMove(-1)} disabled={index === 0} aria-label={`Subir (questão ${index + 1})`}><span className="hidden md:inline">Subir</span></Button>}
+          {onMove && <Button type="button" size="sm" variant="ghost" icon={ArrowDown} onClick={() => onMove(1)} disabled={index === count - 1} aria-label={`Descer (questão ${index + 1})`}><span className="hidden md:inline">Descer</span></Button>}
+          {onDuplicate && <Button type="button" size="sm" variant="ghost" icon={Copy} onClick={onDuplicate} aria-label={`Duplicar (questão ${index + 1})`}><span className="hidden md:inline">Duplicar</span></Button>}
+          {onSaveToBank && (
+            <Button
+              type="button" size="sm" variant="ghost" icon={Library} onClick={() => onSaveToBank(question)} disabled={inBank}
+              aria-label={`Salvar no banco (questão ${index + 1})`}
+              title={inBank ? 'Esta questão já está no banco de questões.' : 'Salvar no banco de questões'}
+            ><span className="hidden md:inline">Salvar no banco</span></Button>
+          )}
+          {onRemove && <Button type="button" size="sm" variant="ghost" icon={Trash2} onClick={onRemove} disabled={count <= 1} aria-label={`Excluir (questão ${index + 1})`}><span className="hidden md:inline">Excluir</span></Button>}
         </div>
       </div>
 
@@ -600,7 +608,7 @@ export default function QuestionEditor({ questions, onChange, onOpenBank, onSave
             onMove={(direction) => move(index, direction)}
             onDuplicate={() => duplicate(index)}
             onRemove={() => askRemove(index)}
-            onSaveToBank={onSaveToBank || (() => {})}
+            onSaveToBank={onSaveToBank}
           />
         ))}
       </div>

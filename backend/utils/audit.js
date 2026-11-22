@@ -231,6 +231,8 @@ const ACTION_LABELS = Object.freeze({
     question_created: 'Questão criada no banco de questões',
     question_updated: 'Questão do banco alterada',
     question_archived: 'Questão do banco arquivada',
+    // Desarquivar a questão do banco (P3-S9a): volta para a lista padrão.
+    question_restored: 'Questão do banco desarquivada',
     question_bank_imported: 'Questões importadas para o banco',
     question_bank_exported: 'Banco de questões exportado',
     // Provas: gabarito depois da prova, ações no Monitor, participantes, agendamento e

@@ -31,6 +31,7 @@ import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspi
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
+import { answerSummary, questionTypeLabel } from './questionEditorModel'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -1546,7 +1547,7 @@ export default function MonitorPage() {
               <label key={question.key} className={`block cursor-pointer rounded-lg border p-3 ${replaceIssue.bankQuestionKey === question.key ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}>
                 <div className="flex items-start gap-3">
                   <input type="radio" name="replacement-question" className="mt-1" checked={replaceIssue.bankQuestionKey === question.key} onChange={() => setReplaceIssue((current) => ({ ...current, bankQuestionKey: question.key }))} />
-                  <div><p className="text-sm font-medium text-text">{question.questionText}</p><p className="mt-1 text-xs text-subtle">{question.category || 'Geral'} · gabarito {question.correctAnswer || '-'}</p></div>
+                  <div><p className="text-sm font-medium text-text">{question.questionText}</p><p className="mt-1 text-xs text-subtle">{questionTypeLabel(question.type)} · {question.category || 'Geral'} · resposta {answerSummary(question) || '-'}</p></div>
                 </div>
               </label>
             ))}

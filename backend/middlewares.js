@@ -874,9 +874,12 @@ function validateProfessorRequestScope(req, account) {
     if (forbiddenCourse) return outOfScopeMessage(account, 'O curso solicitado');
 
     const itemKeys = [body.itemKey, body.examKey, body.sourceExamKey, query.examKey].filter(Boolean);
-    if (pathName === '/question-bank/delete' && body.key) {
-        const question = (db.memory.questionBank || []).find(item => item.key === body.key);
-        if (question && question.sourceExamKey) itemKeys.push(question.sourceExamKey);
+    // Item do banco que veio de uma prova: alterar, arquivar e excluir só dentro do escopo
+    // da prova de origem (fase 3, P3-S9a; antes só a exclusão conferia, e o update mudava
+    // item que o GET nem mostrava ao professor). Item null na lista (dado antigo) não conta.
+    if (/^\/question-bank\/(?:delete|update|archive)$/.test(pathName) && typeof body.key === 'string' && body.key) {
+        const question = (Array.isArray(db.memory.questionBank) ? db.memory.questionBank : []).find(item => item && item.key === body.key);
+        if (question && typeof question.sourceExamKey === 'string' && question.sourceExamKey) itemKeys.push(question.sourceExamKey);
     }
     const itemPath = rawPath.match(/^\/(?:material|evaluation)\/([^/]+)/i);
     if (itemPath) itemKeys.push(safeDecode(itemPath[1]));

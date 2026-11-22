@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../lib/api', () => ({ api: { post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 
-import QuestionEditor from './QuestionEditor'
+import QuestionEditor, { QuestionCard } from './QuestionEditor'
 import { editorQuestion, editorQuestionPayload, firstEvaluationProblem } from './questionEditorModel'
 
 let latest = []
@@ -203,16 +203,38 @@ describe('[UC-PROVA-004] editor de questões do professor', () => {
     expect(within(card(1)).getByRole('button', { name: 'Excluir (questão 1)' })).toBeDisabled()
   })
 
-  it('com a conferência ligada, a questão mostra o que falta; salvar no banco só em "Uma correta"', () => {
+  // Desde o A7 (P3-S9a) o banco guarda os seis tipos: "Salvar no banco" vale para todos; a
+  // questão que já veio do banco (bankKey) mostra "Do banco" e não é salva de novo, e a
+  // cópia por "Duplicar" é uma questão nova (sem a chave).
+  it('com a conferência ligada, a questão mostra o que falta; salvar no banco em todo tipo, menos a que já é do banco', () => {
     const onSaveToBank = vi.fn()
-    render(<Harness initial={[{ type: 'short_answer', text: '' }, { text: 'Ok', alternatives: [{ text: 'a', isCorrect: true }, { text: 'b' }] }]} showProblems onSaveToBank={onSaveToBank} />)
+    render(<Harness initial={[
+      { type: 'short_answer', text: '' },
+      { type: 'essay', text: 'Explique.' },
+      { text: 'Ok', alternatives: [{ text: 'a', isCorrect: true }, { text: 'b' }], bankKey: 'qb_1' },
+    ]} showProblems onSaveToBank={onSaveToBank} />)
     const missing = within(card(1)).getByRole('list', { name: 'O que falta na questão 1' })
     expect(missing).toHaveTextContent('Informe o enunciado.')
     expect(missing).toHaveTextContent('Informe pelo menos uma resposta aceita.')
     expect(within(card(2)).queryByRole('list')).toBeNull()
-    expect(within(card(1)).getByRole('button', { name: 'Salvar no banco (questão 1)' })).toBeDisabled()
     fireEvent.click(within(card(2)).getByRole('button', { name: 'Salvar no banco (questão 2)' }))
     expect(onSaveToBank).toHaveBeenCalledTimes(1)
+    expect(onSaveToBank.mock.calls[0][0].type).toBe('essay')
+    expect(within(card(1)).getByRole('button', { name: 'Salvar no banco (questão 1)' })).not.toBeDisabled()
+    expect(within(card(3)).getByText('Do banco')).toBeInTheDocument()
+    expect(within(card(3)).getByRole('button', { name: 'Salvar no banco (questão 3)' })).toBeDisabled()
+    fireEvent.click(within(card(3)).getByRole('button', { name: 'Duplicar (questão 3)' }))
+    expect(within(card(4)).queryByText('Do banco')).toBeNull()
+    expect(within(card(4)).getByRole('button', { name: 'Salvar no banco (questão 4)' })).not.toBeDisabled()
+  })
+
+  it('sem os botões de lista, o cartão serve de editor de um item só (banco de questões)', () => {
+    render(<QuestionCard question={editorQuestion({ text: 'Q', type: 'true_false', correctAnswer: 'A' })} index={0} onChange={() => {}} label="Questão do banco" />)
+    const group = screen.getByRole('group', { name: 'Questão do banco' })
+    for (const name of [/Subir/, /Descer/, /Duplicar/, /Salvar no banco/, /Excluir \(questão/]) {
+      expect(within(group).queryByRole('button', { name })).toBeNull()
+    }
+    expect(within(group).getByLabelText('Tipo da questão')).toHaveValue('true_false')
   })
 
   // Rodada de ajuste 1 do A6: a numérica voltava ao editor arredondada em 6 casas

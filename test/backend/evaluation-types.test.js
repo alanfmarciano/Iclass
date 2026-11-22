@@ -520,7 +520,11 @@ test('[UC-PROVA-004] estatística da prova escreve cada resposta por describeAns
     assert.deepEqual([byNumber[6].correct, byNumber[6].wrong, byNumber[6].pending], [0, 0, 1]);
 });
 
-test('[UC-PROVA-004] levar a avaliação para o banco deixa de fora os tipos que o banco ainda não guarda', async () => {
+// Desde o A7 (P3-S9a) o banco guarda a questão pelo modelo único: os seis tipos entram,
+// com pontos, gabarito do tipo, explicação e rubrica (antes só uma correta e verdadeiro ou
+// falso, como 'multiple_choice'). O teste mudou com o contrato: o que fica de fora agora
+// é só a questão que o modelo recusa.
+test('[UC-BANCO-001] levar a avaliação para o banco leva os seis tipos pelo modelo', async () => {
     await application();
     const before = (db.memory.questionBank || []).length;
     const imported = await request(app)
@@ -528,19 +532,45 @@ test('[UC-PROVA-004] levar a avaliação para o banco deixa de fora os tipos que
         .set('x-admin-session', adminToken)
         .send({ examKey, category: 'Redes' })
         .expect(200);
-    assert.equal(imported.body.importedCount, 2);
-    assert.deepEqual(imported.body.questions.map(question => question.originalNumber), [1, 3]);
-    assert.deepEqual(imported.body.skipped, [
-        { questionNumber: 2, type: 'multiple_answer' },
-        { questionNumber: 4, type: 'numeric' },
-        { questionNumber: 5, type: 'short_answer' },
-        { questionNumber: 6, type: 'essay' },
-    ]);
-    assert.equal(imported.body.message, '4 questões ficaram de fora: o banco de questões ainda guarda só questões de uma correta e de verdadeiro ou falso.');
+    assert.equal(imported.body.importedCount, 6);
+    assert.equal(imported.body.skippedCount, 0);
+    assert.equal(imported.body.message, undefined);
     const added = db.memory.questionBank.slice(before);
-    assert.equal(added.length, 2);
+    assert.deepEqual(added.map(item => item.type), ['multiple_choice', 'multiple_answer', 'true_false', 'numeric', 'short_answer', 'essay']);
+    assert.deepEqual(added.map(item => item.points), [2, 3, 1, 2, 1, 3]);
+    assert.deepEqual(added.map(item => item.originalNumber), [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(added[1].correctAnswers, ['A', 'C']);
+    assert.deepEqual(added[3].numeric, { value: 3.5, tolerance: 0.25, unit: 'ms' });
+    assert.deepEqual(added[4].acceptedAnswers, ['Máscara de sub-rede', 'máscara']);
+    assert.deepEqual(added[5].rubric.map(criterion => criterion.pontos), [2, 1]);
+    assert.equal(added[0].explanation, 'O **ls** lista.');
     added.forEach(item => {
-        assert.equal(item.type, 'multiple_choice');
-        assert.equal(item.alternatives.filter(alternative => alternative.isCorrect).length, 1);
+        assert.equal(item.sourceExamKey, examKey);
+        assert.equal(item.category, 'Redes');
+        assert.equal(item.revision, 1);
+        assert.equal(item.author, adminEmail);
+        assert.equal(typeof item.questionText, 'string');
+        assert.equal('text' in item, false, 'o enunciado do banco fica em questionText');
     });
+    // De novo: nada entra repetido.
+    const again = await request(app)
+        .post('/api/admin/question-bank/import-evaluation')
+        .set('x-admin-session', adminToken)
+        .send({ examKey, category: 'Redes' })
+        .expect(200);
+    assert.equal(again.body.importedCount, 0);
+    // A questão que o modelo recusa (avaliação antiga incompleta) fica de fora com o motivo.
+    db.memory.evaluations.Avaliacao_Incompleta = { title: 'Antiga', questions: [
+        { originalNumber: 1, text: 'Sem alternativas', alternatives: [], correctAnswer: '' },
+        { originalNumber: 2, text: 'Boa', alternatives: [{ letter: 'A', text: 'a' }, { letter: 'B', text: 'b' }], correctAnswer: 'B' },
+    ] };
+    const partial = await request(app)
+        .post('/api/admin/question-bank/import-evaluation')
+        .set('x-admin-session', adminToken)
+        .send({ examKey: 'Avaliacao_Incompleta' })
+        .expect(200);
+    assert.equal(partial.body.importedCount, 1);
+    assert.deepEqual(partial.body.skipped, [{ questionNumber: 1, type: 'multiple_choice', motivo: 'A questão deve ter entre 2 e 8 alternativas.' }]);
+    assert.equal(partial.body.message, '1 questão ficou de fora porque está incompleta (questão 1: A questão deve ter entre 2 e 8 alternativas.)');
+    delete db.memory.evaluations.Avaliacao_Incompleta;
 });

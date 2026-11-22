@@ -358,24 +358,42 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
     const unlock = await asInstructor('/api/admin/unlock-student-focus').send({ studentEmail: student, studentClass: CLASS_NAME, courseId: COURSE_ID, examKey: EXAM_KEY, applicationId: application.id });
     assert.ok(unlock.status < 500 && unlock.body.field === undefined, JSON.stringify(unlock.body));
 
-    // ProvasPage: salvar questão no banco (alternativas do editor, com isCorrect) e editar.
-    screen('features/admin/ProvasPage.jsx', "category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),");
+    // ProvasPage e QuestionBankPanel: salvar questão no banco (o corpo do editor pelo
+    // bankItemPayload, com os seis tipos desde o P3-S9a) e editar o item do banco.
+    screen('features/admin/ProvasPage.jsx', "...bankItemPayload(question, { category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS) }),");
     // O Tema e a Categoria deixam digitar 500 caracteres (decisões §12, sobra do H9b).
     screen('features/admin/ProvasPage.jsx', 'const THEME_MAX_CHARS = 500');
     screen('features/admin/ProvasPage.jsx', '<Input label="Tema" value={editor.theme} maxLength={THEME_MAX_CHARS}');
-    screen('features/admin/ProvasPage.jsx', "<Input label=\"Categoria\" value={bankEditor.category || ''} maxLength={THEME_MAX_CHARS}");
+    screen('features/admin/questionBankModel.js', 'export const BANK_CATEGORY_MAX = 500');
+    screen('features/admin/QuestionBankPanel.jsx', 'label="Categoria" value={editing.category} maxLength={BANK_CATEGORY_MAX}');
     screen('features/admin/ProvasPage.jsx', "sourceExamKey: editor.key || null,");
-    const alternatives = ['A', 'B', 'C', 'D'].map((letter, index) => ({ letter, text: `Alternativa ${letter} com acento é`, isCorrect: index === 2 }));
-    const bank = ok(await asInstructor('/api/admin/question-bank/create').send({ category: 'Fundamentos de TI', questionText: 'Qual componente guarda a BIOS?\n\nEscolha uma.', alternatives, correctAnswer: 'C', sourceExamKey: null }), 'banco criar');
-    const key = bank.body.question.key;
-    screen('features/admin/ProvasPage.jsx', "api.post('/api/admin/question-bank/update', { key: bankEditor.key, category: bankEditor.category, questionText: bankEditor.questionText, alternatives: bankEditor.alternatives,");
-    ok(await asInstructor('/api/admin/question-bank/update').send({ key, category: bank.body.question.category, questionText: bank.body.question.questionText, alternatives: bank.body.question.alternatives, correctAnswer: 'C' }), 'banco editar');
+    screen('features/admin/QuestionBankPanel.jsx', "api.post('/api/admin/question-bank/update', { key: editing.key, ...payload })");
+    screen('features/admin/QuestionBankPanel.jsx', "api.post('/api/admin/question-bank/create', payload)");
+    screen('features/admin/QuestionBankPanel.jsx', "api.post('/api/admin/question-bank/archive', { key: item.key, archived: !item.archived })");
+    // O corpo que bankItemPayload monta (editorQuestionPayload + dificuldade, habilidades,
+    // etiquetas e categoria), para os seis tipos.
+    const bankBodies = [
+        { type: 'multiple_choice', points: 1, text: 'Qual componente guarda a BIOS?\n\nEscolha uma.', alternatives: ['A', 'B', 'C', 'D'].map((letter, index) => ({ letter, text: `Alternativa ${letter} com acento é`, isCorrect: index === 2 })), correctAnswer: 'C' },
+        { type: 'multiple_answer', points: 2, text: 'Quais?', alternatives: [{ letter: 'A', text: 'a', isCorrect: true }, { letter: 'B', text: 'b', isCorrect: true }], correctAnswers: ['A', 'B'], partialCredit: true },
+        { type: 'true_false', points: 1, text: 'V?', correctAnswer: 'A' },
+        { type: 'numeric', points: 1, text: 'N?', numeric: { value: 2.5, tolerance: 0 }, review: 'auto' },
+        { type: 'short_answer', points: 1, text: 'C?', acceptedAnswers: ['ls'], review: 'auto' },
+        { type: 'essay', points: 2, text: 'D?', expectedAnswer: '', rubric: [{ nome: 'Ideia', pontos: 2 }] },
+    ].map(question => ({ ...question, explanation: '', difficulty: '', skills: [], tags: [], category: 'Fundamentos de TI' }));
+    const bankKeys = [];
+    for (const bankBody of bankBodies) {
+        const created = ok(await asInstructor('/api/admin/question-bank/create').send({ ...bankBody, sourceExamKey: null }), `banco criar ${bankBody.type}`);
+        bankKeys.push(created.body.question.key);
+    }
+    ok(await asInstructor('/api/admin/question-bank/update').send({ key: bankKeys[0], ...bankBodies[0], difficulty: 'media', tags: ['bios'] }), 'banco editar');
+    ok(await asInstructor('/api/admin/question-bank/archive').send({ key: bankKeys[1], archived: true }), 'banco arquivar');
+    ok(await asInstructor('/api/admin/question-bank/archive').send({ key: bankKeys[1], archived: false }), 'banco desarquivar');
     // Tema com o máximo da tela (500) vira a categoria: aceito; 501 é recusado com o campo.
     const longTheme = 'T'.repeat(500);
-    const longBank = ok(await asInstructor('/api/admin/question-bank/create').send({ category: longTheme, questionText: 'Qual?', alternatives, correctAnswer: 'C', sourceExamKey: null }), 'banco com tema de 500');
+    const longBank = ok(await asInstructor('/api/admin/question-bank/create').send({ ...bankBodies[2], category: longTheme, sourceExamKey: null }), 'banco com tema de 500');
     assert.equal(longBank.body.question.category, longTheme);
-    ok(await asInstructor('/api/admin/question-bank/update').send({ key: longBank.body.question.key, category: longTheme, questionText: 'Qual?', alternatives, correctAnswer: 'C' }), 'banco editar com 500');
-    const tooLong = await asInstructor('/api/admin/question-bank/create').send({ category: 'T'.repeat(501), questionText: 'Qual?', alternatives, correctAnswer: 'C' });
+    ok(await asInstructor('/api/admin/question-bank/update').send({ key: longBank.body.question.key, ...bankBodies[2], category: longTheme }), 'banco editar com 500');
+    const tooLong = await asInstructor('/api/admin/question-bank/create').send({ ...bankBodies[2], category: 'T'.repeat(501) });
     assert.equal(tooLong.status, 400);
     assert.equal(tooLong.body.field, 'category');
 });
@@ -550,7 +568,7 @@ test('[UC-CONFIRMACAO-001] guarda: nenhuma caixa nova do navegador (confirm, pro
     }
     assert.deepEqual(problems, [], `use o ConfirmDialog (web/src/components/ui/ConfirmDialog.jsx):\n${problems.join('\n')}`);
     // As telas tocadas no C0a não usam mais as caixas do navegador.
-    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx', 'features/admin/QuestionEditor.jsx', 'features/admin/ResultadosPage.jsx']) {
+    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx', 'features/admin/QuestionEditor.jsx', 'features/admin/QuestionBankPanel.jsx', 'features/admin/ResultadosPage.jsx']) {
         assert.equal(nativeDialogCalls({ text: fs.readFileSync(path.join(WEB_SRC, file), 'utf8') }).length, 0, file);
         assert.equal(NATIVE_DIALOGS_LEFT[file], undefined, file);
     }

@@ -229,10 +229,13 @@ export function editorQuestion(source = {}) {
   }
 }
 
-// Cópia para "Duplicar": mesma questão com outro uid (os ids da rubrica ficam).
+// Cópia para "Duplicar": mesma questão com outro uid (os ids da rubrica ficam). A cópia
+// é uma questão nova da prova: não leva a chave do banco (bankKey), senão o banco contaria
+// as duas como a mesma questão (P3-S9a).
 export function duplicateEditorQuestion(question) {
   return {
     ...question,
+    bankKey: '',
     uid: nextUid(),
     alternatives: question.alternatives.map((alternative) => ({ ...alternative })),
     numeric: { ...question.numeric },

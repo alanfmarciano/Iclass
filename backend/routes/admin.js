@@ -36,7 +36,7 @@ const {
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
-const { DEFAULT_POINTS, describeAnswer, isAnswered, isSingleChoiceType, questionType } = require('../utils/examScoring.js');
+const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
 
 // Resposta de uma questão para a revisão do professor (contrato C3 do P3): tipo, texto da
 // resposta pelas letras que o aluno viu, resposta digitada e pontos. labelsRecord diz que
@@ -198,6 +198,7 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
+const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
 const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
 
@@ -213,21 +214,9 @@ const adminTextField = (max, label) => str({ max, nullable: true, label });
 // conferido por extractInstitutional e rejectInvalidBranding).
 const schoolInfoField = () => shape({}, { nullable: true, label: 'dados da escola' });
 const schoolBrandingField = () => shape({}, { nullable: true, label: 'identidade visual' });
-// Categoria do banco: a tela manda o tema da prova (ou o nome da unidade). O teto é o
-// mesmo do campo Tema do editor (500, com contador): o schema nunca recusa o que a tela
-// deixa digitar (decisões §12, sobra do H9b; antes eram 100).
-const QUESTION_CATEGORY_MAX_CHARS = 500;
-const questionBankFields = () => ({
-    key: adminIdField('questão'),
-    category: adminTextField(QUESTION_CATEGORY_MAX_CHARS, 'categoria'),
-    curriculumKey: adminTextField(100, 'componente curricular'),
-    type: adminTextField(40, 'tipo'),
-    questionText: adminTextField(10000, 'texto da questão'),
-    alternatives: list(either([str({ max: 2000 }), shape({})], { label: 'alternativas' }), { max: 10, nullable: true, label: 'alternativas' }),
-    correctAnswer: adminTextField(10, 'resposta correta'),
-    sourceExamKey: adminTextField(200, 'prova de origem'),
-    examKey: adminTextField(200, 'prova'),
-});
+// Tema da prova: vira a categoria da questão salva no banco, com o mesmo teto (500, com
+// contador; decisões §12, sobra do H9b; routes/adminQuestionBank.js).
+const { QUESTION_CATEGORY_MAX_CHARS } = require('./adminQuestionBank.js');
 // Avaliação (POST e PUT /api/admin/evaluation, fase 3, P3-S1): tipo e tamanho de cada
 // campo da questão pelo schema do modelo (questionInputSchema, utils/questionModel.js, o
 // mesmo da correção ao vivo). Título, tema e rubrica geral não tinham limite na tela: os
@@ -274,7 +263,6 @@ const ADMIN_SCHEMAS = {
         visibility: adminTextField(100, 'visibilidade'),
         text: adminTextField(5000, 'observação'),
     }),
-    questionBank: body(questionBankFields()),
 };
 const {
     addExtraUnit,
@@ -3595,6 +3583,8 @@ router.use(createAdminAuditRouter());
 router.use(createAdminPrivacyRouter());
 router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
+// Banco de questões (fase 3, P3-S9a): depois do router de cursos, na ordem do plano.
+router.use(createAdminQuestionBankRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -5143,166 +5133,8 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
     });
 });
 
-// 8. Banco centralizado de questões reutilizáveis
-// A tela mostra category, curriculumKey, type e questionText como texto: um item antigo
-// gravado pela API com um objeto ali (antes do schema do H9b) derrubava Provas e Monitor
-// com a tela de erro. Só a resposta é normalizada; o banco não é regravado.
-function questionBankItemForScreen(question) {
-    const text = (value, fallback) => (typeof value === 'string' ? value : fallback);
-    return {
-        ...question,
-        category: text(question.category, 'Geral'),
-        curriculumKey: text(question.curriculumKey, ''),
-        type: text(question.type, 'multiple_choice'),
-        questionText: text(question.questionText, ''),
-    };
-}
-
-router.get('/api/admin/question-bank', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
-        const questions = accountScopeKind(matchedAdmin) !== 'tudo'
-            ? (db.memory.questionBank || []).filter(question => question && (!question.sourceExamKey || adminCanAccessItem(matchedAdmin, question.sourceExamKey)))
-            : (db.memory.questionBank || []).filter(Boolean);
-        res.json({ success: true, questions: questions.map(questionBankItemForScreen) });
-    });
-});
-
-router.post('/api/admin/question-bank/create', ADMIN_SCHEMAS.questionBank, (req, res) => {
-    validateAdmin(req, res, () => {
-        const { category, type, questionText, alternatives, correctAnswer, sourceExamKey, curriculumKey } = req.body;
-        if (!questionText || String(questionText).trim() === '') {
-            return res.status(400).json({ error: 'Texto da questão é obrigatório.' });
-        }
-        let normalizedQuestion;
-        try {
-            normalizedQuestion = normalizeEvaluationPayload({
-                title: 'Banco de questões',
-                questions: [{ text: questionText, alternatives, correctAnswer }],
-            }).questions[0];
-        } catch (error) {
-            return sendRouteError(error, req, res);
-        }
-        const item = {
-            key: 'qb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-            category: category || 'Geral',
-            curriculumKey: curriculumKey || '',
-            type: type || 'multiple_choice',
-            questionText: normalizedQuestion.text,
-            alternatives: normalizedQuestion.alternatives,
-            correctAnswer: normalizedQuestion.correctAnswer,
-            sourceExamKey: sourceExamKey || null,
-            createdAt: new Date().toISOString()
-        };
-        db.memory.questionBank.push(item);
-        db.save();
-        res.json({ success: true, question: questionBankItemForScreen(item) });
-    });
-});
-
-router.post('/api/admin/question-bank/update', ADMIN_SCHEMAS.questionBank, (req, res) => {
-    validateAdmin(req, res, () => {
-        const item = (db.memory.questionBank || []).find(question => question && question.key === req.body.key);
-        if (!item) return res.status(404).json({ error: 'Questão não encontrada no banco.' });
-        let normalizedQuestion;
-        try {
-            normalizedQuestion = normalizeEvaluationPayload({
-                title: 'Banco de questões',
-                questions: [{
-                    text: req.body.questionText ?? item.questionText,
-                    alternatives: req.body.alternatives ?? item.alternatives,
-                    correctAnswer: req.body.correctAnswer ?? item.correctAnswer,
-                }],
-            }).questions[0];
-        } catch (error) {
-            return sendRouteError(error, req, res);
-        }
-        item.questionText = normalizedQuestion.text;
-        item.alternatives = normalizedQuestion.alternatives;
-        item.correctAnswer = normalizedQuestion.correctAnswer;
-        if (req.body.category !== undefined) item.category = String(req.body.category || 'Geral');
-        if (req.body.curriculumKey !== undefined) item.curriculumKey = String(req.body.curriculumKey || '');
-        item.updatedAt = new Date().toISOString();
-        db.save();
-        // Item antigo com curriculumKey ou type de outro tipo volta como texto (o guardado
-        // fica como estava, igual ao GET).
-        res.json({ success: true, question: questionBankItemForScreen(item) });
-    });
-});
-
-router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.questionBank, (req, res) => {
-    validateAdmin(req, res, () => {
-        const { examKey, category, curriculumKey } = req.body;
-        if (!examKey) return res.status(400).json({ error: 'examKey é obrigatório.' });
-
-        const evaluation = db.memory.evaluations[examKey];
-        const questions = evaluation && Array.isArray(evaluation.questions) ? evaluation.questions : [];
-        if (questions.length === 0) {
-            return res.status(404).json({ error: 'Avaliação não encontrada ou sem questões estruturadas.' });
-        }
-
-        const existingKeys = new Set((db.memory.questionBank || []).filter(Boolean).map(q => `${q.sourceExamKey}:${q.originalNumber}`));
-        const imported = [];
-        // O banco de hoje guarda só questões de escolha única (enunciado, alternativas e a
-        // letra certa); várias corretas, numérica, resposta curta e dissertativa ficam fora
-        // até o banco ganhar o modelo da questão (A7, P3-S9a). Antes elas entravam como
-        // "uma correta" sem alternativas ou com várias certas.
-        const skipped = [];
-        questions.filter(Boolean).forEach(question => {
-            const originalNumber = Number(question.originalNumber || question.number || 0);
-            const dedupeKey = `${examKey}:${originalNumber}`;
-            if (existingKeys.has(dedupeKey)) return;
-            if (!isSingleChoiceType(questionType(question))) {
-                skipped.push({ questionNumber: originalNumber, type: questionType(question) });
-                return;
-            }
-            const item = {
-                key: 'qb_' + Date.now() + '_' + originalNumber + '_' + Math.random().toString(36).slice(2, 5),
-                category: category || examKey.split('_')[1] || 'Geral',
-                curriculumKey: curriculumKey || '',
-                type: 'multiple_choice',
-                sourceExamKey: examKey,
-                originalNumber,
-                questionText: question.text || '',
-                alternatives: question.alternatives || [],
-                correctAnswer: question.correctAnswer || '',
-                createdAt: new Date().toISOString()
-            };
-            db.memory.questionBank.push(item);
-            imported.push(item);
-        });
-
-        db.save();
-        res.json({
-            success: true,
-            importedCount: imported.length,
-            questions: imported.map(questionBankItemForScreen),
-            skippedCount: skipped.length,
-            skipped,
-            ...(skipped.length ? { message: `${skipped.length === 1 ? '1 questão ficou' : `${skipped.length} questões ficaram`} de fora: o banco de questões ainda guarda só questões de uma correta e de verdadeiro ou falso.` } : {}),
-        });
-    });
-});
-
-router.post('/api/admin/question-bank/delete', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
-        const { key } = req.body;
-        if (!key) return res.status(400).json({ error: 'key é obrigatório.' });
-        // Um item null na lista (dado antigo) fica como está, sem derrubar a exclusão.
-        const before = db.memory.questionBank.length;
-        const removed = db.memory.questionBank.filter(q => q && q.key === key);
-        db.memory.questionBank = db.memory.questionBank.filter(q => !q || q.key !== key);
-        removed.forEach(question => recordAudit(db.memory, {
-            req,
-            actor: matchedAdmin,
-            action: 'question_deleted',
-            category: 'academic',
-            examKey: question.sourceExamKey || undefined,
-            details: { deleted: deletedItemCopy(question) },
-        }));
-        db.save();
-        res.json({ success: true, deleted: before - db.memory.questionBank.length });
-    });
-});
+// 8. Banco centralizado de questões reutilizáveis: routes/adminQuestionBank.js (fase 3,
+// P3-S9a), montado logo depois de createAdminCoursesRouter.
 
 // ---- Escolas / Instituições (Fase I.1) ----
 // O que a auditoria guarda de uma escola: identificação e dados institucionais (a

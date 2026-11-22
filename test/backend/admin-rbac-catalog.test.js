@@ -56,6 +56,13 @@ test('rotas extraídas ficam nos módulos administrativos dedicados', () => {
         assert.equal(adminSource.includes(`'${route}'`), false, `${route} ainda está no router monolítico`);
         assert.equal(examConfigSource.includes(`'${route}'`), true, `${route} não foi extraída para adminExamConfig`);
     });
+    // Banco de questões (fase 3, P3-S9a): router próprio, montado depois do de cursos.
+    const questionBankSource = fs.readFileSync(path.join(routesDir, 'adminQuestionBank.js'), 'utf8');
+    ['/api/admin/question-bank', '/api/admin/question-bank/create', '/api/admin/question-bank/update', '/api/admin/question-bank/archive', '/api/admin/question-bank/import-evaluation', '/api/admin/question-bank/delete'].forEach(route => {
+        assert.equal(adminSource.includes(`'${route}'`), false, `${route} ainda está no router monolítico`);
+        assert.equal(questionBankSource.includes(`'${route}'`), true, `${route} não foi extraída para adminQuestionBank`);
+    });
+    assert.ok(adminSource.indexOf('router.use(createAdminQuestionBankRouter())') > adminSource.indexOf('router.use(createAdminCoursesRouter())'), 'o banco vem depois do router de cursos (ordem_no_createApp)');
 });
 
 // ---------------------------------------------------------------- fase 3 (B0b)
@@ -128,6 +135,7 @@ const PHASE3_ROUTES = [
     ['POST', '/exam-applications/app_1/schedule', 'page.exams'],
     ['POST', '/exam-applications/app_1/participants', 'page.exams'],
     ['GET', '/exam-applications/participant-candidates', 'page.exams'],
+    ['POST', '/question-bank/archive', 'page.exams'],
     ['POST', '/question-bank/import/preview', 'page.exams'],
     ['POST', '/question-bank/import', 'page.exams'],
     ['GET', '/question-bank/export', 'page.exams'],

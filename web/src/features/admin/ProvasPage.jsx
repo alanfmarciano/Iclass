@@ -44,6 +44,8 @@ import {
 } from './examTools'
 import { matchesSearch } from '../../lib/textSearch'
 import QuestionEditor from './QuestionEditor'
+import QuestionBankPanel from './QuestionBankPanel'
+import { bankItemPayload, bankQuestionForExam } from './questionBankModel'
 import QuestionMarkdown from '../exam/QuestionMarkdown'
 import {
   answerSummary,
@@ -52,6 +54,7 @@ import {
   firstEvaluationProblem,
   formatPointsLabel,
   isChoiceType,
+  questionProblems,
   questionTypeLabel,
   totalPoints,
 } from './questionEditorModel'
@@ -170,9 +173,9 @@ export default function ProvasPage() {
   const [mode, setMode] = useState('online')
   const [deleteHistory, setDeleteHistory] = useState(null)
   // Confirmações no ConfirmDialog, no lugar do confirm do navegador (C12 do P3, C0a):
-  // salvar a prova do curso que substitui a das turmas e excluir questão do banco.
+  // salvar a prova do curso que substitui a das turmas (a exclusão de questão do banco
+  // pergunta no QuestionBankPanel).
   const [scopeConfirm, setScopeConfirm] = useState(null)
-  const [bankDelete, setBankDelete] = useState(null)
   const [applyHistory, setApplyHistory] = useState(null)
   // "Para quem" da montagem online e "Alunos desta aplicação" (P3-S7, PrepareApplicationForm.jsx).
   const [audience, setAudience] = useState(initialAudience)
@@ -186,9 +189,9 @@ export default function ProvasPage() {
   const [finishBusy, setFinishBusy] = useState(null)
   const [editor, setEditor] = useState(null)
   const [editorBusy, setEditorBusy] = useState(false)
-  const [bankOpen, setBankOpen] = useState(false)
-  const [bankQuestions, setBankQuestions] = useState([])
-  const [bankEditor, setBankEditor] = useState(null)
+  // Banco de questões (P3-S9a, QuestionBankPanel.jsx): 'editor' quando abre pelo editor
+  // da prova (com "Adicionar"), 'page' pelo "Ver banco de questões" da tela.
+  const [bankOpen, setBankOpen] = useState(null)
   const [shuffleSeed, setShuffleSeed] = useState(() => Date.now())
   // ----- Painel de listagem (dashboard de provas) -----
   const [examStatusMap, setExamStatusMap] = useState({})
@@ -715,65 +718,34 @@ export default function ProvasPage() {
     }
   }
 
-  async function openQuestionBank() {
-    try {
-      const response = await api.get('/api/admin/question-bank')
-      setBankQuestions(response.questions || [])
-      setBankOpen(true)
-    } catch (error) { toast.error(error.message) }
+  function openQuestionBank(mode = 'editor') {
+    setBankOpen(mode)
   }
 
+  // Questão do banco na prova: leva a chave do banco (bankKey), por onde o banco conta os
+  // usos e o acerto dela.
   function addBankQuestion(question) {
-    setEditor((current) => ({ ...current, questions: [...current.questions, editorQuestion(question)] }))
+    setEditor((current) => (current ? { ...current, questions: [...current.questions, bankQuestionForExam(question)] } : current))
     toast.success('Questão adicionada à prova')
   }
 
-  // O banco de questões ainda guarda só "Uma correta" (o banco com os tipos novos é o
-  // P3-S9a): o botão fica desligado nos outros tipos.
+  // "Salvar no banco" vale para os seis tipos (o banco usa o modelo da questão, P3-S9a). A
+  // questão salva passa a apontar para o item novo do banco (bankKey).
   async function saveQuestionToBank(question) {
-    if (question.type !== 'multiple_choice') return toast.info('Por enquanto o banco de questões guarda só questões de "Uma correta".')
-    const payload = editorQuestionPayload(question)
+    const [problem] = questionProblems(question)
+    if (problem) return toast.error(`Complete a questão antes de salvar no banco: ${problem}`)
+    const payload = {
+      ...bankItemPayload(question, { category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS) }),
+      sourceExamKey: editor.key || null,
+    }
     try {
-      const response = await api.post('/api/admin/question-bank/create', {
-        category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),
-        questionText: payload.text,
-        alternatives: payload.alternatives,
-        correctAnswer: payload.correctAnswer,
-        sourceExamKey: editor.key || null,
-      })
-      setBankQuestions((items) => [...items, response.question])
+      const response = await api.post('/api/admin/question-bank/create', payload)
+      const bankKey = response?.question?.key
+      if (bankKey) {
+        setEditor((current) => (current ? { ...current, questions: current.questions.map((item) => (item.uid === question.uid ? { ...item, bankKey } : item)) } : current))
+      }
       toast.success('Questão salva no banco')
     } catch (error) { toast.error(error.message) }
-  }
-
-  async function saveBankEditor() {
-    try {
-      const response = await api.post('/api/admin/question-bank/update', {
-        key: bankEditor.key,
-        category: bankEditor.category,
-        questionText: bankEditor.questionText,
-        alternatives: bankEditor.alternatives,
-        correctAnswer: bankEditor.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
-      })
-      setBankQuestions((items) => items.map((item) => item.key === response.question.key ? response.question : item))
-      setBankEditor(null)
-      toast.success('Questão do banco atualizada')
-    } catch (error) { toast.error(error.message) }
-  }
-
-  function deleteBankQuestion(question) {
-    setBankDelete(question)
-  }
-
-  // Erro da exclusão aparece no próprio diálogo, que continua aberto.
-  async function confirmDeleteBankQuestion() {
-    const question = bankDelete
-    if (!question) return
-    await api.post('/api/admin/question-bank/delete', { key: question.key })
-    setBankQuestions((items) => items.filter((item) => item.key !== question.key))
-    if (bankEditor?.key === question.key) setBankEditor(null)
-    setBankDelete(null)
-    toast.success('Questão excluída do banco')
   }
 
   const loading = courses.loading || classes.loading
@@ -798,6 +770,8 @@ export default function ProvasPage() {
       <>
       <PageHeader title="Provas" helpTopic="provas" subtitle={`Monte e aplique avaliações · ${courseName || selectedCourse?.name || activeCourseId} · ${activeClassName}.`}>
         <Button variant="secondary" icon={Plus} onClick={openNewEditor} disabled={!courseId || !activeModule}>Nova prova</Button>
+        {/* Com o editor aberto, o banco abre pelo botão do editor (com "Adicionar"). */}
+        {!editor && <Button variant="ghost" icon={Library} onClick={() => openQuestionBank('page')}>Ver banco de questões</Button>}
         <div className="grid grid-cols-3 gap-2 min-w-[360px]">
           <div className="rounded-lg border border-border bg-surface px-3 py-2">
             <p className="text-[11px] uppercase font-semibold text-subtle">Curso</p>
@@ -1219,7 +1193,7 @@ export default function ProvasPage() {
             <QuestionEditor
               questions={editor.questions}
               onChange={(questions) => setEditor((current) => ({ ...current, questions }))}
-              onOpenBank={openQuestionBank}
+              onOpenBank={() => openQuestionBank('editor')}
               onSaveToBank={saveQuestionToBank}
               showProblems={editor.showProblems === true}
             />
@@ -1227,36 +1201,12 @@ export default function ProvasPage() {
         )}
       </Modal>
 
-      <Modal open={bankOpen} onClose={() => { setBankOpen(false); setBankEditor(null) }} title="Banco de questões" description="Importe uma questão ou edite o acervo reutilizável." size="lg">
-        {bankEditor ? (
-          <div className="space-y-3">
-            <Input label="Categoria" value={bankEditor.category || ''} maxLength={THEME_MAX_CHARS} counterFrom={THEME_COUNTER_FROM} onChange={(event) => setBankEditor({ ...bankEditor, category: event.target.value })} />
-            <textarea value={bankEditor.questionText || ''} onChange={(event) => setBankEditor({ ...bankEditor, questionText: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" />
-            {(bankEditor.alternatives || []).map((alternative, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <input type="radio" name="bank-correct" checked={alternative.isCorrect === true || alternative.letter === bankEditor.correctAnswer} onChange={() => setBankEditor({ ...bankEditor, correctAnswer: alternative.letter, alternatives: bankEditor.alternatives.map((item, itemIndex) => ({ ...item, isCorrect: itemIndex === index })) })} />
-                <span className="w-6 text-xs font-bold text-muted">{alternative.letter}</span>
-                <input value={alternative.text || ''} onChange={(event) => setBankEditor({ ...bankEditor, alternatives: bankEditor.alternatives.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item) })} className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-sm text-text" />
-              </div>
-            ))}
-            <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setBankEditor(null)}>Voltar</Button><Button onClick={saveBankEditor}>Salvar alterações</Button></div>
-          </div>
-        ) : (
-          <div className="space-y-2 max-h-[65vh] overflow-auto">
-            {bankQuestions.map((question) => (
-              <div key={question.key} className="rounded-lg border border-border p-3">
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1"><p className="text-sm font-medium text-text">{question.questionText}</p><p className="mt-1 text-xs text-subtle">{question.category || 'Geral'} · resposta {question.correctAnswer || '-'}</p></div>
-                  <Button size="sm" variant="secondary" icon={Edit3} onClick={() => setBankEditor({ ...question, alternatives: (question.alternatives || []).map((item) => ({ ...item })) })}>Editar</Button>
-                  <Button size="sm" icon={Plus} onClick={() => addBankQuestion(question)}>Adicionar</Button>
-                  <Button size="sm" variant="ghost" icon={Trash2} aria-label="Excluir questão do banco" onClick={() => deleteBankQuestion(question)} />
-                </div>
-              </div>
-            ))}
-            {bankQuestions.length === 0 && <EmptyState icon={Library} title="Banco vazio" description="Use “Salvar no banco” em uma questão da prova para iniciar o acervo." />}
-          </div>
-        )}
-      </Modal>
+      <QuestionBankPanel
+        open={!!bankOpen}
+        onClose={() => setBankOpen(null)}
+        onAddToExam={bankOpen === 'editor' && editor ? addBankQuestion : null}
+        defaultCategory={String(editor?.theme || activeModule?.name || '')}
+      />
 
       <Modal
         open={!!applyHistory}
@@ -1289,9 +1239,6 @@ export default function ProvasPage() {
       <ConfirmDialog open={!!scopeConfirm} onClose={() => setScopeConfirm(null)} onConfirm={confirmScopeSave} tone="primary"
         title="Substituir a prova nas turmas?" message={`Esta alteração substituirá esta prova em: ${scopeConfirm?.names || ''}.`}
         confirmLabel="Salvar prova" />
-      <ConfirmDialog open={!!bankDelete} onClose={() => setBankDelete(null)} onConfirm={confirmDeleteBankQuestion} tone="danger"
-        title="Excluir a questão do banco?" message={bankDelete ? `"${bankDelete.questionText}"` : ''}
-        confirmLabel="Excluir" />
       <FinishApplicationModal
         open={!!finishApplication}
         onClose={() => setFinishApplication(null)}

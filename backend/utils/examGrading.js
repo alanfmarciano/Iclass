@@ -68,6 +68,12 @@ function freezeSnapshotGrading(snapshots, evaluation) {
                 if (field === 'type' || field === 'points') return;
                 if (source && source[field] !== undefined && source[field] !== null) frozen[field] = clone(source[field]);
             });
+            // Questão vinda do banco (P3-S9a): a chave do banco vem da avaliação, não do
+            // navegador; é por ela que o banco conta usos e acertos.
+            if (source) {
+                delete frozen.bankKey;
+                if (typeof source.bankKey === 'string' && source.bankKey) frozen.bankKey = source.bankKey;
+            }
             return frozen;
         });
     });

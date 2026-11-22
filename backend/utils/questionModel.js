@@ -6,7 +6,8 @@
 //
 // normalizeQuestion(raw, { index, context, previous }) devolve a questão limpa ou lança
 // um erro 400 com a mensagem em português ("Questão 3: informe pelo menos uma resposta
-// aceita."). context: 'avaliacao' (padrão), 'banco' ou 'ao_vivo'. Na correção ao vivo as
+// aceita."). context: 'avaliacao' (padrão), 'banco' ou 'ao_vivo' (nos dois últimos, sem o
+// "Questão N:"). Na correção ao vivo as
 // letras das alternativas são as do pedido (são as do gabarito e dos identificadores das
 // respostas já salvas), alternativa vazia sai e o tipo, sem pedido, é o da questão de
 // antes (previous).
@@ -73,10 +74,11 @@ function questionError(message) {
     return Object.assign(new Error(message), { status: 400 });
 }
 
-// Prefixo da mensagem: "Questão 3: " na avaliação e no banco; na correção ao vivo (uma
-// questão só) a mensagem começa direto.
+// Prefixo da mensagem: "Questão 3: " na avaliação; na correção ao vivo e no banco de
+// questões (uma questão só) a mensagem começa direto ("Informe pelo menos uma resposta
+// aceita.").
 function messageFor(context, index, text) {
-    if (context === 'ao_vivo') return text.charAt(0).toUpperCase() + text.slice(1);
+    if (context === 'ao_vivo' || context === 'banco') return text.charAt(0).toUpperCase() + text.slice(1);
     return `Questão ${index + 1}: ${text}`;
 }
 
@@ -372,10 +374,12 @@ function withLiveInheritance(raw, previous) {
 // (/api/admin/correct-live-question). Os limites de verdade e as mensagens por questão
 // ("Questão 3: ...") são do modelo (normalizeQuestion); aqui os tetos são um pouco
 // maiores, para a mensagem do modelo aparecer no lugar da genérica.
-function questionInputSchema(options = {}) {
+// questionInputFields() é o mesmo conjunto de campos solto, para o corpo do banco de
+// questões (os campos da questão ao lado de categoria e chave, utils/questionBank.js).
+function questionInputFields() {
     const text = (max, label) => str({ max, nullable: true, label });
     const numberOrText = (label, max = 40) => either([num({ label }), str({ max, label })], { nullable: true, label });
-    return shape({
+    return {
         type: text(40, 'tipo da questão'),
         points: numberOrText('pontos'),
         text: text(20000, 'enunciado'),
@@ -407,7 +411,11 @@ function questionInputSchema(options = {}) {
         skills: list(str({ max: 80, nullable: true, label: 'habilidades' }), { max: 20, nullable: true, label: 'habilidades' }),
         tags: list(str({ max: 40, nullable: true, label: 'etiquetas' }), { max: 20, nullable: true, label: 'etiquetas' }),
         bankKey: text(100, 'questão do banco'),
-    }, { label: 'questão', ...options });
+    };
+}
+
+function questionInputSchema(options = {}) {
+    return shape(questionInputFields(), { label: 'questão', ...options });
 }
 
 function normalizeQuestion(input, { index = 0, context = 'avaliacao', previous = null } = {}) {
@@ -474,5 +482,6 @@ module.exports = {
     TYPE_LABELS,
     normalizeEvaluationQuestions,
     normalizeQuestion,
+    questionInputFields,
     questionInputSchema,
 };

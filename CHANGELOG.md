@@ -15,7 +15,15 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - A prova impressa e o gabarito do professor saem com o cabeçalho da escola (nome e dados de Escolas / Instituições, logo da Identidade visual) em cada folha e o rodapé "Gerado por" com o nome da escola, a data e a hora.
 - A prova impressa mostra os pontos de cada questão e o total quando eles não são todos 1, o Markdown (negrito, código, tabela e imagem), linha para a resposta numérica, duas linhas para a resposta curta e doze para a dissertativa. O verdadeiro ou falso é respondido no cartão-resposta (V ou F), como as outras questões de escolha. O cartão-resposta tem só as questões de escolha; numa prova com os tipos novos ou com pontos, cada questão tem só as letras dela, e a prova de antes continua de A a E. O gabarito pinta todas as corretas de "Várias corretas" e descreve o número com a tolerância, as respostas aceitas e, na dissertativa, a resposta esperada e a rubrica.
 - Verdadeiro ou falso nunca embaralha: Verdadeiro vem sempre antes de Falso, na prova online e na impressa.
-- Por enquanto, "Salvar no banco" fica só para questões de "Uma correta"; o banco de questões com os tipos novos vem numa próxima versão.
+- "Salvar no banco" vale para os seis tipos de questão.
+
+### Banco de questões com os tipos novos, metadados e estatística
+- O banco de questões guarda os seis tipos, com pontos, gabarito, explicação, dificuldade, habilidades, etiquetas e categoria. "Levar a avaliação para o banco" leva todas as questões completas; antes, só as de "Uma correta" e de verdadeiro ou falso entravam.
+- Em Provas, o botão "Ver banco de questões" abre o banco também fora do editor. A lista filtra por busca (sem acento), categoria, tipo, dificuldade e etiqueta, e cada questão mostra o tipo, a dificuldade, a resposta, as etiquetas, em quantas aplicações foi usada e o % de acerto (só das entregas consideradas das suas turmas).
+- "Editar" e "Nova questão" usam o mesmo cartão do editor da prova. Cada alteração sobe a revisão e fica na Auditoria; salvar sem mudar nada não grava.
+- "Arquivar" tira a questão da lista sem apagar; "Mostrar arquivadas" mostra de novo e "Desarquivar" devolve. "Excluir" pergunta antes.
+- A questão adicionada do banco aparece com a etiqueta "Do banco" e não é salva no banco de novo. Na troca de questão do Monitor, a nova questão vem com o tipo, os pontos e o gabarito dela, e a lista mostra o tipo e a resposta.
+- O professor só altera, arquiva ou exclui questões do banco das avaliações dele.
 
 ### Prova do aluno com os tipos novos de questão
 - Na prova, cada tipo de questão tem o seu campo: verdadeiro ou falso em dois botões grandes, "Marque todas as corretas." com caixas de marcar, número com o teclado numérico do celular (aceita vírgula) e a unidade ao lado, resposta curta numa linha e dissertativa numa área que cresce, com o contador "1.230 de 10.000". Cada questão mostra quanto vale ("2 pontos").
