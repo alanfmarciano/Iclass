@@ -102,7 +102,10 @@ describe('versões e impressão com os tipos novos', () => {
     // Markdown: negrito e bloco de código.
     expect(questions[2].querySelector('.md strong').textContent).toBe('32 bits')
     expect(questions[5].querySelector('.md pre code').textContent).toContain('$ ping -c 1 host')
-    expect(questions[2].querySelector('.tf').textContent).toMatch(/Verdadeiro.*Falso/)
+    // Verdadeiro ou falso responde só no cartão-resposta (V ou F), como as outras de escolha:
+    // nada de "( ) Verdadeiro ( ) Falso" na questão, para o aluno não responder em dois lugares.
+    expect(questions[2].querySelector('.tf').textContent).toBe('Verdadeiro ou falso? Marque V ou F no cartão-resposta.')
+    expect(questions[2].textContent).not.toMatch(/\(\s*\)/)
     expect(questions[3].querySelector('.answer-inline .blank')).not.toBeNull()
     expect(questions[3].textContent).toContain('ms')
     expect(questions[4].querySelectorAll('.answer-lines .line')).toHaveLength(2)
@@ -139,8 +142,48 @@ describe('versões e impressão com os tipos novos', () => {
     expect(doc.querySelector('.pts')).toBeNull()
     expect(doc.querySelector('.meta').textContent).not.toContain('ponto')
     expect([...doc.querySelectorAll('.alt')].map((alt) => alt.textContent.trim())).toEqual(['a)x', 'b)y', 'c)z', 'd)w'])
+    // Rodada de ajuste 1 do A6: o cartão-resposta da prova de antes continua de A a E
+    // (como era), mesmo com 4 alternativas.
+    expect([...doc.querySelectorAll('.bubble-row')].map((row) => [...row.querySelectorAll('.bubble')].map((bubble) => bubble.textContent).join(''))).toEqual(['ABCDE'])
     const history = snapshotsFromHistory({ printSnapshot: [{ version: 'A', questions: [{ originalNumber: 1, text: 'Qual?', correctAnswer: 'C', alternatives: [{ letter: 'A', text: 'x' }, { letter: 'C', text: 'z', isCorrect: true }] }], answerKey: { 1: 'C' } }] })
     const key = new DOMParser().parseFromString(examPrintHtml({ title: 'P', snapshots: history, answerKey: true }), 'text/html')
     expect(key.querySelector('.key-item').textContent).toContain('1. C')
+    // ... e o gabarito detalhado não ganha "(Uma correta)": só a letra e o enunciado.
+    expect(key.querySelector('.key-item p').textContent.trim()).toBe('1. C')
+    expect(key.querySelector('.kmeta')).toBeNull()
+    expect([...key.querySelectorAll('.bubble-row')].map((row) => [...row.querySelectorAll('.bubble')].map((bubble) => bubble.textContent).join(''))).toEqual(['ABCDE'])
+    expect(key.querySelector('.bubble.filled').textContent).toBe('C')
+  })
+
+  // Rodada de ajuste 1 do A6 (contrato printDocument): a prova impressa sai pelo
+  // documento da escola, com o cabeçalho da escola em cada folha e o rodapé "Gerado por".
+  it('[UC-PROVA-004] a prova impressa tem o cabeçalho da escola e o rodapé "Gerado por <nome> em <data>" em cada folha', () => {
+    const versions = buildExamVersions(typedEvaluation, { shuffleQuestions: false, shuffleAnswers: false, versionCount: 2, seed: 1, codes: ['AB12', 'CD34'] })
+    const page = examPrintHtml({
+      title: 'Prova <de> redes',
+      snapshots: versions,
+      includeAnswerKey: true,
+      escola: { nome: 'Escola Técnica <Centro>', endereco: 'Rua A, 10' },
+      displayName: 'ETC',
+      geradoEm: new Date(2026, 10, 22, 10, 5),
+    })
+    const doc = new DOMParser().parseFromString(page, 'text/html')
+    expect(doc.title).toBe('Prova <de> redes')
+    const sheets = [...doc.querySelectorAll('article.folha')]
+    // Duas versões da prova e, depois, o gabarito de cada uma.
+    expect(sheets).toHaveLength(4)
+    expect(sheets.map((sheet) => sheet.querySelector('.doc-titulo h1').textContent)).toEqual(['AVALIAÇÃO', 'AVALIAÇÃO', 'GABARITO DO PROFESSOR', 'GABARITO DO PROFESSOR'])
+    expect(sheets.map((sheet) => sheet.querySelector('.subtitulo').textContent)).toEqual(['Código AB12 - 22/11/2026', 'Código CD34 - 22/11/2026', 'Código AB12 - 22/11/2026', 'Código CD34 - 22/11/2026'])
+    sheets.forEach((sheet) => {
+      expect(sheet.querySelector('.cabecalho .nome-escola').textContent).toBe('Escola Técnica <Centro>')
+      expect(sheet.querySelector('.rodape').textContent).toContain('Gerado por ETC em 22/11/2026 às 10:05')
+    })
+    expect(sheets[1].classList.contains('nova-folha')).toBe(true)
+    expect(sheets[0].querySelector('.student')).not.toBeNull()
+    expect(sheets[2].querySelector('.student')).toBeNull()
+    expect(page).not.toContain('Gerado pelo IClass')
+    expect(page).not.toContain('<Centro>')
+    // A tabela do Markdown não pega o estilo das tabelas do documento (cabeçalho escuro).
+    expect(page).toContain('.md thead th{background:#eef1f6')
   })
 })

@@ -10,10 +10,12 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   put: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+  branding: { displayName: 'ETC', schoolName: 'Escola Técnica Centro', institution: { tradeName: 'Escola Técnica Centro', cityState: 'Recife - PE' } },
 }))
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post, put: mocks.put } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+vi.mock('../../context/BrandingProvider', () => ({ useBranding: () => ({ branding: mocks.branding }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => ({ courseId: 'C1', courseName: 'Curso', className: '1DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
@@ -156,6 +158,31 @@ describe('[UC-PROVA-004] ProvasPage do professor · questões com os tipos novos
     expect(screen.getByText('1,5 ponto')).toBeInTheDocument()
     expect(screen.getByText('topologia').tagName).toBe('STRONG')
     expect(screen.getByText(/3,5 ms \(± 0,25\)/)).toBeInTheDocument()
+  })
+
+  // Rodada de ajuste 1 do A6 (contrato printDocument): a prova impressa sai com o
+  // cabeçalho da escola (identidade da escola do curso) e o rodapé "Gerado por".
+  it('"Gerar prova + gabarito" imprime pelo documento da escola, com cabeçalho e rodapé', async () => {
+    const written = []
+    const win = { document: { write: (html) => written.push(html), close: vi.fn() }, print: vi.fn() }
+    const open = vi.spyOn(window, 'open').mockReturnValue(win)
+    try {
+      await openTypedExam()
+      fireEvent.click(screen.getByRole('button', { name: 'Impressa' }))
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Gerar prova + gabarito' })) })
+      expect(open).toHaveBeenCalledTimes(1)
+      const doc = new DOMParser().parseFromString(written.join(''), 'text/html')
+      const sheets = [...doc.querySelectorAll('article.folha')]
+      expect(sheets.length).toBeGreaterThanOrEqual(2)
+      sheets.forEach((sheet) => {
+        expect(sheet.querySelector('.nome-escola').textContent).toBe('Escola Técnica Centro')
+        expect(sheet.querySelector('.rodape').textContent).toMatch(/Gerado por ETC em \d{2}\/\d{2}\/\d{4} às \d{2}:\d{2}/)
+      })
+      expect(sheets.at(-1).querySelector('.doc-titulo h1').textContent).toBe('GABARITO DO PROFESSOR')
+      expect(posts('/api/admin/exam-history/add')).toHaveLength(1)
+    } finally {
+      open.mockRestore()
+    }
   })
 
   it('"Versões online" vai até 4, o limite do servidor', async () => {

@@ -47,7 +47,9 @@ export const EDITOR_LIMITS = Object.freeze({
   minPoints: 0.1,
   maxPoints: 100,
   skills: 10,
+  skill: 80,
   tags: 10,
+  tag: 40,
 })
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
@@ -76,12 +78,30 @@ export function parseDecimalInput(raw) {
   return Number(text)
 }
 
-// 2.5 -> '2,5'; vazio para o que não é número.
+// Número em decimal comum, sem arredondar e sem notação científica: 3.14159265 ->
+// '3.14159265', 1e-7 -> '0.0000001', 1e21 -> '1000000000000000000000'. String(n) já é a
+// forma mais curta que volta ao mesmo número; aqui só se desfaz o 'e'.
+function plainDecimal(number) {
+  const text = String(number)
+  const match = /^(-?)(\d+)(?:\.(\d+))?e([+-]\d+)$/i.exec(text)
+  if (!match) return text
+  const [, sign, whole, fraction = '', exponentText] = match
+  const digits = `${whole}${fraction}`
+  const point = whole.length + Number(exponentText)
+  const body = point <= 0
+    ? `0.${'0'.repeat(-point)}${digits}`
+    : (point >= digits.length ? `${digits}${'0'.repeat(point - digits.length)}` : `${digits.slice(0, point)}.${digits.slice(point)}`)
+  return `${sign}${body.replace(/^0+(?=\d)/, '')}`
+}
+
+// 2.5 -> '2,5'; vazio para o que não é número. Não arredonda: o valor da numérica e a
+// tolerância voltam ao editor exatamente como estão no servidor, e salvar de novo não
+// muda nada (3,14159265 continua 3,14159265; 0,0000001 não vira 0).
 export function formatDecimal(value) {
   if (value === undefined || value === null || value === '') return ''
   const number = Number(value)
   if (!Number.isFinite(number)) return String(value)
-  return String(Math.round(number * 1e6) / 1e6).replace('.', ',')
+  return plainDecimal(number).replace('.', ',')
 }
 
 function roundPoints(value) {
@@ -345,6 +365,7 @@ export function questionProblems(question = {}) {
     if (rubric.length > EDITOR_LIMITS.rubricCriteria) problems.push('a rubrica aceita no máximo 8 critérios.')
     rubric.forEach((criterion, index) => {
       if (!String(criterion.nome || '').trim()) problems.push(`dê um nome ao critério ${index + 1} da rubrica.`)
+      else if (String(criterion.nome).trim().length > EDITOR_LIMITS.rubricName) problems.push(`o nome do critério ${index + 1} da rubrica aceita no máximo ${EDITOR_LIMITS.rubricName} caracteres.`)
       const value = parseDecimalInput(criterion.pontos)
       if (!Number.isFinite(value) || value <= 0 || value > EDITOR_LIMITS.maxPoints || Math.abs(roundPoints(value) - value) > 1e-9) {
         problems.push(`os pontos do critério ${index + 1} da rubrica devem ser maiores que zero, com até duas casas decimais.`)
@@ -355,8 +376,12 @@ export function questionProblems(question = {}) {
     }
   }
   if (String(question.explanation || '').trim().length > EDITOR_LIMITS.explanation) problems.push('a explicação aceita no máximo 5.000 caracteres.')
-  if (splitList(question.skills).length > EDITOR_LIMITS.skills) problems.push('habilidades aceita no máximo 10 itens.')
-  if (splitList(question.tags).length > EDITOR_LIMITS.tags) problems.push('etiquetas aceita no máximo 10 itens.')
+  const skills = splitList(question.skills)
+  if (skills.some((item) => item.length > EDITOR_LIMITS.skill)) problems.push(`cada item de habilidades tem no máximo ${EDITOR_LIMITS.skill} caracteres.`)
+  if (skills.length > EDITOR_LIMITS.skills) problems.push('habilidades aceita no máximo 10 itens.')
+  const tags = splitList(question.tags)
+  if (tags.some((item) => item.length > EDITOR_LIMITS.tag)) problems.push(`cada item de etiquetas tem no máximo ${EDITOR_LIMITS.tag} caracteres.`)
+  if (tags.length > EDITOR_LIMITS.tags) problems.push('etiquetas aceita no máximo 10 itens.')
   return problems
 }
 

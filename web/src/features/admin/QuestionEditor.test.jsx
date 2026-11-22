@@ -214,4 +214,56 @@ describe('[UC-PROVA-004] editor de questões do professor', () => {
     fireEvent.click(within(card(2)).getByRole('button', { name: 'Salvar no banco (questão 2)' }))
     expect(onSaveToBank).toHaveBeenCalledTimes(1)
   })
+
+  // Rodada de ajuste 1 do A6: a numérica voltava ao editor arredondada em 6 casas
+  // (3,14159265 virava 3,141593 e 0,0000001 virava 0) e salvar de novo mudava o gabarito.
+  it('valor e tolerância da numérica voltam ao editor sem arredondar; salvar de novo não muda nada', () => {
+    const numeric = { type: 'numeric', text: 'Pi?', numeric: { value: 3.14159265, tolerance: 5e-8, unit: 'rad' } }
+    render(<Harness initial={[numeric, { type: 'numeric', text: 'Pequeno', numeric: { value: 1e-7, tolerance: 0 } }]} />)
+    expect(within(card(1)).getByLabelText('Resposta certa')).toHaveValue('3,14159265')
+    expect(within(card(1)).getByLabelText('Tolerância (±)')).toHaveValue('0,00000005')
+    expect(within(card(2)).getByLabelText('Resposta certa')).toHaveValue('0,0000001')
+    expect(payloads()[0].numeric).toEqual({ value: 3.14159265, tolerance: 5e-8, unit: 'rad' })
+    expect(payloads()[1].numeric).toEqual({ value: 1e-7, tolerance: 0 })
+    // Abrir de novo o que foi salvo dá o mesmo corpo (ida e volta).
+    const again = payloads().map((payload) => editorQuestionPayload(editorQuestion(payload)))
+    expect(again).toEqual(payloads())
+    expect(firstEvaluationProblem(latest)).toBeNull()
+  })
+
+  // Rodada de ajuste 1 do A6: etiqueta com mais de 40 letras ia para o servidor e voltava
+  // como 400 genérico, sem "Questão N:" e sem levar ao cartão.
+  it('etiqueta, habilidade e critério da rubrica compridos demais aparecem no cartão antes de enviar', () => {
+    render(<Harness initial={[{ text: 'Ok', alternatives: [{ text: 'a', isCorrect: true }, { text: 'b' }] }]} showProblems />)
+    const q = within(card(1))
+    fireEvent.click(q.getByRole('button', { name: /Mais detalhes/ }))
+    type(q.getByLabelText('Etiquetas'), `redes, ${'x'.repeat(41)}`)
+    expect(firstEvaluationProblem(latest).message).toBe('Questão 1: cada item de etiquetas tem no máximo 40 caracteres.')
+    expect(q.getByRole('list', { name: 'O que falta na questão 1' })).toHaveTextContent('Cada item de etiquetas tem no máximo 40 caracteres.')
+    type(q.getByLabelText('Etiquetas'), `redes, ${'x'.repeat(40)}`)
+    type(q.getByLabelText('Habilidades'), 'h'.repeat(81))
+    expect(firstEvaluationProblem(latest).message).toBe('Questão 1: cada item de habilidades tem no máximo 80 caracteres.')
+    type(q.getByLabelText('Habilidades'), 'h'.repeat(80))
+    expect(firstEvaluationProblem(latest)).toBeNull()
+    expect(payloads()[0].tags).toEqual(['redes', 'x'.repeat(40)])
+    // O nome do critério da rubrica segue o limite do servidor (80).
+    const essay = editorQuestion({ type: 'essay', points: 1, text: 'Explique.', rubric: [{ nome: 'n'.repeat(81), pontos: 1 }] })
+    expect(firstEvaluationProblem([essay]).message).toBe('Questão 1: o nome do critério 1 da rubrica aceita no máximo 80 caracteres.')
+  })
+
+  // Rodada de ajuste 1 do A6: o desenho pede alvos de 44 px nas alternativas (celular).
+  it('a marca da correta e os botões de excluir da linha têm alvo de 44 px', () => {
+    render(<Harness initial={[{ text: 'Ok', alternatives: [{ text: 'a', isCorrect: true }, { text: 'b' }, { text: 'c' }] }, { type: 'short_answer', text: 'Cmd?', acceptedAnswers: ['ls', 'dir'] }, { type: 'essay', text: 'E', points: 1, rubric: [{ nome: 'A', pontos: 1 }] }]} />)
+    const mark = within(card(1)).getByLabelText('Marcar alternativa B como correta')
+    // O rótulo inteiro (marca e letra) é o alvo: clicar na letra marca a correta.
+    const target = mark.closest('label')
+    expect(target).toHaveClass('h-11')
+    fireEvent.click(within(target).getByText('B'))
+    expect(payloads()[0].correctAnswer).toBe('B')
+    ;[
+      within(card(1)).getByRole('button', { name: 'Excluir alternativa A' }),
+      within(card(2)).getByRole('button', { name: 'Excluir resposta aceita 1' }),
+      within(card(3)).getByRole('button', { name: 'Excluir critério 1' }),
+    ].forEach((button) => expect(button).toHaveClass('!h-11', '!w-11'))
+  })
 })

@@ -14,6 +14,8 @@ import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
+import { useBranding } from '../../context/BrandingProvider'
+import { schoolFromBranding } from '../../lib/printDocument'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { rememberApplicationToken } from './ApplicationTokenPanel'
@@ -148,7 +150,10 @@ function historyLabel(entry, index) {
 export default function ProvasPage() {
   const toast = useToast()
   const navigate = useNavigate()
+  const { branding } = useBranding()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
+  // Cabeçalho da escola e "Gerado por" da prova impressa (contrato printDocument).
+  const printIdentity = () => ({ escola: schoolFromBranding(branding), displayName: branding?.displayName || '' })
   const courses = useApi('/api/courses')
   const summaries = useApi('/api/admin/course-summaries')
   const classes = useApi(`/api/admin/classes?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}`)
@@ -485,7 +490,7 @@ export default function ProvasPage() {
     if (!className || !courseId || !examKey || currentVersions.length === 0) return toast.error('Monte uma prova antes de imprimir')
     setBusy('print')
     try {
-      openPrintWindow({ title: evaluation?.title || examKey, snapshots: currentVersions, includeAnswerKey: true })
+      openPrintWindow({ title: evaluation?.title || examKey, snapshots: currentVersions, includeAnswerKey: true, ...printIdentity() })
       await addHistory('impressa', currentVersions, { questionCount: currentVersions[0].count })
       toast.success('Prova impressa e gabarito gerados')
       await loadExamState()
@@ -582,7 +587,7 @@ export default function ProvasPage() {
   function reprintHistory(entry) {
     const snapshots = snapshotsFromHistory(entry)
     if (snapshots.length === 0) return toast.error('Histórico sem snapshot para reimpressão')
-    openPrintWindow({ title: evaluation?.title || examKey, snapshots, includeAnswerKey: true })
+    openPrintWindow({ title: evaluation?.title || examKey, snapshots, includeAnswerKey: true, ...printIdentity() })
   }
 
   async function removeHistory() {

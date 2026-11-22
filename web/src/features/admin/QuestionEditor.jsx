@@ -49,6 +49,9 @@ import {
 
 const fieldClass = 'w-full min-w-0 rounded-md border border-border bg-surface px-3 py-2 text-sm text-text'
 const IMAGE_TYPES = 'image/png,image/jpeg,image/gif,image/webp'
+// Botão de ícone de uma linha (excluir alternativa, resposta aceita ou critério): 44 px no
+// toque, como pede o desenho para a tela a 375 px.
+const ROW_ICON_BUTTON = '!h-11 !w-11 shrink-0 !px-0'
 
 function selectionOf(element, value) {
   const start = Number.isInteger(element?.selectionStart) ? element.selectionStart : value.length
@@ -238,25 +241,28 @@ function ChoiceAlternatives({ question, index, update }) {
       </legend>
       {alternatives.map((alternative, position) => (
         <div key={position} className={`flex min-w-0 items-start gap-2 rounded-lg border p-2 ${alternative.isCorrect ? 'border-success/60 bg-success-soft/30' : 'border-border'}`}>
-          <input
-            type={multiple ? 'checkbox' : 'radio'}
-            name={`correta-${question.uid}`}
-            checked={alternative.isCorrect}
-            onChange={(event) => mark(position, multiple ? event.target.checked : true)}
-            aria-label={`Marcar alternativa ${alternative.letter} como correta`}
-            className="mt-2.5 h-5 w-5 shrink-0 accent-[var(--success)]"
-          />
-          <span className="mt-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
+          {/* Alvo de 44 px (desenho P3, celular_375): o rótulo inteiro, com a letra, marca a correta. */}
+          <label className="flex h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 hover:bg-surface-2" data-testid="alternative-mark">
+            <input
+              type={multiple ? 'checkbox' : 'radio'}
+              name={`correta-${question.uid}`}
+              checked={alternative.isCorrect}
+              onChange={(event) => mark(position, multiple ? event.target.checked : true)}
+              aria-label={`Marcar alternativa ${alternative.letter} como correta`}
+              className="h-5 w-5 shrink-0 cursor-pointer accent-[var(--success)]"
+            />
+            <span aria-hidden="true" className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
+          </label>
           <textarea
             value={alternative.text}
             rows={1}
             maxLength={EDITOR_LIMITS.alternative}
             onChange={(event) => setAlternatives(alternatives.map((item, altIndex) => (altIndex === position ? { ...item, text: event.target.value } : item)))}
-            className={`${fieldClass} min-h-[40px] resize-y`}
+            className={`${fieldClass} min-h-[44px] resize-y`}
             placeholder={`Alternativa ${alternative.letter}`}
             aria-label={`Texto da alternativa ${alternative.letter} da questão ${index + 1}`}
           />
-          <Button type="button" size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir alternativa ${alternative.letter}`} disabled={alternatives.length <= EDITOR_LIMITS.minAlternatives} onClick={() => remove(position)} />
+          <Button type="button" size="sm" variant="ghost" icon={Trash2} className={ROW_ICON_BUTTON} aria-label={`Excluir alternativa ${alternative.letter}`} disabled={alternatives.length <= EDITOR_LIMITS.minAlternatives} onClick={() => remove(position)} />
         </div>
       ))}
       <div className="flex flex-wrap items-center gap-3">
@@ -338,11 +344,11 @@ function TypeFields({ question, index, update }) {
                 value={item}
                 maxLength={EDITOR_LIMITS.acceptedAnswer}
                 onChange={(event) => setAccepted(accepted.map((value, itemIndex) => (itemIndex === position ? event.target.value : value)))}
-                className={`${fieldClass} h-10`}
+                className={`${fieldClass} h-11`}
                 placeholder={position === 0 ? 'Ex.: ls' : 'Outra forma aceita'}
                 aria-label={`Resposta aceita ${position + 1} da questão ${index + 1}`}
               />
-              <Button type="button" size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir resposta aceita ${position + 1}`} disabled={accepted.length <= 1} onClick={() => setAccepted(accepted.filter((_, itemIndex) => itemIndex !== position))} />
+              <Button type="button" size="sm" variant="ghost" icon={Trash2} className={ROW_ICON_BUTTON} aria-label={`Excluir resposta aceita ${position + 1}`} disabled={accepted.length <= 1} onClick={() => setAccepted(accepted.filter((_, itemIndex) => itemIndex !== position))} />
             </div>
           ))}
           <Button type="button" size="sm" variant="secondary" icon={Plus} disabled={accepted.length >= EDITOR_LIMITS.acceptedAnswers} onClick={() => setAccepted([...accepted, ''])}>Adicionar resposta aceita</Button>
@@ -372,7 +378,7 @@ function TypeFields({ question, index, update }) {
               value={criterion.nome}
               maxLength={EDITOR_LIMITS.rubricName}
               onChange={(event) => setRubric(rubric.map((item, itemIndex) => (itemIndex === position ? { ...item, nome: event.target.value } : item)))}
-              className={`${fieldClass} h-10`}
+              className={`${fieldClass} h-11`}
               placeholder="Ex.: Explica o conceito"
               aria-label={`Critério ${position + 1} da rubrica da questão ${index + 1}`}
             />
@@ -380,11 +386,11 @@ function TypeFields({ question, index, update }) {
               value={criterion.pontos}
               inputMode="decimal"
               onChange={(event) => setRubric(rubric.map((item, itemIndex) => (itemIndex === position ? { ...item, pontos: event.target.value } : item)))}
-              className={`${fieldClass} h-10`}
+              className={`${fieldClass} h-11`}
               placeholder="Pontos"
               aria-label={`Pontos do critério ${position + 1} da questão ${index + 1}`}
             />
-            <Button type="button" size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir critério ${position + 1}`} onClick={() => setRubric(rubric.filter((_, itemIndex) => itemIndex !== position))} />
+            <Button type="button" size="sm" variant="ghost" icon={Trash2} className={ROW_ICON_BUTTON} aria-label={`Excluir critério ${position + 1}`} onClick={() => setRubric(rubric.filter((_, itemIndex) => itemIndex !== position))} />
           </div>
         ))}
         <div className="flex flex-wrap items-center gap-2">
@@ -489,8 +495,8 @@ function QuestionCard({ question, index, count, onChange, onMove, onDuplicate, o
                 <Select label="Dificuldade" value={question.difficulty} onChange={(event) => update({ difficulty: event.target.value })}>
                   {DIFFICULTY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </Select>
-                <Input label="Habilidades" value={question.skills} onChange={(event) => update({ skills: event.target.value })} placeholder="Ex.: BNCC EM13MAT101" helper="Separe por vírgula (até 10)." />
-                <Input label="Etiquetas" value={question.tags} onChange={(event) => update({ tags: event.target.value })} placeholder="Ex.: redes, IPv4" helper="Separe por vírgula (até 10)." />
+                <Input label="Habilidades" value={question.skills} onChange={(event) => update({ skills: event.target.value })} placeholder="Ex.: BNCC EM13MAT101" helper="Separe por vírgula (até 10, com até 80 letras cada)." />
+                <Input label="Etiquetas" value={question.tags} onChange={(event) => update({ tags: event.target.value })} placeholder="Ex.: redes, IPv4" helper="Separe por vírgula (até 10, com até 40 letras cada)." />
               </div>
             )}
           </div>
