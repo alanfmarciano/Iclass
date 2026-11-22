@@ -47,10 +47,22 @@
 //   (frequência abaixo da mínima), "Aprovado" (média final alcança a mínima), "Em
 //   recuperação" (abaixo da mínima com recuperação da etapa ou final ainda por lançar) e
 //   "Reprovado por nota";
+// - recuperação por lançar: enquanto a turma não foi encerrada (mesmo depois do fim do
+//   período letivo, quando a recuperação costuma acontecer), o aluno fica "Em
+//   recuperação"; com a turma encerrada (periodo.encerrada, que é o que o encerramento do
+//   P2-S9 passa, inclusive na prévia do resumo), a recuperação que não foi lançada conta
+//   como não feita: "Reprovado por nota", com aviso. A situação de uma turma encerrada é
+//   sempre final;
 // - unidade da situação (P2-A3, padrão sem o Alan): por disciplina quando os módulos
 //   estão ligados a disciplinas (disciplinas[].modulos, P2-S7); senão, uma situação para a
 //   turma. Por disciplina, a situação geral junta as das disciplinas (Cursando > Em
-//   recuperação > Reprovado por falta > Reprovado por nota > Aprovado).
+//   recuperação > Reprovado por falta > Reprovado por nota > Aprovado);
+// - frequência por disciplina: cada disciplina usa a própria frequência
+//   (frequencia.porDisciplina[id]); disciplina sem chamada própria usa a frequência da
+//   turma (frequenciaTurma: true). A frequência da turma inteira (frequenciaGeral, que
+//   conta também as aulas lançadas sem disciplina e as de disciplinas sem módulo) continua
+//   valendo na situação geral: abaixo da mínima, a situação geral é "Reprovado por falta"
+//   (depois de "Sem notas" e "Cursando", como na unidade da turma), com aviso.
 //
 // Frequência mínima (padrão 75%) é separada do limiar de risco da turma
 // (attendanceConfig.limiarRiscoPct, D10): o denominador continua sendo as aulas lançadas;
@@ -360,14 +372,17 @@ function faltasPermitidasRestantes({ aulasPrevistas, frequenciaMinima, faltas })
     return Math.max(0, permitidas - (usadas !== null && usadas > 0 ? Math.floor(usadas) : 0));
 }
 
+// Estado do período: { terminado: true | false | null, encerrada }. Turma encerrada é
+// sempre terminada; sem informação, terminado fica null (decide pelas notas).
 function readPeriod(periodo) {
-    if (!isPlainObject(periodo)) return null;
-    if (periodo.encerrada === true || periodo.terminado === true) return true;
-    if (periodo.terminado === false) return false;
+    if (!isPlainObject(periodo)) return { terminado: null, encerrada: false };
+    if (periodo.encerrada === true) return { terminado: true, encerrada: true };
+    if (periodo.terminado === true) return { terminado: true, encerrada: false };
+    if (periodo.terminado === false) return { terminado: false, encerrada: false };
     const fim = String(periodo.fim || '');
     const hoje = String(periodo.hoje || '');
-    if (/^\d{4}-\d{2}-\d{2}$/.test(fim) && /^\d{4}-\d{2}-\d{2}$/.test(hoje)) return hoje > fim;
-    return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(fim) && /^\d{4}-\d{2}-\d{2}$/.test(hoje)) return { terminado: hoje > fim, encerrada: false };
+    return { terminado: null, encerrada: false };
 }
 
 function groupItemId(group) {
@@ -416,7 +431,7 @@ function legacyStudentResult({ grupos = [], frequencia = null } = {}) {
 
 // Conta de um conjunto de grupos com os critérios já normalizados (a turma inteira ou uma
 // disciplina).
-function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, terminado }) {
+function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, terminado, encerrada = false }) {
     const ordens = new Set(criterios.etapas.map(etapa => etapa.ordem));
     const unicaEtapa = criterios.etapas.length === 1 ? criterios.etapas[0].ordem : null;
     const resolveEtapa = (etapa) => {
@@ -533,13 +548,19 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
     const restantes = faltasPermitidasRestantes({ aulasPrevistas, frequenciaMinima: criterios.frequenciaMinima, faltas: freq.faltas });
 
     const pendente = etapas.some(etapa => etapa.finalScore === null);
+    const recuperacaoPorLancar = (regraFinal !== 'nenhuma' && recuperacaoFinal === null) || etapas.some(etapa => etapa.pendenteRecuperacao);
     let situacao;
     if (!temNota) situacao = 'sem_notas';
     else if (terminado === false || pendente) situacao = 'cursando';
     else if (freq.pct !== null && freq.pct < criterios.frequenciaMinima) situacao = 'reprovado_falta';
     else if (belowMinimum(mediaFinalScore, criterios.mediaMinima) === false) situacao = 'aprovado';
-    else if ((regraFinal !== 'nenhuma' && recuperacaoFinal === null) || etapas.some(etapa => etapa.pendenteRecuperacao)) situacao = 'em_recuperacao';
-    else situacao = 'reprovado_nota';
+    else if (recuperacaoPorLancar && !encerrada) situacao = 'em_recuperacao';
+    else {
+        situacao = 'reprovado_nota';
+        if (recuperacaoPorLancar) {
+            avisos.push(aviso('recuperacao_nao_lancada', 'Turma encerrada sem a nota de recuperação: a recuperação contou como não feita.'));
+        }
+    }
 
     return {
         etapas,
@@ -569,11 +590,15 @@ function combineSituacoes(situacoes) {
     return SITUACAO_PRIORIDADE.find(situacao => comNota.includes(situacao)) || 'aprovado';
 }
 
+// Frequência própria da disciplina (chamada lançada com a disciplina); null sem chamada
+// própria.
 function disciplineFrequency(frequencia, id) {
     if (!isPlainObject(frequencia) || !isPlainObject(frequencia.porDisciplina)) return null;
+    if (!Object.prototype.hasOwnProperty.call(frequencia.porDisciplina, id)) return null;
     const entry = frequencia.porDisciplina[id];
     if (!isPlainObject(entry)) return null;
-    return { frequenciaGeral: entry.frequencia, faltasContam: entry.faltas };
+    const own = readFrequency({ frequenciaGeral: entry.frequencia, faltasContam: entry.faltas });
+    return own.pct === null ? null : { frequenciaGeral: own.pct, faltasContam: own.faltas };
 }
 
 function disciplinePlanned(aulasPrevistas, id) {
@@ -594,7 +619,8 @@ function totalPlanned(aulasPrevistas) {
 //   tentativas), finalidade?, moduloId? }], um por aplicação (buildGradeGroups);
 // - frequencia: computeAttendanceStats do aluno (ou { pct, faltas }, ou o número);
 // - aulasPrevistas: número ou { total, porDisciplina: { id: n } } (academicCalendar.plannedLessons);
-// - periodo: { terminado } | { encerrada } | { fim, hoje } (sem período: decide pelas notas);
+// - periodo: { terminado } | { encerrada } | { fim, hoje } (sem período: decide pelas notas;
+//   encerrada: turma encerrada, situação final, sem "Em recuperação");
 // - disciplinas: [{ id, nome, modulos: [ids de módulo] }] para a situação por disciplina.
 // Saída: etapas, média final (crua e como aparece), recuperação, menção, situação (código
 // e rótulo), frequência, faltas que ainda pode ter e avisos em português.
@@ -602,8 +628,8 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
     const normalized = normalizeCriteria(criterios);
     if (!normalized) return legacyStudentResult({ grupos, frequencia });
     const plan = normalizePlan(plano);
-    const terminado = readPeriod(periodo);
-    const core = computeCore(normalized, plan, grupos, { frequencia, aulasPrevistas: totalPlanned(aulasPrevistas), terminado });
+    const { terminado, encerrada } = readPeriod(periodo);
+    const core = computeCore(normalized, plan, grupos, { frequencia, aulasPrevistas: totalPlanned(aulasPrevistas), terminado, encerrada });
     const result = {
         regraAntiga: false,
         criterio: { mediaMinima: normalized.mediaMinima, mencoes: normalized.mencoes, regraAntiga: false },
@@ -629,21 +655,38 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
         porDisciplina.get(disciplina).push(group);
     });
 
+    // Frequência da turma inteira: todas as aulas lançadas, com ou sem disciplina.
+    const turma = readFrequency(frequencia);
+    const frequenciaTurma = turma.pct === null ? null : { frequenciaGeral: turma.pct, faltasContam: turma.faltas };
+
     result.unidadeSituacao = 'disciplina';
     result.disciplinas = ligadas.map(item => {
         const id = String(item.id);
+        const propria = disciplineFrequency(frequencia, id);
+        // Sem chamada própria, vale a frequência da turma (e as aulas previstas da turma,
+        // para "pode faltar mais N aulas").
         const own = computeCore(normalized, plan, porDisciplina.get(id), {
-            frequencia: disciplineFrequency(frequencia, id),
-            aulasPrevistas: disciplinePlanned(aulasPrevistas, id),
+            frequencia: propria || frequenciaTurma,
+            aulasPrevistas: propria ? disciplinePlanned(aulasPrevistas, id) : totalPlanned(aulasPrevistas),
             terminado,
+            encerrada,
         });
-        return { id, nome: cleanText(item.nome, 80) || id, ...own };
+        return { id, nome: cleanText(item.nome, 80) || id, ...own, frequenciaTurma: !propria && !!frequenciaTurma };
     });
-    result.situacao = combineSituacoes(result.disciplinas.map(item => item.situacao));
-    result.situacaoRotulo = SITUACAO_ROTULOS[result.situacao];
-    if (foraDeDisciplina) {
-        result.avisos = [...result.avisos, aviso('itens_fora_de_disciplina', `${countLabel(foraDeDisciplina, 'nota de módulo sem disciplina conta', 'notas de módulos sem disciplina contam')} só na média da turma, não na situação das disciplinas.`)];
+    let situacao = combineSituacoes(result.disciplinas.map(item => item.situacao));
+    const avisos = [];
+    // A frequência mínima vale também para a turma inteira: as faltas lançadas sem
+    // disciplina (ou numa disciplina sem módulo) não podem sumir da situação.
+    if (situacao !== 'sem_notas' && situacao !== 'cursando' && turma.pct !== null && turma.pct < normalized.frequenciaMinima) {
+        avisos.push(aviso('frequencia_turma_abaixo', `Frequência da turma (${turma.pct}%, contando as aulas sem disciplina) abaixo da mínima de ${normalized.frequenciaMinima}%.`));
+        situacao = 'reprovado_falta';
     }
+    result.situacao = situacao;
+    result.situacaoRotulo = SITUACAO_ROTULOS[situacao];
+    if (foraDeDisciplina) {
+        avisos.push(aviso('itens_fora_de_disciplina', `${countLabel(foraDeDisciplina, 'nota de módulo sem disciplina conta', 'notas de módulos sem disciplina contam')} só na média da turma, não na situação das disciplinas.`));
+    }
+    if (avisos.length) result.avisos = [...result.avisos, ...avisos];
     return result;
 }
 

@@ -269,8 +269,10 @@ test('[UC-NOTAS-005] situação: Aprovado, Reprovado por nota, Reprovado por fal
     const encerrada = computeStudentResult({ ...base, grupos: [g('A', 90)], periodo: { encerrada: true } });
     assert.deepEqual(encerrada.etapas.map(etapa => [etapa.final, etapa.contouComoZero]), [[9, false], [0, true]]);
     assert.equal(encerrada.mediaFinal, 3);
-    assert.equal(encerrada.situacao, 'em_recuperacao');
+    // Turma encerrada é final: a recuperação final que não foi lançada conta como não feita.
+    assert.equal(encerrada.situacao, 'reprovado_nota');
     assert.match(encerrada.avisos.find(item => item.codigo === 'etapa_sem_nota_zero').texto, /^2º bimestre sem nota: contou como 0/);
+    assert.equal(encerrada.avisos.find(item => item.codigo === 'recuperacao_nao_lancada').texto, 'Turma encerrada sem a nota de recuperação: a recuperação contou como não feita.');
     // Todo rótulo em português.
     assert.deepEqual(rules.SITUACOES.map(codigo => rules.SITUACAO_ROTULOS[codigo]), ['Sem notas', 'Cursando', 'Em recuperação', 'Reprovado por falta', 'Reprovado por nota', 'Aprovado']);
 });
@@ -327,6 +329,77 @@ test('[UC-NOTAS-005] situação por disciplina quando os módulos estão ligados
     assert.equal(combineSituacoes(['sem_notas']), 'sem_notas');
     assert.equal(combineSituacoes(['aprovado', 'reprovado_nota', 'reprovado_falta']), 'reprovado_falta');
     assert.equal(combineSituacoes(['aprovado', 'cursando', 'reprovado_falta']), 'cursando');
+});
+
+test('[UC-NOTAS-005] recuperação por lançar: Em recuperação até a turma ser encerrada; encerrada, é Reprovado por nota', () => {
+    const base = { criterios: criterios({ etapas: DUAS_ETAPAS }), plano: { itens: { A: { etapa: 1 }, B: { etapa: 2 } } }, grupos: [g('A', 40), g('B', 40)] };
+    const tabela = [
+        // [período, situação, aviso de recuperação não lançada]
+        [null, 'em_recuperacao', false],
+        [{ terminado: true }, 'em_recuperacao', false],
+        [{ fim: '2027-07-10', hoje: '2027-07-20' }, 'em_recuperacao', false],
+        [{ encerrada: true }, 'reprovado_nota', true],
+        [{ encerrada: true, terminado: false }, 'reprovado_nota', true],
+    ];
+    for (const [periodo, esperado, comAviso] of tabela) {
+        const r = computeStudentResult({ ...base, periodo });
+        assert.equal(r.situacao, esperado, JSON.stringify(periodo));
+        assert.equal(r.avisos.some(item => item.codigo === 'recuperacao_nao_lancada'), comAviso, JSON.stringify(periodo));
+    }
+    // Recuperação da etapa por lançar, com a turma encerrada: também é final.
+    const etapa = { ...base, criterios: criterios({ etapas: DUAS_ETAPAS, recuperacao: { etapa: 'substitui_se_maior', final: 'nenhuma' } }), grupos: [g('A', 20), g('B', 60)] };
+    assert.equal(computeStudentResult(etapa).situacao, 'em_recuperacao');
+    assert.equal(computeStudentResult({ ...etapa, periodo: { encerrada: true } }).situacao, 'reprovado_nota');
+    // Com a recuperação lançada, a turma encerrada usa a nota dela (aqui, 7,0 com 4,0 de média).
+    const lancada = computeStudentResult({ ...base, grupos: [...base.grupos, g('A', 70, { finalidade: 'recuperacao' })], periodo: { encerrada: true } });
+    assert.deepEqual([lancada.mediaFinal, lancada.situacao], [7, 'aprovado']);
+    assert.equal(lancada.avisos.some(item => item.codigo === 'recuperacao_nao_lancada'), false);
+    // Encerrada e com a média alcançada: aprovado sem aviso; por disciplina, cada disciplina também.
+    const disciplinas = [{ id: 'd1', nome: 'Redes', modulos: ['m1'] }];
+    const porDisciplina = computeStudentResult({ criterios: criterios(), grupos: [g('A', 40, { moduloId: 'm1' })], disciplinas, periodo: { encerrada: true } });
+    assert.deepEqual([porDisciplina.disciplinas[0].situacao, porDisciplina.situacao], ['reprovado_nota', 'reprovado_nota']);
+});
+
+test('[UC-NOTAS-005] por disciplina, a frequência da turma (aulas sem disciplina) continua valendo', () => {
+    const { computeAttendanceStats } = require('../../backend/utils/attendance.js');
+    const registro = (date, aulas) => ({ id: `r${date}`, date, studentEmail: 'ana@x.local', aulas });
+    // 10 dias com chamada sem disciplina (8 faltas) e 1 presença na disciplina d1.
+    const registros = [];
+    for (let dia = 1; dia <= 10; dia += 1) registros.push(registro(`2027-03-${String(dia).padStart(2, '0')}`, [{ status: dia <= 8 ? 'falta' : 'presente' }]));
+    registros.push(registro('2027-03-11', [{ status: 'presente', disciplinaId: 'd1' }]));
+    const frequencia = computeAttendanceStats(registros);
+    assert.equal(frequencia.frequenciaGeral, 27);
+    assert.equal(frequencia.porDisciplina.d1.frequencia, 100);
+    const disciplinas = [{ id: 'd1', nome: 'Redes', modulos: ['m1'] }, { id: 'd2', nome: 'Programação', modulos: ['m2'] }];
+    const grupos = [g('A', 90, { moduloId: 'm1' }), g('B', 80, { moduloId: 'm2' })];
+    const porDisciplina = computeStudentResult({ criterios: criterios(), grupos, frequencia, disciplinas });
+    assert.equal(porDisciplina.unidadeSituacao, 'disciplina');
+    // d1 tem chamada própria (100%); d2 não tem e usa a frequência da turma (27%).
+    assert.deepEqual(porDisciplina.disciplinas.map(item => [item.id, item.frequencia, item.frequenciaTurma, item.situacao]), [
+        ['d1', 100, false, 'aprovado'], ['d2', 27, true, 'reprovado_falta'],
+    ]);
+    assert.equal(porDisciplina.situacao, 'reprovado_falta');
+    // Mesmo com todas as disciplinas aprovadas pela própria chamada, a turma a 27% reprova.
+    const soD1 = computeStudentResult({ criterios: criterios(), grupos: [g('A', 90, { moduloId: 'm1' })], frequencia, disciplinas: [disciplinas[0]] });
+    assert.deepEqual([soD1.disciplinas[0].situacao, soD1.situacao, soD1.situacaoRotulo], ['aprovado', 'reprovado_falta', 'Reprovado por falta']);
+    assert.equal(soD1.avisos.find(item => item.codigo === 'frequencia_turma_abaixo').texto, 'Frequência da turma (27%, contando as aulas sem disciplina) abaixo da mínima de 75%.');
+    // O mesmo resultado da unidade "turma" com os mesmos dados.
+    assert.equal(computeStudentResult({ criterios: criterios({ unidadeSituacao: 'turma' }), grupos, frequencia, disciplinas }).situacao, 'reprovado_falta');
+    // Só a frequência geral (sem porDisciplina), em número ou no formato { pct }.
+    for (const geral of [50, { pct: 50, faltas: 5 }, { frequenciaGeral: 50, faltasContam: 5 }]) {
+        const r = computeStudentResult({ criterios: criterios(), grupos, frequencia: geral, disciplinas });
+        assert.equal(r.situacao, 'reprovado_falta', JSON.stringify(geral));
+        assert.deepEqual(r.disciplinas.map(item => [item.situacao, item.frequenciaTurma]), [['reprovado_falta', true], ['reprovado_falta', true]], JSON.stringify(geral));
+    }
+    // A frequência da turma não passa na frente de "Cursando" nem de "Sem notas".
+    assert.equal(computeStudentResult({ criterios: criterios(), grupos, frequencia: 50, disciplinas, periodo: { terminado: false } }).situacao, 'cursando');
+    assert.equal(computeStudentResult({ criterios: criterios(), grupos: [], frequencia: 50, disciplinas }).situacao, 'sem_notas');
+    // Frequência da turma na mínima: nada muda (a regra de hoje das disciplinas).
+    const ok = computeStudentResult({ criterios: criterios(), grupos, frequencia: { frequenciaGeral: 75, porDisciplina: { d1: { frequencia: 75, faltas: 1 }, d2: { frequencia: 80, faltas: 1 } } }, disciplinas });
+    assert.deepEqual([ok.situacao, ok.avisos.some(item => item.codigo === 'frequencia_turma_abaixo')], ['aprovado', false]);
+    // Sem nenhuma chamada lançada, a frequência não decide.
+    const semChamada = computeStudentResult({ criterios: criterios(), grupos, frequencia: computeAttendanceStats([]), disciplinas });
+    assert.deepEqual([semChamada.situacao, semChamada.disciplinas.map(item => item.frequenciaTurma)], ['aprovado', [false, false]]);
 });
 
 // Semente de notas com várias aplicações, tentativas, regras, notas inválidas e arquivadas.
