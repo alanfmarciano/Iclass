@@ -101,7 +101,23 @@ Tarefa é um trabalho com prazo que o aluno entrega pelo IClass: um arquivo (PDF
 
 **Arquivar e excluir.** **Arquivar** tira a tarefa dos alunos e guarda as entregas e as notas; ela fica na aba **Arquivadas**, de onde volta com **Reativar**. **Excluir** só aparece na tarefa sem nenhum registro de aluno: nem entrega, nem nota lançada, nem prazo prorrogado.
 
-<!-- P1 (trilha C) escreve aqui: entregas, correção, devolução e ZIP (C8). -->
+**Entregas da turma.** Toque no título da tarefa (ou em **Entregas**) para ver a lista da turma: cada aluno com a situação (**Sem envio**, **Para corrigir**, **Corrigida, sem devolver**, **Refazer (esperando o aluno)** ou **Devolvida**), quando enviou, se chegou atrasada e a nota. Em **Mostrar**, veja só quem está para corrigir, as corrigidas, as atrasadas, quem não enviou ou as devolvidas. No celular, a lista vira cartões.
+
+**Corrigir.** Toque em **Corrigir** (ou **Abrir**) no aluno. O painel mostra a entrega: a versão (o aluno pode mandar de novo; escolha em **Versão**), a hora que chegou no relógio da escola, os arquivos, o texto e o link. Foto (JPG, PNG, WebP, GIF) e texto aparecem ali mesmo; PDF abre em outra aba com **Abrir**; o resto (Word, planilha, ZIP, arquivo do programa do curso, foto HEIC do iPhone) você baixa com **Baixar**. O link do aluno aparece como texto: confira antes de tocar em **Abrir**.
+
+**Nota e comentário.** Digite a nota de 0 a 10 (aceita vírgula: 8,5) e o comentário para o aluno. Se a entrega chegou atrasada numa tarefa com desconto, o painel mostra a conta antes de salvar ("Atraso de 2 dias: -20%, nota final 6,4."); cada dia começado conta como um dia. **Dispensar desconto** tira o desconto só deste aluno. **Salvar** guarda sem o aluno ver; **Devolver ao aluno** mostra a nota e o comentário para ele e avisa no sino. **Próximo aluno** segue a ordem da lista que estava na tela quando você abriu o painel. Se você digitou e não salvou, o IClass pergunta antes de sair.
+
+**Nota já devolvida.** Mudar a nota ou o comentário de uma correção que o aluno já vê pede o motivo, que fica na Auditoria.
+
+**Outras ações.** Em **Pedir para refazer**, escreva o que o aluno precisa refazer e o novo prazo; ele manda uma versão nova e a correção volta para você. **Prorrogar prazo** dá um prazo só para aquele aluno (o da turma não muda) e pede o motivo; o aluno aparece com **Prazo próprio**. **Entrega em mãos** registra o trabalho entregue fora do IClass (papel, pendrive, apresentação), com uma observação e, se quiser, a nota. Aluno sem entrega nunca recebe zero sozinho: sem envio, só a nota zero que você lança ou a entrega em mãos.
+
+**Devolver todas.** **Devolver todas as corrigidas** devolve de uma vez as correções salvas com nota. A que recebeu versão nova depois da correção fica de fora, para você conferir.
+
+**Baixar entregas (ZIP).** Baixa os arquivos da turma num ZIP, uma pasta por aluno, só a última versão ou todas. Serve para corrigir no computador ou guardar.
+
+**Copiar para outra turma.** Cria a mesma tarefa como rascunho noutra turma sua, com o prazo que você escolher (ou sem prazo). As entregas não vão junto.
+
+A Coordenação vê as entregas, abre os arquivos e baixa o ZIP, mas não corrige.
 
 ## Resultados {#resultados}
 

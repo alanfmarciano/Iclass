@@ -462,6 +462,84 @@ test('[UC-ERRO-003] contrato das telas do professor: Tarefas (opções, criar, a
     ok(await asInstructor(`/api/admin/assignments/${draft.id}/delete`, 'professor').send({ confirm: 'EXCLUIR' }), 'excluir');
 });
 
+test('[UC-ERRO-003] contrato das telas do professor: entregas e correção (abrir, arquivo, salvar, devolver, motivo, refazer, prorrogar, em mãos, devolver todas, ZIP, copiar)', async () => {
+    // Os corpos saem de web/src/features/admin/tarefas/correctionRules.js (gradeBody, redoBody,
+    // extensionBody, manualEntryBody), com os tamanhos máximos que os campos deixam digitar.
+    const { pathToFileURL } = require('node:url');
+    const form = await import(pathToFileURL(path.join(WEB_SRC, 'features', 'admin', 'tarefas', 'assignmentForm.js')).href);
+    const web = await import(pathToFileURL(path.join(WEB_SRC, 'features', 'admin', 'tarefas', 'correctionRules.js')).href);
+    const asProfessor = route => request(app).get(route).set('x-admin-session', tokens.professor);
+    const options = ok(await asProfessor(`/api/admin/assignments/form-options?courseId=${COURSE_ID}&studentClass=${CLASS_NAME}`), 'opções do formulário').body;
+    const body = form.createBody({ ...form.emptyForm(options), title: 'Entrega para corrigir', response: { files: true, text: true, link: true }, types: ['pdf'], dueDate: '2026-12-04', dueTime: '23:00', lateMode: 'desconto', penaltyPerDayPct: '10', penaltyMaxPct: '30' }, options, { courseId: COURSE_ID, studentClass: CLASS_NAME, publish: true });
+    const task = ok(await asInstructor('/api/admin/assignments', 'professor').send(body), 'criar publicada').body.assignment;
+    const base = `/api/admin/assignments/${task.id}`;
+    const pdf = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(256, 0x20), Buffer.from('\n%%EOF\n')]);
+    // O caso dos Alunos acima redefiniu a senha do aluno de teste: uma senha conhecida e
+    // a sessão nova (a troca obrigatória, se houver, antes do envio).
+    const studentPassword = 'Senha do contrato 2026';
+    ok(await asInstructor('/api/admin/reset-password').send({ email: DEMO_ACCOUNTS.student.email, newPassword: studentPassword }), 'senha do aluno');
+    const login = ok(await request(app).post('/api/student/login').send({ email: DEMO_ACCOUNTS.student.email, password: studentPassword }), 'login do aluno').body;
+    let studentToken = login.sessionToken;
+    if (login.mustChangePassword || login.passwordChangeRequired) {
+        ok(await request(app).post('/api/student/change-password').set('x-session-token', studentToken).send({ currentPassword: studentPassword, newPassword: 'Senha do contrato 2027' }), 'troca obrigatória');
+        studentToken = ok(await request(app).post('/api/student/login').send({ email: DEMO_ACCOUNTS.student.email, password: 'Senha do contrato 2027' }), 'login de novo').body.sessionToken;
+    }
+    ok(await request(app).post(`/api/student/assignments/${task.id}/submit?courseId=${COURSE_ID}&studentClass=${CLASS_NAME}`).set('x-session-token', studentToken)
+        .attach('files', pdf, 'relatório.pdf').field('text', 'Minha resposta').field('link', 'https://example.com/a'), 'envio do aluno');
+
+    // TarefaDetalhePage: a lista da turma; CorrecaoPanel: a entrega.
+    screen('features/admin/TarefaDetalhePage.jsx', 'useApi(id ? base : null, [id])');
+    const detail = ok(await asProfessor(base), 'detalhe com a lista').body;
+    const student = DEMO_ACCOUNTS.student.email.toLowerCase();
+    const row = detail.roster.find(item => item.studentEmail === student);
+    assert.ok(row && row.status === 'para_corrigir', JSON.stringify(detail.roster));
+    const other = detail.roster.find(item => item.studentEmail !== student && !item.submissionId);
+    assert.ok(other, 'a turma tem outro aluno sem entrega');
+    screen('features/admin/tarefas/CorrecaoPanel.jsx', 'api.get(`${base}/submissions/${encodeURIComponent(submissionId)}`)');
+    const sub = ok(await asProfessor(`${base}/submissions/${encodeURIComponent(row.submissionId)}`), 'entrega').body.submission;
+    const version = sub.versions[sub.versions.length - 1];
+    screen('features/admin/tarefas/FilePreview.jsx', "`${base}/files/${encodeURIComponent(file.id)}${inline ? '?inline=1' : ''}`");
+    const file = await asProfessor(`${base}/files/${encodeURIComponent(version.files[0].id)}?inline=1`);
+    assert.equal(file.status, 200);
+
+    const comment = 'c'.repeat(web.CORRECTION_LIMITS.commentMax);
+    screen('features/admin/tarefas/CorrecaoPanel.jsx', 'await api.post(`${base}/grade`, gradeBody({ studentEmail: row.studentEmail, action, gradeText: form.gradeText, comment: form.comment, version: versionArg(), waivePenalty: form.waive, reason }))');
+    ok(await asInstructor(`${base}/grade`, 'professor').send(web.gradeBody({ studentEmail: row.studentEmail, action: 'salvar', gradeText: ' 8,5 ', comment, version: version.n, waivePenalty: false })), 'salvar');
+    ok(await asInstructor(`${base}/grade`, 'professor').send(web.gradeBody({ studentEmail: row.studentEmail, action: 'devolver', gradeText: '8,5', comment, version: version.n, waivePenalty: true })), 'devolver');
+    // Nota já devolvida: sem motivo, a recusa que abre o GradeReasonDialog; com ele, passa.
+    const noReason = await asInstructor(`${base}/grade`, 'professor').send(web.gradeBody({ studentEmail: row.studentEmail, action: 'salvar', gradeText: '9', comment: 'Revisada', version: version.n }));
+    assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+    assert.equal(noReason.body.code, 'reason_required');
+    ok(await asInstructor(`${base}/grade`, 'professor').send(web.gradeBody({ studentEmail: row.studentEmail, action: 'salvar', gradeText: '9', comment: 'Revisada', version: version.n, reason: 'r'.repeat(web.CORRECTION_LIMITS.reasonMax) })), 'alterar com motivo');
+    screen('features/admin/tarefas/CorrecaoPanel.jsx', "await api.post(`${base}/grade`, redoBody({ studentEmail: row.studentEmail, gradeText: form.gradeText, comment: form.comment, version: versionArg(), waivePenalty: form.waive, dueDate: deadline.date, dueTime: deadline.time, closeDate: deadline.closeDate, closeTime: deadline.closeTime, reason: reason || '' }))");
+    ok(await asInstructor(`${base}/grade`, 'professor').send(web.redoBody({ studentEmail: row.studentEmail, gradeText: '9', comment: 'Refaça a parte 2', version: version.n, dueDate: '2026-12-10', dueTime: '23:59', reason: 'Pedido de refazer' })), 'refazer');
+
+    screen('features/admin/tarefas/CorrecaoPanel.jsx', 'await api.post(`${base}/extension`, extensionBody({ studentEmail: row.studentEmail, dueDate: deadline.date, dueTime: deadline.time, closeDate: deadline.closeDate, closeTime: deadline.closeTime, reason }))');
+    ok(await asInstructor(`${base}/extension`, 'professor').send(web.extensionBody({ studentEmail: other.studentEmail, dueDate: '2026-12-08', dueTime: '18:00', reason: ` ${'m'.repeat(web.CORRECTION_LIMITS.reasonMax)} ` })), 'prorrogar');
+    screen('features/admin/tarefas/CorrecaoPanel.jsx', "await api.post(`${base}/manual-entry`, manualEntryBody({ studentEmail: row.studentEmail, note: manual.note, gradeText: manual.gradeText, comment: form.comment !== initial.comment ? form.comment : '', returnNow: manual.returnNow }))");
+    ok(await asInstructor(`${base}/manual-entry`, 'professor').send(web.manualEntryBody({ studentEmail: other.studentEmail, note: 'n'.repeat(web.CORRECTION_LIMITS.manualNoteMax), gradeText: '7', comment: 'Entregue no papel', returnNow: false })), 'entrega em mãos');
+    // Zero sem entrega (sem versão: o servidor escolhe) para um terceiro aluno, se houver.
+    const third = detail.roster.find(item => item.studentEmail !== student && item.studentEmail !== other.studentEmail && !item.submissionId);
+    if (third) ok(await asInstructor(`${base}/grade`, 'professor').send(web.gradeBody({ studentEmail: third.studentEmail, action: 'salvar', gradeText: '0', comment: '' })), 'zero sem entrega');
+
+    screen('features/admin/TarefaDetalhePage.jsx', 'const result = await api.post(`${base}/return-all`, {})');
+    const returned = ok(await asInstructor(`${base}/return-all`, 'professor').send({}), 'devolver todas').body;
+    assert.equal(typeof returned.returned, 'number');
+    screen('features/admin/TarefaDetalhePage.jsx', "await downloadFile(`${base}/export?versoes=${exportChoice}`, 'entregas.zip')");
+    for (const choice of ['ultima', 'todas']) {
+        const zip = await asProfessor(`${base}/export?versoes=${choice}`).buffer(true).parse((res, done) => { const parts = []; res.on('data', chunk => parts.push(chunk)); res.on('end', () => done(null, Buffer.concat(parts))); });
+        assert.equal(zip.status, 200, `ZIP ${choice}`);
+        assert.match(String(zip.headers['content-disposition']), /filename\*=UTF-8''/);
+    }
+    screen('features/admin/TarefaDetalhePage.jsx', 'const result = await api.post(`${base}/copy`, { courseId, studentClass, dueDate: copy.dueDate || null, dueTime: copy.dueTime || null })');
+    const copied = ok(await asInstructor(`${base}/copy`, 'professor').send({ courseId: COURSE_ID, studentClass: CLASS_NAME, dueDate: '2026-12-20', dueTime: '18:00' }), 'copiar').body.assignment;
+    assert.equal(copied.status, 'rascunho');
+    ok(await asInstructor(`/api/admin/assignments/${copied.id}/copy`, 'professor').send({ courseId: COURSE_ID, studentClass: CLASS_NAME, dueDate: null, dueTime: null }), 'copiar sem prazo');
+    for (const action of ['publish', 'archive', 'unarchive']) screen('features/admin/TarefaDetalhePage.jsx', `await api.post(\`\${base}/${action}\`, {})`);
+    screen('features/admin/TarefaDetalhePage.jsx', "await api.post(`${base}/delete`, { confirm: 'EXCLUIR' })");
+    ok(await asInstructor(`/api/admin/assignments/${copied.id}/delete`, 'professor').send({ confirm: 'EXCLUIR' }), 'excluir a cópia');
+});
+
 // ------------------------------------------------------------------ públicas e saída
 
 test('[UC-ERRO-003] contrato das telas públicas: cadastro (com e sem responsável), recuperação, troca de senha do professor e Sair', async () => {

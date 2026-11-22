@@ -233,17 +233,33 @@ function responseError(status, data) {
 // Conferência do servidor enquanto a conexão não está 'online' (lib/connection.js): o
 // próprio request() leva o resultado ao estado.
 setConnectionProbe(() => request('/api/session/status', { auth: false, background: true, timeoutMs: POLL_TIMEOUT_MS }))
-// Baixa um arquivo de rota autenticada (CSV, etc.). window.open não manda o
-// cabeçalho de sessão e abria "Acesso não autorizado." (UXI-01). O Blob preserva
-// os bytes (inclusive o BOM UTF-8 que o Excel usa para os acentos).
-// Sem prazo (o arquivo pode ser grande, como o backup completo); sem rede, a mesma
-// mensagem de conexão dos outros pedidos.
-export async function downloadFile(path, fallbackName = 'arquivo') {
+// Nome do arquivo do Content-Disposition: o filename* (UTF-8, com os acentos de
+// "Relatório final.pdf") vale mais que o filename (só ASCII, a reserva dos navegadores
+// antigos); sem nenhum, o nome de reserva de quem chamou.
+export function dispositionFileName(disposition, fallbackName = 'arquivo') {
+  const value = String(disposition || '')
+  const extended = value.match(/filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/)
+  if (extended) {
+    try {
+      const decoded = decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ''))
+      if (decoded) return decoded
+    } catch {}
+  }
+  const match = value.match(/filename="?([^";]+)"?/i)
+  return match ? match[1] : fallbackName
+}
+
+// Lê um arquivo de rota autenticada como Blob (prévia de imagem, PDF e texto das entregas
+// no painel, fase 3 C8, e o download abaixo): { blob, name, type }. Sem prazo (o arquivo
+// pode ser grande); sem rede, a mesma mensagem de conexão dos outros pedidos; recusa do
+// servidor com a mensagem dele. signal: cancela (a prévia que saiu da tela).
+export async function fetchBlob(path, { fallbackName = 'arquivo', signal } = {}) {
   const headers = authHeaders()
   let res
   try {
-    res = await fetch(path, { headers })
-  } catch {
+    res = await fetch(path, signal ? { headers, signal } : { headers })
+  } catch (error) {
+    if (signal && signal.aborted) throw abortError(signal)
     throw noteFailure(connectionError('network'))
   }
   noteBuildFrom(res, path, headers)
@@ -255,10 +271,24 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
     throw responseError(res.status, data)
   }
   reportResponse(res.status, null)
-  const blob = await res.blob()
-  const disposition = res.headers.get('content-disposition') || ''
-  const match = disposition.match(/filename="?([^";]+)"?/i)
-  const name = match ? match[1] : fallbackName
+  let blob
+  try {
+    blob = await res.blob()
+  } catch (error) {
+    if (signal && signal.aborted) throw abortError(signal)
+    throw noteFailure(connectionError('network'))
+  }
+  const name = dispositionFileName(res.headers.get('content-disposition'), fallbackName)
+  return { blob, name, type: blob.type || res.headers.get('content-type') || '' }
+}
+
+// Baixa um arquivo de rota autenticada (CSV, etc.). window.open não manda o
+// cabeçalho de sessão e abria "Acesso não autorizado." (UXI-01). O Blob preserva
+// os bytes (inclusive o BOM UTF-8 que o Excel usa para os acentos).
+// Sem prazo (o arquivo pode ser grande, como o backup completo); sem rede, a mesma
+// mensagem de conexão dos outros pedidos.
+export async function downloadFile(path, fallbackName = 'arquivo') {
+  const { blob, name } = await fetchBlob(path, { fallbackName })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

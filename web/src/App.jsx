@@ -21,9 +21,11 @@ const DashboardPage = lazyPage(() => import('./features/admin/DashboardPage'))
 const ProvasPage = lazyPage(() => import('./features/admin/ProvasPage'))
 const MonitorPage = lazyPage(() => import('./features/admin/MonitorPage'))
 const ResultadosPage = lazyPage(() => import('./features/admin/ResultadosPage'))
-// Tarefas (fase 3, C7 / P1-e): a lista e o formulário (nova e editar).
+// Tarefas (fase 3, C7 / P1-e): a lista e o formulário (nova e editar); C8 / P1-f: o
+// detalhe com as entregas da turma e a correção.
 const TarefasPage = lazyPage(() => import('./features/admin/TarefasPage'))
 const TarefaForm = lazyPage(() => import('./features/admin/tarefas/TarefaForm'))
+const TarefaDetalhePage = lazyPage(() => import('./features/admin/TarefaDetalhePage'))
 const MateriaisPage = lazyPage(() => import('./features/admin/MateriaisPage'))
 const ChamadaPage = lazyPage(() => import('./features/admin/ChamadaPage'))
 const AvisosPage = lazyPage(() => import('./features/admin/AvisosPage'))
@@ -133,6 +135,7 @@ export default function App() {
         <Route path="monitor" element={<RequireAdminPath path="/monitor"><MonitorPage /></RequireAdminPath>} />
         <Route path="tarefas" element={<RequireAdminPath path="/tarefas"><TarefasPage /></RequireAdminPath>} />
         <Route path="tarefas/nova" element={<RequireAdminPath path="/tarefas"><TarefaForm /></RequireAdminPath>} />
+        <Route path="tarefas/:id" element={<RequireAdminPath path="/tarefas"><TarefaDetalhePage /></RequireAdminPath>} />
         <Route path="tarefas/:id/editar" element={<RequireAdminPath path="/tarefas"><TarefaForm /></RequireAdminPath>} />
         <Route path="resultados" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />
         <Route path="resultados/aluno/:studentId" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />

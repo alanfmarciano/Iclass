@@ -189,11 +189,14 @@ describe('Tarefas', () => {
     expect(await within(dialog).findByText(/não pode ser excluída/)).toBeInTheDocument()
   })
 
-  it('"Nova tarefa" e "Editar" abrem o formulário', async () => {
+  it('"Nova tarefa" e "Editar" abrem o formulário; o título e "Entregas" abrem o detalhe (C8)', async () => {
     const user = userEvent.setup()
     renderAt()
     expect(screen.getByRole('link', { name: 'Editar a tarefa Relatório de redes' })).toHaveAttribute('href', '/tarefas/asg_1_aaaaaa/editar')
-    expect(screen.getByRole('link', { name: 'Relatório de redes' })).toHaveAttribute('href', '/tarefas/asg_1_aaaaaa/editar')
+    expect(screen.getByRole('link', { name: 'Relatório de redes' })).toHaveAttribute('href', '/tarefas/asg_1_aaaaaa')
+    expect(screen.getByRole('link', { name: 'Entregas e correção da tarefa Relatório de redes' })).toHaveAttribute('href', '/tarefas/asg_1_aaaaaa')
+    // Rascunho não tem entregas: o título abre o detalhe, sem o botão "Entregas".
+    expect(screen.queryByRole('link', { name: 'Entregas e correção da tarefa Projeto integrador' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Nova tarefa' }))
     expect(screen.getByTestId('where')).toHaveTextContent('/tarefas/nova')
   })
@@ -204,7 +207,7 @@ describe('Tarefas', () => {
     expect(screen.queryByRole('button', { name: 'Nova tarefa' })).not.toBeInTheDocument()
     const card = cardOf('Relatório de redes')
     expect(within(card).queryByRole('button', { name: /Arquivar|Publicar|Excluir/ })).not.toBeInTheDocument()
-    expect(within(card).getByRole('link', { name: 'Ver a tarefa Relatório de redes' })).toHaveAttribute('href', '/tarefas/asg_1_aaaaaa/editar')
+    expect(within(card).getByRole('link', { name: 'Ver a tarefa Relatório de redes' })).toHaveAttribute('href', '/tarefas/asg_1_aaaaaa')
   })
 
   it('turma sem tarefa mostra o convite para criar a primeira', () => {

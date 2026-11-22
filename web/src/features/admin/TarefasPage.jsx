@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Archive, ArchiveRestore, FilePlus, FileUp, Pencil, Send, Trash2, Eye } from 'lucide-react'
+import { Archive, ArchiveRestore, ClipboardCheck, FilePlus, FileUp, Pencil, Send, Trash2, Eye } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
 import { Card } from '../../components/ui/Card'
@@ -17,6 +17,7 @@ import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
 import { assignmentStatusInfo, closeLine, countsLine, deadlineLine, hidePlaceholderEmails, opensLine } from './tarefas/assignmentText'
 import { TOUCH, TOUCH_SQUARE } from './tarefas/touch'
+import { ASSIGNMENT_DIALOGS as DIALOGS } from './tarefas/assignmentDialogs'
 
 // Tarefas do painel (fase 3, C7 / P1-e; FUN-01): a lista da turma em cartões, com o prazo
 // no relógio da escola (relativo e absoluto), a situação (Rascunho, Publicada, Arquivada)
@@ -29,7 +30,8 @@ import { TOUCH, TOUCH_SQUARE } from './tarefas/touch'
 // ConfirmDialog. A conta só de consulta (Coordenação, readOnly do whoami) vê a lista e
 // abre a tarefa sem os botões de mudar (o servidor recusa o POST dela com 403).
 //
-// A entrega de cada aluno e a correção (TarefaDetalhePage) chegam no C8.
+// O título do cartão (e "Entregas", ou "Ver" na conta só de consulta) abre o detalhe da
+// tarefa com a lista da turma e a correção (TarefaDetalhePage, C8 / P1-f).
 
 const FILTERS = Object.freeze([
   { id: 'todas', label: 'Todas' },
@@ -165,37 +167,6 @@ export default function TarefasPage() {
   )
 }
 
-const DIALOGS = {
-  publish: (assignment) => ({
-    title: 'Publicar a tarefa?',
-    message: assignment.opensAt && assignment.local?.opensDate
-      ? `"${assignment.title}" aparece para os alunos da turma na data de abertura, com o aviso no sino.`
-      : `"${assignment.title}" aparece agora para os alunos da turma, com o aviso no sino.`,
-    confirmLabel: 'Publicar',
-    tone: 'primary',
-  }),
-  archive: (assignment) => ({
-    title: 'Arquivar a tarefa?',
-    message: `"${assignment.title}" some para os alunos. As entregas e as notas ficam guardadas, e a tarefa pode voltar pela aba Arquivadas.`,
-    confirmLabel: 'Arquivar',
-    tone: 'primary',
-  }),
-  unarchive: (assignment) => ({
-    title: 'Reativar a tarefa?',
-    message: assignment.publishedAt
-      ? `"${assignment.title}" volta a aparecer para os alunos da turma.`
-      : `"${assignment.title}" volta como rascunho.`,
-    confirmLabel: 'Reativar',
-    tone: 'primary',
-  }),
-  delete: (assignment) => ({
-    title: 'Excluir a tarefa?',
-    message: `"${assignment.title}" é apagada de vez. Só dá para excluir tarefa sem nenhum registro de aluno; com entrega ou nota, arquive.`,
-    confirmLabel: 'Excluir',
-    tone: 'danger',
-  }),
-}
-
 // Link com a cara do botão secundário (abrir o formulário é navegação, não ação).
 function LinkButton({ to, icon: Icon, className = '', label, children }) {
   return (
@@ -207,7 +178,8 @@ function LinkButton({ to, icon: Icon, className = '', label, children }) {
 
 function AssignmentCard({ assignment, now, readOnly, onAction }) {
   const info = assignmentStatusInfo(assignment.status)
-  const editPath = `/tarefas/${encodeURIComponent(assignment.id)}/editar`
+  const detailPath = `/tarefas/${encodeURIComponent(assignment.id)}`
+  const editPath = `${detailPath}/editar`
   const opens = opensLine(assignment, now)
   const close = closeLine(assignment)
   // "Excluir" só quando o servidor deixa (deletable: nenhuma linha de aluno, nem nota sem
@@ -220,7 +192,7 @@ function AssignmentCard({ assignment, now, readOnly, onAction }) {
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="min-w-0 break-words text-base font-semibold text-text">
-              <Link to={editPath} className="inline-flex min-h-[44px] items-center hover:underline sm:min-h-0">{assignment.title}</Link>
+              <Link to={detailPath} className="inline-flex min-h-[44px] items-center hover:underline sm:min-h-0">{assignment.title}</Link>
             </h2>
             <Badge tone={info.tone}>{info.label}</Badge>
           </div>
@@ -231,9 +203,12 @@ function AssignmentCard({ assignment, now, readOnly, onAction }) {
         </div>
         <div className="flex flex-wrap gap-2 sm:justify-end">
           {readOnly ? (
-            <LinkButton to={editPath} icon={Eye} className={actionClass} label={`Ver a tarefa ${assignment.title}`}>Ver</LinkButton>
+            <LinkButton to={detailPath} icon={Eye} className={actionClass} label={`Ver a tarefa ${assignment.title}`}>Ver</LinkButton>
           ) : (
             <>
+              {assignment.status !== 'rascunho' && (
+                <LinkButton to={detailPath} icon={ClipboardCheck} className={actionClass} label={`Entregas e correção da tarefa ${assignment.title}`}>Entregas</LinkButton>
+              )}
               {assignment.status !== 'arquivada' && (
                 <LinkButton to={editPath} icon={Pencil} className={actionClass} label={`Editar a tarefa ${assignment.title}`}>Editar</LinkButton>
               )}

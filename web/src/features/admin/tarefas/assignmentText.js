@@ -126,6 +126,13 @@ export function studentLabel(row) {
   return { name: name || email, email, matricula, semEmail, title }
 }
 
+// A chave do aluno nas rotas e nas listas da tela (o studentEmail do servidor, que no aluno
+// sem e-mail é o endereço interno): só para comparar, achar a linha e montar a fila do
+// painel de correção (C8), nunca para mostrar. '' sem linha.
+export function studentKey(row) {
+  return typeof row?.studentEmail === 'string' ? row.studentEmail : ''
+}
+
 // Troca, num texto livre (recusa do servidor, aviso), todo endereço interno de aluno sem
 // e-mail por 'sem e-mail'. Texto sem o endereço volta igual.
 const PLACEHOLDER_IN_TEXT = /[^\s<>()"',;:]+@sem-email\.invalid\b/gi

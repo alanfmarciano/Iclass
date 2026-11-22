@@ -17,6 +17,11 @@ const SOURCES = {
   ...import.meta.glob('./**/*.{js,jsx}', { query: '?raw', import: 'default', eager: true }),
 }
 
+// Arquivo sem nada para mostrar (só contas e corpos de rota, sem import para os testes do
+// servidor o carregarem no Node): os usos de studentEmail continuam conferidos acima, mas
+// ele não precisa importar o ajudante.
+const NO_DISPLAY = ['features/admin/tarefas/correctionRules.js']
+
 const HELPER_IMPORT = /import\s*\{[^}]*\b(studentLabel|displayEmail)\b[^}]*\}\s*from\s*'[^']*(assignmentText|studentProfile)'/
 const TOKEN = /(?:[\w$]+\??\.)*studentEmail\b/g
 
@@ -72,6 +77,12 @@ describe('aluno sem e-mail nas telas de tarefa', () => {
     const files = screens().map(([file]) => file)
     expect(files).toContain('features/admin/TarefasPage.jsx')
     expect(files).toContain('features/admin/tarefas/TarefaForm.jsx')
+    // C8: detalhe da tarefa, painel de correção e prévia dos arquivos.
+    expect(files).toContain('features/admin/TarefaDetalhePage.jsx')
+    expect(files).toContain('features/admin/tarefas/CorrecaoPanel.jsx')
+    expect(files).toContain('features/admin/tarefas/FilePreview.jsx')
+    expect(files).toContain('features/admin/tarefas/correction.js')
+    expect(files).toContain('features/admin/tarefas/correctionRules.js')
   })
 
   it('studentEmail só aparece como chave (rota, key, comparação) ou dentro de studentLabel/displayEmail', () => {
@@ -82,7 +93,7 @@ describe('aluno sem e-mail nas telas de tarefa', () => {
       // Tela que lida com studentEmail (fora de comentário) também mostra o aluno: o ajudante
       // precisa estar importado.
       const inCode = source.split('\n').some((line) => !isComment(line) && /studentEmail/.test(line))
-      if (inCode && !HELPER_IMPORT.test(source)) problems.push(`${file}: usa studentEmail sem importar studentLabel ou displayEmail`)
+      if (inCode && !NO_DISPLAY.includes(file) && !HELPER_IMPORT.test(source)) problems.push(`${file}: usa studentEmail sem importar studentLabel ou displayEmail`)
     }
     expect(problems, 'Mostre o aluno por studentLabel(row) (o endereço interno do aluno sem e-mail vira "sem e-mail")').toEqual([])
   })
@@ -115,6 +126,12 @@ describe('aluno sem e-mail nas telas de tarefa', () => {
     expect(flagged('<td>{studentLabel(row).email}</td>')).toBe(false)
     expect(flagged('<td>{displayEmail(row.studentEmail)}</td>')).toBe(false)
     expect(flagged('// studentEmail é a chave')).toBe(false)
+    // O arquivo sem tela também não pode mostrar o endereço: ele não tem JSX nem texto.
+    for (const file of NO_DISPLAY) {
+      const source = screens().find(([name]) => name === file)?.[1] || ''
+      expect(source, file).not.toMatch(/^\s*import\b/m)
+      expect(source, file).not.toMatch(/<[A-Za-z]/)
+    }
     expect(HELPER_IMPORT.test("import { countsLine, studentLabel } from './tarefas/assignmentText'")).toBe(true)
   })
 })

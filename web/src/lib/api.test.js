@@ -5,7 +5,7 @@ const buildMock = vi.hoisted(() => ({ noteServerBuild: vi.fn() }))
 vi.mock('./buildVersion', async (importOriginal) => ({ ...(await importOriginal()), noteServerBuild: buildMock.noteServerBuild }))
 
 import { getConnectionState, resetConnectionForTests } from './connection'
-import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, RETRYABLE_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, downloadFile, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from './api'
+import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, RETRYABLE_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, dispositionFileName, downloadFile, fetchBlob, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from './api'
 
 afterEach(() => {
   resetConnectionForTests()
@@ -59,6 +59,36 @@ describe('downloadFile', () => {
   it('[UC-NOTAS-002] mostra a mensagem do servidor quando o download é recusado', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'Turma não autorizada para esta conta.' }), { status: 403, headers: { 'content-type': 'application/json' } })))
     await expect(downloadFile('/api/admin/gradebook?format=csv')).rejects.toThrow('Turma não autorizada para esta conta.')
+  })
+})
+
+describe('fetchBlob e o nome do arquivo (fase 3, C8: prévia e ZIP das entregas)', () => {
+  it('[UC-NOTAS-002] nome com acento vem do filename* (o filename simples do servidor troca o acento por ?)', () => {
+    const disposition = "attachment; filename=\"Entregas - Relat?rio - 1DES.zip\"; filename*=UTF-8''Entregas%20-%20Relat%C3%B3rio%20-%201DES.zip"
+    expect(dispositionFileName(disposition, 'x.zip')).toBe('Entregas - Relatório - 1DES.zip')
+    expect(dispositionFileName('attachment; filename="notas.csv"', 'x')).toBe('notas.csv')
+    expect(dispositionFileName("attachment; filename*=UTF-8''%E0%A4%A", 'x.zip')).toBe('x.zip')
+    expect(dispositionFileName('', 'x.zip')).toBe('x.zip')
+  })
+
+  it('[UC-NOTAS-002] lê o arquivo com a sessão, repassa o cancelamento e devolve o Blob', async () => {
+    setAuthProvider(() => ({ adminSession: 'token-123' }))
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/png', 'content-disposition': "inline; filename*=UTF-8''foto%20%C3%A1.png" } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const result = await fetchBlob('/api/admin/assignments/a/files/f?inline=1', { signal: controller.signal })
+    expect(fetchMock).toHaveBeenCalledWith('/api/admin/assignments/a/files/f?inline=1', { headers: { 'x-admin-session': 'token-123' }, signal: controller.signal })
+    expect(result.name).toBe('foto á.png')
+    expect(result.blob.size).toBe(3)
+  })
+
+  it('[UC-NOTAS-002] cancelado por quem chamou sai como AbortError, sem a mensagem de conexão', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (path, init) => { throw Object.assign(new Error('aborted'), { name: 'AbortError', signal: init.signal }) }))
+    const controller = new AbortController()
+    controller.abort()
+    const error = await fetchBlob('/x', { signal: controller.signal }).catch((caught) => caught)
+    expect(error.name).toBe('AbortError')
+    expect(error.message).not.toBe(NETWORK_MESSAGE)
   })
 })
 
