@@ -313,6 +313,9 @@ app.use(setupModeRoutes);
 app.use(commonRoutes);
 // Termos e Privacidade (H8a-1): rotas públicas e, no H8a-2, as do aluno; antes das do aluno.
 app.use(require('./routes/privacy.js'));
+// Tarefas do aluno (fase 3, C5 / P1-c): router próprio, antes de student.js
+// (ordem_no_createApp do plano); multer próprio, com os limites da tarefa.
+app.use(require('./routes/studentAssignments.js').createStudentAssignmentsRouter());
 app.use(studentRoutes);
 app.use(adminRoutes);
 

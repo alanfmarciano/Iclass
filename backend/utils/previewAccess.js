@@ -45,7 +45,7 @@ const PREVIEW_READ_ONLY = Object.freeze({ error: 'Na pré-visualização nada é
 //   ?access= ou no cabeçalho);
 // - públicas: as que não pedem sessão e o portal chama com a prévia aberta (configuração,
 //   conexão, documentos, identidade visual), que não leem nem gravam nada do aluno.
-// Ficam de fora, com 403: presença (/api/ping), Sair, prova (exam-state, autosave,
+// Ficam de fora, com 403: envio e download de arquivo de tarefa, presença (/api/ping), Sair, prova (exam-state, autosave,
 // log-*, validate-exam-token, start-attempt, submit, report-question), "Marcar como lidas",
 // caderno e anotações (gravar), progresso (gravar), track-access, fórum (escrever),
 // matrícula, troca de senha, aceite dos Termos, Meus dados (download auditado) e o
@@ -68,6 +68,8 @@ const PREVIEW_READ_ROUTES = Object.freeze([
     { method: 'GET', pattern: /^\/api\/student\/calendar-events$/i, label: 'calendário' },
     { method: 'GET', pattern: /^\/api\/student\/notifications$/i, label: 'sino' },
     { method: 'GET', pattern: /^\/api\/student\/dashboard$/i, label: 'Início' },
+    { method: 'GET', pattern: /^\/api\/student\/assignments$/i, label: 'tarefas da turma' },
+    { method: 'GET', pattern: /^\/api\/student\/assignments\/[^/]+$/i, label: 'tarefa (sem entrega: a prévia não envia nem baixa arquivo)' },
     { method: 'GET', pattern: /^\/api\/student\/progress$/i, label: 'progresso (ler)' },
     { method: 'GET', pattern: /^\/api\/student\/annotations$/i, label: 'anotações (ler)' },
     { method: 'GET', pattern: /^\/api\/student\/my-forum$/i, label: 'minhas dúvidas' },

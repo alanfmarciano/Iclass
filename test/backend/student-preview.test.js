@@ -45,6 +45,7 @@ const tokens = {
     ana: 'ana-token-previa',
     bia: 'bia-token-previa',
 };
+const ASSIGNMENT_ID = 'asg_1700000000000_abcdef';
 const ANA = 'ana@previa.local';
 const BIA = 'bia@previa.local';
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -150,6 +151,18 @@ function seed() {
         groupRow('grp_arq', 'Arquivado', { arquivadoEm: now - 1, arquivadoPor: 'prof@previa.local' }),
         groupRow('grp_outra', 'Da 2DES', { studentClass: OTHER_CLASS }),
     ];
+    // Tarefa publicada da turma com a entrega da Ana (fase 3, C5): a prévia vê a tarefa
+    // como um aluno sem entrega e não envia nem baixa arquivo.
+    db.memory.assignments = [{
+        id: ASSIGNMENT_ID, schemaVersion: 1, courseId: COURSE, studentClass: CLASS, title: 'Relatório', status: 'publicada',
+        response: { files: true, text: true, link: false }, files: { maxFiles: 2, maxSizeMb: 5, types: ['pdf'], extraExtensions: [] },
+        opensAt: null, dueAt: now + 3 * 86400000, closeAt: null, publishedAt: now - 10000, createdAt: now - 20000,
+    }];
+    db.memory.assignmentSubmissions = [{
+        id: 'asub_1700000000000_abcdef', schemaVersion: 1, assignmentId: ASSIGNMENT_ID, courseId: COURSE, studentClass: CLASS,
+        studentEmail: ANA, studentId: 'alu_00000000000000a1', status: 'enviada', createdAt: now - 5000, updatedAt: now - 5000,
+        versions: [{ n: 1, requestAt: now - 5000, receivedAt: now - 5000, late: false, lateMs: 0, text: 'Da Ana', link: '', files: [] }],
+    }];
     db.memory.auditLogs = [];
     delete db.memory.previewSessions;
 }
@@ -511,6 +524,11 @@ function decisions(virtualEmail) {
         'POST /api/session/logout': 'recusada',
         'GET /api/health': 'recusada',
         'POST /api/system/control': 'recusada',
+        // Tarefas (fase 3, C5 / P1-c): a prévia lê a lista e o detalhe; envio e download não.
+        'GET /api/student/assignments': read(`/api/student/assignments?${Q}`),
+        'GET /api/student/assignments/:id': read(`/api/student/assignments/${ASSIGNMENT_ID}?${Q}`),
+        'POST /api/student/assignments/:id/submit': 'recusada',
+        'GET /api/student/assignments/:id/files/:fileId': 'recusada',
     };
 }
 

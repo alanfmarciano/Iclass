@@ -431,3 +431,32 @@ test('tarefas: criar, alterar, publicar, arquivar, reativar, copiar e excluir fi
     }
     assert.equal(last('assignment_deleted').details.deleted.title, 'Relatório final');
 });
+
+// Tarefas (fase 3, C5 / P1-c): o envio do aluno grava assignment_submitted na mesma
+// gravação da versão, com o aluno como ator; envio recusado não grava nada.
+test('tarefas: envio do aluno fica na trilha (assignment_submitted); recusado não', async () => {
+    const { createStudentSession } = require('../../backend/utils/authSessions.js');
+    db.memory.config = { ...(db.memory.config || {}), settings: { entregas: { discoLivreMinimoMb: 0 } } };
+    db.memory.assignments = [{
+        id: 'asg_1700000000000_c0be01', schemaVersion: 1, courseId: COURSE, studentClass: '1DES', title: 'Relatório', status: 'publicada',
+        response: { files: true, text: true, link: false }, files: { maxFiles: 2, maxSizeMb: 5, types: ['pdf'], extraExtensions: [] },
+        opensAt: null, dueAt: Date.now() + 86400000, closeAt: null, publishedAt: Date.now() - 1000,
+    }];
+    db.memory.assignmentSubmissions = [];
+    const token = createStudentSession(db.memory, 'ana@cobertura.local');
+    const refused = await request(app).post('/api/student/assignments/asg_1700000000000_c0be01/submit').set('x-session-token', token)
+        .attach('files', Buffer.from('MZ'), 'programa.exe');
+    assert.equal(refused.status, 400);
+    assert.equal(entries('assignment_submitted').length, 0);
+    const sent = await request(app).post('/api/student/assignments/asg_1700000000000_c0be01/submit').set('x-session-token', token)
+        .field('text', 'Minha resposta');
+    assert.equal(sent.status, 201, JSON.stringify(sent.body));
+    const entry = last('assignment_submitted');
+    assert.equal(entry.category, 'assignment');
+    assert.equal(entry.actor, 'ana@cobertura.local');
+    assert.equal(entry.actorRole, 'aluno');
+    assert.equal(entry.courseId, COURSE);
+    assert.equal(entry.studentClass, '1DES');
+    assert.equal(entry.details.version, 1);
+    assert.equal(entry.submissionId, db.memory.assignmentSubmissions[0].id);
+});

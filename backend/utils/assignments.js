@@ -797,6 +797,57 @@ function nextVersionNumber(submission) {
     return sub && sub.versions.length ? sub.versions[sub.versions.length - 1].n + 1 : 1;
 }
 
+// ------------------------------------------------------------ envio do aluno (P1-c, C5)
+// A tarefa aparece para o aluno da turma: publicada e já aberta (sem abertura, desde a
+// publicação). Rascunho, arquivada e com abertura no futuro ficam fora da lista, do
+// detalhe, do sino e do calendário.
+function isVisibleToStudent(assignment, { now = Date.now() } = {}) {
+    const task = asAssignment(assignment);
+    if (!task || task.status !== 'publicada') return false;
+    return task.opensAt === null || task.opensAt <= now;
+}
+
+// Situação da entrega depois de uma versão nova do aluno: 'corrigida' continua (a
+// correção salva é da versão anterior e a versão nova volta para a fila do professor
+// pelo needsGrading); o resto (pendente, enviada, refazer, entregue em mãos) vira
+// 'enviada'. Devolvida não recebe versão (submissionAcceptance recusa antes).
+function statusAfterNewVersion(submission) {
+    const sub = submission ? asSubmission(submission) : null;
+    return sub && sub.status === 'corrigida' ? 'corrigida' : 'enviada';
+}
+
+// Código curto do arquivo no comprovante: os 8 primeiros do sha256, em maiúsculas.
+function fileReceiptCode(file) {
+    const sha = file && typeof file.sha256 === 'string' && /^[0-9a-f]{64}$/.test(file.sha256) ? file.sha256 : '';
+    return sha ? sha.slice(0, 8).toUpperCase() : '';
+}
+
+// Código do comprovante da versão ('A1B2C3D4'): sha256 da entrega, do número, da hora de
+// chegada, dos sha256 dos arquivos, do texto e do link. Calculado de novo a partir do
+// registro (não é gravado): o mesmo envio dá sempre o mesmo código, e qualquer mudança
+// no que foi recebido dá outro.
+function versionReceiptCode(submission, version) {
+    const sub = submission && typeof submission === 'object' ? submission : {};
+    const v = normalizeVersion(version);
+    const payload = JSON.stringify([text(sub.id), v.n, v.requestAt, v.files.map(file => file.sha256), v.text, v.link]);
+    return crypto.createHash('sha256').update(payload).digest('hex').slice(0, 8).toUpperCase();
+}
+
+function formatPct(value) {
+    return `${String(value).replace('.', ',')}%`;
+}
+
+// Regra de atraso escrita por extenso, para o aluno (D8 e a tela de envio).
+function latePolicyText(assignment) {
+    const task = asAssignment(assignment) || normalizeAssignment({});
+    const close = task.closeAt !== null ? ' Depois do encerramento, o envio não é mais aceito.' : '';
+    if (task.latePolicy.mode === 'bloquear') return 'Depois do prazo, o envio não é mais aceito.';
+    if (task.latePolicy.mode === 'desconto') {
+        return `Depois do prazo, a entrega é aceita com desconto de ${formatPct(task.latePolicy.penaltyPerDayPct)} por dia de atraso, até ${formatPct(task.latePolicy.penaltyMaxPct)}.${close}`;
+    }
+    return `Depois do prazo, a entrega é aceita e fica marcada como atrasada.${close}`;
+}
+
 module.exports = {
     SCHEMA_VERSION,
     ASSIGNMENT_STATUSES,
@@ -843,4 +894,9 @@ module.exports = {
     assignmentGradeEntries,
     submissionRules,
     nextVersionNumber,
+    isVisibleToStudent,
+    statusAfterNewVersion,
+    fileReceiptCode,
+    versionReceiptCode,
+    latePolicyText,
 };

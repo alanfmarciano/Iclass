@@ -58,6 +58,9 @@ const ROTAS_QUE_GRAVAM = [
     ['adminExamConfig.js', 'POST', '/api/admin/correct-live-question'],
     ['adminExamConfig.js', 'POST', '/api/admin/annul-question'],
     ['adminExamConfig.js', 'POST', '/api/admin/replace-question'],
+    // Tarefas (fase 3, C5 / P1-c): o envio do aluno grava a versão da entrega; turma
+    // encerrada recusa com 409 class_closed ("O envio não é mais aceito.").
+    ['studentAssignments.js', 'POST', '/api/student/assignments/:id/submit'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo.
@@ -96,6 +99,10 @@ const DIRECT_WRITE_MARKERS = [
     /saveApplicationAction\(/,
     // Nota mudada no registro da entrega (recorreção, troca da finalização do servidor).
     /\bsubmission\.score\s*=(?!=)/,
+    // Entregas de tarefa (fase 3, P1): versão do aluno, nota, devolução, refazer e entrega
+    // em mãos gravam em assignmentSubmissions.
+    /\.assignmentSubmissions\.(?:push|splice)\(/,
+    /only:\s*\[[^\]]*['"]assignmentSubmissions['"]/,
 ];
 
 const UTILS_DIR = path.join(__dirname, '../../backend/utils');
