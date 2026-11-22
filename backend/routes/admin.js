@@ -34,7 +34,7 @@ const {
     validateAdminPermission
 } = require('../middlewares.js');
 const { importWarningsFor, parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../utils/parser.js');
-const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
+const { gradeAttempt, correctAnswerFor, newCorrection } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
 
@@ -108,7 +108,7 @@ const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecre
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
-const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
+const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
     MANUAL_TYPES,
     buildClassGradebook,
@@ -207,6 +207,7 @@ const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
 const { createAdminAcademicRouter } = require('./adminAcademic.js');
+const { createAdminCorrectionsRouter } = require('./adminCorrections.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
@@ -750,9 +751,14 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
         const gradedAnswers = Array.isArray(submission.gradedAnswers) ? submission.gradedAnswers : [];
         const gradedByNumber = new Map(gradedAnswers.map(answer => [Number(answer.questionNumber), answer]));
         const submittedNumbers = gradedAnswers.map(answer => Number(answer.questionNumber)).filter(Number.isFinite);
-        let snapshot = submission.examSnapshot && Array.isArray(submission.examSnapshot.questions)
+        // Cartão-resposta (prova impressa): a revisão mostra a versão impressa do histórico,
+        // como antes; as questões que a entrega guardou desde o P3-S4a (examSnapshot, para a
+        // correção do professor) só entram quando o histórico não tem a versão.
+        const ownSnapshot = submission.examSnapshot && Array.isArray(submission.examSnapshot.questions)
             ? submission.examSnapshot
             : null;
+        const cardEntry = submission.entryMode === 'card' && !submission.applicationId;
+        let snapshot = cardEntry ? null : ownSnapshot;
         let source = snapshot ? 'attempt' : null;
 
         if (!snapshot && submittedNumbers.length > 0) {
@@ -780,6 +786,10 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
                     break;
                 }
             }
+        }
+        if (!snapshot && ownSnapshot) {
+            snapshot = ownSnapshot;
+            source = 'attempt';
         }
 
         let questions = snapshot && Array.isArray(snapshot.questions) ? snapshot.questions : [];
@@ -877,10 +887,15 @@ router.post('/api/admin/submissions/publish', (req, res) => {
         if (!motive.ok) return res.status(motive.status).json(motive.body);
         let updated = 0;
         let skippedInvalid = 0;
+        let skippedPendingCorrection = 0;
         submissions.forEach(item => {
             if (!ids.has(String(item.id)) || !allowedIds.has(String(item.id))) return;
             // Nota inválida (vazia ou fora de 0 a 10, de registros antigos) nunca é publicada.
             if (published && normalizeScore(item.score) === null) { skippedInvalid++; return; }
+            // Entrega esperando a correção do professor (P3-S4a, D7): a nota dela é só a das
+            // objetivas e não vai para o aluno até a correção ser concluída. A anulada por
+            // integridade não espera correção (vale a decisão do professor).
+            if (published && integrityDecision(item) === null && isAwaitingCorrection(item)) { skippedPendingCorrection++; return; }
             const wasPublished = item.gradePublished === true;
             item.gradePublished = published;
             item.gradePublishedAt = published ? Date.now() : null;
@@ -900,7 +915,7 @@ router.post('/api/admin/submissions/publish', (req, res) => {
             }
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
-        res.json({ success: true, updated, published, skippedInvalid });
+        res.json({ success: true, updated, published, skippedInvalid, skippedPendingCorrection });
     });
 });
 
@@ -1281,6 +1296,8 @@ router.post('/api/admin/submissions/create', (req, res) => {
         let finalTotalCount = null;
         let gradedAnswers = [];
         let entryMode = 'quick';
+        // Cartão-resposta: pontos, questões da entrega e o que espera o professor.
+        let printedDetails = null;
 
         if (answers !== undefined && answers !== null && (typeof answers !== 'object' || Array.isArray(answers))) {
             return res.status(400).json({ error: 'Respostas do cartão em formato inválido.' });
@@ -1345,25 +1362,30 @@ router.post('/api/admin/submissions/create', (req, res) => {
                     }
                 });
             }
-            finalTotalCount = selectedQuestions.length;
-            finalCorrectCount = 0;
-
-            selectedQuestions.forEach(q => {
-                const correctAnswer = correctAnswerFor(q);
-                const studentChoice = normalizedAnswers[q.originalNumber] || null;
-                const isCorrect = !!correctAnswer && studentChoice === correctAnswer;
-                if (isCorrect) {
-                    finalCorrectCount++;
-                }
-                gradedAnswers.push({
-                    questionNumber: q.originalNumber,
-                    studentChoice,
-                    correctAnswer,
-                    isCorrect
-                });
+            // Correção pelo corretor por tipo (examScoring, como a prova online), com a
+            // resposta no papel (P3-S4a): a letra marcada vale nas questões de escolha
+            // única; a dissertativa, a numérica, a resposta curta e a de várias corretas
+            // esperam o professor, e a entrega nasce com a correção pendente (fica fora
+            // das médias e da publicação até ele concluir). Com todas valendo 1 ponto, a
+            // nota é a de antes (acertos / total). As questões da entrega ficam guardadas
+            // (examSnapshot) para a correção recalcular a nota pelas mesmas questões.
+            const printedGrade = gradeAttempt({
+                onlineConfig: { versionSnapshots: [{ version: 'A', questions: selectedQuestions }] },
+                state: { assignedVersion: 'A', assignedQuestionNumbers: selectedQuestions.map(q => Number(q.originalNumber)) },
+                evaluation: null,
+                answers: normalizedAnswers,
+                onPaper: true,
             });
-
-            finalScore = scoreFromCounts(finalCorrectCount, finalTotalCount);
+            gradedAnswers = printedGrade.gradedAnswers;
+            finalTotalCount = printedGrade.totalCount;
+            finalCorrectCount = printedGrade.correctCount;
+            finalScore = printedGrade.score;
+            printedDetails = {
+                pointsEarned: printedGrade.pointsEarned,
+                pointsPossible: printedGrade.pointsPossible,
+                examSnapshot: printedGrade.examSnapshot,
+                pendingCount: printedGrade.pendingCount,
+            };
         } else {
             // Lançamento rápido: nota (0 a 10) e/ou acertos e total.
             const gradeInput = parseGradeInput(body.grade);
@@ -1417,6 +1439,13 @@ router.post('/api/admin/submissions/create', (req, res) => {
             correctCount: finalCorrectCount,
             totalCount: finalTotalCount,
             gradedAnswers,
+            ...(printedDetails ? {
+                pointsEarned: printedDetails.pointsEarned,
+                pointsPossible: printedDetails.pointsPossible,
+                examSnapshot: printedDetails.examSnapshot,
+                answersOnPaper: true,
+                ...(printedDetails.pendingCount > 0 ? { correcao: newCorrection() } : {}),
+            } : {}),
             type,
             entryMode,
             launchedBy: matchedAdmin?.email || 'admin',
@@ -1441,13 +1470,17 @@ router.post('/api/admin/submissions/create', (req, res) => {
             action: 'grade_create',
             field: 'Nota',
             oldValue: '',
-            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})${ignoredNote ? ` · ${ignoredNote}` : ''}`,
+            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})${printedDetails && printedDetails.pendingCount > 0 ? ' · aguardando correção' : ''}${ignoredNote ? ` · ${ignoredNote}` : ''}`,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
 
+        const awaitingCorrection = !!(printedDetails && printedDetails.pendingCount > 0);
         res.json({
             success: true,
-            message: `Nota ${formatGradeBR(finalScore)} lançada para ${registeredStudent.name || studentEmail}.${ignoredNote ? ` Atenção: ${ignoredNote}.` : ''}`,
+            message: awaitingCorrection
+                ? `Respostas lançadas para ${registeredStudent.name || studentEmail}. ${printedDetails.pendingCount === 1 ? 'Uma questão aguarda' : `${printedDetails.pendingCount} questões aguardam`} a sua correção: a nota sai quando você concluir.${ignoredNote ? ` Atenção: ${ignoredNote}.` : ''}`
+                : `Nota ${formatGradeBR(finalScore)} lançada para ${registeredStudent.name || studentEmail}.${ignoredNote ? ` Atenção: ${ignoredNote}.` : ''}`,
+            awaitingCorrection,
             submissionId: submissionObj.id,
             score: finalScore,
             grade: gradeFromScore(finalScore),
@@ -3750,9 +3783,10 @@ router.use(createAdminPrivacyRouter());
 router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 // Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
-// calendário acadêmico (P2), banco de questões (P3-S9a), tarefas com envio de arquivo
-// (P1-b e P1-d) e pré-visualização como aluno (P5-S6a).
+// calendário acadêmico (P2), correção do professor (P3-S4a), banco de questões (P3-S9a),
+// tarefas com envio de arquivo (P1-b e P1-d) e pré-visualização como aluno (P5-S6a).
 router.use(createAdminAcademicRouter());
+router.use(createAdminCorrectionsRouter());
 router.use(createAdminQuestionBankRouter());
 router.use(createAdminAssignmentsRouter());
 router.use(createAdminPreviewRouter());
@@ -4957,8 +4991,16 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     : state.reopenedByInstructor === true,
                 canReopen: !!(application && applicationActive && submission
                     && submission.gradePublished !== true
+                    && !integrityDecision(submission)
                     && !['archived', 'invalidated'].includes(submission.resultStatus)
                     && submission.reopenableState && submission.reopenableState.startedAt),
+                // Anulação por integridade (P3-S4a): a decisão da entrega mostrada ('zero',
+                // 'desconsiderar' ou null) e o que o menu do aluno oferece (anular a prova em
+                // andamento ou a última entrega; desfazer quando alguma entrega está anulada).
+                integrity: submission ? integrityDecision(submission) : null,
+                canInvalidate: !!(application && application.status !== 'cancelled'
+                    && (attemptInProgress || (latestDelivery && !integrityDecision(latestDelivery)))),
+                canUndoInvalidation: !!(application && deliveries.some(delivery => integrityDecision(delivery))),
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
                 fullscreenUnsupported: currentAttemptLogs.some(log => log.eventType === 'fullscreen_unsupported'),
                 // Só os últimos eventos de foco (a linha mostra os 2 últimos); o histórico

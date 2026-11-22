@@ -19,6 +19,7 @@ const { listExamApplications } = require('./utils/examApplications.js');
 const { keystrokeModeOf } = require('./utils/keystrokePolicy.js');
 const { examFamilyIndex } = require('./utils/examFamily.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
+const { integrityDecision, isAwaitingCorrection } = require('./utils/submissionAttempts.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
 const { logError } = require('./utils/errorLog.js');
@@ -1109,6 +1110,25 @@ function sanitizeEvaluationForStudent(evaluation) {
 }
 
 // Sanitização de Submissão para Aluno
+// Campos da questão que vão para a revisão do aluno com o gabarito liberado (D12 do P3).
+function studentReviewQuestionFields(question) {
+    const out = {};
+    if (!question || typeof question !== 'object') return out;
+    if (typeof question.type === 'string' && question.type) out.type = question.type;
+    const points = Number(question.points);
+    if (Number.isFinite(points) && points > 0) out.points = points;
+    if (typeof question.explanation === 'string' && question.explanation.trim()) out.explanation = question.explanation;
+    if (Array.isArray(question.rubric) && question.rubric.length) {
+        out.rubric = question.rubric
+            .filter(item => item && typeof item === 'object')
+            .map(item => ({ id: String(item.id || ''), nome: String(item.nome || ''), pontos: Number(item.pontos) || 0 }));
+    }
+    if (question.numeric && typeof question.numeric === 'object' && typeof question.numeric.unit === 'string' && question.numeric.unit) {
+        out.unit = question.numeric.unit;
+    }
+    return out;
+}
+
 function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     // Letras como o aluno viu na tela (posição na versão dele), não as originais (AVA-05).
     const submission = submissionWithSeenLetters(rawSubmission);
@@ -1117,11 +1137,30 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     const rawScore = submission && submission.score;
     const scoreValue = typeof rawScore === 'number' ? rawScore : Number(rawScore);
     const scoreValid = rawScore !== null && rawScore !== undefined && rawScore !== '' && Number.isFinite(scoreValue) && scoreValue >= 0 && scoreValue <= 100;
-    const gradePublished = submission && submission.gradePublished === true && scoreValid;
+    // Fase 3 (P3-S4a): a entrega que espera a correção do professor nunca mostra nota ao
+    // aluno, nem a parcial das objetivas (P-B6): ele vê "Aguardando correção". A anulada
+    // por integridade mostra a decisão com a nota publicada ('zero' vale 0;
+    // 'desconsiderar' não tem nota).
+    const decision = integrityDecision(submission);
+    const awaiting = decision === null && isAwaitingCorrection(submission);
+    const gradePublished = submission && submission.gradePublished === true && scoreValid && !awaiting && decision !== 'desconsiderar';
     // scoreHistory (notas anteriores de cada recorreção) é do professor: revelava a
-    // nota antes da publicação.
-    const { examSnapshot, scoreHistory, ...submissionWithoutSnapshot } = submission || {};
+    // nota antes da publicação. correcao e integrity (rascunho e motivos do professor)
+    // saem e voltam só com o que o aluno pode ver, mais abaixo.
+    const { examSnapshot, scoreHistory, correcao, integrity, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };
+    if (awaiting) safeGrade.aguardandoCorrecao = true;
+    // A anulação é decisão sobre a nota: o aluno fica sabendo com a nota publicada.
+    if (decision && submission.gradePublished === true) safeGrade.anulada = decision;
+    if (gradePublished && decision === 'zero') {
+        safeGrade.score = 0;
+        if (safeGrade.pointsEarned !== undefined) safeGrade.pointsEarned = 0;
+    }
+    // Comentário geral da correção concluída: com a nota publicada (D12).
+    const finishedCorrection = !awaiting && correcao && typeof correcao === 'object' && !Array.isArray(correcao) ? correcao : null;
+    if (gradePublished && finishedCorrection && typeof finishedCorrection.comentarioGeral === 'string' && finishedCorrection.comentarioGeral.trim()) {
+        safeGrade.comentarioGeral = finishedCorrection.comentarioGeral;
+    }
     // Registro da entrega do servidor que o envio atrasado substituiu: é auditoria do
     // professor e guarda a nota daquela versão, então nunca vai para o aluno.
     delete safeGrade.serverFinalization;
@@ -1146,6 +1185,9 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
         // Gabarito liberado: expõe o conteúdo das questões (enunciado + alternativas)
         // a partir do examSnapshot para permitir a visualização completa da prova.
         // O snapshot em si não é devolvido; apenas os campos necessários e seguros.
+        // Com o gabarito vêm também a explicação, o tipo, os pontos e os critérios da
+        // rubrica de cada questão (D12 do P3); a resposta esperada da dissertativa e as
+        // respostas aceitas continuam só do professor.
         const snapshotQuestions = Array.isArray(examSnapshot?.questions) ? examSnapshot.questions : [];
         if (snapshotQuestions.length) {
             safeGrade.examQuestions = snapshotQuestions.map(question => ({
@@ -1156,8 +1198,37 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
                         letter: String(alt?.letter || '').toUpperCase(),
                         text: typeof alt?.text === 'string' ? alt.text : ''
                     }))
-                    : []
+                    : [],
+                ...studentReviewQuestionFields(question),
             }));
+        }
+        // Pontos, comentário e rubrica da correção do professor, por questão: só da
+        // correção concluída (o rascunho não vai) e com a nota publicada (os pontos são a
+        // nota). Esperando correção, nenhum ponto vai: a parte objetiva seria a nota parcial.
+        const allItems = correcao && typeof correcao === 'object' && correcao.itens && typeof correcao.itens === 'object' && !Array.isArray(correcao.itens)
+            ? correcao.itens
+            : {};
+        const items = finishedCorrection && gradePublished ? allItems : {};
+        if (Array.isArray(safeGrade.gradedAnswers)) {
+            safeGrade.gradedAnswers = safeGrade.gradedAnswers.map(answer => {
+                if (!answer || typeof answer !== 'object') return answer;
+                const copy = { ...answer };
+                if (!gradePublished) {
+                    // Os pontos de cada questão são a nota: só com ela publicada. A
+                    // questão que o professor corrigiu (ou que espera por ele) também não
+                    // diz se ficou certa antes disso.
+                    delete copy.pointsEarned;
+                    delete copy.pending;
+                    const manual = allItems[answer.questionNumber] || allItems[String(answer.questionNumber)];
+                    if (awaiting || copy.type === 'essay' || (manual && typeof manual === 'object')) delete copy.isCorrect;
+                }
+                const item = items[answer.questionNumber] || items[String(answer.questionNumber)];
+                if (item && typeof item === 'object') {
+                    if (typeof item.comentario === 'string' && item.comentario.trim()) copy.comentario = item.comentario;
+                    if (item.rubrica && typeof item.rubrica === 'object' && !Array.isArray(item.rubrica)) copy.rubrica = { ...item.rubrica };
+                }
+                return copy;
+            });
         }
         return safeGrade;
     }

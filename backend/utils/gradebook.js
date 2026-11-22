@@ -393,6 +393,9 @@ function buildGradeGroups(submissions) {
             firstAt: times[0] || null,
             lastAt: times[times.length - 1] || null,
             pendingCount: group.attempts.filter(item => item.gradePublished !== true).length,
+            // Alguma tentativa do grupo espera a correção do professor (P3-S4a, contrato
+            // C1 do P3): a nota dela ainda não entra na conta.
+            aguardandoCorrecao: group.aguardandoCorrecao === true,
         };
     });
 }
@@ -447,6 +450,10 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
     const moduleById = new Map(modules.map(module => [module.id, module]));
     const otherModule = { id: OTHER_MODULE_ID, name: 'Outras avaliações', exams: [], scores: [] };
 
+    // Prova da estrutura sem nota porque a entrega espera a correção do professor.
+    const awaitingByExam = new Set(buildGradeGroups(submissions)
+        .filter(group => group.score === null && group.aguardandoCorrecao)
+        .map(group => group.examKey));
     const pendingFor = (examKey, scopeId = null) => (allSubmissions || []).filter(item => item.examKey === examKey
         && item.gradePublished !== true
         && (!scopeId || (item.applicationId ? `application:${item.applicationId}` : 'legacy') === scopeId)).length;
@@ -465,6 +472,7 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
             grade: roundGrade(group.score),
             policy: group.policy,
             lastAt: group.lastAt,
+            aguardandoCorrecao: group.aguardandoCorrecao === true,
         });
         target.scores.push(group.score);
     });
@@ -483,6 +491,7 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
             grade: null,
             policy: null,
             lastAt: null,
+            aguardandoCorrecao: awaitingByExam.has(examKey),
         });
     });
     modules.forEach(module => {
@@ -582,14 +591,24 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         const sample = group.attempts[0] || {};
         const row = ensureRow(group.email, studentByEmail.get(group.email) || { name: sample.student?.name || sample.studentName, email: group.email });
         row.pendingCount += group.pendingCount;
-        if (group.score === null) return;
         const id = columnIdFor(group);
         const existing = row.cells[id];
+        const awaiting = group.aguardandoCorrecao === true;
+        if (group.score === null) {
+            // Sem nota porque a entrega espera a correção: a célula diz isso (sem nota e
+            // fora da média), em vez de ficar vazia como a da prova não feita.
+            if (awaiting) {
+                row.cells[id] = existing
+                    ? { ...existing, aguardandoCorrecao: true, pending: existing.pending + group.pendingCount }
+                    : { score: null, groups: 0, pending: group.pendingCount, aguardandoCorrecao: true };
+            }
+            return;
+        }
         // Dois grupos no mesmo campo só acontecem com dados antigos inconsistentes:
         // a célula mostra a média deles e a média geral continua contando os dois.
-        row.cells[id] = existing
-            ? { score: (existing.score * existing.groups + group.score) / (existing.groups + 1), groups: existing.groups + 1, pending: existing.pending + group.pendingCount }
-            : { score: group.score, groups: 1, pending: group.pendingCount };
+        row.cells[id] = existing && existing.score !== null
+            ? { score: (existing.score * existing.groups + group.score) / (existing.groups + 1), groups: existing.groups + 1, pending: existing.pending + group.pendingCount, aguardandoCorrecao: existing.aguardandoCorrecao || awaiting }
+            : { score: group.score, groups: 1, pending: group.pendingCount + (existing ? existing.pending : 0), aguardandoCorrecao: awaiting || !!(existing && existing.aguardandoCorrecao) };
         row.scores.push(group.score);
     });
 
@@ -597,7 +616,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         const avg = average(row.scores);
         const cells = {};
         Object.entries(row.cells).forEach(([id, cell]) => {
-            cells[id] = { score: cell.score, grade: roundGrade(cell.score), pending: cell.pending };
+            cells[id] = { score: cell.score, grade: roundGrade(cell.score), pending: cell.pending, ...(cell.aguardandoCorrecao ? { aguardandoCorrecao: true } : {}) };
         });
         return {
             email: row.email,

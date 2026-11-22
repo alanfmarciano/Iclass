@@ -1011,14 +1011,16 @@ export default function MonitorPage() {
   // O erro do servidor fica no diálogo (ele continua aberto); a tentativa vencida que o
   // servidor entregou pelo fim do tempo fecha o diálogo com o aviso.
   function openStudentAction(kind, row) {
-    setActionDialog({ kind, email: row.email, name: row.name || displayEmail(row.email), value: kind === 'extra' ? '1' : '', row })
+    const initial = kind === 'extra' ? '1' : kind === 'invalidate' ? 'zero' : ''
+    setActionDialog({ kind, email: row.email, name: row.name || displayEmail(row.email), value: initial, row })
   }
 
   async function confirmStudentAction(motivo) {
     const dialog = actionDialog
     if (!dialog) return
-    const action = { collect: 'recolher', reopen: 'reabrir', extra: 'tentativa_extra' }[dialog.kind]
+    const action = { collect: 'recolher', reopen: 'reabrir', extra: 'tentativa_extra', invalidate: 'anular', undoInvalidate: 'desfazer_anulacao' }[dialog.kind]
     const body = { action, studentEmail: dialog.email, ...(motivo ? { motivo } : {}) }
+    if (dialog.kind === 'invalidate') body.decisao = dialog.value === 'desconsiderar' ? 'desconsiderar' : 'zero'
     if (dialog.kind === 'extra') {
       const extra = parseExtraAttempts(dialog.value)
       if (extra === null) return
@@ -1043,6 +1045,12 @@ export default function MonitorPage() {
     } else if (dialog.kind === 'reopen') {
       const minutes = response?.state?.remainingMinutes
       toast.success(minutes == null ? `Prova de ${who} reaberta.` : `Prova de ${who} reaberta com ${minutes} min para terminar.`)
+    } else if (dialog.kind === 'invalidate') {
+      const zero = response?.submission?.integrity === 'zero'
+      const collected = response?.submission?.recolhida ? 'A prova foi recolhida e a tentativa ' : 'A tentativa '
+      toast.success(`${collected}de ${who} foi anulada: ${zero ? 'vale nota zero' : 'não conta na nota'}.`)
+    } else if (dialog.kind === 'undoInvalidate') {
+      toast.success(`Anulação desfeita: a tentativa de ${who} volta a contar como antes.`)
     } else {
       const total = response?.maxAttempts
       toast.success(total ? `${who} pode fazer ${total} tentativas nesta aplicação.` : `Tentativa extra registrada para ${who}.`)
@@ -1051,12 +1059,20 @@ export default function MonitorPage() {
     refreshMonitor()
   }
 
+  // Anular por cola e desfazer (P3-S4a) mexem na nota: só com Resultados (page.results), e
+  // também depois de encerrar a aplicação (o caso típico é descobrir depois).
   function studentActions(row) {
-    if (applicationFinished || selectedConfig.status === 'cancelled') return []
+    if (selectedConfig.status === 'cancelled') return []
+    const invalidation = canResults ? [
+      row.canInvalidate && { id: 'invalidate', label: 'Anular tentativa', icon: Ban, onSelect: () => openStudentAction('invalidate', row) },
+      row.canUndoInvalidation && { id: 'undoInvalidate', label: 'Desfazer anulação', icon: RotateCcw, onSelect: () => openStudentAction('undoInvalidate', row) },
+    ] : []
+    if (applicationFinished) return invalidation.filter(Boolean)
     return [
       row.attemptInProgress && { id: 'collect', label: 'Recolher prova', icon: Inbox, onSelect: () => openStudentAction('collect', row) },
       row.canReopen && { id: 'reopen', label: 'Reabrir prova', icon: RotateCcw, onSelect: () => openStudentAction('reopen', row) },
       Number(row.maxAttempts) > 0 && row.activeStudent !== false && { id: 'extra', label: 'Dar tentativa extra', icon: PlusCircle, onSelect: () => openStudentAction('extra', row) },
+      ...invalidation,
     ].filter(Boolean)
   }
 
@@ -1418,6 +1434,7 @@ export default function MonitorPage() {
                         {r.status === 'discarded' && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">Tentativa em andamento desconsiderada no encerramento</p>}
                         {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
                         {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{reopenedRowLabel(r)}</p>}
+                        {INTEGRITY_ROW_LABELS[r.integrity] && <p className="mt-1"><Badge tone="danger">{INTEGRITY_ROW_LABELS[r.integrity]}</Badge></p>}
                       </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email, r.assignedVersion)}>{r.assignedVersion || 'A'}</Button></td>
                       <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
@@ -1447,7 +1464,10 @@ export default function MonitorPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {applicationFinished ? (
-                            canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
+                            <>
+                              {canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>}
+                              {studentActions(r).length > 0 && <MonitorRowMenu label={`Mais ações de ${r.name || displayEmail(r.email)}`} items={studentActions(r)} />}
+                            </>
                           ) : (
                             <>
                               {canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>}
@@ -1694,6 +1714,12 @@ function minutesText(minutes) {
   return `${minutes > 0 ? '+' : minutes < 0 ? '−' : ''}${Math.abs(minutes)} min`
 }
 
+// Entrega anulada por integridade (P3-S4a, P-B1): o que a linha do aluno mostra.
+const INTEGRITY_ROW_LABELS = {
+  zero: 'Tentativa anulada: nota zero',
+  desconsiderar: 'Tentativa anulada: não conta',
+}
+
 // Linha do aluno com a tentativa reaberta: pelo professor (Reabrir prova) ou pelo
 // "+N min" da turma.
 function reopenedRowLabel(row) {
@@ -1703,8 +1729,8 @@ function reopenedRowLabel(row) {
 
 // Os diálogos de ação do Monitor, todos no ConfirmDialog (C12): mensagem com modelos e o
 // destinatário, tempo com atalhos e motivo opcional, versão só entre as que existem,
-// liberar notas com a contagem (D20 do P3) e as ações por aluno (recolher, reabrir e
-// tentativa extra, D18).
+// liberar notas com a contagem (D20 do P3) e as ações por aluno (recolher, reabrir,
+// tentativa extra, anular e desfazer a anulação, D18).
 function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange, onClose, onSendMessage, onAdjustTime, onAssignVersion, onReleaseGrades, onStudentAction }) {
   const kind = dialog?.kind
   const who = dialog?.name || displayEmail(dialog?.email || '')
@@ -1786,6 +1812,42 @@ function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange,
         message="A entrega volta para a mesma tentativa, com as respostas dela e o tempo que faltava quando foi entregue. Não conta como tentativa nova. O motivo fica no registro da aplicação."
         requireReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX}
         reasonPlaceholder="Ex.: o computador desligou, enviou sem querer" confirmLabel="Reabrir prova" />
+    )
+  }
+  if (kind === 'invalidate') {
+    const decision = dialog.value === 'desconsiderar' ? 'desconsiderar' : 'zero'
+    const inProgress = dialog.row?.attemptInProgress === true
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onStudentAction} tone="danger"
+        title={`Anular a tentativa de ${who}?`}
+        message={`${inProgress ? 'A prova está em andamento: ela é recolhida agora, com as respostas salvas, e essa tentativa fica anulada.' : 'A última entrega desta aplicação fica anulada.'} A nota gravada não é apagada: você pode desfazer depois, e a nota volta a ser a de antes. O motivo fica na Auditoria; com a nota publicada, o aluno vê só que a tentativa foi anulada.`}
+        requireReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX}
+        reasonPlaceholder="Ex.: consultou o celular durante a prova" confirmLabel="Anular tentativa">
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium text-text">O que acontece com a nota</legend>
+          {[
+            ['zero', 'Fica zero (recomendado)', 'A tentativa conta na nota com zero.'],
+            ['desconsiderar', 'Não conta', 'Como se o aluno não tivesse feito: a nota sai das médias. Ele pode fazer de novo com uma tentativa extra ou na segunda chamada.'],
+          ].map(([value, label, help]) => (
+            <label key={value} className="flex min-h-[44px] cursor-pointer items-start gap-2 rounded-md border border-border p-2">
+              <input type="radio" name="integrity-decision" value={value} checked={decision === value} onChange={() => onChange(value)} className="mt-1" />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-text">{label}</span>
+                <span className="block text-xs text-muted">{help}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      </ConfirmDialog>
+    )
+  }
+  if (kind === 'undoInvalidate') {
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onStudentAction} tone="primary"
+        title={`Desfazer a anulação da tentativa de ${who}?`}
+        message="A tentativa anulada volta a contar com a nota que tinha. O motivo fica na Auditoria, junto do motivo da anulação."
+        requireReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX}
+        reasonPlaceholder="Ex.: anulei o aluno errado" confirmLabel="Desfazer anulação" />
     )
   }
   if (kind === 'extra') {

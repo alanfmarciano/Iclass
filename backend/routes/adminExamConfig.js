@@ -53,7 +53,7 @@ const {
 const { markGradeChangeNotice } = require('../utils/gradeChangeNotices.js');
 const { compareText } = require('../utils/textSearch.js');
 const { bankItemQuestion } = require('../utils/questionBank.js');
-const { body, bool, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
+const { body, bool, either, int, list, num, oneOf, shape, str } = require('../utils/inputSchema.js');
 const {
     AUDIENCE_INPUT_FIELDS,
     MAX_EXTRA_ATTEMPTS,
@@ -81,7 +81,8 @@ const {
     recordExamAudit: sharedRecordExamAudit,
     resolveInProgressAttempts,
 } = require('../utils/examFinish.js');
-const { buildApplicationAuditTrail, describeSubmissionGrade, examTitle, recordGradeAudit } = require('../utils/gradebook.js');
+const { buildApplicationAuditTrail, createResolvedGroupKey, describeSubmissionGrade, examTitle, formatGradeBR, recordGradeAudit } = require('../utils/gradebook.js');
+const { INTEGRITY_DECISIONS, calculateAttemptResult, integrityDecision } = require('../utils/submissionAttempts.js');
 const {
     validateAdmin,
     adminCanAccessClass,
@@ -346,12 +347,14 @@ const PREPARE_AUDIENCE_SCHEMA = body({
 const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
 
 // Ações por aluno no Monitor (fase 3, P3-S8: AVA-14; D18 do desenho do P3), numa rota só:
-// recolher a prova em andamento, reabrir a entrega e dar uma tentativa extra. Anular por
-// cola e desfazer a anulação chegam no P3-S4a (A9), junto com a regra do calculador da
-// nota (X10 do plano): até lá a rota recusa as duas com 400. O guarda do painel já pede
-// page.monitor (e page.results para qualquer outra ação, adminPermissions.js).
-const ATTEMPT_ACTIONS = Object.freeze(['recolher', 'reabrir', 'tentativa_extra']);
+// recolher a prova em andamento, reabrir a entrega, dar uma tentativa extra, anular a
+// tentativa por integridade (cola) e desfazer a anulação. Anular e desfazer chegaram no
+// P3-S4a (A9), junto com a regra do calculador da nota (X10 do plano: a entrega anulada
+// nunca conta com a nota original). O guarda do painel pede page.monitor e, para anular e
+// desfazer, também page.results (adminPermissions.js).
+const ATTEMPT_ACTIONS = Object.freeze(['recolher', 'reabrir', 'tentativa_extra', 'anular', 'desfazer_anulacao']);
 const ATTEMPT_ACTION_REASON_MAX = 500;
+const ATTEMPT_ACTION_REASON_MIN = 3;
 const ATTEMPT_ACTION_SCHEMA = body({
     action: str({ max: 40, required: true, label: 'ação' }),
     // O emailField do "Para quem" (sem espaço, vírgula, ponto e vírgula nem <>): e-mail
@@ -359,7 +362,166 @@ const ATTEMPT_ACTION_SCHEMA = body({
     studentEmail: emailField('aluno', { required: true }),
     motivo: str({ max: ATTEMPT_ACTION_REASON_MAX, nullable: true, label: 'motivo' }),
     extraAttempts: int({ min: 1, max: MAX_EXTRA_ATTEMPTS, coerce: true, nullable: true, label: 'tentativas extras' }),
+    // Anular (P-B1): 'zero' (padrão: a tentativa vale 0) ou 'desconsiderar' (não conta,
+    // como se o aluno não tivesse feito). submissionId escolhe a entrega; sem ele, vale a
+    // tentativa em andamento (recolhida antes) ou a entrega mais recente do aluno.
+    decisao: oneOf(INTEGRITY_DECISIONS, { nullable: true, label: 'decisão' }),
+    submissionId: str({ max: 200, nullable: true, label: 'entrega' }),
 });
+
+const INTEGRITY_DECISION_LABELS = Object.freeze({ zero: 'nota zero', desconsiderar: 'não conta (como se não tivesse feito)' });
+
+// Entregas do aluno nesta aplicação, da mais recente para a mais antiga.
+function applicationSubmissionsOf(application, email) {
+    return (db.memory.submissions || [])
+        .filter(item => item && String(item.applicationId || '') === String(application.id)
+            && normalizeEmail(item.student?.email || item.studentEmail) === email)
+        .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
+}
+
+// Nota consolidada do grupo da entrega (aluno + curso + turma + aplicação), a mesma de
+// Resultados (submissionAttempts.calculateAttemptResult).
+function consolidatedResultFor(submission) {
+    const groups = createResolvedGroupKey({ students: db.memory.students || [], classes: db.memory.classes || [] });
+    const key = groups.key(submission);
+    const group = (db.memory.submissions || []).filter(item => item && groups.key(item) === key).map(groups.resolved);
+    return calculateAttemptResult(group);
+}
+
+function consolidatedLabel(result) {
+    if (!result) return 'sem nota';
+    if (result.score === null) return result.aguardandoCorrecao ? 'aguardando correção' : 'sem nota';
+    return `${formatGradeBR(result.score)}${result.aguardandoCorrecao ? ' (outra tentativa aguardando correção)' : ''}`;
+}
+
+// Anular a tentativa por integridade e desfazer a anulação (attempt-action, P3-S4a; D18 e
+// P-B1 do P3). submission.integrity = { decisao, motivo, por, em } (em em ms); desfazer
+// grava desfeitaEm, desfeitaPor e motivoDesfeita e a entrega volta a contar como era.
+// A nota gravada (score) nunca muda: quem aplica a decisão é calculateAttemptResult
+// ('zero' entra com 0, 'desconsiderar' fica fora). Anular a prova que o aluno está fazendo
+// recolhe a tentativa antes (com as respostas salvas, como o "Recolher prova").
+// Auditoria grade_invalidated / grade_invalidation_undone (nota consolidada antes e
+// depois, motivo) e attempt_invalidated no registro do monitoramento, na mesma gravação.
+async function invalidationAction({ req, res, action, application, cls, email, student, motivo, actor, now, matchedAdmin, applicationForAccount }) {
+    const requestedId = String(req.body.submissionId || '').trim();
+    const own = applicationSubmissionsOf(application, email);
+    let collected = null;
+    let target = null;
+    if (requestedId) {
+        target = own.find(item => String(item.id) === requestedId) || null;
+        if (!target) return attemptActionRefusal(res, 404, 'submission_not_found', 'Entrega não encontrada para este aluno nesta aplicação.');
+    } else if (action === 'desfazer_anulacao') {
+        target = own.find(item => integrityDecision(item) !== null) || null;
+        if (!target) return attemptActionRefusal(res, 409, 'not_invalidated', 'Este aluno não tem tentativa anulada nesta aplicação.');
+    } else {
+        // A prova em andamento é recolhida antes (a tentativa vencida é entregue pelo fim
+        // do tempo, como sempre): é ela que fica anulada.
+        let settledChanged = false;
+        if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+            settledChanged = !!settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: email, graceMs: 0 }).changed;
+            const open = findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email });
+            if (open && Number(open.state.startedAt) > 0) {
+                const { deadlineAt } = attemptOverdueMs(open.state, application, now);
+                collected = finalizeAttemptState(db.memory, {
+                    key: open.key,
+                    state: open.state,
+                    application,
+                    now,
+                    deadlineAt,
+                    source: INSTRUCTOR_COLLECT_SOURCE,
+                });
+                if (collected) {
+                    collected.collectedBy = actor;
+                    collected.collectedAt = new Date(now).toISOString();
+                    recordExamAudit('exam_attempt_collected', application, actor, {
+                        attemptId: collected.attemptId || null,
+                        attemptNumber: collected.attemptNumber || null,
+                        submissionId: collected.id,
+                        answeredCount: collected.answeredCount,
+                        motivo: 'Recolhida para anular a tentativa',
+                    }, { studentEmail: email });
+                    pushAttemptLog(application, email, collected.attemptId, 'attempt_collected', 'Prova recolhida pelo professor com as respostas salvas');
+                }
+            }
+        }
+        target = collected || applicationSubmissionsOf(application, email)[0] || null;
+        if (!target) {
+            if (settledChanged) await db.save();
+            return attemptActionRefusal(res, 409, 'no_submission', 'Este aluno ainda não entregou esta prova: não há tentativa para anular.');
+        }
+    }
+
+    const title = examTitle(target.examKey, { evaluations: db.memory.evaluations || {} });
+    const before = consolidatedResultFor(target);
+    const current = integrityDecision(target);
+    const attemptLabel = `tentativa ${target.attemptNumber || 1}`;
+    if (action === 'anular') {
+        if (current) {
+            if (collected) await db.save();
+            return attemptActionRefusal(res, 409, 'already_invalidated', `Esta tentativa já está anulada (${INTEGRITY_DECISION_LABELS[current]}). Para mudar a decisão, desfaça a anulação antes.`);
+        }
+        const decisao = INTEGRITY_DECISIONS.includes(req.body.decisao) ? req.body.decisao : 'zero';
+        const previous = target.integrity && typeof target.integrity === 'object' && !Array.isArray(target.integrity) ? target.integrity : null;
+        target.integrity = {
+            decisao,
+            motivo: motivo.slice(0, ATTEMPT_ACTION_REASON_MAX),
+            por: actor,
+            em: now,
+            // Anulação desfeita antes: fica a anterior, para o histórico da entrega.
+            ...(previous ? { anteriores: [...(Array.isArray(previous.anteriores) ? previous.anteriores : []), { ...previous, anteriores: undefined }].slice(-5) } : {}),
+        };
+    } else {
+        if (!current) return attemptActionRefusal(res, 409, 'not_invalidated', 'Esta tentativa não está anulada.');
+        target.integrity = {
+            ...target.integrity,
+            desfeitaEm: now,
+            desfeitaPor: actor,
+            motivoDesfeita: motivo.slice(0, ATTEMPT_ACTION_REASON_MAX),
+        };
+    }
+    const after = consolidatedResultFor(target);
+    const decisionLabel = INTEGRITY_DECISION_LABELS[action === 'anular' ? target.integrity.decisao : current];
+    recordGradeAudit(db.memory, {
+        req,
+        actor: matchedAdmin,
+        submission: target,
+        action: action === 'anular' ? 'grade_invalidated' : 'grade_invalidation_undone',
+        field: 'Integridade da prova',
+        oldValue: `${title}: ${consolidatedLabel(before)}`,
+        newValue: action === 'anular'
+            ? `${consolidatedLabel(after)} · ${attemptLabel} anulada (${decisionLabel})`
+            : `${consolidatedLabel(after)} · anulação da ${attemptLabel} desfeita (era ${decisionLabel})`,
+        reason: motivo,
+        details: {
+            decisao: action === 'anular' ? target.integrity.decisao : current,
+            attemptNumber: target.attemptNumber || 1,
+            scoreAntes: before.score,
+            scoreDepois: after.score,
+            ...(collected ? { recolhida: true } : {}),
+        },
+    });
+    pushAttemptLog(application, email, target.attemptId, action === 'anular' ? 'attempt_invalidated' : 'attempt_invalidation_undone',
+        action === 'anular' ? `Tentativa anulada pelo professor (${decisionLabel})` : 'Anulação da tentativa desfeita pelo professor');
+    application.updatedAt = new Date(now).toISOString();
+    application.updatedBy = actor;
+    // A entrega já existia (coleção que só cresce, linha antiga alterada): gravação completa.
+    await db.save();
+    return res.json({
+        success: true,
+        action,
+        application: applicationForAccount(application),
+        submission: {
+            id: target.id,
+            attemptId: target.attemptId || null,
+            attemptNumber: target.attemptNumber || 1,
+            integrity: integrityDecision(target),
+            recolhida: !!collected,
+        },
+        consolidated: { before: before.score, after: after.score, aguardandoCorrecao: after.aguardandoCorrecao === true },
+        studentName: displayName(student) || email,
+        studentClass: cls.name,
+    });
+}
 
 // Registro do monitoramento da prova (evidência, com a retenção dela; aparece no Monitor
 // e na digitação ao vivo): attempt_collected e attempt_reopened. O texto não leva o motivo
@@ -1120,7 +1282,7 @@ function createAdminExamConfigRouter() {
             const applicationForAccount = application => (withAnswerKeys ? withoutSealedToken(application) : applicationSummary(application));
             const action = String(req.body.action || '').trim().toLowerCase();
             if (!ATTEMPT_ACTIONS.includes(action)) {
-                return res.status(400).json({ success: false, error: 'Ação inválida. Use recolher, reabrir ou tentativa_extra.', field: 'action' });
+                return res.status(400).json({ success: false, error: 'Ação inválida. Use recolher, reabrir, tentativa_extra, anular ou desfazer_anulacao.', field: 'action' });
             }
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
@@ -1137,6 +1299,16 @@ function createAdminExamConfigRouter() {
             const motivo = String(req.body.motivo || '').trim();
             if (action === 'reabrir' && !motivo) {
                 return res.status(400).json({ success: false, error: 'Informe o motivo para reabrir a prova do aluno.', field: 'motivo' });
+            }
+            // Anular e desfazer mexem na nota: o motivo vai para a Auditoria (o aluno não o vê).
+            if ((action === 'anular' || action === 'desfazer_anulacao') && motivo.length < ATTEMPT_ACTION_REASON_MIN) {
+                return res.status(400).json({
+                    success: false,
+                    error: action === 'anular'
+                        ? 'Informe o motivo da anulação (pelo menos 3 letras). Ele fica na Auditoria.'
+                        : 'Informe o motivo para desfazer a anulação (pelo menos 3 letras). Ele fica na Auditoria.',
+                    field: 'motivo',
+                });
             }
             if (!assertClassOpen(cls, { res })) return;
             const actor = adminActor(req);
@@ -1232,6 +1404,10 @@ function createAdminExamConfigRouter() {
                         addedMinutes: reopened.addedMinutes,
                     },
                 });
+            }
+
+            if (action === 'anular' || action === 'desfazer_anulacao') {
+                return invalidationAction({ req, res, action, application, cls, email, student, motivo, actor, now, matchedAdmin, applicationForAccount });
             }
 
             // tentativa_extra

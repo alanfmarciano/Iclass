@@ -303,6 +303,50 @@ describe('[UC-PROVA-005] ProvasPage do professor · gabarito corrigido depois da
     expect(mocks.toast.success).toHaveBeenCalledWith('Gabarito corrigido. 1 nota mudou e 1 aluno foi avisado.')
   })
 
+  // A9 (pendência do A8): a preparação excluída de "Aplicações anteriores" deixava a
+  // aplicação encerrada sem caminho para corrigir o gabarito.
+  it('preparação excluída: a aplicação encerrada aparece em "sem preparação salva" com "Corrigir gabarito"', async () => {
+    const prepared = { id: 'app_2', historyId: 'hist_apagado', status: 'prepared', createdAt: '2026-11-21T10:00:00.000Z', versionSnapshots: [] }
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/courses/C1/structure')) return { structure: [{ id: 'm1', name: 'Módulo 1', units: [{ avaliacaoKey: 'Avaliacao_1', name: 'Avaliação 1' }] }] }
+      if (url === '/api/admin/evaluation/Avaliacao_1') return { evaluation: typedEvaluation }
+      if (url.startsWith('/api/status')) return {}
+      if (url.startsWith('/api/admin/exam-history')) return { history: [] }
+      if (url.startsWith('/api/admin/exam-applications')) return { applications: [finishedApplication('C'), prepared] }
+      return {}
+    })
+    mocks.post.mockImplementation(async (url, body) => {
+      if (!url.endsWith('/answer-key-correction')) return { success: true }
+      if (body.dryRun) return { success: true, dryRun: true, changed: 1, published: 0, question: { number: 1, antes: 'C', depois: 'B' }, students: [], preparacao: { atualizada: false, preparadas: 0, outrasAplicacoes: 0 } }
+      return { success: true, changed: 1, notifiedStudents: 0, preparacao: { atualizada: false, preparadas: 0, outrasAplicacoes: 0 } }
+    })
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: /Avaliação 1/ }))
+    await screen.findByRole('heading', { name: 'Prova de redes' })
+    expect(await screen.findByText('Nenhuma aplicação registrada para esta turma.')).toBeInTheDocument()
+    expect(await screen.findByText('Aplicações online sem preparação salva')).toBeInTheDocument()
+    expect(screen.getByText(/Encerrada em/)).toBeInTheDocument()
+    expect(screen.queryByText(/Preparada em/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Corrigir gabarito' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Corrigir gabarito' }))
+    const dialog = screen.getByRole('dialog', { name: 'Corrigir gabarito' })
+    fireEvent.click(within(dialog).getByText('Alternativa B'))
+    fireEvent.change(within(dialog).getByLabelText(/^Motivo/), { target: { value: 'A certa era a B.' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Ver impacto' })) })
+    await within(dialog).findByRole('status')
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Corrigir gabarito' })) })
+    await waitFor(() => expect(posts('/api/admin/exam-applications/app_1/answer-key-correction').filter(([, body]) => !body.dryRun)).toHaveLength(1))
+    expect(mocks.toast.success).toHaveBeenCalledWith('Gabarito corrigido. 1 nota mudou.')
+    cleanup()
+
+    // A Coordenação vê a lista, sem o botão.
+    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true }
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: /Avaliação 1/ }))
+    expect(await screen.findByText('Aplicações online sem preparação salva')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Corrigir gabarito' })).not.toBeInTheDocument()
+  })
+
   it('a Coordenação (só de consulta) vê as correções, mas não o botão "Corrigir gabarito"', async () => {
     mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true }
     await openPreparation({ letter: 'C' })

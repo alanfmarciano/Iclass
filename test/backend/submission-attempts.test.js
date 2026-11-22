@@ -129,6 +129,94 @@ const CASOS = [
         tentativas: [[null, 0, { aggregationPolicy: 'latest' }], ['', 10]],
         esperado: { policy: 'latest', score: null, compoe: [] },
     },
+    // Anulação por integridade e correção pendente (P3-S4a, contrato C1 do P3): a nota
+    // gravada não muda; 'zero' entra como 0, 'desconsiderar' e a correção pendente ficam
+    // fora, e a pendente marca o grupo (aguardandoCorrecao).
+    {
+        nome: 'anulada com zero entra como 0 (maior nota fica com a outra)',
+        tentativas: [[90, 0, { integrity: { decisao: 'zero', motivo: 'cola' } }], [50, 10]],
+        esperado: { policy: 'highest', score: 50, compoe: [1] },
+    },
+    {
+        nome: 'anulada com zero na média conta 0',
+        tentativas: [[90, 0, { aggregationPolicy: 'average', integrity: { decisao: 'zero' } }], [60, 10]],
+        esperado: { policy: 'average', score: 30, compoe: [0, 1] },
+    },
+    {
+        nome: 'anulada com zero e única: a nota é 0',
+        tentativas: [[90, 0, { integrity: { decisao: 'zero' } }]],
+        esperado: { policy: 'highest', score: 0, compoe: [0] },
+    },
+    {
+        nome: 'anulada "não conta" fica fora da média',
+        tentativas: [[90, 0, { aggregationPolicy: 'average', integrity: { decisao: 'desconsiderar' } }], [60, 10]],
+        esperado: { policy: 'average', score: 60, compoe: [1] },
+    },
+    {
+        nome: 'anulada "não conta" e única: sem nota',
+        tentativas: [[90, 0, { integrity: { decisao: 'desconsiderar' } }]],
+        esperado: { policy: 'highest', score: null, compoe: [] },
+    },
+    {
+        nome: 'escolhida e anulada "não conta": cai na mais recente que conta',
+        tentativas: [[90, 0, { aggregationPolicy: 'selected', selectedForResult: true, integrity: { decisao: 'desconsiderar' } }], [50, 10], [70, 20]],
+        esperado: { policy: 'selected', score: 70, compoe: [2] },
+    },
+    {
+        nome: 'anulação desfeita volta a contar como era',
+        tentativas: [[90, 0, { integrity: { decisao: 'zero', desfeitaEm: T0 + 1 } }], [50, 10]],
+        esperado: { policy: 'highest', score: 90, compoe: [0] },
+    },
+    {
+        nome: 'decisão desconhecida é ignorada',
+        tentativas: [[90, 0, { integrity: { decisao: 'apagar' } }]],
+        esperado: { policy: 'highest', score: 90, compoe: [0] },
+    },
+    {
+        nome: 'aguardando correção fica fora e marca o grupo',
+        tentativas: [[90, 0, { correcao: { situacao: 'pendente', versao: 1, itens: {} } }], [50, 10]],
+        esperado: { policy: 'highest', score: 50, compoe: [1], aguardando: true },
+    },
+    {
+        nome: 'só tentativa aguardando correção: sem nota parcial',
+        tentativas: [[45, 0, { correcao: { situacao: 'pendente', versao: 1, itens: {} } }]],
+        esperado: { policy: 'highest', score: null, compoe: [], aguardando: true },
+    },
+    {
+        nome: 'mais recente aguardando correção: vale a mais recente que conta',
+        tentativas: [[70, 0, { aggregationPolicy: 'latest' }], [90, 10, { correcao: { situacao: 'pendente', versao: 1, itens: {} } }]],
+        esperado: { policy: 'latest', score: 70, compoe: [0], aguardando: true },
+    },
+    {
+        nome: 'correção concluída conta',
+        tentativas: [[90, 0, { correcao: { situacao: 'concluida', versao: 3, itens: {} }, gradedAnswers: [{ questionNumber: 1, pending: true }] }], [50, 10]],
+        esperado: { policy: 'highest', score: 90, compoe: [0] },
+    },
+    {
+        nome: 'entrega antiga sem correcao com questão pendente também espera',
+        tentativas: [[90, 0, { gradedAnswers: [{ questionNumber: 1, pending: true }, { questionNumber: 2, pending: false }] }], [50, 10]],
+        esperado: { policy: 'highest', score: 50, compoe: [1], aguardando: true },
+    },
+    {
+        nome: 'questão pendente anulada não espera',
+        tentativas: [[90, 0, { gradedAnswers: [{ questionNumber: 1, pending: true, annulled: true }] }]],
+        esperado: { policy: 'highest', score: 90, compoe: [0] },
+    },
+    {
+        nome: 'pendente e anulada com zero: vale 0 e não espera',
+        tentativas: [[90, 0, { correcao: { situacao: 'pendente', versao: 1, itens: {} }, integrity: { decisao: 'zero' } }]],
+        esperado: { policy: 'highest', score: 0, compoe: [0] },
+    },
+    {
+        nome: 'pendente e anulada "não conta": fora e não espera',
+        tentativas: [[90, 0, { correcao: { situacao: 'pendente', versao: 1, itens: {} }, integrity: { decisao: 'desconsiderar' } }], [40, 10]],
+        esperado: { policy: 'highest', score: 40, compoe: [1] },
+    },
+    {
+        nome: 'pendente arquivada não marca o grupo',
+        tentativas: [[90, 0, { correcao: { situacao: 'pendente', versao: 1, itens: {} }, resultStatus: 'archived' }], [50, 10]],
+        esperado: { policy: 'highest', score: 50, compoe: [1] },
+    },
 ];
 
 for (const caso of CASOS) {
@@ -138,6 +226,7 @@ for (const caso of CASOS) {
         assert.equal(resultado.policy, caso.esperado.policy);
         assert.equal(resultado.score, caso.esperado.score);
         assert.deepEqual(resultado.contributingIds, caso.esperado.compoe.map(index => tentativas[index].id));
+        assert.equal(resultado.aguardandoCorrecao, caso.esperado.aguardando === true, 'aguardandoCorrecao');
         if (caso.esperado.policy === 'average' || caso.esperado.score === null) {
             assert.equal(resultado.selectedSubmissionId, null);
         } else {

@@ -502,7 +502,9 @@ test('[UC-BANCO-001] prova impressa: as respostas do cartão-resposta contam no 
     assert.equal(ana.status, 200, JSON.stringify(ana.body));
     const stored = db.memory.submissions.find(item => item.student?.email === student.email);
     assert.equal(stored.applicationId, undefined);
-    assert.equal(stored.examSnapshot, undefined);
+    // Desde o P3-S4a o cartão guarda as questões corrigidas (para a correção do professor);
+    // a chave e o uso continuam vindo da versão impressa registrada.
+    assert.deepEqual(stored.examSnapshot.questions.map(question => question.originalNumber).sort(), [1, 2, 3]);
     assert.deepEqual(await statsOf(fromBank.key), { usos: 1, respostas: 1, pendentes: 0, acertoPct: 100 });
     assert.deepEqual(await statsOf(trueFalse.key), { usos: 1, respostas: 1, pendentes: 0, acertoPct: 0 });
     // Cartão do Bruno: erra a 1, acerta a 3.

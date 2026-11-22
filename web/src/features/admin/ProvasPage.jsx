@@ -22,7 +22,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { rememberApplicationToken } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
-import { ExamApplicationDetail } from './ExamApplicationDetail'
+import { ExamApplicationDetail, ExamApplicationsCard } from './ExamApplicationDetail'
 import { DEFAULT_KEYSTROKE_MODE } from '../../lib/keystrokeModes'
 import {
   ApplicationAudienceFields,
@@ -769,6 +769,26 @@ export default function ProvasPage() {
   const selectedCount = previewQuestions.length
   const totalQuestions = normalizedEval?.questions?.length || 0
   const usedCount = Object.keys(usage).length
+  // Aplicações online cuja preparação saiu de "Aplicações anteriores" (lixeira) ou que
+  // nunca tiveram uma (aplicação antiga): a lista da preparação filtra por historyId, e
+  // sem este quadro a aplicação já feita ficava sem caminho para "Corrigir gabarito" (A9,
+  // pendência do A8). Só as que começaram: a preparada sem preparação sai pelo editor.
+  const historyIds = new Set(history.map((entry) => entry.id))
+  const applicationsWithoutPreparation = applications.filter((application) => application
+    && !['draft', 'prepared', 'cancelled'].includes(application.status)
+    && !(application.historyId && historyIds.has(application.historyId)))
+
+  function answerKeyCorrected(response) {
+    if (response?.unchanged) {
+      toast.success(response.message || 'A preparação passou a usar este gabarito.')
+      loadExamState().catch((error) => toast.error(error.message))
+      return
+    }
+    const changed = Number(response?.changed) || 0
+    const notified = Number(response?.notifiedStudents) || 0
+    toast.success(`Gabarito corrigido. ${changed === 1 ? '1 nota mudou' : `${changed} notas mudaram`}${notified ? ` e ${notified === 1 ? '1 aluno foi avisado' : `${notified} alunos foram avisados`}` : ''}.`)
+    loadExamState().catch((error) => toast.error(error.message))
+  }
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -783,17 +803,7 @@ export default function ProvasPage() {
           onApplyOnline={() => openHistoryApplication(viewApplication)}
           applications={applications.filter((application) => application.historyId && application.historyId === viewApplication.id)}
           canCorrectAnswerKey={canCorrectAnswerKey}
-          onAnswerKeyCorrected={(response) => {
-            if (response?.unchanged) {
-              toast.success(response.message || 'A preparação passou a usar este gabarito.')
-              loadExamState().catch((error) => toast.error(error.message))
-              return
-            }
-            const changed = Number(response?.changed) || 0
-            const notified = Number(response?.notifiedStudents) || 0
-            toast.success(`Gabarito corrigido. ${changed === 1 ? '1 nota mudou' : `${changed} notas mudaram`}${notified ? ` e ${notified === 1 ? '1 aluno foi avisado' : `${notified} alunos foram avisados`}` : ''}.`)
-            loadExamState().catch((error) => toast.error(error.message))
-          }}
+          onAnswerKeyCorrected={answerKeyCorrected}
         />
       ) : (
       <>
@@ -1183,6 +1193,17 @@ export default function ProvasPage() {
                     {history.length === 0 && <p className="text-sm text-muted">Nenhuma aplicação registrada para esta turma.</p>}
                   </CardBody>
                 </Card>
+                <ExamApplicationsCard
+                  applications={applicationsWithoutPreparation}
+                  title="Aplicações online sem preparação salva"
+                  subtitle="A preparação destas aplicações foi excluída de Aplicações anteriores (ou elas são de antes do histórico). O gabarito ainda se corrige aqui: as notas são recalculadas e quem já tinha a nota publicada é avisado."
+                  canCorrectAnswerKey={canCorrectAnswerKey}
+                  onAnswerKeyCorrected={answerKeyCorrected}
+                  describeApplication={(application) => {
+                    const count = Array.isArray(application.versionSnapshots?.[0]?.questions) ? application.versionSnapshots[0].questions.length : 0
+                    return count ? `${count} ${count === 1 ? 'questão' : 'questões'}` : ''
+                  }}
+                />
               </>
             ) : examKey ? (
               <p className="text-sm text-muted pt-2">Carregando avaliação...</p>

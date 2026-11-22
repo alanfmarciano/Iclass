@@ -169,3 +169,28 @@ describe('Provas do aluno · impressão sem script (CSP)', () => {
   })
 })
 
+
+// P3-S4a (P-B6 e P-B1): a entrega que aguarda a correção não mostra nota parcial; a
+// anulada diz o que aconteceu; a dissertativa corrigida mostra os pontos, não "Errada".
+describe('[UC-CORRECAO-001] Provas do aluno · correção do professor e tentativa anulada', () => {
+  it('aguardando correção e anulada aparecem com o nome, sem nota parcial', async () => {
+    mocks.submissions = [
+      { ...sub('a1', { score: null, published: false }), aguardandoCorrecao: true },
+      { ...sub('b1', { examKey: 'Avaliacao_FUTEC_2', score: 0 }), anulada: 'zero' },
+    ]
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    expect(await screen.findByText('Aguardando correção')).toBeInTheDocument()
+    expect(screen.getByText('Tentativa anulada: nota zero')).toBeInTheDocument()
+    expect(screen.queryByText('Em revisão')).not.toBeInTheDocument()
+  })
+
+  it('o PDF da revisão mostra os pontos da dissertativa corrigida e "Aguardando correção" na pendente', () => {
+    const questions = [{ number: 1, text: 'Uma', alternatives: [{ letter: 'A', text: 'Sim' }] }, { number: 2, text: 'Explique', alternatives: [] }]
+    const corrected = new Map([[1, { questionNumber: 1, studentChoice: 'A', correctAnswer: 'A', isCorrect: true }], [2, { questionNumber: 2, pointsEarned: 1.5, pointsPossible: 2 }]])
+    const html = buildExamPrintHtml({ gradePublished: true, score: 75, examTitle: 'Prova' }, questions, corrected)
+    expect(html).toContain('1,5 de 2 pontos')
+    expect(html).not.toMatch(/Questão 2<\/b><span class="err">Errada/)
+    const pending = new Map([[2, { questionNumber: 2 }]])
+    expect(buildExamPrintHtml({ aguardandoCorrecao: true, examTitle: 'Prova' }, questions, pending)).toContain('Aguardando correção')
+  })
+})

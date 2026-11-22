@@ -570,6 +570,56 @@ describe('[UC-TENTATIVA-004] MonitorPage · ações por aluno e diálogos própr
     expect(screen.queryByRole('button', { name: 'Mais ações de Elisa' })).toBeNull()
   })
 
+  // P3-S4a (A9): anular por cola e desfazer, com motivo obrigatório e a escolha da nota.
+  it('Anular tentativa: motivo obrigatório, "Não conta" vai como desconsiderar e o aviso diz o que aconteceu', async () => {
+    row = { ...base, attemptInProgress: true, canInvalidate: true }
+    mocks.post.mockResolvedValue({ success: true, submission: { integrity: 'desconsiderar', recolhida: true } })
+    renderMonitor()
+    await openMenuItem('Anular tentativa')
+    const dialog = screen.getByRole('dialog', { name: 'Anular a tentativa de Elisa?' })
+    expect(dialog).toHaveTextContent('ela é recolhida agora')
+    expect(within(dialog).getByRole('radio', { name: /Fica zero \(recomendado\)/ })).toBeChecked()
+    const confirm = within(dialog).getByRole('button', { name: 'Anular tentativa' })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Não conta/ }))
+    fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: 'Consultou o celular' } })
+    await act(async () => { fireEvent.click(confirm) })
+    await waitFor(() => expect(posts(actionUrl)).toHaveLength(1))
+    expect(posts(actionUrl)[0][1]).toEqual({ action: 'anular', studentEmail: 'elisa@x.local', motivo: 'Consultou o celular', decisao: 'desconsiderar' })
+    expect(mocks.toast.success).toHaveBeenCalledWith('A prova foi recolhida e a tentativa de Elisa foi anulada: não conta na nota.')
+  })
+
+  it('aplicação encerrada: só anular e desfazer, a linha mostra a anulação e desfazer pede o motivo', async () => {
+    row = { ...base, status: 'finished', attemptInProgress: false, canInvalidate: false, canUndoInvalidation: true, integrity: 'zero' }
+    list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, status: 'finished' } : item))
+    mocks.liveApplications = list
+    renderMonitor()
+    expect(await screen.findByText('Tentativa anulada: nota zero')).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: 'Mais ações de Elisa' }))
+    expect(screen.queryByRole('menuitem', { name: 'Dar tentativa extra' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Anular tentativa' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Desfazer anulação' }))
+    const dialog = screen.getByRole('dialog', { name: 'Desfazer a anulação da tentativa de Elisa?' })
+    const confirm = within(dialog).getByRole('button', { name: 'Desfazer anulação' })
+    expect(confirm).toBeDisabled()
+    fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: 'Anulei o aluno errado' } })
+    await act(async () => { fireEvent.click(confirm) })
+    await waitFor(() => expect(posts(actionUrl)).toHaveLength(1))
+    expect(posts(actionUrl)[0][1]).toEqual({ action: 'desfazer_anulacao', studentEmail: 'elisa@x.local', motivo: 'Anulei o aluno errado' })
+    expect(mocks.toast.success).toHaveBeenCalledWith('Anulação desfeita: a tentativa de Elisa volta a contar como antes.')
+  })
+
+  it('o professor auxiliar (sem Resultados) não recebe anular nem desfazer', async () => {
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
+    row = { ...base, attemptInProgress: true, canInvalidate: true, canUndoInvalidation: true }
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Mais ações de Elisa' }))
+    expect(screen.getByRole('menuitem', { name: 'Recolher prova' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: 'Anular tentativa' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Desfazer anulação' })).toBeNull()
+    mocks.auth = {}
+  })
+
   it('Mensagem: modelos prontos, várias linhas e o destinatário', async () => {
     renderMonitor()
     fireEvent.click(await screen.findByRole('button', { name: 'Msg' }))
