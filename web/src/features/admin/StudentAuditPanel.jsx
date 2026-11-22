@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { Select } from '../../components/ui/Select'
+import { displayEmail } from '../../lib/studentProfile'
 
 function fmtDateTime(t) { return t ? new Date(t).toLocaleString('pt-BR') : '—' }
 
@@ -58,7 +59,8 @@ export function StudentAuditPanel({ rows }) {
                 </div>
                 {a.action !== 'create' && (oldValue || newValue) && <p className="text-xs text-muted mt-1 break-words"><span className="line-through text-subtle">{oldValue || '(vazio)'}</span> {'→'} <span className="text-text">{newValue || '(vazio)'}</span></p>}
                 {a.reason && <p className="text-xs text-text mt-1 break-words"><span className="text-subtle">Motivo: </span>{a.reason}</p>}
-                <p className="text-xs text-subtle mt-1">por {a.actor}{a.ip ? ` · ${a.ip}` : ''}</p>
+                {/* O aluno sem e-mail como autor (envio de tarefa) aparece como 'sem e-mail' (C1). */}
+                <p className="text-xs text-subtle mt-1">por {displayEmail(a.actor)}{a.ip ? ` · ${a.ip}` : ''}</p>
               </div>
             )
           })}

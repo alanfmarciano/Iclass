@@ -27,4 +27,11 @@ describe('Auditoria da ficha do aluno', () => {
     expect(screen.queryByText('Presença em 04/03/2026 · Presença marcada manualmente')).not.toBeInTheDocument()
     expect(screen.getByText('Presença em 03/03/2026 · Presença alterada')).toBeInTheDocument()
   })
+
+  it('[UC-IDENT-003] aluno sem e-mail como autor aparece como "sem e-mail", nunca o endereço interno', () => {
+    const rows = [{ id: 'e1', action: 'assignment_submitted', category: 'assignment', label: 'Tarefa enviada', actor: 'aluno-alu_f79cb65c606b1838@sem-email.invalid', timestamp: 1_800_000_000_000 }]
+    const { container } = render(<StudentAuditPanel rows={rows} />)
+    expect(screen.getByText('por sem e-mail')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('sem-email.invalid')
+  })
 })

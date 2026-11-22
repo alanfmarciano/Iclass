@@ -1988,7 +1988,10 @@ router.post('/api/admin/student/bulk-status', (req, res) => {
 // (label): as antigas que guardavam o aluno só em details também aparecem, a hora em
 // texto ordena certo, e a que não é campo do cadastro, como o "Redefinir senha" (H5a),
 // aparece na ficha pelo rótulo. Como lá, os valores passam de novo pela limpeza de
-// segredos (entrada antiga vinda de backup).
+// segredos (entrada antiga vinda de backup). O endereço interno do aluno sem e-mail
+// (aluno-<id>@sem-email.invalid) sai como 'sem e-mail' em tudo, como em /api/admin/audit
+// (C1 / P4-S3): o próprio aluno aparece como autor do envio de tarefa, por exemplo. O
+// filtro continua pelo e-mail guardado, que a tela manda na consulta.
 router.get('/api/admin/student/audit', (req, res) => {
     validateAdminPermission(req, res, 'audit.view', () => {
         const email = (req.query.email || '').trim().toLowerCase();
@@ -1997,7 +2000,8 @@ router.get('/api/admin/student/audit', (req, res) => {
             .map(normalizeAuditEntry)
             .filter(entry => entry && entry.studentEmail === email)
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-            .map(auditEntryWithoutSecrets);
+            .map(auditEntryWithoutSecrets)
+            .map(entry => studentIdentity.maskPlaceholderEmailsDeep(entry));
         res.json(logs);
     });
 });
@@ -2010,7 +2014,10 @@ router.get('/api/admin/student/login-logs', (req, res) => {
         const logs = (db.memory.loginLogs || [])
             .filter(l => l.email === email)
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-            .slice(0, 100);
+            .slice(0, 100)
+            // Mesma máscara do endereço interno (C1): a tela não mostra o e-mail do registro,
+            // mas a resposta também não o leva.
+            .map(entry => studentIdentity.maskPlaceholderEmailsDeep(entry));
         res.json(logs);
     });
 });

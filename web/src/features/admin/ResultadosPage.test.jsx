@@ -159,6 +159,29 @@ describe('Resultados · lançamento manual de nota', () => {
   })
 })
 
+describe('Resultados · aluno sem e-mail', () => {
+  it('[UC-IDENT-003] a lista de alunos e o lançamento de nota mostram "sem e-mail", nunca o endereço interno', async () => {
+    const internal = 'aluno-alu_00000000000000c1@sem-email.invalid'
+    const { students, submissions } = mocks.stable
+    mocks.stable.students = [...students, { id: 'alu_00000000000000c1', name: 'Caio', email: internal, semEmail: true, classes: [{ name: '1DES', courseId: 'DES' }] }]
+    mocks.stable.submissions = [...submissions, { id: 'caio1', student: { name: 'Caio', email: internal, courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'Avaliacao_P2', score: 70, consolidatedScore: 70, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' }]
+    try {
+      const user = userEvent.setup()
+      const { container } = renderPage()
+      await waitFor(() => expect(screen.getAllByText('Caio').length).toBeGreaterThan(0))
+      expect(screen.getAllByText('sem e-mail').length).toBeGreaterThan(0)
+      expect(container.textContent).not.toContain('sem-email.invalid')
+      await user.click(screen.getByRole('button', { name: 'Lançar nota' }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByRole('option', { name: 'Caio - sem e-mail' })).toBeInTheDocument()
+      expect(document.body.textContent).not.toContain('sem-email.invalid')
+    } finally {
+      mocks.stable.students = students
+      mocks.stable.submissions = submissions
+    }
+  })
+})
+
 describe('Resultados · exportação', () => {
   it('[UC-NOTAS-002] exporta a planilha da turma com download autenticado (não window.open)', async () => {
     const user = userEvent.setup()

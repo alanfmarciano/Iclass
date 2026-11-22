@@ -588,6 +588,29 @@ test.describe('rotas', () => {
         assert.ok(!JSON.stringify(filtered.body).includes('sem-email.invalid'));
     });
 
+    test('[UC-IDENT-003] aluno sem e-mail: a aba Auditoria da ficha (GET /api/admin/student/audit) e os acessos (login-logs) não levam o endereço interno', async () => {
+        const token = await adminToken();
+        const created = await request(app).post('/api/admin/student/create').set('x-admin-session', token)
+            .send({ name: 'Ivo Sem Email', classes: [{ name: '1DES', courseId: 'DES' }], semEmail: true, matricula: '8181', studentPassword: 'Quadro-Verde-2025' }).expect(200);
+        const internal = `aluno-${created.body.id}@sem-email.invalid`;
+        // O próprio aluno como autor (envio de tarefa pelo portal, C5), com o endereço também
+        // no texto livre dos detalhes.
+        db.memory.auditLogs.push({ timestamp: Date.now(), actor: internal, action: 'assignment_submitted', category: 'assignment', studentEmail: internal, details: { note: `envio de ${internal}` } });
+        await studentLogin('8181', 'Quadro-Verde-2025').expect(200);
+        // Antes: a aba devolvia actor 'aluno-alu_...@sem-email.invalid' e a ficha mostrava "por aluno-alu_...".
+        const res = await request(app).get(`/api/admin/student/audit?email=${encodeURIComponent(internal)}`).set('x-admin-session', token).expect(200);
+        const text = JSON.stringify(res.body);
+        assert.ok(!text.includes('sem-email.invalid'), text);
+        const submitted = res.body.find(item => item.action === 'assignment_submitted');
+        assert.ok(submitted, 'o filtro pelo e-mail guardado continua achando a entrada');
+        assert.equal(submitted.actor, 'sem e-mail');
+        assert.equal(submitted.studentEmail, 'sem e-mail');
+        assert.ok(res.body.length >= 2, 'a criação do cadastro também aparece');
+        const logins = await request(app).get(`/api/admin/student/login-logs?email=${encodeURIComponent(internal)}`).set('x-admin-session', token).expect(200);
+        assert.ok(logins.body.length >= 1, 'o acesso pela matrícula está nos registros');
+        assert.ok(!JSON.stringify(logins.body).includes('sem-email.invalid'));
+    });
+
     test('[UC-IDENT-003] marcar "sem e-mail" num cadastro antigo com matrícula repetida é recusado (o aluno ficaria sem como entrar)', async () => {
         const token = await adminToken();
         const refused = await request(app).post('/api/admin/student/update').set('x-admin-session', token).send({

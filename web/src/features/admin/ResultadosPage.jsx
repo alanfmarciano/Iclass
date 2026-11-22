@@ -23,6 +23,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { deliveryLabel } from './attemptDelivery'
 import { OriginalLetter, reviewLettersNote } from './reviewLetters'
 import { GradeReasonDialog, isReasonRequiredError } from './GradeReasonDialog'
+import { displayEmail } from '../../lib/studentProfile'
 
 function useCountUp(value, durationMs = 900) {
   const [display, setDisplay] = useState(0)
@@ -280,7 +281,7 @@ export default function ResultadosPage() {
         grouped.set(key, {
           id: key,
           studentEmail: email,
-          studentName: submission.studentName || submission.student?.name || email || 'Aluno',
+          studentName: submission.studentName || submission.student?.name || displayEmail(email) || 'Aluno',
           studentClass: submission.studentClass || submission.student?.studentClass || '-',
           submissions: [],
         })
@@ -785,8 +786,9 @@ export default function ResultadosPage() {
           {(student.studentName || '?').split(' ').map((part) => part[0]).slice(0, 2).join('').toUpperCase()}
         </span>
         <span className="min-w-0">
-          <span className="block truncate font-semibold text-text group-hover:text-primary">{student.studentName || student.studentEmail}</span>
-          <span className="block truncate text-xs text-subtle">{student.studentEmail}</span>
+          <span className="block truncate font-semibold text-text group-hover:text-primary">{student.studentName || displayEmail(student.studentEmail)}</span>
+          {/* Aluno sem e-mail: o endereço interno aparece como 'sem e-mail' (C1). */}
+          <span className="block truncate text-xs text-subtle">{displayEmail(student.studentEmail)}</span>
         </span>
       </button>
     ) },
@@ -912,7 +914,7 @@ export default function ResultadosPage() {
       {selectedStudent && !submissionId && (
         <ResultPageFrame
           title={selectedStudent.studentName || 'Resultados do aluno'}
-          subtitle={`${selectedStudent.studentClass} · ${selectedStudent.studentEmail}`}
+          subtitle={`${selectedStudent.studentClass} · ${displayEmail(selectedStudent.studentEmail)}`}
           backLabel="Voltar aos resultados"
           onBack={() => navigate('/resultados')}
           action={<Button variant="secondary" icon={Download} onClick={() => openBoletim(selectedStudent.studentEmail)}>Boletim (PDF)</Button>}
@@ -1029,7 +1031,7 @@ export default function ResultadosPage() {
       {detail && submissionId && (
         <ResultPageFrame
           title="Prova corrigida"
-          subtitle={`${detail.studentName || detail.studentEmail} · ${detail.examKey}`}
+          subtitle={`${detail.studentName || displayEmail(detail.studentEmail)} · ${detail.examKey}`}
           backLabel={selectedStudent ? `Voltar para ${selectedStudent.studentName}` : 'Voltar aos resultados'}
           onBack={() => navigate(selectedStudentPath)}
         >
@@ -1179,7 +1181,7 @@ export default function ResultadosPage() {
           <div><p className="mb-1 text-sm font-medium text-text">Turma</p><div className="h-[38px] rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-text">{activeClassName}</div></div>
           <Select label="Aluno" value={manual.studentEmail} error={manualErrors.studentEmail} onChange={(e) => setManual({ ...manual, studentEmail: e.target.value })}>
             <option value="">Selecione...</option>
-            {classStudents.map((s) => <option key={s.email} value={s.email}>{s.name} - {s.email}</option>)}
+            {classStudents.map((s) => <option key={s.email} value={s.email}>{s.name} - {displayEmail(s.email)}</option>)}
           </Select>
           <Select label="Prova" value={manual.examKey} error={manualErrors.examKey} onChange={(e) => setManual({ ...manual, examKey: e.target.value, answers: {}, snapshotId: '' })}>
             <option value="">Selecione...</option>
@@ -1240,7 +1242,7 @@ export default function ResultadosPage() {
       </Modal>
 
       <GradeReasonDialog open={!!del} onClose={() => setDel(null)} onConfirm={remove} danger confirmLabel="Excluir registro"
-        title="Excluir esta entrega?" description={`${del?.studentName || del?.studentEmail || del?.student?.email} - ${del?.examKey} · nota ${fmtGrade(del?.score)}.`}
+        title="Excluir esta entrega?" description={`${del?.studentName || displayEmail(del?.studentEmail || del?.student?.email)} - ${del?.examKey} · nota ${fmtGrade(del?.score)}.`}
         note={'A entrega sai de Resultados e vai para "Notas excluídas", de onde pode ser restaurada.'}
         reason={del?.gradePublished === true ? 'required' : 'optional'} />
       <ConfirmDialog open={blankConfirm !== null} onClose={() => setBlankConfirm(null)}
