@@ -1011,7 +1011,7 @@ export default function MonitorPage() {
   // O erro do servidor fica no diálogo (ele continua aberto); a tentativa vencida que o
   // servidor entregou pelo fim do tempo fecha o diálogo com o aviso.
   function openStudentAction(kind, row) {
-    setActionDialog({ kind, email: row.email, name: row.name || row.email, value: kind === 'extra' ? '1' : '', row })
+    setActionDialog({ kind, email: row.email, name: row.name || displayEmail(row.email), value: kind === 'extra' ? '1' : '', row })
   }
 
   async function confirmStudentAction(motivo) {
@@ -1036,7 +1036,7 @@ export default function MonitorPage() {
       }
       throw error
     }
-    const who = dialog.name || dialog.email
+    const who = dialog.name || displayEmail(dialog.email)
     if (dialog.kind === 'collect') {
       const answered = Number(response?.submission?.answeredCount || 0)
       toast.success(`Prova de ${who} recolhida com ${answered} ${answered === 1 ? 'resposta salva' : 'respostas salvas'}.`)
@@ -1454,7 +1454,7 @@ export default function MonitorPage() {
                               {r.focusLocked && <Button size="sm" variant="secondary" icon={Unlock} onClick={() => unlock(r.email)}>Foco</Button>}
                               <Button size="sm" variant="secondary" icon={Clock} onClick={() => adjustOne(r.email)}>Tempo</Button>
                               <Button size="sm" variant="secondary" icon={Send} onClick={() => broadcast(r.email)}>Msg</Button>
-                              <MonitorRowMenu label={`Mais ações de ${r.name || r.email}`} items={studentActions(r)} />
+                              <MonitorRowMenu label={`Mais ações de ${r.name || displayEmail(r.email)}`} items={studentActions(r)} />
                             </>
                           )}
                         </div>
@@ -1711,7 +1711,7 @@ function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange,
   if (kind === 'message') {
     const text = String(dialog.value ?? '')
     const recipient = dialog.email
-      ? `${who}${dialog.name && dialog.name !== dialog.email ? ` (${dialog.email})` : ''}`
+      ? `${who}${dialog.name && dialog.name !== dialog.email && displayEmail(dialog.email) !== dialog.name ? ` (${displayEmail(dialog.email)})` : ''}`
       : `todos os alunos desta aplicação${studentCount ? ` (${studentCount})` : ''}`
     return (
       <ConfirmDialog open onClose={onClose} onConfirm={() => onSendMessage(text.trim())} tone="primary"

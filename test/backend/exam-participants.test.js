@@ -538,3 +538,18 @@ test('[UC-PROVA-006] lista e exceções por e-mail: troca de e-mail renomeia, an
     handlers.anonymizeStudentData(db.memory, handlers.studentDataContext(db.memory, carla), { email: 'anon@x.invalid', name: 'Aluno anonimizado' });
     assert.deepEqual(application.participants, [novo]);
 });
+
+// Junção J1 (A3 + C1): o registro da aplicação (Resultados) não mostra o endereço interno
+// do aluno sem e-mail; a exceção dele aparece pelo nome.
+test('[UC-PROVA-006] [UC-IDENT-001] registro da aplicação com aluno sem e-mail não mostra o endereço interno', async () => {
+    const INTERNAL = 'aluno-alu_00000000000000f2@sem-email.invalid';
+    db.memory.students.push({ id: 'alu_00000000000000f2', name: 'Bruno Sem Email', email: INTERNAL, semEmail: true, matricula: 'R7', status: 'Ativo', classes: [{ name: studentClass, courseId }] });
+    const historyId = await createHistory();
+    const prepared = await prepare(historyId, { participants: [INTERNAL, CARLA] });
+    const id = prepared.body.application.id;
+    await admin(request(app).post(`/api/admin/exam-applications/${id}/participants`))
+        .send({ studentOverrides: { [INTERNAL]: { extraAttempts: 1, motivo: 'Faltou luz' } } }).expect(200);
+    const trail = await admin(request(app).get(`/api/admin/exam-applications/${id}/audit`)).expect(200);
+    assert.ok(trail.body.entries.some(row => row.title === 'Exceção para Bruno Sem Email'));
+    assert.equal(JSON.stringify(trail.body).includes('sem-email.invalid'), false, JSON.stringify(trail.body.entries));
+});

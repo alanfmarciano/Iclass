@@ -211,3 +211,33 @@ describe('[UC-PROVA-006] Para quem da aplicação', () => {
     expect(onClose).toHaveBeenCalled()
   })
 })
+
+// Junção J1 (A3 + C1): o aluno sem e-mail aparece como "sem e-mail" na lista do "Para quem"
+// e nas mensagens da exceção; o endereço interno só vai no pedido (é a chave do cadastro).
+describe('[UC-PROVA-006] [UC-IDENT-001] Para quem com aluno sem e-mail', () => {
+  const INTERNAL = 'aluno-alu_00000000000000f2@sem-email.invalid'
+  const candidates = {
+    success: true,
+    students: [
+      { email: 'alice@x.local', name: 'Alice Souza', fezRegular: true },
+      { email: INTERNAL, name: 'Bruno Sem Email', fezRegular: false },
+    ],
+    segundaChamada: [INTERNAL],
+  }
+
+  it('a lista mostra "sem e-mail", nunca o endereço interno, e o pedido leva o endereço interno', () => {
+    render(<Harness candidates={candidates} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Segunda chamada' }))
+    const row = screen.getByRole('checkbox', { name: 'Bruno Sem Email' }).closest('label')
+    expect(within(row).getByText('sem e-mail')).toBeVisible()
+    // Fora do pedido (a saída do Harness), nada na tela tem o endereço interno.
+    const shown = document.body.textContent.replace(screen.getByTestId('payload').textContent, '')
+    expect(shown).not.toMatch(/sem-email\.invalid/)
+    expect(payload().participants).toEqual([INTERNAL])
+  })
+
+  it('a mensagem da exceção fala do aluno sem e-mail sem mostrar o endereço interno', () => {
+    const problem = audienceProblem({ mode: 'turma', selected: [], overrides: { [INTERNAL]: { extraAttempts: '9', motivo: '' } } })
+    expect(problem).toBe('Tentativas extras de aluno sem e-mail: use um número de 0 a 5.')
+  })
+})

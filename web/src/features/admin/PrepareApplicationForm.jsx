@@ -8,6 +8,7 @@ import { Select } from '../../components/ui/Select'
 import { Switch } from '../../components/ui/Switch'
 import { api } from '../../lib/api'
 import { matchesSearch } from '../../lib/textSearch'
+import { displayEmail, isPlaceholderEmail } from '../../lib/studentProfile'
 import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
 
 // Preparar a aplicação da prova (fase 3, P3-S7: AVA-09; D15, D16 e D17 do desenho do P3).
@@ -83,9 +84,11 @@ export function audienceProblem(audience) {
 
 function overridesProblem(audience) {
   for (const [email, entry] of Object.entries(audience?.overrides || {})) {
+    // O endereço interno do aluno sem e-mail (C1) nunca aparece na tela.
+    const who = isPlaceholderEmail(email) ? 'aluno sem e-mail' : email
     const extra = entry.extraAttempts === '' ? 0 : Number(entry.extraAttempts)
-    if (!Number.isInteger(extra) || extra < 0 || extra > MAX_EXTRA_ATTEMPTS) return `Tentativas extras de ${email}: use um número de 0 a ${MAX_EXTRA_ATTEMPTS}.`
-    if (String(entry.motivo || '').length > MAX_REASON_CHARS) return `O motivo da exceção de ${email} aceita no máximo ${MAX_REASON_CHARS} caracteres.`
+    if (!Number.isInteger(extra) || extra < 0 || extra > MAX_EXTRA_ATTEMPTS) return `Tentativas extras de ${who}: use um número de 0 a ${MAX_EXTRA_ATTEMPTS}.`
+    if (String(entry.motivo || '').length > MAX_REASON_CHARS) return `O motivo da exceção de ${who} aceita no máximo ${MAX_REASON_CHARS} caracteres.`
   }
   return null
 }
@@ -189,7 +192,7 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
   const previousCandidatesRef = useRef(candidates)
   const audience = value || initialAudience()
   const students = useMemo(() => candidates?.students || [], [candidates])
-  const nameOf = useMemo(() => new Map(students.map((student) => [student.email, student.name || student.email])), [students])
+  const nameOf = useMemo(() => new Map(students.map((student) => [student.email, student.name || displayEmail(student.email)])), [students])
   const locked = useMemo(() => new Set(lockedEmails), [lockedEmails])
   const selected = useMemo(() => new Set(audience.selected), [audience.selected])
   const restricted = audience.mode !== 'turma'
@@ -338,11 +341,11 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
                       checked={checked}
                       disabled={fixed}
                       onChange={() => toggle(student.email)}
-                      aria-label={student.name || student.email}
+                      aria-label={student.name || displayEmail(student.email)}
                     />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm text-text">{student.name || student.email}</span>
-                      <span className="block truncate text-xs text-subtle">{student.email}</span>
+                      <span className="block truncate text-sm text-text">{student.name || displayEmail(student.email)}</span>
+                      <span className="block truncate text-xs text-subtle">{displayEmail(student.email)}</span>
                       {/* Entregou numa segunda chamada anterior: continua marcado (a lista
                           pré-marcada é de quem não fez a regular), mas o professor vê o aviso,
                           embaixo do nome para não cortá-lo no celular. */}
@@ -370,8 +373,8 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
             return (
               <div key={email} className="space-y-2 rounded-lg border border-border p-3" data-testid={`exception-${email}`}>
                 <div className="flex items-start justify-between gap-2">
-                  <p className="min-w-0 text-sm font-semibold text-text break-words">{nameOf.get(email) || email}</p>
-                  <Button size="sm" variant="ghost" icon={X} aria-label={`Retirar a exceção de ${nameOf.get(email) || email}`} onClick={() => removeException(email)}>Retirar</Button>
+                  <p className="min-w-0 text-sm font-semibold text-text break-words">{nameOf.get(email) || displayEmail(email)}</p>
+                  <Button size="sm" variant="ghost" icon={X} aria-label={`Retirar a exceção de ${nameOf.get(email) || displayEmail(email)}`} onClick={() => removeException(email)}>Retirar</Button>
                 </div>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Input label="Tentativas extras" type="number" min="0" max={MAX_EXTRA_ATTEMPTS} step="1" value={entry.extraAttempts} onChange={(e) => changeException(email, { extraAttempts: e.target.value })} />
@@ -385,7 +388,7 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
                         onChange={(e) => changeException(email, { prazoAteLocal: e.target.value })}
                       />
                       {(entry.prazoAte || entry.prazoAteLocal) && (
-                        <Button size="sm" variant="ghost" icon={X} aria-label={`Tirar o prazo de ${nameOf.get(email) || email}`} onClick={() => changeException(email, { prazoAte: null, prazoAteLabel: '', prazoAteLocal: '' })}>Tirar o prazo</Button>
+                        <Button size="sm" variant="ghost" icon={X} aria-label={`Tirar o prazo de ${nameOf.get(email) || displayEmail(email)}`} onClick={() => changeException(email, { prazoAte: null, prazoAteLabel: '', prazoAteLocal: '' })}>Tirar o prazo</Button>
                       )}
                     </div>
                   )}
@@ -399,7 +402,7 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
               <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
                 <Select label="Aluno" value={adding} onChange={(e) => setAdding(e.target.value)}>
                   <option value="">Escolha o aluno</option>
-                  {eligible.map((student) => <option key={student.email} value={student.email}>{student.name || student.email}</option>)}
+                  {eligible.map((student) => <option key={student.email} value={student.email}>{student.name || displayEmail(student.email)}</option>)}
                 </Select>
                 <Button type="button" variant="secondary" icon={UserPlus} disabled={!adding} onClick={addException}>Adicionar</Button>
               </div>

@@ -889,6 +889,22 @@ describe('[UC-IDENT-003] MonitorPage · aluno sem e-mail', () => {
     expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
   })
 
+  // Junção J1 (A4 + C1): o "Para:" da mensagem e o menu "Mais ações" mostravam o endereço
+  // interno do aluno sem e-mail.
+  it('mensagem e Mais ações do aluno sem e-mail não mostram o endereço interno', async () => {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Msg' }))
+    const dialog = screen.getByRole('dialog', { name: 'Mensagem para o aluno' })
+    expect(dialog.textContent).toContain('Para: Bruno Sem Email (sem e-mail)')
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }))
+    expect(screen.getByRole('button', { name: 'Mais ações de Bruno Sem Email' })).toBeInTheDocument()
+  })
+
   it('o histórico de mensagens mostra o aluno sem e-mail pelo nome e "sem e-mail", nunca o endereço interno', async () => {
     const messages = [
       { id: 'm1', messageText: 'Para o Bruno', targetEmail: row.email, targetName: 'Bruno Sem Email', createdAt: '2026-11-18T10:00:00.000Z' },
