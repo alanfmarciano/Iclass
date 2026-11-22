@@ -113,6 +113,13 @@ test('[UC-CURSO-002] sanitizeDisciplinas: carga horária, professor e módulos v
     // O módulo que ficou de antes (não veio no pedido) não é recusado se saiu da estrutura.
     const oldInput = [{ id: 'REDES', nome: 'Redes' }];
     assert.equal(attendanceUtil.disciplinasModuleProblem(oldInput, attendanceUtil.sanitizeDisciplinas(oldInput, [{ id: 'REDES', nome: 'Redes', modulos: ['M7'] }]), modules), null);
+    // Lista inteira mandada de volta (assistente de horários) com o módulo gravado que saiu
+    // da estrutura: não é recusado; módulo novo que não existe continua recusado.
+    const saved = [{ id: 'REDES', nome: 'Redes', modulos: ['M7'] }];
+    const echoed = [{ id: 'REDES', nome: 'Redes', modulos: ['M7'] }, { id: 'LOGI', nome: 'Lógica' }];
+    assert.equal(attendanceUtil.disciplinasModuleProblem(echoed, attendanceUtil.sanitizeDisciplinas(echoed, saved), modules, saved), null);
+    const added = [{ id: 'REDES', nome: 'Redes', modulos: ['M7', 'M8'] }];
+    assert.match(attendanceUtil.disciplinasModuleProblem(added, attendanceUtil.sanitizeDisciplinas(added, saved), modules, saved).error, /"M8" não existe/);
 });
 
 // ---------------------------------------------------------------- rotas
@@ -173,6 +180,19 @@ test.after(async () => {
     await db.close();
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
+
+// As gravações feitas durante fn (db.save), para conferir o only de cada rota.
+async function capturingSaves(fn) {
+    const originalSave = db.save;
+    const calls = [];
+    db.save = (...args) => { calls.push(args[0] || null); return originalSave.apply(db, args); };
+    try {
+        await fn();
+    } finally {
+        db.save = originalSave;
+    }
+    return calls;
+}
 
 async function createTerm(fields = {}, who = 'admin') {
     const res = await as(who, 'post', '/api/admin/academic/terms/create').send({ ...TERM, etapas: FOUR_STAGES, ...fields });
@@ -276,8 +296,13 @@ test('[UC-CURSO-002] turma no período: class/create e class/update ligam e desl
     const schoolA = (await createTerm({ nome: 'Escola A 2027', schoolId: 'esc_a' })).body.periodo;
     const schoolB = (await createTerm({ nome: 'Escola B 2027', schoolId: 'esc_b' })).body.periodo;
 
-    const linked = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: 'TI', periodoLetivoId: term.id });
+    let linked;
+    const updateSaves = await capturingSaves(async () => {
+        linked = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: 'TI', periodoLetivoId: term.id });
+    });
     assert.equal(linked.status, 200, JSON.stringify(linked.body));
+    // Gravação parcial: só a turma e a auditoria.
+    assert.deepEqual(updateSaves, [{ only: ['classes', 'auditLogs'] }]);
     const cls = () => db.memory.classes.find(item => item.name === '1DES' && item.courseId === 'TI');
     assert.equal(cls().periodoLetivoId, term.id);
     const entry = audits('class_updated').pop();
@@ -304,6 +329,16 @@ test('[UC-CURSO-002] turma no período: class/create e class/update ligam e desl
     assert.equal(cls().period, 'Tarde', 'recusado, nada muda');
     const wrongType = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: 'TI', periodoLetivoId: 42 });
     assert.equal(wrongType.status, 400);
+    assert.equal(wrongType.body.field, 'periodoLetivoId');
+    assert.match(wrongType.body.error, /período letivo/i);
+    // O schema (inputSchema) confere tipo e tamanho também na criação.
+    const tooLong = await as('admin', 'post', '/api/admin/class/create').send({ name: '9DES', period: 'Noite', courseId: 'TI', periodoLetivoId: 'p'.repeat(121) });
+    assert.equal(tooLong.status, 400);
+    assert.equal(tooLong.body.field, 'periodoLetivoId');
+    assert.equal(db.memory.classes.some(item => item.name === '9DES'), false);
+    const objectId = await as('admin', 'post', '/api/admin/class/create').send({ name: '9DES', period: 'Noite', courseId: 'TI', periodoLetivoId: { id: term.id } });
+    assert.equal(objectId.status, 400);
+    assert.equal(objectId.body.field, 'periodoLetivoId');
     const otherSchool = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: 'TI', periodoLetivoId: schoolB.id });
     assert.equal(otherSchool.status, 400);
     assert.match(otherSchool.body.error, /outra escola/);
@@ -313,8 +348,14 @@ test('[UC-CURSO-002] turma no período: class/create e class/update ligam e desl
     assert.equal('periodoLetivoId' in cls(), false);
 
     // Turma nova já no período; com período encerrado, 409.
-    const created = await as('admin', 'post', '/api/admin/class/create').send({ name: '3des', period: 'Noite', courseId: 'TI', periodoLetivoId: term.id });
+    let created;
+    const createSaves = await capturingSaves(async () => {
+        created = await as('admin', 'post', '/api/admin/class/create').send({ name: '3des', period: 'Noite', courseId: 'TI', periodoLetivoId: term.id });
+    });
     assert.equal(created.status, 200, JSON.stringify(created.body));
+    assert.deepEqual(createSaves, [{ only: ['classes', 'auditLogs'] }]);
+    await db.flush();
+    assert.equal((await db.readStoredData()).memory.classes.find(item => item.name === '3DES').periodoLetivoId, term.id, 'foi para o disco');
     assert.equal(db.memory.classes.find(item => item.name === '3DES').periodoLetivoId, term.id);
     assert.equal((await as('admin', 'post', '/api/admin/academic/terms/close').send({ id: term.id })).status, 200);
     const closedNew = await as('admin', 'post', '/api/admin/class/create').send({ name: '4DES', period: 'Noite', courseId: 'TI', periodoLetivoId: term.id });
@@ -347,6 +388,9 @@ test('[UC-CURSO-002] encerrar o período não encerra a turma nem muda nota; alt
     const closed = await as('admin', 'post', '/api/admin/academic/terms/close').send({ id: term.id });
     assert.equal(closed.status, 200, JSON.stringify(closed.body));
     assert.equal(closed.body.periodo.situacao, 'encerrado');
+    assert.ok(closed.body.periodo.encerradoEm > 0);
+    assert.equal(closed.body.periodo.encerradoPor, 'admin@periodo.local');
+    assert.equal(closed.body.periodo.reabertoEm, null);
     assert.deepEqual(closed.body.turmas, [{ courseId: 'TI', courseName: 'Informática', name: '1DES' }]);
     assert.equal(JSON.stringify(db.memory.classes), classBefore, 'a turma não muda');
     assert.equal((await report()).overallAverage, 8, 'a nota não muda');
@@ -368,6 +412,15 @@ test('[UC-CURSO-002] encerrar o período não encerra a turma nem muda nota; alt
     const reopened = await as('admin', 'post', '/api/admin/academic/terms/reopen').send({ id: term.id, reason: 'Faltou lançar a recuperação' });
     assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
     assert.equal(reopened.body.periodo.situacao, 'aberto');
+    // Aberto de novo: a resposta não mostra o encerramento antigo, e mostra a reabertura.
+    assert.equal(reopened.body.periodo.encerradoEm, null);
+    assert.equal(reopened.body.periodo.encerradoPor, null);
+    assert.ok(reopened.body.periodo.reabertoEm > 0);
+    assert.equal(reopened.body.periodo.reabertoPor, 'admin@periodo.local');
+    const listed = (await as('admin', 'get', '/api/admin/academic/terms')).body.periodos.find(item => item.id === term.id);
+    assert.equal(listed.encerradoEm, null);
+    assert.equal(listed.reabertoPor, 'admin@periodo.local');
+    assert.ok(db.memory.academicTerms.find(item => item.id === term.id).encerradoEm > 0, 'o registro guarda o histórico');
     const reopenEntry = audits('academic_term_reopened').pop();
     assert.equal(reopenEntry.reason, 'Faltou lançar a recuperação');
     assert.equal(reopenEntry.details.id, term.id);
@@ -437,6 +490,40 @@ test('[UC-CURSO-002] disciplinas: carga horária, professor e módulos pela rota
     assert.equal((await as('prof', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [] })).status, 403);
 });
 
+test('[UC-CURSO-002] disciplinas: o assistente de horários salva a lista de volta mesmo com um módulo gravado que saiu da estrutura', async () => {
+    const saved = await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [
+        { id: 'REDES', nome: 'Redes', cor: '', cargaHoraria: 80, modulos: ['M1'] },
+        { id: 'BD', nome: 'Banco de Dados', cor: '', modulos: ['M2'] },
+    ] });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    // O módulo M2 sai da estrutura do curso (ou muda de id) depois de ligado à disciplina.
+    db.memory.courses[0].structure = db.memory.courses[0].structure.filter(module => module.id !== 'M2');
+
+    // O corpo do AssistenteHorariosPage: [...course.disciplinas de course-summaries, nova].
+    const summaries = await as('admin', 'get', '/api/admin/course-summaries');
+    const fromScreen = summaries.body.find(course => course.id === 'TI').disciplinas;
+    assert.deepEqual(fromScreen.find(item => item.id === 'BD').modulos, ['M2']);
+    const echoed = await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [...fromScreen, { id: 'LOGI', nome: 'Lógica', cor: '' }] });
+    assert.equal(echoed.status, 200, JSON.stringify(echoed.body));
+    assert.deepEqual(db.memory.courses[0].disciplinas.map(item => item.id), ['REDES', 'BD', 'LOGI']);
+    assert.deepEqual(db.memory.courses[0].disciplinas[1].modulos, ['M2'], 'o módulo que ninguém mexeu fica como estava');
+    assert.equal(db.memory.courses[0].disciplinas[0].cargaHoraria, 80);
+
+    // Ligar o módulo que não existe mais a OUTRA disciplina continua recusado (é novo nela).
+    const moved = await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [
+        { id: 'REDES', nome: 'Redes', modulos: ['M1'] }, { id: 'BD', nome: 'Banco de Dados', modulos: [] }, { id: 'LOGI', nome: 'Lógica', modulos: ['M2'] },
+    ] });
+    assert.equal(moved.status, 400);
+    assert.equal(moved.body.field, 'disciplinas[2].modulos');
+    assert.match(moved.body.error, /"M2" não existe neste curso/);
+    // E o mesmo módulo gravado em duas disciplinas continua recusado.
+    const dup = await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [
+        { id: 'REDES', nome: 'Redes', modulos: ['M1'] }, { id: 'BD', nome: 'Banco de Dados', modulos: ['M2'] }, { id: 'LOGI', nome: 'Lógica', modulos: ['M1'] },
+    ] });
+    assert.equal(dup.status, 400);
+    assert.match(dup.body.error, /já está na disciplina Redes/);
+});
+
 test('[UC-CURSO-002] boletim: período letivo, aulas previstas e carga horária; faltas que ainda pode ter só com a frequência mínima dos critérios', async () => {
     const term = (await createTerm({ inicio: '2027-08-02', fim: '2027-08-29', nome: 'Agosto', etapas: [] })).body.periodo;
     const course = db.memory.courses[0];
@@ -477,6 +564,62 @@ test('[UC-CURSO-002] boletim: período letivo, aulas previstas e carga horária;
     assert.equal(noTerm.periodoLetivo, null);
     assert.equal(noTerm.attendance.aulasPrevistas, null);
     assert.equal(noTerm.attendance.disciplines.find(item => item.id === 'REDES').aulasPrevistas, null);
+});
+
+test('[UC-CURSO-002] boletim: as faltas de antes do período não gastam a cota do período; disciplina sem chamada aparece com carga horária e aulas previstas', async () => {
+    const term = (await createTerm({ inicio: '2027-08-02', fim: '2027-08-29', nome: 'Agosto', etapas: [] })).body.periodo;
+    const course = db.memory.courses[0];
+    course.disciplinas = [{ id: 'REDES', nome: 'Redes', cor: '', cargaHoraria: 80 }, { id: 'BD', nome: 'Banco de Dados', cor: '', cargaHoraria: 20, professor: 'Profa. Bia' }];
+    course.avaliacao = { versao: 1, ativo: true, mediaMinima: 6, frequenciaMinima: 75 };
+    // Turma que já existia (faltas em março) e foi ligada ao período de agosto (D17).
+    db.memory.classes[0].periodoLetivoId = term.id;
+    db.memory.attendance = [
+        { id: 'a0', origin: 'chamada', concluida: true, studentEmail: 'ana@periodo.local', courseId: 'TI', studentClass: '1DES', date: '2027-03-01', aulas: [{ ordem: 1, disciplinaId: 'REDES', status: 'falta' }, { ordem: 2, disciplinaId: 'REDES', status: 'falta' }] },
+        { id: 'a1', origin: 'chamada', concluida: true, studentEmail: 'ana@periodo.local', courseId: 'TI', studentClass: '1DES', date: '2027-08-02', aulas: [{ ordem: 1, disciplinaId: 'REDES', status: 'falta' }, { ordem: 2, disciplinaId: 'REDES', status: 'presente' }] },
+        { id: 'a2', origin: 'chamada', concluida: true, studentEmail: 'ana@periodo.local', courseId: 'TI', studentClass: '1DES', date: '2027-08-30', aulas: [{ ordem: 1, disciplinaId: 'REDES', status: 'falta' }] },
+    ];
+    const res = await as('admin', 'get', '/api/admin/student/report?email=ana@periodo.local&courseId=TI&studentClass=1DES');
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const attendance = res.body.attendance;
+    // 4 segundas e 4 quartas com 2 aulas de REDES = 16; 4 quintas de BD = 4.
+    assert.equal(attendance.aulasPrevistas, 20);
+    // A frequência mostrada é a de todas as aulas lançadas (D10): 4 faltas e 1 presença.
+    assert.equal(attendance.faltas, 4);
+    assert.equal(attendance.presentes, 1);
+    // A cota: 25% de 20 = 5, e só a falta de 02/08 está dentro do período.
+    assert.equal(attendance.faltasNoPeriodo, 1);
+    assert.equal(attendance.faltasPermitidasRestantes, 4);
+    const redes = attendance.disciplines.find(item => item.id === 'REDES');
+    assert.equal(redes.faltas, 4, 'a frequência da disciplina continua com todas as aulas');
+    assert.equal(redes.faltasPermitidasRestantes, 3, '25% de 16 = 4, 1 usada no período');
+    // BD tem aula na grade e nenhuma chamada lançada: entra com carga horária e previstas.
+    const bd = attendance.disciplines.find(item => item.id === 'BD');
+    assert.ok(bd, 'disciplina sem chamada aparece no boletim');
+    assert.equal(bd.name, 'Banco de Dados');
+    assert.equal(bd.cargaHoraria, 20);
+    assert.equal(bd.professor, 'Profa. Bia');
+    assert.equal(bd.aulasPrevistas, 4);
+    assert.equal(bd.faltasPermitidasRestantes, 1);
+    assert.deepEqual([bd.presentes, bd.faltas, bd.total, bd.frequencia], [0, 0, 0, null]);
+    assert.equal(attendance.disciplines.filter(item => item.id === 'BD').length, 1);
+
+    // Curso antigo (sem carga horária) e turma sem período: o boletim lista só as
+    // disciplinas com chamada, como sempre.
+    course.disciplinas = [{ id: 'REDES', nome: 'Redes', cor: '' }, { id: 'BD', nome: 'Banco de Dados', cor: '' }];
+    delete course.avaliacao;
+    delete db.memory.classes[0].periodoLetivoId;
+    const legacy = (await as('admin', 'get', '/api/admin/student/report?email=ana@periodo.local&courseId=TI&studentClass=1DES')).body.attendance;
+    assert.deepEqual(legacy.disciplines.map(item => item.id), ['REDES']);
+    assert.equal(legacy.faltasNoPeriodo, null);
+    assert.equal(legacy.faltasPermitidasRestantes, null);
+
+    // A função exportada para o resumo do aluno (B6): sem records, usa as faltas de stats.
+    const { attendanceAllowanceFor } = require('../../backend/utils/gradebook.js');
+    db.memory.classes[0].periodoLetivoId = term.id;
+    course.avaliacao = { versao: 1, ativo: true, mediaMinima: 6, frequenciaMinima: 75 };
+    const legacyCall = attendanceAllowanceFor(db.memory, { course, cls: db.memory.classes[0], stats: { faltasContam: 2, porDisciplina: {} } });
+    assert.equal(legacyCall.faltasPermitidasRestantes, 3);
+    assert.equal(legacyCall.disciplina('REDES', 1).faltasPermitidasRestantes, 3);
 });
 
 test('[UC-CURSO-002] duplicar curso: disciplinas com carga horária e módulos continuam valendo; período aberto fica, encerrado sai; plano da turma acompanha as provas', async () => {

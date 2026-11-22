@@ -208,7 +208,7 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
-const { createAdminAcademicRouter, resolveClassTermInput } = require('./adminAcademic.js');
+const { createAdminAcademicRouter, resolveClassTermInput, CLASS_TERM_SCHEMA } = require('./adminAcademic.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
@@ -2235,11 +2235,12 @@ router.get('/api/admin/student/report', (req, res) => {
         const stats = attendanceUtil.computeAttendanceStats(attendanceRows);
         // Aulas previstas no período letivo da turma e faltas que ainda pode ter (B5 / P2-S7,
         // C8 do P2): null sem período letivo; as faltas restantes, só com a frequência
-        // mínima dos critérios do curso.
-        const allowance = attendanceAllowanceFor(db.memory, { course, cls, stats });
+        // mínima dos critérios do curso, e contando só as faltas de dentro das datas do
+        // período (a frequência mostrada continua sendo a de todas as aulas lançadas).
+        const allowance = attendanceAllowanceFor(db.memory, { course, cls, records: attendanceRows });
         const discById = {};
         ((course && course.disciplinas) || []).forEach(d => { if (d && d.id) discById[d.id] = d; });
-        const disciplines = Object.entries(stats.porDisciplina).map(([id, value]) => {
+        const disciplineRow = (id, value) => {
             const disciplina = discById[id] || null;
             return {
                 id,
@@ -2249,6 +2250,18 @@ router.get('/api/admin/student/report', (req, res) => {
                 professor: (disciplina && disciplina.professor) || '',
                 ...allowance.disciplina(id, value.faltas),
             };
+        };
+        const disciplines = Object.entries(stats.porDisciplina).map(([id, value]) => disciplineRow(id, value));
+        // Disciplina do curso ainda sem chamada lançada (começo do período) também entra,
+        // quando tem o que mostrar: carga horária ou aula prevista no período. Sem nenhum
+        // dos dois (curso antigo, sem período), o boletim fica como sempre foi.
+        const listed = new Set(disciplines.map(item => item.id));
+        const previstas = new Set(allowance.disciplinasPrevistas);
+        ((course && course.disciplinas) || []).forEach(d => {
+            if (!d || !d.id || listed.has(d.id)) return;
+            if (!Number.isInteger(d.cargaHoraria) && !previstas.has(d.id)) return;
+            listed.add(d.id);
+            disciplines.push(disciplineRow(d.id, { presentes: 0, faltas: 0, total: 0, frequencia: null }));
         });
         const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
         const unitKeys = structure.flatMap(module => (module.units || module.items || []).map(unit => unit.apostilaKey).filter(Boolean));
@@ -2280,6 +2293,7 @@ router.get('/api/admin/student/report', (req, res) => {
                 riskThreshold: attendanceUtil.effectiveAttendanceConfig(cls).limiarRiscoPct,
                 aulasPrevistas: allowance.aulasPrevistas,
                 frequenciaMinima: allowance.frequenciaMinima,
+                faltasNoPeriodo: allowance.faltasNoPeriodo,
                 faltasPermitidasRestantes: allowance.faltasPermitidasRestantes,
             },
             progress: { completedUnits, totalUnits: unitKeys.length },
@@ -3137,6 +3151,7 @@ router.get('/api/admin/course-summaries', (req, res) => {
 // Cadastrar nova turma (administrador)
 router.post('/api/admin/class/create', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!CLASS_TERM_SCHEMA.check(req, res)) return;
         const { name, period, courseId } = req.body;
         const normalizedPeriod = normalizeClassPeriod(period);
         if (!name || !normalizedPeriod || name.trim() === '' || !courseId) {
@@ -3190,13 +3205,14 @@ router.post('/api/admin/class/create', (req, res) => {
         classes.push(newClass);
 
         recordAcademicAudit(req, matchedAdmin, 'class_created', { courseId, className }, null, newClass);
-        writeJSON(DB_CLASSES_FILE, classes);
+        db.save({ only: ['classes', 'auditLogs'] });
         res.json({ success: true });
     });
 });
 
 router.post('/api/admin/class/update', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!CLASS_TERM_SCHEMA.check(req, res)) return;
         const name = String(req.body.name || '').trim().toUpperCase();
         const courseId = String(req.body.courseId || '').trim();
         if (!name || !courseId) return res.status(400).json({ error: 'Nome da turma ou curso não informado.' });
@@ -3227,7 +3243,7 @@ router.post('/api/admin/class/update', (req, res) => {
             else delete cls.periodoLetivoId;
         }
         recordAcademicAudit(req, matchedAdmin, 'class_updated', { courseId, className: name }, before, { ...cls });
-        writeJSON(DB_CLASSES_FILE, classes);
+        db.save({ only: ['classes', 'auditLogs'] });
         res.json({ success: true, class: cls });
     });
 });
@@ -3245,8 +3261,9 @@ const DISCIPLINAS_SCHEMA = body({
 // Define a lista de disciplinas de um curso (usada na grade de presença das turmas) e,
 // desde a fase 3 (B5 / P2-S7, FUN-05), a carga horária, o professor responsável e os
 // módulos de cada uma. Item sem um campo novo mantém o que estava gravado na disciplina
-// de mesmo id (a tela de antes manda só id, nome e cor); null ou vazio apaga. Módulo que
-// não existe no curso, ou em duas disciplinas, é recusado (400 com field).
+// de mesmo id (a tela de antes manda só id, nome e cor); null ou vazio apaga. Módulo novo
+// na disciplina que não existe no curso, ou módulo em duas disciplinas, é recusado (400
+// com field); o que a disciplina já tinha e saiu da estrutura fica como estava.
 router.post('/api/admin/course/disciplinas', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const courseId = String(req.body.courseId || '').trim();
@@ -3260,7 +3277,7 @@ router.post('/api/admin/course/disciplinas', (req, res) => {
         const moduleIds = structureModuleIds(course.structure, ...(db.memory.classes || [])
             .filter(cls => cls && String(cls.courseId) === courseId)
             .map(cls => effectiveStructure(courseId, cls.name)?.structure));
-        const problem = attendanceUtil.disciplinasModuleProblem(req.body.disciplinas, disciplinas, moduleIds);
+        const problem = attendanceUtil.disciplinasModuleProblem(req.body.disciplinas, disciplinas, moduleIds, course.disciplinas);
         if (problem) return res.status(400).json({ success: false, error: problem.error, field: problem.field });
         const before = { disciplinas: course.disciplinas || [] };
         course.disciplinas = disciplinas;
@@ -3302,7 +3319,7 @@ router.post('/api/admin/class/toggle-registration', (req, res) => {
         const before = { ...cls };
         cls.registrationEnabled = !!registrationEnabled;
         recordAcademicAudit(req, matchedAdmin, 'class_updated', { courseId, className: name }, before, { ...cls });
-        writeJSON(DB_CLASSES_FILE, classes);
+        db.save({ only: ['classes', 'auditLogs'] });
         res.json({ success: true, classes });
     });
 });

@@ -438,8 +438,13 @@ function termView(account, raw) {
         criadoEm: raw.criadoEm || null,
         criadoPor: raw.criadoPor || null,
         atualizadoEm: raw.atualizadoEm || null,
-        encerradoEm: raw.encerradoEm || null,
-        encerradoPor: raw.encerradoPor || null,
+        // O registro guarda o último encerramento e a última reabertura (histórico); na
+        // resposta, 'Encerrado em' só aparece no período encerrado e 'Reaberto em' só no
+        // aberto que já foi reaberto, para a tela não mostrar "Encerrado em" num aberto.
+        encerradoEm: term.situacao === 'encerrado' ? (raw.encerradoEm || null) : null,
+        encerradoPor: term.situacao === 'encerrado' ? (raw.encerradoPor || null) : null,
+        reabertoEm: term.situacao === 'aberto' ? (raw.reabertoEm || null) : null,
+        reabertoPor: term.situacao === 'aberto' ? (raw.reabertoPor || null) : null,
         podeAlterar: canManageTerm(account, term),
     };
 }
@@ -471,6 +476,10 @@ function resolveClassTermInput(memory, account, course, value, currentId = null)
     }
     return { ok: true, change: true, value: id };
 }
+
+// O periodoLetivoId de class/create e class/update (inputSchema): texto até 120 ou null.
+// O resto (existe, a conta vê, mesma escola, aberto) é de resolveClassTermInput.
+const CLASS_TERM_SCHEMA = body({ periodoLetivoId: str({ ...ID_FIELD, nullable: true, label: 'período letivo' }) });
 
 function createAdminAcademicRouter() {
     const router = express.Router();
@@ -878,6 +887,7 @@ function createAdminAcademicRouter() {
 module.exports = {
     createAdminAcademicRouter,
     resolveClassTermInput,
+    CLASS_TERM_SCHEMA,
     courseSchoolId,
     canManageDay,
     canSeeDay,

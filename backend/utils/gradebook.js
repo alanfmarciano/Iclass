@@ -15,6 +15,7 @@ const { recordAudit } = require('./audit.js');
 const { buildXlsx } = require('./tabularFile.js');
 const gradingRules = require('./gradingRules.js');
 const academicCalendar = require('./academicCalendar.js');
+const attendanceUtil = require('./attendance.js');
 
 const GRADE_MAX = SCORE_MAX / 10;
 const MANUAL_TYPES = ['impressa', 'manual', 'online'];
@@ -348,25 +349,42 @@ function structureModuleIds(...structures) {
 // letivo na turma (academicCalendar.plannedLessons no período inteiro, sem os dias não
 // letivos); a frequência mínima é a dos critérios do curso (course.avaliacao): sem
 // critérios (regra antiga) não há mínima, e faltasPermitidasRestantes fica null, como no
-// motor de critérios (gradingRules). stats: computeAttendanceStats do aluno na turma.
-function attendanceAllowanceFor(memory, { course = null, cls = null, stats = null } = {}) {
+// motor de critérios (gradingRules).
+// records: as presenças do aluno na turma (dedupeByDate). As faltas que gastam a cota são
+// só as de DENTRO das datas do período (inicio..fim): a turma que já existia e foi ligada
+// a um período novo (D17) não começa o período com as faltas do semestre anterior. A
+// frequência mostrada no boletim continua sendo a de todas as aulas lançadas (D10).
+// stats (computeAttendanceStats) só vale quando records não vem (chamada antiga): aí as
+// faltas são as que vierem nele.
+function attendanceAllowanceFor(memory, { course = null, cls = null, records = null, stats = null } = {}) {
     const term = cls ? academicCalendar.termForClass(memory, cls) : null;
     const planned = term ? academicCalendar.plannedLessons(memory, cls) : null;
     const criterios = gradingRules.normalizeCriteria(course && course.avaliacao);
     const frequenciaMinima = criterios ? criterios.frequenciaMinima : null;
     const aulasPrevistas = planned ? planned.total : null;
-    const faltas = stats ? stats.faltasContam : null;
+    const noPeriodo = Array.isArray(records)
+        ? attendanceUtil.computeAttendanceStats(records.filter(row => row && typeof row.date === 'string'
+            && (!term || (row.date >= term.inicio && row.date <= term.fim))))
+        : stats;
+    const faltas = noPeriodo ? noPeriodo.faltasContam : null;
     const disciplina = (id, faltasDaDisciplina) => {
-        const previstas = planned ? (planned.porDisciplina[String(id || '')] || 0) : null;
+        const key = String(id || '');
+        const previstas = planned ? (planned.porDisciplina[key] || 0) : null;
+        const usadas = Array.isArray(records)
+            ? ((noPeriodo.porDisciplina[key] && noPeriodo.porDisciplina[key].faltas) || 0)
+            : faltasDaDisciplina;
         return {
             aulasPrevistas: previstas,
-            faltasPermitidasRestantes: gradingRules.faltasPermitidasRestantes({ aulasPrevistas: previstas, frequenciaMinima, faltas: faltasDaDisciplina }),
+            faltasPermitidasRestantes: gradingRules.faltasPermitidasRestantes({ aulasPrevistas: previstas, frequenciaMinima, faltas: usadas }),
         };
     };
     return {
         periodoLetivo: academicCalendar.termSummary(term),
         aulasPrevistas,
+        // Disciplinas com aula prevista no período (para o boletim listar mesmo sem chamada).
+        disciplinasPrevistas: planned ? Object.keys(planned.porDisciplina).filter(key => planned.porDisciplina[key] > 0) : [],
         frequenciaMinima,
+        faltasNoPeriodo: term ? faltas : null,
         faltasPermitidasRestantes: gradingRules.faltasPermitidasRestantes({ aulasPrevistas, frequenciaMinima, faltas }),
         disciplina,
     };

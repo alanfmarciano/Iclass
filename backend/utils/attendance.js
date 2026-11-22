@@ -79,13 +79,19 @@ function sanitizeDisciplinas(input, previous) {
     return out;
 }
 
-// Os módulos das disciplinas: o que o pedido mandou precisa existir no curso (moduleIds,
-// os ids da estrutura do curso e das turmas dele) e cada módulo fica em uma disciplina só.
-// input é a lista do pedido (para saber quais módulos foram enviados agora: os que ficaram
-// de antes não são recusados se o módulo saiu da estrutura); disciplinas, a lista já
-// normalizada. Devolve null ou { error, field }.
-function disciplinasModuleProblem(input, disciplinas, moduleIds) {
+// Os módulos das disciplinas: o módulo NOVO numa disciplina (que ela não tinha gravado)
+// precisa existir no curso (moduleIds, os ids da estrutura do curso e das turmas dele) e
+// cada módulo fica em uma disciplina só. input é a lista do pedido; disciplinas, a lista
+// já normalizada; previous, a lista gravada antes. O módulo que a disciplina já tinha e
+// que saiu da estrutura (ou mudou de id) não é recusado nem tirado: a tela que manda a
+// lista inteira de volta (o assistente de horários, com os módulos que course-summaries
+// devolveu) continua salvando sem que ninguém tenha mexido naquele módulo. Devolve null
+// ou { error, field }.
+function disciplinasModuleProblem(input, disciplinas, moduleIds, previous) {
     const known = moduleIds instanceof Set ? moduleIds : new Set(moduleIds || []);
+    const savedModules = new Map((Array.isArray(previous) ? previous : [])
+        .filter(d => d && typeof d === 'object' && d.id)
+        .map(d => [String(d.id).trim().toUpperCase(), new Set(readModulos(d.modulos))]));
     const sentIndex = new Map();
     (Array.isArray(input) ? input : []).forEach((d, index) => {
         const id = String((d && d.id) || '').trim().toUpperCase().slice(0, 16);
@@ -94,8 +100,9 @@ function disciplinasModuleProblem(input, disciplinas, moduleIds) {
     const owner = new Map();
     for (const disciplina of (disciplinas || [])) {
         const where = sentIndex.get(disciplina.id) || { index: 0, sent: false };
+        const saved = savedModules.get(disciplina.id) || new Set();
         for (const modulo of (disciplina.modulos || [])) {
-            if (where.sent && !known.has(modulo)) {
+            if (where.sent && !known.has(modulo) && !saved.has(modulo)) {
                 return { error: `O módulo "${modulo}" não existe neste curso (disciplina ${disciplina.nome}).`, field: `disciplinas[${where.index}].modulos` };
             }
             if (owner.has(modulo)) {
