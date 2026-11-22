@@ -66,6 +66,7 @@ const PREVIEW_READ_ROUTES = Object.freeze([
     { method: 'GET', pattern: /^\/api\/student\/library$/i, label: 'biblioteca' },
     { method: 'GET', pattern: /^\/api\/student\/announcements$/i, label: 'avisos' },
     { method: 'GET', pattern: /^\/api\/student\/calendar-events$/i, label: 'calendário' },
+    { method: 'GET', pattern: /^\/api\/student\/calendar\.ics$/i, label: 'agenda .ics da turma (B3)' },
     { method: 'GET', pattern: /^\/api\/student\/notifications$/i, label: 'sino' },
     { method: 'GET', pattern: /^\/api\/student\/dashboard$/i, label: 'Início' },
     { method: 'GET', pattern: /^\/api\/student\/assignments$/i, label: 'tarefas da turma' },
