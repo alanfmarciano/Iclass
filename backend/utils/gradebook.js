@@ -538,6 +538,9 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
             applicationId: sample?.applicationId || null,
             label: scopeId ? `${title} (${scopeLabel(sample, applicationsById)})` : title,
             moduleName: meta ? meta.moduleName : 'Outras avaliações',
+            // Nome da prova na estrutura do curso (só no JSON): Resultados monta a estrutura
+            // por ele para quem não abre o editor de cursos (Coordenação).
+            unitName: meta ? meta.unitName || '' : '',
         });
         columnIndex.set(id, columns.length - 1);
     };

@@ -193,9 +193,10 @@ function snapshotOptions(history) {
 // Estrutura mínima (módulo e nome de cada prova) a partir do quadro de notas, para quem
 // abre Resultados sem o editor de cursos (Coordenação, Secretaria com Resultados): a rota
 // da estrutura pede page.editor e daria 403. O quadro vem na ordem da estrutura do curso;
-// prova aplicada mais de uma vez tem uma coluna por aplicação, "Título (2ª aplicação)", e
-// o nome da prova é o título sem o sufixo. Prova fora da estrutura ("Outras avaliações")
-// fica fora, como na estrutura de verdade.
+// o nome da prova é o da estrutura (unitName), igual ao que o professor vê; sem ele (quadro
+// de antes da atualização), o rótulo da coluna, e prova aplicada mais de uma vez, com uma
+// coluna por aplicação "Título (2ª aplicação)", fica com o título sem o sufixo. Prova fora
+// da estrutura ("Outras avaliações") fica fora, como na estrutura de verdade.
 export const OTHER_EXAMS_MODULE = 'Outras avaliações'
 export function structureFromGradebook(gradebook) {
   const columns = Array.isArray(gradebook?.columns) ? gradebook.columns : []
@@ -215,8 +216,9 @@ export function structureFromGradebook(gradebook) {
       moduleByName.set(first.moduleName, module)
       modules.push(module)
     }
+    const unitName = String(first.unitName || '').trim()
     const label = String(first.label || examKey)
-    const name = list.length > 1 ? label.replace(/\s*\([^()]*\)\s*$/, '') || examKey : label
+    const name = unitName || (list.length > 1 ? label.replace(/\s*\([^()]*\)\s*$/, '') || examKey : label)
     module.units.push({ avaliacaoKey: examKey, name })
   })
   return modules
@@ -1080,7 +1082,7 @@ export default function ResultadosPage() {
 
                   {isOpen && (
                   <div className="rb space-y-2.5 p-4 pl-6">
-                    <p className="rb-hint"><Info size={12} /> Cada prova em uma linha. Clique para ver a composição e ajustar.</p>
+                    <p className="rb-hint"><Info size={12} /> Cada prova em uma linha. Clique para ver a composição{canWrite ? ' e ajustar' : ''}.</p>
                     {module.provas.map((prova) => {
                       if (prova.applications.length <= 1) {
                         const only = prova.applications[0]

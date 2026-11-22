@@ -407,6 +407,33 @@ describe('Resultados · Coordenação (só consulta)', () => {
     expect(mocks.post).not.toHaveBeenCalled()
   })
 
+  it('[UC-PAPEIS-004] na página do aluno, o nome da prova é o da estrutura e a dica não fala em ajustar', async () => {
+    mocks.auth = coordenacao
+    mocks.stable.submissions[0].scoreInvalid = false
+    mocks.stable.submissions[0].score = 80
+    mocks.stable.submissions[0].consolidatedScore = 80
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/gradebook')) return { columns: [{ examKey: 'Avaliacao_P2', label: 'Avaliação — Prova 2 completa', moduleName: 'Módulo 1', unitName: 'Prova 2' }], rows: [] }
+      return {}
+    })
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local']}>
+          <Routes>
+            <Route path="/resultados/aluno/:studentId" element={<ResultadosPage />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+      await userEvent.click(await screen.findByRole('button', { name: 'Expandir tudo' }))
+      expect(await screen.findByText(/Cada prova em uma linha\. Clique para ver a composição\.$/)).toBeInTheDocument()
+      expect(screen.queryByText(/e ajustar/)).not.toBeInTheDocument()
+      expect(screen.getAllByText('Prova 2').length).toBeGreaterThan(0)
+      expect(screen.queryByText(/Avaliação — Prova 2 completa/)).not.toBeInTheDocument()
+    } finally {
+      Object.assign(mocks.stable.submissions[0], { scoreInvalid: true, score: 150, consolidatedScore: null })
+    }
+  })
+
   it('[UC-PAPEIS-004] na prova do aluno, só ver e exportar: sem publicar, excluir, usar esta nota nem desconsiderar', async () => {
     mocks.auth = coordenacao
     render(
@@ -445,6 +472,22 @@ describe('Resultados · Coordenação (só consulta)', () => {
       { id: 'Módulo 2', name: 'Módulo 2', units: [{ avaliacaoKey: 'P3', name: 'Prova 3' }] },
     ])
     expect(structureFromGradebook(null)).toEqual([])
+    // Com o nome da estrutura (unitName), a Coordenação vê o mesmo nome que o professor, e
+    // não o título da avaliação que rotula a coluna do quadro.
+    expect(structureFromGradebook({
+      columns: [
+        { examKey: 'W', label: 'Avaliação — Instalação de Windows', moduleName: 'Módulo 1', unitName: 'Instalação de Windows Server + KMS' },
+        { examKey: 'R', label: 'Redes (1ª aplicação)', moduleName: 'Módulo 1', unitName: 'Redes locais' },
+        { examKey: 'R', label: 'Redes (2ª aplicação)', moduleName: 'Módulo 1', unitName: 'Redes locais' },
+        { examKey: 'S', label: 'Sem nome na estrutura', moduleName: 'Módulo 1', unitName: '' },
+      ],
+    })).toEqual([
+      { id: 'Módulo 1', name: 'Módulo 1', units: [
+        { avaliacaoKey: 'W', name: 'Instalação de Windows Server + KMS' },
+        { avaliacaoKey: 'R', name: 'Redes locais' },
+        { avaliacaoKey: 'S', name: 'Sem nome na estrutura' },
+      ] },
+    ])
   })
 })
 

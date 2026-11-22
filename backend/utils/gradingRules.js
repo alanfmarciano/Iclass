@@ -550,7 +550,9 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
     const pendente = etapas.some(etapa => etapa.finalScore === null);
     const recuperacaoPorLancar = (regraFinal !== 'nenhuma' && recuperacaoFinal === null) || etapas.some(etapa => etapa.pendenteRecuperacao);
     let situacao;
-    if (!temNota) situacao = 'sem_notas';
+    // Sem nota nenhuma: "Sem notas", salvo com o período terminado e a frequência abaixo
+    // da mínima, que reprova por falta mesmo sem nota (a falta não some por faltar a nota).
+    if (!temNota) situacao = terminado === true && freq.pct !== null && freq.pct < criterios.frequenciaMinima ? 'reprovado_falta' : 'sem_notas';
     else if (terminado === false || pendente) situacao = 'cursando';
     else if (freq.pct !== null && freq.pct < criterios.frequenciaMinima) situacao = 'reprovado_falta';
     else if (belowMinimum(mediaFinalScore, criterios.mediaMinima) === false) situacao = 'aprovado';
@@ -581,6 +583,11 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
         avisos,
     };
 }
+
+// Avisos que explicam a situação (e não a média). Na unidade 'disciplina', a situação vem
+// das disciplinas: esses avisos saem do núcleo da turma e entram os de cada disciplina,
+// com o nome dela, para nunca contradizer a situação mostrada.
+const AVISOS_DE_SITUACAO = ['recuperacao_nao_lancada'];
 
 // Situação geral a partir das disciplinas (unidade 'disciplina').
 const SITUACAO_PRIORIDADE = ['cursando', 'em_recuperacao', 'reprovado_falta', 'reprovado_nota', 'aprovado'];
@@ -675,18 +682,27 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
     });
     let situacao = combineSituacoes(result.disciplinas.map(item => item.situacao));
     const avisos = [];
+    result.disciplinas.forEach(item => item.avisos
+        .filter(entry => AVISOS_DE_SITUACAO.includes(entry.codigo))
+        .forEach(entry => avisos.push({ ...entry, disciplinaId: item.id, texto: `${item.nome}: ${entry.texto}` })));
     // A frequência mínima vale também para a turma inteira: as faltas lançadas sem
-    // disciplina (ou numa disciplina sem módulo) não podem sumir da situação.
-    if (situacao !== 'sem_notas' && situacao !== 'cursando' && turma.pct !== null && turma.pct < normalized.frequenciaMinima) {
+    // disciplina (ou numa disciplina sem módulo) não podem sumir da situação. Sem nota
+    // nenhuma, só reprova com o período terminado (igual à disciplina).
+    const decideFrequencia = situacao !== 'cursando' && (situacao !== 'sem_notas' || terminado === true);
+    if (decideFrequencia && turma.pct !== null && turma.pct < normalized.frequenciaMinima) {
         avisos.push(aviso('frequencia_turma_abaixo', `Frequência da turma (${turma.pct}%, contando as aulas sem disciplina) abaixo da mínima de ${normalized.frequenciaMinima}%.`));
         situacao = 'reprovado_falta';
     }
     result.situacao = situacao;
     result.situacaoRotulo = SITUACAO_ROTULOS[situacao];
+    const semNotas = result.disciplinas.filter(item => item.situacao === 'sem_notas');
+    if (terminado === true && semNotas.length && situacao !== 'sem_notas') {
+        avisos.push(aviso('disciplina_sem_notas', `${semNotas.map(item => item.nome).join(', ')} sem notas: não ${semNotas.length === 1 ? 'entra' : 'entram'} na situação geral.`));
+    }
     if (foraDeDisciplina) {
         avisos.push(aviso('itens_fora_de_disciplina', `${countLabel(foraDeDisciplina, 'nota de módulo sem disciplina conta', 'notas de módulos sem disciplina contam')} só na média da turma, não na situação das disciplinas.`));
     }
-    if (avisos.length) result.avisos = [...result.avisos, ...avisos];
+    result.avisos = [...result.avisos.filter(entry => !AVISOS_DE_SITUACAO.includes(entry.codigo)), ...avisos];
     return result;
 }
 

@@ -390,6 +390,9 @@ test('[UC-NOTAS-002] planilha da turma: uma linha por aluno, coluna por prova, m
         'Prova 2',
         'Prova 3',
     ]);
+    // O nome da prova na estrutura vai junto (Resultados monta a estrutura por ele para quem
+    // não abre o editor de cursos); o CSV continua só com o rótulo.
+    assert.deepEqual(json.body.columns.map(column => column.unitName), ['Prova 1', 'Prova 1', 'Prova 2', 'Prova 3']);
     assert.deepEqual(json.body.rows.map(row => row.email).sort(), ['ana@notas.local', 'bia@notas.local', 'hack@notas.local'], 'Caio é de 1DES de outro curso');
     const ana = json.body.rows.find(row => row.email === 'ana@notas.local');
     const list = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`));
