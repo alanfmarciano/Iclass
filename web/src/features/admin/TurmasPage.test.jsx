@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
   apiData: {},
+  auth: { role: 'admin', accountRole: 'admin' },
 }))
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post, put: mocks.put, delete: mocks.del } }))
@@ -20,7 +21,7 @@ vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => ({ data: (path && mocks.apiData[path]) || null, loading: false, error: null, refetch: vi.fn() }),
 }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
-vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { role: 'admin', accountRole: 'admin' } }) }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 
 function renderPage() {
   return render(<MemoryRouter><TurmasPage /></MemoryRouter>)
@@ -29,6 +30,7 @@ function renderPage() {
 describe('TurmasPage · cursos', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.auth = { role: 'admin', accountRole: 'admin' }
     mocks.apiData = {
       '/api/admin/course-summaries?includeDeleted=1': [
         { id: 'DES', name: 'Técnico em TI', description: 'Desenvolvimento', schoolId: 'escola-a', status: 'active', stats: { classCount: 1, studentCount: 3 } },
@@ -86,5 +88,20 @@ describe('TurmasPage · cursos', () => {
     await user.selectOptions(screen.getByLabelText('Filtrar por status'), 'deleted')
     await user.click(await screen.findByRole('button', { name: 'Restaurar' }))
     await waitFor(() => expect(mocks.put).toHaveBeenCalledWith('/api/admin/courses/OLD', { status: 'active', deleted: false, deletedAt: null }))
+  })
+
+  it('conta que não é administrador vê o total de professores da turma que o servidor manda (não "0 professor(es)")', async () => {
+    const user = userEvent.setup()
+    mocks.auth = { role: 'admin', accountRole: 'secretaria', effectivePermissions: ['page.classes'] }
+    mocks.apiData['/api/admin/classes'] = [
+      { name: '1DES', courseId: 'DES', period: 'Manhã', professorCount: 2 },
+      { name: '2DES', courseId: 'DES', period: 'Tarde', professorCount: 0 },
+    ]
+    delete mocks.apiData['/api/admin/accounts']
+    renderPage()
+    await user.click(screen.getByRole('button', { name: /Técnico em TI/ }))
+    expect(screen.getByText('2 professor(es)')).toBeInTheDocument()
+    expect(screen.getByText('0 professor(es)')).toBeInTheDocument()
+    expect(screen.getAllByText('Sem professor')).toHaveLength(1)
   })
 })
