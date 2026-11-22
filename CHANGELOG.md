@@ -18,11 +18,11 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - "Salvar no banco" vale para os seis tipos de questão.
 
 ### Banco de questões com os tipos novos, metadados e estatística
-- O banco de questões guarda os seis tipos, com pontos, gabarito, explicação, dificuldade, habilidades, etiquetas e categoria. "Levar a avaliação para o banco" leva todas as questões completas; antes, só as de "Uma correta" e de verdadeiro ou falso entravam.
-- Em Provas, o botão "Ver banco de questões" abre o banco também fora do editor. A lista filtra por busca (sem acento), categoria, tipo, dificuldade e etiqueta, e cada questão mostra o tipo, a dificuldade, a resposta, as etiquetas, em quantas aplicações foi usada e o % de acerto (só das entregas consideradas das suas turmas).
+- O banco de questões guarda os seis tipos, com pontos, gabarito, explicação, dificuldade, habilidades, etiquetas e categoria. Antes, só as de "Uma correta" e de verdadeiro ou falso podiam ir para o banco.
+- Em Provas, o botão "Ver banco de questões" abre o banco também fora do editor. A lista filtra por busca (sem acento), categoria, tipo, dificuldade e etiqueta, e cada questão mostra o tipo, a dificuldade, a resposta, as etiquetas, em quantas aplicações foi usada e o % de acerto (só das entregas consideradas das suas turmas). A prova impressa conta também: as respostas lançadas pelo cartão-resposta entram no % de acerto.
 - "Editar" e "Nova questão" usam o mesmo cartão do editor da prova. Cada alteração sobe a revisão e fica na Auditoria; salvar sem mudar nada não grava.
 - "Arquivar" tira a questão da lista sem apagar; "Mostrar arquivadas" mostra de novo e "Desarquivar" devolve. "Excluir" pergunta antes.
-- A questão adicionada do banco aparece com a etiqueta "Do banco" e não é salva no banco de novo. Na troca de questão do Monitor, a nova questão vem com o tipo, os pontos e o gabarito dela, e a lista mostra o tipo e a resposta.
+- A questão adicionada do banco aparece com a etiqueta "Do banco" e não é salva no banco de novo. Se você muda o enunciado ou o gabarito dela na prova, ela vira uma questão da prova: a etiqueta sai, "Salvar no banco" volta a funcionar e os usos e acertos dela não contam mais para a questão do banco (desfazer a mudança religa). Na troca de questão do Monitor, a nova questão vem com o tipo, os pontos e o gabarito dela, e a lista mostra o tipo e a resposta.
 - O professor só altera, arquiva ou exclui questões do banco das avaliações dele.
 
 ### Prova do aluno com os tipos novos de questão

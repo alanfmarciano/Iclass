@@ -189,12 +189,74 @@ function keysByNumber(questions) {
     return map;
 }
 
+// Entrega lançada pelo cartão-resposta (POST /api/admin/submissions/create): não tem
+// examSnapshot nem applicationId, e o número de cada resposta é o da questão na
+// avaliação (originalNumber). A chave do banco vem:
+// 1. da prova impressa registrada no histórico da turma (examHistory[examKey], type
+//    'impressa'): a mais nova cujas versões têm todas as questões respondidas (a do
+//    activeHistoryId primeiro, como a revisão da entrega faz). versionSnapshots é o que a
+//    avaliação tinha na impressão, com o bankKey que o servidor copiou (não o da tela);
+// 2. senão (cartão lançado pela avaliação, sem escolher a versão impressa), das questões
+//    da avaliação, que são as que o lançamento usou para corrigir. Se a turma não tem
+//    prova impressa registrada nessa prova, ela não tem outro registro de uso: as
+//    entregas da turma contam uma aplicação para cada questão do banco respondida
+//    (extraUses).
+// Devolve { byNumber, extraUses }.
+function printedKeysResolver(memory) {
+    const classes = Array.isArray(memory?.classes) ? memory.classes : [];
+    const evaluations = memory?.evaluations && typeof memory.evaluations === 'object' ? memory.evaluations : {};
+    const evaluationKeys = new Map();
+    const keysOfEvaluation = examKey => {
+        if (!evaluationKeys.has(examKey)) {
+            const evaluation = Object.prototype.hasOwnProperty.call(evaluations, examKey) ? evaluations[examKey] : null;
+            evaluationKeys.set(examKey, keysByNumber(evaluation && Array.isArray(evaluation.questions) ? evaluation.questions : []));
+        }
+        return evaluationKeys.get(examKey);
+    };
+    const countedGroups = new Map();
+    const none = { byNumber: new Map(), extraUses: [] };
+    return (submission, studentClass, courseId, answers) => {
+        // Só o lançamento pelo cartão (ou impresso antigo com respostas): a entrega online
+        // antiga sem aplicação nem snapshot não é da prova impressa e fica fora, como antes.
+        if (submission.entryMode !== 'card' && submission.type !== 'impressa') return none;
+        const examKey = textOf(submission.examKey).trim();
+        if (!examKey) return none;
+        const cls = classes.find(item => item && typeof item === 'object' && item.name === studentClass && (!courseId || !item.courseId || String(item.courseId) === String(courseId)));
+        const history = cls && cls.examHistory && typeof cls.examHistory === 'object' && Array.isArray(cls.examHistory[examKey])
+            ? cls.examHistory[examKey].filter(item => item && typeof item === 'object' && item.type === 'impressa')
+            : [];
+        const numbers = answers.map(answer => Number(answer?.questionNumber)).filter(Number.isFinite);
+        const activeId = textOf(submission.activeHistoryId);
+        const ordered = activeId
+            ? [...history.filter(item => item.id === activeId), ...history.filter(item => item.id !== activeId).reverse()]
+            : [...history].reverse();
+        for (const historyEntry of ordered) {
+            const versions = Array.isArray(historyEntry.versionSnapshots) ? historyEntry.versionSnapshots : [];
+            const matched = versions.some(version => {
+                const inVersion = new Set((Array.isArray(version?.questions) ? version.questions : []).map(questionNumberOf));
+                return numbers.every(number => inVersion.has(number));
+            });
+            if (matched) return { byNumber: keysByNumber(snapshotQuestions(versions)), extraUses: [] };
+        }
+        const byNumber = keysOfEvaluation(examKey);
+        if (history.length) return { byNumber, extraUses: [] };
+        const group = `${studentClass}\u0000${courseId}\u0000${examKey}`;
+        if (!countedGroups.has(group)) countedGroups.set(group, new Set());
+        const counted = countedGroups.get(group);
+        const extraUses = [...new Set(numbers.map(number => byNumber.get(number)).filter(key => key && !counted.has(key)))];
+        extraUses.forEach(key => counted.add(key));
+        return { byNumber, extraUses };
+    };
+}
+
 function emptyStats() {
     return { usos: 0, respostas: 0, pendentes: 0, acertoPct: null };
 }
 
 // Estatística de cada questão do banco, por chave: usos (aplicações online que não foram
-// canceladas e provas impressas registradas com a questão), respostas contadas, respostas
+// canceladas, provas impressas registradas com a questão e, sem registro, a prova impressa
+// lançada pelo cartão-resposta na turma), respostas contadas (as do cartão-resposta
+// também, por printedKeysResolver), respostas
 // aguardando o professor e % de acerto (pontos obtidos sobre os possíveis em cada
 // resposta corrigida; entrega antiga sem pontos conta 100% ou 0% pelo acerto). Só entram
 // entregas consideradas (não arquivadas, não anuladas) e só turmas que canAccessClass
@@ -233,6 +295,7 @@ function questionBankStats(memory, { canAccessClass = null } = {}) {
         if (!applicationKeys.has(id)) applicationKeys.set(id, keysByNumber(snapshotQuestions(applications.get(id)?.versionSnapshots)));
         return applicationKeys.get(id);
     };
+    const printed = printedKeysResolver(memory);
     (Array.isArray(memory?.submissions) ? memory.submissions : []).forEach(submission => {
         if (!isConsideredSubmission(submission)) return;
         const answers = Array.isArray(submission.gradedAnswers) ? submission.gradedAnswers : [];
@@ -242,6 +305,12 @@ function questionBankStats(memory, { canAccessClass = null } = {}) {
         if (!allowed(studentClass, courseId)) return;
         let byNumber = keysByNumber(submission.examSnapshot?.questions);
         if (!byNumber.size && submission.applicationId && applications.has(submission.applicationId)) byNumber = keysOfApplication(submission.applicationId);
+        // Lançada pelo cartão-resposta (prova impressa): sem snapshot e sem aplicação.
+        if (!byNumber.size && !submission.applicationId) {
+            const resolved = printed(submission, studentClass, courseId, answers);
+            byNumber = resolved.byNumber;
+            resolved.extraUses.forEach(key => { entry(key).usos += 1; });
+        }
         if (!byNumber.size) return;
         answers.forEach(answer => {
             if (!answer || typeof answer !== 'object') return;

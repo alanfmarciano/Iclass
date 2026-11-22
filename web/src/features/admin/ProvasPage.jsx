@@ -57,6 +57,7 @@ import {
   questionProblems,
   questionTypeLabel,
   totalPoints,
+  withBankLink,
 } from './questionEditorModel'
 
 const EXAM_TOKEN_LENGTH = 5
@@ -730,7 +731,8 @@ export default function ProvasPage() {
   }
 
   // "Salvar no banco" vale para os seis tipos (o banco usa o modelo da questão, P3-S9a). A
-  // questão salva passa a apontar para o item novo do banco (bankKey).
+  // questão salva passa a apontar para o item novo do banco (bankKey), com a assinatura do
+  // que foi salvo (se o professor mudou a questão enquanto o pedido ia, ela já é outra).
   async function saveQuestionToBank(question) {
     const [problem] = questionProblems(question)
     if (problem) return toast.error(`Complete a questão antes de salvar no banco: ${problem}`)
@@ -742,7 +744,7 @@ export default function ProvasPage() {
       const response = await api.post('/api/admin/question-bank/create', payload)
       const bankKey = response?.question?.key
       if (bankKey) {
-        setEditor((current) => (current ? { ...current, questions: current.questions.map((item) => (item.uid === question.uid ? { ...item, bankKey } : item)) } : current))
+        setEditor((current) => (current ? { ...current, questions: current.questions.map((item) => (item.uid === question.uid ? { ...item, bankKey, bankSignature: withBankLink(question, bankKey).bankSignature } : item)) } : current))
       }
       toast.success('Questão salva no banco')
     } catch (error) { toast.error(error.message) }

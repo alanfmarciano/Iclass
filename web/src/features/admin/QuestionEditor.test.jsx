@@ -228,6 +228,33 @@ describe('[UC-PROVA-004] editor de questões do professor', () => {
     expect(within(card(4)).getByRole('button', { name: 'Salvar no banco (questão 4)' })).not.toBeDisabled()
   })
 
+  // Rodada de ajuste 1 do A7: a questão do banco mudada na prova continuava com o bankKey e
+  // a prova aplicada contava usos e acerto para o item do banco, com outra questão.
+  it('mudar o enunciado ou o gabarito da questão do banco a desliga do banco; pontos não; desfazer religa', () => {
+    const onSaveToBank = vi.fn()
+    render(<Harness initial={[
+      { text: 'Qual porta o HTTP usa?', alternatives: [{ text: '80', isCorrect: true }, { text: '21' }], bankKey: 'qb_1' },
+      { type: 'numeric', text: 'Hosts numa /26?', numeric: { value: 62, tolerance: 0 }, bankKey: 'qb_2' },
+    ]} onSaveToBank={onSaveToBank} />)
+    expect(payloads().map((payload) => payload.bankKey)).toEqual(['qb_1', 'qb_2'])
+    // Pontos e dificuldade não mudam a questão.
+    type(within(card(1)).getByLabelText('Pontos'), '2,5')
+    expect(within(card(1)).getByText('Do banco')).toBeInTheDocument()
+    expect(payloads()[0]).toMatchObject({ bankKey: 'qb_1', points: 2.5 })
+    // O enunciado sim.
+    type(within(card(1)).getByLabelText('Enunciado'), 'Qual porta o HTTPS usa?')
+    expect(within(card(1)).queryByText('Do banco')).toBeNull()
+    expect(payloads()[0]).not.toHaveProperty('bankKey')
+    expect(within(card(1)).getByRole('button', { name: 'Salvar no banco (questão 1)' })).not.toBeDisabled()
+    type(within(card(1)).getByLabelText('Enunciado'), 'Qual porta o HTTP usa?')
+    expect(within(card(1)).getByText('Do banco')).toBeInTheDocument()
+    expect(payloads()[0].bankKey).toBe('qb_1')
+    // O gabarito da numérica também.
+    type(within(card(2)).getByLabelText('Resposta certa'), '30')
+    expect(within(card(2)).queryByText('Do banco')).toBeNull()
+    expect(payloads()[1]).not.toHaveProperty('bankKey')
+  })
+
   it('sem os botões de lista, o cartão serve de editor de um item só (banco de questões)', () => {
     render(<QuestionCard question={editorQuestion({ text: 'Q', type: 'true_false', correctAnswer: 'A' })} index={0} onChange={() => {}} label="Questão do banco" />)
     const group = screen.getByRole('group', { name: 'Questão do banco' })

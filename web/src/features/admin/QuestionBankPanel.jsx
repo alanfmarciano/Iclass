@@ -31,6 +31,7 @@ import {
   bankQuery,
   bankUsageText,
   hasBankFilters,
+  mergeFacet,
 } from './questionBankModel'
 
 // Banco de questões do professor (fase 3, P3-S9a: AVA-15; desenho P3, telas.professor
@@ -51,12 +52,6 @@ const SEARCH_DELAY_MS = 300
 function capitalize(text) {
   const value = String(text || '')
   return value.charAt(0).toUpperCase() + value.slice(1)
-}
-
-function mergeFacet(list, value) {
-  const text = String(value || '').trim()
-  if (!text || (list || []).some((item) => item.toLocaleLowerCase('pt-BR') === text.toLocaleLowerCase('pt-BR'))) return list || []
-  return [...(list || []), text].sort((a, b) => a.localeCompare(b, 'pt-BR'))
 }
 
 export default function QuestionBankPanel({ open, onClose, onAddToExam = null, defaultCategory = '' }) {

@@ -200,7 +200,7 @@ export function editorQuestion(source = {}) {
   const points = source?.points === undefined || source?.points === null || source?.points === ''
     ? '1'
     : (typeof source.points === 'number' ? formatDecimal(source.points) : String(source.points))
-  return {
+  const question = {
     uid: nextUid(),
     type,
     points,
@@ -227,6 +227,33 @@ export function editorQuestion(source = {}) {
     tags: listOf(source?.tags).join(', '),
     bankKey: textOf(source?.bankKey),
   }
+  return withBankLink(question, question.bankKey)
+}
+
+// Ligação da questão com o item do banco (P3-S9a). A questão guarda o bankKey e a
+// "assinatura" do que ela pergunta e de como é corrigida (tipo, enunciado, alternativas,
+// gabarito, rubrica) no momento em que veio do banco ou foi salva nele. Se o professor
+// muda o enunciado ou o gabarito no editor da prova, a questão já é outra: deixa de ser
+// "Do banco", o bankKey não vai mais no corpo da avaliação e o banco não conta os usos e
+// o acerto dela para o item antigo (desfazer a mudança religa). Pontos, explicação e os
+// metadados não mudam a questão.
+const OUTSIDE_SIGNATURE = ['points', 'explanation', 'difficulty', 'skills', 'tags', 'bankKey']
+
+export function questionSignature(question = {}) {
+  const payload = editorQuestionPayload({ ...question, bankKey: '' })
+  OUTSIDE_SIGNATURE.forEach((field) => { delete payload[field] })
+  return JSON.stringify(payload)
+}
+
+export function withBankLink(question, bankKey) {
+  const key = textOf(bankKey)
+  return { ...question, bankKey: key, bankSignature: key ? questionSignature(question) : '' }
+}
+
+export function linkedBankKey(question = {}) {
+  if (!question.bankKey) return ''
+  if (!question.bankSignature) return question.bankKey
+  return questionSignature(question) === question.bankSignature ? question.bankKey : ''
 }
 
 // Cópia para "Duplicar": mesma questão com outro uid (os ids da rubrica ficam). A cópia
@@ -236,6 +263,7 @@ export function duplicateEditorQuestion(question) {
   return {
     ...question,
     bankKey: '',
+    bankSignature: '',
     uid: nextUid(),
     alternatives: question.alternatives.map((alternative) => ({ ...alternative })),
     numeric: { ...question.numeric },
@@ -319,7 +347,8 @@ export function editorQuestionPayload(question = {}) {
   if (skills.length) payload.skills = skills
   const tags = splitList(question.tags)
   if (tags.length) payload.tags = tags
-  if (question.bankKey) payload.bankKey = question.bankKey
+  const bankKey = linkedBankKey(question)
+  if (bankKey) payload.bankKey = bankKey
   return payload
 }
 

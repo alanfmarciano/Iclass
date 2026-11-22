@@ -10,6 +10,10 @@
 //   ela que o banco conta usos e acertos).
 // - bankUsageText(stats) e bankAccuracyText(stats): "Usada em 3 aplicações", "63% de
 //   acerto em 4 respostas".
+// - mergeFacet(lista, valor): a lista de categorias ou etiquetas dos filtros com o valor
+//   que o professor acabou de salvar, sem repetir por acento ou maiúscula e na ordem do
+//   português (como bankFacets no servidor, pelo textSearch).
+import { compareText, normalizeSearch } from '../../lib/textSearch'
 import { editorQuestion, editorQuestionPayload, splitList } from './questionEditorModel'
 
 export const BANK_DIFFICULTY_LABELS = Object.freeze({ facil: 'Fácil', media: 'Média', dificil: 'Difícil' })
@@ -49,6 +53,14 @@ export function bankQuery(filters = {}) {
 
 export function hasBankFilters(filters = {}) {
   return ['q', 'categoria', 'tipo', 'dificuldade', 'tag'].some((field) => String(filters[field] || '').trim())
+}
+
+export function mergeFacet(list, value) {
+  const current = Array.isArray(list) ? list : []
+  const text = String(value || '').trim()
+  const key = normalizeSearch(text)
+  if (!key || current.some((item) => normalizeSearch(item) === key)) return current
+  return [...current, text].sort(compareText)
 }
 
 export function bankQuestionForExam(item = {}) {

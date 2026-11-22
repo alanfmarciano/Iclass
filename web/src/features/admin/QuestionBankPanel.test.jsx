@@ -13,7 +13,7 @@ vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 
 import QuestionBankPanel from './QuestionBankPanel'
-import { bankAccuracyText, bankItemPayload, bankQuery, bankQuestionForExam, bankUsageText } from './questionBankModel'
+import { bankAccuracyText, bankItemPayload, bankQuery, bankQuestionForExam, bankUsageText, mergeFacet } from './questionBankModel'
 import { editorQuestion } from './questionEditorModel'
 
 const numericItem = {
@@ -84,6 +84,19 @@ describe('[UC-BANCO-001] questionBankModel', () => {
     expect(bankUsageText(undefined)).toBe('Ainda não usada')
     expect(bankAccuracyText(numericItem.stats)).toBe('63% de acerto em 4 respostas · 1 aguardando correção')
     expect(bankAccuracyText(choiceItem.stats)).toBe('Sem respostas corrigidas')
+  })
+})
+
+describe('[UC-BANCO-001] mergeFacet', () => {
+  // Rodada de ajuste 1 do A7: depois de salvar, a tela comparava só maiúsculas e tratava
+  // "Redes" e "Rêdes" como categorias diferentes até recarregar (o servidor não).
+  it('não repete a categoria por acento ou maiúscula e põe na ordem do português', () => {
+    const list = ['Linux', 'Redes']
+    expect(mergeFacet(list, 'Rêdes')).toBe(list)
+    expect(mergeFacet(list, '  REDES ')).toBe(list)
+    expect(mergeFacet(list, '')).toBe(list)
+    expect(mergeFacet(list, 'Álgebra')).toEqual(['Álgebra', 'Linux', 'Redes'])
+    expect(mergeFacet(undefined, 'ipv4')).toEqual(['ipv4'])
   })
 })
 

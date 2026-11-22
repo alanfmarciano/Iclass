@@ -401,6 +401,89 @@ test('[UC-BANCO-001] questão vinda do banco leva bankKey até a entrega, e a es
     assert.deepEqual(byKey[numericItem.key], { usos: 1, respostas: 1, pendentes: 0, acertoPct: 100 });
 });
 
+// Rodada de ajuste 1 do A7: a prova impressa contava como uso, mas as respostas lançadas
+// pelo cartão-resposta (sem examSnapshot e sem applicationId) nunca entravam no % de
+// acerto ("Usada em 1 aplicação · Sem respostas corrigidas" com a prova já corrigida).
+test('[UC-BANCO-001] prova impressa: as respostas do cartão-resposta contam no % de acerto da questão do banco', async () => {
+    seed();
+    db.memory.students.push({ name: 'Bruno', email: 'bruno@banco.local', status: 'Ativo', classes: [{ name: studentClass, courseId }] });
+    const fromBank = await create(ITEMS.multiple_choice);
+    const trueFalse = await create(ITEMS.true_false);
+    const put = await asAdmin('put', `/api/admin/evaluation/${examKey}`).send({
+        title: 'Prova de redes', theme: 'Redes', rubric: '',
+        questions: [
+            { ...ITEMS.multiple_choice, bankKey: fromBank.key },
+            { type: 'true_false', text: 'Questão própria da prova.', correctAnswer: 'B' },
+            { ...ITEMS.true_false, bankKey: trueFalse.key },
+        ],
+    });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    // Versão impressa com as questões em outra ordem (3, 1, 2), como o sorteio da tela faz.
+    const printSnapshot = browserSnapshot(put.body.evaluation);
+    printSnapshot[0].questions = [printSnapshot[0].questions[2], printSnapshot[0].questions[0], printSnapshot[0].questions[1]]
+        .map((question, index) => ({ ...question, examNumber: index + 1 }));
+    await asAdmin('post', '/api/admin/exam-history/add').send({
+        studentClass, courseId, examKey, type: 'impressa', label: 'Impressa',
+        questionNumbers: [1, 2, 3], printSnapshot,
+    }).expect(200);
+    const statsOf = async key => (await asAdmin('get', '/api/admin/question-bank').expect(200)).body.questions.find(question => question.key === key).stats;
+    assert.deepEqual(await statsOf(fromBank.key), { usos: 1, respostas: 0, pendentes: 0, acertoPct: null });
+
+    // Cartão da Ana pela versão impressa: acerta a 1 e erra a 3 (do banco) e a 2 (da prova).
+    const card = (studentEmail, answers) => asAdmin('post', '/api/admin/submissions/create')
+        .send({ studentEmail, examKey, studentClass, courseId, type: 'impressa', mode: 'card', answers, questionNumbers: [3, 1, 2] });
+    const ana = await card(student.email, { 1: 'A', 2: 'A', 3: 'B' });
+    assert.equal(ana.status, 200, JSON.stringify(ana.body));
+    const stored = db.memory.submissions.find(item => item.student?.email === student.email);
+    assert.equal(stored.applicationId, undefined);
+    assert.equal(stored.examSnapshot, undefined);
+    assert.deepEqual(await statsOf(fromBank.key), { usos: 1, respostas: 1, pendentes: 0, acertoPct: 100 });
+    assert.deepEqual(await statsOf(trueFalse.key), { usos: 1, respostas: 1, pendentes: 0, acertoPct: 0 });
+    // Cartão do Bruno: erra a 1, acerta a 3.
+    (await card('bruno@banco.local', { 1: 'B', 3: 'A' })).status === 200 || assert.fail('cartão do Bruno');
+    assert.deepEqual(await statsOf(fromBank.key), { usos: 1, respostas: 2, pendentes: 0, acertoPct: 50 });
+    assert.deepEqual(await statsOf(trueFalse.key), { usos: 1, respostas: 2, pendentes: 0, acertoPct: 50 });
+    // Arquivar a entrega tira a resposta da conta.
+    stored.resultStatus = 'archived';
+    assert.deepEqual(await statsOf(fromBank.key), { usos: 1, respostas: 1, pendentes: 0, acertoPct: 0 });
+});
+
+test('[UC-BANCO-001] cartão-resposta sem prova impressa registrada: as questões da avaliação dão a chave e o uso', () => {
+    const evaluationQuestions = [{ originalNumber: 1, bankKey: 'qb_a' }, { originalNumber: 2 }, { originalNumber: 3, bankKey: 'qb_b' }];
+    const cardSubmission = (id, answers, extra = {}) => ({
+        id, examKey, type: 'impressa', entryMode: 'card', student: { studentClass, courseId },
+        gradedAnswers: answers.map(([questionNumber, isCorrect]) => ({ questionNumber, studentChoice: 'A', correctAnswer: 'A', isCorrect })),
+        ...extra,
+    });
+    const memory = {
+        evaluations: { [examKey]: { questions: evaluationQuestions } },
+        classes: [
+            { name: studentClass, courseId, examHistory: {} },
+            // Turma com prova impressa registrada: o uso já vem do histórico; o cartão lançado
+            // pela avaliação (números que não batem com a versão) usa as questões dela.
+            { name: '2OUT', courseId, examHistory: { [examKey]: [{ id: 'eh_1', type: 'impressa', versionSnapshots: [{ version: 'A', questions: [{ originalNumber: 1, bankKey: 'qb_a' }] }] }] } },
+        ],
+        submissions: [
+            cardSubmission('s1', [[1, true], [2, true], [3, false]]),
+            cardSubmission('s2', [[1, false], [3, false]]),
+            cardSubmission('s3', [[1, true], [3, true]], { student: { studentClass: '2OUT', courseId } }),
+            // Lançamento rápido (sem cartão) não tem respostas por questão.
+            { id: 's4', examKey, type: 'impressa', entryMode: 'quick', student: { studentClass, courseId }, gradedAnswers: [] },
+            // Entrega online antiga sem snapshot e sem aplicação: não vira resposta de cartão,
+            // nem na turma com prova impressa registrada.
+            { id: 's5', examKey, type: 'online', student: { studentClass, courseId }, gradedAnswers: [{ questionNumber: 1, isCorrect: true }] },
+            { id: 's6', examKey, type: 'online', student: { studentClass: '2OUT', courseId }, gradedAnswers: [{ questionNumber: 1, isCorrect: true }] },
+        ],
+    };
+    const stats = questionBankStats(memory);
+    // qb_a: uso da turma 1RED (sem registro) + impressa da 2OUT; respostas s1, s2, s3.
+    assert.deepEqual(stats.get('qb_a'), { usos: 2, respostas: 3, pendentes: 0, acertoPct: 67 });
+    // qb_b: só o uso da 1RED (a versão impressa da 2OUT não tem a qb_b).
+    assert.deepEqual(stats.get('qb_b'), { usos: 1, respostas: 3, pendentes: 0, acertoPct: 33 });
+    const scoped = questionBankStats(memory, { canAccessClass: name => name === '2OUT' });
+    assert.deepEqual(scoped.get('qb_a'), { usos: 1, respostas: 1, pendentes: 0, acertoPct: 100 });
+});
+
 test('[UC-BANCO-001] professor: vê e altera só o que é do escopo dele; a estatística conta só as turmas dele', async () => {
     seed();
     const shared = await create(ITEMS.true_false);

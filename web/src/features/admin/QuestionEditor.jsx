@@ -22,6 +22,7 @@ import {
   formatDecimal,
   formatPointsLabel,
   isChoiceType,
+  linkedBankKey,
   questionProblems,
   questionTypeLabel,
   rubricTotal,
@@ -47,7 +48,8 @@ import {
 //   (ConfirmDialog, contrato C12 do P3).
 // Trocar o tipo não apaga o que já foi escrito (questionEditorModel.js).
 // "Salvar no banco" vale para os seis tipos desde o banco no modelo único (P3-S9a); a
-// questão que já está no banco (bankKey) mostra "Do banco" e não é salva de novo. O cartão
+// questão que já está no banco (bankKey) mostra "Do banco" e não é salva de novo; mudar o
+// enunciado ou o gabarito dela no editor a desliga do banco (linkedBankKey). O cartão
 // (QuestionCard) também é o editor de um item do banco (QuestionBankPanel.jsx): sem
 // onMove, onDuplicate, onRemove e onSaveToBank, os botões deles não aparecem.
 
@@ -432,7 +434,7 @@ export function QuestionCard({ question, index, count = 1, onChange, onMove, onD
   const problems = showProblems ? questionProblems(question) : []
   const typeOption = QUESTION_TYPE_OPTIONS.find((option) => option.value === question.type) || QUESTION_TYPE_OPTIONS[0]
   const points = editorPointsValue(question)
-  const inBank = !!question.bankKey
+  const inBank = !!linkedBankKey(question)
   const cardLabel = label || `Questão ${index + 1}`
   return (
     <Card id={`questao-editor-${index + 1}`} className={`min-w-0 space-y-3 p-3 sm:p-4 ${problems.length ? 'border-warning/60' : ''}`} aria-label={cardLabel} role="group">
