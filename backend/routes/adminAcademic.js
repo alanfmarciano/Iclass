@@ -29,7 +29,10 @@
 // ou tira a marca naoLetivoId desses registros (academicCalendar.syncNonSchoolDayMarks,
 // só nas datas do dia), e a frequência passa a ignorá-los ou a contá-los de novo. Nenhum
 // registro é apagado; a chamada e a marcação individual nunca são marcadas; turma
-// encerrada não muda. A gravação é parcial: nonSchoolDays, auditLogs e, em attendance
+// encerrada não muda. O dia de uma turma passa pelo portão da turma encerrada
+// (assertClassOpen em create, update e delete; sem efeito até o B10); o de curso, escola
+// ou instituição e os feriados nacionais não (valem para muitas turmas, e a encerrada só
+// fica de fora da marca). A gravação é parcial: nonSchoolDays, auditLogs e, em attendance
 // (coleção que só cresce), as linhas que mudaram (changed).
 const express = require('express');
 const crypto = require('crypto');
@@ -247,6 +250,16 @@ function auditTarget(day) {
     return out;
 }
 
+// Turma do dia de escopo 'turma', para o portão da turma encerrada (X4 do plano:
+// assertClassOpen, sem efeito até o B10), ou null. O dia de curso, escola ou instituição
+// vale para muitas turmas e não passa pelo portão (um feriado não pode ser recusado por
+// uma turma encerrada): a turma encerrada só fica de fora da marca
+// (syncNonSchoolDayMarks olha isClassClosed).
+function dayClass(day) {
+    if (!day || day.escopo !== 'turma') return null;
+    return findClassByNameAndCourse(db.memory.classes || [], day.studentClass, day.courseId);
+}
+
 function saveWithMarks(marks) {
     const options = { only: ['nonSchoolDays', 'auditLogs'] };
     if (marks && marks.changedIds.length) options.changed = { attendance: marks.changedIds };
@@ -321,6 +334,8 @@ function createAdminAcademicRouter() {
                     : 'Sua conta não pode cadastrar dia não letivo com este alcance. Escolha a sua turma ou peça ao administrador.', 'escopo', 403);
             }
             if (findDuplicate(day)) return res.status(409).json({ success: false, code: 'duplicate', error: 'Este dia não letivo já está cadastrado.' });
+            // Turma encerrada não ganha dia não letivo (muda a presença dela).
+            if (!academicCalendar.assertClassOpen(dayClass(day), { res })) return;
             const now = Date.now();
             const record = storedDay(day, { id: newDayId(), criadoEm: now, criadoPor: actorEmail(account), atualizadoEm: now });
             if (!Array.isArray(db.memory.nonSchoolDays)) db.memory.nonSchoolDays = [];
@@ -357,6 +372,8 @@ function createAdminAcademicRouter() {
             const { day } = parsed;
             if (!canManageDay(account, day)) return fieldError(res, 'Sua conta não pode dar este alcance ao dia não letivo.', 'escopo', 403);
             if (findDuplicate(day, current.id)) return res.status(409).json({ success: false, code: 'duplicate', error: 'Já existe um dia não letivo igual a este.' });
+            // A turma de antes e a de depois (dia de turma) precisam estar abertas.
+            if (!academicCalendar.assertClassOpen([dayClass(currentDay), dayClass(day)].filter(Boolean), { res })) return;
             // Salvar sem mudar nada não grava nem registra.
             if (dayKey(day) === dayKey(currentDay)) {
                 return res.json({ success: true, dia: dayView(account, current), semMudanca: true, marcadas: 0, desmarcadas: 0 });
@@ -398,6 +415,7 @@ function createAdminAcademicRouter() {
             if (currentDay ? !canManageDay(account, currentDay) : !isFullAdmin(account)) {
                 return res.status(403).json({ error: outOfScopeMessage(account, 'O dia não letivo') });
             }
+            if (!academicCalendar.assertClassOpen(dayClass(currentDay), { res })) return;
             db.memory.nonSchoolDays = list.filter(item => item !== current);
             // As presenças do login nessas datas voltam a contar (a marca sai).
             const marks = academicCalendar.syncNonSchoolDayMarks(db.memory, {

@@ -2000,8 +2000,17 @@ router.get('/api/admin/student/attendance', (req, res) => {
         const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : null; // YYYY-MM
         let list = (db.memory.attendance || []).filter(a => a.studentEmail === email);
         if (month) list = list.filter(a => (a.date || '').slice(0, 7) === month);
+        // Dia com a presença automática do login em dia não letivo, que não conta na
+        // frequência (naoLetivoId): 'nao_letivo', a não ser que outro registro do dia valha.
         const days = {};
-        list.forEach(a => { if (a.date) days[a.date] = a.origin || 'login'; });
+        list.forEach(a => {
+            if (!a.date) return;
+            if (attendanceUtil.isIgnoredNonSchoolRecord(a)) {
+                if (!days[a.date]) days[a.date] = 'nao_letivo';
+                return;
+            }
+            days[a.date] = a.origin || 'login';
+        });
         res.json({ month, days });
     });
 });
@@ -2303,7 +2312,10 @@ function _gradeAulasForRoster(gradeAulas, course) {
 // tipo, tipoRotulo, inicio, fim, escopo }) ou foraDoPeriodo vêm preenchidos, a grade da
 // semana vem em aulasGrade e aulas vem [] (a tela mostra a faixa sem a grade), até o
 // pedido com ?mesmoAssim=1 ("Fazer chamada mesmo assim": reposição), que traz a grade em
-// aulas como num dia letivo; a chamada salva assim conta na frequência.
+// aulas como num dia letivo; a chamada salva assim conta na frequência. Já há chamada ou
+// marcação individual naquela data (de algum aluno da lista): o roster entra sozinho no
+// "mesmo assim" (chamadaNoDia: true), para quem volta ao dia ver a chamada salva e não a
+// tela de dia sem aula. Só a presença automática do login não conta (não é lançamento).
 router.get('/api/admin/attendance/roster', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.query.studentClass || '').trim();
@@ -2318,14 +2330,17 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         const dia = dayStatus(db.memory, cls, date);
         const aulasGrade = _gradeAulasForRoster(dia.aulasGrade, course);
         const semAulaNoCalendario = !!(dia.naoLetivo || dia.foraDoPeriodo);
-        const gradeAulas = semAulaNoCalendario && !mesmoAssim ? [] : aulasGrade;
         const timezone = settingsUtil.getSettings().timezone;
         const sinceOf = _closedSinceResolver();
+        const alunosDaTurma = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
+            .map(s => ({ s, recs: _rosterDayRecords((s.email || '').toLowerCase(), date, className, courseId) }));
+        const chamadaNoDia = semAulaNoCalendario && alunosDaTurma.some(({ recs }) => recs.some(rec => rec && rec.origin !== 'login'));
+        const comGrade = !semAulaNoCalendario || mesmoAssim || chamadaNoDia;
+        const gradeAulas = comGrade ? aulasGrade : [];
 
-        const roster = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
-            .map(s => {
+        const roster = alunosDaTurma
+            .map(({ s, recs }) => {
                 const email = (s.email || '').toLowerCase();
-                const recs = _rosterDayRecords(email, date, className, courseId);
                 // Cadastro encerrado fica fora das datas novas (H7b).
                 if (!_rosterListsStudent(s, { date, hasRecord: recs.length > 0, timezone, sinceOf })) return null;
                 // O registro que vale no dia (o mesmo da frequência): chamada, manual, login.
@@ -2381,7 +2396,8 @@ router.get('/api/admin/attendance/roster', (req, res) => {
             naoLetivo: dia.naoLetivo,
             foraDoPeriodo: dia.foraDoPeriodo,
             periodoLetivo: dia.periodo,
-            mesmoAssim: semAulaNoCalendario && mesmoAssim,
+            mesmoAssim: semAulaNoCalendario && comGrade,
+            chamadaNoDia,
             roster,
         });
     });
@@ -2515,10 +2531,16 @@ router.get('/api/admin/attendance/export', (req, res) => {
         // Excel e fórmula neutralizada (o nome vem do autocadastro do aluno; "=..." entre
         // aspas ainda era executado pelo Excel).
         const stLabel = { presente: 'Presente', falta: 'Falta', justificada: 'Justificada' };
-        const header = ['Data', 'Aluno', 'E-mail', 'Turma', 'Aula', 'Disciplina', 'Início', 'Status', 'Abonado', 'Justificativa', 'Origem'];
+        // Fora da frequência: a presença automática do login em dia não letivo (naoLetivoId)
+        // fica no arquivo, com o dia que a tirou da conta.
+        const header = ['Data', 'Aluno', 'E-mail', 'Turma', 'Aula', 'Disciplina', 'Início', 'Status', 'Abonado', 'Justificativa', 'Origem', 'Fora da frequência'];
         const lines = [header];
+        const nonSchoolName = new Map((Array.isArray(db.memory.nonSchoolDays) ? db.memory.nonSchoolDays : [])
+            .filter(item => item && item.id).map(item => [String(item.id), String(item.nome || '').trim()]));
         rows.forEach(a => {
             const just = a.justificativa || null;
+            const ignored = attendanceUtil.isIgnoredNonSchoolRecord(a);
+            const foraDaFrequencia = ignored ? `Sim: dia não letivo${nonSchoolName.get(String(a.naoLetivoId)) ? ` (${nonSchoolName.get(String(a.naoLetivoId))})` : ''}` : '';
             const abonado = just && just.abonado ? 'Sim' : '';
             const justTxt = just ? (just.texto || just.tipo || '') : '';
             attendanceUtil.recordAulas(a).forEach(aula => {
@@ -2527,6 +2549,7 @@ router.get('/api/admin/attendance/export', (req, res) => {
                     aula.ordem, discNome[`${a.courseId}::${aula.disciplinaId}`] || aula.disciplinaId || '', aula.inicio || '',
                     stLabel[aula.status] || aula.status || '', aula.status === 'justificada' ? abonado : '',
                     aula.status === 'justificada' ? justTxt : '', ATT_ORIGIN_LABEL[a.origin] || a.origin || '',
+                    foraDaFrequencia,
                 ]);
             });
         });

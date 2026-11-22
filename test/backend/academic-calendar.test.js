@@ -24,6 +24,7 @@ const attendanceUtil = require('../../backend/utils/attendance.js');
 const { buildIcs, foldLine, escapeText } = require('../../backend/utils/icsCalendar.js');
 const { BOOT_NORMALIZATIONS } = require('../../backend/migrations/index.js');
 const settingsUtil = require('../../backend/utils/settings.js');
+const { computeStudentDashboard } = require('../../backend/utils/studentAnalytics.js');
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 
@@ -346,10 +347,112 @@ test('[UC-PRESENCA-005] Chamada no feriado: naoLetivo e aulas vazias; com mesmoA
     const rec = db.memory.attendance.find(item => item.date === '2027-11-15' && item.origin === 'chamada');
     assert.ok(rec && !rec.naoLetivoId, 'a chamada de reposição não é marcada');
     assert.equal(await anaFrequency(), 0, 'a chamada feita no feriado conta');
+    // Quem volta ao feriado depois da chamada de reposição vê a chamada salva (o roster já
+    // entra no "mesmo assim"), não a tela de dia sem aula.
+    const back = await prof('get', '/api/admin/attendance/roster?courseId=TI&studentClass=1DES&date=2027-11-15');
+    assert.equal(back.body.chamadaNoDia, true);
+    assert.equal(back.body.mesmoAssim, true);
+    assert.equal(back.body.aulas.length, 2);
+    assert.equal(back.body.naoLetivo.nome, 'Proclamação da República', 'a faixa do feriado continua');
+    assert.equal(back.body.roster[0].concluida, true);
+    assert.deepEqual(back.body.roster[0].aulas.map(a => a.status), ['falta', 'falta']);
+    // Só a presença automática do login no feriado não é chamada: continua sem a grade.
+    db.memory.attendance = db.memory.attendance.filter(item => item.date !== '2027-11-15');
+    db.memory.attendance.push({ id: 'login_rep', origin: 'login', naoLetivoId: 'nl_rep', studentEmail: 'ana@calendario.local', courseId: 'TI', studentClass: '1DES', date: '2027-11-15', aulas: [{ ordem: 1, disciplinaId: 'REDES', status: 'presente' }] });
+    const onlyLogin = await prof('get', '/api/admin/attendance/roster?courseId=TI&studentClass=1DES&date=2027-11-15');
+    assert.equal(onlyLogin.body.chamadaNoDia, false);
+    assert.equal(onlyLogin.body.mesmoAssim, false);
+    assert.deepEqual(onlyLogin.body.aulas, []);
+    // A marcação individual no feriado também é lançamento de propósito.
+    db.memory.attendance.push({ id: 'manual_rep', origin: 'manual', studentEmail: 'ana@calendario.local', courseId: 'TI', studentClass: '1DES', date: '2027-11-15', aulas: [{ ordem: 1, disciplinaId: 'REDES', status: 'presente' }] });
+    const manual = await prof('get', '/api/admin/attendance/roster?courseId=TI&studentClass=1DES&date=2027-11-15');
+    assert.equal(manual.body.chamadaNoDia, true);
+    assert.equal(manual.body.aulas.length, 2);
     // Dia letivo: nada muda na resposta de antes.
     const normal = await prof('get', '/api/admin/attendance/roster?courseId=TI&studentClass=1DES&date=2027-11-22');
     assert.equal(normal.body.aulas.length, 2);
     assert.equal(normal.body.naoLetivo, null);
+    assert.equal(normal.body.chamadaNoDia, false);
+});
+
+test('[UC-PRESENCA-005] portão da turma encerrada (X4): o dia de uma turma passa a turma (a de antes e a de depois); o da instituição passa sem turma; recusado, nada é gravado', async () => {
+    const original = calendar.assertClassOpen;
+    const seen = [];
+    let recusar = false;
+    calendar.assertClassOpen = (target, options) => {
+        seen.push(target);
+        if (!recusar) return true;
+        options.res.status(409).json({ success: false, code: 'class_closed', error: calendar.CLASS_CLOSED_MESSAGE });
+        return false;
+    };
+    try {
+        const turma1 = db.memory.classes.find(cls => cls.name === '1DES');
+        const turma2 = db.memory.classes.find(cls => cls.name === '2DES');
+        const own = await admin('post', '/api/admin/calendar/non-school-days/create')
+            .send({ inicio: '2027-11-22', tipo: 'evento_escolar', nome: 'Visita técnica', escopo: 'turma', courseId: 'TI', studentClass: '1DES' });
+        assert.equal(own.status, 200, JSON.stringify(own.body));
+        assert.equal(seen.pop(), turma1);
+        const moved = await admin('post', '/api/admin/calendar/non-school-days/update')
+            .send({ id: own.body.dia.id, inicio: '2027-11-22', tipo: 'evento_escolar', nome: 'Visita técnica', escopo: 'turma', courseId: 'TI', studentClass: '2DES' });
+        assert.equal(moved.status, 200, JSON.stringify(moved.body));
+        assert.deepEqual(seen.pop(), [turma1, turma2]);
+        const institution = await admin('post', '/api/admin/calendar/non-school-days/create')
+            .send({ inicio: '2027-11-15', tipo: 'feriado', nome: 'Proclamação da República', escopo: 'instituicao' });
+        assert.equal(institution.status, 200);
+        assert.equal(seen.pop(), null, 'o dia da instituição não depende de uma turma');
+
+        // Com o efeito ligado (B10), a turma encerrada recusa e nada muda.
+        recusar = true;
+        db.memory.attendance.push({ id: 'login_22', origin: 'login', studentEmail: 'ana@calendario.local', courseId: 'TI', studentClass: '1DES', date: '2027-11-23', aulas: [{ ordem: 1, disciplinaId: 'REDES', status: 'presente' }] });
+        const before = JSON.stringify({ dias: db.memory.nonSchoolDays, attendance: db.memory.attendance });
+        const audited = db.memory.auditLogs.length;
+        const refused = await admin('post', '/api/admin/calendar/non-school-days/create')
+            .send({ inicio: '2027-11-23', tipo: 'evento_escolar', nome: 'Feira', escopo: 'turma', courseId: 'TI', studentClass: '1DES' });
+        assert.equal(refused.status, 409);
+        assert.equal(refused.body.code, 'class_closed');
+        assert.equal((await admin('post', '/api/admin/calendar/non-school-days/delete').send({ id: own.body.dia.id })).status, 409);
+        assert.equal((await admin('post', '/api/admin/calendar/non-school-days/update')
+            .send({ id: own.body.dia.id, inicio: '2027-11-23', tipo: 'evento_escolar', nome: 'Visita técnica', escopo: 'turma', courseId: 'TI', studentClass: '2DES' })).status, 409);
+        assert.equal(JSON.stringify({ dias: db.memory.nonSchoolDays, attendance: db.memory.attendance }), before);
+        assert.equal(db.memory.auditLogs.length, audited);
+    } finally {
+        calendar.assertClassOpen = original;
+    }
+});
+
+test('[UC-PRESENCA-005] a presença do login marcada como dia não letivo não aparece como presença: calendário da ficha, sequência, dias ativos e CSV', async () => {
+    const pad = n => String(n).padStart(2, '0');
+    const localDay = offset => { const d = new Date(Date.now() - offset * 86400000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+    const [hoje, ontem, anteontem] = [localDay(0), localDay(1), localDay(2)];
+    db.memory.nonSchoolDays = [day({ id: 'nl_hoje', inicio: hoje, escopo: 'instituicao', nome: 'Feriado municipal' })];
+    const presente = [{ ordem: 1, disciplinaId: 'REDES', status: 'presente' }];
+    db.memory.attendance.push(
+        { id: 'ch_2', origin: 'chamada', studentEmail: 'ana@calendario.local', courseId: 'TI', studentClass: '1DES', date: anteontem, aulas: presente, timestamp: Date.now() - 2 * 86400000 },
+        { id: 'ch_1', origin: 'chamada', studentEmail: 'ana@calendario.local', courseId: 'TI', studentClass: '1DES', date: ontem, aulas: presente, timestamp: Date.now() - 86400000 },
+        { id: 'login_hoje', origin: 'login', naoLetivoId: 'nl_hoje', studentEmail: 'ana@calendario.local', courseId: 'TI', studentClass: '1DES', date: hoje, aulas: presente, timestamp: Date.now() },
+    );
+
+    const dash = computeStudentDashboard(db.memory, 'ana@calendario.local');
+    assert.deepEqual(dash.streak, { atual: 2, recorde: 2 }, 'o acesso no feriado não estende a sequência de presença');
+    assert.equal(dash.engajamento.diasAtivos, 2);
+    assert.equal(dash.temporal.presencaAtual, 2);
+
+    const month = await admin('get', `/api/admin/student/attendance?email=ana@calendario.local&month=${hoje.slice(0, 7)}`);
+    assert.equal(month.status, 200);
+    assert.equal(month.body.days[hoje], 'nao_letivo', 'antes vinha "login", como presença');
+    if (ontem.slice(0, 7) === hoje.slice(0, 7)) assert.equal(month.body.days[ontem], 'chamada');
+    // Outro registro que vale no mesmo dia continua aparecendo.
+    db.memory.attendance.push({ id: 'manual_hoje', origin: 'manual', studentEmail: 'ana@calendario.local', courseId: 'TI', studentClass: '1DES', date: hoje, aulas: presente, timestamp: Date.now() });
+    const withManual = await admin('get', `/api/admin/student/attendance?email=ana@calendario.local&month=${hoje.slice(0, 7)}`);
+    assert.equal(withManual.body.days[hoje], 'manual');
+    db.memory.attendance = db.memory.attendance.filter(item => item.id !== 'manual_hoje');
+
+    const csv = await admin('get', '/api/admin/attendance/export?courseId=TI&studentClass=1DES');
+    assert.equal(csv.status, 200);
+    const lines = csv.text.replace(/^\uFEFF/, '').split('\r\n').filter(Boolean);
+    assert.equal(lines[0].split(';').pop(), 'Fora da frequência');
+    assert.match(lines.find(line => line.startsWith(hoje)), /;Sim: dia não letivo \(Feriado municipal\)$/);
+    assert.match(lines.find(line => line.startsWith(ontem)), /;Chamada;$/, 'a chamada conta: a coluna fica vazia');
 });
 
 test('[UC-PRESENCA-005] login no feriado dentro da janela das aulas não cria presença; no dia letivo cria', async () => {

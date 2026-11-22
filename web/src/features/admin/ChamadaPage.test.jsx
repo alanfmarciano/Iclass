@@ -101,6 +101,34 @@ describe('Chamada em dia não letivo', () => {
     expect(screen.getByRole('button', { name: 'Concluir chamada' })).toBeInTheDocument()
   })
 
+  it('[UC-PRESENCA-005] voltar ao feriado com a chamada de reposição salva mostra a chamada, não a tela de dia sem aula', async () => {
+    // O servidor entra sozinho no "mesmo assim" quando já há chamada naquela data.
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local', { salvo: true, concluida: true, origin: 'chamada' })]), aulas, aulasGrade: aulas, naoLetivo: feriado, foraDoPeriodo: false, mesmoAssim: true, chamadaNoDia: true }
+      : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText(/chamada lançada mesmo assim, que conta na frequência/)).toBeInTheDocument()
+    expect(screen.queryByText('Não há aula neste dia: Proclamação da República')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Concluir chamada' })).toBeInTheDocument()
+    expect(mocks.get).not.toHaveBeenCalledWith(expect.stringContaining('mesmoAssim=1'))
+  })
+
+  it('[UC-PRESENCA-005] "Tentar novamente" depois de um erro não pede a grade "mesmo assim" sem o professor escolher', async () => {
+    const user = userEvent.setup()
+    let falhar = true
+    mocks.get.mockImplementation(async (url) => {
+      if (!url.startsWith('/api/admin/attendance/roster')) return {}
+      if (falhar) { falhar = false; throw new Error('Servidor fora do ar') }
+      return { ...rosterWith([aluno('ana@x.local')]), aulas: url.includes('mesmoAssim=1') ? aulas : [], aulasGrade: aulas, naoLetivo: feriado, foraDoPeriodo: false, mesmoAssim: url.includes('mesmoAssim=1') }
+    })
+    render(<ChamadaPage />)
+    await user.click(await screen.findByRole('button', { name: 'Tentar novamente' }))
+    expect(await screen.findByText('Não há aula neste dia: Proclamação da República')).toBeInTheDocument()
+    const rosterCalls = mocks.get.mock.calls.map(([url]) => url).filter((url) => url.startsWith('/api/admin/attendance/roster'))
+    expect(rosterCalls.length).toBeGreaterThanOrEqual(2)
+    rosterCalls.forEach((url) => expect(url).not.toContain('mesmoAssim=1'))
+  })
+
   it('[UC-PRESENCA-005] dia não letivo sem grade no dia da semana não oferece "mesmo assim"', async () => {
     mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
       ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: [], naoLetivo: feriado, foraDoPeriodo: false }

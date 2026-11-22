@@ -460,6 +460,8 @@ export default function AlunosPage() {
                     const aulas = Array.isArray(at.aulas) ? at.aulas : []
                     const faltas = aulas.filter((a) => a.status === 'falta' || a.status === 'justificada').length
                     const tone = faltas === 0 ? 'success' : faltas === aulas.length ? 'danger' : 'warning'
+                    // Presença automática do acesso num dia não letivo: fica, mas não conta.
+                    if (at.origin === 'login' && at.naoLetivoId) return <Badge key={at.id} tone="neutral">{at.date} · dia não letivo (não conta)</Badge>
                     const resumo = aulas.length ? (faltas === 0 ? 'presente' : `${faltas}/${aulas.length} falta`) : (at.origin === 'login' ? 'automática' : 'manual')
                     return <Badge key={at.id} tone={aulas.length ? tone : 'neutral'}>{at.date} · {resumo}</Badge>
                   })}

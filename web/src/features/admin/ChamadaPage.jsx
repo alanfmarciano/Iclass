@@ -114,7 +114,8 @@ export default function ChamadaPage() {
   const [undoSnap, setUndoSnap] = useState(null)
   const [modal, setModal] = useState(null)
   // Dia sem aula no calendário (feriado, recesso, fora do período letivo): o servidor manda
-  // as aulas vazias e diz por quê; "mesmo assim" pede a grade de novo (reposição).
+  // as aulas vazias e diz por quê; "mesmo assim" pede a grade de novo (reposição). Com
+  // chamada já lançada naquela data, o servidor já entra no "mesmo assim" (chamadaNoDia).
   const [semAula, setSemAula] = useState(null)
   const [mesmoAssim, setMesmoAssim] = useState(false)
   const toast = useToast()
@@ -127,6 +128,8 @@ export default function ChamadaPage() {
     try {
       const r = await api.get(`/api/admin/attendance/roster?studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(activeCourseId || '')}&date=${encodeURIComponent(date)}${forcar ? '&mesmoAssim=1' : ''}`)
       setGrade(r.aulas || [])
+      // O "mesmo assim" segue o servidor: vale o pedido do professor e a chamada já lançada.
+      setMesmoAssim(!!r.mesmoAssim)
       setSemAula(r.naoLetivo || r.foraDoPeriodo ? { naoLetivo: r.naoLetivo || null, foraDoPeriodo: !!r.foraDoPeriodo, temGrade: (r.aulasGrade || []).length > 0 } : null)
       setRoster(r.roster || [])
       setTolerancia(r.toleranciaMin ?? 10)
@@ -330,7 +333,7 @@ export default function ChamadaPage() {
       {!className ? (
         <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Users} title="Selecione uma turma" description="Escolha a turma e a data para fazer a chamada." /></div>
       ) : (
-        <PageState loading={loading} error={error} onRetry={load}>
+        <PageState loading={loading} error={error} onRetry={() => load()}>
           {roster.length === 0 ? (
             <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Users} title="Turma sem alunos" description="Nenhum aluno matriculado nesta turma." /></div>
           ) : grade.length === 0 && semAula ? (

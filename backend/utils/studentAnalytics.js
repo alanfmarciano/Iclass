@@ -79,9 +79,11 @@ function studentScope(memory, student, { courseId = '', studentClass = '' } = {}
 // roundGrade (boletim, quadro e portal). Math.round(5.95 * 10) dava 5,9 aqui e 6,0 lá.
 const round1 = (v) => v == null ? null : Math.round(Number((v * 10).toFixed(6))) / 10;
 
-// Um dia conta como presença (streak/dias ativos) se tiver ao menos 1 aula presente.
+// Um dia conta como presença (streak/dias ativos) se tiver ao menos 1 aula presente. A
+// presença automática do login em dia não letivo não conta (a mesma regra da frequência:
+// attendanceUtil.isIgnoredNonSchoolRecord).
 function isPresentAtt(a) {
-    if (!a) return false;
+    if (!a || attendanceUtil.isIgnoredNonSchoolRecord(a)) return false;
     return attendanceUtil.recordHasPresence(a);
 }
 
