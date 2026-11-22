@@ -37,7 +37,6 @@
 //   pelo req.studentAccount); o envio e o download recebem 403 preview_read_only.
 // ---------------------------------------------------------------------------
 const express = require('express');
-const fs = require('fs');
 const multer = require('multer');
 const db = require('../database.js');
 const { findClassByNameAndCourse, studentBelongsToClass, validateStudentSession } = require('../middlewares.js');
@@ -689,32 +688,12 @@ function createStudentAssignmentsRouter() {
         const sub = rawSub ? assignments.normalizeSubmission(rawSub) : null;
         const file = sub ? sub.versions.flatMap(version => version.files).find(item => item.id === fileId) : null;
         if (!file) return sendError(res, 404, MESSAGES.fileNotFound);
-        let abs;
-        let stat;
-        try {
-            abs = assignmentFiles.absFromStoredRel(file.storedRel);
-            stat = fs.statSync(abs);
-            if (!stat.isFile()) throw new Error('não é arquivo');
-        } catch (err) {
-            return sendError(res, 404, MESSAGES.fileMissing, { code: 'file_missing' });
-        }
-        // Os cabeçalhos do anexo só entram quando o arquivo abriu: uma falha de leitura antes
-        // do primeiro byte responde 503 retryable em JSON, sem Content-Disposition de anexo
-        // (contrato nomes_e_formatos.erros); depois do primeiro byte, a conexão é cortada.
-        const headers = { ...assignmentFiles.downloadHeaders(file), 'Content-Length': String(stat.size) };
-        const stream = fs.createReadStream(abs);
-        stream.once('open', () => {
-            res.set(headers);
-            stream.pipe(res);
+        // Anexo, nosniff e CSP sandbox; 404 file_missing e 503 read_failed como no painel.
+        return assignmentFiles.sendStoredFile(res, file, {
+            missingMessage: MESSAGES.fileMissing,
+            readFailedMessage: MESSAGES.readFailed,
+            onReadError: err => logError('[TAREFAS] Falha ao ler o arquivo de uma entrega', err),
         });
-        res.once('close', () => stream.destroy());
-        stream.on('error', err => {
-            logError('[TAREFAS] Falha ao ler o arquivo de uma entrega', err);
-            if (res.headersSent) return res.destroy(err);
-            Object.keys(headers).forEach(name => res.removeHeader(name));
-            return sendError(res, 503, MESSAGES.readFailed, { code: 'read_failed', retryable: true });
-        });
-        return undefined;
     });
 
     return router;

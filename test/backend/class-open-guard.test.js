@@ -61,6 +61,12 @@ const ROTAS_QUE_GRAVAM = [
     // Tarefas (fase 3, C5 / P1-c): o envio do aluno grava a versão da entrega; turma
     // encerrada recusa com 409 class_closed ("O envio não é mais aceito.").
     ['studentAssignments.js', 'POST', '/api/student/assignments/:id/submit'],
+    // Tarefas (fase 3, C6 / P1-d): nota (salvar, devolver e refazer), "devolver todas",
+    // entrega em mãos e prorrogação gravam a entrega; turma encerrada recusa com 409.
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/grade'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/return-all'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/manual-entry'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/extension'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo.

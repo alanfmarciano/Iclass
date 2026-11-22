@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Tarefas pelo painel do instrutor (fase 3, C4 / P1-b; FUN-01, D11 e D13 do P1): o
-// cadastro da tarefa. A correção, a devolução, a prorrogação, a entrega em mãos, o
-// download e o ZIP (P1-d, C6) entram neste mesmo router depois.
+// cadastro da tarefa. Desde o C6 (P1-d; D7, D9, D10 e D16), também a correção, a
+// devolução, o "refazer", a prorrogação, a entrega em mãos, o download e o ZIP.
 //
 // GET  /api/admin/assignments?courseId&studentClass&status   lista com as contagens
 // POST /api/admin/assignments                                 cria (rascunho ou publicada)
@@ -12,6 +12,13 @@
 // POST /api/admin/assignments/:id/unarchive                    reativa
 // POST /api/admin/assignments/:id/delete                       exclui (só sem entregas)
 // POST /api/admin/assignments/:id/copy                         copia para outra turma
+// GET  /api/admin/assignments/:id/submissions/:submissionId    a entrega com as versões
+// GET  /api/admin/assignments/:id/files/:fileId                baixa um arquivo (?inline=1)
+// GET  /api/admin/assignments/:id/export?versoes=ultima|todas  ZIP com lista.csv
+// POST /api/admin/assignments/:id/grade                        salvar, devolver ou refazer
+// POST /api/admin/assignments/:id/return-all                   devolve todas as corrigidas
+// POST /api/admin/assignments/:id/extension                    prazo individual do aluno
+// POST /api/admin/assignments/:id/manual-entry                 entrega em mãos (nota opcional)
 //
 // Regras:
 // - Permissão 'page.assignments' no guarda (adminPermissions.js, regra /assignments). A
@@ -36,6 +43,35 @@
 //   assignment_archived, assignment_unarchived, assignment_deleted (cópia em
 //   details.deleted) e assignment_copied. Pedido que não muda nada não grava nem registra.
 // - Gravação parcial: db.save({ only: ['assignments', 'auditLogs'] }).
+//
+// Correção (C6 / P1-d):
+// - Só em tarefa publicada (rascunho não tem entrega: 409 assignment_not_published;
+//   arquivada: 409 assignment_archived, reative antes). O aluno do pedido (studentEmail)
+//   precisa estar na lista da tarefa (assignmentRoster: matriculado ativo ou com registro).
+// - Turma encerrada (academicCalendar.assertClassOpen, sem efeito até o B10): nota,
+//   devolução, refazer, "devolver todas", entrega em mãos e prorrogação respondem 409
+//   class_closed antes de mudar qualquer coisa (contrato academicCalendar do plano).
+// - Nota digitada de 0 a 10 (parseGradeInput, vírgula ou ponto) e gravada de 0 a 100; o
+//   desconto de atraso sai da versão corrigida (gradeWithPenalty), com "Dispensar
+//   desconto" (waivePenalty). 'salvar' guarda sem o aluno ver ('corrigida'); 'devolver'
+//   publica ('devolvida', returnedAt). Mudar nota ou comentário de entrega já devolvida
+//   exige motivo (gradeChangeReason) e continua devolvida (assignment_grade_changed).
+//   Aluno sem entrega (nem versão nem entrega em mãos) só recebe a nota zero explícita
+//   (D10: ninguém ganha zero automático e nota maior pede a entrega em mãos).
+// - 'refazer' pede comentário e um prazo novo (redoDueDate/redoDueTime, depois de agora e
+//   não antes do prazo da turma, extensionWindowError) e reabre o envio só para o aluno;
+//   em entrega já devolvida, esconde a nota publicada e por isso exige motivo.
+// - Prorrogação: prazo individual (e encerramento, se a tarefa tem) depois de agora, com
+//   motivo; entrega devolvida não recebe (peça para refazer).
+// - Auditoria na mesma gravação: assignment_grade_saved, assignment_grade_returned (um por
+//   aluno também no "devolver todas", com details.lote), assignment_grade_changed,
+//   assignment_redo_requested (categoria 'grade'), assignment_extension_granted,
+//   assignment_manual_entry e assignment_files_exported (categoria 'assignment'). O
+//   download de um arquivo não entra (fora_da_auditoria do plano); o ZIP entra.
+// - Gravação: db.save({ only: ['assignmentSubmissions', 'auditLogs'] }); o ZIP grava só a
+//   auditoria (only: ['auditLogs']) antes do primeiro byte.
+// - Arquivo sempre como anexo (assignmentFiles.sendStoredFile: nosniff, CSP sandbox);
+//   ?inline=1 só para imagem raster e PDF. Nenhuma resposta traz storedRel.
 // ---------------------------------------------------------------------------
 const express = require('express');
 const db = require('../database.js');
@@ -52,11 +88,18 @@ const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
 const { displayName, isClosedStudentStatus, isAnonymizedStudent, studentInClass } = require('../utils/students.js');
 const studentIdentity = require('../utils/studentIdentity.js');
 const { compareText } = require('../utils/textSearch.js');
-const { KEY_PATTERN, body, bool, int, list, oneOf, shape, str } = require('../utils/inputSchema.js');
+const academicCalendar = require('../utils/academicCalendar.js');
+const assignmentExport = require('../utils/assignmentExport.js');
+const assignmentFeeds = require('../utils/assignmentFeeds.js');
+const { formatGradeBR, gradeChangeReason, parseGradeInput, scoreFromGrade } = require('../utils/gradebook.js');
+const { normalizeEmail } = require('../utils/students.js');
+const { logError } = require('../utils/errorLog.js');
+const { KEY_PATTERN, body, bool, either, int, list, num, oneOf, shape, str } = require('../utils/inputSchema.js');
 
 const { LIMITS } = assignments;
 const ASSIGNMENT_ID_MAX = 100;
 const LIST_STATUSES = Object.freeze(['ativas', 'rascunho', 'publicada', 'arquivada', 'todas']);
+const GRADE_ACTIONS = Object.freeze(['salvar', 'devolver', 'refazer']);
 // Campos que a tela altera e que a auditoria compara (antes e depois).
 const EDITABLE_KEYS = Object.freeze([
     'title', 'instructions', 'moduleId', 'unitKey', 'libraryIds', 'response', 'files',
@@ -86,6 +129,28 @@ const MESSAGES = Object.freeze({
     hasSubmissions: 'Esta tarefa já tem entregas ou registros de alunos e não pode ser excluída. Arquive a tarefa para ela sumir para os alunos.',
     penaltyPerDay: 'Com desconto por atraso, informe o desconto por dia (de 1% a 100%).',
     penaltyMax: 'Com desconto por atraso, o desconto máximo precisa ser de 1% a 100%.',
+    // Correção (C6)
+    archivedGrade: 'Esta tarefa está arquivada. Reative a tarefa para corrigir, devolver ou prorrogar.',
+    notPublished: 'Esta tarefa ainda é um rascunho e não tem entregas. Publique a tarefa antes de corrigir.',
+    studentNotFound: 'Aluno não encontrado na lista desta tarefa.',
+    submissionNotFound: 'Entrega não encontrada nesta tarefa.',
+    fileNotFound: 'Arquivo não encontrado nesta tarefa.',
+    fileMissing: 'Este arquivo não está mais no computador. Se houver cópia no destino externo do backup, ele pode ser trazido de volta em Sistema.',
+    readFailed: 'Não foi possível ler o arquivo agora. Tente de novo em alguns segundos.',
+    exportFailed: 'Não foi possível montar o ZIP das entregas agora. Tente de novo em alguns segundos.',
+    gradeRequired: 'Informe a nota (de 0 a 10).',
+    noDelivery: 'Este aluno não entregou nada. Para dar nota, registre a entrega em mãos; sem entrega, só a nota zero.',
+    noDeliveryRedo: 'Este aluno ainda não entregou nada. Para dar mais tempo, use "Prorrogar prazo".',
+    versionNotFound: 'Versão não encontrada nesta entrega.',
+    redoComment: 'Escreva no comentário o que o aluno precisa refazer.',
+    redoVersions: `O aluno já enviou ${LIMITS.versionsMax} versões desta tarefa e não pode mandar outra. Corrija uma das versões enviadas.`,
+    futureDeadline: 'O novo prazo precisa ser depois de agora.',
+    futureClose: 'O novo encerramento precisa ser depois de agora.',
+    returnedExtension: 'Esta entrega já foi devolvida. Para o aluno mandar outra versão, peça para refazer.',
+    returnedManual: 'Esta entrega já foi devolvida. Para mudar a nota, use a correção (com o motivo).',
+    extensionReason: `Informe o motivo da prorrogação (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres).`,
+    redoReason: 'Informe o motivo: esta nota já foi devolvida ao aluno e ficará escondida até a nova correção.',
+    classClosedExtension: 'Esta turma foi encerrada. Para prorrogar o prazo, reabra a turma em Turmas.',
 });
 
 // ------------------------------------------------------------ schemas
@@ -152,6 +217,36 @@ const SCHEMAS = {
         studentClass: str({ max: 200, required: true, label: 'turma' }),
         ...DEADLINE_SCHEMA,
     }),
+    // Correção (C6)
+    grade: body({
+        studentEmail: str({ max: 254, required: true, label: 'aluno' }),
+        grade: either([num({ label: 'nota' }), str({ max: 10, label: 'nota' })], { nullable: true, label: 'nota' }),
+        comment: str({ max: LIMITS.commentMax, trim: false, nullable: true, label: 'comentário' }),
+        action: oneOf(GRADE_ACTIONS, { label: 'ação' }),
+        version: int({ min: 0, max: 100000, coerce: true, nullable: true, label: 'versão' }),
+        redoDueDate: dateField('data do novo prazo'),
+        redoDueTime: timeField('hora do novo prazo'),
+        redoCloseDate: dateField('data do novo encerramento'),
+        redoCloseTime: timeField('hora do novo encerramento'),
+        waivePenalty: bool({ label: 'dispensar desconto' }),
+        reason: str({ max: LIMITS.reasonMax, nullable: true, label: 'motivo' }),
+    }),
+    extension: body({
+        studentEmail: str({ max: 254, required: true, label: 'aluno' }),
+        dueDate: dateField('data do novo prazo'),
+        dueTime: timeField('hora do novo prazo'),
+        closeDate: dateField('data do novo encerramento'),
+        closeTime: timeField('hora do novo encerramento'),
+        reason: str({ max: LIMITS.reasonMax, nullable: true, label: 'motivo' }),
+    }),
+    manualEntry: body({
+        studentEmail: str({ max: 254, required: true, label: 'aluno' }),
+        note: str({ max: LIMITS.manualNoteMax, nullable: true, label: 'observação' }),
+        grade: either([num({ label: 'nota' }), str({ max: 10, label: 'nota' })], { nullable: true, label: 'nota' }),
+        comment: str({ max: LIMITS.commentMax, trim: false, nullable: true, label: 'comentário' }),
+        returnNow: bool({ label: 'devolver agora' }),
+    }),
+    exportQuery: shape({ versoes: oneOf(assignmentExport.EXPORT_VERSIONS, { label: 'versões' }) }),
 };
 
 // ------------------------------------------------------------ apoio
@@ -504,9 +599,211 @@ function audit(req, account, action, task, extra = {}) {
     });
 }
 
+// ------------------------------------------------------------ correção (C6 / P1-d)
+// A tarefa aceita correção? Responde 409 e devolve false quando não (rascunho, arquivada).
+function checkGradable(task, res) {
+    if (task.status === 'arquivada') {
+        sendFieldError(res, MESSAGES.archivedGrade, null, { status: 409, code: 'assignment_archived' });
+        return false;
+    }
+    if (task.status !== 'publicada') {
+        sendFieldError(res, MESSAGES.notPublished, null, { status: 409, code: 'assignment_not_published' });
+        return false;
+    }
+    return true;
+}
+
+// A turma do registro da tarefa (para o portão de turma encerrada), ou null.
+function classOfTask(task) {
+    return findClassByNameAndCourse(db.memory.classes || [], task.studentClass, task.courseId) || null;
+}
+
+// O aluno do pedido na lista da tarefa (assignmentRoster), ou null.
+function rosterTarget(task, studentEmail) {
+    const email = normalizeEmail(studentEmail);
+    if (!email) return null;
+    return assignments.assignmentRoster(db.memory, task).find(row => row.studentEmail === email) || null;
+}
+
+function submissionRows() {
+    if (!Array.isArray(db.memory.assignmentSubmissions)) db.memory.assignmentSubmissions = [];
+    return db.memory.assignmentSubmissions;
+}
+
+// Troca a linha gravada (crua) pela nova, ou acrescenta a nova.
+function putSubmission(raw, next) {
+    const rows = submissionRows();
+    const index = raw ? rows.indexOf(raw) : -1;
+    if (index >= 0) rows[index] = next; else rows.push(next);
+}
+
+function studentIdOf(target, base) {
+    const fromRow = typeof target.studentId === 'string' && /^alu_[0-9a-f]{16}$/.test(target.studentId) ? target.studentId : null;
+    return (base && base.studentId) || fromRow || null;
+}
+
+// Linha de base para mudar: a gravada (crua, com os campos que esta versão não conhece) ou
+// uma nova para o aluno da lista.
+function baseSubmission(task, target, now) {
+    if (target.submission) return target.submission;
+    const student = target.student || { email: target.studentEmail, id: target.studentId };
+    return assignments.newSubmissionRecord(task, student, { now });
+}
+
+function gradeOf(sub) {
+    return sub && sub.grade ? sub.grade : null;
+}
+
+// A correção comparável (para saber se o pedido muda alguma coisa).
+function gradeKey(grade) {
+    if (!grade) return 'null';
+    return JSON.stringify([grade.score, grade.penaltyPct, grade.finalScore, grade.comment, grade.versionGraded, grade.penaltyWaived === true]);
+}
+
+function gradeValueText(grade) {
+    return grade && grade.finalScore !== null && grade.finalScore !== undefined ? formatGradeBR(grade.finalScore) : '';
+}
+
+// 'DD/MM/AAAA às HH:MM' no relógio da escola ('' sem instante).
+function deadlineText(ms, tz) {
+    const parts = ms === null || ms === undefined ? null : schoolTime.localParts(ms, tz);
+    if (!parts) return '';
+    const [year, month, day] = parts.date.split('-');
+    return `${day}/${month}/${year} às ${parts.time}`;
+}
+
+// Comentário do pedido: ausente mantém o gravado; texto vazio apaga.
+function commentFrom(source, previous) {
+    if (!hasKey(source, 'comment') || source.comment === null) return previous;
+    return String(source.comment).trim();
+}
+
+// Nota digitada (0 a 10) -> { score (0 a 100) | null, empty } ou { error }.
+function readScore(value) {
+    const parsed = parseGradeInput(value);
+    if (parsed.error) return { error: parsed.error };
+    if (parsed.empty) return { score: null, empty: true };
+    return { score: scoreFromGrade(parsed.value), empty: false };
+}
+
+// Prazo individual do corpo (prefixo 'due'/'close' na prorrogação, 'redoDue'/'redoClose'
+// no refazer): { dueAt, closeAt } ou { error, field }. Os dois precisam ser depois de agora
+// e seguir a regra da janela (extensionWindowError; os campos da resposta são os do pedido).
+function readIndividualWindow(source, task, { duePrefix, closePrefix, tz, now }) {
+    const due = assignments.deadlineFields(source, duePrefix, { required: true, label: 'do novo prazo', timezone: tz, defaultTime: '23:59' });
+    if (due.error) return due;
+    const close = assignments.deadlineFields(source, closePrefix, { label: 'do novo encerramento', timezone: tz, defaultTime: '23:59' });
+    if (close.error) return close;
+    const windowError = assignments.extensionWindowError(task, { dueAt: due.value, closeAt: close.value });
+    if (windowError) {
+        return { error: windowError.error, field: windowError.field === 'closeDate' ? `${closePrefix}Date` : `${duePrefix}Date` };
+    }
+    if (due.value <= now) return { error: MESSAGES.futureDeadline, field: `${duePrefix}Date` };
+    if (close.value !== null && close.value <= now) return { error: MESSAGES.futureClose, field: `${closePrefix}Date` };
+    return { dueAt: due.value, closeAt: close.value };
+}
+
+function presentGrade(grade) {
+    if (!grade) return null;
+    return {
+        score: grade.score,
+        penaltyPct: grade.penaltyPct,
+        finalScore: grade.finalScore,
+        comment: grade.comment,
+        versionGraded: grade.versionGraded,
+        gradedBy: grade.gradedBy,
+        gradedAt: grade.gradedAt,
+        penaltyWaived: grade.penaltyWaived,
+    };
+}
+
+// A entrega como o painel vê (correção): todas as versões, com o desconto que cada uma
+// teria, a prévia possível de cada arquivo (D7) e se ele ainda está no disco. Nunca sai
+// storedRel nem caminho.
+function presentAdminSubmission(task, raw, student = null) {
+    const sub = assignments.normalizeSubmission(raw);
+    const window = assignments.effectiveWindow(task, sub);
+    const last = sub.versions.length ? sub.versions[sub.versions.length - 1] : null;
+    return {
+        id: sub.id,
+        assignmentId: sub.assignmentId,
+        studentEmail: sub.studentEmail,
+        studentId: sub.studentId || (student && typeof student.id === 'string' ? student.id : null),
+        semEmail: studentIdentity.isPlaceholderEmail(sub.studentEmail),
+        name: student ? displayName(student) : '',
+        matricula: student ? String(student.matricula || '') : '',
+        status: sub.status,
+        instructorStatus: assignments.instructorStatus(sub),
+        needsGrading: assignments.needsGrading(sub),
+        newVersionAfterGrade: !!(sub.grade && last && last.n > sub.grade.versionGraded),
+        window: { dueAt: window.dueAt, closeAt: window.closeAt, individual: window.individual },
+        versions: sub.versions.map(version => ({
+            n: version.n,
+            requestAt: version.requestAt,
+            receivedAt: version.receivedAt,
+            late: version.late,
+            lateMs: version.lateMs,
+            penaltyPct: assignments.latePenaltyPct(task, version.lateMs),
+            text: version.text,
+            link: version.link,
+            ip: version.ip,
+            device: version.device,
+            bytes: version.files.reduce((total, file) => total + file.size, 0),
+            comprovante: assignments.versionReceiptCode(sub, version),
+            files: version.files.map(file => ({
+                id: file.id,
+                name: file.originalName,
+                size: file.size,
+                mime: file.mime,
+                ext: file.ext,
+                category: file.category,
+                comprovante: assignments.fileReceiptCode(file),
+                preview: assignmentFiles.previewKind(file),
+                missing: !assignmentFiles.storedFileExists(file),
+            })),
+        })),
+        grade: presentGrade(sub.grade),
+        returnedAt: sub.returnedAt,
+        returnedBy: sub.returnedBy,
+        extension: sub.extension ? { dueAt: sub.extension.dueAt, closeAt: sub.extension.closeAt, by: sub.extension.by, at: sub.extension.at, reason: sub.extension.reason } : null,
+        manualEntry: sub.manualEntry ? { note: sub.manualEntry.note, by: sub.manualEntry.by, at: sub.manualEntry.at } : null,
+        anonymized: sub.anonymized || (!!student && isAnonymizedStudent(student)),
+        createdAt: sub.createdAt,
+        updatedAt: sub.updatedAt,
+    };
+}
+
+// A resposta de uma mudança na entrega: a entrega inteira e a linha da lista da turma.
+function submissionResponse(task, next, target, extra = {}) {
+    const row = { ...target, submission: next };
+    return { success: true, changed: true, submission: presentAdminSubmission(task, next, target.student), row: rosterRow(task, row), ...extra };
+}
+
+// Auditoria de nota (categoria 'grade'), com o campo e os valores do histórico da ficha.
+function gradeAudit(req, account, action, task, sub, { oldValue = '', newValue = '', reason, details = {} } = {}) {
+    recordAudit(db.memory, {
+        req,
+        actor: account,
+        action,
+        category: 'grade',
+        studentEmail: sub.studentEmail,
+        courseId: task.courseId,
+        studentClass: task.studentClass,
+        submissionId: sub.id,
+        field: 'Nota da tarefa',
+        oldValue: String(oldValue || ''),
+        newValue: String(newValue || ''),
+        reason: reason || undefined,
+        details: { assignmentId: task.id, title: task.title, ...details },
+    });
+}
+
 // ------------------------------------------------------------ rotas
 function createAdminAssignmentsRouter() {
     const router = express.Router();
+    // Fila "Precisa de você", sino do painel e sino do aluno (D16): o mesmo provedor do
+    // router do aluno (registrar de novo não duplica).
+    assignmentFeeds.registerAssignmentFeeds();
 
     router.get('/api/admin/assignments', (req, res) => validateAdmin(req, res, (config, account) => {
         const query = { ...(req.query || {}) };
@@ -741,6 +1038,386 @@ function createAdminAssignmentsRouter() {
         res.status(201).json({ success: true, assignment: presentAssignment(db.memory, record, { tz }), avisos });
     }));
 
+    // ------------------------------------------------------------ correção (C6 / P1-d)
+    router.get('/api/admin/assignments/:id/submissions/:submissionId', (req, res) => validateAdmin(req, res, (config, account) => {
+        const found = loadScopedAssignment(req, res, account);
+        if (!found) return;
+        const wanted = typeof req.params.submissionId === 'string' ? req.params.submissionId : '';
+        const raw = wanted && wanted.length <= ASSIGNMENT_ID_MAX ? assignments.findSubmissionById(db.memory, wanted) : null;
+        if (!raw || String(raw.assignmentId) !== found.task.id) return sendFieldError(res, MESSAGES.submissionNotFound, null, { status: 404 });
+        const email = assignments.submissionOwners(raw)[0] || '';
+        const student = (db.memory.students || []).find(item => item && normalizeEmail(item.email) === email) || null;
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            success: true,
+            submission: presentAdminSubmission(found.task, raw, student),
+            latePolicy: found.task.latePolicy,
+            serverNow: Date.now(),
+            timezone: timezone(),
+        });
+    }));
+
+    // Download de um arquivo de qualquer entrega da tarefa (o professor corrige). Fora da
+    // auditoria (volume); o ZIP entra.
+    router.get('/api/admin/assignments/:id/files/:fileId', (req, res) => validateAdmin(req, res, (config, account) => {
+        const found = loadScopedAssignment(req, res, account);
+        if (!found) return undefined;
+        const fileId = typeof req.params.fileId === 'string' ? req.params.fileId : '';
+        let file = null;
+        if (assignmentFiles.isFileId(fileId)) {
+            assignments.submissionsForAssignment(db.memory, found.task.id).some(raw => {
+                const sub = assignments.normalizeSubmission(raw);
+                file = sub.versions.flatMap(version => version.files).find(item => item.id === fileId) || null;
+                return !!file;
+            });
+        }
+        if (!file) return sendFieldError(res, MESSAGES.fileNotFound, null, { status: 404 });
+        return assignmentFiles.sendStoredFile(res, file, {
+            inline: String((req.query && req.query.inline) || '') === '1',
+            missingMessage: MESSAGES.fileMissing,
+            readFailedMessage: MESSAGES.readFailed,
+            onReadError: err => logError('[TAREFAS] Falha ao ler o arquivo de uma entrega (painel)', err),
+        });
+    }));
+
+    router.get('/api/admin/assignments/:id/export', (req, res) => validateAdmin(req, res, async (config, account) => {
+        const found = loadScopedAssignment(req, res, account);
+        if (!found) return undefined;
+        const query = { ...(req.query || {}) };
+        const checked = SCHEMAS.exportQuery.run(query, '', 'filtro');
+        if (!checked.ok) return sendFieldError(res, checked.error, checked.field);
+        const versoes = String(query.versoes || '').trim() || 'ultima';
+        const { task } = found;
+        const plan = assignmentExport.buildExportPlan(db.memory, task, { versoes, timezone: timezone() });
+        audit(req, account, 'assignment_files_exported', task, {
+            details: {
+                assignmentId: task.id,
+                title: task.title,
+                versoes: plan.versoes,
+                alunos: plan.stats.alunos,
+                comEnvio: plan.stats.comEnvio,
+                arquivos: plan.stats.arquivos,
+                bytes: plan.stats.bytes,
+                faltando: plan.stats.faltando,
+            },
+        });
+        // A auditoria grava antes do primeiro byte: falha de gravação ainda sai 503 em JSON.
+        await db.save({ only: ['auditLogs'] });
+        res.set({
+            'Content-Type': 'application/zip',
+            'Content-Disposition': assignmentFiles.attachmentDisposition(plan.fileName),
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'private, no-store',
+        });
+        try {
+            await assignmentExport.writeExportZip(res, plan);
+        } catch (err) {
+            // O navegador desistiu do download: nada a responder.
+            if (err && err.code === 'ERR_STREAM_PREMATURE_CLOSE') return undefined;
+            logError('[TAREFAS] Falha ao montar o ZIP das entregas', err);
+            if (!res.headersSent) {
+                ['Content-Type', 'Content-Disposition'].forEach(name => res.removeHeader(name));
+                return sendFieldError(res, MESSAGES.exportFailed, null, { status: 503, code: 'export_failed' });
+            }
+            res.destroy(err);
+        }
+        return undefined;
+    }));
+
+    // Salvar, devolver ou pedir para refazer a correção de um aluno.
+    router.post('/api/admin/assignments/:id/grade', SCHEMAS.grade, (req, res) => validateAdmin(req, res, async (config, account) => {
+        const found = loadScopedAssignment(req, res, account);
+        if (!found) return undefined;
+        const { task } = found;
+        if (!checkGradable(task, res)) return undefined;
+        // Turma encerrada: 409 class_closed antes de mudar qualquer coisa.
+        if (!academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
+        const target = rosterTarget(task, req.body.studentEmail);
+        if (!target) return sendFieldError(res, MESSAGES.studentNotFound, 'studentEmail', { status: 404 });
+        const action = String(req.body.action || '').trim() || 'salvar';
+        const tz = timezone();
+        const now = Date.now();
+        const existing = target.submission ? assignments.normalizeSubmission(target.submission) : null;
+        const previousGrade = gradeOf(existing);
+        const wasReturned = assignments.isReturned(existing);
+        const delivered = assignments.hasDelivery(existing);
+        const read = readScore(req.body.grade);
+        if (read.error) return sendFieldError(res, read.error, 'grade');
+
+        // Versão corrigida: a pedida, a já corrigida (devolver sem mandar a nota de novo) ou
+        // a última. Sem versão (entrega em mãos ou zero sem entrega): 0.
+        const versions = existing ? existing.versions : [];
+        let versionN = null;
+        if (req.body.version !== undefined && req.body.version !== null) {
+            versionN = Number(req.body.version);
+            if (versionN !== 0 && !versions.some(version => version.n === versionN)) return sendFieldError(res, MESSAGES.versionNotFound, 'version');
+            if (versionN === 0 && versions.length && !(existing && existing.manualEntry)) return sendFieldError(res, MESSAGES.versionNotFound, 'version');
+        } else if (read.empty && previousGrade && action !== 'refazer') {
+            versionN = previousGrade.versionGraded;
+        } else {
+            versionN = versions.length ? versions[versions.length - 1].n : 0;
+        }
+        const comment = commentFrom(req.body, previousGrade ? previousGrade.comment : '');
+        const waivePenalty = typeof req.body.waivePenalty === 'boolean' ? req.body.waivePenalty : !!(previousGrade && previousGrade.penaltyWaived);
+        const score = read.empty ? (previousGrade ? previousGrade.score : null) : read.score;
+
+        let next;
+        let auditAction;
+        let auditExtra = {};
+        if (action === 'refazer') {
+            if (!delivered) return sendFieldError(res, MESSAGES.noDeliveryRedo, null, { status: 409, code: 'no_delivery' });
+            if (versions.length >= LIMITS.versionsMax) return sendFieldError(res, MESSAGES.redoVersions, null, { status: 409, code: 'versions_limit' });
+            if (!comment) return sendFieldError(res, MESSAGES.redoComment, 'comment');
+            const window = readIndividualWindow(req.body, task, { duePrefix: 'redoDue', closePrefix: 'redoClose', tz, now });
+            if (window.error) return sendFieldError(res, window.error, window.field);
+            const computed = assignments.gradeWithPenalty(task, existing, { score, versionN, waivePenalty });
+            const grade = { ...(previousGrade || {}), ...computed, comment, gradedBy: String(account.email || '').toLowerCase(), gradedAt: now };
+            const sameRequest = existing && existing.status === 'refazer' && existing.extension
+                && existing.extension.dueAt === window.dueAt && existing.extension.closeAt === window.closeAt
+                && gradeKey(previousGrade) === gradeKey(grade);
+            if (sameRequest) return res.json({ ...submissionResponse(task, target.submission, target), changed: false });
+            // Esconder a nota que o aluno já viu pede motivo (CONF-09).
+            const reasonCheck = gradeChangeReason(req.body, { required: wasReturned });
+            if (!reasonCheck.ok) return res.status(reasonCheck.status).json(wasReturned && !String(req.body.reason || '').trim() ? { ...reasonCheck.body, error: MESSAGES.redoReason } : reasonCheck.body);
+            const base = baseSubmission(task, target, now);
+            const before = assignments.effectiveWindow(task, existing);
+            next = {
+                ...base,
+                studentId: studentIdOf(target, base),
+                status: 'refazer',
+                grade,
+                returnedAt: null,
+                returnedBy: '',
+                extension: { dueAt: window.dueAt, closeAt: window.closeAt, by: String(account.email || '').toLowerCase(), at: now, reason: 'Pedido para refazer' },
+                updatedAt: now,
+            };
+            auditAction = 'assignment_redo_requested';
+            auditExtra = {
+                oldValue: deadlineText(before.dueAt, tz),
+                newValue: deadlineText(window.dueAt, tz),
+                reason: reasonCheck.reason,
+                details: { version: grade.versionGraded, dueAt: window.dueAt, closeAt: window.closeAt, notaEscondida: wasReturned, comentarioAlterado: !previousGrade || previousGrade.comment !== comment },
+            };
+        } else {
+            if (score === null) return sendFieldError(res, MESSAGES.gradeRequired, 'grade');
+            // Ninguém ganha nota sem entrega (D10): sem versão nem entrega em mãos, só o zero.
+            if (!delivered && score !== 0) return sendFieldError(res, MESSAGES.noDelivery, 'grade', { status: 409, code: 'no_delivery' });
+            // Versão 0 (entrega em mãos, zero sem entrega): sem desconto de atraso.
+            const computed = versionN
+                ? assignments.gradeWithPenalty(task, existing, { score, versionN, waivePenalty })
+                : { ...assignments.gradeWithPenalty(task, null, { score, waivePenalty }), versionGraded: 0 };
+            const grade = { ...(previousGrade || {}), ...computed, comment, gradedBy: String(account.email || '').toLowerCase(), gradedAt: now };
+            const gradeChanged = gradeKey(previousGrade) !== gradeKey(grade);
+            const nextStatus = wasReturned || action === 'devolver' ? 'devolvida' : 'corrigida';
+            if (!gradeChanged && existing && existing.status === nextStatus) {
+                return res.json({ ...submissionResponse(task, target.submission, target), changed: false });
+            }
+            // Nota que o aluno já viu: mudar pede motivo e continua devolvida (CONF-09).
+            const reasonCheck = gradeChangeReason(req.body, { required: wasReturned && gradeChanged });
+            if (!reasonCheck.ok) return res.status(reasonCheck.status).json(reasonCheck.body);
+            const base = baseSubmission(task, target, now);
+            next = {
+                ...base,
+                studentId: studentIdOf(target, base),
+                status: nextStatus,
+                grade: gradeChanged || !previousGrade ? grade : { ...previousGrade },
+                updatedAt: now,
+            };
+            if (nextStatus === 'devolvida') {
+                next.returnedAt = wasReturned ? existing.returnedAt : now;
+                next.returnedBy = wasReturned ? existing.returnedBy : String(account.email || '').toLowerCase();
+            } else {
+                next.returnedAt = null;
+                next.returnedBy = '';
+            }
+            auditAction = wasReturned ? 'assignment_grade_changed' : (action === 'devolver' ? 'assignment_grade_returned' : 'assignment_grade_saved');
+            auditExtra = {
+                oldValue: gradeValueText(previousGrade),
+                newValue: gradeValueText(next.grade),
+                reason: reasonCheck.reason,
+                details: {
+                    version: next.grade.versionGraded,
+                    score: next.grade.score,
+                    penaltyPct: next.grade.penaltyPct,
+                    finalScore: next.grade.finalScore,
+                    penaltyWaived: next.grade.penaltyWaived,
+                    comentarioAlterado: !previousGrade || previousGrade.comment !== next.grade.comment,
+                    semEntrega: !delivered,
+                },
+            };
+        }
+        putSubmission(target.submission, next);
+        gradeAudit(req, account, auditAction, task, next, auditExtra);
+        await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
+        return res.json(submissionResponse(task, next, target));
+    }));
+
+    // Devolve de uma vez as correções salvas (com nota) que não têm versão nova esperando.
+    router.post('/api/admin/assignments/:id/return-all', SCHEMAS.empty, (req, res) => validateAdmin(req, res, async (config, account) => {
+        const found = loadScopedAssignment(req, res, account);
+        if (!found) return undefined;
+        const { task } = found;
+        if (!checkGradable(task, res)) return undefined;
+        if (!academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
+        const rows = assignments.submissionsForAssignment(db.memory, task.id);
+        const ready = rows.filter(raw => assignments.isReturnable(raw));
+        const newVersionPending = rows.filter(raw => {
+            const sub = assignments.normalizeSubmission(raw);
+            return sub.status === 'corrigida' && assignments.needsGrading(sub);
+        }).length;
+        if (!ready.length) return res.json({ success: true, changed: false, returned: 0, newVersionPending });
+        const now = Date.now();
+        const by = String(account.email || '').toLowerCase();
+        ready.forEach(raw => {
+            const sub = assignments.normalizeSubmission(raw);
+            const next = { ...raw, status: 'devolvida', returnedAt: now, returnedBy: by, updatedAt: now };
+            putSubmission(raw, next);
+            gradeAudit(req, account, 'assignment_grade_returned', task, sub, {
+                oldValue: '',
+                newValue: gradeValueText(sub.grade),
+                details: { version: sub.grade.versionGraded, finalScore: sub.grade.finalScore, penaltyPct: sub.grade.penaltyPct, lote: true, count: ready.length },
+            });
+        });
+        await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
+        return res.json({ success: true, changed: true, returned: ready.length, newVersionPending });
+    }));
+
+    // Prazo individual (prorrogação) para um aluno.
+    router.post('/api/admin/assignments/:id/extension', SCHEMAS.extension, (req, res) => validateAdmin(req, res, async (config, account) => {
+        const found = loadScopedAssignment(req, res, account);
+        if (!found) return undefined;
+        const { task } = found;
+        if (!checkGradable(task, res)) return undefined;
+        // Turma encerrada: o envio já é recusado; a prorrogação diz como reabrir.
+        try {
+            academicCalendar.assertClassOpen(classOfTask(task));
+        } catch (err) {
+            if (err && err.code === academicCalendar.CLASS_CLOSED_CODE) return sendFieldError(res, MESSAGES.classClosedExtension, null, { status: 409, code: academicCalendar.CLASS_CLOSED_CODE });
+            throw err;
+        }
+        const target = rosterTarget(task, req.body.studentEmail);
+        if (!target) return sendFieldError(res, MESSAGES.studentNotFound, 'studentEmail', { status: 404 });
+        const existing = target.submission ? assignments.normalizeSubmission(target.submission) : null;
+        if (assignments.isReturned(existing)) return sendFieldError(res, MESSAGES.returnedExtension, null, { status: 409, code: 'assignment_returned' });
+        const tz = timezone();
+        const now = Date.now();
+        const window = readIndividualWindow(req.body, task, { duePrefix: 'due', closePrefix: 'close', tz, now });
+        if (window.error) return sendFieldError(res, window.error, window.field);
+        if (existing && existing.extension && existing.extension.dueAt === window.dueAt && existing.extension.closeAt === window.closeAt) {
+            return res.json({ ...submissionResponse(task, target.submission, target), changed: false });
+        }
+        const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+        if (reason.length < LIMITS.reasonMin) return sendFieldError(res, MESSAGES.extensionReason, 'reason', { code: 'reason_required' });
+        const base = baseSubmission(task, target, now);
+        const before = assignments.effectiveWindow(task, existing);
+        const by = String(account.email || '').toLowerCase();
+        const next = {
+            ...base,
+            studentId: studentIdOf(target, base),
+            extension: { dueAt: window.dueAt, closeAt: window.closeAt, by, at: now, reason },
+            updatedAt: now,
+        };
+        putSubmission(target.submission, next);
+        audit(req, account, 'assignment_extension_granted', task, {
+            studentEmail: next.studentEmail,
+            submissionId: next.id,
+            field: 'Prazo da tarefa',
+            oldValue: deadlineText(before.dueAt, tz),
+            newValue: deadlineText(window.dueAt, tz),
+            reason,
+            details: {
+                assignmentId: task.id,
+                title: task.title,
+                dueAt: window.dueAt,
+                closeAt: window.closeAt,
+                anterior: existing && existing.extension ? { dueAt: existing.extension.dueAt, closeAt: existing.extension.closeAt } : null,
+            },
+        });
+        await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
+        return res.json(submissionResponse(task, next, target));
+    }));
+
+    // Entrega em mãos (sem arquivo), com observação e, se quiser, a nota.
+    router.post('/api/admin/assignments/:id/manual-entry', SCHEMAS.manualEntry, (req, res) => validateAdmin(req, res, async (config, account) => {
+        const found = loadScopedAssignment(req, res, account);
+        if (!found) return undefined;
+        const { task } = found;
+        if (!checkGradable(task, res)) return undefined;
+        if (!academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
+        const target = rosterTarget(task, req.body.studentEmail);
+        if (!target) return sendFieldError(res, MESSAGES.studentNotFound, 'studentEmail', { status: 404 });
+        const existing = target.submission ? assignments.normalizeSubmission(target.submission) : null;
+        if (assignments.isReturned(existing)) return sendFieldError(res, MESSAGES.returnedManual, null, { status: 409, code: 'assignment_returned' });
+        const read = readScore(req.body.grade);
+        if (read.error) return sendFieldError(res, read.error, 'grade');
+        const returnNow = req.body.returnNow === true;
+        if (returnNow && read.empty && !(existing && existing.grade && existing.grade.score !== null)) return sendFieldError(res, MESSAGES.gradeRequired, 'grade');
+        const now = Date.now();
+        const by = String(account.email || '').toLowerCase();
+        const note = typeof req.body.note === 'string' ? req.body.note.trim() : (existing && existing.manualEntry ? existing.manualEntry.note : '');
+        const manualEntry = existing && existing.manualEntry
+            ? { ...existing.manualEntry, note, by: existing.manualEntry.by || by, at: existing.manualEntry.at || now }
+            : { note, by, at: now };
+        const previousGrade = gradeOf(existing);
+        const last = existing && existing.versions.length ? existing.versions[existing.versions.length - 1] : null;
+        let grade = previousGrade;
+        if (!read.empty || hasKey(req.body, 'comment')) {
+            const score = read.empty ? (previousGrade ? previousGrade.score : null) : read.score;
+            if (score !== null) {
+                // A nota da entrega em mãos não tem desconto de atraso (não há hora de chegada);
+                // ela vale para a última versão, se houver, e tira a entrega da fila.
+                const computed = assignments.gradeWithPenalty(task, null, { score });
+                grade = {
+                    ...(previousGrade || {}),
+                    ...computed,
+                    versionGraded: last ? last.n : 0,
+                    comment: commentFrom(req.body, previousGrade ? previousGrade.comment : ''),
+                    gradedBy: by,
+                    gradedAt: now,
+                };
+            }
+        }
+        const gradeChanged = gradeKey(previousGrade) !== gradeKey(grade);
+        let status = existing ? existing.status : 'pendente';
+        if (returnNow) status = 'devolvida';
+        else if (gradeChanged && grade) status = 'corrigida';
+        else if (!existing || !existing.versions.length) status = grade ? 'corrigida' : 'entregue_em_maos';
+        const sameEntry = existing && existing.manualEntry && existing.manualEntry.note === note;
+        if (sameEntry && !gradeChanged && existing.status === status) {
+            return res.json({ ...submissionResponse(task, target.submission, target), changed: false });
+        }
+        const base = baseSubmission(task, target, now);
+        const next = {
+            ...base,
+            studentId: studentIdOf(target, base),
+            manualEntry,
+            grade,
+            status,
+            updatedAt: now,
+        };
+        if (status === 'devolvida') {
+            next.returnedAt = now;
+            next.returnedBy = by;
+        }
+        putSubmission(target.submission, next);
+        if (!sameEntry) {
+            audit(req, account, 'assignment_manual_entry', task, {
+                studentEmail: next.studentEmail,
+                submissionId: next.id,
+                details: { assignmentId: task.id, title: task.title, note, comNota: !!(grade && grade.score !== null), alterada: !!(existing && existing.manualEntry) },
+            });
+        }
+        if (gradeChanged || returnNow) {
+            gradeAudit(req, account, returnNow ? 'assignment_grade_returned' : 'assignment_grade_saved', task, next, {
+                oldValue: gradeValueText(previousGrade),
+                newValue: gradeValueText(grade),
+                details: { version: grade.versionGraded, finalScore: grade.finalScore, penaltyPct: grade.penaltyPct, entregaEmMaos: true },
+            });
+        }
+        await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
+        return res.json(submissionResponse(task, next, target));
+    }));
+
     return router;
 }
 
@@ -750,4 +1427,5 @@ module.exports = {
     presentAssignment,
     readAssignmentFields,
     publishProblem,
+    presentAdminSubmission,
 };

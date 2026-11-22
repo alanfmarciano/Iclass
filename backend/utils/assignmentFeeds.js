@@ -12,8 +12,18 @@
 //   ('A fazer' ou 'Refazer') e que aceita envio, com o prazo efetivo dele nas próximas
 //   24 h; no sino desde 24 h antes do prazo (ou desde que a tarefa apareceu, se for depois),
 //   some quando ele envia, quando o prazo passa ou quando a turma é encerrada.
-// Os itens de devolução e de "refazer" entram no C6 (P1-d), neste mesmo provedor.
+// - 'tarefa:<id>:devolvida' Tarefa devolvida (C6 / P1-d): a correção chegou ao aluno, na
+//   hora da devolução; se o professor muda a nota depois (com motivo), o mesmo item volta
+//   como não lido com o título "Nota da tarefa alterada", na hora da mudança;
+// - 'tarefa:<id>:refazer' Refazer a tarefa (C6 / P1-d): o professor pediu para refazer, com
+//   o prazo novo, na hora do pedido; some quando o aluno manda a versão nova ou quando a
+//   entrega não aceita mais envio.
 // Não lido: depois do último "Marcar como lidas" (seenAt), como as notas e as dúvidas.
+//
+// Fila do instrutor ('Precisa de você' e sino do painel, D16): 'entregas_para_corrigir',
+// uma linha por turma com o total de entregas que esperam correção nas tarefas publicadas
+// (versão nova sem nota, entrega em mãos sem nota, versão nova depois da correção), só dos
+// alunos do escopo de quem vê e só para quem tem 'page.assignments'.
 //
 // Calendário ('entrega'): um evento 'tarefa:<id>' por tarefa publicada e aberta da turma,
 // na data e na hora do prazo efetivo do aluno (no relógio da escola), com a situação dele.
@@ -62,7 +72,7 @@ function notificationItems(ctx) {
     const seenAt = Number(ctx && ctx.seenAt) || 0;
     const tz = timezone();
     const items = [];
-    visibleTasks(ctx, now).forEach(({ task, situation }) => {
+    visibleTasks(ctx, now).forEach(({ task, sub, situation }) => {
         const shownAt = Math.max(task.publishedAt || 0, task.opensAt || 0) || task.updatedAt || task.createdAt || 0;
         const due = situation.dueAt !== null ? assignments.formatSchoolDateTime(situation.dueAt, tz) : '';
         items.push({
@@ -89,6 +99,35 @@ function notificationItems(ctx) {
                 href: detailHref(task),
                 unread: at > seenAt,
             });
+        }
+        // Devolução e pedido para refazer (C6): a entrega do próprio aluno, como a lista.
+        if (sub) {
+            const entry = assignments.normalizeSubmission(sub);
+            if (situation.code === 'devolvida' && entry.returnedAt !== null) {
+                const changedAt = entry.grade && entry.grade.gradedAt !== null && entry.grade.gradedAt > entry.returnedAt ? entry.grade.gradedAt : null;
+                const at = changedAt || entry.returnedAt;
+                items.push({
+                    id: `tarefa:${task.id}:devolvida`,
+                    type: 'tarefa',
+                    title: changedAt ? 'Nota da tarefa alterada' : 'Tarefa devolvida',
+                    text: task.title,
+                    at,
+                    href: detailHref(task),
+                    unread: at > seenAt,
+                });
+            }
+            if (situation.code === 'refazer' && situation.aceitaEnvio) {
+                const at = (entry.extension && entry.extension.at) || (entry.grade && entry.grade.gradedAt) || entry.updatedAt || 0;
+                items.push({
+                    id: `tarefa:${task.id}:refazer`,
+                    type: 'tarefa',
+                    title: 'Refazer a tarefa',
+                    text: due ? `${task.title} · até ${due}` : task.title,
+                    at,
+                    href: detailHref(task),
+                    unread: at > seenAt,
+                });
+            }
         }
     });
     return items;
@@ -118,15 +157,52 @@ function calendarEvents(ctx) {
     return events;
 }
 
-// Registra os dois provedores (o mesmo id troca o provedor: chamar de novo não duplica).
+function plural(count, one, many) {
+    return `${count} ${count === 1 ? one : many}`;
+}
+
+// Pendência da fila do instrutor (ctx de studentFeeds.registerInstructorQueueProvider):
+// só dentro de uma turma (o sino percorre as turmas do escopo; sem turma, a fila do
+// Dashboard fica sem o item, como a chamada de hoje).
+function queueItems(ctx) {
+    const cls = ctx && ctx.cls;
+    if (!cls || !cls.name) return [];
+    const summary = assignments.gradingQueueSummary(ctx.memory, {
+        courseId: String(cls.courseId || ''),
+        studentClass: String(cls.name),
+        emails: ctx.emails instanceof Set ? ctx.emails : null,
+    });
+    if (!summary.count) return [];
+    const first = summary.tasks[0];
+    const detalhe = summary.tasks.length === 1
+        ? `em "${first.title}" · Tarefas`
+        : `em ${plural(summary.tasks.length, 'tarefa', 'tarefas')}, a maior "${first.title}" (${first.count}) · Tarefas`;
+    const item = {
+        id: 'entregas_para_corrigir',
+        tipo: 'entregas_para_corrigir',
+        titulo: summary.count === 1 ? 'Entrega de tarefa para corrigir' : 'Entregas de tarefas para corrigir',
+        detalhe,
+        count: summary.count,
+        tone: 'warning',
+        href: '/tarefas?filtro=para-corrigir',
+        permissao: 'page.assignments',
+    };
+    if (summary.oldestAt) item.at = summary.oldestAt;
+    return [item];
+}
+
+// Registra os três provedores (o mesmo id troca o provedor: chamar de novo não duplica).
+// Chamado pelos dois routers das tarefas (aluno e painel).
 function registerAssignmentFeeds() {
     studentFeeds.registerStudentNotificationProvider({ id: PROVIDER_ID, items: notificationItems });
     studentFeeds.registerStudentCalendarProvider({ id: PROVIDER_ID, events: calendarEvents });
+    studentFeeds.registerInstructorQueueProvider({ id: PROVIDER_ID, items: queueItems });
 }
 
 module.exports = {
     PROVIDER_ID,
     notificationItems,
     calendarEvents,
+    queueItems,
     registerAssignmentFeeds,
 };

@@ -65,14 +65,17 @@ test('[UC-FUNDACAO-001] registro: id e função obrigatórios, mesmo id troca e 
     assert.throws(() => feeds.registerStudentNotificationProvider({ id: 'x' }), /items\(ctx\)/);
     assert.throws(() => feeds.registerStudentCalendarProvider({ id: 'x', items: () => [] }), /events\(ctx\)/);
     assert.throws(() => feeds.registerInstructorQueueProvider(null), /inválido/);
+    // Os provedores de verdade já registrados pelo createApp (as tarefas do C6, 'tarefas',
+    // que sem turma no contexto não trazem item) ficam de fora da conta.
+    const ownIds = () => feeds.providerIds('queue').filter(id => id !== 'tarefas');
     const first = feeds.registerInstructorQueueProvider({ id: 'teste', items: () => [{ id: 'a', titulo: 'A' }] });
     feeds.registerInstructorQueueProvider({ id: 'teste', items: () => [{ id: 'b', titulo: 'B' }] });
-    assert.deepEqual(feeds.providerIds('queue'), ['teste']);
+    assert.deepEqual(ownIds(), ['teste']);
     assert.deepEqual(feeds.collectInstructorQueue({}).map(item => item.id), ['b']);
     first(); // a função do registro trocado não retira o novo
-    assert.equal(feeds.hasProviders('queue'), true);
+    assert.deepEqual(ownIds(), ['teste']);
     keep(feeds.registerInstructorQueueProvider({ id: 'teste', items: () => [] }))();
-    assert.equal(feeds.hasProviders('queue'), false);
+    assert.deepEqual(ownIds(), []);
 });
 
 test('[UC-FUNDACAO-001] sino do aluno: itens do provedor entram na mesma ordem e no limite de 30, com o contexto da turma', async () => {

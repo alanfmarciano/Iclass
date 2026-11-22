@@ -875,6 +875,61 @@ function situationForClass(situation, classOpen) {
     return { ...situation, aceitaEnvio: false, label, turmaEncerrada: true };
 }
 
+// ------------------------------------------------------------ correção (P1-d, C6)
+// O aluno entregou algo (versão pelo sistema ou entrega em mãos)?
+function hasDelivery(submission) {
+    const sub = submission ? asSubmission(submission) : null;
+    return !!sub && (sub.versions.length > 0 || !!sub.manualEntry);
+}
+
+// Devolvida: o aluno vê a nota e o comentário.
+function isReturned(submission) {
+    const sub = submission ? asSubmission(submission) : null;
+    return !!sub && sub.status === 'devolvida' && sub.returnedAt !== null;
+}
+
+// Entra no "Devolver todas as corrigidas": correção salva com nota e nenhuma versão nova
+// esperando correção (a nota salva seria de uma versão velha).
+function isReturnable(submission) {
+    const sub = submission ? asSubmission(submission) : null;
+    return !!sub && instructorStatus(sub) === 'corrigida' && !!sub.grade && sub.grade.finalScore !== null;
+}
+
+// Desde quando a entrega espera correção: a chegada da última versão (ou a entrega em
+// mãos, sem versão). null quando não espera.
+function waitingSince(submission) {
+    const sub = submission ? asSubmission(submission) : null;
+    if (!sub || !needsGrading(sub)) return null;
+    const last = lastVersion(sub);
+    if (last) return last.requestAt;
+    return sub.manualEntry ? sub.manualEntry.at : null;
+}
+
+// Entregas para corrigir nas tarefas publicadas da turma (fila "Precisa de você" e sino
+// do instrutor, D16): { count, tasks: [{ id, title, count }], oldestAt }. emails (Set):
+// só os alunos do escopo de quem vê; sem ele, todos.
+function gradingQueueSummary(memory, { courseId, studentClass, emails = null } = {}) {
+    const summary = { count: 0, tasks: [], oldestAt: null };
+    assignmentsForClass(memory, { courseId, studentClass, statuses: ['publicada'] }).forEach(raw => {
+        const task = normalizeAssignment(raw);
+        let count = 0;
+        submissionsForAssignment(memory, task.id).forEach(rawSub => {
+            const sub = normalizeSubmission(rawSub);
+            if (emails instanceof Set && !submissionOwners(sub).some(email => emails.has(email))) return;
+            if (instructorStatus(sub) !== 'para_corrigir') return;
+            count += 1;
+            const since = waitingSince(sub);
+            if (since !== null && (summary.oldestAt === null || since < summary.oldestAt)) summary.oldestAt = since;
+        });
+        if (count) {
+            summary.count += count;
+            summary.tasks.push({ id: task.id, title: task.title, count });
+        }
+    });
+    summary.tasks.sort((a, b) => b.count - a.count || compareText(a.title, b.title));
+    return summary;
+}
+
 module.exports = {
     SCHEMA_VERSION,
     ASSIGNMENT_STATUSES,
@@ -928,4 +983,9 @@ module.exports = {
     latePolicyText,
     classAcceptsSubmissions,
     situationForClass,
+    hasDelivery,
+    isReturned,
+    isReturnable,
+    waitingSince,
+    gradingQueueSummary,
 };

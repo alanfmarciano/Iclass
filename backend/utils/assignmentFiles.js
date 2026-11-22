@@ -523,6 +523,68 @@ function downloadHeaders(file, { inline = false } = {}) {
     };
 }
 
+// Content-Disposition de anexo com um nome qualquer (o ZIP das entregas): acentos em
+// filename*, a versão ASCII em filename.
+function attachmentDisposition(name) {
+    const clean = sanitizeOriginalName(name) || 'arquivo';
+    return `attachment; filename="${asciiFallback(clean)}"; filename*=UTF-8''${encodeRfc5987(clean)}`;
+}
+
+// Prévia que o painel pode mostrar (D7): 'image' (jpg, png, webp, gif em <img src=blob:>),
+// 'pdf' (Blob aberto em aba nova), 'text' (texto e código até 200 KB, mostrados como
+// texto puro, nunca como HTML) ou null (só "Baixar"; HEIC entra aqui).
+const TEXT_PREVIEW_MAX_BYTES = 200 * 1024;
+const IMAGE_PREVIEW_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
+
+function previewKind(file) {
+    const ext = String((file && file.ext) || extensionOf(file && file.originalName)).toLowerCase();
+    if (IMAGE_PREVIEW_EXTENSIONS.has(ext)) return 'image';
+    if (ext === '.pdf') return 'pdf';
+    const size = Number(file && file.size);
+    if (TEXT_EXTENSIONS.has(ext) && Number.isFinite(size) && size <= TEXT_PREVIEW_MAX_BYTES) return 'text';
+    return null;
+}
+
+// O arquivo do registro existe em data/entregas? (caminho estranho conta como não.)
+function storedFileExists(file) {
+    try {
+        return fs.statSync(absFromStoredRel(file && file.storedRel)).isFile();
+    } catch (err) {
+        return false;
+    }
+}
+
+// Envia o arquivo de uma entrega como download (aluno e painel; D6). Sumiu do disco (ou
+// caminho estranho): 404 file_missing. Os cabeçalhos do anexo só entram quando o arquivo
+// abriu: uma falha de leitura antes do primeiro byte responde 503 retryable em JSON, sem
+// Content-Disposition de anexo (contrato nomes_e_formatos.erros); depois do primeiro byte,
+// a conexão é cortada. inline só vale para imagem raster e PDF (downloadHeaders).
+function sendStoredFile(res, file, { inline = false, missingMessage, readFailedMessage, onReadError } = {}) {
+    let abs;
+    let stat;
+    try {
+        abs = absFromStoredRel(file && file.storedRel);
+        stat = fs.statSync(abs);
+        if (!stat.isFile()) throw new Error('não é arquivo');
+    } catch (err) {
+        return res.status(404).json({ success: false, error: missingMessage || 'Arquivo não encontrado.', code: 'file_missing' });
+    }
+    const headers = { ...downloadHeaders(file, { inline }), 'Content-Length': String(stat.size) };
+    const stream = fs.createReadStream(abs);
+    stream.once('open', () => {
+        res.set(headers);
+        stream.pipe(res);
+    });
+    res.once('close', () => stream.destroy());
+    stream.on('error', err => {
+        if (typeof onReadError === 'function') onReadError(err);
+        if (res.headersSent) return res.destroy(err);
+        Object.keys(headers).forEach(name => res.removeHeader(name));
+        return res.status(503).json({ success: false, error: readFailedMessage || 'Não foi possível ler o arquivo agora. Tente de novo em alguns segundos.', code: 'read_failed', retryable: true });
+    });
+    return undefined;
+}
+
 module.exports = {
     ASSIGNMENT_FILE_TYPES,
     FILE_TYPE_KEYS,
@@ -556,4 +618,9 @@ module.exports = {
     checkFreeSpace,
     cleanupReceivingDir,
     downloadHeaders,
+    attachmentDisposition,
+    TEXT_PREVIEW_MAX_BYTES,
+    previewKind,
+    storedFileExists,
+    sendStoredFile,
 };
