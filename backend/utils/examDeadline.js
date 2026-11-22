@@ -65,8 +65,10 @@ function countAnswers(answers) {
 // automática do fim do tempo e o professor reabrir qualquer uma pelo Monitor (P3-S8),
 // sem as respostas, que ficam na própria entrega, sem a chave da cópia local, que é do
 // navegador do aluno, e sem a marca da reabertura pelo professor (a próxima reabertura
-// diz a sua).
-const REOPEN_STATE_OMITTED_FIELDS = new Set(['answers', 'localCopyKey', 'status', 'timerRemaining', 'submittedAt', 'reopenableState', 'pageExit', 'reopenedDelivery', 'reopenedByInstructor']);
+// diz a sua). Também sem o e-mail do aluno: a reabertura grava o da entrega, e a cópia
+// não deixa o e-mail para trás na entrega anonimizada (A4, ajuste 1; as cópias antigas
+// saem pelo handler de examParticipants.js, scrubReopenSnapshots).
+const REOPEN_STATE_OMITTED_FIELDS = new Set(['answers', 'localCopyKey', 'status', 'timerRemaining', 'submittedAt', 'reopenableState', 'pageExit', 'reopenedDelivery', 'reopenedByInstructor', 'studentEmail']);
 
 function attemptStateForReopen(state) {
     if (!state || typeof state !== 'object' || !state.startedAt) return null;
@@ -587,6 +589,21 @@ function reopenDeliveryByInstructor(memory, application, studentEmail, { now = D
     return { ok: true, state, key, submission, addedMinutes, remainingMs, discardedNext };
 }
 
+// Aplicação encerrada (ou cancelada) não reabre mais nenhuma entrega: as cópias da
+// tentativa guardadas nas entregas dela (reopenableState) saem, para não ficarem para
+// sempre no banco e nos backups (A4, ajuste 1). Entregas são linhas antigas de coleção
+// só de acréscimo: quem chama grava completo quando devolve mais que 0.
+function dropReopenSnapshots(memory, applicationId) {
+    if (!applicationId) return 0;
+    let dropped = 0;
+    ((memory && memory.submissions) || []).forEach(submission => {
+        if (!submission || submission.applicationId !== applicationId || !submission.reopenableState) return;
+        delete submission.reopenableState;
+        dropped += 1;
+    });
+    return dropped;
+}
+
 // Tentativa reaberta pelo "+N min" que termina sem entrega nova (o professor desconsiderou
 // as tentativas em andamento ao encerrar): a entrega do fim do tempo que ela já tinha
 // volta como estava, marcada para o professor. Devolve a entrega restaurada (ou null).
@@ -772,6 +789,7 @@ module.exports = {
     computeAttemptDeadline,
     countAnswers,
     deliveredWithoutAttemptsLeft,
+    dropReopenSnapshots,
     extendedByServerOutage,
     finalizeAttemptState,
     isAttemptPastDeadline,

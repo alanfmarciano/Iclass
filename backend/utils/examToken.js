@@ -84,6 +84,15 @@ function unsealExamToken(sealed, { applicationId, secret } = {}) {
     }
 }
 
+// A aplicação como vai para a tela: sem o token selado (só GET .../access-token o abre).
+// Toda rota do painel que devolve a aplicação inteira passa por aqui (admin.js e
+// adminExamConfig.js).
+function withoutSealedToken(application) {
+    if (!application || typeof application !== 'object' || !Object.prototype.hasOwnProperty.call(application, 'accessTokenSealed')) return application;
+    const { accessTokenSealed, ...rest } = application;
+    return rest;
+}
+
 module.exports = {
     EXAM_TOKEN_LENGTH,
     EXAM_TOKEN_PATTERN,
@@ -94,4 +103,5 @@ module.exports = {
     verifyExamToken,
     sealExamToken,
     unsealExamToken,
+    withoutSealedToken,
 };

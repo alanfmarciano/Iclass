@@ -166,6 +166,9 @@ function startDeadlineResponse(prazoAte) {
     };
 }
 
+// Aluno com situação Ativo (ou sem situação, cadastro antigo). Quem foi desligado
+// (Inativo, Transferido, Evadido, Concluído) ou está Bloqueado não entra na lista da
+// aplicação nem ganha tentativa extra (attempt-action, P3-S8).
 function activeStudent(student) {
     const status = String((student && student.status) || '').trim().toLowerCase();
     return !status || status === 'ativo' || status === 'active';
@@ -509,17 +512,44 @@ function removeStudentFromApplications(memory, aluno) {
     });
 }
 
+// Tentativa guardada na entrega para o "Reabrir" do Monitor e o "+N min" da turma
+// (submissions[].reopenableState, examDeadline.attemptStateForReopen; P3-S8). As
+// guardadas antes do ajuste 1 da A4 levam o e-mail do aluno (studentEmail), que a
+// reabertura não usa (ela grava o da entrega). Anonimizar e apagar de vez tiram a cópia
+// inteira das entregas do aluno (drop); trocar o e-mail e mesclar só tiram o e-mail
+// antigo de dentro dela. Devolve quantas entregas mudaram.
+function scrubReopenSnapshots(memory, isHis, { drop = false, pseudonymEmail = null } = {}) {
+    let changed = 0;
+    const pseudonym = normalizeEmail(pseudonymEmail);
+    ((memory && memory.submissions) || []).forEach(submission => {
+        const snapshot = submission && submission.reopenableState;
+        if (!isPlainObject(snapshot)) return;
+        const owner = submission.student && submission.student.email;
+        if (drop && (isHis(snapshot.studentEmail) || isHis(owner) || (pseudonym && normalizeEmail(owner) === pseudonym))) {
+            delete submission.reopenableState;
+            changed += 1;
+        } else if (snapshot.studentEmail !== undefined && isHis(snapshot.studentEmail)) {
+            delete snapshot.studentEmail;
+            changed += 1;
+        }
+    });
+    return changed;
+}
+
 registerStudentDataHandler({
     collection: 'examParticipation',
     label: 'Participação e exceções em provas',
     rename(memory, de, para) {
         forEachApplication(memory, application => renameInApplication(application, de, para));
+        scrubReopenSnapshots(memory, email => normalizeEmail(email) === de);
     },
-    anonymize(memory, aluno) {
+    anonymize(memory, aluno, pseudonimo) {
         removeStudentFromApplications(memory, aluno);
+        scrubReopenSnapshots(memory, email => !!email && aluno.owns(email, null, 'renamed'), { drop: true, pseudonymEmail: pseudonimo && pseudonimo.email });
     },
     purge(memory, aluno) {
         removeStudentFromApplications(memory, aluno);
+        scrubReopenSnapshots(memory, email => !!email && aluno.owns(email, null, 'renamed'), { drop: true });
     },
     // Mesclar: o que era do 'sai' passa para o 'fica'; a exceção do 'fica' vale quando os
     // dois têm.
@@ -527,6 +557,7 @@ registerStudentDataHandler({
         const target = normalizeEmail(fica && fica.email);
         if (!target) return;
         const isSai = email => sai.owns(email, null, 'renamed');
+        scrubReopenSnapshots(memory, email => !!email && isSai(email));
         forEachApplication(memory, application => {
             if (Array.isArray(application.participants)) {
                 const next = [];
@@ -589,6 +620,7 @@ registerStudentDataHandler({
 
 module.exports = {
     APPLICATION_PURPOSES,
+    activeStudent,
     AUDIENCE_INPUT_FIELDS,
     MAX_EXTRA_ATTEMPTS,
     MAX_PARTICIPANTS,
@@ -608,6 +640,7 @@ module.exports = {
     notParticipantResponse,
     parseApplicationAudience,
     participantCandidates,
+    scrubReopenSnapshots,
     secondCallEmails,
     startDeadlineResponse,
     studentOverrideFor,

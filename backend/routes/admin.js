@@ -148,9 +148,11 @@ const {
     transitionExamApplication,
 } = require('../utils/examApplications.js');
 const { collectMonitorActivity, monitorKeystrokeEmail } = require('../utils/monitorActivity.js');
-const { attemptOverdueMs, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { attemptOverdueMs, deliveredWithoutAttemptsLeft, dropReopenSnapshots, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
+const { withoutSealedToken } = require('../utils/examToken.js');
+const { activeStudent } = require('../utils/examParticipants.js');
 
 function rejectInvalidBranding(res, body) {
     const validationError = validateBrandingPatch(body);
@@ -4072,7 +4074,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) db.save();
-                return res.json({ success: true, unchanged: true, application, config: currentConfig });
+                return res.json({ success: true, unchanged: true, application: withoutSealedToken(application), config: currentConfig });
             }
             if (plan.resolve) {
                 try {
@@ -4102,8 +4104,11 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             cls.releasedItems[examKey] = active;
             cls.activeExamKey = active ? examKey : (cls.activeExamKey === examKey ? null : cls.activeExamKey);
             cls.activeApplicationId = active ? application.id : (cls.activeApplicationId === application.id ? null : cls.activeApplicationId);
+            // Encerrada, a aplicação não reabre mais entrega: as cópias das tentativas saem
+            // (a gravação aqui já é completa).
+            if (!active) dropReopenSnapshots(db.memory, application.id);
             db.save();
-            return res.json({ success: true, application, config: cls.onlineExamConfigs[examKey] });
+            return res.json({ success: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs[examKey] });
         }
         const actionStartsExam = action === 'running' || action === 'waiting';
         const hasPreparedSnapshot = currentConfig.activeHistoryId
@@ -4194,6 +4199,25 @@ function classExtraTimeResult(reopened, deliveredAtDeadline = 0) {
     };
 }
 
+// Ajuste de tempo de um aluno no registro do monitoramento (P3-S8, D20), com o motivo
+// opcional do diálogo. Sem tentativa aberta (attemptId null), o ajuste vale para a
+// próxima tentativa dele e o texto diz isso.
+function pushTimeAdjustedLog(application, email, attemptId, adjustmentMinutes, reason, { nextAttempt = false } = {}) {
+    if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
+    db.memory.proctoringLogs.push({
+        id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
+        studentEmail: email,
+        studentClass: application.studentClass,
+        courseId: application.courseId || null,
+        examKey: application.examKey,
+        applicationId: application.id,
+        attemptId,
+        timestamp: Date.now(),
+        eventType: 'time_adjusted',
+        details: `${adjustmentMinutes > 0 ? '+' : ''}${adjustmentMinutes} min pelo professor${nextAttempt ? ' (vale quando o aluno começar a prova)' : ''}${reason ? `: ${reason}` : ''}`,
+    });
+}
+
 // 2. Adiciona ou subtrai minutos de um aluno específico ou de toda a turma
 router.post('/api/admin/adjust-student-time', ADMIN_SCHEMAS.adjustStudentTime, (req, res) => {
     validateAdmin(req, res, (config, currentAdmin) => {
@@ -4248,6 +4272,9 @@ router.post('/api/admin/adjust-student-time', ADMIN_SCHEMAS.adjustStudentTime, (
                 // aplicação e a tentativa seguinte (2+ tentativas) já nascia com o extra.
                 if (!application.studentAdjustments) application.studentAdjustments = {};
                 application.studentAdjustments[email] = Number(application.studentAdjustments[email] || 0) + adjustmentMinutes;
+                // O motivo não se perde: o registro diz que o ajuste vale quando ele começar
+                // (A4, ajuste 1).
+                pushTimeAdjustedLog(application, email, null, adjustmentMinutes, reason, { nextAttempt: true });
                 db.save();
                 return res.json({ success: true, appliesToNextAttempt: true });
             }
@@ -4268,19 +4295,7 @@ router.post('/api/admin/adjust-student-time', ADMIN_SCHEMAS.adjustStudentTime, (
             // O ajuste de um aluno com a prova aberta fica no registro do monitoramento
             // (P3-S8, D20: o diálogo do tempo tem motivo opcional).
             if (application && openAttempt) {
-                if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
-                db.memory.proctoringLogs.push({
-                    id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
-                    studentEmail: email,
-                    studentClass: application.studentClass,
-                    courseId: application.courseId || null,
-                    examKey: application.examKey,
-                    applicationId: application.id,
-                    attemptId: openAttempt.state.attemptId || null,
-                    timestamp: Date.now(),
-                    eventType: 'time_adjusted',
-                    details: `${adjustmentMinutes > 0 ? '+' : ''}${adjustmentMinutes} min pelo professor${reason ? `: ${reason}` : ''}`,
-                });
+                pushTimeAdjustedLog(application, email, openAttempt.state.attemptId || null, adjustmentMinutes, reason);
             }
         } else {
             const classes = db.memory.classes;
@@ -4724,6 +4739,8 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 // aplicação mais as tentativas extras dele, D16).
                 attemptNumber,
                 maxAttempts: application ? effectiveMaxAttempts(application, email, currentConfig.maxAttempts) : monitorMaxAttempts,
+                // Cadastro desligado (ou bloqueado): o Monitor não oferece tentativa extra.
+                activeStudent: activeStudent(s),
                 deliveredAttempts,
                 attemptInProgress,
                 attemptStarted,

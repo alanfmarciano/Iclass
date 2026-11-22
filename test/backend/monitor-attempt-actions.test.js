@@ -561,3 +561,115 @@ test('[UC-TENTATIVA-004] migração 2026-11-p3-token-historico tira o token em t
     assert.equal(JSON.stringify(memory), before);
     assert.equal(row.run({}), false);
 });
+
+// ---------------------------------------------------------------- A4, ajuste 1
+
+test('[UC-TENTATIVA-004] tentativa extra recusa aluno desligado e o Monitor não a oferece', async () => {
+    const application = await running();
+    const started = await begin(BRUNO, application.id);
+    await submit(BRUNO, application.id, started, {});
+    db.memory.students.find(item => item.email === BRUNO).status = 'Transferido';
+
+    const refused = await action(application.id, { action: 'tentativa_extra', studentEmail: BRUNO }).expect(409);
+    assert.equal(refused.body.code, 'student_inactive');
+    assert.match(refused.body.error, /Bruno Lima está com o cadastro Transferido/);
+    assert.equal(effectiveFor(application.id, BRUNO), undefined, 'nada é gravado');
+    assert.equal(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_extra_granted'), false);
+    assert.equal((await monitorRow(application.id, BRUNO)).activeStudent, false);
+    assert.equal((await monitorRow(application.id, ALICE)).activeStudent, true);
+    await action(application.id, { action: 'tentativa_extra', studentEmail: ALICE }).expect(200);
+});
+
+test('[UC-TENTATIVA-004] a cópia da tentativa na entrega não leva o e-mail e sai quando a aplicação encerra', async () => {
+    const application = await running({ maxAttempts: 2 });
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, {});
+    const [delivery] = deliveries(application.id, ALICE);
+    assert.ok(delivery.reopenableState && delivery.reopenableState.startedAt);
+    assert.equal(Object.prototype.hasOwnProperty.call(delivery.reopenableState, 'studentEmail'), false, 'sem o e-mail do aluno');
+    assert.doesNotMatch(JSON.stringify(delivery.reopenableState), /alice@/);
+    // Reabrir continua funcionando sem o e-mail na cópia: a tentativa volta com o da entrega.
+    await action(application.id, { action: 'reabrir', studentEmail: ALICE, motivo: 'Enviou por engano' }).expect(200);
+    assert.equal(openState(ALICE, application.id).studentEmail, ALICE);
+    await action(application.id, { action: 'recolher', studentEmail: ALICE }).expect(200);
+    assert.ok(deliveries(application.id, ALICE)[0].reopenableState);
+
+    // Entregas são linhas antigas de coleção só de acréscimo: tirar a cópia pede gravação
+    // completa (sem only), senão o banco ficaria com ela.
+    const originalSave = db.save;
+    const saves = [];
+    db.save = (options) => { saves.push(options); return originalSave.call(db, options); };
+    try {
+        await admin(request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    } finally {
+        db.save = originalSave;
+    }
+    assert.ok(saves.length > 0 && saves.every(options => !options || !options.only), JSON.stringify(saves));
+    const [kept] = deliveries(application.id, ALICE);
+    assert.ok(kept, 'a entrega continua');
+    assert.equal(kept.reopenableState, undefined, 'encerrada, a aplicação não guarda mais a cópia da tentativa');
+});
+
+test('[UC-TENTATIVA-004] server-exam-control não devolve o token selado e encerrar tira a cópia da tentativa', async () => {
+    const historyId = await createHistory();
+    const prepared = await prepare(historyId, { tokenEnabled: true, accessToken: 'QRSTU' });
+    const applicationId = prepared.body.application.id;
+    const started = await admin(request(app).post('/api/admin/server-exam-control')).send({ studentClass, courseId, examKey, applicationId, action: 'start' }).expect(200);
+    assert.equal(started.body.application.status, 'running');
+    assert.doesNotMatch(JSON.stringify(started.body), /accessTokenSealed|QRSTU/);
+    assert.ok(db.memory.examApplications.find(item => item.id === applicationId).accessTokenSealed, 'a aplicação continua com o selo');
+    const repeated = await admin(request(app).post('/api/admin/server-exam-control')).send({ studentClass, courseId, examKey, applicationId, action: 'start' }).expect(200);
+    assert.doesNotMatch(JSON.stringify(repeated.body), /accessTokenSealed/);
+
+    await asStudent(request(app).post('/api/student/validate-exam-token'), ALICE)
+        .send({ email: ALICE, studentClass, courseId, examKey, applicationId, token: 'QRSTU' }).expect(200);
+    const attempt = await begin(ALICE, applicationId);
+    await submit(ALICE, applicationId, attempt, {});
+    assert.ok(deliveries(applicationId, ALICE)[0].reopenableState);
+    const finished = await admin(request(app).post('/api/admin/server-exam-control')).send({ studentClass, courseId, examKey, applicationId, action: 'finish', inProgressPolicy: 'discard' }).expect(200);
+    assert.doesNotMatch(JSON.stringify(finished.body), /accessTokenSealed/);
+    assert.equal(deliveries(applicationId, ALICE)[0].reopenableState, undefined);
+});
+
+test('[UC-TENTATIVA-004] anonimizar e trocar o e-mail não deixam o e-mail do aluno na cópia da tentativa', async () => {
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, {});
+    // Como as entregas automáticas do fim do tempo gravavam antes deste ajuste.
+    const [delivery] = deliveries(application.id, ALICE);
+    delivery.reopenableState.studentEmail = ALICE;
+    const startedBruno = await begin(BRUNO, application.id);
+    await submit(BRUNO, application.id, startedBruno, {});
+    deliveries(application.id, BRUNO)[0].reopenableState.studentEmail = BRUNO;
+
+    // Trocar o e-mail do Bruno: o antigo sai de dentro da cópia (a reabertura usa o da entrega).
+    const { renameStudentData } = require('../../backend/utils/studentDataHandlers.js');
+    renameStudentData(db.memory, BRUNO, 'bruno.novo@acoes.local');
+    const brunoDelivery = db.memory.submissions.find(item => item.applicationId === application.id && item.student.email === BRUNO);
+    assert.ok(brunoDelivery.reopenableState && brunoDelivery.reopenableState.startedAt, 'a cópia continua');
+    assert.equal(brunoDelivery.reopenableState.studentEmail, undefined);
+
+    // Anonimizar a Alice (desligada) com a aplicação ainda em andamento.
+    db.memory.students.find(item => item.email === ALICE).status = 'Transferido';
+    const anonymized = await admin(request(app).post('/api/admin/students/anonymize')).send({ email: ALICE, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    assert.equal(anonymized.status, 200, JSON.stringify(anonymized.body));
+    assert.doesNotMatch(JSON.stringify(db.memory.submissions), /alice@acoes\.local/, 'nenhuma entrega guarda o e-mail original');
+    const hers = db.memory.submissions.filter(item => item.applicationId === application.id && item.attemptId === started.attemptId);
+    assert.equal(hers.length, 1);
+    assert.equal(hers[0].reopenableState, undefined, 'a cópia da tentativa sai da entrega anonimizada');
+    assert.ok(deliveries(application.id, BRUNO)[0].reopenableState, 'a do outro aluno fica');
+});
+
+test('[UC-TENTATIVA-004] ajuste de tempo de aluno que ainda não começou guarda o motivo no registro', async () => {
+    const application = await running();
+    const response = await admin(request(app).post('/api/admin/adjust-student-time')).send({
+        studentClass, courseId, examKey, applicationId: application.id, targetEmail: BRUNO, adjustmentMinutes: 10, reason: 'Laudo de tempo extra',
+    }).expect(200);
+    assert.equal(response.body.appliesToNextAttempt, true);
+    assert.equal(db.memory.examApplications.find(item => item.id === application.id).studentAdjustments[BRUNO], 10);
+    const log = db.memory.proctoringLogs.find(entry => entry.eventType === 'time_adjusted' && entry.studentEmail === BRUNO);
+    assert.ok(log, 'o ajuste fica no registro do monitoramento');
+    assert.equal(log.attemptId, null);
+    assert.equal(log.applicationId, application.id);
+    assert.equal(log.details, '+10 min pelo professor (vale quando o aluno começar a prova): Laudo de tempo extra');
+});

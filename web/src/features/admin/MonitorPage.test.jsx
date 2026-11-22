@@ -306,7 +306,7 @@ describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
       await tick(50)
       expect(urls('/api/admin/submissions?')).toHaveLength(1)
       expect(urls('/api/admin/submissions?')[0]).toContain('applicationId=app-antiga')
-      expect(dialog).toHaveTextContent('1 nota será liberada')
+      expect(dialog).toHaveTextContent('1 nota será liberada e o aluno passará a vê-la no portal.')
       expect(mocks.post).not.toHaveBeenCalled()
       fireEvent.click(within(dialog).getByRole('button', { name: 'Liberar notas' }))
       await tick(50)
@@ -543,6 +543,13 @@ describe('[UC-TENTATIVA-004] MonitorPage · ações por aluno e diálogos própr
     cleanup()
 
     row = { ...base, status: 'finished', attemptInProgress: false, maxAttempts: null }
+    renderMonitor()
+    await screen.findByRole('button', { name: 'Msg' })
+    expect(screen.queryByRole('button', { name: 'Mais ações de Elisa' })).toBeNull()
+    cleanup()
+
+    // A4, ajuste 1: aluno desligado (Transferido) não recebe a oferta de tentativa extra.
+    row = { ...base, status: 'finished', attemptInProgress: false, activeStudent: false }
     renderMonitor()
     await screen.findByRole('button', { name: 'Msg' })
     expect(screen.queryByRole('button', { name: 'Mais ações de Elisa' })).toBeNull()

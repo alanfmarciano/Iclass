@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { MoreHorizontal } from 'lucide-react'
 import { cn } from '../../lib/cn'
 
@@ -8,7 +9,10 @@ import { cn } from '../../lib/cn'
 // Setas para cima e para baixo andam pelos itens. O menu é fixo na janela (a tabela do
 // Monitor rola de lado e cortaria um menu absoluto nas últimas linhas) e abre para cima
 // perto do fim da tela; rolar a página ou mudar o tamanho da janela leva o menu junto com
-// o botão, e ele fecha quando o botão sai da tela.
+// o botão, e ele fecha quando o botão sai da tela. Ele é desenhado em document.body
+// (portal): um ancestral com transform (a animação de entrada do painel, .app-enter)
+// vira o bloco de contenção de position:fixed e jogaria o menu para fora da tela quando a
+// página está rolada.
 export function MonitorRowMenu({ label, items }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState(null)
@@ -59,7 +63,11 @@ export function MonitorRowMenu({ label, items }) {
     const upward = rect.bottom + 48 * list.length + 16 > height && rect.top > height / 2
     return {
       right: Math.max(8, width - rect.right),
-      ...(upward ? { bottom: Math.max(8, height - rect.top + 4) } : { top: rect.bottom + 4 }),
+      ...(upward
+        ? { bottom: Math.min(Math.max(8, height - rect.top + 4), Math.max(8, height - 56)) }
+        : { top: Math.min(Math.max(8, rect.bottom + 4), Math.max(8, height - 56)) }),
+      maxHeight: Math.max(120, height - 16),
+      overflowY: 'auto',
     }
   }
 
@@ -79,6 +87,34 @@ export function MonitorRowMenu({ label, items }) {
     else if (event.key === 'Tab') close(false)
   }
 
+  const menu = open ? (
+    <div
+      ref={menuRef}
+      id={menuId}
+      role="menu"
+      aria-label={label}
+      onKeyDown={onMenuKey}
+      style={position ? { position: 'fixed', ...position } : undefined}
+      className={cn('z-50 min-w-[210px] rounded-md border border-border bg-surface py-1 shadow-lg', position ? '' : 'absolute right-0 mt-1')}
+    >
+      {list.map((item) => {
+        const Icon = item.icon
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="menuitem"
+            onClick={() => { close(); item.onSelect() }}
+            className={cn('flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-2 focus:bg-surface-2 focus:outline-none', item.tone === 'danger' ? 'text-danger' : 'text-text')}
+          >
+            {Icon && <Icon size={14} aria-hidden />}
+            <span>{item.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  ) : null
+
   return (
     <div className="relative">
       <button
@@ -94,33 +130,7 @@ export function MonitorRowMenu({ label, items }) {
       >
         <MoreHorizontal size={16} aria-hidden />
       </button>
-      {open && (
-        <div
-          ref={menuRef}
-          id={menuId}
-          role="menu"
-          aria-label={label}
-          onKeyDown={onMenuKey}
-          style={position ? { position: 'fixed', ...position } : undefined}
-          className={cn('z-50 min-w-[210px] rounded-md border border-border bg-surface py-1 shadow-lg', position ? '' : 'absolute right-0 mt-1')}
-        >
-          {list.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                type="button"
-                role="menuitem"
-                onClick={() => { close(); item.onSelect() }}
-                className={cn('flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-2 focus:bg-surface-2 focus:outline-none', item.tone === 'danger' ? 'text-danger' : 'text-text')}
-              >
-                {Icon && <Icon size={14} aria-hidden />}
-                <span>{item.label}</span>
-              </button>
-            )
-          })}
-        </div>
-      )}
+      {menu && (position && typeof document !== 'undefined' ? createPortal(menu, document.body) : menu)}
     </div>
   )
 }

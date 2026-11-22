@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../database.js');
-const { ensureExamToken, hashExamToken, normalizeExamToken, sealExamToken, unsealExamToken } = require('../utils/examToken.js');
+const { ensureExamToken, hashExamToken, normalizeExamToken, sealExamToken, unsealExamToken, withoutSealedToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
 const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
 const {
@@ -27,6 +27,7 @@ const {
     INSTRUCTOR_COLLECT_SOURCE,
     attemptOverdueMs,
     deliveredWithoutAttemptsLeft,
+    dropReopenSnapshots,
     finalizeAttemptState,
     reopenDeadlineDeliveries,
     reopenDeliveryByInstructor,
@@ -39,6 +40,7 @@ const { body, either, int, shape, str } = require('../utils/inputSchema.js');
 const {
     AUDIENCE_INPUT_FIELDS,
     MAX_EXTRA_ATTEMPTS,
+    activeStudent,
     applicationFinalidade,
     applicationParticipantList,
     changedOverrides,
@@ -48,7 +50,7 @@ const {
     participantCandidates,
 } = require('../utils/examParticipants.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
-const { normalizeEmail, studentInClass } = require('../utils/students.js');
+const { displayName, normalizeEmail, studentInClass } = require('../utils/students.js');
 const { answerIdSecret } = require('../utils/examAnswerIds.js');
 const {
     OPEN_APPLICATION_STATUSES,
@@ -513,13 +515,6 @@ function revealApplicationToken(application) {
     return token && hashExamToken(token) === application.accessTokenHash ? token : null;
 }
 
-// A aplicação como vai para a tela: sem o token selado (só GET .../access-token o abre).
-function withoutSealedToken(application) {
-    if (!application || typeof application !== 'object' || !Object.prototype.hasOwnProperty.call(application, 'accessTokenSealed')) return application;
-    const { accessTokenSealed, ...rest } = application;
-    return rest;
-}
-
 function adminApplicationView(application) {
     return withoutSealedToken(withKeystrokeMode(application));
 }
@@ -940,9 +935,12 @@ function createAdminExamConfigRouter() {
             cls.releasedItems[application.examKey] = active;
             cls.activeExamKey = active ? application.examKey : (cls.activeExamKey === application.examKey ? null : cls.activeExamKey);
             cls.activeApplicationId = active ? application.id : (cls.activeApplicationId === application.id ? null : cls.activeApplicationId);
-            // Encerrar com tentativas em andamento resolve entregas (algumas já existiam):
-            // gravação completa. As outras transições, parcial.
-            await saveApplicationAction({ full: !!plan.resolve });
+            // Encerrada, a aplicação não reabre mais entrega: as cópias das tentativas saem.
+            const droppedSnapshots = active ? 0 : dropReopenSnapshots(db.memory, application.id);
+            // Encerrar com tentativas em andamento resolve entregas (algumas já existiam), e
+            // tirar as cópias muda entregas antigas: gravação completa. As outras
+            // transições, parcial.
+            await saveApplicationAction({ full: !!plan.resolve || droppedSnapshots > 0 });
             res.json({ success: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs[application.examKey], finish: processedFinish });
         });
     });
@@ -1148,6 +1146,10 @@ function createAdminExamConfigRouter() {
             const configMaxAttempts = cls.onlineExamConfigs?.[application.examKey]?.maxAttempts;
             if (effectiveMaxAttempts(application, email, configMaxAttempts) === null) {
                 return attemptActionRefusal(res, 409, 'unlimited_attempts', 'Esta aplicação não tem limite de tentativas: não é preciso dar tentativa extra.');
+            }
+            // Aluno desligado (ou bloqueado) não ganha tentativa: é a mesma regra do "Para quem".
+            if (!activeStudent(student)) {
+                return attemptActionRefusal(res, 409, 'student_inactive', `${displayName(student) || email} está com o cadastro ${String(student.status || '').trim() || 'encerrado'}: a tentativa extra é só para aluno ativo da turma.`);
             }
             if (!applicationParticipant(application, email)) {
                 return attemptActionRefusal(res, 409, 'not_participant', 'Este aluno não está na lista desta aplicação. Inclua-o em "Alunos desta aplicação" antes.');

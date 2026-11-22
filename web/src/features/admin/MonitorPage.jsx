@@ -1030,7 +1030,7 @@ export default function MonitorPage() {
     return [
       row.attemptInProgress && { id: 'collect', label: 'Recolher prova', icon: Inbox, onSelect: () => openStudentAction('collect', row) },
       row.canReopen && { id: 'reopen', label: 'Reabrir prova', icon: RotateCcw, onSelect: () => openStudentAction('reopen', row) },
-      Number(row.maxAttempts) > 0 && { id: 'extra', label: 'Dar tentativa extra', icon: PlusCircle, onSelect: () => openStudentAction('extra', row) },
+      Number(row.maxAttempts) > 0 && row.activeStudent !== false && { id: 'extra', label: 'Dar tentativa extra', icon: PlusCircle, onSelect: () => openStudentAction('extra', row) },
     ].filter(Boolean)
   }
 
@@ -1782,7 +1782,9 @@ function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange,
     else if (dialog.loadError) message = dialog.loadError
     else if (ids.length === 0) message = pending ? `Nenhuma nota pronta para liberar: ${pending} ${pending === 1 ? 'entrega aguarda' : 'entregas aguardam'} correção.` : 'Nenhuma nota pendente para liberar.'
     else {
-      message = `${ids.length} ${ids.length === 1 ? 'nota será liberada' : 'notas serão liberadas'} e os alunos passarão a vê-las no portal.`
+      message = ids.length === 1
+        ? '1 nota será liberada e o aluno passará a vê-la no portal.'
+        : `${ids.length} notas serão liberadas e os alunos passarão a vê-las no portal.`
       if (pending) message += ` ${pending} ${pending === 1 ? 'entrega aguardando correção fica' : 'entregas aguardando correção ficam'} de fora.`
     }
     return (

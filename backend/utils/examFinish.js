@@ -15,7 +15,7 @@ const {
     listExamApplications,
     transitionExamApplication,
 } = require('./examApplications.js');
-const { isAttemptPastDeadline, restoreReopenedDelivery, settleExpiredAttempts } = require('./examDeadline.js');
+const { dropReopenSnapshots, isAttemptPastDeadline, restoreReopenedDelivery, settleExpiredAttempts } = require('./examDeadline.js');
 const { studentInClass } = require('./students.js');
 
 const IN_PROGRESS_POLICIES = new Set(['submit', 'discard']);
@@ -274,7 +274,7 @@ function planControlAction(memory, application, action) {
 }
 
 // Encerra de vez uma aplicação em andamento: resolve as tentativas (com a política
-// informada) e muda o status para "finished".
+// informada) e muda o status para "finished". Quem chama grava completo.
 function finishApplication(memory, { application, cls, policy, actor, reason = null, now = Date.now() } = {}) {
     const plan = planControlAction(memory, application, 'finish');
     if (plan.unchanged) return null;
@@ -287,6 +287,9 @@ function finishApplication(memory, { application, cls, policy, actor, reason = n
         now,
     });
     transitionExamApplication(application, 'finished', { actor, now });
+    // Encerrada, não reabre mais entrega: as cópias das tentativas saem (quem chama grava
+    // completo, como já faz por causa das entregas resolvidas).
+    dropReopenSnapshots(memory, application.id);
     syncClassWithApplication(cls, application);
     return processed;
 }
