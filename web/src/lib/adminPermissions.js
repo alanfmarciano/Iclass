@@ -48,6 +48,8 @@ export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   // Endereço da sala em tela cheia, para projetar (H6a).
   '/endereco': ADMIN_PERMISSIONS.PAGE_DASHBOARD,
   '/provas': ADMIN_PERMISSIONS.PAGE_EXAMS,
+  // Tarefas (fase 3, C7 / P1-e): a mesma permissão das rotas /api/admin/assignments.
+  '/tarefas': ADMIN_PERMISSIONS.PAGE_ASSIGNMENTS,
   '/monitor': ADMIN_PERMISSIONS.PAGE_MONITOR,
   '/resultados': ADMIN_PERMISSIONS.PAGE_RESULTS,
   '/materiais': ADMIN_PERMISSIONS.PAGE_MATERIALS,

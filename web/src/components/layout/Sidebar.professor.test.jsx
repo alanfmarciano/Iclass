@@ -37,3 +37,19 @@ describe('[UC-PAPEIS-004] menu do professor de hoje', () => {
     baseline.menu.curso.forEach((path) => expect(menuPaths({ ...auth, activeWorkspace: { courseId: 'curso', className: '1A' } })).toContain(path))
   })
 })
+
+describe('menu Tarefas (fase 3, C7 / P1-e)', () => {
+  const inCourse = { activeWorkspace: { courseId: 'curso', className: '1A' } }
+  const avaliacoes = (auth) => getAdminNavGroups(auth).find((group) => group.label === 'Avaliações')?.items.map((item) => item.to) || []
+
+  it('aparece em Avaliações para o professor (page.assignments do padrão) e para a Coordenação', () => {
+    expect(avaliacoes({ accountRole: 'professor', additionalPermissions: [], ...inCourse })).toContain('/tarefas')
+    expect(avaliacoes({ accountRole: 'coordenacao', effectivePermissions: ['page.dashboard', 'page.results', 'page.assignments'], readOnly: true, ...inCourse })).toContain('/tarefas')
+  })
+
+  it('não aparece para quem não tem page.assignments (Professor auxiliar, Secretaria) nem fora da turma', () => {
+    expect(menuPaths({ accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.monitor', 'page.students'], ...inCourse })).not.toContain('/tarefas')
+    expect(menuPaths({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'], ...inCourse })).not.toContain('/tarefas')
+    expect(menuPaths({ accountRole: 'professor', additionalPermissions: [], activeWorkspace: null })).not.toContain('/tarefas')
+  })
+})

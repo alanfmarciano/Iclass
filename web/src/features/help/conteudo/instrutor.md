@@ -89,7 +89,19 @@ Abriu o Monitor em outro computador, no projetor ou fechou a aba? Em **Token de 
 
 ## Tarefas {#tarefas}
 
-<!-- P1 (trilha C) escreve aqui: criar tarefa, prazos, entregas, correção, devolução e ZIP. -->
+Tarefa é um trabalho com prazo que o aluno entrega pelo IClass: um arquivo (PDF, foto, documento, código, o arquivo do programa do curso), um texto ou um link. Fica em **Avaliações > Tarefas**, dentro da turma.
+
+**A lista.** Cada cartão mostra o prazo (com quanto falta), a situação (**Rascunho**, **Publicada** ou **Arquivada**) e, depois de publicada, quantas entregas estão **Para corrigir**, quantas chegaram **Atrasadas** e quantos alunos estão **Sem envio**. Em **Mostrar** você vê só as publicadas, só os rascunhos ou só as que têm entrega para corrigir (o aviso do Dashboard abre assim).
+
+**Criar.** Toque em **Nova tarefa**. Escreva o título e as instruções (negrito, listas e links como nas apostilas; **Prévia** mostra como o aluno vai ler). Se quiser, ligue a tarefa a um módulo e a uma unidade e escolha materiais de apoio da Biblioteca. Em **O aluno responde com**, marque arquivo, texto ou link. Com arquivo, escolha os tipos aceitos, até quantos arquivos e de quantos MB cada; o tamanho vai até o limite das entregas em **Sistema**. Programa do curso que não está na lista (Packet Tracer, por exemplo)? Escreva a extensão em **Formatos do curso** (.pkt). Programas que se instalam ou rodam sozinhos (.exe, .bat e afins) nunca são aceitos.
+
+**Prazo.** O prazo é a data e a hora no relógio da escola. **Encerrar envios em** é opcional: depois dele, nada chega, nem atrasado. Em **Depois do prazo**, escolha entre aceitar e marcar como atrasada, aceitar com desconto na nota (tanto por dia, até um máximo) ou não aceitar. A frase "O aluno lê" mostra como a regra aparece para ele. **Aparecer para os alunos** pode ser assim que publicar ou numa data.
+
+**Rascunho e publicar.** **Salvar como rascunho** guarda sem os alunos verem (o rascunho pode ficar sem prazo). **Publicar** exige o prazo; a tarefa aparece para a turma e o aluno recebe o aviso no sino. Mudar o prazo de uma tarefa que já tem entrega pede o motivo, que fica na Auditoria.
+
+**Arquivar e excluir.** **Arquivar** tira a tarefa dos alunos e guarda as entregas e as notas; ela fica na aba **Arquivadas**, de onde volta com **Reativar**. **Excluir** só existe para tarefa sem nenhuma entrega.
+
+<!-- P1 (trilha C) escreve aqui: entregas, correção, devolução e ZIP (C8). -->
 
 ## Resultados {#resultados}
 

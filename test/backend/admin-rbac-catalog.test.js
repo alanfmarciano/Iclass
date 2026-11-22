@@ -65,7 +65,7 @@ test('rotas extraídas ficam nos módulos administrativos dedicados', () => {
     assert.ok(adminSource.indexOf('router.use(createAdminQuestionBankRouter())') > adminSource.indexOf('router.use(createAdminCoursesRouter())'), 'o banco vem depois do router de cursos (ordem_no_createApp)');
     // Tarefas (fase 3, C4 / P1-b): router próprio, nunca no admin.js.
     const assignmentsSource = fs.readFileSync(path.join(routesDir, 'adminAssignments.js'), 'utf8');
-    ['/api/admin/assignments', '/api/admin/assignments/:id', '/api/admin/assignments/:id/copy'].forEach(route => {
+    ['/api/admin/assignments', '/api/admin/assignments/form-options', '/api/admin/assignments/:id', '/api/admin/assignments/:id/copy'].forEach(route => {
         assert.equal(adminSource.includes(`'${route}'`), false, `${route} está no router monolítico`);
         assert.equal(assignmentsSource.includes(`'${route}'`), true, `${route} não está em adminAssignments`);
     });
@@ -90,6 +90,7 @@ const {
 const PHASE3_ROUTES = [
     // P1 Tarefas
     ['GET', '/assignments', 'page.assignments'],
+    ['GET', '/assignments/form-options', 'page.assignments'],
     ['POST', '/assignments', 'page.assignments'],
     ['GET', '/assignments/asg_1_abcdef', 'page.assignments'],
     ['POST', '/assignments/asg_1_abcdef/update', 'page.assignments'],

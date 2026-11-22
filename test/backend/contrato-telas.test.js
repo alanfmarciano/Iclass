@@ -414,6 +414,54 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
     assert.equal(tooLong.body.field, 'category');
 });
 
+test('[UC-ERRO-003] contrato das telas do professor: Tarefas (opções, criar, alterar, publicar, arquivar, reativar e excluir)', async () => {
+    // O corpo sai de web/src/features/admin/tarefas/assignmentForm.js (createBody e
+    // updateBody), com as opções que a tela pede ao servidor.
+    const { pathToFileURL } = require('node:url');
+    const web = await import(pathToFileURL(path.join(WEB_SRC, 'features', 'admin', 'tarefas', 'assignmentForm.js')).href);
+    const asProfessor = route => request(app).get(route).set('x-admin-session', tokens.professor);
+    screen('features/admin/tarefas/TarefaForm.jsx', 'useApi(optionsQuery ? `/api/admin/assignments/form-options?${optionsQuery}` : null, [optionsQuery])');
+    const options = ok(await asProfessor(`/api/admin/assignments/form-options?courseId=${COURSE_ID}&studentClass=${CLASS_NAME}`), 'opções do formulário').body;
+    const form = {
+        ...web.emptyForm(options),
+        title: 'T'.repeat(options.limits.titleMax),
+        instructions: 'Envie o **relatório**.\n\n'.padEnd(options.limits.instructionsMax, 'x'),
+        response: { files: true, text: true, link: true },
+        types: options.fileTypes.map(type => type.key),
+        extraExtensions: '.pkt, fzz, .dwg',
+        maxFiles: String(options.limits.maxFilesMax),
+        maxSizeMb: String(options.limits.maxSizeMbMax),
+        libraryIds: options.library.slice(0, options.limits.libraryIdsMax).map(entry => entry.id),
+        moduleId: options.modules[0] ? options.modules[0].id : '',
+        unitKey: options.modules[0] && options.modules[0].units[0] ? options.modules[0].units[0].key : '',
+        opensDate: '2026-12-01', opensTime: '07:00',
+        dueDate: '2026-12-04', dueTime: '23:00',
+        closeDate: '2026-12-06', closeTime: '12:00',
+        lateMode: 'desconto', penaltyPerDayPct: '100', penaltyMaxPct: '100',
+        countsInAverage: false,
+    };
+    assert.equal(web.validateForm(form, options, { publish: true }), null);
+    screen('features/admin/tarefas/TarefaForm.jsx', "await api.post('/api/admin/assignments', createBody(form, options, { courseId, studentClass, publish }))");
+    const draft = ok(await asInstructor('/api/admin/assignments', 'professor').send(web.createBody({ ...web.emptyForm(options), title: 'Rascunho', dueDate: '2026-12-10' }, options, { courseId: COURSE_ID, studentClass: CLASS_NAME, publish: false })), 'criar rascunho').body.assignment;
+    const created = ok(await asInstructor('/api/admin/assignments', 'professor').send(web.createBody(form, options, { courseId: COURSE_ID, studentClass: CLASS_NAME, publish: true })), 'criar publicada').body.assignment;
+    assert.equal(created.status, 'publicada');
+    screen('features/admin/tarefas/TarefaForm.jsx', 'const body = updateBody(initial, form, options, { withReason: needsReason })');
+    screen('features/admin/tarefas/TarefaForm.jsx', 'const result = await api.post(`${base}/update`, body)');
+    const initial = web.formFromAssignment(ok(await asProfessor(`/api/admin/assignments/${created.id}`), 'detalhe').body.assignment, options);
+    const changed = { ...initial, title: 'Relatório', moduleId: '', unitKey: '', closeDate: '', closeTime: '', lateMode: 'bloquear', types: ['pdf'], extraExtensions: '' };
+    const updated = ok(await asInstructor(`/api/admin/assignments/${created.id}/update`, 'professor').send(web.updateBody(initial, changed, options)), 'alterar').body;
+    assert.equal(updated.changed, true);
+    assert.deepEqual([updated.assignment.moduleId, updated.assignment.unitKey, updated.assignment.closeAt], ['', '', null]);
+    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/publish`, {})');
+    ok(await asInstructor(`/api/admin/assignments/${draft.id}/publish`, 'professor').send({}), 'publicar');
+    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/archive`, {})');
+    ok(await asInstructor(`/api/admin/assignments/${created.id}/archive`, 'professor').send({}), 'arquivar');
+    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/unarchive`, {})');
+    ok(await asInstructor(`/api/admin/assignments/${created.id}/unarchive`, 'professor').send({}), 'reativar');
+    screen('features/admin/TarefasPage.jsx', "await api.post(`${base}/delete`, { confirm: 'EXCLUIR' })");
+    ok(await asInstructor(`/api/admin/assignments/${draft.id}/delete`, 'professor').send({ confirm: 'EXCLUIR' }), 'excluir');
+});
+
 // ------------------------------------------------------------------ públicas e saída
 
 test('[UC-ERRO-003] contrato das telas públicas: cadastro (com e sem responsável), recuperação, troca de senha do professor e Sair', async () => {

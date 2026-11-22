@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive, CircleHelp } from 'lucide-react'
+import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive, CircleHelp, FileUp } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
 import { ADMIN_PERMISSIONS, canAccessAdminPath, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
@@ -25,6 +25,8 @@ const COURSE_GROUPS = [
   { label: 'Avaliações', items: [
     { to: '/provas', icon: ClipboardList, text: 'Provas' },
     { to: '/monitor', icon: MonitorPlay, text: 'Monitor Online' },
+    // Tarefas com envio de arquivo (fase 3, C7 / P1-e; FUN-01): page.assignments.
+    { to: '/tarefas', icon: FileUp, text: 'Tarefas' },
     { to: '/resultados', icon: BarChart3, text: 'Resultados' },
   ] },
   { label: 'Conteúdo', items: [

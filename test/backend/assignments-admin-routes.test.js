@@ -520,3 +520,104 @@ test('limite por arquivo segue o teto de Sistema (settings.entregas) e o padrão
     assert.equal(over.status, 400);
     assert.match(over.body.error, /vai até 6 MB/);
 });
+
+// Formulário da tarefa na tela (C7 / P1-e): as opções vêm do servidor, com os mesmos
+// tipos, limites e padrões que a gravação usa, e só o que a gravação aceita da turma.
+test('opções do formulário: catálogo em português, limites com o teto de Sistema, módulos, unidades e materiais da turma', async () => {
+    db.memory.config.settings = { timezone: 'America/Sao_Paulo', entregas: { maxMbPorArquivo: 6, maxMbPorEnvio: 30 } };
+    // Antes do C7 esta rota caía no GET /:id e respondia 404 "Tarefa não encontrada.".
+    const res = await get('professor', '/api/admin/assignments/form-options?courseId=curso-tarefas&studentClass=1DES');
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.success, true);
+    assert.deepEqual(res.body.fileTypes.map(item => item.key), ['pdf', 'image', 'doc', 'sheet', 'slides', 'archive', 'code']);
+    assert.equal(res.body.fileTypes.find(item => item.key === 'code').label, 'Código e texto');
+    assert.ok(res.body.fileTypes.find(item => item.key === 'code').extensions.includes('.py'));
+    assert.deepEqual(res.body.lateModes, ['aceitar', 'desconto', 'bloquear']);
+    assert.ok(res.body.blockedExtensions.includes('.exe') && res.body.blockedExtensions.includes('.bat'));
+    assert.equal(res.body.limits.maxSizeMbMax, 6);
+    assert.equal(res.body.limits.maxMbPorEnvio, 30);
+    assert.equal(res.body.limits.titleMax, 160);
+    assert.equal(res.body.defaults.files.maxSizeMb, 6, 'o padrão de 10 MB fica no teto');
+    assert.deepEqual(res.body.defaults.response, { files: true, text: false, link: false });
+    assert.equal(res.body.timezone, 'America/Sao_Paulo');
+    assert.deepEqual(res.body.modules.map(module => module.id), ['m1', 'm2']);
+    assert.deepEqual(res.body.modules[0].units, [{ key: 'Apostila_m1_1', keys: ['Apostila_m1_1', 'Avaliacao_m1_1'], name: 'Redes' }]);
+    // Material só da 2DES e o oculto não aparecem para a 1DES (a gravação recusaria).
+    assert.deepEqual(res.body.library.map(entry => entry.id), ['lib_curso']);
+    assert.equal(res.body.library[0].name, 'Guia do curso');
+    // A unidade escolhida pela chave principal grava como a tela mandou.
+    const created = await post('professor', '/api/admin/assignments', { ...DRAFT, moduleId: 'm1', unitKey: res.body.modules[0].units[0].key, libraryIds: ['lib_curso'] });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.assignment.unitKey, 'Apostila_m1_1');
+
+    // Escopo e papéis: turma de fora, turma que não existe, pedido sem turma e sem a tela.
+    const other = await get('professor', '/api/admin/assignments/form-options?courseId=curso-tarefas&studentClass=2DES');
+    assert.equal(other.status, 403);
+    assert.equal((await get('admin', '/api/admin/assignments/form-options?courseId=curso-tarefas&studentClass=9ZZ')).status, 404);
+    const missing = await get('professor', '/api/admin/assignments/form-options?courseId=curso-tarefas');
+    assert.equal(missing.status, 400);
+    assert.equal(missing.body.field, 'studentClass');
+    assert.equal((await get('monitor', '/api/admin/assignments/form-options?courseId=curso-tarefas&studentClass=1DES')).status, 403);
+    assert.equal((await get('secretaria', '/api/admin/assignments/form-options?courseId=curso-tarefas&studentClass=1DES')).status, 403);
+    assert.equal((await get('coordenacao', '/api/admin/assignments/form-options?courseId=curso-tarefas&studentClass=1DES')).status, 200);
+});
+
+// "Validação na tela e no servidor com as mesmas mensagens" (telas do P1, C7): para cada
+// recusa, o formulário da tela (web/src/features/admin/tarefas/assignmentForm.js) e o
+// servidor, com o corpo que a tela monta, dizem a mesma frase no mesmo campo. Se uma
+// mensagem do servidor mudar, este caso falha até a tela acompanhar.
+test('a tela e o servidor recusam com a mesma mensagem no mesmo campo', async () => {
+    const { pathToFileURL } = require('node:url');
+    const web = await import(pathToFileURL(path.join(__dirname, '..', '..', 'web', 'src', 'features', 'admin', 'tarefas', 'assignmentForm.js')).href);
+    db.memory.config.settings = { timezone: 'America/Sao_Paulo', entregas: { maxMbPorArquivo: 6 } };
+    const options = (await get('professor', '/api/admin/assignments/form-options?courseId=curso-tarefas&studentClass=1DES')).body;
+    const base = { ...web.emptyForm(options), title: 'Relatório de redes', dueDate: '2026-12-04', dueTime: '23:00' };
+    const cases = [
+        ['título curto', { title: 'ab' }],
+        ['sem forma de resposta', { response: { files: false, text: false, link: false } }],
+        ['arquivo sem tipo', { types: [], extraExtensions: '' }],
+        ['publicar sem prazo', { dueDate: '' }, true],
+        ['desconto sem o valor por dia', { lateMode: 'desconto', penaltyPerDayPct: '0' }],
+        ['desconto sem o máximo', { lateMode: 'desconto', penaltyPerDayPct: '10', penaltyMaxPct: '0' }],
+        ['tamanho acima do teto de Sistema', { maxSizeMb: '7' }],
+        ['arquivos demais por envio', { maxFiles: '11' }],
+        ['data inválida', { dueDate: '2026-02-30' }],
+        ['hora inválida', { dueTime: '24:00' }],
+        ['hora da abertura sem a data', { opensTime: '08:00' }],
+        ['abertura depois do prazo', { opensDate: '2026-12-05', opensTime: '08:00' }],
+        ['encerramento antes do prazo', { closeDate: '2026-12-03', closeTime: '10:00' }],
+        ['encerramento sem prazo', { dueDate: '', closeDate: '2026-12-03', closeTime: '10:00' }],
+        ['formato do curso inválido', { extraExtensions: '.pkt, abc!' }],
+        ['executável como formato do curso', { extraExtensions: 'bat' }],
+    ];
+    for (const [label, change, publish = false] of cases) {
+        const form = { ...base, ...change };
+        const screen = web.validateForm(form, options, { publish });
+        assert.ok(screen, `${label}: a tela deixou passar`);
+        const res = await post('professor', '/api/admin/assignments', web.createBody(form, options, { courseId: COURSE, studentClass: '1DES', publish }));
+        assert.equal(res.status, 400, `${label}: ${res.status} ${JSON.stringify(res.body)}`);
+        assert.equal(screen.error, res.body.error, `${label}: mensagens diferentes`);
+        assert.equal(screen.field, web.formFieldOf(res.body.field), `${label}: campos diferentes`);
+    }
+    assert.equal(db.memory.assignments.length, 0, 'nada recusado foi gravado');
+
+    // O formulário válido passa nos dois, como rascunho e publicada.
+    assert.equal(web.validateForm(base, options, { publish: true }), null);
+    const created = await post('professor', '/api/admin/assignments', web.createBody(base, options, { courseId: COURSE, studentClass: '1DES', publish: true }));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.assignment.dueAt, deadline('2026-12-04', '23:00'));
+
+    // Mudar o prazo de tarefa com entrega pede o motivo, com a mesma frase.
+    addSubmission(created.body.assignment.id, 'ana@tarefas.local');
+    const initial = web.formFromAssignment(created.body.assignment, options);
+    const moved = { ...initial, dueDate: '2026-12-08' };
+    assert.equal(web.deadlineChanged(initial, moved), true);
+    const screen = web.validateForm(moved, options, { publish: true, needsReason: true });
+    const res = await post('professor', `/api/admin/assignments/${created.body.assignment.id}/update`, web.updateBody(initial, moved, options));
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'reason_required');
+    assert.deepEqual([screen.error, screen.field], [res.body.error, web.formFieldOf(res.body.field)]);
+    const withReason = await post('professor', `/api/admin/assignments/${created.body.assignment.id}/update`, web.updateBody(initial, { ...moved, reason: 'Laboratório fechado na sexta' }, options, { withReason: true }));
+    assert.equal(withReason.status, 200, JSON.stringify(withReason.body));
+    assert.deepEqual(withReason.body.assignment.local.dueDate, '2026-12-08');
+});

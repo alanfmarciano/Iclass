@@ -4,6 +4,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Tarefas com prazo e envio pelos alunos (lista e formulário do professor)
+- O menu Avaliações tem "Tarefas". A lista da turma mostra cada tarefa em cartão, com o prazo no relógio da escola e quanto falta ("faltam 2 dias"), a situação (Rascunho, Publicada ou Arquivada) e as contagens "Para corrigir · Atrasadas · Sem envio". "Mostrar" filtra publicadas, rascunhos e as que têm entrega para corrigir, e o aviso "Entrega de tarefa para corrigir" do Dashboard abre a lista já filtrada.
+- "Nova tarefa" e "Editar" abrem o formulário: título, instruções com prévia (o mesmo Markdown das apostilas), módulo e unidade, materiais de apoio da Biblioteca, como o aluno responde (arquivo, texto ou link), tipos de arquivo com o nome em português e exemplos, formatos do curso (.pkt, .fzz...), quantos arquivos e de quantos MB, prazo, encerramento opcional, quando aparece para os alunos, a regra depois do prazo (aceitar e marcar como atrasada, desconto por dia até um máximo, ou não aceitar), com a frase que o aluno vai ler, e "Conta na média".
+- O formulário avisa no próprio campo, com as mesmas frases do servidor, antes de mandar: prazo para publicar, tamanho acima do limite de Sistema, encerramento antes do prazo, formato inválido ou executável e o motivo quando o prazo de uma tarefa com entrega muda.
+- Publicar, Arquivar, Reativar e Excluir (só sem entrega) perguntam antes. A aba "Arquivadas" guarda as tarefas tiradas dos alunos, com as entregas.
+- A Coordenação vê a lista e abre a tarefa sem poder mudar. O Professor auxiliar e a Secretaria não têm a tela. As entregas de cada aluno e a correção chegam numa próxima etapa.
+
 ### Editor de questões do professor
 - Em Provas, "Editar conteúdo" e "Nova prova" têm os seis tipos de questão: Uma correta, Várias corretas, Verdadeiro ou falso, Numérica, Resposta curta e Dissertativa. Cada tipo mostra uma frase de exemplo e só os campos dele: a marca da correta (ou das corretas, com "Pontuação parcial" ou tudo ou nada), Verdadeiro ou Falso, o número certo com tolerância e unidade, as respostas aceitas, e na dissertativa a resposta esperada (só você vê) e a rubrica com os critérios e os pontos.
 - Cada questão tem os seus pontos (de 0,1 a 100, com vírgula) e o topo do editor mostra o total da prova. Na dissertativa, a soma dos critérios da rubrica aparece ao lado e o botão "Usar ... como pontos" acerta a diferença.

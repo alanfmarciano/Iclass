@@ -249,6 +249,11 @@ const SCHEMAS = {
         waivePenalty: bool({ label: 'dispensar desconto' }),
     }),
     exportQuery: shape({ versoes: oneOf(assignmentExport.EXPORT_VERSIONS, { label: 'versões' }) }),
+    // Formulário (C7)
+    formOptions: shape({
+        courseId: str({ max: 100, required: true, label: 'curso' }),
+        studentClass: str({ max: 200, required: true, label: 'turma' }),
+    }),
 };
 
 // ------------------------------------------------------------ apoio
@@ -516,6 +521,82 @@ function presentAssignment(memory, raw, { tz, full = true } = {}) {
         out.libraryIds = task.libraryIds;
     }
     return out;
+}
+
+// Opções do formulário da tarefa na tela (C7 / P1-e): o catálogo de tipos de arquivo com
+// o nome em português e as extensões (a mesma lista que o envio do aluno confere), os
+// limites dos campos (o teto do tamanho por arquivo é o de settings.entregas, D17), os
+// padrões de uma tarefa nova e, da turma, os módulos com as unidades e os materiais da
+// Biblioteca que o aluno da turma vê (os únicos que a gravação aceita). A unidade leva a
+// chave principal (apostila, senão avaliação, senão a própria) e todas as chaves que a
+// gravação aceita para ela (keys), para a tela reconhecer a tarefa gravada com outra.
+function formOptions(cls) {
+    const ceiling = perFileCeilingMb();
+    const entregas = settingsUtil.getSettings().entregas || {};
+    const perSubmission = Math.floor(Number(entregas.maxMbPorEnvio));
+    const modules = structureOf(cls.courseId, cls.name)
+        .filter(module => module && module.id !== undefined && module.id !== null && String(module.id) !== '')
+        .map(module => ({
+            id: String(module.id),
+            name: String(module.name || module.title || module.id),
+            units: (module.units || module.items || [])
+                .filter(unit => unit && typeof unit === 'object')
+                .map(unit => {
+                    const keys = [unit.apostilaKey, unit.avaliacaoKey, unit.key].filter(key => typeof key === 'string' && key && KEY_PATTERN.test(key));
+                    return keys.length ? { key: keys[0], keys: [...new Set(keys)], name: String(unit.name || unit.title || keys[0]) } : null;
+                })
+                .filter(Boolean),
+        }));
+    const library = visibleLibraryEntries(db.memory.library || [], cls.courseId, cls.name)
+        .filter(entry => entry && entry.id !== undefined && entry.id !== null && String(entry.id) !== '')
+        .map(entry => ({
+            id: String(entry.id),
+            name: String(entry.name || entry.title || entry.originalName || entry.id),
+            kind: String(entry.kind || ''),
+            moduleId: String(entry.moduleId || ''),
+        }));
+    return {
+        courseId: cls.courseId,
+        studentClass: cls.name,
+        timezone: timezone(),
+        serverNow: Date.now(),
+        fileTypes: assignmentFiles.FILE_TYPE_KEYS.map(key => ({
+            key,
+            label: assignmentFiles.ASSIGNMENT_FILE_TYPES[key].label,
+            extensions: [...assignmentFiles.ASSIGNMENT_FILE_TYPES[key].extensions],
+        })),
+        // Executáveis nunca entram, nem como formato do curso (a tela avisa antes de mandar).
+        blockedExtensions: [...assignmentFiles.BLOCKED_EXECUTABLES],
+        lateModes: [...assignments.LATE_MODES],
+        limits: {
+            titleMin: LIMITS.titleMin,
+            titleMax: LIMITS.titleMax,
+            instructionsMax: LIMITS.instructionsMax,
+            libraryIdsMax: LIMITS.libraryIdsMax,
+            maxFilesMin: LIMITS.maxFilesMin,
+            maxFilesMax: LIMITS.maxFilesMax,
+            maxSizeMbMin: LIMITS.maxSizeMbMin,
+            maxSizeMbMax: ceiling,
+            maxMbPorEnvio: Number.isFinite(perSubmission) && perSubmission >= 1 ? perSubmission : null,
+            extraExtensionsMax: assignmentFiles.EXTRA_EXTENSIONS_MAX,
+            reasonMin: LIMITS.reasonMin,
+            reasonMax: LIMITS.reasonMax,
+        },
+        defaults: {
+            response: { ...assignments.DEFAULT_RESPONSE },
+            files: {
+                maxFiles: assignments.DEFAULT_FILE_RULES.maxFiles,
+                maxSizeMb: Math.min(assignments.DEFAULT_FILE_RULES.maxSizeMb, ceiling),
+                types: [...assignments.DEFAULT_FILE_RULES.types],
+                extraExtensions: [...assignments.DEFAULT_FILE_RULES.extraExtensions],
+            },
+            latePolicy: { ...assignments.DEFAULT_LATE_POLICY },
+            countsInAverage: true,
+            dueTime: '23:59',
+        },
+        modules,
+        library,
+    };
 }
 
 // Cópia da tarefa para a auditoria (sem contagens nem campos calculados).
@@ -892,6 +973,21 @@ function createAdminAssignmentsRouter() {
         if (publish) audit(req, account, 'assignment_published', record, { details: { id: record.id, opensAt: record.opensAt } });
         await db.save({ only: ['assignments', 'auditLogs'] });
         res.status(201).json({ success: true, assignment: presentAssignment(db.memory, record, { tz }) });
+    }));
+
+    // Opções do formulário (C7 / P1-e). Declarada antes de '/:id' para não virar uma tarefa
+    // chamada "form-options".
+    router.get('/api/admin/assignments/form-options', (req, res) => validateAdmin(req, res, (config, account) => {
+        const query = { ...(req.query || {}) };
+        const checked = SCHEMAS.formOptions.run(query, '', 'filtro');
+        if (!checked.ok) return sendFieldError(res, checked.error, checked.field);
+        const target = findTargetClass(String(query.courseId).trim(), String(query.studentClass).trim());
+        if (!target) return sendFieldError(res, MESSAGES.classNotFound, 'studentClass', { status: 404 });
+        const { cls } = target;
+        if (!adminCanAccessClass(account, cls.name, cls.courseId)) {
+            return sendFieldError(res, outOfScopeMessage(account, 'A turma solicitada'), 'studentClass', { status: 403 });
+        }
+        res.json({ success: true, ...formOptions(cls) });
     }));
 
     router.get('/api/admin/assignments/:id', (req, res) => validateAdmin(req, res, (config, account) => {

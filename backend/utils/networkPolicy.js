@@ -186,7 +186,7 @@ function studentsHttpsEnabled() {
 // também é a entrada dos alunos pelo QR). Um teste confere esta lista com
 // ADMIN_PATH_PERMISSIONS de web/src/lib/adminPermissions.js.
 const ADMIN_PANEL_PAGES = Object.freeze([
-    '/endereco', '/provas', '/monitor', '/resultados', '/materiais', '/editor', '/biblioteca',
+    '/endereco', '/provas', '/monitor', '/tarefas', '/resultados', '/materiais', '/editor', '/biblioteca',
     '/turmas', '/alunos', '/matriculas', '/chamada', '/diretorio', '/admins', '/avisos',
     '/calendario', '/forum', '/escolas', '/identidade', '/sistema', '/auditoria', '/lgpd',
     '/encerrados', '/minha-conta',
