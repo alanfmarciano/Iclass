@@ -105,6 +105,7 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 ### Planilhas
 - O servidor já gera o quadro de notas da turma em Excel (.xlsx), além do CSV: as notas e a média vão como números com uma casa (dá para somar e fazer média no Excel) e a matrícula não perde o zero da frente. O botão "Baixar Excel" chega com a tela Relatórios. (FUN-06)
 - O IClass passa a ler planilhas do Excel (.xlsx) e CSV salvos pelo Excel, pelo LibreOffice ou pelo Google Planilhas, com acentos, datas e números como aparecem na planilha. É a base das importações que vêm a seguir (alunos, notas e banco de questões). (FUN-08)
+- Uma planilha do Excel feita para travar o servidor (com o texto de uma célula escrito de um jeito que ocupa pouco no arquivo e muito ao abrir) é lida até o limite de 32.767 caracteres por célula, sem gastar memória à toa. Formato de número com mais de 100 casas decimais dá a mensagem de arquivo danificado.
 
 ### Confirmações na própria tela
 - As perguntas antes de excluir ou alterar abrem uma janela do próprio IClass, que diz o que vai acontecer, em vez da caixa do navegador. Enquanto a pergunta está aberta, o Monitor continua se atualizando.

@@ -433,6 +433,84 @@ test('limite do texto devolvido: um .xlsx de 4 KB não vira 800 milhões de cara
     expectError(() => parseTabularFile(Buffer.from('Nome\n' + 'x'.repeat(5000)), { maxCaracteres: 1000 }), 'spreadsheet_too_large');
 });
 
+test('XLSX: entidades e "_xHHHH_" são decodificados só até o limite da célula (um .xlsx de 31 KB não vira 840 MB)', () => {
+    // 20 MB de "&amp;" (ou "_x0041_") num só texto: a decodificação inteira acontecia
+    // antes do corte em 32.767 caracteres, com milhões de trechos na memória (840 MB de
+    // RSS por texto; 1,7 GB com duas partes). Medido num processo à parte, para o RSS
+    // ser só o da leitura.
+    const script = `
+        const AdmZip = require(${JSON.stringify(require.resolve('adm-zip'))});
+        const { parseTabularFile } = require(${JSON.stringify(path.join(__dirname, '..', '..', 'backend', 'utils', 'tabularFile.js'))});
+        const rels = '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x/sharedStrings" Target="sharedStrings.xml"/></Relationships>';
+        const sheet = rows => '<worksheet><sheetData>' + rows + '</sheetData></worksheet>';
+        const xlsx = parts => {
+            const zip = new AdmZip();
+            const base = { '[Content_Types].xml': '<Types/>', 'xl/workbook.xml': '<workbook xmlns:r="r"><sheets><sheet name="F" sheetId="1" r:id="rId1"/></sheets></workbook>', 'xl/_rels/workbook.xml.rels': rels, ...parts };
+            for (const [name, content] of Object.entries(base)) zip.addFile(name, Buffer.from(content));
+            return zip.toBuffer();
+        };
+        const big = '&amp;'.repeat(4 * 1024 * 1024);
+        const casos = {
+            compartilhado: { 'xl/sharedStrings.xml': '<sst><si><t>' + big + '</t></si></sst>', 'xl/worksheets/sheet1.xml': sheet('<row r="1"><c t="s"><v>0</v></c></row>') },
+            escape: { 'xl/sharedStrings.xml': '<sst><si><t>' + '_x0041_'.repeat(3 * 1024 * 1024) + '</t></si></sst>', 'xl/worksheets/sheet1.xml': sheet('<row r="1"><c t="s"><v>0</v></c></row>') },
+            inline: { 'xl/worksheets/sheet1.xml': sheet('<row r="1"><c t="inlineStr"><is><t>' + big + '</t></is></c></row>') },
+            formula: { 'xl/worksheets/sheet1.xml': sheet('<row r="1"><c t="str"><f>A</f><v>' + '&#65;'.repeat(4 * 1024 * 1024) + '</v></c></row>') },
+            richText: { 'xl/sharedStrings.xml': '<sst><si>' + ('<r><t>' + '&lt;'.repeat(50000) + '</t></r>').repeat(80) + '</si></sst>', 'xl/worksheets/sheet1.xml': sheet('<row r="1"><c t="s"><v>0</v></c></row>') },
+        };
+        const out = {};
+        for (const [nome, partes] of Object.entries(casos)) {
+            const arquivo = xlsx(partes);
+            const inicio = Date.now();
+            const lida = parseTabularFile(arquivo, { nomeArquivo: 'bomba.xlsx', cabecalho: false });
+            const valor = lida.linhas[0].valores[0];
+            out[nome] = { bytes: arquivo.length, ms: Date.now() - inicio, tamanho: valor.length, distintos: [...new Set(valor)].join('') };
+        }
+        out.rssMb = Math.round(process.resourceUsage().maxRSS / 1024);
+        process.stdout.write(JSON.stringify(out));
+    `;
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 120000 });
+    assert.equal(result.status, 0, result.stderr);
+    const out = JSON.parse(result.stdout);
+    const esperado = { compartilhado: '&', escape: 'A', inline: '&', formula: 'A', richText: '<' };
+    for (const [nome, letra] of Object.entries(esperado)) {
+        assert.ok(out[nome].bytes < 64 * 1024, `${nome}: ${out[nome].bytes} bytes`);
+        assert.equal(out[nome].tamanho, LIMITES.maxTextoCelula, nome);
+        assert.equal(out[nome].distintos, letra, nome);
+        assert.ok(out[nome].ms < 3000, `${nome}: ${out[nome].ms} ms`);
+    }
+    // Antes: 840 MB num caso só.
+    assert.ok(out.rssMb < 400, `RSS de ${out.rssMb} MB`);
+
+    // O corte dá o mesmo que decodificar tudo e cortar, também com entidade que vira
+    // "_xHHHH_" e com caractere fora do BMP.
+    const { decodeXmlText } = _internals;
+    assert.equal(decodeXmlText('&#95;x0041_&amp;lt;&#x1F600;_x005F_x0042_'), 'A&lt;\u{1F600}_x0042_');
+    assert.equal(decodeXmlText('&amp;'.repeat(10), 4), '&&&&');
+    assert.equal(decodeXmlText('ab_x0041_cd', 3), 'abA');
+    assert.equal(decodeXmlText('&#95;x0041_'.repeat(5), 2), 'AA');
+    assert.equal(decodeXmlText('texto sem nada', 5), 'texto');
+    // Atributos também passam pelo corte (um formatCode de 20 MB de "&amp;" é só "geral").
+    assert.equal(decodeXmlText('&amp;'.repeat(100000)).length, LIMITES.maxTextoCelula);
+});
+
+test('XLSX: formato de número com mais de 100 casas é arquivo danificado (antes dava RangeError do toFixed)', () => {
+    const rels = '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId3" Type="x/styles" Target="styles.xml"/></Relationships>';
+    const comCasas = (casas, sufixo = '') => handmadeXlsx({
+        'xl/_rels/workbook.xml.rels': rels,
+        'xl/styles.xml': `<styleSheet><numFmts><numFmt numFmtId="164" formatCode="0.${'0'.repeat(casas)}${sufixo}"/></numFmts><cellXfs><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs></styleSheet>`,
+        'xl/worksheets/sheet1.xml': sheetXml('<row r="1"><c t="inlineStr"><is><t>Nota</t></is></c></row><row r="2"><c s="1"><v>7.5</v></c></row>'),
+    });
+    for (const [casas, sufixo] of [[101, ''], [150, ''], [101, '%'], [200, '#']]) {
+        const erro = expectError(() => parseTabularFile(comCasas(casas, sufixo), { nomeArquivo: 'casas.xlsx' }), 'invalid_xlsx', { status: 400 });
+        assert.match(erro.message, /danificado/);
+    }
+    assert.throws(() => _internals.classifyFormat(-1, '0.' + '#'.repeat(101)), error => error instanceof TabularFileError && error.code === 'invalid_xlsx');
+    // 100 casas ainda lê (o toFixed aceita), e as 30 do Excel também.
+    assert.equal(parseTabularFile(comCasas(100), { nomeArquivo: 'casas.xlsx' }).linhas[0].valores[0], '7,5' + '0'.repeat(99));
+    assert.equal(parseTabularFile(comCasas(30), { nomeArquivo: 'casas.xlsx' }).linhas[0].valores[0], '7,5' + '0'.repeat(29));
+    assert.equal(parseTabularFile(comCasas(100, '%'), { nomeArquivo: 'casas.xlsx' }).linhas[0].valores[0], '750,' + '0'.repeat(100) + '%');
+});
+
 test('CSV: linhas e separadores vazios não ficam na memória; espaços depois da última coluna valem igual no CSV e no XLSX', () => {
     // 2 MB de quebras de linha eram 2 milhões de registros guardados (500 MB) antes do
     // limite de linhas.

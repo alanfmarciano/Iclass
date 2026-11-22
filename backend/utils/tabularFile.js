@@ -261,18 +261,58 @@ function parseCsvText(buffer, limits) {
 }
 
 // ------------------------------------------------------------ XML do XLSX
-function decodeXmlText(text) {
+// O texto decodificado para no limite do Excel por célula (`max`): a decodificação
+// percorre a entrada uma vez e não passa do que vai ser devolvido. Antes, 20 MB de
+// "&amp;" dentro de um <t> (31 KB de .xlsx) viravam milhões de trechos e 840 MB de
+// memória para no fim guardar só 32.767 caracteres. Primeiro as entidades e depois o
+// "_xHHHH_" (como antes): cada caractere final vem de no máximo 7 do passo do meio,
+// então o resultado é o mesmo de decodificar tudo e cortar no limite.
+const XML_ENTITY = /&(#x[0-9a-fA-F]+|#\d+|lt|gt|amp|quot|apos);/g;
+const OOXML_ESCAPE = /_x([0-9a-fA-F]{4})_/g;
+const NAMED_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
+
+function decodeEntity(match, entity) {
+    if (entity[0] === '#') {
+        const code = entity[1] === 'x' || entity[1] === 'X' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
+        return Number.isFinite(code) && code >= 0 && code <= 0x10FFFF ? String.fromCodePoint(code) : '';
+    }
+    return NAMED_ENTITIES[entity];
+}
+
+function decodeOoxmlEscape(match, hex) {
+    return String.fromCharCode(parseInt(hex, 16));
+}
+
+// Troca cada ocorrência de `pattern` por `decode(...)`, parando quando a saída chega a
+// `max` caracteres (a saída pode passar um pouco: quem chama corta).
+function replaceBounded(text, pattern, decode, max) {
+    pattern.lastIndex = 0;
+    const pieces = [];
+    let size = 0;
+    let index = 0;
+    let match;
+    while (size < max && (match = pattern.exec(text)) !== null) {
+        if (match.index > index) {
+            const plain = text.slice(index, Math.min(match.index, index + (max - size)));
+            pieces.push(plain);
+            size += plain.length;
+            if (size >= max) { index = match.index; break; }
+        }
+        const value = decode(...match);
+        pieces.push(value);
+        size += value.length;
+        index = pattern.lastIndex;
+    }
+    pattern.lastIndex = 0;
+    if (size < max && index < text.length) pieces.push(text.slice(index, index + (max - size)));
+    const result = pieces.length === 1 ? pieces[0] : pieces.join('');
+    return result.length > max ? result.slice(0, max) : result;
+}
+
+function decodeXmlText(text, max = LIMITES.maxTextoCelula) {
     if (!text) return '';
-    return text
-        .replace(/&(#x[0-9a-fA-F]+|#\d+|lt|gt|amp|quot|apos);/g, (match, entity) => {
-            if (entity[0] === '#') {
-                const code = entity[1] === 'x' || entity[1] === 'X' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
-                return Number.isFinite(code) && code >= 0 && code <= 0x10FFFF ? String.fromCodePoint(code) : '';
-            }
-            return { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" }[entity];
-        })
-        // Escape do OOXML para caractere que o XML não aceita (_x000D_ = CR).
-        .replace(/_x([0-9a-fA-F]{4})_/g, (match, hex) => String.fromCharCode(parseInt(hex, 16)));
+    const entities = text.indexOf('&') >= 0 ? replaceBounded(text, XML_ENTITY, decodeEntity, max * 7) : text.slice(0, max * 7);
+    return entities.indexOf('_x') >= 0 ? replaceBounded(entities, OOXML_ESCAPE, decodeOoxmlEscape, max) : entities.slice(0, max);
 }
 
 // O XML de cada parte é lido por um laço só, da esquerda para a direita, sem expressão
@@ -433,8 +473,8 @@ function prefixedAttribute(attrs, localNameWanted) {
 
 // Junta os trechos de texto de um elemento (o texto pode vir partido por comentário
 // ou CDATA) e decodifica uma vez.
-function joinXmlText(parts) {
-    return parts.length === 1 ? decodeXmlText(parts[0]) : decodeXmlText(parts.join(''));
+function joinXmlText(parts, max = LIMITES.maxTextoCelula) {
+    return parts.length === 1 ? decodeXmlText(parts[0], max) : decodeXmlText(parts.join(''), max);
 }
 
 function columnIndex(letters) {
@@ -519,6 +559,8 @@ function findNumberPart(bare) {
     return null;
 }
 
+const MAX_FORMAT_DECIMALS = 100;
+
 function classifyFormat(numFmtId, code) {
     if (BUILTIN_DATE_IDS.has(numFmtId)) return { kind: 'date', time: numFmtId === 22, seconds: false, dateParts: true };
     if (BUILTIN_TIME_IDS.has(numFmtId)) return { kind: 'date', time: true, seconds: [19, 21, 46].includes(numFmtId), dateParts: false, elapsed: numFmtId === 46 };
@@ -538,6 +580,9 @@ function classifyFormat(numFmtId, code) {
     // "0,0#": uma casa sempre, a segunda só quando há.
     const fraction = numberPart.fraction || '';
     const decimals = fraction.length;
+    // O Excel aceita até 30 casas; com mais de 100 o toFixed nem funciona. Só um arquivo
+    // feito à mão chega aqui.
+    if (decimals > MAX_FORMAT_DECIMALS) throw xmlError();
     const minDecimals = (/^0*/.exec(fraction) || [''])[0].length;
     const grouping = /[#0],[#0]/.test(bare);
     return { kind: bare.includes('%') ? 'percent' : 'fixed', decimals, minDecimals, grouping };
@@ -758,8 +803,9 @@ function createRichTextCollector() {
     let parts = null;
     let phonetic = 0;
     let textParts = null;
+    let size = 0;
     return {
-        start() { parts = []; phonetic = 0; textParts = null; },
+        start() { parts = []; phonetic = 0; textParts = null; size = 0; },
         get active() { return parts !== null; },
         open(name, selfClosing) {
             if (parts === null) return;
@@ -772,7 +818,15 @@ function createRichTextCollector() {
         close(name) {
             if (parts === null) return;
             if (name === 'rPh' && phonetic) phonetic -= 1;
-            else if (name === 't' && textParts) { parts.push(joinXmlText(textParts)); textParts = null; }
+            else if (name === 't' && textParts) {
+                // Rich text com muitos <r>: o que passa do limite da célula não é guardado.
+                if (size < LIMITES.maxTextoCelula) {
+                    const value = joinXmlText(textParts, LIMITES.maxTextoCelula - size);
+                    parts.push(value);
+                    size += value.length;
+                }
+                textParts = null;
+            }
         },
         finish() { const value = (parts || []).join(''); parts = null; return value; },
     };
@@ -1304,5 +1358,5 @@ module.exports = {
     fileSha256,
     parseTabularFile,
     // Para os testes.
-    _internals: { classifyFormat, detectSeparator, decodeText, formatNumberCell, serialToParts, splitCsvRecords },
+    _internals: { classifyFormat, decodeXmlText, detectSeparator, decodeText, formatNumberCell, serialToParts, splitCsvRecords },
 };
