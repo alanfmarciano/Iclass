@@ -18,6 +18,9 @@
 //   classes[].periodoLetivoId), ou null (turma sem período funciona como sempre: todo dia
 //   de grade é letivo). plannedLessons(memory, cls, { from, to }): as aulas previstas no
 //   intervalo (dentro do período da turma), no total e por disciplina.
+//   normalizeTerm, readTermInput e termStageForDate: o registro do período letivo, o
+//   formulário (datas, etapas em sequência, dentro do período e sem se cruzar) e a etapa
+//   de uma data (B5 / P2-S7).
 // - nationalHolidays(ano): os feriados nacionais do ano, calculados aqui (datas fixas e,
 //   pela Páscoa, Carnaval, Sexta-feira Santa e Corpus Christi), sem internet.
 // - Presença do login em dia não letivo (D13 do P2): o registro não é apagado; ganha
@@ -303,6 +306,128 @@ function termSummary(term) {
     return { id: String(term.id), nome: text(term.nome), inicio: term.inicio, fim: term.fim };
 }
 
+// --- período letivo e etapas datadas (B5 / P2-S7, FUN-05) ------------------------------
+// Registro de memory.academicTerms: { id: 'per_<ms>_<6 hex>', schemaVersion: 1, nome,
+// inicio, fim (AAAA-MM-DD, fim depois do início, até 400 dias), schoolId (null = toda a
+// instituição), etapas: [{ ordem: 1..6, nome, inicio, fim }] (dentro do período, em
+// sequência e sem se cruzar), situacao: 'aberto' | 'encerrado', criadoEm, criadoPor,
+// atualizadoEm, atualizadoPor?, encerradoEm?, encerradoPor?, reabertoEm?, reabertoPor? }.
+// As etapas do período dão as DATAS; quantas etapas contam e o peso de cada uma são do
+// curso (course.avaliacao, D7 do P2), casadas pelo número de ordem. Encerrar o período
+// não encerra as turmas nem muda nota (o encerramento da turma é do B10); só impede ligar
+// turma nova a ele e alterar as datas até reabrir.
+
+const TERM_SITUACOES = Object.freeze(['aberto', 'encerrado']);
+const TERM_SITUACAO_LABELS = Object.freeze({ aberto: 'Aberto', encerrado: 'Encerrado' });
+const TERM_NAME_MAX = 80;
+const TERM_STAGE_NAME_MAX = 40;
+const MAX_TERM_SPAN = MAX_PLANNED_SPAN;
+const MAX_TERM_STAGES = 6;
+
+const stageDefaultName = ordem => `${ordem}ª etapa`;
+// 'AAAA-MM-DD' -> 'DD/MM/AAAA' para as mensagens.
+const brDate = date => (YMD_RE.test(String(date || '')) ? String(date).split('-').reverse().join('/') : String(date || ''));
+
+// Período gravado, lido com tolerância (registro editado à mão ou de versão futura): sem
+// id ou sem datas reais, null; situação desconhecida vale 'aberto'; etapa sem datas reais,
+// fora do período ou de ordem fora de 1 a 6 fica de fora; as que sobram vão em ordem.
+function normalizeTerm(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const id = text(raw.id);
+    const inicio = text(raw.inicio);
+    const fim = text(raw.fim);
+    if (!id || !isValidDate(inicio) || !isValidDate(fim) || fim < inicio) return null;
+    const seen = new Set();
+    const etapas = (Array.isArray(raw.etapas) ? raw.etapas : [])
+        .map(stage => {
+            if (!stage || typeof stage !== 'object') return null;
+            const ordem = Number(stage.ordem);
+            const stageStart = text(stage.inicio);
+            const stageEnd = text(stage.fim);
+            if (!Number.isInteger(ordem) || ordem < 1 || ordem > MAX_TERM_STAGES || seen.has(ordem)) return null;
+            if (!isValidDate(stageStart) || !isValidDate(stageEnd) || stageEnd < stageStart) return null;
+            if (stageStart < inicio || stageEnd > fim) return null;
+            seen.add(ordem);
+            return { ordem, nome: text(stage.nome) || stageDefaultName(ordem), inicio: stageStart, fim: stageEnd };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.ordem - b.ordem);
+    return {
+        id,
+        nome: text(raw.nome) || 'Período letivo',
+        inicio,
+        fim,
+        schoolId: text(raw.schoolId) || null,
+        etapas,
+        situacao: raw.situacao === 'encerrado' ? 'encerrado' : 'aberto',
+    };
+}
+
+// A etapa do período que cobre a data, ou null (data fora das etapas ou período sem elas).
+function termStageForDate(term, date) {
+    const normalized = normalizeTerm(term);
+    if (!normalized || !isValidDate(date)) return null;
+    return normalized.etapas.find(stage => date >= stage.inicio && date <= stage.fim) || null;
+}
+
+// Lê o período do formulário (corpo já conferido pelo schema). No update, o campo que não
+// veio fica como estava (current). Devolve { term: { nome, inicio, fim, etapas } } ou
+// { error, field } com a mensagem em português.
+function readTermInput(input, current = null) {
+    const source = input && typeof input === 'object' ? input : {};
+    const pick = field => (source[field] !== undefined ? source[field] : (current ? current[field] : undefined));
+    const nome = text(pick('nome'));
+    if (!nome) return { error: 'Informe o nome do período letivo (por exemplo: 2027 · 1º semestre).', field: 'nome' };
+    if (nome.length > TERM_NAME_MAX) return { error: `O nome do período letivo aceita no máximo ${TERM_NAME_MAX} caracteres.`, field: 'nome' };
+    const inicio = text(pick('inicio'));
+    if (!inicio) return { error: 'Informe a data de início do período letivo.', field: 'inicio' };
+    if (!isValidDate(inicio)) return { error: 'Data de início inválida. Informe uma data real no formato AAAA-MM-DD.', field: 'inicio' };
+    const fim = text(pick('fim'));
+    if (!fim) return { error: 'Informe a data de fim do período letivo.', field: 'fim' };
+    if (!isValidDate(fim)) return { error: 'Data de fim inválida. Informe uma data real no formato AAAA-MM-DD.', field: 'fim' };
+    if (fim <= inicio) return { error: 'A data de fim do período letivo precisa ser depois da data de início.', field: 'fim' };
+    if (spanDays(inicio, fim) > MAX_TERM_SPAN) return { error: `Um período letivo dura no máximo ${MAX_TERM_SPAN} dias.`, field: 'fim' };
+
+    const rawStages = pick('etapas');
+    const list = rawStages === undefined || rawStages === null ? [] : rawStages;
+    if (!Array.isArray(list)) return { error: 'Lista de etapas inválida.', field: 'etapas' };
+    if (list.length > MAX_TERM_STAGES) return { error: `O período letivo tem no máximo ${MAX_TERM_STAGES} etapas.`, field: 'etapas' };
+    const stages = [];
+    for (let index = 0; index < list.length; index++) {
+        const raw = list[index];
+        const field = `etapas[${index}]`;
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'Etapa em formato inválido.', field };
+        const ordem = raw.ordem === undefined || raw.ordem === null || raw.ordem === '' ? index + 1 : Number(raw.ordem);
+        if (!Number.isInteger(ordem) || ordem < 1 || ordem > MAX_TERM_STAGES) {
+            return { error: `O número da etapa vai de 1 a ${MAX_TERM_STAGES}.`, field: `${field}.ordem` };
+        }
+        const stageName = text(raw.nome) || stageDefaultName(ordem);
+        if (stageName.length > TERM_STAGE_NAME_MAX) return { error: `O nome da etapa aceita no máximo ${TERM_STAGE_NAME_MAX} caracteres.`, field: `${field}.nome` };
+        const stageStart = text(raw.inicio);
+        const stageEnd = text(raw.fim);
+        // "1ª etapa" ou "etapa 1 (1º bimestre)", para a frase concordar com qualquer nome.
+        const label = stageName === stageDefaultName(ordem) ? stageName : `etapa ${ordem} (${stageName})`;
+        if (!isValidDate(stageStart)) return { error: `Informe a data de início da ${label} (data real, AAAA-MM-DD).`, field: `${field}.inicio` };
+        if (!isValidDate(stageEnd)) return { error: `Informe a data de fim da ${label} (data real, AAAA-MM-DD).`, field: `${field}.fim` };
+        if (stageEnd < stageStart) return { error: `A ${label} termina antes de começar.`, field: `${field}.fim` };
+        if (stageStart < inicio || stageEnd > fim) return { error: `A ${label} precisa ficar dentro do período letivo (${brDate(inicio)} a ${brDate(fim)}).`, field: `${field}.inicio` };
+        stages.push({ ordem, nome: stageName, label, inicio: stageStart, fim: stageEnd, index });
+    }
+    stages.sort((a, b) => a.ordem - b.ordem);
+    for (let position = 0; position < stages.length; position++) {
+        const stage = stages[position];
+        const field = `etapas[${stage.index}]`;
+        if (stage.ordem !== position + 1) {
+            return { error: 'As etapas precisam ser numeradas em sequência a partir de 1 (1, 2, 3...), sem pular nem repetir.', field: `${field}.ordem` };
+        }
+        const previous = stages[position - 1];
+        if (previous && stage.inicio <= previous.fim) {
+            return { error: `A ${stage.label} começa antes do fim da ${previous.label}: as etapas não podem se cruzar.`, field: `${field}.inicio` };
+        }
+    }
+    return { term: { nome, inicio, fim, etapas: stages.map(({ index, label, ...stage }) => stage) } };
+}
+
 // A grade da semana da turma naquela data, sem olhar o calendário: só para quem lança de
 // propósito num dia sem aula (a chamada feita "mesmo assim", a marcação individual) e
 // para os dados de demonstração. Todo o resto usa lessonsForDate.
@@ -485,6 +610,14 @@ module.exports = {
     nonSchoolDaysFor,
     isNonSchoolDay,
     termForClass,
+    termSummary,
+    TERM_SITUACOES,
+    TERM_SITUACAO_LABELS,
+    MAX_TERM_SPAN,
+    MAX_TERM_STAGES,
+    normalizeTerm,
+    termStageForDate,
+    readTermInput,
     weeklyLessons,
     dayStatus,
     lessonsForDate,

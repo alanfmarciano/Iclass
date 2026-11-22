@@ -13,6 +13,8 @@ const {
 } = require('./submissionAttempts.js');
 const { recordAudit } = require('./audit.js');
 const { buildXlsx } = require('./tabularFile.js');
+const gradingRules = require('./gradingRules.js');
+const academicCalendar = require('./academicCalendar.js');
 
 const GRADE_MAX = SCORE_MAX / 10;
 const MANUAL_TYPES = ['impressa', 'manual', 'online'];
@@ -324,10 +326,56 @@ function createResolvedGroupKey(context = {}) {
 }
 
 // --------------------------------------------------- consolidação
+// Id do módulo da estrutura do curso, o mesmo no boletim, no quadro e nas disciplinas
+// (disciplinas[].modulos, B5 / P2-S7): id, chave, nome ou a posição.
+function structureModuleId(module, moduleIndex) {
+    const value = module && (module.id || module.key || module.name || module.title);
+    return String(value || `module_${moduleIndex}`);
+}
+
+// Ids dos módulos das estruturas dadas (a do curso e as das turmas dele, que podem ter
+// módulo a mais), sem repetir.
+function structureModuleIds(...structures) {
+    const ids = new Set();
+    structures.forEach(structure => (Array.isArray(structure) ? structure : []).forEach((module, index) => {
+        if (module && typeof module === 'object') ids.add(structureModuleId(module, index));
+    }));
+    return ids;
+}
+
+// Aulas previstas e faltas que o aluno ainda pode ter (C8 do P2), na turma inteira e por
+// disciplina, para o boletim (e, no B6, o resumo do aluno). Aulas previstas só com período
+// letivo na turma (academicCalendar.plannedLessons no período inteiro, sem os dias não
+// letivos); a frequência mínima é a dos critérios do curso (course.avaliacao): sem
+// critérios (regra antiga) não há mínima, e faltasPermitidasRestantes fica null, como no
+// motor de critérios (gradingRules). stats: computeAttendanceStats do aluno na turma.
+function attendanceAllowanceFor(memory, { course = null, cls = null, stats = null } = {}) {
+    const term = cls ? academicCalendar.termForClass(memory, cls) : null;
+    const planned = term ? academicCalendar.plannedLessons(memory, cls) : null;
+    const criterios = gradingRules.normalizeCriteria(course && course.avaliacao);
+    const frequenciaMinima = criterios ? criterios.frequenciaMinima : null;
+    const aulasPrevistas = planned ? planned.total : null;
+    const faltas = stats ? stats.faltasContam : null;
+    const disciplina = (id, faltasDaDisciplina) => {
+        const previstas = planned ? (planned.porDisciplina[String(id || '')] || 0) : null;
+        return {
+            aulasPrevistas: previstas,
+            faltasPermitidasRestantes: gradingRules.faltasPermitidasRestantes({ aulasPrevistas: previstas, frequenciaMinima, faltas: faltasDaDisciplina }),
+        };
+    };
+    return {
+        periodoLetivo: academicCalendar.termSummary(term),
+        aulasPrevistas,
+        frequenciaMinima,
+        faltasPermitidasRestantes: gradingRules.faltasPermitidasRestantes({ aulasPrevistas, frequenciaMinima, faltas }),
+        disciplina,
+    };
+}
+
 function structureExamIndex(structure) {
     const index = new Map();
     (structure || []).forEach((module, moduleIndex) => {
-        const moduleId = String(module.id || module.key || module.name || module.title || `module_${moduleIndex}`);
+        const moduleId = structureModuleId(module, moduleIndex);
         const moduleName = module.name || module.title || module.id || `Módulo ${moduleIndex + 1}`;
         (module.units || module.items || []).forEach((unit, unitIndex) => {
             if (!unit || !unit.avaliacaoKey || index.has(unit.avaliacaoKey)) return;
@@ -439,7 +487,7 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
     });
 
     const modules = (structure || []).map((module, moduleIndex) => ({
-        id: String(module.id || module.key || module.name || module.title || `module_${moduleIndex}`),
+        id: structureModuleId(module, moduleIndex),
         name: module.name || module.title || module.id || `Módulo ${moduleIndex + 1}`,
         exams: [],
         scores: [],
@@ -1333,6 +1381,9 @@ module.exports = {
     scoreFromCounts,
     scoreFromGrade,
     structureExamIndex,
+    structureModuleId,
+    structureModuleIds,
+    attendanceAllowanceFor,
     studentMemberships,
     submissionMatchesContext,
     withResolvedContext,

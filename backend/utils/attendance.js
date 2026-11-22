@@ -16,9 +16,47 @@ function configDefault() {
     return { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} };
 }
 
-// Normaliza a lista de disciplinas de um curso (id único, nome, cor opcional).
-function sanitizeDisciplinas(input) {
+// Normaliza a lista de disciplinas de um curso: id único, nome e cor opcional e, desde a
+// fase 3 (B5 / P2-S7, FUN-05; D16 do P2), carga horária (horas, inteiro de 0 a 2000),
+// professor responsável (texto informativo, até 80) e os módulos do curso que são desta
+// disciplina (ids, para a nota do módulo contar na disciplina). previous (opcional): a
+// lista gravada. Campo AUSENTE no item enviado fica como estava na disciplina de mesmo id
+// (a tela de antes manda só id, nome e cor e não apaga a carga horária); null, texto
+// vazio ou lista vazia apagam. Disciplina sem os campos novos sai como sempre saiu
+// ({ id, nome, cor }). Devolve a lista ou null (entrada que não é lista). Quem confere se
+// os módulos existem e se um módulo está em duas disciplinas é disciplinasModuleProblem.
+const DISCIPLINA_CARGA_MAX = 2000;
+const DISCIPLINA_PROFESSOR_MAX = 80;
+const DISCIPLINA_MODULOS_MAX = 60;
+const DISCIPLINA_MODULO_MAX = 200;
+
+const hasOwn = (object, key) => !!object && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key);
+
+function readCargaHoraria(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = typeof value === 'string' && /^\s*\d{1,6}\s*$/.test(value) ? Number(value) : value;
+    return Number.isInteger(number) && number >= 0 && number <= DISCIPLINA_CARGA_MAX ? number : null;
+}
+
+function readModulos(value) {
+    if (!Array.isArray(value)) return [];
+    const out = [];
+    value.forEach(item => {
+        const id = typeof item === 'string' || typeof item === 'number' ? String(item).trim().slice(0, DISCIPLINA_MODULO_MAX) : '';
+        if (id && !out.includes(id) && out.length < DISCIPLINA_MODULOS_MAX) out.push(id);
+    });
+    return out;
+}
+
+function readProfessor(value) {
+    return typeof value === 'string' ? value.trim().slice(0, DISCIPLINA_PROFESSOR_MAX) : '';
+}
+
+function sanitizeDisciplinas(input, previous) {
     if (!Array.isArray(input)) return null;
+    const before = new Map((Array.isArray(previous) ? previous : [])
+        .filter(d => d && typeof d === 'object' && d.id)
+        .map(d => [String(d.id).trim().toUpperCase(), d]));
     const seen = new Set();
     const out = [];
     for (const d of input) {
@@ -27,9 +65,46 @@ function sanitizeDisciplinas(input) {
         if (!id || !nome || seen.has(id)) continue;
         seen.add(id);
         const cor = /^#[0-9a-fA-F]{6}$/.test((d && d.cor) || '') ? d.cor : '';
-        out.push({ id, nome, cor });
+        const item = { id, nome, cor };
+        const old = before.get(id);
+        const pick = field => (hasOwn(d, field) ? d[field] : (old ? old[field] : undefined));
+        const cargaHoraria = readCargaHoraria(pick('cargaHoraria'));
+        if (cargaHoraria !== null) item.cargaHoraria = cargaHoraria;
+        const professor = readProfessor(pick('professor'));
+        if (professor) item.professor = professor;
+        const modulos = readModulos(pick('modulos'));
+        if (modulos.length) item.modulos = modulos;
+        out.push(item);
     }
     return out;
+}
+
+// Os módulos das disciplinas: o que o pedido mandou precisa existir no curso (moduleIds,
+// os ids da estrutura do curso e das turmas dele) e cada módulo fica em uma disciplina só.
+// input é a lista do pedido (para saber quais módulos foram enviados agora: os que ficaram
+// de antes não são recusados se o módulo saiu da estrutura); disciplinas, a lista já
+// normalizada. Devolve null ou { error, field }.
+function disciplinasModuleProblem(input, disciplinas, moduleIds) {
+    const known = moduleIds instanceof Set ? moduleIds : new Set(moduleIds || []);
+    const sentIndex = new Map();
+    (Array.isArray(input) ? input : []).forEach((d, index) => {
+        const id = String((d && d.id) || '').trim().toUpperCase().slice(0, 16);
+        if (id && !sentIndex.has(id)) sentIndex.set(id, { index, sent: hasOwn(d, 'modulos') });
+    });
+    const owner = new Map();
+    for (const disciplina of (disciplinas || [])) {
+        const where = sentIndex.get(disciplina.id) || { index: 0, sent: false };
+        for (const modulo of (disciplina.modulos || [])) {
+            if (where.sent && !known.has(modulo)) {
+                return { error: `O módulo "${modulo}" não existe neste curso (disciplina ${disciplina.nome}).`, field: `disciplinas[${where.index}].modulos` };
+            }
+            if (owner.has(modulo)) {
+                return { error: `O módulo "${modulo}" já está na disciplina ${owner.get(modulo)}. Cada módulo fica em uma disciplina só.`, field: `disciplinas[${where.index}].modulos` };
+            }
+            owner.set(modulo, disciplina.nome);
+        }
+    }
+    return null;
 }
 
 // Normaliza os modelos de grade reutilizáveis de um curso. Cada modelo guarda o
@@ -586,7 +661,7 @@ function closedStudentListedOn({ hasRecord = false, date, statusChangedAt, timez
 
 module.exports = {
     WEEKDAYS, HHMM_RE, AULA_STATUS, JUST_TIPOS,
-    configDefault, sanitizeDisciplinas, sanitizeGradeTemplates, sanitizeAttendanceConfig,
+    configDefault, sanitizeDisciplinas, disciplinasModuleProblem, DISCIPLINA_CARGA_MAX, sanitizeGradeTemplates, sanitizeAttendanceConfig,
     effectiveAttendanceConfig, weekdayOf, gradeForDate,
     hhmmToMin, deriveAulasFromArrival, aulaCountsAsFalta, recordAulas,
     classDayWindow, withinClassDayWindow,
