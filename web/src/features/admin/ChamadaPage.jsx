@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ClipboardCheck, Download, Check, X, Clock, LogOut, FileText, Paperclip, Users,
-  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi, UserX,
+  AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi, UserX, CalendarOff,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -113,16 +113,21 @@ export default function ChamadaPage() {
   const [focusIdx, setFocusIdx] = useState(-1)
   const [undoSnap, setUndoSnap] = useState(null)
   const [modal, setModal] = useState(null)
+  // Dia sem aula no calendário (feriado, recesso, fora do período letivo): o servidor manda
+  // as aulas vazias e diz por quê; "mesmo assim" pede a grade de novo (reposição).
+  const [semAula, setSemAula] = useState(null)
+  const [mesmoAssim, setMesmoAssim] = useState(false)
   const toast = useToast()
   const listRef = useRef(null)
   const autosaveRef = useRef(null)
 
-  async function load() {
-    if (!className || !date) { setRoster([]); setGrade([]); setUi({}); return }
+  async function load(forcar = mesmoAssim) {
+    if (!className || !date) { setRoster([]); setGrade([]); setUi({}); setSemAula(null); return }
     setLoading(true); setError(null)
     try {
-      const r = await api.get(`/api/admin/attendance/roster?studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(activeCourseId || '')}&date=${encodeURIComponent(date)}`)
+      const r = await api.get(`/api/admin/attendance/roster?studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(activeCourseId || '')}&date=${encodeURIComponent(date)}${forcar ? '&mesmoAssim=1' : ''}`)
       setGrade(r.aulas || [])
+      setSemAula(r.naoLetivo || r.foraDoPeriodo ? { naoLetivo: r.naoLetivo || null, foraDoPeriodo: !!r.foraDoPeriodo, temGrade: (r.aulasGrade || []).length > 0 } : null)
       setRoster(r.roster || [])
       setTolerancia(r.toleranciaMin ?? 10)
       const next = {}
@@ -142,7 +147,9 @@ export default function ChamadaPage() {
     } catch (e) { setError(e) } finally { setLoading(false) }
   }
   useEffect(() => { api.get('/api/settings/public', { auth: false }).then((r) => { if (r && r.today) setDate(r.today) }).catch(() => {}) }, [])
-  useEffect(() => { load() /* eslint-disable-next-line */ }, [className, date, activeCourseId])
+  // Outra turma ou outra data começa sem o "mesmo assim".
+  useEffect(() => { setMesmoAssim(false); load(false) /* eslint-disable-next-line */ }, [className, date, activeCourseId])
+  const fazerMesmoAssim = () => { setMesmoAssim(true); load(true) }
 
   // ---- edição ----
   const patch = useCallback((email, p) => {
@@ -326,10 +333,26 @@ export default function ChamadaPage() {
         <PageState loading={loading} error={error} onRetry={load}>
           {roster.length === 0 ? (
             <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Users} title="Turma sem alunos" description="Nenhum aluno matriculado nesta turma." /></div>
+          ) : grade.length === 0 && semAula ? (
+            <div className="bg-surface border border-border rounded-xl p-6">
+              <EmptyState
+                icon={CalendarOff}
+                title={semAula.naoLetivo ? `Não há aula neste dia: ${semAula.naoLetivo.nome}` : 'Fora do período letivo da turma'}
+                description={`${semAula.naoLetivo ? `${semAula.naoLetivo.tipoRotulo || 'Dia sem aula'}. ` : ''}A chamada não é cobrada e a presença automática do acesso não conta na frequência.${semAula.temGrade ? ' Se houve aula (reposição), faça a chamada mesmo assim: ela conta normalmente.' : ''}`}
+                action={semAula.temGrade ? 'Fazer a chamada mesmo assim' : undefined}
+                onAction={fazerMesmoAssim}
+              />
+            </div>
           ) : grade.length === 0 ? (
             <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Clock} title="Sem aulas neste dia" description="Esta turma não tem grade horária configurada para este dia da semana. Configure a grade em Cursos e turmas, ou escolha outra data." /></div>
           ) : (
             <>
+              {semAula && (
+                <div role="status" className="flex items-center gap-2 rounded-xl border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-text">
+                  <CalendarOff size={16} className="shrink-0 text-warning" />
+                  <span>{semAula.naoLetivo ? `${semAula.naoLetivo.nome} (${String(semAula.naoLetivo.tipoRotulo || 'dia sem aula').toLowerCase()})` : 'Fora do período letivo'}: chamada lançada mesmo assim, que conta na frequência.</span>
+                </div>
+              )}
               {/* Barra de progresso + autosave */}
               <section className="sticky top-2 z-30 bg-surface-glass backdrop-blur border border-border rounded-xl shadow-sm p-3 flex flex-wrap items-center gap-4">
                 <div className="flex-1 min-w-[240px]">

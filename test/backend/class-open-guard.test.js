@@ -81,6 +81,11 @@ const FORA_DO_PORTAO = [
     ['testmode.js', 'POST', '/api/test/seed', 'dados de demonstração do TEST_MODE; não existe no computador da escola'],
     ['adminArchive.js', 'POST', '/api/admin/courses/:id/purge', 'arquivar o curso inteiro leva as notas para o pacote do curso; não é mudança de nota'],
     ['adminArchive.js', 'POST', '/api/admin/archived-courses/restore', 'restaurar o curso arquivado devolve as notas como estavam'],
+    // Dias não letivos (B3 / P2-S5): só a marca naoLetivoId na presença do login muda.
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/create', 'o dia não letivo só marca a presença automática do login nas datas dele (sai da frequência, nada é apagado); turma encerrada fica de fora da marca (syncNonSchoolDayMarks olha isClassClosed)'],
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/update', 'a mesma marca da presença automática do login, posta e tirada nas datas de antes e de depois; turma encerrada fica de fora da marca'],
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/delete', 'tira a marca da presença automática do login nas datas do dia excluído (volta a contar); turma encerrada fica de fora'],
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/national-holidays', 'os feriados nacionais da instituição marcam a presença automática do login nas datas deles; turma encerrada fica de fora da marca'],
 ];
 
 // Sinais de gravação de nota ou presença feita ali mesmo (no corpo de uma rota ou de uma
@@ -93,6 +98,8 @@ const DIRECT_WRITE_MARKERS = [
     /\.attendance\s*=\s*(?!\s*\[\s*\])/,
     /\.(?:submissions|attendance)\.splice\(/,
     /only:\s*\[[^\]]*['"](?:submissions|attendance)['"]/,
+    // Linha antiga de coleção que só cresce gravada pela lista de mudadas (changed).
+    /changed\s*[:=]\s*\{\s*['"]?(?:submissions|attendance)\b/,
     /saveApplicationAction\(/,
     // Nota mudada no registro da entrega (recorreção, troca da finalização do servidor).
     /\bsubmission\.score\s*=(?!=)/,

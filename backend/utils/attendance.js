@@ -123,7 +123,9 @@ function weekdayOf(dateStr) {
     return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay();
 }
 
-// Grade (array de aulas) de uma turma numa data. [] se dia não letivo.
+// Grade da semana (array de aulas) de uma turma numa data: só o dia da semana. O
+// calendário (dia não letivo, período letivo) fica em academicCalendar.lessonsForDate,
+// que é quem as rotas chamam (teste de guarda em academic-calendar.test.js).
 function gradeForDate(cls, dateStr) {
     const cfg = effectiveAttendanceConfig(cls);
     const wd = weekdayOf(dateStr);
@@ -238,12 +240,22 @@ function recordHasPresence(rec) {
     return recordAulas(rec).some(a => a.status === 'presente');
 }
 
+// Presença automática do login num dia não letivo (D13 do P2, FUN-15): o registro fica
+// (nunca apagar dados sozinho), com a marca naoLetivoId posta por
+// academicCalendar.syncNonSchoolDayMarks, e não conta na frequência. Só o do login: a
+// chamada e a marcação individual feitas num feriado foram lançadas de propósito.
+function isIgnoredNonSchoolRecord(rec) {
+    return !!rec && rec.origin === 'login' && !!String(rec.naoLetivoId || '').trim();
+}
+
 // Mantém 1 registro por curso/turma/data, preferindo a chamada do professor
 // sobre marca manual e login automático. Evita dupla contagem na frequência.
+// O registro do login em dia não letivo fica de fora (isIgnoredNonSchoolRecord).
 const ORIGIN_RANK = { chamada: 3, manual: 2, login: 1 };
 function dedupeByDate(records) {
     const best = new Map();
     (records || []).forEach(r => {
+        if (isIgnoredNonSchoolRecord(r)) return;
         const key = `${r.courseId || ''}::${r.studentClass || ''}::${r.date || r.id}`;
         const cur = best.get(key);
         if (!cur || (ORIGIN_RANK[r.origin] || 0) >= (ORIGIN_RANK[cur.origin] || 0)) best.set(key, r);
@@ -255,11 +267,13 @@ const _freqPct = (p, f) => (p + f) ? Math.round((p / (p + f)) * 100) : null;
 
 // Estatística de frequência por aula: geral + por disciplina.
 // Denominador = aulas lançadas que contam (presente + falta não abonada).
-// Aulas abonadas ficam de fora do numerador e do denominador.
+// Aulas abonadas ficam de fora do numerador e do denominador, e o registro do login em
+// dia não letivo também (isIgnoredNonSchoolRecord).
 function computeAttendanceStats(records) {
     let presentes = 0, faltasContam = 0;
     const disc = {};
     (records || []).forEach(rec => {
+        if (isIgnoredNonSchoolRecord(rec)) return;
         const just = rec.justificativa || null;
         recordAulas(rec).forEach(a => {
             const did = a.disciplinaId || '';
@@ -577,7 +591,7 @@ module.exports = {
     hhmmToMin, deriveAulasFromArrival, aulaCountsAsFalta, recordAulas,
     classDayWindow, withinClassDayWindow,
     sanitizeAulas, sanitizeJustificativa, recordHasPresence, computeAttendanceStats,
-    dedupeByDate,
+    dedupeByDate, isIgnoredNonSchoolRecord,
     ATTENDANCE_EDIT_SESSION_MS, attendanceSnapshot, statusKey, describe, effectiveDayRecord,
     shouldAuditAttendanceChange, attendanceBaseVersion, attendanceBaseVersionFields,
     attendanceCarryOver, formatDateBR, recordAttendanceAudit,

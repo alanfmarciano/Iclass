@@ -144,7 +144,7 @@ const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
 const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require('../utils/studentAnalytics.js');
 const { computeNow, computeQueue, computeTrends } = require('../utils/dashboardAggregates.js');
-const { assertClassOpen, classOfSubmission, classesOfSubmissions } = require('../utils/academicCalendar.js');
+const { assertClassOpen, classOfSubmission, classesOfSubmissions, dayStatus, weeklyLessons } = require('../utils/academicCalendar.js');
 const { renameStudentData } = require('../utils/studentDataHandlers.js');
 const attendanceUtil = require('../utils/attendance.js');
 const runtimePaths = require('../runtimePaths.js');
@@ -159,6 +159,8 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
+const { createAdminAcademicRouter } = require('./adminAcademic.js');
+const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { body, either, list, shape, str } = require('../utils/inputSchema.js');
 
 // Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
@@ -2178,7 +2180,9 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
             || (db.memory.classes || []).find(c => c.name === studentClass);
         // Turma encerrada não recebe presença (sem efeito até o B10).
         if (!assertClassOpen(cls, { res })) return;
-        const gradeAulas = attendanceUtil.gradeForDate(cls, date);
+        // A grade da semana mesmo em dia não letivo: quem marca a presença num feriado
+        // (reposição) marca de propósito, e a marcação conta na frequência (D13 do P2).
+        const gradeAulas = weeklyLessons(cls, date);
         const aulas = (gradeAulas.length ? gradeAulas : [{ ordem: 1, inicio: '', disciplinaId: '' }])
             .map(a => ({ ordem: a.ordem, disciplinaId: a.disciplinaId || '', inicio: a.inicio || '', status: 'presente', hora: '' }));
         const now = Date.now();
@@ -2280,11 +2284,12 @@ function _studentInClass(student, className, courseId) {
     });
 }
 
-// Grade do dia (aulas da turma na data) enriquecida com nome/cor da disciplina.
-function _gradeAulasForRoster(cls, course, date) {
+// Grade da semana da turma na data (dayStatus(...).aulasGrade) enriquecida com nome e
+// cor da disciplina.
+function _gradeAulasForRoster(gradeAulas, course) {
     const discById = {};
     ((course && course.disciplinas) || []).forEach(d => { discById[d.id] = d; });
-    return attendanceUtil.gradeForDate(cls, date).map(a => ({
+    return (gradeAulas || []).map(a => ({
         ordem: a.ordem,
         inicio: a.inicio || '',
         disciplinaId: a.disciplinaId || '',
@@ -2294,6 +2299,11 @@ function _gradeAulasForRoster(cls, course, date) {
 }
 
 // Roster da chamada: grade do dia + aulas já marcadas por aluno.
+// Dia não letivo e fora do período letivo da turma (FUN-15): naoLetivo ({ id, nome,
+// tipo, tipoRotulo, inicio, fim, escopo }) ou foraDoPeriodo vêm preenchidos, a grade da
+// semana vem em aulasGrade e aulas vem [] (a tela mostra a faixa sem a grade), até o
+// pedido com ?mesmoAssim=1 ("Fazer chamada mesmo assim": reposição), que traz a grade em
+// aulas como num dia letivo; a chamada salva assim conta na frequência.
 router.get('/api/admin/attendance/roster', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.query.studentClass || '').trim();
@@ -2304,7 +2314,11 @@ router.get('/api/admin/attendance/roster', (req, res) => {
             || (db.memory.classes || []).find(c => c.name === className);
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
-        const gradeAulas = _gradeAulasForRoster(cls, course, date);
+        const mesmoAssim = ['1', 'true', 'sim'].includes(String(req.query.mesmoAssim || '').trim().toLowerCase());
+        const dia = dayStatus(db.memory, cls, date);
+        const aulasGrade = _gradeAulasForRoster(dia.aulasGrade, course);
+        const semAulaNoCalendario = !!(dia.naoLetivo || dia.foraDoPeriodo);
+        const gradeAulas = semAulaNoCalendario && !mesmoAssim ? [] : aulasGrade;
         const timezone = settingsUtil.getSettings().timezone;
         const sinceOf = _closedSinceResolver();
 
@@ -2363,6 +2377,11 @@ router.get('/api/admin/attendance/roster', (req, res) => {
             toleranciaMin: cfg.toleranciaMin, limiarRiscoPct: cfg.limiarRiscoPct,
             disciplinas: (course && course.disciplinas) || [],
             aulas: gradeAulas,
+            aulasGrade,
+            naoLetivo: dia.naoLetivo,
+            foraDoPeriodo: dia.foraDoPeriodo,
+            periodoLetivo: dia.periodo,
+            mesmoAssim: semAulaNoCalendario && mesmoAssim,
             roster,
         });
     });
@@ -2702,6 +2721,9 @@ router.get('/api/admin/announcements/calendar', (req, res) => {
                 && _annInScope(item, matchedAdmin)
                 && (!courseId || item.courseId === courseId)
                 && (!studentClass || item.target === 'curso' || item.targetValue === studentClass))
+            // Dias não letivos que valem para o curso e a turma (FUN-15), como itens só de
+            // leitura (kind 'nonSchoolDay', readOnly): mudam pela rota deles, não por aqui.
+            .concat(courseId ? nonSchoolDayCalendarItems(db.memory, { courseId, studentClass }) : [])
             .sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || String(a.startTime || '').localeCompare(String(b.startTime || '')));
         res.json(list);
     });
@@ -3599,6 +3621,8 @@ router.use(createAdminAuditRouter());
 router.use(createAdminPrivacyRouter());
 router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
+// Rotas novas da fase 3 (ordem_no_createApp do plano): calendário acadêmico (P2).
+router.use(createAdminAcademicRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)

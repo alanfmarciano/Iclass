@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ChamadaPage from './ChamadaPage'
 
@@ -76,5 +77,36 @@ describe('Chamada com presença em versões (H7b)', () => {
     render(<ChamadaPage />)
     expect(await screen.findByText('Transferido')).toBeInTheDocument()
     expect(screen.getAllByText('Transferido')).toHaveLength(1)
+  })
+})
+
+describe('Chamada em dia não letivo', () => {
+  const feriado = { id: 'nl_1', nome: 'Proclamação da República', tipo: 'feriado', tipoRotulo: 'Feriado', inicio: '2026-11-15', fim: '2026-11-15', escopo: 'instituicao' }
+
+  it('[UC-PRESENCA-005] feriado: a tela diz que não há aula (não "sem grade") e "mesmo assim" pede a grade de novo', async () => {
+    const user = userEvent.setup()
+    mocks.get.mockImplementation(async (url) => {
+      if (!url.startsWith('/api/admin/attendance/roster')) return {}
+      const forcado = url.includes('mesmoAssim=1')
+      return { ...rosterWith([aluno('ana@x.local')]), aulas: forcado ? aulas : [], aulasGrade: aulas, naoLetivo: feriado, foraDoPeriodo: false, mesmoAssim: forcado }
+    })
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Não há aula neste dia: Proclamação da República')).toBeInTheDocument()
+    // Antes a tela dizia que a turma não tinha grade para o dia da semana.
+    expect(screen.queryByText('Sem aulas neste dia')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Concluir chamada' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Fazer a chamada mesmo assim' }))
+    expect(await screen.findByText(/chamada lançada mesmo assim, que conta na frequência/)).toBeInTheDocument()
+    expect(mocks.get).toHaveBeenCalledWith(expect.stringContaining('mesmoAssim=1'))
+    expect(screen.getByRole('button', { name: 'Concluir chamada' })).toBeInTheDocument()
+  })
+
+  it('[UC-PRESENCA-005] dia não letivo sem grade no dia da semana não oferece "mesmo assim"', async () => {
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: [], naoLetivo: feriado, foraDoPeriodo: false }
+      : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Não há aula neste dia: Proclamação da República')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Fazer a chamada mesmo assim' })).not.toBeInTheDocument()
   })
 })

@@ -503,7 +503,6 @@ test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem locale
 // reprova. E, onde há o histórico do git, arquivo da lista que mudou desde o começo da
 // fase 3 (PHASE3_BASE) também reprova: quem toca a tela troca as caixas dela.
 const NATIVE_DIALOGS_LEFT = {
-    'features/admin/CalendarioPage.jsx': 1,
     'features/admin/EditorPage.jsx': 2,
     'features/admin/ResultadosPage.jsx': 1,
     'features/admin/TurmaPresencaConfig.jsx': 1,

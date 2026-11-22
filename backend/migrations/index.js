@@ -38,6 +38,11 @@
 // Cada item: { id, nome, run(memory, ctx) => boolean }, idempotente; grava só se mudou. A
 // primeira será ensureStudentIds (P4-S3, trilha C). As normalizações antigas do init
 // (contas, senhas, studentClass, provas resetadas) continuam onde estão (D2 do P6).
+// A marca de dia não letivo na presença do login (B3 / P2-S5) também é daqui: a versão
+// anterior não conhece os dias não letivos e cria presença do login num feriado, e o
+// backup de antes deles volta a presença sem a marca enquanto os dias ficam (missing
+// 'keep'). Só marca o que um dia cadastrado cobre (sem dia cadastrado, não muda nada).
+const academicCalendar = require('../utils/academicCalendar.js');
 
 const MIGRATIONS = Object.freeze([
     Object.freeze({
@@ -50,6 +55,17 @@ const MIGRATIONS = Object.freeze([
     }),
 ]);
 
-const BOOT_NORMALIZATIONS = Object.freeze([]);
+const BOOT_NORMALIZATIONS = Object.freeze([
+    // Presença do login em dia não letivo fica fora da frequência (D13 do P2): a marca
+    // naoLetivoId confere com os dias não letivos cadastrados agora, em todo boot e
+    // depois de toda restauração. A chamada e a marcação individual nunca são marcadas.
+    Object.freeze({
+        id: '2026-11-p2-presenca-dia-nao-letivo',
+        nome: 'Confere a marca de dia não letivo na presença automática',
+        run(memory) {
+            return academicCalendar.syncNonSchoolDayMarks(memory).changedIds.length > 0;
+        },
+    }),
+]);
 
 module.exports = { MIGRATIONS, BOOT_NORMALIZATIONS };

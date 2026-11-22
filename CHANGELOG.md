@@ -25,6 +25,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - A busca aceita mais de uma palavra, em qualquer ordem: "martins joão" acha "João Martins". Na Auditoria, as palavras podem estar em campos diferentes da mesma entrada.
 - As listas saem em ordem alfabética do português: "Ângela" fica junto de "ana" e "Érica" antes de "Zélia", e "Turma 2" vem antes de "Turma 10".
 
+### Feriados e dias sem aula
+- O IClass passa a saber quando não há aula: feriado, ponto facultativo, recesso (vários dias seguidos) e evento da escola, para a instituição inteira, uma escola, um curso ou uma turma. Nesses dias a Chamada abre avisando que não há aula (com "mesmo assim" para lançar a chamada), o Dashboard não cobra a chamada e a próxima aula pula o feriado. (FUN-15)
+- O aluno que entra no sistema num feriado não ganha presença nem falta. A presença automática que já tinha sido registrada num dia que depois vira feriado continua guardada, mas sai da frequência (e volta a contar se o feriado for excluído). A chamada que o professor lança no feriado conta normalmente. (FUN-15)
+- Os feriados nacionais do ano (com Carnaval e Corpus Christi como ponto facultativo) são calculados pelo próprio IClass, sem internet, e entram de uma vez; adicionar de novo não repete nenhum. Cadastrar, alterar e excluir dia sem aula fica na Auditoria. A tela para cadastrar os dias chega com as novas telas do calendário. (FUN-15)
+- Os dias sem aula aparecem no calendário do painel (só para consulta) e no do aluno, marcados como "Sem aula". O servidor já gera o calendário da turma em arquivo `.ics`, para importar no Google Agenda, no Outlook ou no celular (importar de novo atualiza em vez de repetir); o botão para baixar chega com as novas telas do calendário. (FUN-15)
+- No Calendário do painel, excluir um evento pergunta antes na janela do IClass.
+
 ### Confirmações na própria tela
 - As perguntas antes de excluir ou alterar abrem uma janela do próprio IClass, que diz o que vai acontecer, em vez da caixa do navegador. Enquanto a pergunta está aberta, o Monitor continua se atualizando.
 - No Monitor, a mensagem para o aluno ou para a turma, o ajuste de tempo, a versão da prova e a liberação das notas abrem essa janela. No ajuste de tempo, Cancelar não muda nada (antes virava um ajuste de 0 minutos), e o tempo vai de 30 minutos a menos a 120 a mais.
