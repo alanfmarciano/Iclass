@@ -3,8 +3,10 @@
   "version": "3.0.0",
   "description": "IClass V3 — LMS local-first white-label para instituições de ensino. Backend Express + SQLite (regras no servidor) e nova interface React (web/). Roda 100% local.",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=20.19.0",
+    "npm": ">=10"
   },
+  "packageManager": "npm@10.9.9",
   "scripts": {
     "start": "node backend/server.js",
     "start:supervised": "node backend/supervisor.js",

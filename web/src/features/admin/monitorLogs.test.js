@@ -59,3 +59,14 @@ describe('[UC-TENTATIVA-001] Monitor: volta à prova depois de recarregar e erro
     expect(logLabel({ eventType: 'exam_left', details: 'Saiu da prova pela navegação' })).toBe('Saiu da prova pela navegação')
   })
 })
+
+describe('[UC-TENTATIVA-004] Monitor: ações do professor no registro do aluno (AVA-14)', () => {
+  it('recolher, reabrir e ajustar o tempo aparecem com nome em português, sem contar como saída de foco', () => {
+    expect(focusLogLabel({ eventType: 'attempt_collected' })).toBe('Recolhida pelo professor')
+    expect(focusLogLabel({ eventType: 'attempt_reopened' })).toBe('Reaberta pelo professor')
+    expect(focusLogLabel({ eventType: 'time_adjusted', details: '+10 min pelo professor: Laudo de tempo extra' })).toBe('Tempo ajustado (+10 min)')
+    expect(focusLogLabel({ eventType: 'time_adjusted', details: '-5 min pelo professor' })).toBe('Tempo ajustado (-5 min)')
+    expect(focusLogLabel({ eventType: 'time_adjusted' })).toBe('Tempo ajustado pelo professor')
+    for (const type of ['attempt_collected', 'attempt_reopened', 'time_adjusted']) expect(LOG_INFO[type]).toBeUndefined()
+  })
+})

@@ -158,6 +158,46 @@ test('[UC-AUDITORIA-002] aviso, evento do calendário e questão excluídos guar
     assert.equal(question.details.deleted.text, 'Quanto é 2 + 2?');
 });
 
+// Banco de questões (fase 3, P3-S9a): cada rota que muda o banco grava na trilha (contrato
+// auditoria.regra), e salvar sem mudar ou arquivar o que já está arquivado não grava.
+test('[UC-AUDITORIA-002] banco de questões: criar, alterar, arquivar, desarquivar e levar a avaliação ficam na trilha', async () => {
+    const created = await admin(request(app).post('/api/admin/question-bank/create')).send({
+        category: 'Redes', type: 'true_false', text: 'IPv4 tem 32 bits.', correctAnswer: 'A', sourceExamKey: 'Avaliacao_P1',
+    });
+    assert.equal(created.status, 200, created.body.error);
+    const key = created.body.question.key;
+    const create = last('question_created');
+    assert.equal(create.actor, 'admin@cobertura.local');
+    assert.equal(create.examKey, 'Avaliacao_P1');
+    assert.deepEqual(create.details, { key, categoria: 'Redes', tipo: 'true_false' });
+
+    const changed = await admin(request(app).post('/api/admin/question-bank/update')).send({ key, category: 'Sub-redes' });
+    assert.equal(changed.status, 200, changed.body.error);
+    const update = last('question_updated');
+    assert.deepEqual(update.details, { key, revision: 2, tipo: 'true_false', campos: ['category'] });
+    assert.equal((await admin(request(app).post('/api/admin/question-bank/update')).send({ key, category: 'Sub-redes' })).body.unchanged, true);
+    assert.equal(entries('question_updated').length, 1, 'nada mudou: sem entrada nova');
+
+    assert.equal((await admin(request(app).post('/api/admin/question-bank/archive')).send({ key })).status, 200);
+    assert.deepEqual(last('question_archived').details, { key, categoria: 'Sub-redes', texto: 'IPv4 tem 32 bits.' });
+    assert.equal((await admin(request(app).post('/api/admin/question-bank/archive')).send({ key })).body.unchanged, true);
+    assert.equal(entries('question_archived').length, 1);
+    assert.equal((await admin(request(app).post('/api/admin/question-bank/archive')).send({ key, archived: false })).status, 200);
+    assert.equal(last('question_restored').details.key, key);
+
+    const imported = await admin(request(app).post('/api/admin/question-bank/import-evaluation')).send({ examKey: 'Avaliacao_P1', category: 'Prova 1' });
+    assert.equal(imported.status, 200, imported.body.error);
+    assert.equal(imported.body.importedCount, 2);
+    const fromEvaluation = last('question_created');
+    assert.equal(fromEvaluation.examKey, 'Avaliacao_P1');
+    assert.equal(fromEvaluation.details.origem, 'avaliacao');
+    assert.equal(fromEvaluation.details.quantidade, 2);
+    assert.deepEqual(fromEvaluation.details.keys, imported.body.questions.map(question => question.key));
+    // Levar de novo não traz nada e não grava.
+    assert.equal((await admin(request(app).post('/api/admin/question-bank/import-evaluation')).send({ examKey: 'Avaliacao_P1' })).body.importedCount, 0);
+    assert.equal(entries('question_created').length, 2);
+});
+
 test('[UC-AUDITORIA-002] curso arquivado, restaurado do arquivo e apagado de vez ficam na trilha', async () => {
     const purge = await admin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
     assert.equal(purge.status, 200, purge.body.error);

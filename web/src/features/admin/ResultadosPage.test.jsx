@@ -110,6 +110,33 @@ describe('Resultados · lançamento manual de nota', () => {
     expect(body).not.toHaveProperty('score')
   })
 
+  it('[UC-CONFIRMACAO-001] cartão-resposta com questões em branco pergunta no diálogo da tela, sem o confirm do navegador', async () => {
+    const native = vi.spyOn(window, 'confirm').mockImplementation(() => { throw new Error('window.confirm') })
+    try {
+      const user = userEvent.setup()
+      renderPage()
+      const dialog = await openManual(user)
+      await user.click(within(dialog).getByRole('button', { name: 'Cartão-resposta' }))
+      await user.click(within(dialog).getAllByRole('button', { name: 'A' })[0])
+      await user.click(within(dialog).getByRole('button', { name: 'Salvar nota' }))
+      let ask = await screen.findByRole('dialog', { name: 'Lançar com 9 questões em branco?' })
+      expect(ask).toHaveTextContent('As questões sem resposta marcada contam como erradas.')
+      await user.click(within(ask).getByRole('button', { name: 'Voltar ao cartão' }))
+      expect(mocks.post).not.toHaveBeenCalled()
+      await user.click(within(dialog).getByRole('button', { name: 'Salvar nota' }))
+      ask = await screen.findByRole('dialog', { name: 'Lançar com 9 questões em branco?' })
+      await user.click(within(ask).getByRole('button', { name: 'Lançar assim' }))
+      await waitFor(() => expect(mocks.post).toHaveBeenCalledOnce())
+      const [path, body] = mocks.post.mock.calls[0]
+      expect(path).toBe('/api/admin/submissions/create')
+      expect(body).toMatchObject({ studentEmail: 'ana@x.local', examKey: 'Avaliacao_P2', mode: 'card', answers: { 1: 'A' } })
+      expect(body.questionNumbers).toHaveLength(10)
+      expect(native).not.toHaveBeenCalled()
+    } finally {
+      native.mockRestore()
+    }
+  })
+
   it('[UC-NOTAS-001] bloqueia nota fora de 0 a 10 e acertos acima do total, e aceita vírgula', async () => {
     const user = userEvent.setup()
     renderPage()

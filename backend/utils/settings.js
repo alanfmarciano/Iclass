@@ -22,7 +22,10 @@ const DEFAULTS = Object.freeze({
 // um só é gravado pela própria rota, com validação e auditoria (backup do H4, rede do
 // H6 em /api/admin/network-settings, retenção do H8). mergeSettings devolve o bloco
 // gravado como está, inclusive campos que esta versão ainda não conhece.
-const PROTECTED_SETTINGS_SECTIONS = Object.freeze(['backup', 'network', 'retention']);
+// 'install' (fase 3, A1 / P6-S2, contrato C5): a identidade desta instalação, gravada
+// pela migração '2026-11-p6-instalacao'; nenhuma rota a troca e a restauração de um
+// backup a mantém (gancho 'protectedConfig').
+const PROTECTED_SETTINGS_SECTIONS = Object.freeze(['backup', 'network', 'retention', 'install']);
 
 // Painel do professor em outros aparelhos (settings.network.adminAccess, SEG-03):
 // - 'rede-sem-https' (padrão; também quando o campo não existe, como no banco de antes
@@ -192,6 +195,21 @@ function isValidTimeZone(value) {
     return timeZoneChecks.get(value);
 }
 
+// Identidade da instalação (settings.install, fase 3, A1 / P6-S2): { id, criadaEm,
+// licenciadoPara, licencaAceita }. Leitura tolerante: banco de antes da migração (sem a
+// seção) ou valor estranho dá null nos campos. licenciadoPara e a licença
+// ({ versao, aceitaEm, aceitaPor }) são gravados pelo A21b; aqui só são lidos.
+function installSettings(stored = storedSettings()) {
+    const install = stored.install && typeof stored.install === 'object' && !Array.isArray(stored.install) ? stored.install : {};
+    const licenca = install.licenca && typeof install.licenca === 'object' && !Array.isArray(install.licenca) ? install.licenca : null;
+    return {
+        id: typeof install.id === 'string' && install.id.trim() ? install.id.trim() : null,
+        criadaEm: Number.isFinite(install.criadaEm) && install.criadaEm > 0 ? install.criadaEm : null,
+        licenciadoPara: typeof install.licenciadoPara === 'string' && install.licenciadoPara.trim() ? install.licenciadoPara.trim() : null,
+        licencaAceita: !!(licenca && licenca.aceitaEm),
+    };
+}
+
 // Extensão -> categoria (para regra de tipos de upload permitidos).
 function extCategory(ext) {
     ext = String(ext || '').toLowerCase();
@@ -212,6 +230,7 @@ module.exports = {
     mergeSettings,
     networkSettings,
     backupSettings,
+    installSettings,
     BACKUP_KEEP_EXTERNAL_MIN,
     BACKUP_KEEP_EXTERNAL_MAX,
     retentionSettings,

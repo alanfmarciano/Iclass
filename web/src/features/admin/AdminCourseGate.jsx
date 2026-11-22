@@ -13,7 +13,8 @@ import { usePreferences } from '../../context/PreferencesProvider'
 // Telas do ambiente da instituição: abrem sem curso escolhido. Toda tela nova do grupo
 // Instituição ou Gestão acadêmica da Sidebar entra aqui também (senão o item do menu cai
 // no seletor de curso); o teste AdminCourseGate.test confere as duas listas.
-export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria', '/lgpd', '/encerrados']
+// A Ajuda (fase 3, A1) abre com ou sem curso escolhido.
+export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria', '/lgpd', '/encerrados', '/ajuda']
 
 function isDeleted(course) {
   return course?.deleted === true || course?.status === 'deleted' || course?.status === 'inactive' || !!course?.deletedAt

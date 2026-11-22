@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import SistemaPage, { BackupHistory, NETWORK_KEPT_NOTE, maintenanceClassOptions } from './SistemaPage'
 
 const IN_CLASS = { courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }
@@ -74,7 +75,7 @@ describe('SistemaPage · manutenção', () => {
 
   it('[UC-MANUT-001] "Limpar estado de prova" abre a confirmação com o que será apagado e só envia com LIMPAR (UXI-02, OPS-X3)', async () => {
     const user = userEvent.setup()
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Limpar estado de prova' }))
     expect(mocks.post).not.toHaveBeenCalled()
     expect(await screen.findByText(/3 estados de tentativa sem entrega/, {}, SLOW)).toBeVisible()
@@ -93,7 +94,7 @@ describe('SistemaPage · manutenção', () => {
   it('[UC-MANUT-001] limpeza fica travada com prova em andamento na turma', async () => {
     const user = userEvent.setup()
     mocks.get.mockResolvedValue(preview({ blocked: true }))
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Limpar estado de prova' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/Prova Z/)
     expect(screen.getByRole('button', { name: 'Limpar estado' })).toBeDisabled()
@@ -102,7 +103,7 @@ describe('SistemaPage · manutenção', () => {
 
   it('[UC-MANUT-001] "Reiniciar servidor" pede confirmação e avisa das provas em andamento (CONF-10)', async () => {
     const user = userEvent.setup()
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     expect(mocks.post).not.toHaveBeenCalled()
     expect(await screen.findByText(/1 prova em andamento/, {}, SLOW)).toBeVisible()
@@ -116,7 +117,7 @@ describe('SistemaPage · manutenção', () => {
     const data = preview()
     data.restart.activeApplications.push({ id: 'app-9', examKey: 'Avaliacao_Q', examTitle: 'Prova Q', status: 'running', studentClass: '3RED', outsideScope: true })
     mocks.get.mockResolvedValue(data)
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     expect(await screen.findByText(/2 provas em andamento/, {}, SLOW)).toBeVisible()
     expect(screen.getByText(/3RED · Prova Q/)).toHaveTextContent('(turma de outro professor)')
@@ -127,7 +128,7 @@ describe('SistemaPage · manutenção', () => {
 
   it('[UC-MANUT-001] o reinício promete o que o sistema faz: volta sozinho, ninguém entra de novo e o tempo parado volta (H3c e frente do H3, CONF-12, UXA-06)', async () => {
     const user = userEvent.setup()
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     expect(await screen.findByText(/1 prova em andamento/, {}, SLOW)).toBeVisible()
     // Com a frente do H3 o navegador confere a sessão ao ver o servidor novo, em vez de
@@ -143,7 +144,7 @@ describe('SistemaPage · manutenção', () => {
     const user = userEvent.setup()
     let finish
     mocks.restart.waitForServerRestart.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     await screen.findByText(/1 prova em andamento/, {}, SLOW)
     await user.click(screen.getByRole('button', { name: 'Reiniciar agora' }))
@@ -160,7 +161,7 @@ describe('SistemaPage · manutenção', () => {
   it('[UC-MANUT-001] se o servidor não voltar em 90 s, diz para olhar a janela do IClass', async () => {
     const user = userEvent.setup()
     mocks.restart.waitForServerRestart.mockResolvedValue({ ok: false })
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     await screen.findByText(/1 prova em andamento/, {}, SLOW)
     await user.click(screen.getByRole('button', { name: 'Reiniciar agora' }))
@@ -171,7 +172,7 @@ describe('SistemaPage · manutenção', () => {
   it('[UC-MANUT-001] reinício recusado pelo servidor mostra o erro e não fica esperando', async () => {
     const user = userEvent.setup()
     mocks.post.mockRejectedValue(new Error('Reinício indisponível neste modo.'))
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     await user.click(screen.getByRole('button', { name: 'Reiniciar servidor' }))
     await screen.findByText(/1 prova em andamento/, {}, SLOW)
     await user.click(screen.getByRole('button', { name: 'Reiniciar agora' }))
@@ -181,7 +182,7 @@ describe('SistemaPage · manutenção', () => {
 
   it('[UC-MANUT-001] "Resetar sala" nomeia a turma, mostra as provas que serão encerradas e envia a confirmação ao servidor (CONF-X3)', async () => {
     const user = userEvent.setup()
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     expect(screen.getByText(/Só na turma 1DES · Técnico em TI/)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Resetar sala' }))
     expect(await screen.findByText(/Prova W/, {}, SLOW)).toBeVisible()
@@ -197,7 +198,7 @@ describe('SistemaPage · manutenção', () => {
   it('[UC-MANUT-001] no Ambiente da instituição (sem turma ativa) a turma é escolhida no próprio card de Manutenção (UXI-02, OPS-X3, CONF-X3)', async () => {
     const user = userEvent.setup()
     mocks.workspace = INSTITUTION
-    render(<SistemaPage />)
+    render(<SistemaPage />, { wrapper: MemoryRouter })
     const flushButton = screen.getByRole('button', { name: 'Limpar estado de prova' })
     const resetButton = screen.getByRole('button', { name: 'Resetar sala' })
     expect(flushButton).toBeDisabled()
@@ -239,7 +240,7 @@ describe('SistemaPage · manutenção', () => {
       { id: 't2', name: 'rascunho.txt', originalName: '', originalRel: 'uploads/rascunho.txt', isDir: false, deletedAt: Date.now(), size: 4 },
     ]
     try {
-      render(<SistemaPage />)
+      render(<SistemaPage />, { wrapper: MemoryRouter })
       expect(screen.getByText('Apostila de Redes')).toBeInTheDocument()
       expect(screen.queryByText('1700000000000-123456789.pdf')).not.toBeInTheDocument()
       expect(screen.getByText('rascunho.txt')).toBeInTheDocument()
@@ -247,6 +248,39 @@ describe('SistemaPage · manutenção', () => {
       delete mocks.apiData['/api/admin/trash']
     }
   })
+
+  it('[UC-CONFIRMACAO-001] lixeira: excluir de vez e esvaziar pedem confirmação no ConfirmDialog, sem a caixa do navegador', async () => {
+    const user = userEvent.setup()
+    const nativeConfirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocks.apiData['/api/admin/trash'] = [
+      { id: 't1', name: 'a.pdf', originalName: 'Apostila de Redes', originalRel: 'uploads/a.pdf', isDir: false, deletedAt: Date.now(), size: 8 },
+    ]
+    mocks.post.mockResolvedValue({ success: true, removed: 1 })
+    try {
+      render(<SistemaPage />, { wrapper: MemoryRouter })
+      await user.click(screen.getByRole('button', { name: 'Excluir' }))
+      let dialog = await screen.findByRole('dialog', { name: 'Excluir definitivamente?' })
+      expect(within(dialog).getByText(/"Apostila de Redes" será apagado definitivamente/)).toBeVisible()
+      expect(mocks.post).not.toHaveBeenCalled()
+      await user.click(within(dialog).getByRole('button', { name: 'Cancelar' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(mocks.post).not.toHaveBeenCalled()
+
+      await user.click(screen.getByRole('button', { name: 'Excluir' }))
+      dialog = await screen.findByRole('dialog', { name: 'Excluir definitivamente?' })
+      await user.click(within(dialog).getByRole('button', { name: 'Excluir' }))
+      await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/trash/delete', { id: 't1' }))
+
+      await user.click(screen.getByRole('button', { name: 'Esvaziar' }))
+      dialog = await screen.findByRole('dialog', { name: 'Esvaziar a lixeira?' })
+      await user.click(within(dialog).getByRole('button', { name: 'Esvaziar' }))
+      await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/trash/empty', {}))
+      expect(nativeConfirm).not.toHaveBeenCalled()
+    } finally {
+      nativeConfirm.mockRestore()
+      delete mocks.apiData['/api/admin/trash']
+    }
+  }, CASE_MS)
 })
 
 describe('Sistema · histórico de backup', () => {
@@ -331,7 +365,7 @@ describe('Sistema · restaurar backup (prévia com token, H4a)', () => {
     const calls = (url) => mocks.post.mock.calls.filter(([called]) => called === url)
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
-    const { container } = render(<SistemaPage />)
+    const { container } = render(<SistemaPage />, { wrapper: MemoryRouter })
     const dialog = await openPreview(user, container, 'backup-antigo.json')
 
     // A prévia vai pelo cliente da API com o arquivo; nada foi restaurado ainda.
@@ -381,7 +415,7 @@ describe('Sistema · restaurar backup (prévia com token, H4a)', () => {
       }))
       : Promise.resolve({ success: true, accountsNotRestored: 0, replaceAccounts: true, networkKept: true })))
     const user = userEvent.setup()
-    const { container } = render(<SistemaPage />)
+    const { container } = render(<SistemaPage />, { wrapper: MemoryRouter })
     const dialog = await openPreview(user, container, 'iclass-backup-completo.zip')
     expect(dialog).toHaveAccessibleDescription(/no computador SALA-01 · ZIP \(formato 2\) · completo/)
     expect(within(dialog).getByRole('note', { name: 'Provas em andamento' })).toHaveTextContent('Há 1 prova em andamento agora.')
@@ -402,7 +436,7 @@ describe('Sistema · restaurar backup (prévia com token, H4a)', () => {
       ? Promise.reject(Object.assign(new Error('Backup inválido: aluno sem e-mail na posição 3 (students).'), { status: 400 }))
       : Promise.resolve({ success: true })))
     const user = userEvent.setup()
-    const { container } = render(<SistemaPage />)
+    const { container } = render(<SistemaPage />, { wrapper: MemoryRouter })
     // A linha de que a rede continua a de hoje fica junto do aviso do que a restauração substitui.
     expect(screen.getByText(NETWORK_KEPT_NOTE)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Conferir backup' })).toBeDisabled()
@@ -419,7 +453,7 @@ describe('Sistema · restaurar backup (prévia com token, H4a)', () => {
       ? Promise.resolve(restorePreview())
       : Promise.reject(Object.assign(new Error(expired), { status: 400 }))))
     const user = userEvent.setup()
-    const { container } = render(<SistemaPage />)
+    const { container } = render(<SistemaPage />, { wrapper: MemoryRouter })
     const dialog = await openPreview(user, container)
     await user.type(within(dialog).getByLabelText('Digite RESTAURAR para confirmar'), 'RESTAURAR')
     await user.click(within(dialog).getByRole('button', { name: 'Restaurar' }))
@@ -438,7 +472,7 @@ describe('Sistema · restaurar backup (prévia com token, H4a)', () => {
       return Promise.resolve({ success: true })
     })
     const user = userEvent.setup()
-    const { container } = render(<SistemaPage />)
+    const { container } = render(<SistemaPage />, { wrapper: MemoryRouter })
     // Os dois downloads são o ZIP formato 2 (com o histórico de digitação); baixar pede a
     // senha do administrador de novo (H4b, SEG-15) e o bilhete vai no ?ticket=.
     const downloadWithPassword = async (button) => {

@@ -17,16 +17,31 @@ function sourceLabel(item) {
   if (late > 0) return `Enviada após o prazo (${formatLateness(late)})`
   if (source === 'timer_auto_submit') return 'Enviada automaticamente no fim do tempo'
   if (source === 'instructor_finish') return 'Salva pelo professor ao encerrar'
+  if (source === 'instructor_collect') return 'Recolhida pelo professor com as respostas salvas'
   return ''
 }
 
-// Tentativa reaberta pelo "+N min" da turma depois da entrega do fim do tempo: a entrega
-// mostra que houve reabertura (e quantas vezes). Quando o professor desconsiderou as
-// tentativas em andamento ao encerrar, vale a entrega do fim do tempo que o aluno já tinha.
+// Tentativa reaberta pelo "+N min" da turma depois da entrega do fim do tempo, ou pelo
+// professor no Monitor (P3-S8: reopenedByInstructor na linha do Monitor, byInstructor na
+// última reabertura da entrega): a entrega mostra que houve reabertura (e quantas vezes).
+// Quando o professor desconsiderou as tentativas em andamento ao encerrar, vale a entrega
+// que o aluno já tinha.
+export function reopenedByInstructor(item) {
+  if (item?.reopenedByInstructor === true) return true
+  const list = Array.isArray(item?.reopenedFrom) ? item.reopenedFrom : []
+  return list.length > 0 && list[list.length - 1]?.byInstructor === true
+}
+
 function reopenLabel(item) {
-  if (item?.restoredAfterDiscard) return 'Reaberta com o tempo extra da turma e desconsiderada no encerramento: vale a entrega do fim do tempo'
+  const byInstructor = reopenedByInstructor(item) || item?.restoredAfterDiscard?.byInstructor === true
+  if (item?.restoredAfterDiscard) {
+    return byInstructor
+      ? 'Reaberta pelo professor e desconsiderada no encerramento: vale a entrega anterior'
+      : 'Reaberta com o tempo extra da turma e desconsiderada no encerramento: vale a entrega do fim do tempo'
+  }
   if (!item?.reopenedAt) return ''
   const times = Array.isArray(item.reopenedFrom) ? item.reopenedFrom.length : 0
+  if (byInstructor) return times > 1 ? `Reaberta ${times} vezes (a última pelo professor)` : 'Reaberta pelo professor'
   return times > 1 ? `Reaberta ${times} vezes com o tempo extra da turma` : 'Reaberta com o tempo extra da turma'
 }
 

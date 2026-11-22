@@ -20,6 +20,7 @@ const {
     findOpenAttemptState,
 } = require('../utils/examApplications.js');
 const { attemptContextForStudent, newAttemptGate } = require('../utils/studentAttemptContext.js');
+const { notParticipantResponse, startDeadlineResponse } = require('../utils/examParticipants.js');
 const { SERVER_FINALIZE_DELAY_MS, attemptOverdueMs, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
@@ -718,9 +719,11 @@ router.post('/api/student/validate-exam-token', validateStudentSession, PROCTORI
                 // Sem tentativa aberta, a nova só nasce quando o aluno pode começar (as
                 // mesmas regras do sync); senão nada é gravado.
                 const gate = newAttemptGate(application, { studentEmail: normalizedEmail, onlineConfig: cfg, courseId: cls.courseId });
+                if (gate.notParticipant) return res.status(403).json(notParticipantResponse(application));
                 if (!gate.applicationActive) {
                     return res.status(409).json({ error: 'A prova ainda não começou. Aguarde o professor iniciar a aplicação.', notStarted: true });
                 }
+                if (gate.startDeadlinePassedAt) return res.status(409).json(startDeadlineResponse(gate.startDeadlinePassedAt));
                 if (gate.attemptsExhausted) {
                     return res.status(403).json({
                         error: 'Limite de tentativas atingido.',

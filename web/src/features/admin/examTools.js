@@ -1,7 +1,20 @@
+import { printDocumentHtml as schoolDocumentHtml, trustedHtml } from '../../lib/printDocument'
 import { compareText } from '../../lib/textSearch'
+import { questionMarkdownHtml } from '../exam/QuestionMarkdown'
+import { answerSummary, formatPointsLabel, questionTypeLabel } from './questionEditorModel'
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
 export const VERSION_LABELS = LETTERS.slice(0, 10)
+// Versões online: o servidor guarda no máximo 4 (A a D, VERSION_LABELS de
+// adminExamConfig.js); a tela diz o limite em vez de cortar sem avisar (AVA-16).
+export const ONLINE_VERSIONS_MAX = 4
+const QUESTION_TYPES = ['multiple_choice', 'multiple_answer', 'true_false', 'numeric', 'short_answer', 'essay']
+const CHOICE_TYPES = new Set(['multiple_choice', 'multiple_answer', 'true_false'])
+
+function typeOf(question) {
+  const type = typeof question?.type === 'string' ? question.type.trim() : ''
+  return QUESTION_TYPES.includes(type) ? type : 'multiple_choice'
+}
 
 function seededRandom(seed) {
   const text = String(seed)
@@ -77,8 +90,10 @@ export function getQuestionUsageMap(history = []) {
   }, {})
 }
 
+// Verdadeiro ou falso nunca embaralha (Verdadeiro sempre antes de Falso).
 function withDisplayLetters(question, shuffleAnswers, random = Math.random) {
-  const alternatives = shuffleAnswers ? shuffle(question.alternatives || [], random) : [...(question.alternatives || [])]
+  const keepOrder = typeOf(question) === 'true_false'
+  const alternatives = shuffleAnswers && !keepOrder ? shuffle(question.alternatives || [], random) : [...(question.alternatives || [])]
   return {
     ...question,
     alternatives: alternatives.map((alt, index) => ({
@@ -88,9 +103,27 @@ function withDisplayLetters(question, shuffleAnswers, random = Math.random) {
   }
 }
 
+// Letra(s) da versão: 'B' ou, em várias corretas, 'AC' (como o servidor grava na correção
+// ao vivo). Questão sem alternativas (numérica, resposta curta, dissertativa) não tem letra.
 function getDisplayAnswer(question) {
+  const type = typeOf(question)
+  if (!CHOICE_TYPES.has(type)) return ''
+  if (type === 'multiple_answer') {
+    return question.alternatives.filter((alt) => alt.isCorrect).map((alt) => String(alt.displayLetter || alt.letter || '').toUpperCase()).join('')
+  }
   const correct = question.alternatives.find((alt) => alt.isCorrect || alt.letter === question.correctAnswer)
   return String(correct?.displayLetter || correct?.letter || question.correctAnswer || '').toUpperCase()
+}
+
+// Campos que vão com a questão da versão: o tipo e os pontos (prévia e impressão) e o
+// gabarito dos tipos novos (gabarito impresso). Quem corrige é o servidor, que troca
+// esses campos pelos da avaliação ao registrar (freezeSnapshotGrading).
+const VERSION_QUESTION_FIELDS = ['type', 'points', 'partialCredit', 'numeric', 'acceptedAnswers', 'review', 'expectedAnswer', 'rubric']
+function versionQuestionFields(question) {
+  return VERSION_QUESTION_FIELDS.reduce((fields, field) => {
+    if (question[field] !== undefined && question[field] !== null) fields[field] = question[field]
+    return fields
+  }, {})
 }
 
 export function buildExamVersions(evaluation, options = {}) {
@@ -109,6 +142,7 @@ export function buildExamVersions(evaluation, options = {}) {
     const questions = ordered.map((question, index) => {
       const q = withDisplayLetters(question, options.shuffleAnswers, randomFor(`answers:${versionIndex}:${question.originalNumber}`))
       return {
+        ...versionQuestionFields(q),
         originalNumber: q.originalNumber,
         examNumber: index + 1,
         text: q.text,
@@ -119,7 +153,8 @@ export function buildExamVersions(evaluation, options = {}) {
     })
     const answerKey = {}
     questions.forEach((question, index) => {
-      answerKey[index + 1] = getDisplayAnswer(question)
+      const letters = getDisplayAnswer(question)
+      if (letters) answerKey[index + 1] = letters
     })
     return {
       version,
@@ -184,50 +219,171 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;')
 }
 
-function printDocumentHtml({ title, snapshots, answerKey, includeAnswerKey = false }) {
-  const date = new Date().toLocaleDateString('pt-BR')
-  const renderPages = (answerKey) => snapshots.map((snapshot, versionIndex) => {
-    const code = snapshot.examCode || snapshot.version || VERSION_LABELS[versionIndex]
-    const count = snapshot.count || snapshot.questions.length
-    const bubbleRows = answerKey
-      ? snapshot.questions.slice(0, count).map((_, index) => {
-        const correct = snapshot.answerKey?.[index + 1]
-        return `<div class="bubble-row"><b>${index + 1}.</b>${LETTERS.slice(0, 5).map((letter) => `<span class="bubble ${correct === letter ? 'filled' : ''}">${letter}</span>`).join('')}</div>`
-      }).join('')
-      : Array.from({ length: count }).map((_, index) => `<div class="bubble-row"><b>${index + 1}.</b>${LETTERS.slice(0, 5).map((letter) => `<span class="bubble">${letter}</span>`).join('')}</div>`).join('')
-    const questionsHtml = answerKey
-      ? `<h2>Gabarito detalhado</h2>${snapshot.questions.slice(0, count).map((q, index) => `<p><b>${index + 1}. ${escapeHtml(snapshot.answerKey?.[index + 1] || '-')}</b> - ${escapeHtml(q.text)}</p>`).join('')}`
-      : snapshot.questions.slice(0, count).map((q, index) => `<div class="question"><p><b>${index + 1}.</b> ${escapeHtml(q.text)}</p>${(q.alternatives || []).map((alt) => `<p class="alt">${escapeHtml((alt.displayLetter || alt.letter || '').toLowerCase())}) ${escapeHtml(alt.text)}</p>`).join('')}</div>`).join('')
-
-    return `<section class="page">
-      <header><strong>${answerKey ? 'GABARITO DO PROFESSOR' : 'AVALIAÇÃO'}</strong><span>Código ${escapeHtml(code)} - ${date}</span></header>
-      ${answerKey ? '' : '<div class="student"><span>Nome:</span><span>Turma:</span><span>Data:</span><span>Nota:</span></div>'}
-      <div class="meta">${escapeHtml(title)} - Versão ${escapeHtml(snapshot.version || VERSION_LABELS[versionIndex])} - ${count} questões</div>
-      <div class="sheet"><b>${answerKey ? 'Gabarito rápido' : 'Cartão-resposta'}</b><div class="sheet-grid">${bubbleRows}</div></div>
-      ${questionsHtml}
-    </section>`
-  }).join('')
-  const pages = includeAnswerKey
-    ? `${renderPages(false)}${renderPages(true)}`
-    : renderPages(answerKey)
-
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-    *{box-sizing:border-box} body{font-family:Arial,sans-serif;color:#182033;margin:0;background:white}
-    .page{min-height:98vh;padding:0 38px 28px;page-break-after:always}.page:last-child{page-break-after:auto}
-    header{display:flex;justify-content:space-between;align-items:center;background:#182033;color:white;margin:0 -38px 18px;padding:22px 38px}
-    header strong{font-size:18px} header span{font-size:12px;color:#d7e3ff}.meta{background:#eef3ff;border-left:5px solid #2563eb;padding:10px 12px;margin-bottom:14px;font-weight:700}
-    .student{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:16px;border:2px solid #182033;padding:14px;margin-bottom:14px}.student span{border-bottom:1px solid #182033;padding-bottom:14px}
-    .sheet{border:2px solid #182033;background:#f8faff;padding:12px;margin-bottom:18px;page-break-inside:avoid}.sheet>b{display:block;text-align:center;margin-bottom:8px}.sheet-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px 14px}
-    .bubble-row{display:flex;gap:5px;align-items:center;font-family:monospace;font-size:11px}.bubble-row b{width:24px;text-align:right}.bubble{width:16px;height:16px;border:1px solid #182033;border-radius:50%;display:inline-grid;place-items:center;font-size:9px}.bubble.filled{background:#182033!important;color:white!important}
-    .question{margin:0 0 16px;page-break-inside:avoid}.question p{margin:5px 0}.alt{padding-left:18px}
-    h2{font-size:16px;margin:14px 0 8px}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.page{page-break-after:always}.page:last-child{page-break-after:auto}}
-  </style></head><body>${pages}</body></html>`
+// Markdown da questão no papel (contrato C4 do P3: pelo QuestionMarkdown). A imagem sai
+// sem 'loading="lazy"': na janela de impressão, a imagem fora da tela não carregaria a
+// tempo da caixa de impressão.
+function printMarkdown(text, options = {}) {
+  return questionMarkdownHtml(String(text ?? ''), { links: false, zoom: false, ...options }).replace(/\sloading="lazy"/g, '')
 }
 
-export function openPrintWindow({ title, snapshots, answerKey = false, includeAnswerKey = false }) {
+function questionPointsValue(question) {
+  const value = Number(question?.points)
+  return Number.isFinite(value) && value > 0 ? value : 1
+}
+
+// Linhas para a resposta escrita no papel: dissertativa com 12, resposta curta com 2.
+function answerLines(count) {
+  return `<div class="answer-lines">${Array.from({ length: count }).map(() => '<div class="line"></div>').join('')}</div>`
+}
+
+// Letras do cartão-resposta de uma questão de escolha (V e F no verdadeiro ou falso).
+// Prova de antes (só "Uma correta", 1 ponto cada: legacy) sai como sempre saiu, de A a E
+// em toda questão (de A até a última letra quando há mais de 5 alternativas); prova com
+// tipos novos ou pontos tem só as letras de cada questão.
+function bubbleLetters(question, legacy = false) {
+  if (typeOf(question) === 'true_false') return [{ label: 'V', letter: 'A' }, { label: 'F', letter: 'B' }]
+  const alternatives = (question.alternatives || []).length
+  const count = legacy
+    ? Math.max(5, Math.min(8, alternatives))
+    : Math.max(2, Math.min(8, alternatives || 5))
+  return LETTERS.slice(0, count).map((letter) => ({ label: letter, letter }))
+}
+
+// Letras certas na versão (as de exibição), para pintar o gabarito rápido.
+function correctDisplayLetters(question, keyValue) {
+  if (typeOf(question) === 'true_false') {
+    const correct = (question.alternatives || []).find((alt) => alt.isCorrect)
+    const original = String(correct?.letter || question.correctAnswer || '').toUpperCase()
+    return new Set(original ? [original] : [])
+  }
+  return new Set(String(keyValue || '').toUpperCase().split('').filter(Boolean))
+}
+
+function questionBodyHtml(question) {
+  const type = typeOf(question)
+  // A resposta vai só no cartão-resposta (V ou F), como a letra das outras questões de
+  // escolha: nada de "( ) Verdadeiro ( ) Falso" aqui, para o aluno não responder em dois
+  // lugares.
+  if (type === 'true_false') return '<p class="tf">Verdadeiro ou falso? Marque <b>V</b> ou <b>F</b> no cartão-resposta.</p>'
+  if (type === 'multiple_choice' || type === 'multiple_answer') {
+    return (question.alternatives || []).map((alt) => `<div class="alt"><span class="alt-letter">${escapeHtml((alt.displayLetter || alt.letter || '').toLowerCase())})</span><div class="md">${printMarkdown(alt.text, { choice: true })}</div></div>`).join('')
+  }
+  if (type === 'numeric') {
+    const unit = question.numeric?.unit ? ` ${escapeHtml(question.numeric.unit)}` : ''
+    return `<p class="answer-inline">Resposta: <span class="blank"></span>${unit}</p>`
+  }
+  if (type === 'short_answer') return `<p class="answer-label">Resposta:</p>${answerLines(2)}`
+  return `<p class="answer-label">Resposta:</p>${answerLines(12)}`
+}
+
+function rubricHtml(question) {
+  const rubric = Array.isArray(question.rubric) ? question.rubric : []
+  if (!rubric.length) return ''
+  return `<ul class="rubric">${rubric.map((criterion) => `<li>${escapeHtml(criterion.nome || criterion.name || '')}: ${escapeHtml(formatPointsLabel(criterion.pontos ?? criterion.points ?? 0))}</li>`).join('')}</ul>`
+}
+
+// Resposta certa no gabarito detalhado: letras da versão, Verdadeiro ou Falso, o número
+// com a tolerância, as respostas aceitas ou "Dissertativa" com a resposta esperada e a
+// rubrica.
+// Na prova de antes (legacy) o item é só a letra e o enunciado, como sempre foi; o tipo e
+// os pontos só aparecem quando a prova tem tipos novos ou pontos diferentes de 1.
+function answerKeyItemHtml(question, index, keyValue, showPoints) {
+  const type = typeOf(question)
+  const key = CHOICE_TYPES.has(type) && type !== 'true_false'
+    ? (type === 'multiple_answer' ? String(keyValue || '').split('').join(', ') : String(keyValue || '-'))
+    : (type === 'essay' ? 'Dissertativa: correção pelo professor' : answerSummary(question) || '-')
+  const meta = showPoints ? `${questionTypeLabel(type)} · ${formatPointsLabel(questionPointsValue(question))}` : ''
+  const expected = type === 'essay' && question.expectedAnswer
+    ? `<p class="expected"><b>Resposta esperada:</b> ${escapeHtml(question.expectedAnswer)}</p>`
+    : ''
+  return `<div class="key-item"><p><b>${index + 1}. ${escapeHtml(key)}</b>${meta ? ` <span class="kmeta">(${escapeHtml(meta)})</span>` : ''}</p><div class="md small">${printMarkdown(question.text)}</div>${expected}${type === 'essay' ? rubricHtml(question) : ''}</div>`
+}
+
+// CSS da prova dentro do documento da escola (web/src/lib/printDocument.js): o
+// cabeçalho, o rodapé e o @page são de lá; aqui ficam a caixa do aluno, o cartão-resposta,
+// as questões e o Markdown. As regras gerais do documento (p com quebra de linha, tabela
+// larga com cabeçalho escuro) não valem dentro do Markdown da questão.
+const EXAM_CSS = `
+    .exam{color:#182033}
+    .meta{background:#eef3ff;border-left:5px solid #2563eb;padding:10px 12px;margin-bottom:14px;font-weight:700;white-space:normal}
+    .student{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:16px;border:2px solid #182033;padding:14px;margin-bottom:14px}.student span{border-bottom:1px solid #182033;padding-bottom:14px}
+    .sheet{border:2px solid #182033;background:#f8faff;padding:12px;margin-bottom:18px;page-break-inside:avoid;break-inside:avoid}.sheet>b{display:block;text-align:center;margin-bottom:8px}.sheet-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px 14px}.sheet-grid.wide{grid-template-columns:repeat(3,1fr)}
+    .bubble-row{display:flex;gap:4px;align-items:center;font-family:monospace;font-size:11px}.bubble-row b{width:24px;text-align:right}.bubble{width:16px;height:16px;border:1px solid #182033;border-radius:50%;display:inline-grid;place-items:center;font-size:9px}.bubble.filled{background:#182033!important;color:white!important}.bubble-row .write{font-family:Arial,sans-serif;font-size:10px;color:#596273}
+    .question{margin:0 0 16px;page-break-inside:avoid;break-inside:avoid}.question.essay{page-break-inside:auto;break-inside:auto}.question p{margin:5px 0}.qhead{margin:0 0 2px}.pts{font-size:12px;color:#596273}.hint{font-size:12px;font-style:italic;color:#596273}
+    .alt{display:flex;gap:6px;align-items:flex-start;padding-left:18px;margin:4px 0}.alt-letter{flex:0 0 auto}.alt .md{flex:1 1 auto;min-width:0}
+    .md{line-height:1.45;overflow-wrap:anywhere}.md p{margin:4px 0;white-space:normal}.md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}.md img{max-width:100%;height:auto}.md pre{white-space:pre-wrap;background:#f3f5f9;border:1px solid #d7dbe3;padding:6px 8px;font-size:12px}.md code{font-family:monospace}
+    .md table{border-collapse:collapse;width:auto;margin:6px 0;font-size:12px}.md th,.md td{border:1px solid #8a93a6;padding:3px 6px;text-align:left;vertical-align:top}.md thead th{background:#eef1f6;color:#182033;font-size:12px;text-transform:none;letter-spacing:normal}.md.small{font-size:12px;color:#40495a}
+    .tf{padding-left:18px}.answer-inline{padding-left:18px}.answer-inline .blank{display:inline-block;width:180px;border-bottom:1px solid #182033;margin:0 4px}
+    .answer-label{margin:8px 0 0;font-size:12px;color:#596273}.answer-lines .line{border-bottom:1px solid #8a93a6;height:28px}
+    .key-item{margin:0 0 12px;page-break-inside:avoid;break-inside:avoid}.key-item p{margin:3px 0}.key-item .kmeta{font-weight:400;font-size:12px;color:#596273}.expected{font-size:12px}.rubric{margin:2px 0 0;padding-left:20px;font-size:12px}
+    .exam h2.key-title{font-size:16px;text-transform:none;letter-spacing:normal;margin:14px 0 8px}
+`
+
+// Prova impressa (e gabarito do professor) pelo documento da escola (contrato
+// printDocument: cabeçalho da escola, rodapé "Gerado por <nome> em <data>", @page e
+// escape). Uma folha por versão; com includeAnswerKey, as folhas do gabarito vêm depois.
+// escola/displayName/fuso vêm da identidade da escola (schoolFromBranding na ProvasPage).
+function examDocumentHtml({ title, snapshots, answerKey, includeAnswerKey = false, escola, displayName, fuso, geradoEm }) {
+  const date = new Date(geradoEm ?? Date.now()).toLocaleDateString('pt-BR', fuso ? { timeZone: fuso } : undefined)
+  const sheetsFor = (answerKey) => snapshots.map((snapshot, versionIndex) => {
+    const code = snapshot.examCode || snapshot.version || VERSION_LABELS[versionIndex]
+    const count = snapshot.count || snapshot.questions.length
+    const questions = snapshot.questions.slice(0, count)
+    // Pontos de cada questão só aparecem quando a prova tem pontos diferentes de 1 ou
+    // tipos novos (a prova de antes sai como sempre saiu).
+    const showPoints = questions.some((q) => questionPointsValue(q) !== 1 || typeOf(q) !== 'multiple_choice')
+    const legacy = !showPoints
+    const totalPoints = Math.round(questions.reduce((sum, q) => sum + questionPointsValue(q), 0) * 100) / 100
+    // Cartão-resposta só com as questões de escolha; a resposta escrita vai na questão.
+    const hasChoice = questions.some((q) => CHOICE_TYPES.has(typeOf(q)))
+    // Até 5 letras por questão, 5 colunas (como sempre); com 6 a 8 alternativas, 3.
+    const wideRows = questions.some((q) => CHOICE_TYPES.has(typeOf(q)) && bubbleLetters(q, legacy).length > 5)
+    const bubbleRows = questions.map((q, index) => {
+      if (!CHOICE_TYPES.has(typeOf(q))) return `<div class="bubble-row"><b>${index + 1}.</b><span class="write">resposta escrita</span></div>`
+      const filled = answerKey ? correctDisplayLetters(q, snapshot.answerKey?.[index + 1]) : new Set()
+      return `<div class="bubble-row"><b>${index + 1}.</b>${bubbleLetters(q, legacy).map(({ label, letter }) => `<span class="bubble ${filled.has(letter) ? 'filled' : ''}">${label}</span>`).join('')}</div>`
+    }).join('')
+    const questionsHtml = answerKey
+      ? `<h2 class="key-title">Gabarito detalhado</h2>${questions.map((q, index) => answerKeyItemHtml(q, index, snapshot.answerKey?.[index + 1], showPoints)).join('')}`
+      : questions.map((q, index) => {
+        const type = typeOf(q)
+        const points = showPoints ? ` <span class="pts">(${escapeHtml(formatPointsLabel(questionPointsValue(q)))})</span>` : ''
+        const hint = type === 'multiple_answer' ? ' <span class="hint">Marque todas as corretas.</span>' : ''
+        return `<div class="question ${type === 'essay' ? 'essay' : ''}"><div class="qhead"><b>${index + 1}.</b>${points}${hint}</div><div class="md">${printMarkdown(q.text)}</div>${questionBodyHtml(q)}</div>`
+      }).join('')
+    const meta = `${escapeHtml(title)} - Versão ${escapeHtml(snapshot.version || VERSION_LABELS[versionIndex])} - ${count} questões${showPoints ? ` - ${escapeHtml(formatPointsLabel(totalPoints))}` : ''}`
+    const body = `<div class="exam">
+      ${answerKey ? '' : '<div class="student"><span>Nome:</span><span>Turma:</span><span>Data:</span><span>Nota:</span></div>'}
+      <div class="meta">${meta}</div>
+      ${hasChoice ? `<div class="sheet"><b>${answerKey ? 'Gabarito rápido' : 'Cartão-resposta'}</b><div class="sheet-grid${wideRows ? ' wide' : ''}">${bubbleRows}</div></div>` : ''}
+      ${questionsHtml}
+    </div>`
+    return {
+      titulo: answerKey ? 'GABARITO DO PROFESSOR' : 'AVALIAÇÃO',
+      subtitulo: `Código ${code} - ${date}`,
+      secoes: [trustedHtml(body)],
+    }
+  })
+  const folhas = includeAnswerKey ? [...sheetsFor(false), ...sheetsFor(true)] : sheetsFor(answerKey)
+  return schoolDocumentHtml({
+    titulo: title,
+    escola,
+    displayName,
+    fuso,
+    geradoEm,
+    rodapeEsquerda: title,
+    folhas,
+    estilo: trustedHtml(EXAM_CSS),
+  })
+}
+
+// O HTML da impressão sem abrir janela (testes e openPrintWindow).
+export const examPrintHtml = examDocumentHtml
+
+export function openPrintWindow({ title, snapshots, answerKey = false, includeAnswerKey = false, escola, displayName, fuso }) {
   const win = window.open('', '_blank')
   if (!win) return false
-  win.document.write(printDocumentHtml({ title, snapshots, answerKey, includeAnswerKey }))
+  win.document.write(examDocumentHtml({ title, snapshots, answerKey, includeAnswerKey, escola, displayName, fuso }))
   win.document.close()
   win.onload = () => setTimeout(() => win.print(), 300)
   return true

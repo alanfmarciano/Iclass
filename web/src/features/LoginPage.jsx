@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { ArrowRight, BookOpen, CheckCircle2, ChevronDown, ExternalLink, GraduationCap, KeyRound, Layers3, LogIn, MonitorX, RefreshCw, ShieldCheck, Sparkles, User, UserPlus, Wifi } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
@@ -455,6 +455,10 @@ export default function LoginPage() {
             )}
         </div>
           <p className="mt-5 flex items-center justify-center gap-2 text-center text-xs text-subtle"><ShieldCheck size={13} /> Ambiente protegido · acesso pela rede da instituição</p>
+          {/* Ajuda do aluno (fase 3, A1, OPS-13): abre sem login. */}
+          <p className="mt-3 text-center text-sm">
+            <Link to="/ajuda/aluno" className="font-medium text-text underline" data-testid="login-help-link">Problemas para entrar?</Link>
+          </p>
           <p className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-center text-xs text-muted" data-testid="login-legal-links">
             <LegalLink path="/termos" courseId={isRegister ? courseValue : ''}>Termos de Uso</LegalLink>
             <span aria-hidden="true">·</span>

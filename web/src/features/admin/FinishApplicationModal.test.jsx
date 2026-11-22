@@ -62,6 +62,6 @@ describe('FinishApplicationModal', () => {
       onDiscard={() => {}}
     />)
     expect(screen.getByText('Entregas já concluídas permanecem preservadas.', { exact: false })).toBeVisible()
-    expect(screen.getByRole('note')).toHaveTextContent('1 dessas tentativas foi reaberta com o tempo extra da turma depois da entrega do fim do tempo: ao desconsiderar, vale a entrega que o aluno já tinha.')
+    expect(screen.getByRole('note')).toHaveTextContent('1 dessas tentativas foi reaberta depois da entrega (pelo tempo extra da turma ou pelo professor): ao desconsiderar, vale a entrega que o aluno já tinha.')
   })
 })

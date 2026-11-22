@@ -4,6 +4,14 @@
     {
       "id": "2026-11-p6-base",
       "hash": "22a0fb3ddfdf061c39e812355b21daf1adb63c76f005b9595193ca952848bcd3"
+    },
+    {
+      "id": "2026-11-p6-instalacao",
+      "hash": "1742ddd1f9d47bbf3a6775c6f57589f690b3f180c79c92c50eddd95c2e9c5932"
+    },
+    {
+      "id": "2026-11-p3-token-historico",
+      "hash": "b9e8db04879aa4e37023abf3ce8614d5427af768de55e3f6c6e6a5f6d3f10ea3"
     }
   ]
 }

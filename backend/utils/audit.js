@@ -231,6 +231,8 @@ const ACTION_LABELS = Object.freeze({
     question_created: 'Questão criada no banco de questões',
     question_updated: 'Questão do banco alterada',
     question_archived: 'Questão do banco arquivada',
+    // Desarquivar a questão do banco (P3-S9a): volta para a lista padrão.
+    question_restored: 'Questão do banco desarquivada',
     question_bank_imported: 'Questões importadas para o banco',
     question_bank_exported: 'Banco de questões exportado',
     // Provas: gabarito depois da prova, ações no Monitor, participantes, agendamento e
@@ -412,9 +414,11 @@ const REASON_MAX_LENGTH = 500;
 // O hash também sai: o token da prova tem 5 letras e o accessTokenHash é sha256 sem
 // sal, que volta ao token por tentativa em segundos. Valor booleano fica
 // (mustChangePassword: true não é segredo; só diz que a senha precisa ser trocada).
-// O vazio (null) também sai: a trilha nem mostra que o campo existe.
+// O vazio (null) também sai: a trilha nem mostra que o campo existe. O token selado da
+// prova (accessTokenSealed, fase 3, P3-S8) também: é o token, cifrado com o segredo deste
+// computador.
 const SECRET_KEYS = new Set(['password', 'passwordhash', 'hash', 'salt', 'token', 'sessiontoken', 'accesstoken', 'adminsessiontoken', 'secret', 'senha']);
-const SECRET_SUFFIXES = /(password|senha|token|secret|hash|salt)$/;
+const SECRET_SUFFIXES = /(password|senha|token|secret|hash|salt|sealed)$/;
 
 function isSecretKey(key, value) {
     if (typeof value === 'boolean') return false;

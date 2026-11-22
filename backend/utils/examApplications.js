@@ -1,6 +1,19 @@
 const crypto = require('crypto');
 const { normalizeMaxAttempts } = require('./examAttempts.js');
 const { keystrokeModeOf } = require('./keystrokePolicy.js');
+// Para quem é a aplicação (finalidade, participants, studentOverrides) e o limite de
+// tentativas de cada aluno (P3-S7): regras em utils/examParticipants.js, que também
+// registra o handler do ciclo de vida do aluno para esses mapas por e-mail.
+const {
+    APPLICATION_PURPOSES,
+    applicationFinalidade,
+    applicationParticipant,
+    effectiveMaxAttempts,
+    extraAttemptsFor,
+    normalizeFinalidade,
+    studentOverrideFor,
+    studentStartDeadlinePassed,
+} = require('./examParticipants.js');
 
 const APPLICATION_STATUSES = Object.freeze([
     'draft',
@@ -117,6 +130,12 @@ function createExamApplication({
         // Registro do teclado escolhido ao preparar (H8b, CRIT-04): 'eventos' (padrão),
         // 'tudo' ou 'nada'. Não muda depois de preparada (utils/keystrokePolicy.js).
         keystrokeMode: keystrokeModeOf(config),
+        // Para quem (P3-S7, D15 e D16): finalidade ('regular' | 'segunda_chamada' |
+        // 'recuperacao'), participants (null = a turma inteira; senão os e-mails) e as
+        // exceções por aluno. A rota confere tudo antes (parseApplicationAudience).
+        finalidade: normalizeFinalidade(config.finalidade),
+        participants: Array.isArray(config.participants) ? [...config.participants] : null,
+        studentOverrides: clone(config.studentOverrides && typeof config.studentOverrides === 'object' ? config.studentOverrides : {}),
         createdAt: timestamp,
         preparedAt: timestamp,
         startedAt: normalizedStatus === 'running' ? timestamp : null,
@@ -430,7 +449,14 @@ function transitionExamApplication(application, action, options = {}) {
 
 module.exports = {
     ACTIVE_APPLICATION_STATUSES,
+    APPLICATION_PURPOSES,
     APPLICATION_STATUSES,
+    applicationFinalidade,
+    applicationParticipant,
+    effectiveMaxAttempts,
+    extraAttemptsFor,
+    studentOverrideFor,
+    studentStartDeadlinePassed,
     CLOSED_ATTEMPT_STATUSES,
     SERVER_OUTAGE_PAUSE_REASON,
     applicationPauses,

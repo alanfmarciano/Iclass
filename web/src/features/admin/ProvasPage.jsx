@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, ChevronRight, ClipboardList, Copy, Edit3, FileText, Layers, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, ChevronRight, ClipboardList, Edit3, FileText, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock, Users } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -14,14 +14,29 @@ import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
+import { useBranding } from '../../context/BrandingProvider'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { schoolFromBranding } from '../../lib/printDocument'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { rememberApplicationToken } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { ExamApplicationDetail } from './ExamApplicationDetail'
-import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
+import { DEFAULT_KEYSTROKE_MODE } from '../../lib/keystrokeModes'
+import {
+  ApplicationAudienceFields,
+  ApplicationAudienceModal,
+  KeystrokeModeSelect,
+  PrepareApplicationForm,
+  audiencePayload,
+  audienceProblem,
+  initialAudience,
+  useParticipantCandidates,
+} from './PrepareApplicationForm'
 import '../../styles/provas-board.css'
 import {
+  ONLINE_VERSIONS_MAX,
   buildExamVersions,
   getQuestionUsageMap,
   normalizeEvaluation,
@@ -30,6 +45,22 @@ import {
   snapshotsFromHistory,
 } from './examTools'
 import { matchesSearch } from '../../lib/textSearch'
+import QuestionEditor from './QuestionEditor'
+import QuestionBankPanel from './QuestionBankPanel'
+import { bankItemPayload, bankQuestionForExam } from './questionBankModel'
+import QuestionMarkdown from '../exam/QuestionMarkdown'
+import {
+  answerSummary,
+  editorQuestion,
+  editorQuestionPayload,
+  firstEvaluationProblem,
+  formatPointsLabel,
+  isChoiceType,
+  questionProblems,
+  questionTypeLabel,
+  totalPoints,
+  withBankLink,
+} from './questionEditorModel'
 
 const EXAM_TOKEN_LENGTH = 5
 // Tema da prova e categoria do banco de questões: até 500 caracteres, o teto do servidor
@@ -82,19 +113,6 @@ const DEFAULT_FORM = {
   keystrokeMode: DEFAULT_KEYSTROKE_MODE,
 }
 
-// Campo "Registro do teclado" das duas telas de preparar (H8b, CRIT-04): vale para a
-// aplicação inteira e não muda depois de preparada.
-function KeystrokeModeSelect({ value, onChange }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <Select label="Registro do teclado" value={value || DEFAULT_KEYSTROKE_MODE} onChange={(e) => onChange(e.target.value)}>
-        {KEYSTROKE_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </Select>
-      <span className="text-xs text-subtle">{keystrokeModeDescription(value)}</span>
-    </div>
-  )
-}
-
 function statusTone(status) {
   if (status === 'running') return 'success'
   if (status === 'waiting' || status === 'paused') return 'warning'
@@ -123,29 +141,30 @@ function clampCount(value, max) {
   return Math.max(1, Math.min(Number(value) || 1, Math.max(1, max || 1)))
 }
 
+// "Segunda chamada · 3 alunos" da aplicação preparada ou em andamento.
+function audienceLabel(application) {
+  const list = Array.isArray(application?.participants) ? application.participants : null
+  const purpose = application?.finalidade === 'segunda_chamada' ? 'Segunda chamada' : 'Para quem'
+  if (!list) return `${purpose}: turma inteira`
+  return `${purpose}: ${list.length} ${list.length === 1 ? 'aluno' : 'alunos'}`
+}
+
 function historyLabel(entry, index) {
   return entry.label || (entry.type === 'impressa' ? `Impressa #${index + 1}` : `Online #${index + 1}`)
 }
 
-function editorQuestion(source = {}) {
-  const rawAlternatives = Array.isArray(source.alternatives) && source.alternatives.length >= 2
-    ? source.alternatives
-    : [{ text: '', isCorrect: true }, { text: '', isCorrect: false }, { text: '', isCorrect: false }, { text: '', isCorrect: false }]
-  const requestedCorrect = String(source.correctAnswer || '').toUpperCase()
-  return {
-    text: source.text || source.questionText || '',
-    alternatives: rawAlternatives.map((alternative, index) => ({
-      letter: String.fromCharCode(65 + index),
-      text: typeof alternative === 'string' ? alternative : alternative.text || '',
-      isCorrect: alternative?.isCorrect === true || (!!requestedCorrect && String(alternative?.letter || '').toUpperCase() === requestedCorrect),
-    })),
-  }
-}
-
 export default function ProvasPage() {
   const toast = useToast()
+  const auth = useAuth()
+  // Corrigir o gabarito depois da prova recorrige notas: page.results (P3-S6).
+  // A Coordenação tem Resultados, mas é só de consulta (readOnly do whoami, B1): o servidor
+  // recusaria a correção com 403, então o botão nem aparece.
+  const canCorrectAnswerKey = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS) && auth?.readOnly !== true
   const navigate = useNavigate()
+  const { branding } = useBranding()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
+  // Cabeçalho da escola e "Gerado por" da prova impressa (contrato printDocument).
+  const printIdentity = () => ({ escola: schoolFromBranding(branding), displayName: branding?.displayName || '' })
   const courses = useApi('/api/courses')
   const summaries = useApi('/api/admin/course-summaries')
   const classes = useApi(`/api/admin/classes?courseId=${encodeURIComponent(activeCourseId)}&studentClass=${encodeURIComponent(activeClassName)}`)
@@ -162,10 +181,13 @@ export default function ProvasPage() {
   const [mode, setMode] = useState('online')
   const [deleteHistory, setDeleteHistory] = useState(null)
   // Confirmações no ConfirmDialog, no lugar do confirm do navegador (C12 do P3, C0a):
-  // salvar a prova do curso que substitui a das turmas e excluir questão do banco.
+  // salvar a prova do curso que substitui a das turmas (a exclusão de questão do banco
+  // pergunta no QuestionBankPanel).
   const [scopeConfirm, setScopeConfirm] = useState(null)
-  const [bankDelete, setBankDelete] = useState(null)
   const [applyHistory, setApplyHistory] = useState(null)
+  // "Para quem" da montagem online e "Alunos desta aplicação" (P3-S7, PrepareApplicationForm.jsx).
+  const [audience, setAudience] = useState(initialAudience)
+  const [audienceApplication, setAudienceApplication] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [excluded, setExcluded] = useState([])
   const [unusedOnly, setUnusedOnly] = useState(false)
@@ -175,9 +197,9 @@ export default function ProvasPage() {
   const [finishBusy, setFinishBusy] = useState(null)
   const [editor, setEditor] = useState(null)
   const [editorBusy, setEditorBusy] = useState(false)
-  const [bankOpen, setBankOpen] = useState(false)
-  const [bankQuestions, setBankQuestions] = useState([])
-  const [bankEditor, setBankEditor] = useState(null)
+  // Banco de questões (P3-S9a, QuestionBankPanel.jsx): 'editor' quando abre pelo editor
+  // da prova (com "Adicionar"), 'page' pelo "Ver banco de questões" da tela.
+  const [bankOpen, setBankOpen] = useState(null)
   const [shuffleSeed, setShuffleSeed] = useState(() => Date.now())
   // ----- Painel de listagem (dashboard de provas) -----
   const [examStatusMap, setExamStatusMap] = useState({})
@@ -239,6 +261,9 @@ export default function ProvasPage() {
     return applications.find((item) => item.id === configuredId) || applications[0] || null
   }, [applications, onlineConfig])
   const runningApplication = useMemo(() => runningApplicationOf(applications), [applications])
+  // Alunos da turma para o "Para quem" (só com a prova e a turma escolhidas, no modo online).
+  const audienceCandidates = useParticipantCandidates({ studentClass: className, courseId, examKey, enabled: mode === 'online' && !!examKey && !!className })
+  const historyCandidates = useParticipantCandidates({ studentClass: className, courseId, examKey, enabled: !!applyHistory && !!examKey && !!className })
   const RUNNING_MESSAGE = 'Há uma aplicação em andamento desta prova; encerre-a pelo Monitor antes de preparar outra.'
   const normalizedEval = useMemo(() => evaluation ? normalizeEvaluation(evaluation) : null, [evaluation])
   const usage = useMemo(() => getQuestionUsageMap(history), [history])
@@ -293,9 +318,16 @@ export default function ProvasPage() {
     setUnusedOnly(false)
     setForm((f) => ({ ...f, questionCount: clampCount(f.questionCount, ev.questions?.length || 1) }))
     setOnlineConfig((statusRes.onlineExamConfigs || {})[nextExamKey] || null)
-    setHistory(historyRes.history || [])
+    const nextHistory = historyRes.history || []
+    setHistory(nextHistory)
+    // A tela de detalhe aberta acompanha a preparação recarregada (depois de corrigir o
+    // gabarito, o "Gabarito — Versão" e o "Imprimir" já saem com a resposta certa).
+    setViewApplication((current) => (current ? (nextHistory.find((entry) => entry.id === current.id) || current) : current))
     setApplications(applicationsRes.applications || [])
   }
+
+  // Outra prova ou turma: o "Para quem" volta para a turma inteira.
+  useEffect(() => { setAudience(initialAudience()) }, [examKey, className, courseId])
 
   useEffect(() => {
     if (activeCourseId && courseId !== activeCourseId) setCourseId(activeCourseId)
@@ -401,7 +433,9 @@ export default function ProvasPage() {
       durationMinutes: Number(form.durationMinutes) || 60,
       timerEnabled: form.timerEnabled !== false,
       waitingRoomMinutes: parseWaitingRoomInput(form.waitingRoomMinutes),
-      accessToken: type === 'online' && form.tokenEnabled ? form.accessToken : null,
+      // A configuração salva guarda só se pede token (P3-S8, D19): o token em texto puro
+      // não vai mais para o histórico; ele é escolhido na preparação.
+      tokenEnabled: type === 'online' && form.tokenEnabled === true,
       ...extra,
     })
   }
@@ -425,6 +459,8 @@ export default function ProvasPage() {
     if (form.tokenEnabled && !/^[A-Z]{5}$/.test(form.accessToken)) return toast.error('O token deve ter exatamente 5 letras maiúsculas')
     const parsedMaxAttempts = parseMaxAttemptsInput(form.maxAttempts)
     if (!parsedMaxAttempts.valid) return toast.error('Tentativas deve ser um número entre 1 e 10.')
+    const audienceIssue = prepare ? audienceProblem(audience) : null
+    if (audienceIssue) return toast.error(audienceIssue)
     setBusy(prepare ? 'prepare' : 'saveOnline')
     try {
       const saved = await addHistory('online', currentVersions, { questionCount: currentVersions[0].count, maxAttempts: parsedMaxAttempts.value })
@@ -444,6 +480,7 @@ export default function ProvasPage() {
             accessToken: form.tokenEnabled ? form.accessToken : null,
             maxAttempts: parsedMaxAttempts.value,
             keystrokeMode: form.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
+            ...audiencePayload(audience, { timerMode: form.timerMode }),
           },
         })
         rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -468,7 +505,7 @@ export default function ProvasPage() {
     if (!className || !courseId || !examKey || currentVersions.length === 0) return toast.error('Monte uma prova antes de imprimir')
     setBusy('print')
     try {
-      openPrintWindow({ title: evaluation?.title || examKey, snapshots: currentVersions, includeAnswerKey: true })
+      openPrintWindow({ title: evaluation?.title || examKey, snapshots: currentVersions, includeAnswerKey: true, ...printIdentity() })
       await addHistory('impressa', currentVersions, { questionCount: currentVersions[0].count })
       toast.success('Prova impressa e gabarito gerados')
       await loadExamState()
@@ -496,6 +533,7 @@ export default function ProvasPage() {
         ? (entry.maxAttempts == null ? '' : String(entry.maxAttempts))
         : String(DEFAULT_MAX_ATTEMPTS),
       keystrokeMode: DEFAULT_KEYSTROKE_MODE,
+      audience: initialAudience(),
     })
   }
 
@@ -504,6 +542,8 @@ export default function ProvasPage() {
     if (applyHistory.tokenEnabled && !/^[A-Z]{5}$/.test(applyHistory.accessToken)) return toast.error('O token deve ter exatamente 5 letras maiúsculas')
     const parsedMaxAttempts = parseMaxAttemptsInput(applyHistory.maxAttempts)
     if (!parsedMaxAttempts.valid) return toast.error('Tentativas deve ser um número entre 1 e 10.')
+    const audienceIssue = audienceProblem(applyHistory.audience)
+    if (audienceIssue) return toast.error(audienceIssue)
     const durationMinutes = Math.max(1, Number(applyHistory.durationMinutes) || 60)
     const waitingRoomMinutes = parseWaitingRoomInput(applyHistory.waitingRoomMinutes)
     setBusy('applyHistory')
@@ -523,6 +563,7 @@ export default function ProvasPage() {
           accessToken: applyHistory.tokenEnabled ? applyHistory.accessToken : null,
           maxAttempts: parsedMaxAttempts.value,
           keystrokeMode: applyHistory.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
+          ...audiencePayload(applyHistory.audience, { timerMode: applyHistory.timerMode }),
         },
       })
       rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -561,7 +602,7 @@ export default function ProvasPage() {
   function reprintHistory(entry) {
     const snapshots = snapshotsFromHistory(entry)
     if (snapshots.length === 0) return toast.error('Histórico sem snapshot para reimpressão')
-    openPrintWindow({ title: evaluation?.title || examKey, snapshots, includeAnswerKey: true })
+    openPrintWindow({ title: evaluation?.title || examKey, snapshots, includeAnswerKey: true, ...printIdentity() })
   }
 
   async function removeHistory() {
@@ -633,76 +674,27 @@ export default function ProvasPage() {
     })
   }
 
-  function updateEditorQuestion(index, patch) {
-    setEditor((current) => ({ ...current, questions: current.questions.map((question, questionIndex) => questionIndex === index ? { ...question, ...patch } : question) }))
-  }
-
-  function updateAlternative(questionIndex, alternativeIndex, patch) {
-    setEditor((current) => ({
-      ...current,
-      questions: current.questions.map((question, index) => {
-        if (index !== questionIndex) return question
-        const alternatives = question.alternatives.map((alternative, altIndex) => {
-          if (patch.isCorrect === true) return { ...alternative, isCorrect: altIndex === alternativeIndex }
-          return altIndex === alternativeIndex ? { ...alternative, ...patch } : alternative
-        })
-        return { ...question, alternatives }
-      }),
-    }))
-  }
-
-  function addAlternative(questionIndex) {
-    const question = editor.questions[questionIndex]
-    if (question.alternatives.length >= 8) return toast.info('Máximo de 8 alternativas')
-    updateEditorQuestion(questionIndex, { alternatives: [...question.alternatives, { letter: String.fromCharCode(65 + question.alternatives.length), text: '', isCorrect: false }] })
-  }
-
-  function removeAlternative(questionIndex, alternativeIndex) {
-    const question = editor.questions[questionIndex]
-    if (question.alternatives.length <= 2) return toast.info('A questão precisa de ao menos 2 alternativas')
-    const removedWasCorrect = question.alternatives[alternativeIndex]?.isCorrect
-    const alternatives = question.alternatives.filter((_, index) => index !== alternativeIndex).map((alternative, index) => ({ ...alternative, letter: String.fromCharCode(65 + index) }))
-    if (removedWasCorrect) alternatives[0].isCorrect = true
-    updateEditorQuestion(questionIndex, { alternatives })
-  }
-
-  function moveQuestion(index, direction) {
-    const target = index + direction
-    if (target < 0 || target >= editor.questions.length) return
-    setEditor((current) => {
-      const questions = [...current.questions]
-      ;[questions[index], questions[target]] = [questions[target], questions[index]]
-      return { ...current, questions }
-    })
-  }
-
-  function duplicateQuestion(index) {
-    setEditor((current) => {
-      const questions = [...current.questions]
-      questions.splice(index + 1, 0, editorQuestion(current.questions[index]))
-      return { ...current, questions }
-    })
-  }
-
-  function removeQuestion(index) {
-    if (editor.questions.length <= 1) return toast.info('A prova precisa de ao menos uma questão')
-    setEditor((current) => ({ ...current, questions: current.questions.filter((_, questionIndex) => questionIndex !== index) }))
-  }
-
   function evaluationPayload() {
     return {
       title: editor.title,
       theme: editor.theme,
       rubric: editor.rubric,
-      questions: editor.questions.map((question) => ({
-        text: question.text,
-        alternatives: question.alternatives,
-        correctAnswer: question.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
-      })),
+      questions: editor.questions.map(editorQuestionPayload),
     }
   }
 
+  // Antes de enviar, o que falta em cada questão (as frases do modelo do servidor): a
+  // questão com problema ganha a lista embaixo e a tela rola até ela. O servidor continua
+  // conferindo tudo de novo.
   function saveEvaluationEditor() {
+    const problem = firstEvaluationProblem(editor.questions)
+    if (problem) {
+      setEditor((current) => ({ ...current, showProblems: true }))
+      toast.error(problem.message)
+      const card = typeof document !== 'undefined' ? document.getElementById(`questao-editor-${problem.index + 1}`) : null
+      if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
     if (editor.scope === 'course') {
       const names = affectedClassNames.length ? affectedClassNames.join(', ') : 'todas as turmas do curso'
       setScopeConfirm({ names })
@@ -738,61 +730,35 @@ export default function ProvasPage() {
     }
   }
 
-  async function openQuestionBank() {
-    try {
-      const response = await api.get('/api/admin/question-bank')
-      setBankQuestions(response.questions || [])
-      setBankOpen(true)
-    } catch (error) { toast.error(error.message) }
+  function openQuestionBank(mode = 'editor') {
+    setBankOpen(mode)
   }
 
+  // Questão do banco na prova: leva a chave do banco (bankKey), por onde o banco conta os
+  // usos e o acerto dela.
   function addBankQuestion(question) {
-    setEditor((current) => ({ ...current, questions: [...current.questions, editorQuestion(question)] }))
+    setEditor((current) => (current ? { ...current, questions: [...current.questions, bankQuestionForExam(question)] } : current))
     toast.success('Questão adicionada à prova')
   }
 
+  // "Salvar no banco" vale para os seis tipos (o banco usa o modelo da questão, P3-S9a). A
+  // questão salva passa a apontar para o item novo do banco (bankKey), com a assinatura do
+  // que foi salvo (se o professor mudou a questão enquanto o pedido ia, ela já é outra).
   async function saveQuestionToBank(question) {
+    const [problem] = questionProblems(question)
+    if (problem) return toast.error(`Complete a questão antes de salvar no banco: ${problem}`)
+    const payload = {
+      ...bankItemPayload(question, { category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS) }),
+      sourceExamKey: editor.key || null,
+    }
     try {
-      const response = await api.post('/api/admin/question-bank/create', {
-        category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),
-        questionText: question.text,
-        alternatives: question.alternatives,
-        correctAnswer: question.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
-        sourceExamKey: editor.key || null,
-      })
-      setBankQuestions((items) => [...items, response.question])
+      const response = await api.post('/api/admin/question-bank/create', payload)
+      const bankKey = response?.question?.key
+      if (bankKey) {
+        setEditor((current) => (current ? { ...current, questions: current.questions.map((item) => (item.uid === question.uid ? { ...item, bankKey, bankSignature: withBankLink(question, bankKey).bankSignature } : item)) } : current))
+      }
       toast.success('Questão salva no banco')
     } catch (error) { toast.error(error.message) }
-  }
-
-  async function saveBankEditor() {
-    try {
-      const response = await api.post('/api/admin/question-bank/update', {
-        key: bankEditor.key,
-        category: bankEditor.category,
-        questionText: bankEditor.questionText,
-        alternatives: bankEditor.alternatives,
-        correctAnswer: bankEditor.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
-      })
-      setBankQuestions((items) => items.map((item) => item.key === response.question.key ? response.question : item))
-      setBankEditor(null)
-      toast.success('Questão do banco atualizada')
-    } catch (error) { toast.error(error.message) }
-  }
-
-  function deleteBankQuestion(question) {
-    setBankDelete(question)
-  }
-
-  // Erro da exclusão aparece no próprio diálogo, que continua aberto.
-  async function confirmDeleteBankQuestion() {
-    const question = bankDelete
-    if (!question) return
-    await api.post('/api/admin/question-bank/delete', { key: question.key })
-    setBankQuestions((items) => items.filter((item) => item.key !== question.key))
-    if (bankEditor?.key === question.key) setBankEditor(null)
-    setBankDelete(null)
-    toast.success('Questão excluída do banco')
   }
 
   const loading = courses.loading || classes.loading
@@ -812,11 +778,26 @@ export default function ProvasPage() {
           onBack={() => setViewApplication(null)}
           onReprint={() => reprintHistory(viewApplication)}
           onApplyOnline={() => openHistoryApplication(viewApplication)}
+          applications={applications.filter((application) => application.historyId && application.historyId === viewApplication.id)}
+          canCorrectAnswerKey={canCorrectAnswerKey}
+          onAnswerKeyCorrected={(response) => {
+            if (response?.unchanged) {
+              toast.success(response.message || 'A preparação passou a usar este gabarito.')
+              loadExamState().catch((error) => toast.error(error.message))
+              return
+            }
+            const changed = Number(response?.changed) || 0
+            const notified = Number(response?.notifiedStudents) || 0
+            toast.success(`Gabarito corrigido. ${changed === 1 ? '1 nota mudou' : `${changed} notas mudaram`}${notified ? ` e ${notified === 1 ? '1 aluno foi avisado' : `${notified} alunos foram avisados`}` : ''}.`)
+            loadExamState().catch((error) => toast.error(error.message))
+          }}
         />
       ) : (
       <>
-      <PageHeader title="Provas" subtitle={`Monte e aplique avaliações · ${courseName || selectedCourse?.name || activeCourseId} · ${activeClassName}.`}>
+      <PageHeader title="Provas" helpTopic="provas" subtitle={`Monte e aplique avaliações · ${courseName || selectedCourse?.name || activeCourseId} · ${activeClassName}.`}>
         <Button variant="secondary" icon={Plus} onClick={openNewEditor} disabled={!courseId || !activeModule}>Nova prova</Button>
+        {/* Com o editor aberto, o banco abre pelo botão do editor (com "Adicionar"). */}
+        {!editor && <Button variant="ghost" icon={Library} onClick={() => openQuestionBank('page')}>Ver banco de questões</Button>}
         <div className="grid grid-cols-3 gap-2 min-w-[360px]">
           <div className="rounded-lg border border-border bg-surface px-3 py-2">
             <p className="text-[11px] uppercase font-semibold text-subtle">Curso</p>
@@ -973,6 +954,7 @@ export default function ProvasPage() {
                     <div className="mt-2"><Button size="sm" variant="secondary" icon={Edit3} onClick={openEvaluationEditor}>Editar conteúdo</Button></div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Badge tone="info">{selectedCount}/{totalQuestions} questões</Badge>
+                      <Badge tone="info">{formatPointsLabel(totalPoints(previewQuestions).total)} nesta montagem</Badge>
                       <Badge tone={usedCount > 0 ? 'warning' : 'neutral'}>{usedCount} já usadas</Badge>
                       <Badge tone="neutral">{mode === 'online' ? `${form.onlineVersions} versões online` : `${form.printVersions} versões impressas`}</Badge>
                     </div>
@@ -1010,7 +992,7 @@ export default function ProvasPage() {
                       <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponíveis`} />
                       {mode === 'online' ? (
                         <div className="grid grid-cols-2 gap-3">
-                          <Input label="Versões online" type="number" min="1" max="5" value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
+                          <Input label="Versões online" type="number" min="1" max={ONLINE_VERSIONS_MAX} value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(ONLINE_VERSIONS_MAX, Number(e.target.value) || 1)) })} helper={`Máx. ${ONLINE_VERSIONS_MAX}.`} />
                           <Input label="Duração (min)" type="number" min="1" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} />
                           <Input label="Sala de espera (min)" type="number" min="0" value={form.waitingRoomMinutes} onChange={(e) => setForm({ ...form, waitingRoomMinutes: e.target.value })} helper="Padrão: 10 minutos." />
                           <Select label="Início do cronômetro" value={form.timerMode} onChange={(e) => setForm({ ...form, timerMode: e.target.value })}>
@@ -1052,6 +1034,28 @@ export default function ProvasPage() {
                       </div>
                     </Card>
 
+                    {mode === 'online' && (
+                      <Card className="p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="w-8 h-8 grid place-items-center rounded-md bg-surface-2 text-muted"><Users size={17} /></span>
+                          <div>
+                            <h3 className="text-sm font-bold text-text">Para quem</h3>
+                            <p className="text-xs text-muted">Turma inteira, segunda chamada ou só os alunos que você escolher</p>
+                          </div>
+                        </div>
+                        <ApplicationAudienceFields
+                          value={audience}
+                          onChange={setAudience}
+                          candidates={audienceCandidates.data}
+                          loading={audienceCandidates.loading}
+                          refreshing={audienceCandidates.refreshing}
+                          error={audienceCandidates.error}
+                          onRetry={audienceCandidates.refetch}
+                          timerMode={form.timerMode}
+                        />
+                      </Card>
+                    )}
+
                     {mode === 'online' ? (
                       <Card className="p-4 space-y-3">
                         <div className="flex items-center gap-2">
@@ -1072,6 +1076,12 @@ export default function ProvasPage() {
                           <Button icon={Play} loading={busy === 'prepare'} disabled={!!runningApplication} title={runningApplication ? RUNNING_MESSAGE : undefined} onClick={() => saveOnline(true)}>Preparar e abrir monitor</Button>
                         </div>
                         <p className="text-xs text-warning">Preparar ainda não libera a prova. No monitor, clique em “Iniciar prova e avisar alunos” ou abra a sala de espera.</p>
+                        {activeApplication && !['finished', 'cancelled'].includes(activeApplication.status) && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge tone={activeApplication.finalidade === 'segunda_chamada' || Array.isArray(activeApplication.participants) ? 'info' : 'neutral'}>{audienceLabel(activeApplication)}</Badge>
+                            <Button size="sm" variant="secondary" icon={Users} onClick={() => setAudienceApplication(activeApplication)}>Alunos desta aplicação</Button>
+                          </div>
+                        )}
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="secondary" icon={Pause} loading={busy === 'paused'} onClick={() => control('paused')}>Pausar</Button>
                           <Button size="sm" variant="secondary" icon={Play} loading={busy === 'running'} onClick={() => control('running')}>Retomar</Button>
@@ -1104,18 +1114,28 @@ export default function ProvasPage() {
                             <div className="flex items-start gap-3">
                               <span className="w-7 h-7 shrink-0 grid place-items-center rounded-md bg-primary-soft text-primary text-sm font-bold">{index + 1}</span>
                               <div className="min-w-0 flex-1">
-                                <p className="text-sm font-medium text-text">{q.text}</p>
+                                <div className="mb-1 flex flex-wrap gap-1.5">
+                                  <Badge tone="neutral">{questionTypeLabel(q.type)}</Badge>
+                                  <Badge tone="neutral">{formatPointsLabel(q.points ?? 1)}</Badge>
+                                </div>
+                                <QuestionMarkdown text={q.text} links={false} className="text-sm font-medium text-text" />
                                 {usages.length > 0 && <p className="text-xs text-warning mt-1">Já usada: {usages.map((u) => u.label).join(', ')}</p>}
                               </div>
                               <Button size="sm" variant="ghost" icon={Trash2} onClick={() => toggleQuestion(q.originalNumber, false)}>Remover</Button>
                             </div>
-                            <div className="mt-3 grid gap-1 pl-10">
-                              {(q.alternatives || []).map((alt) => (
-                                <div key={alt.displayLetter || alt.letter} className={`text-xs rounded-md border px-2 py-1 ${alt.isCorrect ? 'border-success/50 bg-success-soft text-success' : 'border-border text-muted'}`}>
-                                  <b>{alt.displayLetter || alt.letter})</b> {alt.text} {alt.isCorrect ? ' - correta' : ''}
-                                </div>
-                              ))}
-                            </div>
+                            {isChoiceType(q.type || 'multiple_choice') ? (
+                              <div className="mt-3 grid gap-1 pl-10 max-sm:pl-0">
+                                {(q.alternatives || []).map((alt) => (
+                                  <div key={alt.displayLetter || alt.letter} className={`flex min-w-0 items-start gap-1 text-xs rounded-md border px-2 py-1 ${alt.isCorrect ? 'border-success/50 bg-success-soft text-success' : 'border-border text-muted'}`}>
+                                    <b className="shrink-0">{alt.displayLetter || alt.letter})</b>
+                                    <QuestionMarkdown text={alt.text} choice links={false} zoom={false} className="min-w-0 flex-1" />
+                                    {alt.isCorrect && <span className="shrink-0">- correta</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="mt-3 pl-10 max-sm:pl-0 text-xs text-muted"><b className="text-text">Resposta certa:</b> {answerSummary(q) || '—'}</p>
+                            )}
                           </div>
                         )
                       })}
@@ -1196,74 +1216,23 @@ export default function ProvasPage() {
                 <textarea value={editor.rubric} onChange={(event) => setEditor({ ...editor, rubric: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" placeholder="Orientações, materiais permitidos e critérios." />
               </label>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
-              <div><h3 className="font-semibold text-text">Questões</h3><p className="text-xs text-muted">{editor.questions.length} questão(ões)</p></div>
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" icon={Library} onClick={openQuestionBank}>Banco de questões</Button>
-                <Button size="sm" icon={Plus} onClick={() => setEditor((current) => ({ ...current, questions: [...current.questions, editorQuestion()] }))}>Adicionar questão</Button>
-              </div>
-            </div>
-            <div className="space-y-4">
-              {editor.questions.map((question, questionIndex) => (
-                <Card key={questionIndex} className="p-4 space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone="info">Questão {questionIndex + 1}</Badge>
-                    <div className="flex-1" />
-                    <Button size="sm" variant="ghost" icon={ArrowUp} onClick={() => moveQuestion(questionIndex, -1)} disabled={questionIndex === 0}>Subir</Button>
-                    <Button size="sm" variant="ghost" icon={ArrowDown} onClick={() => moveQuestion(questionIndex, 1)} disabled={questionIndex === editor.questions.length - 1}>Descer</Button>
-                    <Button size="sm" variant="ghost" icon={Copy} onClick={() => duplicateQuestion(questionIndex)}>Duplicar</Button>
-                    <Button size="sm" variant="ghost" icon={Library} onClick={() => saveQuestionToBank(question)}>Salvar no banco</Button>
-                    <Button size="sm" variant="ghost" icon={Trash2} onClick={() => removeQuestion(questionIndex)}>Excluir</Button>
-                  </div>
-                  <textarea value={question.text} onChange={(event) => updateEditorQuestion(questionIndex, { text: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" placeholder="Texto da questão" />
-                  <div className="space-y-2">
-                    {question.alternatives.map((alternative, alternativeIndex) => (
-                      <div key={alternativeIndex} className={`flex items-center gap-2 rounded-lg border p-2 ${alternative.isCorrect ? 'border-success/60 bg-success-soft/30' : 'border-border'}`}>
-                        <input type="radio" name={`correct-${questionIndex}`} checked={alternative.isCorrect} onChange={() => updateAlternative(questionIndex, alternativeIndex, { isCorrect: true })} aria-label={`Marcar alternativa ${alternative.letter} como correta`} />
-                        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
-                        <input value={alternative.text} onChange={(event) => updateAlternative(questionIndex, alternativeIndex, { text: event.target.value })} className="h-9 min-w-0 flex-1 rounded-md border border-border bg-surface px-3 text-sm text-text" placeholder={`Alternativa ${alternative.letter}`} />
-                        <Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir alternativa ${alternative.letter}`} onClick={() => removeAlternative(questionIndex, alternativeIndex)} />
-                      </div>
-                    ))}
-                    <Button size="sm" variant="secondary" icon={Plus} onClick={() => addAlternative(questionIndex)}>Adicionar alternativa</Button>
-                  </div>
-                </Card>
-              ))}
-            </div>
+            <QuestionEditor
+              questions={editor.questions}
+              onChange={(questions) => setEditor((current) => ({ ...current, questions }))}
+              onOpenBank={() => openQuestionBank('editor')}
+              onSaveToBank={saveQuestionToBank}
+              showProblems={editor.showProblems === true}
+            />
           </div>
         )}
       </Modal>
 
-      <Modal open={bankOpen} onClose={() => { setBankOpen(false); setBankEditor(null) }} title="Banco de questões" description="Importe uma questão ou edite o acervo reutilizável." size="lg">
-        {bankEditor ? (
-          <div className="space-y-3">
-            <Input label="Categoria" value={bankEditor.category || ''} maxLength={THEME_MAX_CHARS} counterFrom={THEME_COUNTER_FROM} onChange={(event) => setBankEditor({ ...bankEditor, category: event.target.value })} />
-            <textarea value={bankEditor.questionText || ''} onChange={(event) => setBankEditor({ ...bankEditor, questionText: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" />
-            {(bankEditor.alternatives || []).map((alternative, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <input type="radio" name="bank-correct" checked={alternative.isCorrect === true || alternative.letter === bankEditor.correctAnswer} onChange={() => setBankEditor({ ...bankEditor, correctAnswer: alternative.letter, alternatives: bankEditor.alternatives.map((item, itemIndex) => ({ ...item, isCorrect: itemIndex === index })) })} />
-                <span className="w-6 text-xs font-bold text-muted">{alternative.letter}</span>
-                <input value={alternative.text || ''} onChange={(event) => setBankEditor({ ...bankEditor, alternatives: bankEditor.alternatives.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item) })} className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-sm text-text" />
-              </div>
-            ))}
-            <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setBankEditor(null)}>Voltar</Button><Button onClick={saveBankEditor}>Salvar alterações</Button></div>
-          </div>
-        ) : (
-          <div className="space-y-2 max-h-[65vh] overflow-auto">
-            {bankQuestions.map((question) => (
-              <div key={question.key} className="rounded-lg border border-border p-3">
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1"><p className="text-sm font-medium text-text">{question.questionText}</p><p className="mt-1 text-xs text-subtle">{question.category || 'Geral'} · resposta {question.correctAnswer || '-'}</p></div>
-                  <Button size="sm" variant="secondary" icon={Edit3} onClick={() => setBankEditor({ ...question, alternatives: (question.alternatives || []).map((item) => ({ ...item })) })}>Editar</Button>
-                  <Button size="sm" icon={Plus} onClick={() => addBankQuestion(question)}>Adicionar</Button>
-                  <Button size="sm" variant="ghost" icon={Trash2} aria-label="Excluir questão do banco" onClick={() => deleteBankQuestion(question)} />
-                </div>
-              </div>
-            ))}
-            {bankQuestions.length === 0 && <EmptyState icon={Library} title="Banco vazio" description="Use “Salvar no banco” em uma questão da prova para iniciar o acervo." />}
-          </div>
-        )}
-      </Modal>
+      <QuestionBankPanel
+        open={!!bankOpen}
+        onClose={() => setBankOpen(null)}
+        onAddToExam={bankOpen === 'editor' && editor ? addBankQuestion : null}
+        defaultCategory={String(editor?.theme || activeModule?.name || '')}
+      />
 
       <Modal
         open={!!applyHistory}
@@ -1276,52 +1245,26 @@ export default function ProvasPage() {
         </>}
       >
         {applyHistory && (
-          <div className="space-y-4">
-            <div className="rounded-lg border border-border bg-surface-2/60 p-3">
-              <p className="text-sm font-semibold text-text">{applyHistory.entry.label || 'Aplicação salva'}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Badge tone="neutral">{applyHistory.entry.questionCount || applyHistory.entry.questionNumbers?.length || 0} questões fixas</Badge>
-                <Badge tone="info">{applyHistory.availableVersions} {applyHistory.availableVersions === 1 ? 'versão disponível' : 'versões disponíveis'}</Badge>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Input label="Versões online" type="number" min="1" max={applyHistory.availableVersions} value={applyHistory.onlineVersions} onChange={(e) => setApplyHistory({ ...applyHistory, onlineVersions: Math.max(1, Math.min(applyHistory.availableVersions, Number(e.target.value) || 1)) })} />
-              <Input label="Duração (min)" type="number" min="1" value={applyHistory.durationMinutes} onChange={(e) => setApplyHistory({ ...applyHistory, durationMinutes: e.target.value })} />
-              <Input label="Sala de espera (min)" type="number" min="0" value={applyHistory.waitingRoomMinutes} helper="Padrão: 10 minutos" onChange={(e) => setApplyHistory({ ...applyHistory, waitingRoomMinutes: e.target.value })} />
-              <Select label="Início do cronômetro" value={applyHistory.timerMode} onChange={(e) => setApplyHistory({ ...applyHistory, timerMode: e.target.value })}>
-                <option value="per_attempt">Quando cada aluno iniciar</option>
-                <option value="collective">Junto com a turma</option>
-              </Select>
-              <div className="sm:col-span-2">
-                <Input label="Tentativas permitidas" type="number" min="1" max="10" step="1" placeholder="Ilimitadas" value={applyHistory.maxAttempts} onChange={(e) => setApplyHistory({ ...applyHistory, maxAttempts: e.target.value })} helper="Padrão: 1 tentativa. Deixe em branco para não limitar." />
-              </div>
-              <div className="sm:col-span-2">
-                <KeystrokeModeSelect value={applyHistory.keystrokeMode} onChange={(keystrokeMode) => setApplyHistory({ ...applyHistory, keystrokeMode })} />
-              </div>
-              {applyHistory.tokenEnabled && <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
-                <Input label="Token de acesso" value={applyHistory.accessToken} maxLength={5} autoComplete="off" spellCheck={false} className="font-mono text-base font-semibold tracking-[0.2em]" helper="Obrigatório · 5 letras" onChange={(e) => setApplyHistory({ ...applyHistory, accessToken: normalizeTokenInput(e.target.value) })} />
-                <Button type="button" variant="secondary" icon={RefreshCw} aria-label="Gerar novo token" onClick={() => setApplyHistory({ ...applyHistory, accessToken: generateExamToken() })}>Novo</Button>
-              </div>}
-            </div>
-
-            <div className="rounded-lg border border-border p-3">
-              <div className="space-y-3">
-                <Switch label="Cronômetro ativo" checked={applyHistory.timerEnabled} onChange={(value) => setApplyHistory({ ...applyHistory, timerEnabled: value })} />
-                <Switch label="Exigir token de acesso" checked={applyHistory.tokenEnabled} onChange={(value) => setApplyHistory({ ...applyHistory, tokenEnabled: value, accessToken: applyHistory.accessToken || generateExamToken() })} />
-              </div>
-            </div>
-          </div>
+          <PrepareApplicationForm
+            value={applyHistory}
+            onChange={setApplyHistory}
+            candidates={historyCandidates}
+            tokenTools={{ normalize: normalizeTokenInput, generate: generateExamToken }}
+          />
         )}
       </Modal>
 
+      <ApplicationAudienceModal
+        open={!!audienceApplication}
+        application={audienceApplication}
+        onClose={() => setAudienceApplication(null)}
+        onSaved={() => loadExamState().catch(() => {})}
+        toast={toast}
+      />
       <ConfirmDialog open={!!deleteHistory} onClose={() => setDeleteHistory(null)} onConfirm={removeHistory} danger title="Excluir histórico?" description={deleteHistory?.label || deleteHistory?.id} confirmLabel="Excluir" />
       <ConfirmDialog open={!!scopeConfirm} onClose={() => setScopeConfirm(null)} onConfirm={confirmScopeSave} tone="primary"
         title="Substituir a prova nas turmas?" message={`Esta alteração substituirá esta prova em: ${scopeConfirm?.names || ''}.`}
         confirmLabel="Salvar prova" />
-      <ConfirmDialog open={!!bankDelete} onClose={() => setBankDelete(null)} onConfirm={confirmDeleteBankQuestion} tone="danger"
-        title="Excluir a questão do banco?" message={bankDelete ? `"${bankDelete.questionText}"` : ''}
-        confirmLabel="Excluir" />
       <FinishApplicationModal
         open={!!finishApplication}
         onClose={() => setFinishApplication(null)}

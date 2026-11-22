@@ -9,6 +9,24 @@ const runtimePaths = require('../runtimePaths.js');
 // com a regra trocada e o build antigo, um arquivo do build poderia dar 404. O próprio
 // buildIntegrity.js fica de fora: mudar o cálculo já muda o hash.
 const BACKEND_BUILD_FILES = ['backend/utils/staticAssets.js'];
+// Arquivos da raiz que o bundle leva (fase 3, A1 / P6-S2): as Novidades da tela Sistema e
+// da Ajuda são o CHANGELOG.md, importado com ?raw. Mudar o texto sem refazer o build
+// deixaria a tela com as Novidades de antes.
+const ROOT_BUILD_FILES = ['CHANGELOG.md'];
+
+// Versão do IClass (SemVer do package.json da raiz, a fonte única, D7 do P6). Só o campo
+// version entra no hash (o bundle mostra a versão por __ICLASS_VERSION__, vite.config.js):
+// trocar a versão sem refazer o build deixaria a barra lateral com a versão de antes. O
+// resto do package.json da raiz (scripts, dependências do servidor) não muda o build.
+// Lido a cada chamada, da pasta do programa de agora (os testes trocam PROJECT_ROOT).
+function appVersion() {
+    try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(runtimePaths.PROJECT_ROOT, 'package.json'), 'utf8'));
+        return typeof pkg.version === 'string' ? pkg.version.trim() : '';
+    } catch (err) {
+        return '';
+    }
+}
 
 function sourceFiles() {
     const webRoot = path.join(runtimePaths.PROJECT_ROOT, 'web');
@@ -25,7 +43,7 @@ function sourceFiles() {
         const full = path.join(webRoot, name);
         if (fs.existsSync(full)) files.push(full);
     });
-    BACKEND_BUILD_FILES.forEach(name => {
+    [...BACKEND_BUILD_FILES, ...ROOT_BUILD_FILES].forEach(name => {
         const full = path.join(runtimePaths.PROJECT_ROOT, ...name.split('/'));
         if (fs.existsSync(full)) files.push(full);
     });
@@ -40,6 +58,10 @@ function computeSourceHash() {
         hash.update(fs.readFileSync(file));
         hash.update('\0');
     });
+    hash.update('package.json#version');
+    hash.update('\0');
+    hash.update(appVersion());
+    hash.update('\0');
     return hash.digest('hex');
 }
 
@@ -98,4 +120,4 @@ function resetBuildIdCache() {
     buildIdCache = { checkedAt: 0, mtimeMs: null, id: null };
 }
 
-module.exports = { BACKEND_BUILD_FILES, BUILD_ID_HEADER, computeSourceHash, currentBuildId, resetBuildIdCache, verifyBuild };
+module.exports = { BACKEND_BUILD_FILES, BUILD_ID_HEADER, ROOT_BUILD_FILES, appVersion, computeSourceHash, currentBuildId, resetBuildIdCache, verifyBuild };

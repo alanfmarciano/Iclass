@@ -211,7 +211,11 @@ test('[UC-ERRO-003] contrato da tela da prova: start-attempt, autosave, teclas (
     assert.ok(attemptId, JSON.stringify(started.body));
     // A tela numera as questões como examUtils.normQuestion e marca { número: id }.
     screen('features/student/exam/examUtils.js', 'const number = Number(q.originalNumber ?? q.number ?? i + 1)')
-    screen('features/student/exam/ExamRunner.jsx', 'onClick={() => setAnswers((a) => ({ ...a, [q.number]: alt.id }))}')
+    // Fase 3 (P3-S2): o campo de cada tipo fica em QuestionAnswer.jsx; a uma correta manda
+    // o identificador da alternativa e o ExamRunner guarda { número: resposta }.
+    screen('features/student/exam/QuestionAnswer.jsx', 'onClick={() => onChange(alt.id)}')
+    screen('features/student/exam/ExamRunner.jsx', 'onChange={(value) => setAnswer(q.number, value)}')
+    screen('features/student/exam/ExamRunner.jsx', 'else next[number] = value')
     const questions = (started.body.questions || []).map((question, index) => ({
         number: Number(question.originalNumber ?? question.number ?? index + 1),
         alternativeId: String(question.alternatives?.[0]?.id || '').toUpperCase(),
@@ -220,7 +224,8 @@ test('[UC-ERRO-003] contrato da tela da prova: start-attempt, autosave, teclas (
     for (const question of questions.slice(0, 2)) answers[question.number] = question.alternativeId;
     assert.equal(Object.keys(answers).length, 2, JSON.stringify(answers));
 
-    screen('features/student/exam/ExamRunner.jsx', "api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }");
+    screen('features/student/exam/ExamRunner.jsx', 'const payload = { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }');
+    screen('features/student/exam/ExamRunner.jsx', "await api.post('/api/student/autosave-progress', payload,");
     ok(await asStudent('/api/student/autosave-progress').send({ email, studentClass, courseId, examKey, applicationId, attemptId, answers }), 'autosave');
 
     // Teclas: o lote cheio de 500 com os eventos que o handler de keydown, copiar e o menu
@@ -353,24 +358,42 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
     const unlock = await asInstructor('/api/admin/unlock-student-focus').send({ studentEmail: student, studentClass: CLASS_NAME, courseId: COURSE_ID, examKey: EXAM_KEY, applicationId: application.id });
     assert.ok(unlock.status < 500 && unlock.body.field === undefined, JSON.stringify(unlock.body));
 
-    // ProvasPage: salvar questão no banco (alternativas do editor, com isCorrect) e editar.
-    screen('features/admin/ProvasPage.jsx', "category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),");
+    // ProvasPage e QuestionBankPanel: salvar questão no banco (o corpo do editor pelo
+    // bankItemPayload, com os seis tipos desde o P3-S9a) e editar o item do banco.
+    screen('features/admin/ProvasPage.jsx', "...bankItemPayload(question, { category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS) }),");
     // O Tema e a Categoria deixam digitar 500 caracteres (decisões §12, sobra do H9b).
     screen('features/admin/ProvasPage.jsx', 'const THEME_MAX_CHARS = 500');
     screen('features/admin/ProvasPage.jsx', '<Input label="Tema" value={editor.theme} maxLength={THEME_MAX_CHARS}');
-    screen('features/admin/ProvasPage.jsx', "<Input label=\"Categoria\" value={bankEditor.category || ''} maxLength={THEME_MAX_CHARS}");
+    screen('features/admin/questionBankModel.js', 'export const BANK_CATEGORY_MAX = 500');
+    screen('features/admin/QuestionBankPanel.jsx', 'label="Categoria" value={editing.category} maxLength={BANK_CATEGORY_MAX}');
     screen('features/admin/ProvasPage.jsx', "sourceExamKey: editor.key || null,");
-    const alternatives = ['A', 'B', 'C', 'D'].map((letter, index) => ({ letter, text: `Alternativa ${letter} com acento é`, isCorrect: index === 2 }));
-    const bank = ok(await asInstructor('/api/admin/question-bank/create').send({ category: 'Fundamentos de TI', questionText: 'Qual componente guarda a BIOS?\n\nEscolha uma.', alternatives, correctAnswer: 'C', sourceExamKey: null }), 'banco criar');
-    const key = bank.body.question.key;
-    screen('features/admin/ProvasPage.jsx', "api.post('/api/admin/question-bank/update', { key: bankEditor.key, category: bankEditor.category, questionText: bankEditor.questionText, alternatives: bankEditor.alternatives,");
-    ok(await asInstructor('/api/admin/question-bank/update').send({ key, category: bank.body.question.category, questionText: bank.body.question.questionText, alternatives: bank.body.question.alternatives, correctAnswer: 'C' }), 'banco editar');
+    screen('features/admin/QuestionBankPanel.jsx', "api.post('/api/admin/question-bank/update', { key: editing.key, ...payload })");
+    screen('features/admin/QuestionBankPanel.jsx', "api.post('/api/admin/question-bank/create', payload)");
+    screen('features/admin/QuestionBankPanel.jsx', "api.post('/api/admin/question-bank/archive', { key: item.key, archived: !item.archived })");
+    // O corpo que bankItemPayload monta (editorQuestionPayload + dificuldade, habilidades,
+    // etiquetas e categoria), para os seis tipos.
+    const bankBodies = [
+        { type: 'multiple_choice', points: 1, text: 'Qual componente guarda a BIOS?\n\nEscolha uma.', alternatives: ['A', 'B', 'C', 'D'].map((letter, index) => ({ letter, text: `Alternativa ${letter} com acento é`, isCorrect: index === 2 })), correctAnswer: 'C' },
+        { type: 'multiple_answer', points: 2, text: 'Quais?', alternatives: [{ letter: 'A', text: 'a', isCorrect: true }, { letter: 'B', text: 'b', isCorrect: true }], correctAnswers: ['A', 'B'], partialCredit: true },
+        { type: 'true_false', points: 1, text: 'V?', correctAnswer: 'A' },
+        { type: 'numeric', points: 1, text: 'N?', numeric: { value: 2.5, tolerance: 0 }, review: 'auto' },
+        { type: 'short_answer', points: 1, text: 'C?', acceptedAnswers: ['ls'], review: 'auto' },
+        { type: 'essay', points: 2, text: 'D?', expectedAnswer: '', rubric: [{ nome: 'Ideia', pontos: 2 }] },
+    ].map(question => ({ ...question, explanation: '', difficulty: '', skills: [], tags: [], category: 'Fundamentos de TI' }));
+    const bankKeys = [];
+    for (const bankBody of bankBodies) {
+        const created = ok(await asInstructor('/api/admin/question-bank/create').send({ ...bankBody, sourceExamKey: null }), `banco criar ${bankBody.type}`);
+        bankKeys.push(created.body.question.key);
+    }
+    ok(await asInstructor('/api/admin/question-bank/update').send({ key: bankKeys[0], ...bankBodies[0], difficulty: 'media', tags: ['bios'] }), 'banco editar');
+    ok(await asInstructor('/api/admin/question-bank/archive').send({ key: bankKeys[1], archived: true }), 'banco arquivar');
+    ok(await asInstructor('/api/admin/question-bank/archive').send({ key: bankKeys[1], archived: false }), 'banco desarquivar');
     // Tema com o máximo da tela (500) vira a categoria: aceito; 501 é recusado com o campo.
     const longTheme = 'T'.repeat(500);
-    const longBank = ok(await asInstructor('/api/admin/question-bank/create').send({ category: longTheme, questionText: 'Qual?', alternatives, correctAnswer: 'C', sourceExamKey: null }), 'banco com tema de 500');
+    const longBank = ok(await asInstructor('/api/admin/question-bank/create').send({ ...bankBodies[2], category: longTheme, sourceExamKey: null }), 'banco com tema de 500');
     assert.equal(longBank.body.question.category, longTheme);
-    ok(await asInstructor('/api/admin/question-bank/update').send({ key: longBank.body.question.key, category: longTheme, questionText: 'Qual?', alternatives, correctAnswer: 'C' }), 'banco editar com 500');
-    const tooLong = await asInstructor('/api/admin/question-bank/create').send({ category: 'T'.repeat(501), questionText: 'Qual?', alternatives, correctAnswer: 'C' });
+    ok(await asInstructor('/api/admin/question-bank/update').send({ key: longBank.body.question.key, ...bankBodies[2], category: longTheme }), 'banco editar com 500');
+    const tooLong = await asInstructor('/api/admin/question-bank/create').send({ ...bankBodies[2], category: 'T'.repeat(501) });
     assert.equal(tooLong.status, 400);
     assert.equal(tooLong.body.field, 'category');
 });
@@ -483,22 +506,19 @@ test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem locale
 // e não dizem o que vai acontecer: tela tocada na fase 3 usa o ConfirmDialog
 // (web/src/components/ui/ConfirmDialog.jsx, contrato C12 do P3). As que ainda existem
 // estão na lista abaixo, com quantas há em cada arquivo; a lista só diminui (a Biblioteca,
-// o Fórum, o Monitor e Provas do professor saíram no C0a). Arquivo novo ou chamada nova
+// o Fórum, o Monitor e Provas do professor saíram no C0a; Resultados, no P3-S8). Arquivo novo ou chamada nova
 // reprova. E, onde há o histórico do git, arquivo da lista que mudou desde o começo da
 // fase 3 (PHASE3_BASE) também reprova: quem toca a tela troca as caixas dela.
 const NATIVE_DIALOGS_LEFT = {
     'features/admin/CalendarioPage.jsx': 1,
     'features/admin/EditorPage.jsx': 2,
     'features/admin/IdentidadePage.jsx': 1,
-    'features/admin/ResultadosPage.jsx': 1,
-    'features/admin/SistemaPage.jsx': 2,
     'features/admin/TurmaPresencaConfig.jsx': 1,
 };
 // Exceções combinadas no plano (a tela muda antes de quem troca a caixa dela).
-const NATIVE_DIALOGS_TOUCH_EXCEPTIONS = {
-    // K15: até a J2 a ResultadosPage é da trilha B; o confirm dela sai no P3-S8 (trilha A).
-    'features/admin/ResultadosPage.jsx': 'K15 do plano: o confirm sai no P3-S8',
-};
+// A K15 (ResultadosPage até o P3-S8) acabou: o confirm das questões em branco virou o
+// ConfirmDialog no P3-S8.
+const NATIVE_DIALOGS_TOUCH_EXCEPTIONS = {};
 // Main de onde a fase 3 partiu (281029f, 18/11/2026).
 const PHASE3_BASE = '281029f1846543c2b33b181f6d9a9bb304aa6f0a';
 
@@ -548,7 +568,7 @@ test('[UC-CONFIRMACAO-001] guarda: nenhuma caixa nova do navegador (confirm, pro
     }
     assert.deepEqual(problems, [], `use o ConfirmDialog (web/src/components/ui/ConfirmDialog.jsx):\n${problems.join('\n')}`);
     // As telas tocadas no C0a não usam mais as caixas do navegador.
-    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx']) {
+    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx', 'features/admin/QuestionEditor.jsx', 'features/admin/QuestionBankPanel.jsx', 'features/admin/ResultadosPage.jsx']) {
         assert.equal(nativeDialogCalls({ text: fs.readFileSync(path.join(WEB_SRC, file), 'utf8') }).length, 0, file);
         assert.equal(NATIVE_DIALOGS_LEFT[file], undefined, file);
     }

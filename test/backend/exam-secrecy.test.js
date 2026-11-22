@@ -618,3 +618,47 @@ test('[UC-SIGILO-001] apostila salva com BOM UTF-8 (Bloco de Notas) também perd
         fs.writeFileSync(file, original);
     }
 });
+
+// Tipos de questão da fase 3 (P3-S1, contrato C4): a lista branca do aluno leva o tipo,
+// os pontos, a unidade e o limite da resposta, e nunca o gabarito de nenhum tipo, a
+// explicação, a resposta esperada ou a rubrica.
+test('[UC-SIGILO-001] studentQuestion não leva explicação, respostas aceitas, valor da numérica, rubrica, resposta esperada nem corretas', () => {
+    const { studentQuestion } = require('../../backend/utils/attemptQuestions.js');
+    const secret = 'SEGREDO-DO-PROFESSOR';
+    const base = {
+        originalNumber: 7,
+        text: 'Enunciado',
+        points: 2.5,
+        explanation: secret,
+        expectedAnswer: secret,
+        rubric: [{ id: 'c1', nome: secret, pontos: 2.5 }],
+        acceptedAnswers: [secret],
+        numeric: { value: 123.456, tolerance: 0.5, unit: 'ms' },
+        correctAnswers: ['A', 'C'],
+        correctAnswer: 'A',
+        partialCredit: true,
+        review: 'professor',
+        difficulty: 'dificil',
+        tags: [secret],
+        skills: [secret],
+        bankKey: secret,
+        alternatives: [{ letter: 'A', text: 'a', isCorrect: true }, { letter: 'B', text: 'b' }, { letter: 'C', text: 'c', isCorrect: true }],
+    };
+    ['multiple_choice', 'multiple_answer', 'true_false', 'numeric', 'short_answer', 'essay'].forEach(type => {
+        const shown = studentQuestion({ ...base, type }, 0, 'escopo-sigilo');
+        const serialized = JSON.stringify(shown);
+        for (const leak of [secret, '123.456', 'tolerance', 'correctAnswer', 'isCorrect', 'partialCredit', 'review', 'difficulty', 'explanation', 'rubric']) {
+            assert.equal(serialized.includes(leak), false, `${type}: ${leak} não pode chegar ao aluno`);
+        }
+        assert.equal(shown.type, type);
+        assert.equal(shown.points, 2.5);
+        if (type === 'numeric') assert.equal(shown.unit, 'ms');
+        else assert.equal(shown.unit, undefined);
+        assert.equal(shown.alternatives.length, ['multiple_choice', 'multiple_answer', 'true_false'].includes(type) ? 3 : 0);
+    });
+    // Questão antiga: uma correta de 1 ponto.
+    const legacy = studentQuestion({ originalNumber: 1, text: 'Q', weight: 5, alternatives: [{ letter: 'A', text: 'a' }, { letter: 'B', text: 'b' }], correctAnswer: 'B' }, 0, 'escopo-sigilo');
+    assert.equal(legacy.type, 'multiple_choice');
+    assert.equal(legacy.points, 1);
+    assert.equal(legacy.maxLength, undefined);
+});

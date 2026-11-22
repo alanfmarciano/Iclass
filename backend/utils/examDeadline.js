@@ -4,12 +4,14 @@
 // respostas salvas ("entregue automaticamente no fim do tempo"). O envio automático
 // do navegador que chega atrasado (celular sem rede, por exemplo) ainda é aceito
 // dentro de uma janela de tolerância, com o atraso registrado para o professor.
-const { filterStudentExamAttempts, normalizeMaxAttempts } = require('./examAttempts.js');
+const { filterStudentExamAttempts } = require('./examAttempts.js');
 const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js');
+const { answerFingerprint, answersFromGradedAnswers, hasAnswer } = require('./examScoring.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
     SERVER_OUTAGE_PAUSE_REASON,
+    effectiveMaxAttempts,
     examStateKey,
     extendDeadlineByPauses,
     findExamApplication,
@@ -28,6 +30,9 @@ const LATE_AUTO_SUBMIT_TOLERANCE_MS = 10 * 60 * 1000;
 const SERVER_FINALIZE_DELAY_MS = AUTO_SUBMIT_GRACE_MS;
 const SERVER_DEADLINE_SOURCE = 'deadline_server_auto_submit';
 const CLIENT_TIMER_SOURCE = 'timer_auto_submit';
+// "Recolher prova" do professor no Monitor (P3-S8): a tentativa aberta é entregue com as
+// respostas salvas no servidor.
+const INSTRUCTOR_COLLECT_SOURCE = 'instructor_collect';
 // Entregas automáticas do fim do tempo (navegador ou servidor). Só elas podem ser
 // reabertas pelo "+N min" da turma; o envio feito pelo próprio aluno nunca.
 const DEADLINE_DELIVERY_SOURCES = new Set([CLIENT_TIMER_SOURCE, SERVER_DEADLINE_SOURCE]);
@@ -50,15 +55,20 @@ function normalizedEmail(value) {
     return String(value || '').trim().toLowerCase();
 }
 
+// Questões respondidas no estado da tentativa (letra, lista de letras ou resposta digitada).
 function countAnswers(answers) {
     return Object.values(answers && typeof answers === 'object' ? answers : {})
-        .filter(value => value !== null && value !== undefined && value !== '').length;
+        .filter(hasAnswer).length;
 }
 
-// Estado da tentativa guardado na entrega automática do fim do tempo, para o "+N min"
-// da turma poder reabri-la (sem as respostas, que ficam na própria entrega, e sem a
-// chave da cópia local, que é do navegador do aluno).
-const REOPEN_STATE_OMITTED_FIELDS = new Set(['answers', 'localCopyKey', 'status', 'timerRemaining', 'submittedAt', 'reopenableState', 'pageExit', 'reopenedDelivery']);
+// Estado da tentativa guardado na entrega, para o "+N min" da turma reabrir a entrega
+// automática do fim do tempo e o professor reabrir qualquer uma pelo Monitor (P3-S8),
+// sem as respostas, que ficam na própria entrega, sem a chave da cópia local, que é do
+// navegador do aluno, e sem a marca da reabertura pelo professor (a próxima reabertura
+// diz a sua). Também sem o e-mail do aluno: a reabertura grava o da entrega, e a cópia
+// não deixa o e-mail para trás na entrega anonimizada (A4, ajuste 1; as cópias antigas
+// saem pelo handler de examParticipants.js, scrubReopenSnapshots).
+const REOPEN_STATE_OMITTED_FIELDS = new Set(['answers', 'localCopyKey', 'status', 'timerRemaining', 'submittedAt', 'reopenableState', 'pageExit', 'reopenedDelivery', 'reopenedByInstructor', 'studentEmail']);
 
 function attemptStateForReopen(state) {
     if (!state || typeof state !== 'object' || !state.startedAt) return null;
@@ -333,14 +343,10 @@ function latestDeliveryByStudent(memory, applicationId) {
     return latest;
 }
 
-// Respostas da entrega (letra original por questão), como ficam no estado da tentativa.
+// Respostas da entrega como ficam no estado da tentativa: letra original, lista de letras
+// (várias corretas) ou o objeto da resposta digitada (utils/examScoring.js).
 function answersFromDelivery(submission) {
-    const answers = {};
-    (Array.isArray(submission?.gradedAnswers) ? submission.gradedAnswers : []).forEach(item => {
-        const number = Number(item?.questionNumber);
-        if (Number.isFinite(number) && item.studentChoice) answers[number] = String(item.studentChoice).toUpperCase();
-    });
-    return answers;
+    return answersFromGradedAnswers(submission?.gradedAnswers);
 }
 
 // A entrega manual (o aluno apertou "Enviar") só conta como "ficou sem o tempo extra"
@@ -480,6 +486,124 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
     return result;
 }
 
+// "Reabrir" do professor no Monitor (fase 3, P3-S8: AVA-14; D18 do desenho do P3): a
+// entrega mais recente do aluno nesta aplicação (enviada por engano, recolhida antes da
+// hora) volta para a mesma tentativa, com as mesmas respostas e o tempo que faltava
+// quando ela foi entregue. A máquina é a do "+N min" da turma (reopenDeadlineDeliveries):
+// a entrega sai da lista e fica guardada na tentativa (reopenedDelivery), então ela volta
+// se a tentativa reaberta terminar desconsiderada no encerramento, e a tentativa não
+// conta de novo no limite (é a mesma). Só com a aplicação em andamento e só a entrega sem
+// nota publicada, considerada (nem arquivada, nem anulada) e que guardou a tentativa
+// (reopenableState: as entregas feitas a partir desta versão; as de antes, não). A
+// tentativa seguinte que o aluno ainda não começou sai, como no "+N min". Devolve
+// { ok: true, state, key, submission, addedMinutes, remainingMs, discardedNext } ou
+// { ok: false, code, error } sem mudar nada.
+const INSTRUCTOR_REOPEN_MIN_REMAINING_MS = 60 * 1000;
+
+function reopenDeliveryByInstructor(memory, application, studentEmail, { now = Date.now(), actor = null } = {}) {
+    const refuse = (code, error) => ({ ok: false, code, error });
+    const email = normalizedEmail(studentEmail);
+    if (!application || !ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+        return refuse('application_not_running', 'Só dá para reabrir a prova de um aluno com a aplicação em andamento.');
+    }
+    const submission = latestDeliveryByStudent(memory, application.id).get(email);
+    if (!submission) return refuse('no_delivery', 'Este aluno não tem entrega nesta aplicação para reabrir.');
+    const open = openAttemptsInApplication(memory, application.id, email);
+    const pendingNext = open.length > 0 && open.every(([, state]) => untouchedNextAttempt(state, submission));
+    if (open.length && !pendingNext) {
+        return refuse('attempt_in_progress', 'O aluno já está fazendo outra tentativa: a entrega anterior não pode ser reaberta agora.');
+    }
+    if (submission.gradePublished === true) {
+        return refuse('grade_published', 'A nota desta entrega já foi publicada para o aluno: ela não volta para a prova. Para ele fazer de novo, dê uma tentativa extra.');
+    }
+    if (['archived', 'invalidated'].includes(submission.resultStatus)) {
+        return refuse('delivery_not_considered', 'Esta entrega está arquivada ou anulada e não pode ser reaberta.');
+    }
+    const snapshot = submission.reopenableState;
+    if (!snapshot || typeof snapshot !== 'object' || !snapshot.startedAt) {
+        return refuse('not_reopenable', 'Esta entrega não guardou a tentativa (foi feita antes desta versão do IClass) e não pode ser reaberta. Para o aluno fazer de novo, dê uma tentativa extra.');
+    }
+    const state = {
+        ...JSON.parse(JSON.stringify(snapshot)),
+        applicationId: application.id,
+        studentEmail: email,
+        status: 'active',
+        answers: answersFromDelivery(submission),
+        timerRemaining: null,
+    };
+    // O tempo que faltava quando a prova foi entregue volta inteiro: o "+N min" do aluno
+    // na tentativa cresce o que for preciso (em minutos inteiros, para cima) para o prazo
+    // novo ficar pelo menos a esse tempo de agora. Nunca diminui o prazo.
+    const deadlineAtDelivery = Number(submission.deadlineAt) > 0 ? Number(submission.deadlineAt) : null;
+    const deliveredAt = Date.parse(submission.timestamp || '');
+    const baseDeadline = computeAttemptDeadline({ application, state, now });
+    let remainingMs = null;
+    let addedMinutes = 0;
+    if (baseDeadline !== null) {
+        remainingMs = deadlineAtDelivery && Number.isFinite(deliveredAt) ? Math.max(0, deadlineAtDelivery - deliveredAt) : Math.max(0, baseDeadline - now);
+        if (remainingMs < INSTRUCTOR_REOPEN_MIN_REMAINING_MS) {
+            return refuse('no_time_left', 'O tempo deste aluno tinha acabado quando a prova foi entregue: reabrir não daria tempo para responder. Logo depois do fim do tempo, use "+N min" da turma; depois disso, dê uma tentativa extra.');
+        }
+        const target = now + remainingMs;
+        if (target > baseDeadline) {
+            addedMinutes = Math.ceil((target - baseDeadline) / 60000);
+            state.individualTimeAdjustment = Number(state.individualTimeAdjustment || 0) + addedMinutes;
+        }
+    }
+    const discardedNext = pendingNext ? open.map(([key, next]) => {
+        delete memory.studentExamState[key];
+        if (Number(next.individualTimeAdjustment)) {
+            if (!application.studentAdjustments) application.studentAdjustments = {};
+            application.studentAdjustments[email] = Number(application.studentAdjustments[email] || 0) + Number(next.individualTimeAdjustment);
+        }
+        return { attemptId: next.attemptId || next.id || null, attemptNumber: Number(next.attemptNumber || 0) || null };
+    }) : [];
+    state.attemptId = state.attemptId || submission.attemptId;
+    state.id = state.id || state.attemptId;
+    state.attemptNumber = Number(state.attemptNumber || submission.attemptNumber || 1);
+    state.deadlineAt = computeAttemptDeadline({ application, state, now });
+    state.savedAt = state.savedAt || submission.timestamp || null;
+    state.reopenedAt = now;
+    state.reopenedBy = actor || null;
+    // A tela do aluno diz "O professor reabriu a sua prova" (e não "deu mais tempo à turma").
+    state.reopenedByInstructor = true;
+    state.reopenedFrom = [
+        ...(Array.isArray(snapshot.reopenedFrom) ? snapshot.reopenedFrom : []),
+        {
+            submissionId: submission.id,
+            source: submission.submissionSource,
+            deliveredAt: submission.timestamp || null,
+            deadlineAt: deadlineAtDelivery,
+            answeredCount: countAnswers(state.answers),
+            lateBySeconds: Number(submission.lateBySeconds || 0),
+            score: submission.score ?? null,
+            byInstructor: true,
+        },
+    ];
+    state.reopenedDelivery = archivedDelivery(submission);
+    const key = examStateKey({ applicationId: application.id, studentEmail: email, attemptNumber: state.attemptNumber });
+    const index = memory.submissions.indexOf(submission);
+    if (index >= 0) memory.submissions.splice(index, 1);
+    if (!memory.studentExamState || typeof memory.studentExamState !== 'object') memory.studentExamState = {};
+    memory.studentExamState[key] = state;
+    return { ok: true, state, key, submission, addedMinutes, remainingMs, discardedNext };
+}
+
+// Aplicação encerrada (ou cancelada) não reabre mais nenhuma entrega: as cópias da
+// tentativa guardadas nas entregas dela (reopenableState) saem, para não ficarem para
+// sempre no banco e nos backups (A4, ajuste 1). Entregas são linhas antigas de coleção
+// só de acréscimo: quem chama grava completo quando devolve mais que 0.
+function dropReopenSnapshots(memory, applicationId) {
+    if (!applicationId) return 0;
+    let dropped = 0;
+    ((memory && memory.submissions) || []).forEach(submission => {
+        if (!submission || submission.applicationId !== applicationId || !submission.reopenableState) return;
+        delete submission.reopenableState;
+        dropped += 1;
+    });
+    return dropped;
+}
+
 // Tentativa reaberta pelo "+N min" que termina sem entrega nova (o professor desconsiderou
 // as tentativas em andamento ao encerrar): a entrega do fim do tempo que ela já tinha
 // volta como estava, marcada para o professor. Devolve a entrega restaurada (ou null).
@@ -494,6 +618,8 @@ function restoreReopenedDelivery(memory, state, { application = null, actor = nu
         at: new Date(now).toISOString(),
         by: actor || 'sistema',
         reopenedAt: Number(state.reopenedAt) > 0 ? new Date(Number(state.reopenedAt)).toISOString() : null,
+        // Reaberta pelo professor no Monitor (P3-S8), e não pelo "+N min" da turma.
+        ...(state.reopenedByInstructor === true ? { byInstructor: true } : {}),
     };
     memory.submissions.push(restored);
     if (!Array.isArray(memory.auditLogs)) memory.auditLogs = [];
@@ -560,7 +686,8 @@ function deliveredWithoutAttemptsLeft(memory, application, studentEmail) {
         applicationId: application.id,
     }).length;
     if (!delivered) return false;
-    const maxAttempts = normalizeMaxAttempts(application.maxAttempts);
+    // O limite do aluno: o da aplicação mais as tentativas extras dele (P3-S7, D16).
+    const maxAttempts = effectiveMaxAttempts(application, email);
     return maxAttempts !== null && delivered >= maxAttempts;
 }
 
@@ -585,12 +712,14 @@ function markLateSubmission(submission, { deadlineAt, lateMs } = {}) {
 
 function sameAnswers(gradedAnswers, answers) {
     const fromSubmission = {};
-    (Array.isArray(gradedAnswers) ? gradedAnswers : []).forEach(item => {
-        if (item?.studentChoice) fromSubmission[Number(item.questionNumber)] = String(item.studentChoice).toUpperCase();
+    Object.entries(answersFromGradedAnswers(gradedAnswers)).forEach(([number, value]) => {
+        const print = answerFingerprint(value);
+        if (print) fromSubmission[Number(number)] = print;
     });
     const fromClient = {};
-    Object.entries(answers || {}).forEach(([number, choice]) => {
-        if (choice !== null && choice !== undefined && choice !== '') fromClient[Number(number)] = String(choice).toUpperCase();
+    Object.entries(answers && typeof answers === 'object' ? answers : {}).forEach(([number, value]) => {
+        const print = answerFingerprint(value);
+        if (print) fromClient[Number(number)] = print;
     });
     const keys = new Set([...Object.keys(fromSubmission), ...Object.keys(fromClient)]);
     return [...keys].every(number => fromSubmission[number] === fromClient[number]);
@@ -630,6 +759,8 @@ function replaceServerFinalization(submission, { application, onlineConfig, eval
     submission.score = grade.score;
     submission.correctCount = grade.correctCount;
     submission.totalCount = grade.totalCount;
+    submission.pointsEarned = grade.pointsEarned;
+    submission.pointsPossible = grade.pointsPossible;
     submission.gradedAnswers = grade.gradedAnswers;
     if (grade.examSnapshot) submission.examSnapshot = grade.examSnapshot;
     submission.answeredCount = countAnswers(answers);
@@ -645,6 +776,7 @@ module.exports = {
     AUTO_SUBMIT_GRACE_MS,
     CLASS_EXTRA_TIME_REOPEN_WINDOW_MS,
     CLIENT_TIMER_SOURCE,
+    INSTRUCTOR_COLLECT_SOURCE,
     LATE_AUTO_SUBMIT_TOLERANCE_MS,
     LATE_FLAG_THRESHOLD_MS,
     NO_DEADLINE_AUTO_SUBMIT_MESSAGE,
@@ -657,12 +789,14 @@ module.exports = {
     computeAttemptDeadline,
     countAnswers,
     deliveredWithoutAttemptsLeft,
+    dropReopenSnapshots,
     extendedByServerOutage,
     finalizeAttemptState,
     isAttemptPastDeadline,
     lateSubmitDecision,
     markLateSubmission,
     reopenDeadlineDeliveries,
+    reopenDeliveryByInstructor,
     replaceServerFinalization,
     restoreReopenedDelivery,
     setDeadlineCheck,

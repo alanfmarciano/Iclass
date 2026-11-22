@@ -1,18 +1,41 @@
 import { useMemo, useState } from 'react'
-import { ArrowLeft, CheckCircle2, Play, Printer } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, ListChecks, Play, Printer } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { snapshotsFromHistory } from './examTools'
+import { AnswerKeyCorrectionDialog } from './AnswerKeyCorrectionDialog'
+
+// Status da aplicação online em palavras, e se o gabarito dela pode ser corrigido (com a
+// prova em andamento ou encerrada; P3-S6, AVA-X2).
+const APPLICATION_STATUS = {
+  draft: { label: 'Rascunho', tone: 'neutral' },
+  prepared: { label: 'Preparada', tone: 'info' },
+  waiting: { label: 'Sala de espera', tone: 'warning' },
+  running: { label: 'Em andamento', tone: 'success' },
+  paused: { label: 'Pausada', tone: 'warning' },
+  finished: { label: 'Encerrada', tone: 'neutral' },
+  cancelled: { label: 'Cancelada', tone: 'danger' },
+}
+const CORRECTABLE = new Set(['waiting', 'running', 'paused', 'finished'])
+
+function fmtWhen(value) {
+  const time = typeof value === 'number' ? value : Date.parse(value)
+  return Number.isFinite(time) ? new Date(time).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : ''
+}
 
 function historyLabel(entry) {
   if (entry?.label) return entry.label
   return entry?.type === 'impressa' ? 'Prova impressa' : 'Aplicação online'
 }
 
-export function ExamApplicationDetail({ entry, title, subtitle, onBack, onReprint, onApplyOnline, applyBusy }) {
+// applications: as aplicações online feitas com esta preparação (Corrigir gabarito em cada
+// uma, para quem tem canCorrectAnswerKey, isto é, page.results). onAnswerKeyCorrected(resposta)
+// é chamada depois da correção, para a tela recarregar as aplicações.
+export function ExamApplicationDetail({ entry, title, subtitle, onBack, onReprint, onApplyOnline, applyBusy, applications = [], canCorrectAnswerKey = false, onAnswerKeyCorrected }) {
   const versions = useMemo(() => snapshotsFromHistory(entry), [entry])
   const [activeIndex, setActiveIndex] = useState(0)
+  const [correcting, setCorrecting] = useState(null)
   const active = versions[activeIndex] || null
 
   const questionNumbers = (entry?.questionNumbers || []).join(', ')
@@ -59,6 +82,53 @@ export function ExamApplicationDetail({ entry, title, subtitle, onBack, onReprin
           </div>
         </CardBody>
       </Card>
+
+      {applications.length > 0 && (
+        <Card>
+          <CardHeader
+            title="Aplicações online desta preparação"
+            subtitle="O gabarito errado descoberto depois da prova se corrige aqui: as notas são recalculadas e quem já tinha a nota publicada é avisado."
+          />
+          <CardBody className="space-y-2">
+            {applications.map((application) => {
+              const status = APPLICATION_STATUS[application.status] || { label: application.status || '—', tone: 'neutral' }
+              const corrections = Array.isArray(application.answerKeyCorrections) ? application.answerKeyCorrections : []
+              return (
+                <div key={application.id} className="rounded-lg border border-border p-3 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="flex-1 min-w-[180px] text-sm font-semibold text-text">
+                      {application.finishedAt ? `Encerrada em ${fmtWhen(application.finishedAt)}` : (application.startedAt ? `Iniciada em ${fmtWhen(application.startedAt)}` : `Preparada em ${fmtWhen(application.createdAt)}`)}
+                    </p>
+                    <Badge tone={status.tone}>{status.label}</Badge>
+                    {canCorrectAnswerKey && CORRECTABLE.has(application.status) && (
+                      <Button size="sm" variant="secondary" icon={ListChecks} onClick={() => setCorrecting(application)}>Corrigir gabarito</Button>
+                    )}
+                  </div>
+                  {corrections.length > 0 && (
+                    <ul className="space-y-1 text-xs text-muted">
+                      {corrections.map((item, index) => (
+                        <li key={`${item.em}-${index}`} className="break-words">
+                          <span className="font-semibold text-text">Questão {item.questionNumber}:</span> {item.antes || '—'} → {item.depois || '—'}
+                          {` · ${item.changed === 1 ? '1 nota mudou' : `${item.changed || 0} notas mudaram`}`}
+                          {item.em ? ` · ${fmtWhen(item.em)}` : ''}
+                          {item.motivo ? ` · motivo: ${item.motivo}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )
+            })}
+          </CardBody>
+        </Card>
+      )}
+
+      <AnswerKeyCorrectionDialog
+        open={!!correcting}
+        application={correcting}
+        onClose={() => setCorrecting(null)}
+        onCorrected={(response) => { setCorrecting(null); onAnswerKeyCorrected?.(response) }}
+      />
 
       {versions.length === 0 ? (
         <Card>

@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 import { GraduationCap, LogOut, Menu, X } from 'lucide-react'
 import { ThemeToggle } from '../ui/ThemeToggle'
 import { cn } from '../../lib/cn'
+import { ConnectionStatus } from './ConnectionStatus'
 
 function initials(value = '') {
   return value
@@ -158,8 +159,7 @@ export function LumenShell({
               ))}
             </nav>
             <div className="lumen-menu-footer">
-              <span className="lumen-status-dot" aria-hidden="true" />
-              Sistema ativo
+              <ConnectionStatus variant="lumen" />
               <button type="button" onClick={onLogout}><LogOut size={15} /> Sair</button>
             </div>
           </aside>

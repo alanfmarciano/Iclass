@@ -334,6 +334,44 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     expect(postsTo('/api/student/submit')).toHaveLength(1)
   }, 15000)
 
+  it('[UC-TENTATIVA-004] o professor recolhe a prova no Monitor: a tela mostra a entrega com as respostas salvas, sem enviar de novo', async () => {
+    let collected = false
+    apiMock.get.mockImplementation(async () => (collected
+      ? syncResponse({ startedAt: null, attemptOutcome: { attemptId: 'att-1', finalizedByServer: false, source: 'instructor_collect', answeredCount: 2 } })
+      : syncResponse({ timerRemaining: 600 })))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    collected = true
+    expect(await screen.findByText('Prova recolhida pelo professor', {}, { timeout: 6000 })).toBeVisible()
+    expect(screen.getByText(/O professor recolheu a sua prova e entregou as respostas que já estavam salvas/)).toBeVisible()
+    expect(screen.getByText('2 respostas registradas.')).toBeVisible()
+    expect(postsTo('/api/student/submit')).toHaveLength(0)
+  }, 15000)
+
+  it('[UC-TENTATIVA-004] o professor reabre a prova entregue: a tela volta às questões com "O professor reabriu a sua prova"', async () => {
+    const user = userEvent.setup()
+    let delivered = false
+    apiMock.get.mockImplementation(async () => {
+      if (!delivered) return syncResponse({ timerRemaining: 2 })
+      const response = syncResponse({ timerRemaining: 900, answers: { 1: 'A' }, reopenedAt: Date.now() })
+      response.state.reopenedByInstructor = true
+      return response
+    })
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/submit') return { success: true }
+      delivered = true
+      return { success: true, gradePublished: false, answeredCount: 1 }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    expect(await screen.findByText('Prova enviada!', {}, { timeout: 5000 })).toBeVisible()
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 6000 })).toBeVisible()
+    expect(toast.info).toHaveBeenCalledWith('O professor reabriu a sua prova. Ela continua de onde parou, com as suas respostas.')
+    expect(screen.queryByText('Prova enviada!')).not.toBeInTheDocument()
+  }, 15000)
+
   it('reaberta pelo "+N min" depois do salvamento que falhou no fim do tempo: sem "Falha no último salvamento" quando o servidor tem tudo', async () => {
     const user = userEvent.setup()
     let delivered = false
@@ -1877,6 +1915,8 @@ describe('[UC-LGPD-009] ExamRunner: registro do teclado conforme a aplicação',
     renderRunner()
     const notice = await screen.findByTestId('keystroke-notice')
     expect(notice).toHaveTextContent('as teclas digitadas na tela da prova')
+    // Com as respostas escritas (P3-S2), o aviso diz que elas também entram no registro.
+    expect(notice).toHaveTextContent('inclusive nas respostas escritas')
     expect(notice).toHaveTextContent('"Reportar problema" não é registrado')
     expect(notice).toHaveTextContent('ficam guardados até a escola apagá-los')
   })
@@ -1887,5 +1927,400 @@ describe('[UC-LGPD-009] ExamRunner: registro do teclado conforme a aplicação',
     const none = await screen.findByTestId('keystroke-notice')
     expect(none).toHaveTextContent('Nesta prova o teclado não é registrado.')
     expect(none).toHaveTextContent('As saídas da tela são apagadas 30 dias depois')
+  })
+})
+
+// Segunda chamada e exceção por aluno (fase 3, P3-S7: AVA-09).
+describe('[UC-PROVA-006] ExamRunner: aplicação só para alguns alunos e prazo para começar', () => {
+  it('fora da lista da segunda chamada: o sync recusa e a tela diz que a aplicação é só para os indicados', async () => {
+    apiMock.get.mockRejectedValue(Object.assign(new Error('Esta é a segunda chamada da prova, só para os alunos indicados pelo professor.'), { status: 403, data: { code: 'not_participant', notParticipant: true } }))
+    renderRunner()
+    expect(await screen.findByText(/segunda chamada da prova, só para os alunos indicados/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Iniciar prova' })).not.toBeInTheDocument()
+  })
+
+  it('prazo para começar vencido: o sync avisa e não há "Iniciar prova"', async () => {
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null }), startDeadlinePassed: true, startDeadlineMessage: 'O seu prazo para começar esta prova terminou em 20/11 às 08:00. Procure o professor.' })
+    renderRunner()
+    expect(await screen.findByText(/prazo para começar esta prova terminou em 20\/11 às 08:00/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Iniciar prova' })).not.toBeInTheDocument()
+  })
+
+  it('o prazo vence enquanto o aluno lê as instruções: Iniciar mostra o aviso do servidor', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
+    apiMock.post.mockImplementation(async (url) => {
+      if (url.endsWith('/start-attempt')) {
+        throw Object.assign(new Error('O seu prazo para começar esta prova terminou. Procure o professor.'), { status: 409, data: { code: 'start_deadline_passed', startDeadlinePassed: true } })
+      }
+      return { success: true }
+    })
+    renderRunner()
+    await user.click(await screen.findByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: 'Iniciar prova' }))
+    expect(await screen.findByText(/O seu prazo para começar esta prova terminou/)).toBeVisible()
+  })
+
+  it('instruções mostram o limite do próprio aluno (com a tentativa extra) e o prazo dele para começar', async () => {
+    // A turma tem 1 tentativa; o Bruno ganhou 1 extra e já usou 1: o sync traz 2.
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null }), attemptsUsed: 1, maxAttempts: 2, startDeadlineAt: Date.now() + 3600000, startDeadlineLabel: '20/11 às 08:00' })
+    renderRunner()
+    const attempts = await screen.findByTestId('attempts-info')
+    expect(attempts).toHaveTextContent('Tentativa')
+    expect(attempts).toHaveTextContent('2 de 2')
+    expect(screen.getByTestId('start-deadline')).toHaveTextContent('Você pode começar esta prova até 20/11 às 08:00')
+  })
+
+  it('instruções sem exceção: o limite da turma e nenhum prazo', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
+    renderRunner()
+    expect(await screen.findByTestId('attempts-info')).toHaveTextContent('1 de 1')
+    expect(screen.queryByTestId('start-deadline')).not.toBeInTheDocument()
+  })
+})
+
+// Tipos de questão na prova do aluno (fase 3, P3-S2: AVA-06, UXA-12). As questões chegam
+// como o servidor manda (studentQuestion: tipo, pontos, unidade e limite, sem gabarito).
+const TYPE_IDS = {
+  ls: 'A1A1A1A1A1A1A', cd: 'A2A2A2A2A2A2A', rm: 'A3A3A3A3A3A3A',
+  tcp: 'B1B1B1B1B1B1B', http: 'B2B2B2B2B2B2B', udp: 'B3B3B3B3B3B3B', dns: 'B4B4B4B4B4B4B',
+  verdadeiro: 'C1C1C1C1C1C1C', falso: 'C2C2C2C2C2C2C',
+}
+function alternativesOf(entries) {
+  return entries.map(([id, text]) => ({ id, letter: id, text }))
+}
+function typedQuestions() {
+  return [
+    { originalNumber: 1, examNumber: 1, type: 'multiple_choice', points: 2, text: 'Qual comando lista arquivos?\n\n```\n$ ls -la\n```', alternatives: alternativesOf([[TYPE_IDS.ls, '`ls`'], [TYPE_IDS.cd, '`cd`'], [TYPE_IDS.rm, '`rm`']]) },
+    { originalNumber: 2, examNumber: 2, type: 'multiple_answer', points: 3, text: 'Quais são protocolos de **transporte**?', alternatives: alternativesOf([[TYPE_IDS.tcp, 'TCP'], [TYPE_IDS.http, 'HTTP'], [TYPE_IDS.udp, 'UDP'], [TYPE_IDS.dns, 'DNS']]) },
+    { originalNumber: 3, examNumber: 3, type: 'true_false', points: 1, text: 'IPv4 tem 32 bits.', alternatives: alternativesOf([[TYPE_IDS.verdadeiro, 'Verdadeiro'], [TYPE_IDS.falso, 'Falso']]) },
+    { originalNumber: 4, examNumber: 4, type: 'numeric', points: 2, unit: 'ms', maxLength: 32, text: 'Latência média?', alternatives: [] },
+    { originalNumber: 5, examNumber: 5, type: 'short_answer', points: 0.5, maxLength: 300, text: 'Nome do endereço 255.255.255.0?', alternatives: [] },
+    { originalNumber: 6, examNumber: 6, type: 'essay', points: 3, maxLength: 10000, text: 'Explique o handshake.\nUse as três etapas.', alternatives: [] },
+  ]
+}
+function typedSync(options) {
+  const response = syncResponse(options)
+  if (response.questions) response.questions = typedQuestions()
+  return response
+}
+function lastAutosave() {
+  const calls = postsTo('/api/student/autosave-progress')
+  return calls[calls.length - 1]?.[1]
+}
+
+describe('[UC-PROVA-004] ExamRunner: um campo para cada tipo de questão', () => {
+  it('mostra o campo de cada tipo com os pontos e o enunciado em Markdown, e manda cada resposta no formato do tipo', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    const container = document.body
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('0/6 respondidas')).toBeVisible()
+    // Pontos no cabeçalho de cada cartão.
+    expect(screen.getAllByText('2 pontos')).toHaveLength(2)
+    expect(screen.getAllByText('3 pontos')).toHaveLength(2)
+    expect(screen.getByText('1 ponto')).toBeVisible()
+    expect(screen.getByText('0,5 ponto')).toBeVisible()
+    // Enunciado em Markdown: bloco de código, negrito e quebra de linha.
+    expect(container.querySelector('.question-md pre code').textContent).toContain('$ ls -la')
+    expect(screen.getByText('transporte').tagName).toBe('STRONG')
+    expect(screen.getByText(/Explique o handshake\./).querySelector('br')).not.toBeNull()
+    // Uma correta continua com os botões; alternativa em Markdown.
+    expect(screen.getByRole('button', { name: /cd/ }).querySelector('code')).not.toBeNull()
+    // Várias corretas: caixas com o aviso.
+    expect(screen.getByText('Marque todas as corretas.')).toBeVisible()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(4)
+    // Verdadeiro ou falso: dois botões de rádio grandes.
+    expect(screen.getByRole('radio', { name: 'Verdadeiro' })).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Falso' })).toBeVisible()
+    // Numérica com teclado decimal e a unidade; resposta curta e dissertativa.
+    const numeric = screen.getByLabelText('Sua resposta (número)')
+    expect(numeric).toHaveAttribute('inputmode', 'decimal')
+    expect(numeric).toHaveAttribute('maxlength', '32')
+    expect(screen.getByText('ms')).toBeVisible()
+    const [shortAnswer, essay] = screen.getAllByLabelText('Sua resposta')
+    expect(shortAnswer.tagName).toBe('INPUT')
+    expect(shortAnswer).toHaveAttribute('maxlength', '300')
+    expect(essay.tagName).toBe('TEXTAREA')
+    expect(essay).toHaveAttribute('maxlength', '10000')
+    expect(screen.getByText('0 de 10.000')).toBeVisible()
+
+    await user.click(screen.getByRole('checkbox', { name: /UDP/ }))
+    await user.click(screen.getByRole('checkbox', { name: /TCP/ }))
+    await user.click(screen.getByRole('radio', { name: 'Verdadeiro' }))
+    await user.type(numeric, '3,5')
+    await user.type(shortAnswer, 'Máscara')
+    await user.type(essay, 'SYN e ACK')
+    expect(screen.getByText('9 de 10.000')).toBeVisible()
+    expect(screen.getByText('5/6 respondidas')).toBeVisible()
+    await waitFor(() => expect(lastAutosave()?.answers).toEqual({
+      2: [TYPE_IDS.tcp, TYPE_IDS.udp],
+      3: TYPE_IDS.verdadeiro,
+      4: { numero: '3,5' },
+      5: { texto: 'Máscara' },
+      6: { texto: 'SYN e ACK' },
+    }), { timeout: 6000 })
+
+    // A confirmação do envio diz qual questão ficou em branco.
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('Você respondeu 5 de 6 questões. A questão 1 está em branco.')
+  }, 20000)
+
+  it('desmarcar a última caixa ou apagar o texto volta a questão para em branco; texto só com espaços conta como em branco', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600, answers: { 2: [TYPE_IDS.dns], 5: { texto: 'máscara' } } }))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('2/6 respondidas')).toBeVisible()
+    expect(screen.getByRole('checkbox', { name: /DNS/ })).toBeChecked()
+    await user.click(screen.getByRole('checkbox', { name: /DNS/ }))
+    await user.clear(screen.getAllByLabelText('Sua resposta')[0])
+    await user.type(screen.getAllByLabelText('Sua resposta')[1], '   ')
+    expect(screen.getByText('0/6 respondidas')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('As questões 1, 2, 3, 4, 5 e 6 estão em branco.')
+  }, 15000)
+
+  it('a resposta escrita salva não volta aparada pelo servidor nem é reenviada a cada sincronização', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const essay = (await screen.findAllByLabelText('Sua resposta'))[1]
+    await user.type(essay, 'Olá ')
+    await waitFor(() => expect(lastAutosave()?.answers).toEqual({ 6: { texto: 'Olá ' } }), { timeout: 6000 })
+    // O servidor guarda o texto aparado no fim (como a dissertativa é guardada).
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 590, answers: { 6: { texto: 'Olá' } } }))
+    const saves = postsTo('/api/student/autosave-progress').length
+    const syncs = apiMock.get.mock.calls.length
+    await waitFor(() => expect(apiMock.get.mock.calls.length).toBeGreaterThan(syncs + 1), { timeout: 10000 })
+    // O espaço que o aluno acabou de digitar continua lá, e nada foi salvo de novo.
+    expect(essay.value).toBe('Olá ')
+    expect(postsTo('/api/student/autosave-progress')).toHaveLength(saves)
+    await user.type(essay, 'mundo')
+    expect(essay.value).toBe('Olá mundo')
+  }, 20000)
+
+  it('a cópia local guarda lista e texto: depois de recarregar, as caixas e o texto voltam e são salvos', async () => {
+    await writeCopy('att-1', { 2: [TYPE_IDS.tcp, TYPE_IDS.http], 4: { numero: '2,5' }, 6: { texto: 'rascunho\nsegunda linha' }, 9: { estranho: true } }, false)
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600, answers: {} }))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('3/6 respondidas')).toBeVisible()
+    expect(screen.getByRole('checkbox', { name: /TCP/ })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /HTTP/ })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /UDP/ })).not.toBeChecked()
+    expect(screen.getByLabelText('Sua resposta (número)')).toHaveValue('2,5')
+    expect(screen.getAllByLabelText('Sua resposta')[1]).toHaveValue('rascunho\nsegunda linha')
+    await waitFor(() => expect(lastAutosave()?.answers).toEqual({
+      2: [TYPE_IDS.tcp, TYPE_IDS.http],
+      4: { numero: '2,5' },
+      6: { texto: 'rascunho\nsegunda linha' },
+    }), { timeout: 6000 })
+    await waitFor(async () => expect((await readCopy())?.saved).toBe(true))
+  }, 15000)
+
+  it('na saída da página, respostas escritas grandes vão sem keepalive (o navegador recusaria o pedido)', async () => {
+    const long = 'ã'.repeat(9000)
+    await writeCopy('att-1', { 6: { texto: long } }, false)
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600, answers: {} }))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('1/6 respondidas')).toBeVisible()
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    const calls = postsTo('/api/student/autosave-progress')
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.some(([, , options]) => options?.keepalive === true)).toBe(false)
+    expect(calls[calls.length - 1][1].answers[6].texto).toHaveLength(9000)
+  })
+
+  it('[UC-LGPD-009] no campo da resposta escrita, Ctrl+Z e Ctrl+Backspace são escrita, não atalho; copiar continua registrado', async () => {
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const essay = (await screen.findAllByLabelText('Sua resposta'))[1]
+    act(() => {
+      essay.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', ctrlKey: true, bubbles: true, cancelable: true }))
+      essay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', ctrlKey: true, bubbles: true, cancelable: true }))
+    })
+    const copy = new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', ctrlKey: true, bubbles: true, cancelable: true })
+    act(() => { essay.dispatchEvent(copy) })
+    expect(copy.defaultPrevented).toBe(true)
+    await waitFor(() => expect(postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events).map((event) => event.key)).toEqual(['c']), { timeout: 4000 })
+  })
+
+  it('prova com dissertativa: o fim diz "Sua prova foi entregue. As dissertativas serão corrigidas." e não mostra nota', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => (url === '/api/student/submit'
+      ? { success: true, gradePublished: false, awaitingCorrection: true, answeredCount: 1 }
+      : { success: true }))
+    renderRunner()
+    enterFullscreen()
+    await user.type((await screen.findAllByLabelText('Sua resposta'))[1], 'Três etapas')
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    expect(await screen.findByText('Sua prova foi entregue. As dissertativas serão corrigidas.')).toBeVisible()
+    // Uma frase só: "Sua nota será exibida depois da publicação" não aparece junto.
+    expect(screen.queryByText(/Sua nota será exibida/)).not.toBeInTheDocument()
+    expect(postsTo('/api/student/submit')[0][1].answers).toEqual({ 6: { texto: 'Três etapas' } })
+  })
+
+  it('dissertativa entregue quando o tempo acabou: diz que o tempo acabou e que as dissertativas serão corrigidas, sem a frase da nota', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => (url === '/api/student/submit'
+      ? { success: true, gradePublished: true, score: 40, awaitingCorrection: true, finalizedByServer: true, answeredCount: 1 }
+      : { success: true }))
+    renderRunner()
+    enterFullscreen()
+    await user.type((await screen.findAllByLabelText('Sua resposta'))[1], 'Três etapas')
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    expect(await screen.findByText('O tempo acabou e as respostas salvas no servidor foram entregues automaticamente.')).toBeVisible()
+    expect(screen.getByTestId('awaiting-correction')).toHaveTextContent('Sua prova foi entregue. As dissertativas serão corrigidas.')
+    expect(screen.queryByText(/Sua nota será exibida/)).not.toBeInTheDocument()
+    expect(screen.queryByText('4,0')).not.toBeInTheDocument()
+  })
+
+  // Rodadas de ajuste do A5: no Android, o toque longo na resposta escrita dispara
+  // 'contextmenu'; antes ele era bloqueado e ia ao Monitor como "menu do botão direito".
+  // Só o toque passa: o botão direito do mouse continua bloqueado e registrado.
+  function contextMenuEvent({ pointerType, button = 0 } = {}) {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button })
+    if (pointerType !== undefined) Object.defineProperty(event, 'pointerType', { value: pointerType })
+    return event
+  }
+
+  it('[UC-LGPD-009] toque longo (menu) dentro da resposta escrita passa sem registro; fora dela continua bloqueado e registrado', async () => {
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const [shortAnswer, essay] = await screen.findAllByLabelText('Sua resposta')
+    const inEssay = contextMenuEvent({ pointerType: 'touch' })
+    const inShort = contextMenuEvent({ pointerType: 'touch' })
+    // Navegador que não diz o tipo do ponteiro no menu: vale o toque que começou o gesto.
+    const inNumeric = contextMenuEvent()
+    const numeric = screen.getByLabelText('Sua resposta (número)')
+    act(() => {
+      essay.dispatchEvent(inEssay)
+      shortAnswer.dispatchEvent(inShort)
+      numeric.dispatchEvent(new Event('touchstart', { bubbles: true }))
+      numeric.dispatchEvent(inNumeric)
+    })
+    expect(inEssay.defaultPrevented).toBe(false)
+    expect(inShort.defaultPrevented).toBe(false)
+    expect(inNumeric.defaultPrevented).toBe(false)
+    // Na caixa de marcar e no texto da questão, até o toque longo continua bloqueado e registrado.
+    const onCheckbox = contextMenuEvent({ pointerType: 'touch' })
+    const onText = contextMenuEvent({ pointerType: 'touch' })
+    act(() => {
+      screen.getByRole('checkbox', { name: /UDP/ }).dispatchEvent(onCheckbox)
+      screen.getByText('transporte').dispatchEvent(onText)
+    })
+    expect(onCheckbox.defaultPrevented).toBe(true)
+    expect(onText.defaultPrevented).toBe(true)
+    await waitFor(() => expect(postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events).map((event) => event.key)).toEqual(['contextmenu', 'contextmenu']), { timeout: 4000 })
+  })
+
+  // Ajuste 2 do A5: no computador do laboratório, o menu do Chrome dentro da resposta traz
+  // "Inspecionar", "Pesquisar no Google" e a ajuda de escrita. O botão direito do mouse
+  // (e a tecla de menu) continua bloqueado e registrado também na resposta escrita.
+  it('[UC-LGPD-009] botão direito do mouse dentro da resposta escrita continua bloqueado e registrado', async () => {
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const [shortAnswer, essay] = await screen.findAllByLabelText('Sua resposta')
+    const mouseInEssay = contextMenuEvent({ pointerType: 'mouse', button: 2 })
+    // Sem o tipo no evento: o último ponteiro foi o mouse, mesmo com um toque antes dele.
+    const mouseInShort = contextMenuEvent({ button: 2 })
+    // Tecla de menu do teclado: sem ponteiro nenhum.
+    const keyboardInNumeric = contextMenuEvent()
+    act(() => {
+      essay.dispatchEvent(mouseInEssay)
+      shortAnswer.dispatchEvent(new Event('touchstart', { bubbles: true }))
+      const mouseDown = new MouseEvent('pointerdown', { bubbles: true, button: 2 })
+      Object.defineProperty(mouseDown, 'pointerType', { value: 'mouse' })
+      shortAnswer.dispatchEvent(mouseDown)
+      shortAnswer.dispatchEvent(mouseInShort)
+      screen.getByLabelText('Sua resposta (número)').dispatchEvent(keyboardInNumeric)
+    })
+    expect(mouseInEssay.defaultPrevented).toBe(true)
+    expect(mouseInShort.defaultPrevented).toBe(true)
+    expect(keyboardInNumeric.defaultPrevented).toBe(true)
+    await waitFor(() => expect(postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events)
+      .map((event) => [event.key, event.kind, event.blocked])).toEqual([
+      ['contextmenu', 'contextmenu', true], ['contextmenu', 'contextmenu', true], ['contextmenu', 'contextmenu', true],
+    ]), { timeout: 4000 })
+  })
+
+  it('[UC-LGPD-009] colar na resposta escrita pelo menu entra no registro (sem bloquear); Ctrl+V seguido do colar conta uma vez só', async () => {
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const essay = (await screen.findAllByLabelText('Sua resposta'))[1]
+    const menuPaste = new Event('paste', { bubbles: true, cancelable: true })
+    act(() => { essay.dispatchEvent(menuPaste) })
+    expect(menuPaste.defaultPrevented).toBe(false)
+    await waitFor(() => expect(postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events)
+      .map((event) => [event.key, event.kind, event.blocked])).toEqual([['paste', 'clipboard', false]]), { timeout: 4000 })
+    act(() => {
+      essay.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true, cancelable: true }))
+      essay.dispatchEvent(new Event('paste', { bubbles: true, cancelable: true }))
+    })
+    await waitFor(() => expect(postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events)
+      .map((event) => event.key)).toEqual(['paste', 'v']), { timeout: 4000 })
+  })
+
+  it('questão antiga (sem tipo) com HTML no texto: a alternativa "<p>" aparece escrita, não vazia', async () => {
+    const response = syncResponse({ timerRemaining: 600 })
+    response.questions = [{
+      originalNumber: 1,
+      text: 'Qual tag cria um parágrafo em HTML: <p> ou <div>? Quanto é 2*3*4?',
+      alternatives: [{ letter: 'A', text: '<p>' }, { letter: 'B', text: 'Lista<String> em Java' }, { letter: 'C', text: '<br>' }],
+    }]
+    apiMock.get.mockResolvedValue(response)
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('Qual tag cria um parágrafo em HTML: <p> ou <div>? Quanto é 2*3*4?')).toBeVisible()
+    expect(screen.getByRole('button', { name: /<p>/ })).toHaveTextContent('<p>')
+    expect(screen.getByRole('button', { name: /Lista<String> em Java/ })).toBeVisible()
+    expect(screen.getByRole('button', { name: /<br>/ })).toHaveTextContent('<br>')
+  })
+
+  // Ajuste 2 do A5: '+', '-' e '*' viravam um item de lista vazio e '>=' uma citação com '='.
+  it('questão antiga (sem tipo) de operadores: as alternativas "+", "-", "*" e ">=" aparecem escritas', async () => {
+    const user = userEvent.setup()
+    const response = syncResponse({ timerRemaining: 600 })
+    response.questions = [{
+      originalNumber: 1,
+      text: 'Qual operador soma dois números em Java?',
+      alternatives: [{ letter: 'A', text: '+' }, { letter: 'B', text: '-' }, { letter: 'C', text: '*' }, { letter: 'D', text: '>=' }],
+    }]
+    apiMock.get.mockResolvedValue(response)
+    renderRunner()
+    enterFullscreen()
+    await screen.findByText('Qual operador soma dois números em Java?')
+    const choices = screen.getAllByRole('button').filter((button) => button.hasAttribute('aria-pressed'))
+    expect(choices.map((button) => button.querySelector('.question-md').textContent.trim())).toEqual(['+', '-', '*', '>='])
+    for (const button of choices) expect(button.querySelector('ul, li, blockquote')).toBeNull()
+    await user.click(choices[3])
+    expect(choices[3]).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('prova sem dissertativa: o fim continua o de sempre', async () => {
+    const user = userEvent.setup()
+    apiMock.get.mockResolvedValue(syncResponse({ timerRemaining: 600 }))
+    apiMock.post.mockImplementation(async (url) => (url === '/api/student/submit' ? { success: true, gradePublished: false, answeredCount: 0 } : { success: true }))
+    renderRunner()
+    enterFullscreen()
+    await screen.findByRole('button', { name: /Dois/ })
+    expect(screen.getByText('1 ponto')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /Enviar prova \(/ }))
+    await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
+    expect(await screen.findByText(/Sua nota será exibida depois da publicação pelo professor/)).toBeVisible()
+    expect(screen.queryByTestId('awaiting-correction')).not.toBeInTheDocument()
   })
 })

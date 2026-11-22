@@ -506,3 +506,51 @@ test('[UC-PROVA-003] estado criado antes da atualização (instruções abertas 
     assert.equal(second.studentChoice, 'B');
     assert.equal(second.studentChoiceSeen, 'A');
 });
+
+// Tipos de questão da fase 3 (P3-S1, D5): o formato de cada resposta segue o tipo da
+// questão da tentativa.
+test('[UC-PROVA-003] tipos novos: várias corretas por identificadores, resposta curta "A" não vira alternativa, lista com identificador inventado e texto longo descartados', () => {
+    const scope = 'escopo-tipos';
+    const alternatives = ['A', 'B', 'C', 'D'].map(letter => ({ letter, text: letter }));
+    const questions = [
+        { originalNumber: 1, type: 'multiple_answer', alternatives },
+        { originalNumber: 2, type: 'short_answer', acceptedAnswers: ['A'] },
+        { originalNumber: 3, type: 'numeric', numeric: { value: 1 } },
+        { originalNumber: 4, type: 'essay' },
+        { originalNumber: 5, type: 'true_false', alternatives: [{ letter: 'A', text: 'Verdadeiro' }, { letter: 'B', text: 'Falso' }] },
+        { originalNumber: 6, alternatives },
+    ];
+    const id = (number, letter) => alternativeAnswerId(scope, number, letter);
+    assert.deepEqual(decodeStudentAnswers({
+        1: [id(1, 'D'), id(1, 'B'), id(1, 'D')],
+        2: { texto: ' A ' },
+        3: { numero: ' 1,5 ' },
+        4: { texto: 'Linha 1\nLinha 2\n\n' },
+        5: id(5, 'B'),
+        6: id(6, 'C'),
+    }, { scope, questions, positional: true }), {
+        1: ['B', 'D'],
+        2: { texto: 'A' },
+        3: { numero: '1,5' },
+        4: { texto: 'Linha 1\nLinha 2' },
+        5: 'B',
+        6: 'C',
+    });
+    // Formato errado para o tipo: descartado.
+    assert.deepEqual(decodeStudentAnswers({
+        1: [id(1, 'A'), 'ZZZZZZZZZZZZZ'],
+        2: 'A',
+        3: '1,5',
+        4: { texto: 'x'.repeat(10001) },
+        5: [id(5, 'A')],
+        6: { texto: 'C' },
+    }, { scope, questions, positional: true }), {});
+    // Lista maior que o número de alternativas, objeto com protótipo estranho e texto curto acima de 300.
+    assert.deepEqual(decodeStudentAnswers({
+        1: [id(1, 'A'), id(1, 'B'), id(1, 'C'), id(1, 'D'), id(1, 'A')],
+        2: { texto: 'x'.repeat(301) },
+        3: { numero: '9'.repeat(33) },
+    }, { scope, questions }), {});
+    // Letra avulsa dentro da lista segue a regra da posição.
+    assert.deepEqual(decodeStudentAnswers({ 1: ['a', 'C'] }, { scope, questions: [{ ...questions[0], alternatives: [...alternatives].reverse() }], positional: true }), { 1: ['B', 'D'] });
+});

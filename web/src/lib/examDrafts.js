@@ -126,7 +126,7 @@ export async function readExamDraft({ attemptId, cryptoKey }) {
     const plain = await subtle.decrypt({ name: 'AES-GCM', iv: fromBase64(envelope.iv), additionalData: attemptData(attemptId) }, cryptoKey, fromBase64(envelope.data))
     const draft = JSON.parse(new TextDecoder().decode(plain))
     if (!draft || typeof draft !== 'object' || !draft.answers || typeof draft.answers !== 'object' || Array.isArray(draft.answers)) throw new Error('cópia inválida')
-    return { attemptId: String(attemptId), answers: draft.answers, saved: draft.saved === true, updatedAt: Number(draft.updatedAt) || 0 }
+    return { attemptId: String(attemptId), answers: sanitizeExamAnswers(draft.answers), saved: draft.saved === true, updatedAt: Number(draft.updatedAt) || 0 }
   } catch {
     clearExamDraft(attemptId)
     return null
@@ -211,13 +211,74 @@ export function clearAllExamDrafts() {
   clearOtherExamDrafts(null)
 }
 
-// Mesmas respostas? (as chaves são números de questão; a ordem não importa)
+// Resposta de uma questão, por tipo (fase 3, P3-S2; D5 do desenho P3), como a tela guarda
+// e manda ao servidor:
+// - uma correta e verdadeiro ou falso: o identificador da alternativa (texto);
+// - várias corretas: lista de identificadores;
+// - numérica: { numero: texto como o aluno digitou };
+// - resposta curta e dissertativa: { texto }.
+// Em branco: ausente, '', lista vazia ou texto só com espaços.
+export const EXAM_ANSWER_LIMITS = Object.freeze({ choice: 64, choices: 8, numero: 32, texto: 10000 })
+
+function plainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function hasExamAnswer(value) {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'string') return value.trim() !== ''
+  if (Array.isArray(value)) return value.some((item) => typeof item === 'string' && item.trim() !== '')
+  if (plainObject(value)) {
+    const inner = typeof value.numero === 'string' ? value.numero : value.texto
+    return typeof inner === 'string' && inner.trim() !== ''
+  }
+  return false
+}
+
+// Forma canônica para comparar duas respostas: a lista em qualquer ordem é a mesma, e os
+// espaços nas pontas do texto não contam (o servidor guarda o texto aparado; sem isso, a
+// resposta com um espaço no fim parecia sempre diferente da salva e era reenviada a cada
+// sincronização). Em branco = ''.
+export function examAnswerFingerprint(value) {
+  if (!hasExamAnswer(value)) return ''
+  if (typeof value === 'string') return `C:${value.trim()}`
+  if (Array.isArray(value)) {
+    const items = value.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim())
+    return `L:${[...new Set(items)].sort().join(',')}`
+  }
+  if (typeof value.numero === 'string') return `N:${value.numero.trim()}`
+  return `T:${value.texto.trim()}`
+}
+
+// Mesmas respostas? (as chaves são números de questão; a ordem não importa). Compara
+// também lista e texto (antes o !== dizia "diferente" para toda resposta que não era
+// uma letra, e a resposta digitada parecia nunca salva).
 export function sameExamAnswers(a, b) {
   const left = a || {}
   const right = b || {}
   const keys = new Set([...Object.keys(left), ...Object.keys(right)])
   for (const key of keys) {
-    if ((left[key] ?? null) !== (right[key] ?? null)) return false
+    if (examAnswerFingerprint(left[key]) !== examAnswerFingerprint(right[key])) return false
   }
   return true
+}
+
+// Respostas lidas da cópia local: só os formatos acima, dentro dos limites; o que não
+// é resposta (cópia de outra versão da tela, valor estranho) fica de fora.
+export function sanitizeExamAnswers(answers) {
+  const clean = {}
+  if (!plainObject(answers)) return clean
+  Object.entries(answers).forEach(([number, value]) => {
+    if (!/^\d+$/.test(number)) return
+    if (typeof value === 'string') {
+      if (value && value.length <= EXAM_ANSWER_LIMITS.choice) clean[number] = value
+    } else if (Array.isArray(value)) {
+      const items = value.filter((item) => typeof item === 'string' && item && item.length <= EXAM_ANSWER_LIMITS.choice)
+      if (items.length && items.length === value.length && items.length <= EXAM_ANSWER_LIMITS.choices) clean[number] = items
+    } else if (plainObject(value)) {
+      if (typeof value.numero === 'string' && value.numero.length <= EXAM_ANSWER_LIMITS.numero) clean[number] = { numero: value.numero }
+      else if (typeof value.texto === 'string' && value.texto.length <= EXAM_ANSWER_LIMITS.texto) clean[number] = { texto: value.texto }
+    }
+  })
+  return clean
 }

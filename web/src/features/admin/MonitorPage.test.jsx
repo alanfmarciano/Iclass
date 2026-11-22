@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import MonitorPage from './MonitorPage'
+import MonitorPage, { classifyKeystroke } from './MonitorPage'
 import { keystrokeLiveEmptyText, keystrokeLiveTitle } from '../../lib/keystrokeModes'
 
 const mocks = vi.hoisted(() => ({
@@ -300,12 +300,17 @@ describe('MonitorPage · consultas leves (H2-D, DES-04)', () => {
       await tick(50)
       fireEvent.click(screen.getByText('Liberar nota para o aluno'))
       // Fase 3, C0a: o diálogo da tela pergunta antes (o confirm do navegador parava o polling).
+      // P3-S8 (D20): o diálogo já abre contando as notas, então as entregas desta
+      // aplicação são pedidas ao abrir (antes, só ao confirmar) e nada é publicado antes do clique.
       const dialog = screen.getByRole('dialog', { name: 'Liberar as notas desta aplicação?' })
-      expect(urls('/api/admin/submissions?')).toHaveLength(0)
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Liberar notas' }))
       await tick(50)
       expect(urls('/api/admin/submissions?')).toHaveLength(1)
       expect(urls('/api/admin/submissions?')[0]).toContain('applicationId=app-antiga')
+      expect(dialog).toHaveTextContent('1 nota será liberada e o aluno passará a vê-la no portal.')
+      expect(mocks.post).not.toHaveBeenCalled()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Liberar notas' }))
+      await tick(50)
+      expect(urls('/api/admin/submissions?')).toHaveLength(1)
       expect(mocks.post).toHaveBeenCalledWith('/api/admin/submissions/publish', { ids: ['s1'], published: true })
       expect(screen.queryByRole('dialog', { name: 'Liberar as notas desta aplicação?' })).toBeNull()
       expect(confirm).not.toHaveBeenCalled()
@@ -424,6 +429,244 @@ describe('[UC-CONFIRMACAO-001] MonitorPage · diálogos das ações por aluno', 
   })
 })
 
+// Fase 3, P3-S8 (AVA-14, UXI-05; D18 e D20 do P3): ações por aluno no menu "Mais ações"
+// (recolher, reabrir e tentativa extra) e os diálogos próprios do Monitor.
+describe('[UC-TENTATIVA-004] MonitorPage · ações por aluno e diálogos próprios', () => {
+  const base = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'B' }
+  let row = base
+  let list = applications
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+  const posts = (path) => mocks.post.mock.calls.filter(([url]) => url === path)
+  const actionUrl = '/api/admin/exam-applications/app-antiga/attempt-action'
+  let nativeSpies = []
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    row = base
+    list = applications
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications: list }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/message-history?')) return { messages: [] }
+      return {}
+    })
+    mocks.post.mockResolvedValue({ success: true })
+    nativeSpies = ['prompt', 'confirm', 'alert'].map((name) => vi.spyOn(window, name).mockImplementation(() => { throw new Error(`window.${name}`) }))
+  })
+  afterEach(() => {
+    for (const spy of nativeSpies) {
+      expect(spy).not.toHaveBeenCalled()
+      spy.mockRestore()
+    }
+    mocks.liveApplications = null
+    cleanup()
+  })
+
+  async function openMenuItem(name) {
+    fireEvent.click(await screen.findByRole('button', { name: 'Mais ações de Elisa' }))
+    fireEvent.click(screen.getByRole('menuitem', { name }))
+  }
+
+  it('Recolher prova: Cancelar não envia; confirmar manda recolher com o motivo opcional', async () => {
+    mocks.post.mockResolvedValue({ success: true, submission: { answeredCount: 3 } })
+    renderMonitor()
+    await openMenuItem('Recolher prova')
+    let dialog = screen.getByRole('dialog', { name: 'Recolher a prova de Elisa?' })
+    expect(dialog).toHaveTextContent('respostas que o servidor já salvou (1/4 respondidas)')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }))
+    expect(posts(actionUrl)).toHaveLength(0)
+
+    await openMenuItem('Recolher prova')
+    dialog = screen.getByRole('dialog', { name: 'Recolher a prova de Elisa?' })
+    fireEvent.change(within(dialog).getByLabelText('Motivo (opcional)'), { target: { value: 'Saiu da sala' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Recolher prova' })) })
+    await waitFor(() => expect(posts(actionUrl)).toHaveLength(1))
+    expect(posts(actionUrl)[0][1]).toEqual({ action: 'recolher', studentEmail: 'elisa@x.local', motivo: 'Saiu da sala' })
+    expect(mocks.toast.success).toHaveBeenCalledWith('Prova de Elisa recolhida com 3 respostas salvas.')
+    expect(screen.queryByRole('dialog', { name: 'Recolher a prova de Elisa?' })).toBeNull()
+  })
+
+  it('Recolher tentativa já vencida: o aviso do servidor fecha o diálogo', async () => {
+    mocks.post.mockRejectedValueOnce(Object.assign(new Error('O tempo deste aluno já tinha terminado.'), { status: 409, data: { attemptFinalized: true } }))
+    renderMonitor()
+    await openMenuItem('Recolher prova')
+    const dialog = screen.getByRole('dialog', { name: 'Recolher a prova de Elisa?' })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Recolher prova' })) })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Recolher a prova de Elisa?' })).toBeNull())
+    expect(mocks.toast.info).toHaveBeenCalledWith('O tempo deste aluno já tinha terminado.')
+  })
+
+  it('Reabrir prova: só aparece quando a entrega pode voltar, pede o motivo e o erro fica no diálogo', async () => {
+    row = { ...base, status: 'finished', attemptInProgress: false, canReopen: true }
+    mocks.post.mockRejectedValueOnce(Object.assign(new Error('A nota desta entrega já foi publicada.'), { status: 409, data: { code: 'grade_published' } }))
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Mais ações de Elisa' }))
+    expect(screen.queryByRole('menuitem', { name: 'Recolher prova' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Reabrir prova' }))
+    const dialog = screen.getByRole('dialog', { name: 'Reabrir a prova de Elisa?' })
+    expect(dialog).toHaveTextContent('o tempo que faltava')
+    const confirm = within(dialog).getByRole('button', { name: 'Reabrir prova' })
+    expect(confirm).toBeDisabled()
+    fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: 'Queda de energia' } })
+    await act(async () => { fireEvent.click(confirm) })
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('A nota desta entrega já foi publicada.')
+    mocks.post.mockResolvedValueOnce({ success: true, state: { remainingMinutes: 12 } })
+    await act(async () => { fireEvent.click(confirm) })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reabrir a prova de Elisa?' })).toBeNull())
+    expect(posts(actionUrl).at(-1)[1]).toEqual({ action: 'reabrir', studentEmail: 'elisa@x.local', motivo: 'Queda de energia' })
+    expect(mocks.toast.success).toHaveBeenCalledWith('Prova de Elisa reaberta com 12 min para terminar.')
+  })
+
+  it('Tentativa extra: número de 1 a 5 e motivo opcional; sem limite de tentativas o item não aparece', async () => {
+    row = { ...base, status: 'finished', attemptInProgress: false }
+    mocks.post.mockResolvedValue({ success: true, extraAttempts: 2, maxAttempts: 3 })
+    renderMonitor()
+    await openMenuItem('Dar tentativa extra')
+    const dialog = screen.getByRole('dialog', { name: 'Dar tentativa extra a Elisa?' })
+    const field = within(dialog).getByLabelText('Tentativas a mais')
+    expect(field).toHaveValue(1)
+    const confirm = within(dialog).getByRole('button', { name: 'Dar tentativa extra' })
+    for (const value of ['0', '6', '', '1.5']) {
+      fireEvent.change(field, { target: { value } })
+      expect(confirm).toBeDisabled()
+    }
+    fireEvent.change(field, { target: { value: '2' } })
+    await act(async () => { fireEvent.click(confirm) })
+    await waitFor(() => expect(posts(actionUrl)).toHaveLength(1))
+    expect(posts(actionUrl)[0][1]).toEqual({ action: 'tentativa_extra', studentEmail: 'elisa@x.local', extraAttempts: 2 })
+    expect(mocks.toast.success).toHaveBeenCalledWith('Elisa pode fazer 3 tentativas nesta aplicação.')
+    cleanup()
+
+    row = { ...base, status: 'finished', attemptInProgress: false, maxAttempts: null }
+    renderMonitor()
+    await screen.findByRole('button', { name: 'Msg' })
+    expect(screen.queryByRole('button', { name: 'Mais ações de Elisa' })).toBeNull()
+    cleanup()
+
+    // A4, ajuste 1: aluno desligado (Transferido) não recebe a oferta de tentativa extra.
+    row = { ...base, status: 'finished', attemptInProgress: false, activeStudent: false }
+    renderMonitor()
+    await screen.findByRole('button', { name: 'Msg' })
+    expect(screen.queryByRole('button', { name: 'Mais ações de Elisa' })).toBeNull()
+  })
+
+  it('aplicação encerrada não mostra o menu; a linha reaberta pelo professor diz isso', async () => {
+    row = { ...base, reopenedAt: '2026-11-20T10:00:00.000Z', reopenedByInstructor: true }
+    renderMonitor()
+    expect(await screen.findByText('Reaberta pelo professor')).toBeVisible()
+    cleanup()
+    list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, status: 'finished' } : item))
+    mocks.liveApplications = list
+    renderMonitor()
+    await screen.findByRole('button', { name: 'Ver respostas' })
+    expect(screen.queryByRole('button', { name: 'Mais ações de Elisa' })).toBeNull()
+  })
+
+  it('Mensagem: modelos prontos, várias linhas e o destinatário', async () => {
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Msg' }))
+    const dialog = screen.getByRole('dialog', { name: 'Mensagem para o aluno' })
+    expect(dialog).toHaveTextContent('Para: Elisa (elisa@x.local)')
+    for (const template of ['Faltam 10 minutos', 'Confira se respondeu todas', 'Levante a mão se precisar de ajuda']) {
+      expect(within(dialog).getByRole('button', { name: template })).toBeVisible()
+    }
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Levante a mão se precisar de ajuda' }))
+    const field = within(dialog).getByLabelText('Mensagem')
+    expect(field).toHaveValue('Levante a mão se precisar de ajuda')
+    fireEvent.change(field, { target: { value: 'Linha 1\nLinha 2' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar' })) })
+    await waitFor(() => expect(posts('/api/admin/send-broadcast-message')).toHaveLength(1))
+    expect(posts('/api/admin/send-broadcast-message')[0][1]).toMatchObject({ targetEmail: 'elisa@x.local', messageText: 'Linha 1\nLinha 2' })
+    cleanup()
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Aviso turma' }))
+    expect(screen.getByRole('dialog', { name: 'Aviso para a turma' })).toHaveTextContent('Para: todos os alunos desta aplicação (1)')
+  })
+
+  it('Aviso para a turma conta só os alunos ativos (desligado e anonimizado ficam fora da contagem)', async () => {
+    const fallback = mocks.get.getMockImplementation()
+    const finished = { ...base, status: 'finished', attemptInProgress: false, deliveredAttempts: 1 }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/monitor-status/')
+      ? [
+          row,
+          { ...finished, email: 'lucas@x.local', name: 'Lucas Transferido', activeStudent: false },
+          { ...finished, email: 'anon_1@anonimizado.invalid', name: 'Aluno anonimizado', activeStudent: false },
+          { ...base, email: 'bia@x.local', name: 'Bia', activeStudent: true },
+        ]
+      : fallback(url)))
+    renderMonitor()
+    await screen.findAllByText('Lucas Transferido')
+    fireEvent.click(await screen.findByRole('button', { name: 'Aviso turma' }))
+    expect(screen.getByRole('dialog', { name: 'Aviso para a turma' })).toHaveTextContent('Para: todos os alunos desta aplicação (2)')
+  })
+
+  it('Tempo: atalhos −5, +5 e +10 trocam o valor e o motivo opcional vai junto', async () => {
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Tempo' }))
+    const dialog = screen.getByRole('dialog', { name: 'Ajustar o tempo do aluno' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '+10 min' }))
+    expect(within(dialog).getByLabelText('Minutos')).toHaveValue(10)
+    expect(within(dialog).getByRole('button', { name: '+10 min' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(within(dialog).getByRole('button', { name: '\u22125 min' }))
+    expect(within(dialog).getByLabelText('Minutos')).toHaveValue(-5)
+    fireEvent.click(within(dialog).getByRole('button', { name: '+5 min' }))
+    fireEvent.change(within(dialog).getByLabelText('Motivo (opcional)'), { target: { value: 'Laudo' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Ajustar tempo' })) })
+    await waitFor(() => expect(posts('/api/admin/adjust-student-time')).toHaveLength(1))
+    expect(posts('/api/admin/adjust-student-time')[0][1]).toMatchObject({ targetEmail: 'elisa@x.local', adjustmentMinutes: 5, reason: 'Laudo' })
+  })
+
+  it('Versão: só as versões que a aplicação tem', async () => {
+    list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, versionLabels: ['A', 'B', 'C'] } : item))
+    mocks.liveApplications = list
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'B' }))
+    const dialog = screen.getByRole('dialog', { name: 'Versão da prova do aluno' })
+    const select = within(dialog).getByLabelText('Versão')
+    expect(select.tagName).toBe('SELECT')
+    expect([...select.options].map((option) => option.value)).toEqual(['A', 'B', 'C'])
+    expect(select).toHaveValue('B')
+    fireEvent.change(select, { target: { value: 'C' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Atribuir versão' })) })
+    await waitFor(() => expect(posts('/api/admin/assign-student-version')).toHaveLength(1))
+    expect(posts('/api/admin/assign-student-version')[0][1]).toMatchObject({ version: 'C' })
+  })
+
+  it('Liberar notas: conta as notas e deixa de fora as que aguardam correção', async () => {
+    list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, status: 'finished' } : item))
+    mocks.liveApplications = list
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications: list }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/submissions?')) {
+        return [
+          { id: 's1', applicationId: 'app-antiga', gradePublished: false },
+          { id: 's2', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'pendente' } },
+          { id: 's3', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'concluida' } },
+          { id: 's4', applicationId: 'app-antiga', gradePublished: true },
+        ]
+      }
+      return {}
+    })
+    mocks.post.mockResolvedValue({ updated: 2 })
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Liberar nota para o aluno' }))
+    const dialog = screen.getByRole('dialog', { name: 'Liberar as notas desta aplicação?' })
+    await waitFor(() => expect(dialog).toHaveTextContent('2 notas serão liberadas'))
+    expect(dialog).toHaveTextContent('1 entrega aguardando correção fica de fora.')
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Liberar notas' })) })
+    await waitFor(() => expect(posts('/api/admin/submissions/publish')).toHaveLength(1))
+    expect(posts('/api/admin/submissions/publish')[0][1]).toEqual({ ids: ['s1', 's3'], published: true })
+    expect(mocks.toast.success).toHaveBeenCalledWith('2 notas liberadas para os alunos.')
+  })
+})
+
 describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação', () => {
   const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', logs: [], keystrokeCount: 3, suspiciousCount: 3 }
   function renderWith(keystrokeMode, extra = {}) {
@@ -492,5 +735,15 @@ describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação'
     expect(keystrokeLiveTitle('nada', false, 'Elisa')).toBe('Teclado — Elisa')
     expect(keystrokeLiveEmptyText('nada')).toBe('Registro de teclado desligado nesta prova.')
     expect(keystrokeLiveTitle('eventos', true, 'Elisa')).toBe('Digitação ao vivo — Elisa')
+  })
+})
+
+// Rodada de ajuste do A5: colar pelo menu da resposta escrita chega como evento 'paste'
+// (kind 'clipboard'); no Monitor ele é "Colou conteúdo", e não "Cópia bloqueada".
+describe('[UC-LGPD-009] Monitor: colar pelo menu da resposta escrita', () => {
+  it('evento paste vira "Colou conteúdo" e conta como colagem; copiar e recortar continuam bloqueados', () => {
+    expect(classifyKeystroke({ kind: 'clipboard', key: 'paste' })).toMatchObject({ reason: 'colar', label: 'Colou conteúdo' })
+    expect(classifyKeystroke({ kind: 'clipboard', key: 'copy' })).toMatchObject({ reason: 'clipboard', label: 'Cópia bloqueada' })
+    expect(classifyKeystroke({ kind: 'clipboard', key: 'cut' })).toMatchObject({ reason: 'clipboard', label: 'Recorte bloqueado' })
   })
 })

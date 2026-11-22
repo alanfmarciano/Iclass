@@ -115,8 +115,11 @@ test('[UC-FUNDACAO-003] registro: coleção e nome obrigatórios, funções de v
     assert.throws(() => handlers.registerStudentDataHandler({ collection: 'nova', label: 'Nova', exportKey: 'extraSections', exportSection: () => [] }), /já existe em Meus dados/);
     // Mesma coleção de novo troca o handler.
     keep(handlers.registerStudentDataHandler({ collection: 'certificates', label: 'Certificados (2)', replaceCore: true }));
-    assert.equal(handlers.studentDataHandlers().length, 1);
-    assert.equal(handlers.studentDataHandlers()[0].label, 'Certificados (2)');
+    // Conta só os desta coleção: os módulos das trilhas já registram os deles ao carregar
+    // (examParticipation do P3-S7, em utils/examParticipants.js).
+    const certificateHandlers = handlers.studentDataHandlers().filter(handler => handler.collection === 'certificates');
+    assert.equal(certificateHandlers.length, 1);
+    assert.equal(certificateHandlers[0].label, 'Certificados (2)');
 });
 
 test('[UC-FUNDACAO-003] troca de e-mail do aluno passa pelo handler, depois dos blocos de hoje', async () => {

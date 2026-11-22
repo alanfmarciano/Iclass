@@ -743,7 +743,12 @@ test('[UC-AUDITORIA-001] turma com prova preparada com token: a auditoria guarda
     const tokenHash = hashExamToken('PROVA');
     const cls = db.memory.classes[0];
     assert.equal(cls.onlineExamConfigs.Avaliacao_A.accessTokenHash, tokenHash, 'o campo real que a turma guarda');
-    assert.equal(cls.examHistory.Avaliacao_A[0].accessToken, 'PROVA');
+    // Desde o P3-S8 (D19) o histórico guarda só tokenEnabled, nunca o token em texto. A
+    // entrada é posta como a versão anterior gravava (antes da migração) para o teste
+    // continuar conferindo que o token do histórico não vai para a auditoria.
+    assert.equal(Object.prototype.hasOwnProperty.call(cls.examHistory.Avaliacao_A[0], 'accessToken'), false);
+    assert.equal(cls.examHistory.Avaliacao_A[0].tokenEnabled, true);
+    cls.examHistory.Avaliacao_A[0].accessToken = 'PROVA';
 
     const updated = await asAdmin(request(app).post('/api/admin/class/update')).send({ name: '1AUD', courseId, period: 'Manhã' });
     assert.equal(updated.status, 200, updated.body.error);

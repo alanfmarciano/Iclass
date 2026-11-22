@@ -51,6 +51,10 @@ const CadastrosEncerradosPage = lazyPage(() => import('./features/admin/Cadastro
 const LegalDocumentPage = lazyPage(() => import('./features/LegalDocumentPage'))
 // Pública (sem login): guia de instalação do certificado da conexão segura (H6c, OPS-08).
 const CertificadoPage = lazyPage(() => import('./features/CertificadoPage'))
+// Ajuda (fase 3, A1 / P6-S9, OPS-13): /ajuda no painel e /ajuda/aluno pública (abre sem
+// login: quem não consegue entrar é quem mais precisa dela).
+const AjudaPage = lazyPage(() => import('./features/help/AjudaPage'))
+const AjudaAlunoPage = lazyPage(() => import('./features/help/AjudaAlunoPage'))
 // Aluno
 const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
 const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
@@ -146,6 +150,8 @@ export default function App() {
         <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="lgpd" element={<RequireAdministrator><RequireAdminPath path="/lgpd"><PrivacidadePage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="encerrados" element={<RequireAdministrator><RequireAdminPath path="/encerrados"><CadastrosEncerradosPage /></RequireAdminPath></RequireAdministrator>} />
+        {/* Ajuda do painel: toda conta do painel vê (sem permissão própria). */}
+        <Route path="ajuda" element={<AjudaPage />} />
       </Route>
 
       {/* Endereço da sala para projetar no quadro (H6a): tela cheia, sem o menu do painel. */}
@@ -174,6 +180,8 @@ export default function App() {
       <Route path="/privacidade" element={<LegalDocumentPage kind="privacidade" />} />
       {/* Guia do certificado: aberto a qualquer um, em http e em https (H6c). */}
       <Route path="/certificado" element={<CertificadoPage />} />
+      {/* Ajuda do aluno: aberta a qualquer um, com ou sem login (link "Problemas para entrar?"). */}
+      <Route path="/ajuda/aluno" element={<AjudaAlunoPage />} />
 
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>

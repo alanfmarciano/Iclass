@@ -36,6 +36,44 @@ const {
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
+const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
+
+// Resposta de uma questão para a revisão do professor (contrato C3 do P3): tipo, texto da
+// resposta pelas letras que o aluno viu, resposta digitada e pontos. labelsRecord diz que
+// letras o aluno viu (a entrega ou a tentativa).
+function reviewAnswerFields(labelsRecord, question, graded, rawAlternatives) {
+    const type = graded?.type || questionType(question);
+    const seen = letter => seenLetterFor(labelsRecord, { alternatives: rawAlternatives }, letter);
+    const seenGraded = graded ? {
+        ...graded,
+        type,
+        studentChoice: graded.studentChoice ? seen(String(graded.studentChoice).toUpperCase()) : null,
+        studentChoices: Array.isArray(graded.studentChoices) ? graded.studentChoices.map(letter => seen(String(letter).toUpperCase())).sort() : [],
+    } : null;
+    const correctLetters = Array.isArray(graded?.correctAnswers) ? graded.correctAnswers : [];
+    return {
+        type,
+        answerText: seenGraded ? describeAnswer(question, seenGraded) : '',
+        studentChoices: seenGraded ? seenGraded.studentChoices : [],
+        studentResponse: graded && graded.studentResponse != null ? String(graded.studentResponse) : null,
+        correctAnswersSeen: correctLetters.map(letter => seen(String(letter).toUpperCase())).sort(),
+        ...reviewPoints(graded),
+        pending: graded?.pending === true,
+    };
+}
+
+// Pontos da questão na revisão. Entrega de antes do A2 não guardou pontos: vale como uma
+// correta de 1 ponto (D1), pelo isCorrect e pela anulação gravados nela, como a nota dela
+// foi calculada (mesmo que a questão valha outros pontos hoje).
+function reviewPoints(graded) {
+    if (!graded) return { pointsEarned: null, pointsPossible: null };
+    const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    if (finite(graded.pointsEarned) && finite(graded.pointsPossible)) {
+        return { pointsEarned: Number(graded.pointsEarned), pointsPossible: Number(graded.pointsPossible) };
+    }
+    if (graded.annulled && graded.annulmentMode === 'remover_do_total') return { pointsEarned: 0, pointsPossible: 0 };
+    return { pointsEarned: graded.isCorrect === true ? DEFAULT_POINTS : 0, pointsPossible: DEFAULT_POINTS };
+}
 const { canAccessAdminPermission, hasAdminCapability } = require('../utils/adminPermissions.js');
 const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
@@ -100,7 +138,9 @@ const loginGuard = require('../utils/loginGuard.js');
 const { redactSensitiveStudentData } = require('../utils/studentPrivacy.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
+    applicationParticipant,
     applicationToOnlineConfig,
+    effectiveMaxAttempts,
     examStateKey,
     findExamApplication,
     findOpenAttemptState,
@@ -108,9 +148,11 @@ const {
     transitionExamApplication,
 } = require('../utils/examApplications.js');
 const { collectMonitorActivity, monitorKeystrokeEmail } = require('../utils/monitorActivity.js');
-const { attemptOverdueMs, countAnswers, deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const { attemptOverdueMs, deliveredWithoutAttemptsLeft, dropReopenSnapshots, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
 const { normalizeMaxAttempts } = require('../utils/examAttempts.js');
 const { planControlAction, resolveInProgressAttempts } = require('../utils/examFinish.js');
+const { withoutSealedToken } = require('../utils/examToken.js');
+const { activeStudent } = require('../utils/examParticipants.js');
 
 function rejectInvalidBranding(res, body) {
     const validationError = validateBrandingPatch(body);
@@ -156,7 +198,9 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
-const { body, either, list, shape, str } = require('../utils/inputSchema.js');
+const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
+const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
+const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
 
 // Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
 // H9b: ENG-03, ENG-04): só tipo e tamanho (utils/inputSchema.js), escritos a partir do
@@ -170,23 +214,29 @@ const adminTextField = (max, label) => str({ max, nullable: true, label });
 // conferido por extractInstitutional e rejectInvalidBranding).
 const schoolInfoField = () => shape({}, { nullable: true, label: 'dados da escola' });
 const schoolBrandingField = () => shape({}, { nullable: true, label: 'identidade visual' });
-// Categoria do banco: a tela manda o tema da prova (ou o nome da unidade). O teto é o
-// mesmo do campo Tema do editor (500, com contador): o schema nunca recusa o que a tela
-// deixa digitar (decisões §12, sobra do H9b; antes eram 100).
-const QUESTION_CATEGORY_MAX_CHARS = 500;
-const questionBankFields = () => ({
-    key: adminIdField('questão'),
-    category: adminTextField(QUESTION_CATEGORY_MAX_CHARS, 'categoria'),
-    curriculumKey: adminTextField(100, 'componente curricular'),
-    type: adminTextField(40, 'tipo'),
-    questionText: adminTextField(10000, 'texto da questão'),
-    alternatives: list(either([str({ max: 2000 }), shape({})], { label: 'alternativas' }), { max: 10, nullable: true, label: 'alternativas' }),
-    correctAnswer: adminTextField(10, 'resposta correta'),
-    sourceExamKey: adminTextField(200, 'prova de origem'),
-    examKey: adminTextField(200, 'prova'),
+// Tema da prova: vira a categoria da questão salva no banco, com o mesmo teto (500, com
+// contador; decisões §12, sobra do H9b; routes/adminQuestionBank.js).
+const { QUESTION_CATEGORY_MAX_CHARS } = require('./adminQuestionBank.js');
+// Avaliação (POST e PUT /api/admin/evaluation, fase 3, P3-S1): tipo e tamanho de cada
+// campo da questão pelo schema do modelo (questionInputSchema, utils/questionModel.js, o
+// mesmo da correção ao vivo). Título, tema e rubrica geral não tinham limite na tela: os
+// tetos são largos.
+const evaluationQuestionField = () => questionInputSchema();
+const evaluationFields = () => ({
+    title: adminTextField(1000, 'título'),
+    theme: adminTextField(QUESTION_CATEGORY_MAX_CHARS, 'tema'),
+    rubric: str({ max: 200000, trim: false, nullable: true, label: 'rubrica' }),
+    questions: list(evaluationQuestionField(), { max: 1000, nullable: true, label: 'questões' }),
+    courseId: adminIdField('curso'),
+    studentClass: adminTextField(200, 'turma'),
+    moduleId: either([str({ max: 200, label: 'módulo' }), num({ label: 'módulo' })], { nullable: true, label: 'módulo' }),
+    scope: adminTextField(20, 'escopo'),
 });
 const ADMIN_SCHEMAS = {
+    evaluation: body(evaluationFields()),
     resetPassword: body({ email: adminEmailField(), newPassword: str({ max: 200, trim: false, nullable: true, label: 'nova senha' }) }),
+    // Ajuste de tempo do Monitor: o motivo é opcional (diálogo do tempo, D20 do P3).
+    adjustStudentTime: body({ reason: str({ max: 300, nullable: true, label: 'motivo' }) }),
     examStudent: body({
         studentEmail: adminEmailField('e-mail do aluno'),
         studentClass: adminTextField(200, 'turma'),
@@ -213,7 +263,6 @@ const ADMIN_SCHEMAS = {
         visibility: adminTextField(100, 'visibilidade'),
         text: adminTextField(5000, 'observação'),
     }),
-    questionBank: body(questionBankFields()),
 };
 const {
     addExtraUnit,
@@ -749,6 +798,8 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
                     studentChoiceSeen: seenLetterFor(submission, { alternatives: rawAlternatives }, studentChoice),
                     correctAnswerSeen: seenLetterFor(submission, { alternatives: rawAlternatives }, correctAnswer),
                     isCorrect: graded.isCorrect === true,
+                    // Tipos da fase 3 (P3-S1): texto da resposta, pontos e "aguardando correção".
+                    ...reviewAnswerFields(submission, question, graded, rawAlternatives),
                     alternatives: rawAlternatives.map((alternative, alternativeIndex) => {
                         const canonicalLetter = String(alternative.letter || String.fromCharCode(65 + alternativeIndex)).toUpperCase();
                         return {
@@ -756,7 +807,8 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
                             letter: seenAlternativeLetter(submission, alternative, alternativeIndex),
                             canonicalLetter,
                             text: alternative.text ?? alternative.label ?? String(alternative),
-                            selectedByStudent: canonicalLetter === studentChoice,
+                            selectedByStudent: canonicalLetter === studentChoice
+                                || (Array.isArray(graded.studentChoices) && graded.studentChoices.map(letter => String(letter).toUpperCase()).includes(canonicalLetter)),
                             correct: canonicalLetter === correctAnswer || alternative.isCorrect === true
                         };
                     })
@@ -3251,43 +3303,12 @@ router.post('/api/admin/material/create', (req, res) => {
     });
 });
 
-// Obter avaliação estruturada
+// Avaliação estruturada: título, tema, rubrica e as questões pelo modelo único da
+// questão (utils/questionModel.js, D3 do P3): tipos, pontos, explicação e rubrica.
 function normalizeEvaluationPayload(payload) {
     const title = String(payload?.title || '').trim();
     if (!title) throw Object.assign(new Error('Título da avaliação é obrigatório.'), { status: 400 });
-    if (!Array.isArray(payload.questions) || payload.questions.length === 0) {
-        throw Object.assign(new Error('A avaliação deve ter pelo menos uma questão.'), { status: 400 });
-    }
-    const questions = payload.questions.map((question, index) => {
-        const text = String(question?.text || question?.questionText || '').trim();
-        if (!text) throw Object.assign(new Error(`Informe o texto da questão ${index + 1}.`), { status: 400 });
-        const rawAlternatives = Array.isArray(question.alternatives) ? question.alternatives : [];
-        if (rawAlternatives.length < 2 || rawAlternatives.length > 8) {
-            throw Object.assign(new Error(`A questão ${index + 1} deve ter entre 2 e 8 alternativas.`), { status: 400 });
-        }
-        const requestedCorrect = String(question.correctAnswer || '').trim().toUpperCase();
-        const alternatives = rawAlternatives.map((alternative, alternativeIndex) => ({
-            letter: String.fromCharCode(65 + alternativeIndex),
-            text: String(typeof alternative === 'string' ? alternative : alternative?.text || '').trim(),
-            isCorrect: alternative?.isCorrect === true
-                || String(alternative?.letter || '').toUpperCase() === requestedCorrect,
-        }));
-        if (alternatives.some(alternative => !alternative.text)) {
-            throw Object.assign(new Error(`Preencha todas as alternativas da questão ${index + 1}.`), { status: 400 });
-        }
-        if (alternatives.filter(alternative => alternative.isCorrect).length !== 1) {
-            throw Object.assign(new Error(`Marque exatamente uma alternativa correta na questão ${index + 1}.`), { status: 400 });
-        }
-        const correctAnswer = alternatives.find(alternative => alternative.isCorrect).letter;
-        return {
-            ...question,
-            number: index + 1,
-            originalNumber: index + 1,
-            text,
-            alternatives,
-            correctAnswer,
-        };
-    });
+    const questions = normalizeEvaluationQuestions(payload.questions);
     return {
         title,
         theme: String(payload.theme || '').trim(),
@@ -3296,7 +3317,7 @@ function normalizeEvaluationPayload(payload) {
     };
 }
 
-router.post('/api/admin/evaluation', (req, res) => {
+router.post('/api/admin/evaluation', ADMIN_SCHEMAS.evaluation, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const courseId = String(req.body.courseId || '').trim();
         const moduleId = String(req.body.moduleId || '').trim();
@@ -3365,7 +3386,7 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
 });
 
 // Salvar avaliação estruturada
-router.put('/api/admin/evaluation/:key', (req, res) => {
+router.put('/api/admin/evaluation/:key', ADMIN_SCHEMAS.evaluation, (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const requestedKey = req.params.key;
         const evaluationData = req.body;
@@ -3562,6 +3583,8 @@ router.use(createAdminAuditRouter());
 router.use(createAdminPrivacyRouter());
 router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
+// Banco de questões (fase 3, P3-S9a): depois do router de cursos, na ordem do plano.
+router.use(createAdminQuestionBankRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -4041,7 +4064,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) db.save();
-                return res.json({ success: true, unchanged: true, application, config: currentConfig });
+                return res.json({ success: true, unchanged: true, application: withoutSealedToken(application), config: currentConfig });
             }
             if (plan.resolve) {
                 try {
@@ -4071,8 +4094,11 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             cls.releasedItems[examKey] = active;
             cls.activeExamKey = active ? examKey : (cls.activeExamKey === examKey ? null : cls.activeExamKey);
             cls.activeApplicationId = active ? application.id : (cls.activeApplicationId === application.id ? null : cls.activeApplicationId);
+            // Encerrada, a aplicação não reabre mais entrega: as cópias das tentativas saem
+            // (a gravação aqui já é completa).
+            if (!active) dropReopenSnapshots(db.memory, application.id);
             db.save();
-            return res.json({ success: true, application, config: cls.onlineExamConfigs[examKey] });
+            return res.json({ success: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs[examKey] });
         }
         const actionStartsExam = action === 'running' || action === 'waiting';
         const hasPreparedSnapshot = currentConfig.activeHistoryId
@@ -4163,10 +4189,30 @@ function classExtraTimeResult(reopened, deliveredAtDeadline = 0) {
     };
 }
 
+// Ajuste de tempo de um aluno no registro do monitoramento (P3-S8, D20), com o motivo
+// opcional do diálogo. Sem tentativa aberta (attemptId null), o ajuste vale para a
+// próxima tentativa dele e o texto diz isso.
+function pushTimeAdjustedLog(application, email, attemptId, adjustmentMinutes, reason, { nextAttempt = false } = {}) {
+    if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
+    db.memory.proctoringLogs.push({
+        id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
+        studentEmail: email,
+        studentClass: application.studentClass,
+        courseId: application.courseId || null,
+        examKey: application.examKey,
+        applicationId: application.id,
+        attemptId,
+        timestamp: Date.now(),
+        eventType: 'time_adjusted',
+        details: `${adjustmentMinutes > 0 ? '+' : ''}${adjustmentMinutes} min pelo professor${nextAttempt ? ' (vale quando o aluno começar a prova)' : ''}${reason ? `: ${reason}` : ''}`,
+    });
+}
+
 // 2. Adiciona ou subtrai minutos de um aluno específico ou de toda a turma
-router.post('/api/admin/adjust-student-time', (req, res) => {
-    validateAdmin(req, res, () => {
+router.post('/api/admin/adjust-student-time', ADMIN_SCHEMAS.adjustStudentTime, (req, res) => {
+    validateAdmin(req, res, (config, currentAdmin) => {
         const { studentClass, courseId, examKey, applicationId, targetEmail, adjustmentMinutes } = req.body;
+        const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
         if (!studentClass || !examKey || typeof adjustmentMinutes !== 'number') {
             return res.status(400).json({ error: 'Campos obrigatórios ausentes ou inválidos.' });
         }
@@ -4216,6 +4262,9 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
                 // aplicação e a tentativa seguinte (2+ tentativas) já nascia com o extra.
                 if (!application.studentAdjustments) application.studentAdjustments = {};
                 application.studentAdjustments[email] = Number(application.studentAdjustments[email] || 0) + adjustmentMinutes;
+                // O motivo não se perde: o registro diz que o ajuste vale quando ele começar
+                // (A4, ajuste 1).
+                pushTimeAdjustedLog(application, email, null, adjustmentMinutes, reason, { nextAttempt: true });
                 db.save();
                 return res.json({ success: true, appliesToNextAttempt: true });
             }
@@ -4232,6 +4281,11 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
             db.memory.studentExamState[key].individualTimeAdjustment += adjustmentMinutes;
             if (db.memory.studentExamState[key].timerRemaining !== null) {
                 db.memory.studentExamState[key].timerRemaining += (adjustmentMinutes * 60);
+            }
+            // O ajuste de um aluno com a prova aberta fica no registro do monitoramento
+            // (P3-S8, D20: o diálogo do tempo tem motivo opcional).
+            if (application && openAttempt) {
+                pushTimeAdjustedLog(application, email, openAttempt.state.attemptId || null, adjustmentMinutes, reason);
             }
         } else {
             const classes = db.memory.classes;
@@ -4512,7 +4566,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         // Um único aluno com a turma gravada em formato inesperado não pode derrubar o
         // Monitor de todas as turmas (DES-03): a leitura passa pelo helper normalizado.
         const monitorCourseId = String((cls && cls.courseId) || courseId || '').trim();
-        const students = (db.memory.students || []).filter(s => s && s.email && studentInClass(s, studentClass, monitorCourseId));
+        const classStudents = (db.memory.students || []).filter(s => s && s.email && studentInClass(s, studentClass, monitorCourseId));
 
         const monitorMaxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? currentConfig.maxAttempts);
         const perAttemptTimer = (application?.timerMode || currentConfig.timerMode) === 'per_attempt';
@@ -4521,6 +4575,17 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
         // e-mail (DES-04), DEPOIS da varredura dos prazos acima. Antes cada aluno percorria
         // o histórico inteiro da escola.
         const activity = collectMonitorActivity(db.memory, { application, examKey, keystrokes: db.keystrokes });
+
+        // Segunda chamada e lista escolhida (P3-S7): só quem está na lista aparece (quem
+        // não está não é "ausente"); quem já tem tentativa ou entrega nela aparece sempre.
+        const students = application && Array.isArray(application.participants)
+            ? classStudents.filter(s => {
+                const email = s.email.toLowerCase();
+                return applicationParticipant(application, email)
+                    || (activity.attemptsByEmail.get(email) || []).length > 0
+                    || (activity.deliveriesByEmail.get(email) || []).length > 0;
+            })
+            : classStudents;
 
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
@@ -4607,7 +4672,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     ? (Number.isFinite(Number(submission.answeredCount)) && submission.answeredCount !== null
                         ? Number(submission.answeredCount)
                         : (Array.isArray(submission.gradedAnswers)
-                            ? countAnswers(Object.fromEntries(submission.gradedAnswers.map(item => [item.questionNumber, item.studentChoice])))
+                            ? submission.gradedAnswers.filter(isAnswered).length
                             : 0))
                     : Object.keys(state.answers || {}).length;
                 const questionsInAttempt = submission ? (Number(submission.totalCount) || totalQuestions) : totalQuestions;
@@ -4660,9 +4725,12 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 name: s.name,
                 ip: session ? session.ip : '',
                 status,
-                // Tentativa que a linha mostra ("tentativa N de M") e o limite da aplicação.
+                // Tentativa que a linha mostra ("tentativa N de M") e o limite do aluno (o da
+                // aplicação mais as tentativas extras dele, D16).
                 attemptNumber,
-                maxAttempts: monitorMaxAttempts,
+                maxAttempts: application ? effectiveMaxAttempts(application, email, currentConfig.maxAttempts) : monitorMaxAttempts,
+                // Cadastro desligado (ou bloqueado): o Monitor não oferece tentativa extra.
+                activeStudent: activeStudent(s),
                 deliveredAttempts,
                 attemptInProgress,
                 attemptStarted,
@@ -4685,6 +4753,16 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     ? (submission.reopenedAt || null)
                     : (Number(state.reopenedAt) > 0 ? new Date(Number(state.reopenedAt)).toISOString() : null),
                 restoredAfterDiscard: !!submission?.restoredAfterDiscard,
+                // Ações por aluno do Monitor (P3-S8): a reabertura foi do professor (e não do
+                // "+N min" da turma), e a entrega mostrada pode voltar para a prova (a rota
+                // attempt-action confere de novo, inclusive o tempo que faltava).
+                reopenedByInstructor: submission
+                    ? (Array.isArray(submission.reopenedFrom) && submission.reopenedFrom.length > 0 && submission.reopenedFrom[submission.reopenedFrom.length - 1]?.byInstructor === true)
+                    : state.reopenedByInstructor === true,
+                canReopen: !!(application && applicationActive && submission
+                    && submission.gradePublished !== true
+                    && !['archived', 'invalidated'].includes(submission.resultStatus)
+                    && submission.reopenableState && submission.reopenableState.startedAt),
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
                 fullscreenUnsupported: currentAttemptLogs.some(log => log.eventType === 'fullscreen_unsupported'),
                 // Só os últimos eventos de foco (a linha mostra os 2 últimos); o histórico
@@ -4803,7 +4881,7 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             } else {
                 const rawChoice = answers[question.number] != null ? answers[question.number]
                     : (answers[questionNumber] != null ? answers[questionNumber] : null);
-                studentChoice = rawChoice != null ? String(rawChoice).toUpperCase() : null;
+                studentChoice = typeof rawChoice === 'string' && rawChoice ? rawChoice.toUpperCase() : null;
                 correctAnswer = getCorrectAnswer(question) || null;
                 isCorrect = !!studentChoice && studentChoice === correctAnswer;
             }
@@ -4824,7 +4902,9 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                 isCorrect,
                 annulled: !!(graded && graded.annulled),
                 annulmentMode: (graded && graded.annulmentMode) || null,
-                answered: !!studentChoice,
+                // Tipos da fase 3 (P3-S1): várias corretas e resposta digitada contam como respondidas.
+                answered: graded ? isAnswered(graded) : !!studentChoice,
+                ...reviewAnswerFields(labelsRecord, question, graded || (studentChoice ? { studentChoice } : null), rawAlternatives),
                 alternatives: rawAlternatives.map((alternative, alternativeIndex) => {
                     const canonicalLetter = String(alternative.letter || String.fromCharCode(65 + alternativeIndex)).toUpperCase();
                     return {
@@ -4832,7 +4912,8 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                         letter: seenAlternativeLetter(labelsRecord, alternative, alternativeIndex),
                         canonicalLetter,
                         text: alternative.text ?? alternative.label ?? String(alternative),
-                        selectedByStudent: canonicalLetter === studentChoice,
+                        selectedByStudent: canonicalLetter === studentChoice
+                            || !!(graded && Array.isArray(graded.studentChoices) && graded.studentChoices.map(letter => String(letter).toUpperCase()).includes(canonicalLetter)),
                         correct: canonicalLetter === correctAnswer || alternative.isCorrect === true,
                     };
                 }),
@@ -4992,6 +5073,11 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
         });
 
         submissions.forEach(sub => {
+            // Questão como a entrega foi corrigida (tipo e unidade da numérica), para o texto
+            // da resposta.
+            const snapshotQuestions = new Map((Array.isArray(sub.examSnapshot?.questions) ? sub.examSnapshot.questions : [])
+                .filter(question => question && typeof question === 'object')
+                .map((question, index) => [Number(question.originalNumber || question.number || index + 1), question]));
             (sub.gradedAnswers || []).forEach(answer => {
                 const qn = String(answer.questionNumber);
                 if (!byQuestion[qn]) {
@@ -5000,13 +5086,18 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
                         attempts: 0,
                         correct: 0,
                         wrong: 0,
+                        pending: 0,
                         choices: {}
                     };
                 }
                 byQuestion[qn].attempts++;
+                // Aguardando o professor (dissertativa, resposta para revisar) não é erro.
                 if (answer.isCorrect) byQuestion[qn].correct++;
+                else if (answer.pending === true) byQuestion[qn].pending++;
                 else byQuestion[qn].wrong++;
-                const choice = answer.studentChoice || 'em branco';
+                // Texto da resposta só por describeAnswer (contrato C3 do P3): 'B', 'A e C',
+                // '3,5 ms', a resposta curta digitada ou 'Resposta escrita'.
+                const choice = describeAnswer(snapshotQuestions.get(Number(answer.questionNumber)) || null, answer, { blank: 'em branco' });
                 byQuestion[qn].choices[choice] = (byQuestion[qn].choices[choice] || 0) + 1;
             });
         });
@@ -5042,150 +5133,8 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
     });
 });
 
-// 8. Banco centralizado de questões reutilizáveis
-// A tela mostra category, curriculumKey, type e questionText como texto: um item antigo
-// gravado pela API com um objeto ali (antes do schema do H9b) derrubava Provas e Monitor
-// com a tela de erro. Só a resposta é normalizada; o banco não é regravado.
-function questionBankItemForScreen(question) {
-    const text = (value, fallback) => (typeof value === 'string' ? value : fallback);
-    return {
-        ...question,
-        category: text(question.category, 'Geral'),
-        curriculumKey: text(question.curriculumKey, ''),
-        type: text(question.type, 'multiple_choice'),
-        questionText: text(question.questionText, ''),
-    };
-}
-
-router.get('/api/admin/question-bank', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
-        const questions = accountScopeKind(matchedAdmin) !== 'tudo'
-            ? (db.memory.questionBank || []).filter(question => question && (!question.sourceExamKey || adminCanAccessItem(matchedAdmin, question.sourceExamKey)))
-            : (db.memory.questionBank || []).filter(Boolean);
-        res.json({ success: true, questions: questions.map(questionBankItemForScreen) });
-    });
-});
-
-router.post('/api/admin/question-bank/create', ADMIN_SCHEMAS.questionBank, (req, res) => {
-    validateAdmin(req, res, () => {
-        const { category, type, questionText, alternatives, correctAnswer, sourceExamKey, curriculumKey } = req.body;
-        if (!questionText || String(questionText).trim() === '') {
-            return res.status(400).json({ error: 'Texto da questão é obrigatório.' });
-        }
-        let normalizedQuestion;
-        try {
-            normalizedQuestion = normalizeEvaluationPayload({
-                title: 'Banco de questões',
-                questions: [{ text: questionText, alternatives, correctAnswer }],
-            }).questions[0];
-        } catch (error) {
-            return sendRouteError(error, req, res);
-        }
-        const item = {
-            key: 'qb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-            category: category || 'Geral',
-            curriculumKey: curriculumKey || '',
-            type: type || 'multiple_choice',
-            questionText: normalizedQuestion.text,
-            alternatives: normalizedQuestion.alternatives,
-            correctAnswer: normalizedQuestion.correctAnswer,
-            sourceExamKey: sourceExamKey || null,
-            createdAt: new Date().toISOString()
-        };
-        db.memory.questionBank.push(item);
-        db.save();
-        res.json({ success: true, question: questionBankItemForScreen(item) });
-    });
-});
-
-router.post('/api/admin/question-bank/update', ADMIN_SCHEMAS.questionBank, (req, res) => {
-    validateAdmin(req, res, () => {
-        const item = (db.memory.questionBank || []).find(question => question && question.key === req.body.key);
-        if (!item) return res.status(404).json({ error: 'Questão não encontrada no banco.' });
-        let normalizedQuestion;
-        try {
-            normalizedQuestion = normalizeEvaluationPayload({
-                title: 'Banco de questões',
-                questions: [{
-                    text: req.body.questionText ?? item.questionText,
-                    alternatives: req.body.alternatives ?? item.alternatives,
-                    correctAnswer: req.body.correctAnswer ?? item.correctAnswer,
-                }],
-            }).questions[0];
-        } catch (error) {
-            return sendRouteError(error, req, res);
-        }
-        item.questionText = normalizedQuestion.text;
-        item.alternatives = normalizedQuestion.alternatives;
-        item.correctAnswer = normalizedQuestion.correctAnswer;
-        if (req.body.category !== undefined) item.category = String(req.body.category || 'Geral');
-        if (req.body.curriculumKey !== undefined) item.curriculumKey = String(req.body.curriculumKey || '');
-        item.updatedAt = new Date().toISOString();
-        db.save();
-        // Item antigo com curriculumKey ou type de outro tipo volta como texto (o guardado
-        // fica como estava, igual ao GET).
-        res.json({ success: true, question: questionBankItemForScreen(item) });
-    });
-});
-
-router.post('/api/admin/question-bank/import-evaluation', ADMIN_SCHEMAS.questionBank, (req, res) => {
-    validateAdmin(req, res, () => {
-        const { examKey, category, curriculumKey } = req.body;
-        if (!examKey) return res.status(400).json({ error: 'examKey é obrigatório.' });
-
-        const evaluation = db.memory.evaluations[examKey];
-        const questions = evaluation && Array.isArray(evaluation.questions) ? evaluation.questions : [];
-        if (questions.length === 0) {
-            return res.status(404).json({ error: 'Avaliação não encontrada ou sem questões estruturadas.' });
-        }
-
-        const existingKeys = new Set((db.memory.questionBank || []).filter(Boolean).map(q => `${q.sourceExamKey}:${q.originalNumber}`));
-        const imported = [];
-        questions.filter(Boolean).forEach(question => {
-            const originalNumber = Number(question.originalNumber || question.number || 0);
-            const dedupeKey = `${examKey}:${originalNumber}`;
-            if (existingKeys.has(dedupeKey)) return;
-            const item = {
-                key: 'qb_' + Date.now() + '_' + originalNumber + '_' + Math.random().toString(36).slice(2, 5),
-                category: category || examKey.split('_')[1] || 'Geral',
-                curriculumKey: curriculumKey || '',
-                type: 'multiple_choice',
-                sourceExamKey: examKey,
-                originalNumber,
-                questionText: question.text || '',
-                alternatives: question.alternatives || [],
-                correctAnswer: question.correctAnswer || '',
-                createdAt: new Date().toISOString()
-            };
-            db.memory.questionBank.push(item);
-            imported.push(item);
-        });
-
-        db.save();
-        res.json({ success: true, importedCount: imported.length, questions: imported.map(questionBankItemForScreen) });
-    });
-});
-
-router.post('/api/admin/question-bank/delete', (req, res) => {
-    validateAdmin(req, res, (config, matchedAdmin) => {
-        const { key } = req.body;
-        if (!key) return res.status(400).json({ error: 'key é obrigatório.' });
-        // Um item null na lista (dado antigo) fica como está, sem derrubar a exclusão.
-        const before = db.memory.questionBank.length;
-        const removed = db.memory.questionBank.filter(q => q && q.key === key);
-        db.memory.questionBank = db.memory.questionBank.filter(q => !q || q.key !== key);
-        removed.forEach(question => recordAudit(db.memory, {
-            req,
-            actor: matchedAdmin,
-            action: 'question_deleted',
-            category: 'academic',
-            examKey: question.sourceExamKey || undefined,
-            details: { deleted: deletedItemCopy(question) },
-        }));
-        db.save();
-        res.json({ success: true, deleted: before - db.memory.questionBank.length });
-    });
-});
+// 8. Banco centralizado de questões reutilizáveis: routes/adminQuestionBank.js (fase 3,
+// P3-S9a), montado logo depois de createAdminCoursesRouter.
 
 // ---- Escolas / Instituições (Fase I.1) ----
 // O que a auditoria guarda de uma escola: identificação e dados institucionais (a

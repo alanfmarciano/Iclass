@@ -14,7 +14,10 @@ const WIDTHS = {
 // e um Esc fechava os dois de uma vez.
 const openModals = []
 
-export function Modal({ open, onClose, title, description, children, footer, size = 'md' }) {
+// fullScreenOnPhone: no celular (abaixo de 640 px) o diálogo ocupa a tela inteira, sem a
+// margem nem a borda arredondada, e os botões do rodapé quebram em linhas inteiras em vez
+// de espremer o texto (diálogos longos, como o "Corrigir gabarito" do P3-S6).
+export function Modal({ open, onClose, title, description, children, footer, size = 'md', fullScreenOnPhone = false }) {
   const dialogRef = useRef(null)
   const previousFocusRef = useRef(null)
   const onCloseRef = useRef(onClose)
@@ -59,9 +62,9 @@ export function Modal({ open, onClose, title, description, children, footer, siz
   }, [open])
   if (!open) return null
   return createPortal(
-    <div className="fixed inset-0 z-[9998] grid place-items-center p-4">
+    <div className={`fixed inset-0 z-[9998] grid place-items-center ${fullScreenOnPhone ? 'p-0 sm:p-4' : 'p-4'}`}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true" onClick={onClose} />
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} tabIndex={-1} className={`relative bg-surface border border-border rounded-xl shadow-lg w-full ${WIDTHS[size] || WIDTHS.md} max-h-[94vh] overflow-auto`}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} tabIndex={-1} className={`relative bg-surface shadow-lg w-full ${WIDTHS[size] || WIDTHS.md} overflow-auto ${fullScreenOnPhone ? 'h-full max-h-full border-0 rounded-none sm:h-auto sm:max-h-[94vh] sm:border sm:border-border sm:rounded-xl' : 'border border-border rounded-xl max-h-[94vh]'}`}>
         <div className="flex items-start justify-between px-5 pt-5">
           <div>
             <h2 id={titleId} className="text-lg font-semibold text-text">{title}</h2>
@@ -70,7 +73,7 @@ export function Modal({ open, onClose, title, description, children, footer, siz
           <button onClick={onClose} aria-label="Fechar" className="text-subtle hover:text-text"><X size={20} /></button>
         </div>
         <div className="px-5 py-4">{children}</div>
-        {footer && <div className="flex justify-end gap-2 px-5 py-4 border-t border-border">{footer}</div>}
+        {footer && <div className={`flex justify-end gap-2 px-5 py-4 border-t border-border ${fullScreenOnPhone ? 'flex-wrap [&>button]:whitespace-nowrap' : ''}`}>{footer}</div>}
       </div>
     </div>,
     document.body

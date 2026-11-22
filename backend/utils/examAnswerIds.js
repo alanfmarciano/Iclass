@@ -12,9 +12,18 @@
 // - tentativa criada a partir desta versão (alternativeLabels = 'position'): a letra é
 //   a POSIÇÃO na versão do aluno, a mesma que ele vê;
 // - tentativa antiga (sem a marca): a letra é a original, como era antes.
+//
+// Tipos de questão da fase 3 (D5 do P3; utils/examScoring.js): uma correta e verdadeiro
+// ou falso vão e voltam como acima; várias corretas vão como lista de identificadores (até
+// 8) e ficam como lista de letras originais; numérica vem como { numero } (até 32
+// caracteres), resposta curta como { texto } (até 300) e dissertativa como { texto } (até
+// 10.000). O tipo que vale é o da questão da tentativa: resposta de formato errado para o
+// tipo (texto 'A' numa resposta curta não vira alternativa, lista numa questão de uma
+// correta, identificador inventado numa lista) é descartada.
 const crypto = require('crypto');
 const db = require('../database.js');
 const { questionsForAttempt } = require('./examGrading.js');
+const { ANSWER_LIMITS, MAX_CHOICES, questionType } = require('./examScoring.js');
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 const POSITION_LABELS = 'position';
@@ -25,8 +34,9 @@ const SINGLE_LETTER_PATTERN = /^[A-Z]$/;
 const MAX_ANSWERS_WITHOUT_QUESTIONS = 200;
 // Teto de entradas lidas do objeto de respostas, com ou sem questões (uma prova real tem
 // dezenas): o corpo pode ter até 10 MB e centenas de milhares de chaves inventadas; as
-// que passam do teto nem são lidas. Resposta é texto curto (letra ou identificador de
-// 13 caracteres): valor que não é texto ou é longo demais é descartado sem processar.
+// que passam do teto nem são lidas. Resposta de alternativa é texto curto (letra ou
+// identificador de 13 caracteres): valor que não é texto ou é longo demais é descartado
+// sem processar. A resposta digitada tem o limite do tipo (ANSWER_LIMITS, examScoring.js).
 const MAX_ANSWER_ENTRIES = 10000;
 const MAX_ANSWER_VALUE_LENGTH = 64;
 
@@ -99,10 +109,24 @@ function studentAlternatives(question, scope, index = 0) {
     });
 }
 
-// Respostas guardadas (letra original) no formato do navegador (identificadores).
+// Respostas guardadas no formato do navegador: letra original vira identificador, lista
+// de letras vira lista de identificadores e a resposta digitada volta como está.
 function encodeAnswersForStudent(answers, scope) {
     const encoded = {};
     Object.entries(answers && typeof answers === 'object' ? answers : {}).forEach(([number, value]) => {
+        if (Array.isArray(value)) {
+            const ids = value
+                .map(item => String(item ?? '').trim().toUpperCase())
+                .filter(letter => SINGLE_LETTER_PATTERN.test(letter))
+                .map(letter => alternativeAnswerId(scope, number, letter));
+            if (ids.length) encoded[number] = ids;
+            return;
+        }
+        if (value && typeof value === 'object') {
+            if (typeof value.numero === 'string') encoded[number] = { numero: value.numero };
+            else if (typeof value.texto === 'string') encoded[number] = { texto: value.texto };
+            return;
+        }
         const letter = String(value ?? '').trim().toUpperCase();
         if (!SINGLE_LETTER_PATTERN.test(letter)) return;
         encoded[number] = alternativeAnswerId(scope, number, letter);
@@ -110,12 +134,32 @@ function encodeAnswersForStudent(answers, scope) {
     return encoded;
 }
 
+function isPlainAnswerObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value)
+        && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+// Resposta digitada ({ numero } ou { texto }) dentro do limite do tipo, ou null.
+function decodeTypedAnswer(type, raw) {
+    if (!isPlainAnswerObject(raw)) return null;
+    if (type === 'numeric') {
+        const value = typeof raw.numero === 'number' && Number.isFinite(raw.numero) ? String(raw.numero) : raw.numero;
+        if (typeof value !== 'string' || value.length > ANSWER_LIMITS.numeric) return null;
+        const text = value.trim();
+        return text ? { numero: text } : null;
+    }
+    if (typeof raw.texto !== 'string' || raw.texto.length > ANSWER_LIMITS[type]) return null;
+    if (!raw.texto.trim()) return null;
+    return { texto: type === 'essay' ? raw.texto.replace(/\s+$/, '') : raw.texto.trim() };
+}
+
 // Respostas do navegador (identificador, ou letra) convertidas para a letra original.
 // questions: questões da tentativa na ordem da versão do aluno (questionsForAttempt).
 // positional: a letra avulsa é a posição na versão (tentativas novas) ou a original.
 // Só as questões da tentativa contam (a correção ignora as outras): a chave de uma
 // questão que não está na tentativa é descartada antes de qualquer HMAC, e milhares de
-// chaves inventadas num salvamento não prendem o servidor da sala.
+// chaves inventadas num salvamento não prendem o servidor da sala. O formato de cada
+// resposta segue o tipo da questão (ver o começo do arquivo).
 function decodeStudentAnswers(answers, { scope, questions = [], positional = false } = {}) {
     const byNumber = new Map((Array.isArray(questions) ? questions : [])
         .map((question, index) => [questionNumberOf(question, index), question]));
@@ -123,34 +167,55 @@ function decodeStudentAnswers(answers, { scope, questions = [], positional = fal
     let unknownQuestionAnswers = 0;
     let examined = 0;
     const source = answers && typeof answers === 'object' && !Array.isArray(answers) ? answers : {};
+    // Uma letra (identificador opaco ou letra avulsa) para a letra original, ou null.
+    const decodeLetter = (number, raw, letters) => {
+        if (typeof raw !== 'string' || raw.length > MAX_ANSWER_VALUE_LENGTH) return null;
+        const value = raw.trim().toUpperCase();
+        if (!value) return null;
+        if (ANSWER_ID_PATTERN.test(value)) {
+            const candidates = letters.length ? letters : LETTERS;
+            return candidates.find(letter => alternativeAnswerId(scope, number, letter) === value) || null;
+        }
+        if (!SINGLE_LETTER_PATTERN.test(value)) return null;
+        if (!positional) return value;
+        const position = LETTERS.indexOf(value);
+        return position >= 0 && letters[position] ? letters[position] : null;
+    };
     const decodeEntry = (key, raw) => {
-        if (typeof raw !== 'string' || raw.length > MAX_ANSWER_VALUE_LENGTH) return;
         const number = Number(key);
         if (!Number.isFinite(number)) return;
         const question = byNumber.get(number) || null;
         if (!question) {
             if (byNumber.size) return;
+            // Registro antigo sem a lista de questões: só respostas de uma letra.
+            if (typeof raw !== 'string' || raw.length > MAX_ANSWER_VALUE_LENGTH) return;
             unknownQuestionAnswers += 1;
             if (unknownQuestionAnswers > MAX_ANSWERS_WITHOUT_QUESTIONS) return;
-        }
-        const value = raw.trim().toUpperCase();
-        if (!value) return;
-        const letters = question
-            ? alternativeList(question).map((alternative, index) => originalLetter(alternative, index)).filter(Boolean)
-            : [];
-        if (ANSWER_ID_PATTERN.test(value)) {
-            const candidates = letters.length ? letters : LETTERS;
-            const match = candidates.find(letter => alternativeAnswerId(scope, number, letter) === value);
-            if (match) decoded[String(number)] = match;
+            const letter = decodeLetter(number, raw, []);
+            if (letter) decoded[String(number)] = letter;
             return;
         }
-        if (!SINGLE_LETTER_PATTERN.test(value)) return;
-        if (!positional) {
-            decoded[String(number)] = value;
+        const type = questionType(question);
+        if (type === 'numeric' || type === 'short_answer' || type === 'essay') {
+            const typed = decodeTypedAnswer(type, raw);
+            if (typed) decoded[String(number)] = typed;
             return;
         }
-        const position = LETTERS.indexOf(value);
-        if (position >= 0 && letters[position]) decoded[String(number)] = letters[position];
+        const letters = alternativeList(question).map((alternative, index) => originalLetter(alternative, index)).filter(Boolean);
+        if (type === 'multiple_answer') {
+            if (!Array.isArray(raw) || !raw.length || raw.length > Math.min(MAX_CHOICES, letters.length || MAX_CHOICES)) return;
+            const chosen = [];
+            for (const item of raw) {
+                const letter = decodeLetter(number, item, letters);
+                // Um identificador inventado (ou fora da questão) descarta a lista inteira.
+                if (!letter || !letters.includes(letter)) return;
+                chosen.push(letter);
+            }
+            decoded[String(number)] = [...new Set(chosen)].sort();
+            return;
+        }
+        const letter = decodeLetter(number, raw, letters);
+        if (letter) decoded[String(number)] = letter;
     };
     for (const key in source) {
         if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
@@ -231,10 +296,15 @@ function submissionWithSeenLetters(submission) {
             ? submission.gradedAnswers.map(answer => {
                 const question = byNumber.get(Number(answer?.questionNumber));
                 if (!question) return answer;
+                const seenList = list => (Array.isArray(list)
+                    ? list.map(letter => seenLetterFor(submission, question, letter)).sort()
+                    : list);
                 return {
                     ...answer,
                     studentChoice: seenLetterFor(submission, question, answer.studentChoice),
                     correctAnswer: seenLetterFor(submission, question, answer.correctAnswer),
+                    ...(Array.isArray(answer.studentChoices) ? { studentChoices: seenList(answer.studentChoices) } : {}),
+                    ...(Array.isArray(answer.correctAnswers) ? { correctAnswers: seenList(answer.correctAnswers) } : {}),
                 };
             })
             : submission.gradedAnswers,

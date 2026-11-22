@@ -110,6 +110,31 @@ button { -webkit-tap-highlight-color: transparent; }
 .prose-iclass table { border-collapse: collapse; width: 100%; margin: 1em 0; }
 .prose-iclass th,.prose-iclass td { border: 1px solid var(--border); padding: .5em .7em; text-align: left; }
 .prose-iclass img { max-width: 100%; height: auto; border-radius: 12px; display: block; margin: 1em auto; border: 1px solid var(--border); }
+
+/* Questão de prova em Markdown (fase 3, P3-S2: QuestionMarkdown.jsx). Nada passa da
+   largura do cartão no celular de 375 px: imagem com max-width 100%, tabela e bloco de
+   código com rolagem própria, palavra longa quebra. */
+.question-md { min-width: 0; max-width: 100%; overflow-wrap: anywhere; line-height: 1.6; }
+.question-md > :first-child { margin-top: 0; }
+.question-md > :last-child { margin-bottom: 0; }
+.question-md p { margin: .45em 0; }
+.question-md h1,.question-md h2,.question-md h3,.question-md h4 { font-weight: 700; margin: .7em 0 .35em; font-size: 1.05em; }
+.question-md ul,.question-md ol { margin: .45em 0; padding-left: 1.4em; }
+.question-md ul { list-style: disc; } .question-md ol { list-style: decimal; }
+.question-md li { margin: .2em 0; }
+.question-md blockquote { border-left: 3px solid var(--primary); padding-left: .8em; color: var(--text-muted); margin: .6em 0; }
+.question-md a { color: var(--primary); text-decoration: underline; }
+.question-md a:not([href]) { color: inherit; }
+.question-md code { background: var(--surface-2); padding: .1em .35em; border-radius: 5px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .9em; overflow-wrap: anywhere; }
+.question-md pre { background: var(--surface-2); border: 1px solid var(--border); padding: .7em .8em; border-radius: 10px; margin: .6em 0; max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; text-align: left; }
+.question-md pre code { background: none; padding: 0; border-radius: 0; font-size: .85em; overflow-wrap: normal; white-space: pre; }
+.question-md .question-md-table { max-width: 100%; overflow-x: auto; margin: .6em 0; }
+.question-md table { border-collapse: collapse; overflow-wrap: break-word; font-size: .92em; }
+.question-md th,.question-md td { border: 1px solid var(--border); padding: .35em .6em; text-align: left; vertical-align: top; }
+.question-md th { background: var(--surface-2); font-weight: 600; }
+.question-md img { max-width: 100%; height: auto; display: block; margin: .6em 0; border-radius: 8px; border: 1px solid var(--border); }
+.question-md img[data-zoomable] { cursor: zoom-in; }
+.question-md :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .wysiwyg-editor { overflow-wrap: anywhere; }
 .wysiwyg-editor:empty::before { content: 'Digite o conteúdo da apostila...'; color: var(--text-subtle); }
 .wysiwyg-editor:focus { min-height: 520px; }

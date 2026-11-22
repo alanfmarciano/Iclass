@@ -39,6 +39,9 @@ const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClas
 const { recordLoginLog } = require('../utils/security.js');
 const legalAcceptance = require('../utils/legalAcceptance.js');
 const studentFeeds = require('../utils/studentFeeds.js');
+// Provedor do sino "Nota alterada" (gabarito corrigido depois da prova, P3-S6): registra-se
+// ao carregar, para o sino abaixo juntar os itens dele.
+require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
@@ -48,11 +51,17 @@ const { normalizeExamToken } = require('../utils/examToken.js');
 const { effectiveStructure } = require('../utils/classContent.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
+    applicationFinalidade,
+    applicationParticipant,
+    effectiveMaxAttempts,
     examStateKey,
+    extraAttemptsFor,
     findExamApplication,
     findOpenAttemptState,
     listExamApplications,
+    studentStartDeadlinePassed,
 } = require('../utils/examApplications.js');
+const { notParticipantResponse, startDeadlineResponse, studentStartDeadlineInfo } = require('../utils/examParticipants.js');
 const {
     countStudentExamAttempts,
     filterStudentExamAttempts,
@@ -97,6 +106,7 @@ const {
 } = require('../utils/examDeadline.js');
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
+const { hasEssayAwaitingTeacher, isAnswered } = require('../utils/examScoring.js');
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
@@ -366,8 +376,10 @@ function attemptOutcomeFor(application, studentEmail, attemptId) {
         submittedAt: submission.timestamp || null,
         answeredCount: Number.isFinite(Number(submission.answeredCount))
             ? Number(submission.answeredCount)
-            : (submission.gradedAnswers || []).filter(item => item?.studentChoice).length,
+            : (submission.gradedAnswers || []).filter(isAnswered).length,
         lateBySeconds: Number(submission.lateBySeconds || 0),
+        // Dissertativa escrita esperando o professor (P-B6): a tela diz que ela será corrigida.
+        awaitingCorrection: hasEssayAwaitingTeacher(submission.gradedAnswers),
     };
 }
 
@@ -556,9 +568,28 @@ const STUDENT_APPLICATION_FIELDS = [
     'updatedAt',
 ];
 
+// O aluno tem tentativa (aberta ou entregue) nesta aplicação? Quem tem continua vendo a
+// aplicação mesmo fora da lista de participantes (nunca some uma prova que ele fez).
+function hasOwnAttemptIn(application, studentEmail, cls) {
+    if (findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail })) return true;
+    return countStudentExamAttempts(db.memory.submissions, {
+        studentEmail,
+        examKey: application.examKey,
+        courseId: application.courseId || cls?.courseId,
+        applicationId: application.id,
+    }) > 0;
+}
+
+// Aplicação que o aluno pode ver: está na lista dela (applicationParticipant; sem lista,
+// a turma inteira) ou já tem tentativa nela (P3-S7, D15).
+function applicationVisibleToStudent(application, studentEmail, cls) {
+    return applicationParticipant(application, studentEmail) || hasOwnAttemptIn(application, studentEmail, cls);
+}
+
 function applicationForStudent(application, cls, studentEmail) {
     const config = studentExamConfigSummary(cls.onlineExamConfigs?.[application.examKey]);
-    const maxAttempts = normalizeMaxAttempts(application.maxAttempts ?? config?.maxAttempts);
+    // O limite dele: o da aplicação mais as tentativas extras que o professor deu (D16).
+    const maxAttempts = effectiveMaxAttempts(application, studentEmail, config?.maxAttempts);
     const attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
         studentEmail,
         examKey: application.examKey,
@@ -583,6 +614,9 @@ function applicationForStudent(application, cls, studentEmail) {
         attemptsUsed,
         maxAttempts,
         attemptsExhausted: maxAttempts !== null && attemptsUsed >= maxAttempts && !openAttempt,
+        // Para quem (P3-S7): a finalidade e, só do próprio aluno, o prazo para começar.
+        finalidade: applicationFinalidade(application),
+        ...studentStartDeadlineInfo(application, studentEmail, { openAttemptStarted: !!openAttempt?.state?.startedAt }),
     };
 }
 
@@ -610,10 +644,11 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
             courseId: cls.courseId,
             statuses: ['waiting', 'running', 'paused'],
         }).map(application => ({ application, cls })))
-        .filter(({ application }) => {
+        .filter(({ application, cls }) => {
             if (seen.has(application.id)) return false;
             seen.add(application.id);
-            return true;
+            // Segunda chamada e lista escolhida: só quem está nela vê a aplicação.
+            return applicationVisibleToStudent(application, req.studentEmail, cls);
         })
         .sort((a, b) => String(b.application.createdAt || '').localeCompare(String(a.application.createdAt || '')))
         .map(({ application, cls }) => applicationForStudent(application, cls, req.studentEmail));
@@ -684,6 +719,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         let finishOutcome = null;
         let attemptOutcome = null;
         let timeOver = false;
+        let startDeadlinePassedAt = null;
+        // A tentativa do aluno já começou (e está aberta): o prazo para começar não vale mais.
+        let openAttemptStarted = false;
         let localCopyKey = null;
         let questions = null;
         let questionsVersion = null;
@@ -705,7 +743,14 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             // Tentativa vencida vira entrega (com as respostas salvas) antes de qualquer
             // outra decisão: assim ela conta como usada e nunca é recriada vazia.
             settleStudentAttempt(application, email);
-            maxAttempts = normalizeMaxAttempts(application?.maxAttempts ?? onlineCfg?.maxAttempts);
+            // Aplicação só para alguns alunos (segunda chamada, lista escolhida): quem não
+            // está na lista nem tem tentativa nela não sincroniza (nada é criado).
+            if (application && !applicationVisibleToStudent(application, email, cls)) {
+                return res.status(403).json(notParticipantResponse(application));
+            }
+            maxAttempts = application
+                ? effectiveMaxAttempts(application, email, onlineCfg?.maxAttempts)
+                : normalizeMaxAttempts(onlineCfg?.maxAttempts);
             attemptsUsed = countStudentExamAttempts(db.memory.submissions, {
                 studentEmail: email,
                 examKey,
@@ -719,6 +764,12 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 ? findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email })
                 : null;
             timeOver = !!application && !openAttempt?.state?.startedAt && collectiveTimeOverForNewAttempt(application, email, Date.now(), openAttempt?.state || null);
+            // Prazo do aluno para começar (exceção por aluno, D16): passou e a tentativa não
+            // começou, então não há o que iniciar (a já começada continua).
+            openAttemptStarted = !!openAttempt?.state?.startedAt;
+            startDeadlinePassedAt = application && !openAttemptStarted
+                ? studentStartDeadlinePassed(application, email)
+                : null;
             const context = application
                 ? attemptContextForStudent({
                     application,
@@ -726,7 +777,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                     examKey,
                     studentClass: cls.name,
                     courseId: cls.courseId,
-                    create: !attemptsExhausted && !timeOver && ['waiting', 'running', 'paused'].includes(application.status),
+                    create: !attemptsExhausted && !timeOver && !startDeadlinePassedAt && ['waiting', 'running', 'paused'].includes(application.status),
                 })
                 : attemptContextForStudent({ studentEmail: email, examKey });
             const stateKey = context.key || examStateKey({ studentEmail: email, examKey });
@@ -858,6 +909,12 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             finishOutcome,
             attemptOutcome,
             timeOver,
+            // Prazo do aluno para começar já passou (exceção por aluno): a tela mostra o aviso.
+            startDeadlinePassed: !!startDeadlinePassedAt,
+            startDeadlineMessage: startDeadlinePassedAt ? startDeadlineResponse(startDeadlinePassedAt).error : null,
+            // Prazo do aluno para começar (exceção com prazo), para as instruções da prova.
+            // Com a tentativa já começada, nulo: ele continua a prova depois do prazo.
+            ...(application ? studentStartDeadlineInfo(application, email, { openAttemptStarted }) : { startDeadlineAt: null, startDeadlineLabel: null }),
             localCopyKey,
             // Prazo de guarda do monitoramento da prova (settings.retention, H8b), para as
             // instruções: 0 = sem prazo automático (até a escola apagar).
@@ -1456,7 +1513,18 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         courseId: application.courseId,
         applicationId: application.id,
     });
-    const maxAttempts = normalizeMaxAttempts(application.maxAttempts);
+    const openBefore = findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: req.studentEmail });
+    // Segunda chamada e lista escolhida (P3-S7): só quem está na lista começa. A tentativa
+    // já aberta continua sempre.
+    if (!openBefore && !applicationParticipant(application, req.studentEmail)) {
+        return res.status(403).json(notParticipantResponse(application));
+    }
+    // Prazo do aluno para começar (exceção por aluno, D16): vale para a tentativa que
+    // ainda não começou.
+    const startDeadlinePassedAt = openBefore?.state?.startedAt ? null : studentStartDeadlinePassed(application, req.studentEmail, now);
+    if (startDeadlinePassedAt) return res.status(409).json(startDeadlineResponse(startDeadlinePassedAt));
+    // O limite dele: o da aplicação mais as tentativas extras (D16).
+    const maxAttempts = effectiveMaxAttempts(application, req.studentEmail);
     if (maxAttempts !== null && previousAttempts.length >= maxAttempts) {
         return res.status(403).json({
             error: 'Limite de tentativas atingido.',
@@ -1711,6 +1779,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
                 gradePublished: false,
                 answeredCount: previousSameAttempt.answeredCount,
                 lateBySeconds: Number(previousSameAttempt.lateBySeconds || 0),
+                awaitingCorrection: hasEssayAwaitingTeacher(previousSameAttempt.gradedAnswers),
                 message: 'Prova enviada após o fim do tempo. O atraso fica registrado para o professor.',
                 examConfigVersion: previousSameAttempt.examConfigVersion || null,
             });
@@ -1723,7 +1792,8 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
             finalizedByServer: previousSameAttempt.submissionSource === SERVER_DEADLINE_SOURCE,
             answeredCount: Number.isFinite(Number(previousSameAttempt.answeredCount))
                 ? Number(previousSameAttempt.answeredCount)
-                : (previousSameAttempt.gradedAnswers || []).filter(item => item?.studentChoice).length,
+                : (previousSameAttempt.gradedAnswers || []).filter(isAnswered).length,
+            awaitingCorrection: hasEssayAwaitingTeacher(previousSameAttempt.gradedAnswers),
             message: 'Esta tentativa já havia sido enviada.',
             examConfigVersion: previousSameAttempt.examConfigVersion || null,
         });
@@ -1742,7 +1812,9 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
     if (onlineConfig.onlineActive !== true || (!emAndamento && !applicationPaused)) {
         return res.status(403).json({ error: 'Esta prova online ainda não está em andamento para a sua turma.' });
     }
-    const maxAttempts = normalizeMaxAttempts(onlineConfig.maxAttempts);
+    // Com as tentativas extras do aluno nesta aplicação (exceção por aluno, D16).
+    const baseMaxAttempts = normalizeMaxAttempts(onlineConfig.maxAttempts);
+    const maxAttempts = baseMaxAttempts === null ? null : baseMaxAttempts + (application ? extraAttemptsFor(application, studentEmail) : 0);
     if (maxAttempts !== null && previousAttempts.length >= maxAttempts) {
         return res.status(403).json({
             error: 'Limite de tentativas atingido.',
@@ -1806,6 +1878,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
             finalizedByServer: !!finalized,
             submissionId: finalized?.id || null,
             answeredCount: finalized ? finalized.answeredCount : null,
+            awaitingCorrection: finalized ? hasEssayAwaitingTeacher(finalized.gradedAnswers) : false,
         });
     }
     const lateDecision = lateSubmitDecision({ overdueMs: timing.overdueMs, auto: auto === true });
@@ -1824,6 +1897,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
             finalizedByServer: !!finalized,
             submissionId: finalized?.id || null,
             answeredCount: finalized ? finalized.answeredCount : null,
+            awaitingCorrection: finalized ? hasEssayAwaitingTeacher(finalized.gradedAnswers) : false,
         });
     }
 
@@ -1937,9 +2011,10 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
     });
     submissionObj.answeredCount = countAnswers(answers);
     markLateSubmission(submissionObj, { deadlineAt: timing.deadlineAt, lateMs: lateDecision.lateMs });
-    // Entrega automática do fim do tempo: guarda a tentativa para o "+N min" da turma
-    // poder reabri-la logo depois do fim do tempo.
-    if (auto === true && application) {
+    // Guarda a tentativa na entrega para ela poder voltar à prova: a do fim do tempo pelo
+    // "+N min" da turma, e qualquer uma pelo "Reabrir" do professor no Monitor (P3-S8,
+    // AVA-14: enviada por engano). Nunca vai para o aluno.
+    if (application && ACTIVE_APPLICATION_STATUSES.has(application.status)) {
         const reopenable = attemptStateForReopen(lockedState);
         if (reopenable) submissionObj.reopenableState = reopenable;
     }
@@ -1965,7 +2040,12 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
         attemptId: submissionObj.attemptId,
         answeredCount: submissionObj.answeredCount,
         lateBySeconds: Number(submissionObj.lateBySeconds || 0),
-        message: 'Prova enviada. A nota será exibida após a publicação do professor.',
+        // Prova com dissertativa escrita (P3-S2, P-B6): "Sua prova foi entregue. As
+        // dissertativas serão corrigidas." A nota só sai depois da correção e da publicação.
+        awaitingCorrection: hasEssayAwaitingTeacher(submissionObj.gradedAnswers),
+        message: hasEssayAwaitingTeacher(submissionObj.gradedAnswers)
+            ? 'Sua prova foi entregue. As dissertativas serão corrigidas.'
+            : 'Prova enviada. A nota será exibida após a publicação do professor.',
         examConfigVersion: currentExamConfigVersion
     });
 });
@@ -2109,6 +2189,8 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
         });
 
     listExamApplications(db.memory.examApplications, { studentClass: cls.name, courseId: cls.courseId, statuses: ['waiting', 'running', 'paused'] })
+        // Segunda chamada e lista escolhida: o sino só toca para quem está na lista.
+        .filter(application => applicationVisibleToStudent(application, email, cls))
         .forEach(application => {
             const at = Date.parse(application.startedAt || application.updatedAt || application.createdAt) || 0;
             items.push({

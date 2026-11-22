@@ -7,8 +7,11 @@ import {
   examDraftStorageKey,
   findExamDraftAttempt,
   importExamDraftKey,
+  examAnswerFingerprint,
+  hasExamAnswer,
   readExamDraft,
   sameExamAnswers,
+  sanitizeExamAnswers,
   writeExamDraft,
 } from './examDrafts'
 
@@ -119,5 +122,39 @@ describe('[UC-TENTATIVA-001] cópia local cifrada das respostas da prova (AVA-11
     expect(sameExamAnswers({ 1: 'A' }, { 1: 'A', 2: 'B' })).toBe(false)
     expect(await importExamDraftKey(btoa('curta'))).toBeNull()
     expect(await importExamDraftKey('não é base64')).toBeNull()
+  })
+})
+
+// Respostas dos tipos novos (fase 3, P3-S2: AVA-06): lista de identificadores e texto.
+describe('[UC-PROVA-004] respostas de lista e de texto na cópia local e na comparação', () => {
+  it('compara lista em qualquer ordem e texto sem os espaços das pontas; em branco é igual a ausente', () => {
+    expect(sameExamAnswers({ 2: ['B', 'A'] }, { 2: ['A', 'B'] })).toBe(true)
+    expect(sameExamAnswers({ 2: ['A'] }, { 2: ['A', 'B'] })).toBe(false)
+    expect(sameExamAnswers({ 6: { texto: 'Olá ' } }, { 6: { texto: 'Olá' } })).toBe(true)
+    expect(sameExamAnswers({ 6: { texto: 'Olá mundo' } }, { 6: { texto: 'Olá' } })).toBe(false)
+    expect(sameExamAnswers({ 4: { numero: '3,5' } }, { 4: { numero: '3,5' } })).toBe(true)
+    expect(sameExamAnswers({ 4: { numero: '3,5' } }, { 4: { numero: '3.5' } })).toBe(false)
+    expect(sameExamAnswers({ 5: { texto: '   ' }, 2: [] }, {})).toBe(true)
+    // Texto 'A' numa resposta digitada não é a alternativa A.
+    expect(examAnswerFingerprint({ texto: 'A' })).not.toBe(examAnswerFingerprint('A'))
+  })
+
+  it('diz quando há resposta de qualquer tipo', () => {
+    expect(hasExamAnswer('A1B2')).toBe(true)
+    expect(hasExamAnswer(['X'])).toBe(true)
+    expect(hasExamAnswer({ numero: '0' })).toBe(true)
+    expect(hasExamAnswer({ texto: 'x' })).toBe(true)
+    ;[undefined, null, '', '  ', [], [''], { texto: '' }, { texto: ' \n ' }, { numero: '' }, { outro: 'x' }, 5].forEach((value) => {
+      expect(hasExamAnswer(value)).toBe(false)
+    })
+  })
+
+  it('a cópia cifrada guarda e devolve lista e texto; valor que não é resposta fica de fora', async () => {
+    const cryptoKey = await importExamDraftKey(randomKey())
+    const answers = { 1: 'ID1', 2: ['ID2', 'ID3'], 4: { numero: '3,5' }, 6: { texto: 'linha 1\nlinha 2 ' } }
+    expect(await writeExamDraft({ attemptId: 'att-t', applicationId: 'app-1', cryptoKey, answers: { ...answers, 7: { outro: 1 }, 8: [1, 2], x: 'A' } })).toBe(true)
+    const draft = await readExamDraft({ attemptId: 'att-t', cryptoKey })
+    expect(draft.answers).toEqual(answers)
+    expect(sanitizeExamAnswers({ 1: 'x'.repeat(65), 6: { texto: 'x'.repeat(10001) }, 3: Array(9).fill('A') })).toEqual({})
   })
 })

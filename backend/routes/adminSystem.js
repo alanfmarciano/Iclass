@@ -1,8 +1,11 @@
 const express = require('express');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const db = require('../database.js');
-const { DATA_DIR } = require('../runtimePaths.js');
+const runtimePaths = require('../runtimePaths.js');
+const { DATA_DIR } = runtimePaths;
+const schemaMigrations = require('../utils/schemaMigrations.js');
 const { recordAudit } = require('../utils/audit.js');
 const {
     DB_CLASSES_FILE,
@@ -151,6 +154,91 @@ async function diskFreeBytes(dir) {
     }
 }
 
+// --- Sobre o IClass (fase 3, A1 / P6-S2: OPS-02, ENG-10, OPS-21; D22 do P6) -------------
+
+// O build que este servidor serve (web/dist/build-meta.json): id curto, quando foi feito e
+// com que Node. Sem o arquivo (não deveria acontecer: o boot confere o build), tudo null.
+function buildInfo() {
+    try {
+        const meta = JSON.parse(fs.readFileSync(path.join(runtimePaths.WEB_DIST_DIR, 'build-meta.json'), 'utf8'));
+        const id = typeof meta.sourceHash === 'string' && /^[0-9a-f]{12,128}$/.test(meta.sourceHash) ? meta.sourceHash.slice(0, 12) : null;
+        return {
+            id,
+            geradoEm: typeof meta.builtAt === 'string' && Number.isFinite(Date.parse(meta.builtAt)) ? meta.builtAt : null,
+            node: typeof meta.node === 'string' ? meta.node : null,
+        };
+    } catch (err) {
+        return { id: null, geradoEm: null, node: null };
+    }
+}
+
+// 'pacote' quando o IClass veio do pacote de release (release-manifest.json na pasta do
+// programa e sem o código da interface, D14 do P6); senão 'desenvolvimento' (pasta do git,
+// como a do Alan hoje).
+function installMode() {
+    const root = runtimePaths.PROJECT_ROOT;
+    return fs.existsSync(path.join(root, 'release-manifest.json')) && !fs.existsSync(path.join(root, 'web', 'src')) ? 'pacote' : 'desenvolvimento';
+}
+
+// Versão dos dados (schemaMeta, A0): quantas migrações este banco tem, a última (com o
+// nome do registro) e quantas faltam ou são desconhecidas (só acontece em TEST_MODE: fora
+// dele o boot recusa banco de versão mais nova).
+function schemaSummary(value) {
+    const meta = schemaMigrations.normalizeSchemaMeta(value);
+    const plan = schemaMigrations.planSchema(meta);
+    const names = new Map(schemaMigrations.registry().migrations.map(row => [row.id, row.nome]));
+    const ordered = schemaMigrations.sortApplied(meta.aplicadas);
+    const last = ordered.length ? ordered[ordered.length - 1] : null;
+    return {
+        aplicadas: meta.aplicadas.length,
+        ultima: last ? { id: last.id, nome: names.get(last.id) || null, em: Number.isFinite(last.em) ? last.em : null } : null,
+        pendentes: plan.pending.length,
+        desconhecidas: plan.unknown.length,
+    };
+}
+
+// A última atualização registrada (schemaMeta.atualizacoes, A0) ou null.
+function lastUpdate(value) {
+    const updates = schemaMigrations.normalizeSchemaMeta(value).atualizacoes;
+    const last = updates.length ? updates[updates.length - 1] : null;
+    if (!last) return null;
+    return {
+        de: typeof last.de === 'string' && last.de ? last.de : null,
+        para: typeof last.para === 'string' && last.para ? last.para : null,
+        em: Number.isFinite(last.em) ? last.em : null,
+        backup: typeof last.backup === 'string' && last.backup ? last.backup : null,
+        semBackup: last.semBackup === true,
+        instalacaoNova: last.instalacaoNova === true,
+        migracoes: Array.isArray(last.migracoes) ? last.migracoes.length : 0,
+    };
+}
+
+// GET /api/admin/system/about: o cartão "Sobre o IClass" da tela Sistema. Tudo o que o
+// suporte pergunta primeiro, num lugar só. As pastas do computador só para o administrador
+// pleno (contrato C2 do P4); o resto, para toda conta com page.system.
+function systemAbout(account, memory = db.memory) {
+    const install = settingsUtil.installSettings(memory && memory.config && memory.config.settings && typeof memory.config.settings === 'object' ? memory.config.settings : {});
+    const about = {
+        versao: schemaMigrations.appVersion() || null,
+        build: buildInfo(),
+        modo: installMode(),
+        node: process.version,
+        plataforma: `${os.type()} ${os.release()} (${process.arch})`,
+        esquema: schemaSummary(memory && memory.schemaMeta),
+        ultimaAtualizacao: lastUpdate(memory && memory.schemaMeta),
+        instalacao: install,
+    };
+    if (isFullAdmin(account)) {
+        about.pastas = {
+            programa: runtimePaths.PROJECT_ROOT,
+            dados: runtimePaths.DATA_DIR,
+            conteudo: runtimePaths.CONTENT_DIR,
+            cursosArquivados: runtimePaths.ARCHIVE_DIR,
+        };
+    }
+    return about;
+}
+
 // Chaves das configurações achatadas por ponto ('trash.retentionDays'), com o valor.
 // Lista (tipos de arquivo permitidos) é um valor só.
 function flattenSettings(value, prefix = '', out = {}) {
@@ -261,6 +349,15 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 studentsHttps: snapshot.scheme === 'https',
                 qr: qr ? { version: qr.version, size: qr.size, rows: qr.rows } : null,
             });
+        });
+    });
+
+    // Sobre o IClass (A1 / P6-S2): versão, build, modo, Node, versão dos dados, última
+    // atualização e a identidade da instalação (page.system; pastas só do administrador).
+    router.get('/api/admin/system/about', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            res.set('Cache-Control', 'no-store');
+            res.json({ success: true, ...systemAbout(matchedAdmin) });
         });
     });
 
@@ -778,4 +875,4 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
     return router;
 }
 
-module.exports = { createAdminSystemRouter };
+module.exports = { createAdminSystemRouter, systemAbout };

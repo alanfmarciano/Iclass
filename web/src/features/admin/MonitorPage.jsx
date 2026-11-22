@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, Ban, CheckCircle2, Clock, Eye, GitBranch, History, Keyboard, Library, ListFilter, MonitorPlay, Pause, Pencil, Play, Send, Square, Trash2, Unlock, Users } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Ban, CheckCircle2, Clock, Eye, GitBranch, History, Inbox, Keyboard, Library, ListFilter, MonitorPlay, Pause, Pencil, Play, PlusCircle, RotateCcw, Send, Square, Trash2, Unlock, Users } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -20,6 +20,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { classTimeExtraFeedback, resolveMonitorTimer, rowStartedAttempt, rowTimerLabel } from './monitorTimer'
 import { attemptCountLabel, deliveryLabel, deliveryTone } from './attemptDelivery'
+import { MonitorRowMenu } from './MonitorRowMenu'
 import { liveCorrectionDraft } from './examTools'
 import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
@@ -30,6 +31,7 @@ import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspi
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
+import { answerSummary, questionTypeLabel } from './questionEditorModel'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -73,7 +75,7 @@ function applicationTime(application) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 function keystrokeText(ev) {
-  if (ev.kind === 'clipboard') return ev.key === 'cut' ? '✂ recortar' : '⧉ copiar'
+  if (ev.kind === 'clipboard') return ev.key === 'cut' ? '✂ recortar' : ev.key === 'paste' ? '📋 colar' : '⧉ copiar'
   if (ev.kind === 'contextmenu') return '☰ menu (botão direito)'
   if (ev.mods) return `${ev.mods}+${(ev.key || '').toUpperCase()}`
   if (ev.key === ' ') return '␣ espaço'
@@ -118,8 +120,10 @@ const SHORTCUT_INFO = {
 const ALERT_LOG_TYPES = new Set(Object.keys(LOG_INFO))
 
 // Classifica um keystroke → { reason, label, icon, sev }. Char/key não são comandos.
-function classifyKeystroke(ev) {
+export function classifyKeystroke(ev) {
   if (ev.kind === 'clipboard') {
+    // Colar pelo menu da resposta escrita (fase 3, ajuste do A5): não é bloqueado.
+    if (ev.key === 'paste') return { reason: 'colar', ...SHORTCUT_INFO.colar }
     const cut = ev.key === 'cut'
     return { reason: 'clipboard', label: cut ? 'Recorte bloqueado' : 'Cópia bloqueada', icon: cut ? '✂' : '⧉', sev: 'high' }
   }
@@ -464,6 +468,8 @@ export default function MonitorPage() {
   // outro navegador trocou o token, o painel deixa de mostrar o guardado nesta aba.
   const liveApplication = useMemo(() => (activeApplicationsRequest.data?.applications || []).find((item) => item.id === applicationId) || null, [activeApplicationsRequest.data, applicationId])
   const tokenIssuedAt = (liveApplication || selectedApplication)?.accessTokenIssuedAt || ''
+  // Versões que a aplicação tem (A, B...): o diálogo da versão só oferece essas (D20).
+  const monitorVersionLabels = (liveApplication || selectedApplication)?.versionLabels || EMPTY_LIST
   // Registro do teclado da aplicação (H8b): a coluna diz o que mostra ('nada': desligado).
   const keystrokeMode = normalizeKeystrokeMode((liveApplication || selectedApplication)?.keystrokeMode)
   // Aplicação de antes desta versão: o que ela já guardou é a digitação completa.
@@ -846,9 +852,9 @@ export default function MonitorPage() {
     return control('start')
   }
 
-  async function addTime(targetEmail = null, adjustmentMinutes = 5) {
+  async function addTime(targetEmail = null, adjustmentMinutes = 5, reason = '') {
     try {
-      const r = await api.post('/api/admin/adjust-student-time', { studentClass: className, courseId, examKey, applicationId, targetEmail, adjustmentMinutes })
+      const r = await api.post('/api/admin/adjust-student-time', { studentClass: className, courseId, examKey, applicationId, targetEmail, adjustmentMinutes, ...(reason ? { reason } : {}) })
       if (r?.appliesToNextAttempt) toast.info('Ajuste registrado: vale quando o aluno iniciar a tentativa.')
       else if (targetEmail) toast.success('Tempo do aluno ajustado')
       else {
@@ -861,7 +867,7 @@ export default function MonitorPage() {
   }
 
   function broadcast(targetEmail = null) {
-    setActionDialog({ kind: 'message', email: targetEmail, name: targetEmail ? studentLabel(targetEmail) : '' })
+    setActionDialog({ kind: 'message', email: targetEmail, name: targetEmail ? studentLabel(targetEmail) : '', value: '' })
   }
 
   // Erro do envio aparece no próprio diálogo (ConfirmDialog), que continua aberto com o texto.
@@ -965,16 +971,70 @@ export default function MonitorPage() {
     setActionDialog({ kind: 'time', email, name: studentLabel(email), value: '5' })
   }
 
-  async function confirmAdjustOne() {
+  async function confirmAdjustOne(reason) {
     const minutes = parseAdjustMinutes(actionDialog?.value)
     if (minutes === null) return
     const email = actionDialog.email
     setActionDialog(null)
-    await addTime(email, minutes)
+    await addTime(email, minutes, reason || '')
   }
 
   function assignVersion(email, currentVersion) {
-    setActionDialog({ kind: 'version', email, name: studentLabel(email), value: currentVersion || 'A' })
+    setActionDialog({ kind: 'version', email, name: studentLabel(email), value: currentVersion || 'A', versions: monitorVersionLabels })
+  }
+
+  // Ações por aluno (P3-S8: AVA-14; D18 do P3): recolher a prova em andamento, reabrir a
+  // entrega e dar uma tentativa extra, todas pelo ConfirmDialog e pela rota attempt-action.
+  // O erro do servidor fica no diálogo (ele continua aberto); a tentativa vencida que o
+  // servidor entregou pelo fim do tempo fecha o diálogo com o aviso.
+  function openStudentAction(kind, row) {
+    setActionDialog({ kind, email: row.email, name: row.name || row.email, value: kind === 'extra' ? '1' : '', row })
+  }
+
+  async function confirmStudentAction(motivo) {
+    const dialog = actionDialog
+    if (!dialog) return
+    const action = { collect: 'recolher', reopen: 'reabrir', extra: 'tentativa_extra' }[dialog.kind]
+    const body = { action, studentEmail: dialog.email, ...(motivo ? { motivo } : {}) }
+    if (dialog.kind === 'extra') {
+      const extra = parseExtraAttempts(dialog.value)
+      if (extra === null) return
+      body.extraAttempts = extra
+    }
+    let response
+    try {
+      response = await api.post(`/api/admin/exam-applications/${encodeURIComponent(applicationId)}/attempt-action`, body)
+    } catch (error) {
+      if (error?.data?.attemptFinalized) {
+        toast.info(error.message)
+        setActionDialog(null)
+        refreshMonitor()
+        return
+      }
+      throw error
+    }
+    const who = dialog.name || dialog.email
+    if (dialog.kind === 'collect') {
+      const answered = Number(response?.submission?.answeredCount || 0)
+      toast.success(`Prova de ${who} recolhida com ${answered} ${answered === 1 ? 'resposta salva' : 'respostas salvas'}.`)
+    } else if (dialog.kind === 'reopen') {
+      const minutes = response?.state?.remainingMinutes
+      toast.success(minutes == null ? `Prova de ${who} reaberta.` : `Prova de ${who} reaberta com ${minutes} min para terminar.`)
+    } else {
+      const total = response?.maxAttempts
+      toast.success(total ? `${who} pode fazer ${total} tentativas nesta aplicação.` : `Tentativa extra registrada para ${who}.`)
+    }
+    setActionDialog(null)
+    refreshMonitor()
+  }
+
+  function studentActions(row) {
+    if (applicationFinished || selectedConfig.status === 'cancelled') return []
+    return [
+      row.attemptInProgress && { id: 'collect', label: 'Recolher prova', icon: Inbox, onSelect: () => openStudentAction('collect', row) },
+      row.canReopen && { id: 'reopen', label: 'Reabrir prova', icon: RotateCcw, onSelect: () => openStudentAction('reopen', row) },
+      Number(row.maxAttempts) > 0 && row.activeStudent !== false && { id: 'extra', label: 'Dar tentativa extra', icon: PlusCircle, onSelect: () => openStudentAction('extra', row) },
+    ].filter(Boolean)
   }
 
   async function confirmAssignVersion() {
@@ -1000,14 +1060,12 @@ export default function MonitorPage() {
     navigate(qs ? `/resultados?${qs}` : '/resultados')
   }
 
-  function releaseGrades() {
+  // Liberar notas (D20 do P3): o diálogo diz quantas notas vão para os alunos e quantas
+  // ficam de fora por estarem aguardando a correção do professor (correcao.situacao
+  // 'pendente'); liberar manda só as contadas.
+  async function releaseGrades() {
     if (!applicationId) return
-    setActionDialog({ kind: 'release' })
-  }
-
-  async function confirmReleaseGrades() {
-    if (!applicationId) return
-    setReleaseBusy(true)
+    setActionDialog({ kind: 'release', loading: true, ids: [], pendingCorrection: 0 })
     try {
       const params = new URLSearchParams()
       if (courseId) params.set('courseId', courseId)
@@ -1015,17 +1073,26 @@ export default function MonitorPage() {
       // Só as entregas desta aplicação (antes vinham todas as da turma, com as questões).
       params.set('applicationId', applicationId)
       const list = await api.get(`/api/admin/submissions?${params.toString()}`)
-      const subs = Array.isArray(list) ? list : (list?.submissions || [])
-      const ids = subs
+      const subs = (Array.isArray(list) ? list : (list?.submissions || []))
         .filter((s) => String(s.applicationId || '') === String(applicationId) && s.gradePublished !== true)
-        .map((s) => s.id)
-      if (ids.length === 0) { toast.success('Nenhuma nota pendente para liberar.'); return }
+      const pending = subs.filter((s) => s.correcao && s.correcao.situacao === 'pendente')
+      const ids = subs.filter((s) => !pending.includes(s)).map((s) => s.id)
+      setActionDialog((current) => current && current.kind === 'release' ? { ...current, loading: false, ids, pendingCorrection: pending.length } : current)
+    } catch (e) {
+      setActionDialog((current) => current && current.kind === 'release' ? { ...current, loading: false, loadError: e.message || 'Não foi possível contar as notas.' } : current)
+    }
+  }
+
+  async function confirmReleaseGrades() {
+    const ids = actionDialog?.ids || []
+    if (!applicationId || ids.length === 0) return
+    setReleaseBusy(true)
+    try {
       const res = await api.post('/api/admin/submissions/publish', { ids, published: true })
-      toast.success(`${res.updated ?? ids.length} nota(s) liberada(s) para os alunos.`)
-    } catch (e) { toast.error(e.message) }
-    finally {
-      setReleaseBusy(false)
+      toast.success(`${res.updated ?? ids.length} ${(res.updated ?? ids.length) === 1 ? 'nota liberada' : 'notas liberadas'} para os alunos.`)
       setActionDialog(null)
+    } finally {
+      setReleaseBusy(false)
     }
   }
 
@@ -1039,7 +1106,7 @@ export default function MonitorPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <PageHeader title="Monitor Online" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`}><RoomAddressButton /></PageHeader>
+      <PageHeader title="Monitor Online" helpTopic="monitor" subtitle={`Acompanhe a prova em tempo real · ${courseName || activeCourseId} · ${activeClassName}.`}><RoomAddressButton /></PageHeader>
       {activeApplications.length > 0 && (
         <section className="border-y border-success/45 bg-success-soft/20" aria-labelledby="active-monitor-applications-title">
           <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
@@ -1327,7 +1394,7 @@ export default function MonitorPage() {
                         {r.status === 'time_over' && <p className="mt-1 text-[11px] text-subtle">Entrega automática em instantes</p>}
                         {r.status === 'discarded' && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">Tentativa em andamento desconsiderada no encerramento</p>}
                         {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
-                        {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLocked ? 'Reaberta com o tempo extra da turma: desbloqueie para o aluno continuar' : 'Reaberta com o tempo extra da turma'}</p>}
+                        {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{reopenedRowLabel(r)}</p>}
                       </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email, r.assignedVersion)}>{r.assignedVersion || 'A'}</Button></td>
                       <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
@@ -1364,6 +1431,7 @@ export default function MonitorPage() {
                               {r.focusLocked && <Button size="sm" variant="secondary" icon={Unlock} onClick={() => unlock(r.email)}>Foco</Button>}
                               <Button size="sm" variant="secondary" icon={Clock} onClick={() => adjustOne(r.email)}>Tempo</Button>
                               <Button size="sm" variant="secondary" icon={Send} onClick={() => broadcast(r.email)}>Msg</Button>
+                              <MonitorRowMenu label={`Mais ações de ${r.name || r.email}`} items={studentActions(r)} />
                             </>
                           )}
                         </div>
@@ -1479,7 +1547,7 @@ export default function MonitorPage() {
               <label key={question.key} className={`block cursor-pointer rounded-lg border p-3 ${replaceIssue.bankQuestionKey === question.key ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}>
                 <div className="flex items-start gap-3">
                   <input type="radio" name="replacement-question" className="mt-1" checked={replaceIssue.bankQuestionKey === question.key} onChange={() => setReplaceIssue((current) => ({ ...current, bankQuestionKey: question.key }))} />
-                  <div><p className="text-sm font-medium text-text">{question.questionText}</p><p className="mt-1 text-xs text-subtle">{question.category || 'Geral'} · gabarito {question.correctAnswer || '-'}</p></div>
+                  <div><p className="text-sm font-medium text-text">{question.questionText}</p><p className="mt-1 text-xs text-subtle">{questionTypeLabel(question.type)} · {question.category || 'Geral'} · resposta {answerSummary(question) || '-'}</p></div>
                 </div>
               </label>
             ))}
@@ -1545,12 +1613,17 @@ export default function MonitorPage() {
       />
       <MonitorActionDialog
         dialog={actionDialog}
+        // Só quem está ativo: o Monitor lista também quem foi desligado ou anonimizado
+        // depois de entregar (activeStudent: false), e esses não recebem o aviso.
+        studentCount={rows.filter((item) => item && item.activeStudent !== false).length}
+        busy={releaseBusy}
         onChange={(value) => setActionDialog((current) => current && { ...current, value })}
         onClose={() => setActionDialog(null)}
         onSendMessage={(text) => sendBroadcast(actionDialog?.email || null, text)}
         onAdjustTime={confirmAdjustOne}
         onAssignVersion={confirmAssignVersion}
         onReleaseGrades={confirmReleaseGrades}
+        onStudentAction={confirmStudentAction}
       />
     </div>
   )
@@ -1576,18 +1649,61 @@ export function normalizeVersionInput(value) {
   return String(value ?? '').trim().toUpperCase().slice(0, VERSION_MAX_CHARS)
 }
 
-// Os quatro diálogos de ação do Monitor (mensagem, tempo, versão e liberar notas), todos
-// no ConfirmDialog. Os diálogos próprios da D20 do P3 (modelos de mensagem, botões
-// −5/+5/+10, só versões existentes, contagem das notas) chegam no P3-S8 sobre estes.
-function MonitorActionDialog({ dialog, onChange, onClose, onSendMessage, onAdjustTime, onAssignVersion, onReleaseGrades }) {
+// Modelos prontos do aviso (D20 do P3): um clique preenche o texto, que ainda pode ser
+// editado antes de enviar.
+export const MESSAGE_TEMPLATES = ['Faltam 10 minutos', 'Confira se respondeu todas', 'Levante a mão se precisar de ajuda']
+// Atalhos do ajuste de tempo (D20): trocam o valor do campo.
+export const ADJUST_PRESETS = [-5, 5, 10]
+const ADJUST_REASON_MAX = 300
+const STUDENT_ACTION_REASON_MAX = 500
+// Tentativas extras por vez no Monitor (o servidor recusa passar de 5 no total).
+export const EXTRA_ATTEMPTS_MAX = 5
+
+export function parseExtraAttempts(value) {
+  const text = String(value ?? '').trim()
+  if (!/^\d+$/.test(text)) return null
+  const count = Number(text)
+  return count >= 1 && count <= EXTRA_ATTEMPTS_MAX ? count : null
+}
+
+function minutesText(minutes) {
+  return `${minutes > 0 ? '+' : minutes < 0 ? '−' : ''}${Math.abs(minutes)} min`
+}
+
+// Linha do aluno com a tentativa reaberta: pelo professor (Reabrir prova) ou pelo
+// "+N min" da turma.
+function reopenedRowLabel(row) {
+  const base = row.reopenedByInstructor ? 'Reaberta pelo professor' : 'Reaberta com o tempo extra da turma'
+  return row.focusLocked ? `${base}: desbloqueie para o aluno continuar` : base
+}
+
+// Os diálogos de ação do Monitor, todos no ConfirmDialog (C12): mensagem com modelos e o
+// destinatário, tempo com atalhos e motivo opcional, versão só entre as que existem,
+// liberar notas com a contagem (D20 do P3) e as ações por aluno (recolher, reabrir e
+// tentativa extra, D18).
+function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange, onClose, onSendMessage, onAdjustTime, onAssignVersion, onReleaseGrades, onStudentAction }) {
   const kind = dialog?.kind
   const who = dialog?.name || dialog?.email || ''
   if (kind === 'message') {
+    const text = String(dialog.value ?? '')
+    const recipient = dialog.email
+      ? `${who}${dialog.name && dialog.name !== dialog.email ? ` (${dialog.email})` : ''}`
+      : `todos os alunos desta aplicação${studentCount ? ` (${studentCount})` : ''}`
     return (
-      <ConfirmDialog open onClose={onClose} onConfirm={onSendMessage} tone="primary"
+      <ConfirmDialog open onClose={onClose} onConfirm={() => onSendMessage(text.trim())} tone="primary"
         title={dialog.email ? 'Mensagem para o aluno' : 'Aviso para a turma'}
         message={dialog.email ? `Aparece na tela da prova de ${who}.` : 'Aparece na tela da prova de todos os alunos desta aplicação.'}
-        requireReason reasonLabel="Mensagem" reasonMaxLength={MONITOR_MESSAGE_MAX} confirmLabel="Enviar" />
+        confirmLabel="Enviar" confirmDisabled={!text.trim()}>
+        <p className="text-sm text-text"><span className="font-medium">Para:</span> {recipient}</p>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Modelos prontos">
+          {MESSAGE_TEMPLATES.map((template) => (
+            <Button key={template} size="sm" variant="secondary" onClick={() => onChange(template)}>{template}</Button>
+          ))}
+        </div>
+        <Textarea label="Mensagem" value={text} maxLength={MONITOR_MESSAGE_MAX} counterFrom={Math.floor(MONITOR_MESSAGE_MAX * 0.9)}
+          onChange={(event) => onChange(event.target.value)} autoFocus className="min-h-[100px]"
+          placeholder="Escreva o aviso. Pode usar mais de uma linha." />
+      </ConfirmDialog>
     )
   }
   if (kind === 'time') {
@@ -1596,27 +1712,91 @@ function MonitorActionDialog({ dialog, onChange, onClose, onSendMessage, onAdjus
     return (
       <ConfirmDialog open onClose={onClose} onConfirm={onAdjustTime} tone="primary"
         title="Ajustar o tempo do aluno" message={`Minutos a mais ou a menos para ${who}. Use um número negativo para tirar tempo.`}
-        confirmLabel="Ajustar tempo" confirmDisabled={invalid}>
+        confirmLabel="Ajustar tempo" confirmDisabled={invalid}
+        askReason reasonLabel="Motivo" reasonMaxLength={ADJUST_REASON_MAX} reasonPlaceholder="Ex.: laudo de tempo extra, problema no computador">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Atalhos de tempo">
+          {ADJUST_PRESETS.map((preset) => (
+            <Button key={preset} size="sm" variant={minutes === preset ? 'primary' : 'secondary'} aria-pressed={minutes === preset}
+              onClick={() => onChange(String(preset))}>{minutesText(preset)}</Button>
+          ))}
+        </div>
         <Input label="Minutos" type="number" inputMode="numeric" min={ADJUST_MINUTES_MIN} max={ADJUST_MINUTES_MAX} step={1}
-          value={dialog.value ?? ''} onChange={(event) => onChange(event.target.value)} autoFocus
+          value={dialog.value ?? ''} onChange={(event) => onChange(event.target.value)}
           error={invalid && String(dialog.value ?? '').trim() !== '' ? `Use um número inteiro de ${ADJUST_MINUTES_MIN} a ${ADJUST_MINUTES_MAX}, diferente de zero.` : undefined} />
       </ConfirmDialog>
     )
   }
   if (kind === 'version') {
     const version = normalizeVersionInput(dialog.value)
+    const versions = Array.isArray(dialog.versions) ? dialog.versions.filter(Boolean) : []
+    // Aplicação com as versões conhecidas: só elas (a versão atual entra mesmo que a lista
+    // não a tenha, para não sumir do campo). Sem a lista (aplicação antiga), o campo livre.
+    const options = versions.length ? [...new Set([...versions, ...(version ? [version] : [])])] : []
     return (
       <ConfirmDialog open onClose={onClose} onConfirm={onAssignVersion} tone="primary"
         title="Versão da prova do aluno" message={`A versão define a ordem das questões de ${who}.`}
         confirmLabel="Atribuir versão" confirmDisabled={!version}>
-        <Input label="Versão" value={dialog.value ?? ''} maxLength={VERSION_MAX_CHARS} autoFocus
-          onChange={(event) => onChange(event.target.value)} />
+        {options.length
+          ? (
+            <Select label="Versão" value={version} autoFocus onChange={(event) => onChange(event.target.value)}>
+              {options.map((label) => <option key={label} value={label}>{`Versão ${label}`}</option>)}
+            </Select>
+          )
+          : <Input label="Versão" value={dialog.value ?? ''} maxLength={VERSION_MAX_CHARS} autoFocus onChange={(event) => onChange(event.target.value)} />}
       </ConfirmDialog>
     )
   }
-  return (
-    <ConfirmDialog open={kind === 'release'} onClose={onClose} onConfirm={onReleaseGrades} tone="primary"
-      title="Liberar as notas desta aplicação?" message="Os alunos passarão a ver a nota no portal."
-      confirmLabel="Liberar notas" />
-  )
+  if (kind === 'collect') {
+    const answered = dialog.row?.progress ? ` (${dialog.row.progress} respondidas)` : ''
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onStudentAction} tone="danger"
+        title={`Recolher a prova de ${who}?`}
+        message={`A prova é entregue agora com as respostas que o servidor já salvou${answered}. O aluno vê a prova como entregue e não responde mais nesta tentativa. Se precisar, você pode reabrir depois, enquanto a prova estiver em andamento.`}
+        askReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX} confirmLabel="Recolher prova" />
+    )
+  }
+  if (kind === 'reopen') {
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onStudentAction} tone="primary"
+        title={`Reabrir a prova de ${who}?`}
+        message="A entrega volta para a mesma tentativa, com as respostas dela e o tempo que faltava quando foi entregue. Não conta como tentativa nova. O motivo fica no registro da aplicação."
+        requireReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX}
+        reasonPlaceholder="Ex.: o computador desligou, enviou sem querer" confirmLabel="Reabrir prova" />
+    )
+  }
+  if (kind === 'extra') {
+    const count = parseExtraAttempts(dialog.value)
+    const max = Number(dialog.row?.maxAttempts) || 0
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onStudentAction} tone="primary"
+        title={`Dar tentativa extra a ${who}?`}
+        message={`Só ${who} ganha a tentativa a mais nesta aplicação${max ? ` (hoje são ${max})` : ''}. As entregas anteriores continuam valendo como antes.`}
+        confirmLabel="Dar tentativa extra" confirmDisabled={count === null}
+        askReason reasonLabel="Motivo" reasonMaxLength={ADJUST_REASON_MAX}>
+        <Input label="Tentativas a mais" type="number" inputMode="numeric" min={1} max={EXTRA_ATTEMPTS_MAX} step={1} autoFocus
+          value={dialog.value ?? ''} onChange={(event) => onChange(event.target.value)}
+          error={count === null && String(dialog.value ?? '').trim() !== '' ? `Use um número inteiro de 1 a ${EXTRA_ATTEMPTS_MAX}.` : undefined} />
+      </ConfirmDialog>
+    )
+  }
+  if (kind === 'release') {
+    const ids = dialog.ids || []
+    const pending = Number(dialog.pendingCorrection || 0)
+    let message
+    if (dialog.loading) message = 'Contando as notas desta aplicação...'
+    else if (dialog.loadError) message = dialog.loadError
+    else if (ids.length === 0) message = pending ? `Nenhuma nota pronta para liberar: ${pending} ${pending === 1 ? 'entrega aguarda' : 'entregas aguardam'} correção.` : 'Nenhuma nota pendente para liberar.'
+    else {
+      message = ids.length === 1
+        ? '1 nota será liberada e o aluno passará a vê-la no portal.'
+        : `${ids.length} notas serão liberadas e os alunos passarão a vê-las no portal.`
+      if (pending) message += ` ${pending} ${pending === 1 ? 'entrega aguardando correção fica' : 'entregas aguardando correção ficam'} de fora.`
+    }
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onReleaseGrades} tone="primary" busy={busy}
+        title="Liberar as notas desta aplicação?" message={message}
+        confirmLabel="Liberar notas" confirmDisabled={!!dialog.loading || !!dialog.loadError || ids.length === 0} />
+    )
+  }
+  return null
 }
