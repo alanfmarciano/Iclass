@@ -12,6 +12,7 @@ const {
     roundGrade,
 } = require('./submissionAttempts.js');
 const { recordAudit } = require('./audit.js');
+const { buildXlsx } = require('./tabularFile.js');
 
 const GRADE_MAX = SCORE_MAX / 10;
 const MANUAL_TYPES = ['impressa', 'manual', 'online'];
@@ -614,20 +615,40 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
     return { columns, rows };
 }
 
-function gradebookCsv(gradebook) {
-    const header = ['Aluno', 'E-mail', 'Matrícula', ...gradebook.columns.map(column => column.label), 'Média', 'Notas não publicadas'];
-    const lines = gradebook.rows.map(row => [
+// Planilha do quadro de notas (UXI-01, FUN-06): o mesmo cabeçalho e as mesmas linhas
+// para o CSV e o XLSX. A nota vai crua (0 a 10 com uma casa, null sem nota válida);
+// cada formato escreve do seu jeito ("7,5" no CSV, número com formato 0,0 no XLSX, que
+// soma e faz média no Excel). Coluna nova do quadro entra aqui e sai nos dois.
+function gradebookSheet(gradebook) {
+    const cabecalho = ['Aluno', 'E-mail', 'Matrícula', ...gradebook.columns.map(column => column.label), 'Média', 'Notas não publicadas'];
+    const formatos = ['texto', 'texto', 'texto', ...gradebook.columns.map(() => 'nota'), 'nota', 'inteiro'];
+    const linhas = gradebook.rows.map(row => [
         row.name,
         row.email,
         row.matricula,
         ...gradebook.columns.map(column => {
             const cell = row.cells[column.id];
-            return cell ? formatGradeBR(cell.score) : '';
+            return cell ? gradeFromScore(cell.score) : null;
         }),
-        row.averageScore === null ? '' : formatGradeBR(row.averageScore),
+        row.averageScore === null ? null : gradeFromScore(row.averageScore),
         row.pendingCount,
     ]);
-    return buildCsv([header, ...lines]);
+    return { cabecalho, formatos, linhas };
+}
+
+function gradebookCsv(gradebook) {
+    const { cabecalho, formatos, linhas } = gradebookSheet(gradebook);
+    const lines = linhas.map(values => values.map((value, index) => {
+        if (formatos[index] !== 'nota') return value;
+        return value === null ? '' : value.toFixed(1).replace('.', ',');
+    }));
+    return buildCsv([cabecalho, ...lines]);
+}
+
+// XLSX do quadro (utils/tabularFile.js): aba com o nome da turma.
+function gradebookXlsx(gradebook, { studentClass = '' } = {}) {
+    const { cabecalho, formatos, linhas } = gradebookSheet(gradebook);
+    return buildXlsx(linhas, { nomePlanilha: studentClass ? `Notas ${studentClass}` : 'Notas', cabecalho, formatos });
 }
 
 // ---------------------------------------------------------- auditoria
@@ -1294,6 +1315,8 @@ module.exports = {
     gradeChangeReason,
     gradeFromScore,
     gradebookCsv,
+    gradebookSheet,
+    gradebookXlsx,
     isEmptyInput,
     isPassingGrade,
     normalizeGradeCriterion,

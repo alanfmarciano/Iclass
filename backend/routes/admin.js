@@ -84,6 +84,7 @@ const {
     gradeCriterionFor,
     gradeFromScore,
     gradebookCsv,
+    gradebookXlsx,
     isEmptyInput,
     parseCountInput,
     parseGradeInput,
@@ -97,6 +98,7 @@ const {
     scoreFromGrade,
     structureExamIndex,
 } = require('../utils/gradebook.js');
+const { XLSX_CONTENT_TYPE } = require('../utils/tabularFile.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const loginGuard = require('../utils/loginGuard.js');
@@ -5012,8 +5014,8 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
 });
 
 // Planilha de notas da turma (UXI-01, FUN-06): uma linha por aluno, uma coluna por
-// prova e a média, com a mesma consolidação da tela Resultados. JSON para a tela
-// e CSV (?format=csv) no padrão do Excel brasileiro.
+// prova e a média, com a mesma consolidação da tela Resultados. JSON para a tela,
+// CSV (?format=csv) no padrão do Excel brasileiro e XLSX (?format=xlsx, B3b).
 router.get('/api/admin/gradebook', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const courseId = String(req.query.courseId || '').trim();
@@ -5036,11 +5038,19 @@ router.get('/api/admin/gradebook', (req, res) => {
             applications: db.memory.examApplications || [],
         });
 
-        if (String(req.query.format || '').toLowerCase() === 'csv') {
+        const format = String(req.query.format || '').toLowerCase();
+        if (format === 'csv' || format === 'xlsx') {
             const today = new Date();
             const stamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+            const baseName = `planilha_notas_${safeFilePart(course?.name || courseId)}_${safeFilePart(studentClass)}_${stamp}`;
+            if (format === 'xlsx') {
+                // Mesmas células do CSV (gradebookSheet), com a nota como número.
+                res.setHeader('Content-Type', XLSX_CONTENT_TYPE);
+                res.setHeader('Content-Disposition', `attachment; filename="${baseName}.xlsx"`);
+                return res.status(200).send(gradebookXlsx(gradebook, { studentClass }));
+            }
             res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-            res.setHeader('Content-Disposition', `attachment; filename="planilha_notas_${safeFilePart(course?.name || courseId)}_${safeFilePart(studentClass)}_${stamp}.csv"`);
+            res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`);
             return res.status(200).send(gradebookCsv(gradebook));
         }
         // criterio (C1 do P2): a tela pinta a nota pela média mínima que vem daqui.

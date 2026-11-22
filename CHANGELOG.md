@@ -32,6 +32,10 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Os dias sem aula aparecem no calendário do painel (só para consulta) e no do aluno, marcados como "Sem aula". O servidor já gera o calendário da turma em arquivo `.ics` (só com os eventos que a sua conta vê no calendário do painel), para importar no Google Agenda, no Outlook ou no celular (importar de novo atualiza em vez de repetir); o botão para baixar chega com as novas telas do calendário. (FUN-15)
 - No Calendário do painel, excluir um evento pergunta antes na janela do IClass.
 
+### Planilhas
+- O servidor já gera o quadro de notas da turma em Excel (.xlsx), além do CSV: as notas e a média vão como números com uma casa (dá para somar e fazer média no Excel) e a matrícula não perde o zero da frente. O botão "Baixar Excel" chega com a tela Relatórios. (FUN-06)
+- O IClass passa a ler planilhas do Excel (.xlsx) e CSV salvos pelo Excel, pelo LibreOffice ou pelo Google Planilhas, com acentos, datas e números como aparecem na planilha. É a base das importações que vêm a seguir (alunos, notas e banco de questões). (FUN-08)
+
 ### Confirmações na própria tela
 - As perguntas antes de excluir ou alterar abrem uma janela do próprio IClass, que diz o que vai acontecer, em vez da caixa do navegador. Enquanto a pergunta está aberta, o Monitor continua se atualizando.
 - No Monitor, a mensagem para o aluno ou para a turma, o ajuste de tempo, a versão da prova e a liberação das notas abrem essa janela. No ajuste de tempo, Cancelar não muda nada (antes virava um ajuste de 0 minutos), e o tempo vai de 30 minutos a menos a 120 a mais.

@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const request = require('supertest');
+const { spawnSync } = require('node:child_process');
+const AdmZip = require('adm-zip');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-grades-test-'));
 process.env.ICLASS_DATA_DIR = tempRoot;
@@ -18,6 +20,7 @@ const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { errorHandler } = require('../../backend/middlewares.js');
 const { regradeSubmission } = require('../../backend/utils/examGrading.js');
+const { XLSX_CONTENT_TYPE, parseTabularFile } = require('../../backend/utils/tabularFile.js');
 
 let app;
 // Funções de nota da interface (web/src/lib/grades.js), para comparar com o que a tela mostra.
@@ -417,6 +420,76 @@ test('[UC-NOTAS-002] planilha da turma: uma linha por aluno, coluna por prova, m
     const sameDay = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES`));
     const p1Labels = sameDay.body.columns.filter(column => column.examKey === 'Avaliacao_P1').map(column => column.label);
     assert.deepEqual(p1Labels, ['Prova 1 — Fundamentos (1ª aplicação, 01/03/2026)', 'Prova 1 — Fundamentos (2ª aplicação, 01/03/2026)']);
+});
+
+// Resposta binária do supertest (o XLSX é um ZIP).
+function binaryParser(res, callback) {
+    const chunks = [];
+    res.on('data', chunk => chunks.push(chunk));
+    res.on('end', () => callback(null, Buffer.concat(chunks)));
+}
+
+test('[UC-NOTAS-007] quadro da turma em XLSX: as mesmas células do CSV, com a nota como número de verdade', async () => {
+    db.memory.submissions = [
+        submission('p1_app1', { applicationId: 'app_1', score: 40 }),
+        submission('p1_app2', { applicationId: 'app_2', score: 90, timestamp: '2026-03-15T11:00:00.000Z' }),
+        submission('p2', { examKey: 'Avaliacao_P2', score: 85, published: false }),
+        submission('bia_p2', { email: 'bia@notas.local', name: 'Bia', examKey: 'Avaliacao_P2', score: 66 }),
+        submission('outra_turma', { email: 'caio@notas.local', name: 'Caio', score: 100, courseId: COURSE_B }),
+    ];
+    db.memory.students.find(student => student.email === 'ana@notas.local').matricula = '000123';
+    const xlsx = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES&format=xlsx`)).buffer(true).parse(binaryParser);
+    assert.equal(xlsx.status, 200);
+    assert.equal(xlsx.headers['content-type'], XLSX_CONTENT_TYPE);
+    assert.match(xlsx.headers['content-disposition'], /attachment; filename="planilha_notas_Desenvolvimento_1DES_\d{4}-\d{2}-\d{2}\.xlsx"/);
+    assert.ok(Buffer.isBuffer(xlsx.body) && xlsx.body.toString('latin1', 0, 2) === 'PK', 'arquivo ZIP do Excel');
+
+    const csv = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES&format=csv`));
+    const fromCsv = parseTabularFile(Buffer.from(csv.text, 'utf8'), { nomeArquivo: 'quadro.csv' });
+    const fromXlsx = parseTabularFile(xlsx.body, { nomeArquivo: 'quadro.xlsx' });
+    assert.equal(fromXlsx.planilha, 'Notas 1DES');
+    assert.deepEqual(fromXlsx.cabecalho, fromCsv.cabecalho);
+    // O CSV põe apóstrofo na frente de "=..." (csvSafe); no XLSX a célula de texto não é fórmula.
+    const unquote = value => (/^'[=+\-@]/.test(value) ? value.slice(1) : value);
+    assert.deepEqual(fromXlsx.linhas.map(linha => linha.valores), fromCsv.linhas.map(linha => linha.valores.map(unquote)));
+    const ana = fromXlsx.linhas.find(linha => linha.valores[1] === 'ana@notas.local').valores;
+    assert.deepEqual(ana.slice(2), ['000123', '4,0', '9,0', '8,5', '', '7,2', '1'], 'matrícula com o zero da frente; notas com uma casa');
+    const hack = fromXlsx.linhas.find(linha => linha.valores[1] === 'hack@notas.local').valores;
+    assert.equal(hack[0], '=HYPERLINK("http://x")');
+
+    // Nota e média como número com o formato 0,0 (soma e faz média no Excel), nunca fórmula.
+    const sheet = new AdmZip(xlsx.body).readAsText('xl/worksheets/sheet1.xml');
+    assert.doesNotMatch(sheet, /<f>/);
+    const anaRow = /<row r="(\d+)">(?:(?!<\/row>).)*ana@notas\.local(?:(?!<\/row>).)*<\/row>/.exec(sheet)[0];
+    assert.match(anaRow, /<c r="D\d+" s="2"><v>4<\/v><\/c>/);
+    assert.match(anaRow, /<c r="H\d+" s="2"><v>7\.2<\/v><\/c>/);
+    assert.match(anaRow, /<c r="C\d+" t="inlineStr" s="7"><is><t xml:space="preserve">000123<\/t>/);
+
+    // Mesmo escopo do JSON e do CSV.
+    const forbidden = await professor(request(app).get(`/api/admin/gradebook?courseId=${COURSE_B}&studentClass=2RED&format=xlsx`));
+    assert.equal(forbidden.status, 403);
+    const missing = await admin(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&format=xlsx`));
+    assert.equal(missing.status, 400);
+    const own = await professor(request(app).get(`/api/admin/gradebook?courseId=${COURSE_A}&studentClass=1DES&format=XLSX`)).buffer(true).parse(binaryParser);
+    assert.equal(own.status, 200);
+    assert.equal(own.headers['content-type'], XLSX_CONTENT_TYPE);
+
+    // O LibreOffice abre o arquivo e dá as mesmas células (pulado sem o soffice).
+    const probe = spawnSync('soffice', ['--version'], { encoding: 'utf8', timeout: 60000 });
+    if (probe.status === 0) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-quadro-lo-'));
+        try {
+            fs.writeFileSync(path.join(dir, 'quadro.xlsx'), xlsx.body);
+            const result = spawnSync('soffice', [`-env:UserInstallation=file://${path.join(dir, 'perfil')}`, '--headless', '--convert-to', 'csv:Text - txt - csv (StarCalc):59,34,76,1', '--outdir', dir, path.join(dir, 'quadro.xlsx')], { encoding: 'utf8', timeout: 180000 });
+            assert.equal(result.status, 0, result.stderr);
+            const converted = parseTabularFile(fs.readFileSync(path.join(dir, 'quadro.csv')), { nomeArquivo: 'quadro.csv' });
+            assert.deepEqual(converted.cabecalho, fromXlsx.cabecalho);
+            // O LibreOffice da nuvem está em inglês (ponto decimal).
+            assert.deepEqual(converted.linhas.map(linha => linha.valores.map(value => value.replace(/^(\d+)\.(\d)$/, '$1,$2'))), fromXlsx.linhas.map(linha => linha.valores));
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
 });
 
 test('[UC-NOTAS-002] CSV da prova: nota 0 a 10 com vírgula, acertos separados e só do curso pedido', async () => {
