@@ -67,6 +67,20 @@ describe('[UC-PROVA-006] Para quem da aplicação', () => {
     expect(screen.queryByRole('checkbox', { name: 'Bruno Lima' })).not.toBeInTheDocument()
   })
 
+  it('nova segunda chamada: quem entregou a anterior continua marcado, com "Fez a segunda chamada"', () => {
+    const candidates = {
+      ...CANDIDATES,
+      students: CANDIDATES.students.map((student) => (student.email === 'bruno@x.local' ? { ...student, fezSegundaChamada: true } : student)),
+    }
+    render(<Harness candidates={candidates} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Segunda chamada' }))
+    expect(screen.getByRole('checkbox', { name: 'Bruno Lima' })).toBeChecked()
+    const row = screen.getByRole('checkbox', { name: 'Bruno Lima' }).closest('label')
+    expect(within(row).getByText('Fez a segunda chamada')).toBeVisible()
+    expect(screen.getAllByText('Fez a segunda chamada')).toHaveLength(1)
+    expect(payload().participants).toEqual(['bruno@x.local', 'carla@x.local'])
+  })
+
   it('segunda chamada escolhida antes de a lista chegar marca quem não fez assim que ela chega', () => {
     const { rerender } = render(<Harness candidates={null} />)
     fireEvent.click(screen.getByRole('radio', { name: 'Segunda chamada' }))
@@ -107,7 +121,7 @@ describe('[UC-PROVA-006] Para quem da aplicação', () => {
 
   it('nomes da tela batem com a Ajuda do professor ("Escolher alunos")', async () => {
     const help = (await import('../help/conteudo/instrutor.md?raw')).default
-    for (const label of ['Turma inteira', 'Segunda chamada', 'Escolher alunos', 'Já fez', 'Alunos desta aplicação', 'Exceção por aluno', 'Pode começar até', 'Tirar o prazo']) {
+    for (const label of ['Turma inteira', 'Segunda chamada', 'Escolher alunos', 'Já fez', 'Fez a segunda chamada', 'Alunos desta aplicação', 'Exceção por aluno', 'Pode começar até', 'Tirar o prazo']) {
       expect(help).toContain(`**${label}**`)
     }
     expect(help).not.toContain('Alunos escolhidos')

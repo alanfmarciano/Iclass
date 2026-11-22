@@ -343,6 +343,10 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm text-text">{student.name || student.email}</span>
                       <span className="block truncate text-xs text-subtle">{student.email}</span>
+                      {/* Entregou numa segunda chamada anterior: continua marcado (a lista
+                          pré-marcada é de quem não fez a regular), mas o professor vê o aviso,
+                          embaixo do nome para não cortá-lo no celular. */}
+                      {!student.fezRegular && student.fezSegundaChamada && <span className="mt-1 block"><Badge tone="neutral">Fez a segunda chamada</Badge></span>}
                     </span>
                     {student.fezRegular && <Badge tone="info">Já fez</Badge>}
                   </label>

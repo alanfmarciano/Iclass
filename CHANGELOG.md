@@ -5,11 +5,11 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 ## Não publicado
 
 ### Segunda chamada e exceção por aluno
-- Em Provas, o cartão "Para quem" escolhe se a aplicação é para a turma inteira, para a segunda chamada ou só para alguns alunos ("Escolher alunos"). Na segunda chamada, a lista já vem marcada com quem ainda não fez a prova regular, e quem já fez aparece com "Já fez".
+- Em Provas, o cartão "Para quem" escolhe se a aplicação é para a turma inteira, para a segunda chamada ou só para alguns alunos ("Escolher alunos"). Na segunda chamada, a lista já vem marcada com quem ainda não fez a prova regular, e quem já fez aparece com "Já fez". Numa nova segunda chamada, quem entregou a anterior aparece com "Fez a segunda chamada".
 - Quem não está na lista não vê a prova e não consegue começar; quem já tinha começado continua vendo a própria tentativa. O Monitor e o Dashboard contam só os alunos da lista.
 - O botão "Alunos desta aplicação" muda a lista depois de preparar, enquanto a aplicação não terminar. "Aplicar prova novamente" também pergunta para quem é.
-- Exceção por aluno: até 5 tentativas extras e, com tempo por tentativa, um prazo "Pode começar até" só para aquele aluno, com motivo. Cada mudança fica na Auditoria.
-- O aluno com exceção vê o próprio limite ("Tentativa 1 de 2") e o prazo "Pode começar até" no cartão da prova e nas instruções. Na segunda chamada, quem já fez a prova do curso conta como feito também na versão "só desta turma".
+- Exceção por aluno: até 5 tentativas extras e, com o cronômetro "Quando cada aluno iniciar", um prazo "Pode começar até" só para aquele aluno, com motivo. Cada mudança fica na Auditoria.
+- O aluno com exceção vê o próprio limite ("Tentativa 1 de 2") no cartão da prova e, nas instruções, o limite e o prazo "Pode começar até". Quem começou antes do prazo continua a prova depois dele, sem aviso de prazo terminado. Na segunda chamada, quem já fez a prova do curso conta como feito também na versão "só desta turma".
 
 ### Versão, Novidades e Ajuda
 - O rodapé do menu mostra a versão de verdade do IClass (por exemplo, "v3.0.0") e se a tela está falando com o servidor: "Conectado", "Sem conexão" ou "Servidor reiniciando". Antes ficava "Sistema ativo" e "v3", mesmo com o servidor fora do ar.

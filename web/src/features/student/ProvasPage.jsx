@@ -558,11 +558,6 @@ export default function ProvasPage() {
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-text truncate">{application.examTitle || k.replace(/_/g, ' ')}</p>
                   <p className="text-xs text-muted flex items-center gap-1"><Clock size={12} /> {application.durationMinutes ? `${application.durationMinutes} min` : 'sem tempo'} {application.tokenEnabled ? '- requer token' : ''}{maxAttempts !== null ? ` - Tentativa ${nextAttempt} de ${maxAttempts}` : ''}</p>
-                  {application.startDeadlineLabel && !attemptsExhausted && (
-                    <p className="text-xs font-medium text-text" data-testid="start-deadline">
-                      {Number(application.startDeadlineAt) > Date.now() ? `Pode começar até ${application.startDeadlineLabel}` : `Prazo para começar terminou em ${application.startDeadlineLabel}`}
-                    </p>
-                  )}
                 </div>
                 {attemptsExhausted
                   ? <Badge tone="neutral">Tentativas esgotadas</Badge>

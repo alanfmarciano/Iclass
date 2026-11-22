@@ -3,12 +3,12 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProvasPage, { buildExamPrintHtml, openExamPrintWindow } from './ProvasPage'
 
-const mocks = vi.hoisted(() => ({ post: vi.fn(), submissions: [], applications: [] }))
+const mocks = vi.hoisted(() => ({ post: vi.fn(), submissions: [] }))
 
 vi.mock('../../lib/api', () => ({ api: { get: vi.fn(), post: mocks.post } }))
 vi.mock('./useStudent', () => ({ useStudent: () => ({ email: 'ana@x.local', studentClass: '1DES', courseId: 'DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
-  useApi: () => ({ data: { applications: mocks.applications }, loading: false, error: null, refetch: vi.fn() }),
+  useApi: () => ({ data: { applications: [] }, loading: false, error: null, refetch: vi.fn() }),
 }))
 vi.mock('../../components/ui/MiniLineChart', () => ({ MiniLineChart: () => null }))
 
@@ -30,35 +30,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  mocks.applications = []
-})
-
-// Segunda chamada e exceção por aluno (fase 3, P3-S7: AVA-09).
-describe('Provas do aluno · exceção por aluno no cartão da prova', () => {
-  const application = (extra = {}) => ({
-    id: 'app-1', examKey: 'Avaliacao_FUTEC_5', examTitle: 'FUTEC 5', status: 'running', durationMinutes: 30,
-    config: { maxAttempts: 1 }, attemptsUsed: 0, maxAttempts: 2, startDeadlineAt: null, startDeadlineLabel: null, ...extra,
-  })
-
-  it('[UC-PROVA-006] mostra o limite do aluno (com a tentativa extra) e até quando ele pode começar', async () => {
-    mocks.submissions = []
-    mocks.applications = [application({ startDeadlineAt: Date.now() + 3600000, startDeadlineLabel: '20/11 às 08:00' })]
-    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
-    expect(await screen.findByText(/Tentativa 1 de 2/)).toBeInTheDocument()
-    expect(screen.getByTestId('start-deadline')).toHaveTextContent('Pode começar até 20/11 às 08:00')
-  })
-
-  it('[UC-PROVA-006] prazo vencido aparece como terminado; sem prazo, nada', async () => {
-    mocks.submissions = []
-    mocks.applications = [application({ startDeadlineAt: Date.now() - 60000, startDeadlineLabel: '19/11 às 07:00' })]
-    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
-    expect(await screen.findByTestId('start-deadline')).toHaveTextContent('Prazo para começar terminou em 19/11 às 07:00')
-    cleanup()
-    mocks.applications = [application()]
-    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
-    await screen.findByText(/Tentativa 1 de 2/)
-    expect(screen.queryByTestId('start-deadline')).not.toBeInTheDocument()
-  })
 })
 
 describe('Provas do aluno · média', () => {

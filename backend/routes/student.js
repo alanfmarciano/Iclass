@@ -611,7 +611,7 @@ function applicationForStudent(application, cls, studentEmail) {
         attemptsExhausted: maxAttempts !== null && attemptsUsed >= maxAttempts && !openAttempt,
         // Para quem (P3-S7): a finalidade e, só do próprio aluno, o prazo para começar.
         finalidade: applicationFinalidade(application),
-        ...studentStartDeadlineInfo(application, studentEmail),
+        ...studentStartDeadlineInfo(application, studentEmail, { openAttemptStarted: !!openAttempt?.state?.startedAt }),
     };
 }
 
@@ -715,6 +715,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
         let attemptOutcome = null;
         let timeOver = false;
         let startDeadlinePassedAt = null;
+        // A tentativa do aluno já começou (e está aberta): o prazo para começar não vale mais.
+        let openAttemptStarted = false;
         let localCopyKey = null;
         let questions = null;
         let questionsVersion = null;
@@ -759,7 +761,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             timeOver = !!application && !openAttempt?.state?.startedAt && collectiveTimeOverForNewAttempt(application, email, Date.now(), openAttempt?.state || null);
             // Prazo do aluno para começar (exceção por aluno, D16): passou e a tentativa não
             // começou, então não há o que iniciar (a já começada continua).
-            startDeadlinePassedAt = application && !openAttempt?.state?.startedAt
+            openAttemptStarted = !!openAttempt?.state?.startedAt;
+            startDeadlinePassedAt = application && !openAttemptStarted
                 ? studentStartDeadlinePassed(application, email)
                 : null;
             const context = application
@@ -905,7 +908,8 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             startDeadlinePassed: !!startDeadlinePassedAt,
             startDeadlineMessage: startDeadlinePassedAt ? startDeadlineResponse(startDeadlinePassedAt).error : null,
             // Prazo do aluno para começar (exceção com prazo), para as instruções da prova.
-            ...(application ? studentStartDeadlineInfo(application, email) : { startDeadlineAt: null, startDeadlineLabel: null }),
+            // Com a tentativa já começada, nulo: ele continua a prova depois do prazo.
+            ...(application ? studentStartDeadlineInfo(application, email, { openAttemptStarted }) : { startDeadlineAt: null, startDeadlineLabel: null }),
             localCopyKey,
             // Prazo de guarda do monitoramento da prova (settings.retention, H8b), para as
             // instruções: 0 = sem prazo automático (até a escola apagar).

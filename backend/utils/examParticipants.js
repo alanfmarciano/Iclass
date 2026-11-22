@@ -131,9 +131,13 @@ function formatSchoolDateTime(ms) {
 
 // Prazo do aluno para começar, para as telas dele (lista de provas e instruções):
 // { startDeadlineAt, startDeadlineLabel } com o horário no relógio da escola ("20/11 às
-// 08:00"), ou nulos sem exceção com prazo ou fora do cronômetro por aluno.
-function studentStartDeadlineInfo(application, email) {
-    const override = application && application.timerMode === 'per_attempt' ? studentOverrideFor(application, email) : null;
+// 08:00"), ou nulos sem exceção com prazo ou fora do cronômetro por aluno. Com a tentativa
+// dele já começada e aberta (openAttemptStarted) o prazo não vale mais: ele começou antes
+// e continua a prova depois do prazo, sem a tela dizer que o prazo terminou.
+function studentStartDeadlineInfo(application, email, { openAttemptStarted = false } = {}) {
+    const override = application && application.timerMode === 'per_attempt' && !openAttemptStarted
+        ? studentOverrideFor(application, email)
+        : null;
     const at = override && override.prazoAte ? override.prazoAte : null;
     return { startDeadlineAt: at, startDeadlineLabel: at ? formatSchoolDateTime(at) || null : null };
 }
@@ -192,7 +196,13 @@ function consideredSubmission(submission) {
 // prova do curso e a variante "só desta turma" criada ao editar a prova para a turma
 // (Avaliacao_X__turma_<hash>) são a mesma prova. Sem isso, quem fez a regular na chave do
 // curso voltava marcado na segunda chamada da variante, sem "Já fez".
-function emailsWithRegularDelivery(memory, { studentClass, courseId, examKey, excludeApplicationId = null } = {}) {
+function emailsWithRegularDelivery(memory, scope = {}) {
+    return emailsWithDeliveryIn(memory, scope, 'regular');
+}
+
+// O mesmo conjunto para as aplicações de uma finalidade ('regular' ou 'segunda_chamada').
+// Só a regular conta a entrega da interface antiga, que não tem aplicação.
+function emailsWithDeliveryIn(memory, { studentClass, courseId, examKey, excludeApplicationId = null } = {}, finalidade = 'regular') {
     const className = String(studentClass || '').trim().toLowerCase();
     const course = String(courseId || '').trim();
     const family = examFamilyKeys(memory, examKey);
@@ -203,7 +213,7 @@ function emailsWithRegularDelivery(memory, { studentClass, courseId, examKey, ex
             && inFamily(application.examKey)
             && String(application.studentClass || '').trim().toLowerCase() === className
             && (!application.courseId || !course || String(application.courseId) === course)
-            && applicationFinalidade(application) === 'regular')
+            && applicationFinalidade(application) === finalidade)
         .map(application => application.id));
     const done = new Set();
     ((memory && memory.submissions) || []).forEach(submission => {
@@ -211,6 +221,7 @@ function emailsWithRegularDelivery(memory, { studentClass, courseId, examKey, ex
         if (submission.applicationId) {
             if (!regular.has(submission.applicationId)) return;
         } else {
+            if (finalidade !== 'regular') return;
             // Entrega da interface antiga: pela turma e pelo curso gravados nela.
             const subClass = String((submission.student && submission.student.studentClass) || submission.studentClass || '').trim().toLowerCase();
             const subCourse = String((submission.student && submission.student.courseId) || submission.courseId || '').trim();
@@ -224,12 +235,21 @@ function emailsWithRegularDelivery(memory, { studentClass, courseId, examKey, ex
 }
 
 // Alunos da turma para o "Para quem": cada um com fezRegular (já tem entrega que conta
-// numa aplicação regular da prova). A segunda chamada pré-marca quem não fez.
+// numa aplicação regular da prova). A segunda chamada pré-marca quem não fez (D15).
+// fezSegundaChamada avisa quem já entregou numa segunda chamada anterior desta prova: ele
+// continua marcado (a regra da D15 é só a regular), mas a tela mostra "Fez a segunda
+// chamada" para o professor decidir, numa segunda chamada para quem faltou à primeira.
 function participantCandidates(memory, scope = {}) {
     const done = emailsWithRegularDelivery(memory, scope);
+    const doneSecondCall = emailsWithDeliveryIn(memory, scope, 'segunda_chamada');
     return classStudents(memory, scope).map(student => {
         const email = normalizeEmail(student.email);
-        return { email, name: displayName(student) || student.email, fezRegular: done.has(email) };
+        return {
+            email,
+            name: displayName(student) || student.email,
+            fezRegular: done.has(email),
+            fezSegundaChamada: doneSecondCall.has(email),
+        };
     });
 }
 

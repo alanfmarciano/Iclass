@@ -250,6 +250,13 @@ test('[UC-PROVA-006] lista pré-marcada: entrega arquivada não conta como feita
     db.memory.examApplications.push({ id: 'app_segunda_antiga', examKey, studentClass, courseId, status: 'finished', finalidade: 'segunda_chamada', participants: [BRUNO] });
     candidates = await admin(request(app).get('/api/admin/exam-applications/participant-candidates')).query({ studentClass, courseId, examKey }).expect(200);
     assert.deepEqual(candidates.body.segundaChamada.sort(), [BRUNO, CARLA]);
+    // Mas a tela avisa: numa nova segunda chamada, o Bruno aparece com "Fez a segunda
+    // chamada" (continua marcado; a Carla e a Alice não têm o aviso).
+    const flags = Object.fromEntries(candidates.body.students.map(item => [item.email, item.fezSegundaChamada]));
+    assert.deepEqual(flags, { [ALICE]: false, [BRUNO]: true, [CARLA]: false });
+    // A própria aplicação (Alunos desta aplicação) não conta como anterior.
+    const own = await admin(request(app).get('/api/admin/exam-applications/participant-candidates')).query({ applicationId: 'app_segunda_antiga' }).expect(200);
+    assert.equal(own.body.students.find(item => item.email === BRUNO).fezSegundaChamada, false);
 
     // Todos já fizeram: a segunda chamada sem lista é recusada.
     db.memory.submissions.push(
@@ -388,6 +395,35 @@ test('[UC-PROVA-006] prazo para começar: vencido recusa o início; prazo no pas
     // A Carla, sem prazo, começa normalmente.
     await sync(CARLA, application.id).expect(200);
     await startAttempt(CARLA, application.id).expect(200);
+});
+
+test('[UC-PROVA-006] prazo para começar: quem começou antes do prazo continua depois dele, sem aviso de prazo terminado', async () => {
+    const historyId = await createHistory();
+    const prepared = await prepare(historyId, { studentOverrides: { [BRUNO]: { prazoAteLocal: '2099-12-01T08:00' } } });
+    const application = await start(prepared.body.application.id);
+    await sync(BRUNO, application.id).expect(200);
+    const started = await startAttempt(BRUNO, application.id).expect(200);
+    // O prazo passa com a tentativa dele aberta (o relógio andou).
+    db.memory.examApplications.find(item => item.id === application.id).studentOverrides[BRUNO].prazoAte = Date.now() - 1000;
+
+    // A lista e o sync não dizem mais que o prazo terminou: ele começou antes.
+    const list = await asStudent(request(app).get('/api/student/exam-applications'), BRUNO).query({ studentClass, courseId }).expect(200);
+    const item = list.body.applications.find(entry => entry.id === application.id);
+    assert.equal(item.startDeadlineAt, null);
+    assert.equal(item.startDeadlineLabel, null);
+    assert.equal(item.attemptsExhausted, false);
+    const synced = await sync(BRUNO, application.id).expect(200);
+    assert.equal(synced.body.startDeadlinePassed, false);
+    assert.equal(synced.body.startDeadlineMessage, null);
+    assert.equal(synced.body.startDeadlineLabel, null);
+    assert.equal(synced.body.attemptId, started.body.attemptId);
+    // Voltar ao início continua a mesma tentativa, e a entrega é aceita.
+    const again = await startAttempt(BRUNO, application.id).expect(200);
+    assert.equal(again.body.attemptId, started.body.attemptId);
+    await asStudent(request(app).post('/api/student/submit'), BRUNO).send({
+        studentClass, courseId, examKey, applicationId: application.id, attemptId: started.body.attemptId,
+        answers: {}, questionNumbers: [1], examConfigVersion: started.body.examConfigVersion,
+    }).expect(200);
 });
 
 test('[UC-PROVA-006] rota de participantes: acrescenta em andamento, não tira, recusa aplicação encerrada, outra turma e e-mail de fora, com auditoria', async () => {
