@@ -403,6 +403,11 @@ function consolidatedLabel(result) {
 // Auditoria grade_invalidated / grade_invalidation_undone (nota consolidada antes e
 // depois, motivo) e attempt_invalidated no registro do monitoramento, na mesma gravação.
 async function invalidationAction({ req, res, action, application, cls, email, student, motivo, actor, now, matchedAdmin, applicationForAccount }) {
+    // Aplicação cancelada: o Monitor não oferece anular (canInvalidate) e o servidor recusa
+    // igual. Desfazer uma anulação de antes do cancelamento continua valendo.
+    if (action === 'anular' && application.status === 'cancelled') {
+        return attemptActionRefusal(res, 409, 'application_cancelled', 'Esta aplicação foi cancelada: não há tentativa para anular nela.');
+    }
     const requestedId = String(req.body.submissionId || '').trim();
     const own = applicationSubmissionsOf(application, email);
     let collected = null;

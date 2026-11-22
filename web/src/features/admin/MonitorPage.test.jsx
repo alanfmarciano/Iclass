@@ -699,24 +699,30 @@ describe('[UC-TENTATIVA-004] MonitorPage · ações por aluno e diálogos própr
       if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
       if (url.startsWith('/api/admin/submissions?')) {
         return [
-          { id: 's1', applicationId: 'app-antiga', gradePublished: false },
-          { id: 's2', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'pendente' } },
-          { id: 's3', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'concluida' } },
+          { id: 's1', applicationId: 'app-antiga', gradePublished: false, awaitingCorrection: false },
+          { id: 's2', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'pendente' }, awaitingCorrection: true },
+          { id: 's3', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'concluida' }, awaitingCorrection: false },
           { id: 's4', applicationId: 'app-antiga', gradePublished: true },
+          // A9, ajuste 2: quem espera vem de awaitingCorrection (regra do servidor), não de
+          // correcao. Sem correcao, com questão para revisar: espera. Anulada com zero e
+          // correção pendente: não espera (vale a anulação) e vai na lista.
+          { id: 's5', applicationId: 'app-antiga', gradePublished: false, awaitingCorrection: true },
+          { id: 's6', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'pendente' }, integrityDecision: 'zero', awaitingCorrection: false },
         ]
       }
       return {}
     })
-    mocks.post.mockResolvedValue({ updated: 2 })
+    mocks.post.mockResolvedValue({ updated: 2, skippedPendingCorrection: 1 })
     renderMonitor()
     fireEvent.click(await screen.findByRole('button', { name: 'Liberar nota para o aluno' }))
     const dialog = screen.getByRole('dialog', { name: 'Liberar as notas desta aplicação?' })
-    await waitFor(() => expect(dialog).toHaveTextContent('2 notas serão liberadas'))
-    expect(dialog).toHaveTextContent('1 entrega aguardando correção fica de fora.')
+    await waitFor(() => expect(dialog).toHaveTextContent('3 notas serão liberadas'))
+    expect(dialog).toHaveTextContent('2 entregas aguardando correção ficam de fora.')
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Liberar notas' })) })
     await waitFor(() => expect(posts('/api/admin/submissions/publish')).toHaveLength(1))
-    expect(posts('/api/admin/submissions/publish')[0][1]).toEqual({ ids: ['s1', 's3'], published: true })
-    expect(mocks.toast.success).toHaveBeenCalledWith('2 notas liberadas para os alunos.')
+    expect(posts('/api/admin/submissions/publish')[0][1]).toEqual({ ids: ['s1', 's3', 's6'], published: true })
+    // O servidor pulou uma que passou a aguardar correção depois da contagem: o aviso diz.
+    expect(mocks.toast.success).toHaveBeenCalledWith('2 notas liberadas para os alunos. 1 entrega aguarda correção e ficou de fora.')
   })
 })
 

@@ -875,3 +875,61 @@ test('[UC-TENTATIVA-004] anular vale na aplicação encerrada e o Monitor oferec
     assert.equal(after.canInvalidate, false, 'a última entrega já está anulada');
     assert.equal(after.canUndoInvalidation, true);
 });
+
+// A9, ajuste 2: o "+N min" da turma (reopenDeadlineDeliveries) devolvia à prova a entrega
+// do fim do tempo anulada por cola: a anulação ficava só na cópia guardada e a entrega
+// nova nascia sem ela, contando a nota cheia. Agora a anulada fica e é contada entre as
+// entregues no fim do tempo; desfeita a anulação, o "+N min" reabre como antes.
+test('[UC-TENTATIVA-004] "+N min" da turma não reabre a entrega do fim do tempo anulada por cola', async () => {
+    const application = await running();
+    await begin(ALICE, application.id);
+    const state = openState(ALICE, application.id);
+    state.answers = { 1: 'A', 2: 'A' };
+    state.startedAt = Date.now() - 31 * MINUTE;
+    state.deadlineAt = Date.now() - 30 * 1000;
+    // O Monitor entrega pelo fim do tempo (deadline_server_auto_submit).
+    await monitorRow(application.id, ALICE);
+    const [delivery] = deliveries(application.id, ALICE);
+    assert.ok(delivery, 'entregue pelo fim do tempo');
+    assert.ok(delivery.reopenableState && delivery.reopenableState.startedAt);
+    assert.equal(consolidated(application.id, ALICE).score, 100);
+
+    for (const decisao of ['zero', 'desconsiderar']) {
+        await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular', decisao }).expect(200);
+        const adjusted = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/time-adjustment`)).send({ adjustmentMinutes: 5 }).expect(200);
+        assert.equal(adjusted.body.reopenedAtDeadline, 0, decisao);
+        assert.equal(adjusted.body.deliveredAtDeadline, 1, 'a anulada conta entre as que ficaram entregues');
+        const still = deliveries(application.id, ALICE);
+        assert.equal(still.length, 1, 'a entrega anulada continua na lista');
+        assert.equal(still[0].id, delivery.id);
+        assert.equal(still[0].integrity.decisao, decisao);
+        assert.equal(openState(ALICE, application.id), undefined, 'o aluno não volta para a prova');
+        assert.equal(consolidated(application.id, ALICE).score, decisao === 'zero' ? 0 : null);
+        await action(application.id, { action: 'desfazer_anulacao', studentEmail: ALICE, motivo: 'Engano na sala' }).expect(200);
+    }
+    assert.equal(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_reopened_extra_time'), false);
+
+    // Sem anulação, o "+N min" ainda reabre a entrega do fim do tempo.
+    const reopened = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/time-adjustment`)).send({ adjustmentMinutes: 5 }).expect(200);
+    assert.equal(reopened.body.reopenedAtDeadline, 1);
+    assert.ok(openState(ALICE, application.id), 'desfeita a anulação, volta para a prova');
+});
+
+// A9, ajuste 2: só a tela escondia "Anular" na aplicação cancelada (canInvalidate); o
+// servidor aceitava. Desfazer uma anulação de antes do cancelamento continua valendo.
+test('[UC-TENTATIVA-004] anular é recusado na aplicação cancelada; desfazer a anulação de antes continua', async () => {
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, { 1: 'A' });
+    const startedB = await begin(BRUNO, application.id);
+    await submit(BRUNO, application.id, startedB, { 1: 'A' });
+    await action(application.id, { action: 'anular', studentEmail: BRUNO, motivo: 'Cola com celular' }).expect(200);
+    db.memory.examApplications.find(item => item.id === application.id).status = 'cancelled';
+
+    const refused = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular' }).expect(409);
+    assert.equal(refused.body.code, 'application_cancelled');
+    assert.equal(deliveries(application.id, ALICE)[0].integrity, undefined, 'a recusa não anula');
+    assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'grade_invalidated').length, 1);
+    await action(application.id, { action: 'desfazer_anulacao', studentEmail: BRUNO, motivo: 'Engano na sala' }).expect(200);
+    assert.equal(deliveries(application.id, BRUNO)[0].integrity.desfeitaPor, 'admin@acoes.local');
+});

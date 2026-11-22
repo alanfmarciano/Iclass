@@ -1100,8 +1100,10 @@ export default function MonitorPage() {
   }
 
   // Liberar notas (D20 do P3): o diálogo diz quantas notas vão para os alunos e quantas
-  // ficam de fora por estarem aguardando a correção do professor (correcao.situacao
-  // 'pendente'); liberar manda só as contadas.
+  // ficam de fora por estarem aguardando a correção do professor; liberar manda só as
+  // contadas. Quem espera a correção vem do servidor (awaitingCorrection, pela mesma regra
+  // do calculador de notas: C1 do P3), nunca de correcao lido aqui: a entrega sem correcao
+  // com questão para revisar espera; a anulada por cola não espera (vale a decisão).
   async function releaseGrades() {
     if (!applicationId) return
     setActionDialog({ kind: 'release', loading: true, ids: [], pendingCorrection: 0 })
@@ -1114,7 +1116,7 @@ export default function MonitorPage() {
       const list = await api.get(`/api/admin/submissions?${params.toString()}`)
       const subs = (Array.isArray(list) ? list : (list?.submissions || []))
         .filter((s) => String(s.applicationId || '') === String(applicationId) && s.gradePublished !== true)
-      const pending = subs.filter((s) => s.correcao && s.correcao.situacao === 'pendente')
+      const pending = subs.filter((s) => s.awaitingCorrection === true)
       const ids = subs.filter((s) => !pending.includes(s)).map((s) => s.id)
       setActionDialog((current) => current && current.kind === 'release' ? { ...current, loading: false, ids, pendingCorrection: pending.length } : current)
     } catch (e) {
@@ -1128,7 +1130,14 @@ export default function MonitorPage() {
     setReleaseBusy(true)
     try {
       const res = await api.post('/api/admin/submissions/publish', { ids, published: true })
-      toast.success(`${res.updated ?? ids.length} ${(res.updated ?? ids.length) === 1 ? 'nota liberada' : 'notas liberadas'} para os alunos.`)
+      let message = `${res.updated ?? ids.length} ${(res.updated ?? ids.length) === 1 ? 'nota liberada' : 'notas liberadas'} para os alunos.`
+      // O servidor confere de novo: a entrega que passou a aguardar correção depois da
+      // contagem (ou com nota inválida) fica de fora, e o professor fica sabendo.
+      const skippedPending = Number(res.skippedPendingCorrection || 0)
+      const skippedInvalid = Number(res.skippedInvalid || 0)
+      if (skippedPending) message += skippedPending === 1 ? ' 1 entrega aguarda correção e ficou de fora.' : ` ${skippedPending} entregas aguardam correção e ficaram de fora.`
+      if (skippedInvalid) message += skippedInvalid === 1 ? ' 1 entrega sem nota válida ficou de fora.' : ` ${skippedInvalid} entregas sem nota válida ficaram de fora.`
+      toast.success(message)
       setActionDialog(null)
     } finally {
       setReleaseBusy(false)

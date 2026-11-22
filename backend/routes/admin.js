@@ -5203,6 +5203,27 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
     });
 });
 
+// "Nota da tentativa" e "Publicada" da planilha por prova, pela regra do calculador
+// (C1 do P3, enrichSubmissionsWithAttemptResult): a anulada por cola e a que aguarda a
+// correção do professor não mostram a nota gravada (a original ou a parcial das
+// objetivas), e só sai "Sim" em Publicada quando o aluno vê a nota.
+function csvAttemptGrade(sub) {
+    if (sub.integrityDecision === 'zero') return 'anulada (zero)';
+    if (sub.integrityDecision === 'desconsiderar') return 'anulada (não conta)';
+    if (sub.awaitingCorrection) return 'aguardando correção';
+    return sub.scoreInvalid ? 'nota inválida' : formatGradeBR(sub.score);
+}
+
+function csvAttemptPublished(sub) {
+    if (sub.gradePublished !== true) return 'Não';
+    if (sub.integrityDecision === 'desconsiderar') return 'Não (anulada, não conta)';
+    if (sub.integrityDecision === 'zero') return 'Sim';
+    // A que voltou a aguardar correção não aparece para o aluno até ser concluída.
+    if (sub.awaitingCorrection) return 'Não (aguardando correção)';
+    // Nota inválida não é mostrada ao aluno nem entra na média, mesmo marcada como publicada.
+    return sub.scoreInvalid ? 'Não (nota inválida)' : 'Sim';
+}
+
 // 6. Exporta as notas de uma prova da turma em CSV (Excel pt-BR: ";", BOM e nota
 // 0 a 10 com vírgula). Escopo por curso/turma e pelas turmas do professor (UXI-01).
 router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
@@ -5236,11 +5257,10 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
             sub.assignedVersion || sub.version || '',
             Number.isInteger(sub.correctCount) ? sub.correctCount : '',
             Number.isInteger(sub.totalCount) ? sub.totalCount : '',
-            sub.scoreInvalid ? 'nota inválida' : formatGradeBR(sub.score),
+            csvAttemptGrade(sub),
             sub.resultStatus === 'archived' ? 'Desconsiderada' : (sub.countsTowardResult ? 'Sim' : 'Não'),
             formatGradeBR(sub.consolidatedScore),
-            // Nota inválida não é mostrada ao aluno nem entra na média, mesmo marcada como publicada.
-            sub.scoreInvalid ? 'Não (nota inválida)' : (sub.gradePublished === true ? 'Sim' : 'Não'),
+            csvAttemptPublished(sub),
             formatDateTimeBR(sub.timestamp || sub.submittedAt),
         ]);
 

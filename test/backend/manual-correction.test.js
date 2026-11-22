@@ -533,3 +533,32 @@ test('[UC-CORRECAO-001] ficha do aluno: a anulada com zero conta 0, a "não cont
     const dashboard = await professor(request(app).get('/api/admin/student/dashboard')).query({ email: ALICE, courseId, studentClass }).expect(200);
     assert.deepEqual(dashboard.body.notas.map(item => item.value), [0], 'o gráfico leva só a anulada com zero, com 0');
 });
+
+// A9, ajuste 2: a planilha por prova (GET /api/admin/export-grades/:class/:examKey)
+// mostrava em "Nota da tentativa" a nota gravada (a original na anulada, a parcial das
+// objetivas na que aguarda correção) e "Sim" em Publicada na que voltou a aguardar.
+test('[UC-CORRECAO-001] planilha por prova: anulada e aguardando correção não mostram a nota gravada', async () => {
+    const zero = deliver(ALICE, { 1: 'A', 2: { texto: 'Regras.' }, 3: { texto: 'tcp' } });
+    await postCorrection(zero.id, { versao: 1, itens: { 2: { pontos: 2 } }, concluir: true }).expect(200);
+    Object.assign(db.memory.submissions.find(item => item.id === zero.id), { gradePublished: true, integrity: { decisao: 'zero', motivo: 'Cola', por: 'prof', em: Date.now() } });
+    // Publicada e depois reaberta (apagaram os pontos): o aluno não vê a nota.
+    const pending = deliver(ALICE, { 1: 'A', 2: { texto: 'Outra.' }, 3: { texto: 'tcp' } }, { attemptNumber: 2, gradePublished: true });
+    const ignored = deliver(ALICE, { 1: 'A', 2: { texto: 'Mais uma.' }, 3: { texto: 'tcp' } }, { attemptNumber: 3 });
+    await postCorrection(ignored.id, { versao: 1, itens: { 2: { pontos: 2 } }, concluir: true }).expect(200);
+    Object.assign(db.memory.submissions.find(item => item.id === ignored.id), { gradePublished: true, integrity: { decisao: 'desconsiderar', motivo: 'Cola', por: 'prof', em: Date.now() } });
+    const done = deliver(BRUNO, { 1: 'A', 2: { texto: 'Regras.' }, 3: { texto: 'tcp' } });
+    await postCorrection(done.id, { versao: 1, itens: { 2: { pontos: 1 } }, concluir: true }).expect(200);
+    db.memory.submissions.find(item => item.id === done.id).gradePublished = true;
+    assert.ok(pending.score > 0, 'a pendente tem a parcial das objetivas gravada');
+
+    const res = await professor(request(app).get(`/api/admin/export-grades/${studentClass}/${examKey}`)).query({ courseId }).expect(200);
+    assert.equal(res.text.charCodeAt(0), 0xFEFF);
+    const [header, ...lines] = res.text.slice(1).trim().split(/\r\n/).map(line => line.split(';'));
+    const col = name => header.indexOf(name);
+    const byAttempt = (name, attempt) => lines.find(line => line[0] === name && line[col('Tentativa')] === String(attempt));
+    const cells = line => [line[col('Nota da tentativa')], line[col('Publicada')]];
+    assert.deepEqual(cells(byAttempt('Alice Souza', 1)), ['anulada (zero)', 'Sim']);
+    assert.deepEqual(cells(byAttempt('Alice Souza', 2)), ['aguardando correção', 'Não (aguardando correção)']);
+    assert.deepEqual(cells(byAttempt('Alice Souza', 3)), ['anulada (não conta)', 'Não (anulada, não conta)']);
+    assert.deepEqual(cells(byAttempt('Bruno Lima', 1)), ['7,5', 'Sim']);
+});

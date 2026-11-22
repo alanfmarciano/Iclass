@@ -281,12 +281,49 @@ function anonymizedAttendance(record, pseudoEmail) {
     return next;
 }
 
+// Texto livre do professor na entrega (fase 3, P3-S4a): o motivo da anulação por cola e
+// do desfazer (integrity, com as anteriores), os comentários e motivos da correção
+// (correcao) e o motivo das mudanças de nota (scoreHistory) podem citar o aluno ("a Ana
+// colou"): o nome, o e-mail e a matrícula dele saem (scrub), o resto fica.
+function scrubSubmissionTexts(next, scrub) {
+    const text = value => (typeof value === 'string' && value ? scrub(value) : value);
+    const scrubIntegrity = integrity => {
+        if (!integrity || typeof integrity !== 'object' || Array.isArray(integrity)) return integrity;
+        const out = { ...integrity, motivo: text(integrity.motivo) };
+        if (integrity.motivoDesfeita !== undefined) out.motivoDesfeita = text(integrity.motivoDesfeita);
+        if (Array.isArray(integrity.anteriores)) out.anteriores = integrity.anteriores.map(scrubIntegrity);
+        if (out.motivo === undefined) delete out.motivo;
+        return out;
+    };
+    if (next.integrity) next.integrity = scrubIntegrity(next.integrity);
+    const correcao = next.correcao;
+    if (correcao && typeof correcao === 'object' && !Array.isArray(correcao)) {
+        const itens = correcao.itens && typeof correcao.itens === 'object' && !Array.isArray(correcao.itens)
+            ? Object.fromEntries(Object.entries(correcao.itens).map(([number, item]) => {
+                if (!item || typeof item !== 'object') return [number, item];
+                const out = { ...item };
+                if (typeof item.comentario === 'string') out.comentario = text(item.comentario);
+                if (typeof item.motivo === 'string') out.motivo = text(item.motivo);
+                return [number, out];
+            }))
+            : correcao.itens;
+        next.correcao = { ...correcao, itens, ...(typeof correcao.comentarioGeral === 'string' ? { comentarioGeral: text(correcao.comentarioGeral) } : {}) };
+        if (itens === undefined) delete next.correcao.itens;
+    }
+    if (Array.isArray(next.scoreHistory)) {
+        next.scoreHistory = next.scoreHistory.map(entry => (entry && typeof entry === 'object' && typeof entry.reason === 'string' ? { ...entry, reason: text(entry.reason) } : entry));
+    }
+    return next;
+}
+
 // Entrega/nota do aluno anonimizado: prova, nota, acertos e respostas ficam; o cadastro
-// que a entrega online copiava (telefone, matrícula, responsável...) sai.
-function anonymizedSubmission(submission, pseudonym) {
+// que a entrega online copiava (telefone, matrícula, responsável...) sai. scrub tira o
+// nome, o e-mail e a matrícula do texto livre do professor (scrubSubmissionTexts).
+function anonymizedSubmission(submission, pseudonym, scrub = null) {
     const student = submission.student && typeof submission.student === 'object' ? submission.student : {};
     const next = { ...submission };
     PERSONAL_SUBMISSION_FIELDS.forEach(field => { delete next[field]; });
+    if (scrub) scrubSubmissionTexts(next, scrub);
     if (next.studentEmail !== undefined) next.studentEmail = pseudonym.email;
     next.student = {
         name: pseudonym.name,
@@ -365,7 +402,13 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
 
     // Notas: com o pseudônimo, ou fora.
     if (anonymize) {
-        memory.submissions = (memory.submissions || []).map(item => (item && item.student && ownedRecord(item, item.student.email) ? anonymizedSubmission(item, pseudonym) : item));
+        const scrubText = text => scrubReason(text, {
+            emails,
+            names: [student.name, student.nomeSocial],
+            matriculas: [student.matricula],
+            replacement: pseudonym.name,
+        });
+        memory.submissions = (memory.submissions || []).map(item => (item && item.student && ownedRecord(item, item.student.email) ? anonymizedSubmission(item, pseudonym, scrubText) : item));
     } else {
         memory.submissions = (memory.submissions || []).filter(item => !(item && item.student && ownedRecord(item, item.student.email)));
     }
