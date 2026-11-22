@@ -494,6 +494,11 @@ const LIVE_QUESTION_SCHEMA = body({
 const ANSWER_KEY_MOTIVO_MIN = 5;
 const ANSWER_KEY_MOTIVO_MAX = 500;
 const ANSWER_KEY_PREVIEW_LIMIT = 300;
+// Recusa da aplicação preparada (ainda não começou): o caminho que monta a prova de novo
+// a partir da avaliação é o "Preparar e abrir monitor" do editor, não o "Aplicar online"
+// da preparação (que reaplica o gabarito guardado nela).
+const APPLICATION_NOT_STARTED_MESSAGE = 'A aplicação ainda não começou, e ela guarda o gabarito de quando foi preparada. Corrija a questão no editor da prova e prepare de novo por "Preparar e abrir monitor": a nova preparação substitui esta. O "Aplicar online" desta preparação traria a resposta antiga de volta.';
+const APPLICATION_NOT_STARTED_SIBLING_HINT = 'Outra aplicação desta preparação já começou: corrigir o gabarito por ela ("Corrigir gabarito") leva a resposta certa também a esta.';
 const ANSWER_KEY_CORRECTION_SCHEMA = body({
     questionNumber: int({ min: 1, max: 100000, coerce: true, label: 'número da questão' }),
     correctAnswer: str({ max: 20, nullable: true, label: 'resposta certa' }),
@@ -1588,9 +1593,15 @@ function createAdminExamConfigRouter() {
                 }
                 if (!CORRECTABLE_STATUSES.has(application.status)) {
                     // A aplicação preparada guarda o gabarito de quando foi preparada: editar a
-                    // avaliação não a muda; é preciso preparar de novo pelo editor.
+                    // avaliação não a muda. É preciso preparar de novo pelo editor ("Preparar e
+                    // abrir monitor", que monta a prova da avaliação corrigida e substitui esta).
+                    // "Aplicar online" da preparação não serve: copia os versionSnapshots
+                    // guardados nela, com a letra errada. Se outra aplicação da mesma
+                    // preparação já começou, corrigir por ela leva a resposta certa também a
+                    // esta (applyAnswerKeyToPreparation e as preparadas).
+                    const startedSibling = preparationOf(cls, application).started.length > 0;
                     return res.status(409).json({
-                        error: 'A aplicação ainda não começou, e ela guarda o gabarito de quando foi preparada. Corrija a questão no editor da prova e prepare a aplicação de novo pelo "Aplicar online" da prova.',
+                        error: startedSibling ? `${APPLICATION_NOT_STARTED_MESSAGE} ${APPLICATION_NOT_STARTED_SIBLING_HINT}` : APPLICATION_NOT_STARTED_MESSAGE,
                         code: 'application_not_started',
                     });
                 }

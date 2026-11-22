@@ -495,7 +495,8 @@ function seedPreparation() {
         questionReports: [],
         createdAt: new Date(Date.now() - 600000).toISOString(),
     };
-    // Outra turma da manhã, já encerrada, com a mesma preparação: as notas dela ficam.
+    // Outra aplicação da mesma turma e da mesma preparação (a da manhã), já encerrada:
+    // as notas dela ficam.
     const morning = {
         ...JSON.parse(JSON.stringify(application())),
         id: 'app_manha',
@@ -608,10 +609,28 @@ test('[UC-PROVA-005] preparação antiga (só printSnapshot, sem tipo) e de outr
     assert.equal(preparationHasAnswerKey(null, 1, { type: 'numeric', numeric: { value: 1, tolerance: 0 } }), true);
 });
 
-test('[UC-PROVA-005] aplicação preparada: a recusa manda preparar de novo pelo editor', async () => {
+test('[UC-PROVA-005] aplicação preparada: a recusa manda preparar de novo pelo editor ("Preparar e abrir monitor"), não pelo "Aplicar online" da preparação', async () => {
     application().status = 'prepared';
     const refused = await correct(FIX_Q4);
     assert.equal(refused.status, 409);
     assert.equal(refused.body.code, 'application_not_started');
-    assert.equal(refused.body.error, 'A aplicação ainda não começou, e ela guarda o gabarito de quando foi preparada. Corrija a questão no editor da prova e prepare a aplicação de novo pelo "Aplicar online" da prova.');
+    // "Aplicar online" da preparação reaplica os versionSnapshots guardados nela (com a
+    // letra errada): a mensagem não pode mandar o professor por ali.
+    assert.equal(refused.body.error, 'A aplicação ainda não começou, e ela guarda o gabarito de quando foi preparada. Corrija a questão no editor da prova e prepare de novo por "Preparar e abrir monitor": a nova preparação substitui esta. O "Aplicar online" desta preparação traria a resposta antiga de volta.');
+    assert.doesNotMatch(refused.body.error, /Outra aplicação desta preparação/);
+    assert.equal(application().answerKeyCorrections, undefined);
+});
+
+test('[UC-PROVA-005] aplicação preparada com outra da mesma preparação já começada: a recusa diz para corrigir por ela', async () => {
+    seedPreparation();
+    const refused = await correct(FIX_Q4, ADMIN, 'app_segunda_chamada');
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, 'application_not_started');
+    assert.match(refused.body.error, /prepare de novo por "Preparar e abrir monitor"/);
+    assert.match(refused.body.error, /Outra aplicação desta preparação já começou: corrigir o gabarito por ela \("Corrigir gabarito"\) leva a resposta certa também a esta\.$/);
+    // E é verdade: corrigir pela encerrada leva a letra certa à preparada.
+    const fixed = await correct(FIX_Q4);
+    assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
+    const second = db.memory.examApplications.find(item => item.id === 'app_segunda_chamada');
+    assert.deepEqual(second.versionSnapshots.map(q4Marks), [['B'], ['B']]);
 });

@@ -27,6 +27,17 @@ describe('[UC-AJUDA-001] textos da ajuda', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
+  it('[UC-PROVA-005] corrigir o gabarito: a aplicação preparada se prepara de novo por "Preparar e abrir monitor", não pelo "Aplicar online" da preparação', () => {
+    const provas = parseHelpDocument(instrutor).secoes.find((section) => section.id === 'provas')
+    const paragraph = provas.corpo.split('\n').find((line) => line.startsWith('**Corrigir o gabarito depois da prova.**'))
+    expect(paragraph).toBeTruthy()
+    // O "Aplicar online" da preparação reaplica o gabarito guardado nela (o errado).
+    expect(paragraph).toContain('prepare de novo por **Preparar e abrir monitor**')
+    expect(paragraph).not.toContain('prepare de novo pelo **Aplicar online**')
+    // A preparação é de cada turma: a aplicação de outra turma nunca é contada pela prévia.
+    expect(paragraph).not.toContain('outra turma, por exemplo')
+  })
+
   it('a ajuda do aluno começa pelos temas de quem não consegue entrar e tem os temas do portal', () => {
     const doc = parseHelpDocument(aluno)
     const ids = doc.secoes.map((section) => section.id)
