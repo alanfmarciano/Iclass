@@ -17,6 +17,7 @@ const {
     sendRouteError,
 } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
+const { shape, int } = require('../utils/inputSchema.js');
 const { isFullAdmin } = require('../utils/adminRoles.js');
 const serverLifecycle = require('../utils/serverLifecycle.js');
 const { connectionInfo, httpsAvailable, networkHttpsStatus, studentsHttpsEnabled } = require('../utils/networkPolicy.js');
@@ -164,6 +165,14 @@ function flattenSettings(value, prefix = '', out = {}) {
 
 // O que mudou entre duas versões das configurações: [{ key, before, after }], na ordem
 // das chaves (as de antes primeiro).
+// Bloco 'entregas' do POST /api/admin/settings (fase 3, P1 D17): cada limite é um número
+// inteiro (a tela manda texto do campo numérico: coerce) dentro de ENTREGAS_LIMITS.
+// Campo ausente fica como está; null no bloco inteiro também (nada muda).
+const ENTREGAS_SCHEMA = shape(Object.fromEntries(Object.keys(settingsUtil.ENTREGAS_LIMITS).map(key => [
+    key,
+    int({ coerce: true, min: settingsUtil.ENTREGAS_LIMITS[key].min, max: settingsUtil.ENTREGAS_LIMITS[key].max, label: settingsUtil.ENTREGAS_LABELS[key] }),
+])), { label: 'Limites das entregas', nullable: true });
+
 function settingsChanges(before, after) {
     const flatBefore = flattenSettings(before);
     const flatAfter = flattenSettings(after);
@@ -759,7 +768,18 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
             // resto do pedido vale) e o administrador ainda muda, como antes.
             const patch = { ...(req.body && typeof req.body === 'object' ? req.body : {}) };
             if (!isFullAdmin(account)) delete patch.trash;
-            db.memory.config.settings = settingsUtil.mergeSettings(patch);
+            // Limites das entregas de tarefa (fase 3, P1 D17): entrada nova, validada pelo
+            // schema (número inteiro na faixa de cada campo) e pela combinação (teto do
+            // upload, envio nunca menor que um arquivo). Recusa = 400 com field, nada gravado.
+            if (patch.entregas !== undefined) {
+                const checked = ENTREGAS_SCHEMA.run(patch.entregas, 'entregas', 'entregas');
+                if (!checked.ok) return res.status(400).json({ success: false, error: checked.error, field: checked.field });
+                if (checked.value === null) delete patch.entregas;
+            }
+            const next = settingsUtil.mergeSettings(patch);
+            const combination = settingsUtil.entregasPatchError(patch.entregas, { before: before.entregas, next });
+            if (combination) return res.status(400).json({ success: false, error: combination.error, field: combination.field });
+            db.memory.config.settings = next;
             const changes = settingsChanges(before, settingsUtil.getSettings());
             if (changes.length) {
                 recordAudit(db.memory, {
@@ -771,7 +791,10 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 });
             }
             await db.save();
-            res.json({ success: true, settings: settingsForAccount(db.memory.config.settings, account) });
+            // entregas na resposta como no GET (com o teto do upload na leitura): a tela vê o
+            // mesmo número nos dois.
+            const saved = { ...db.memory.config.settings, entregas: settingsUtil.getSettings().entregas };
+            res.json({ success: true, settings: settingsForAccount(saved, account) });
         });
     });
 

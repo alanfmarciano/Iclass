@@ -58,9 +58,19 @@ const FILE_TYPE_KEYS = Object.freeze(Object.keys(ASSIGNMENT_FILE_TYPES));
 const COURSE_FORMAT_CATEGORY = 'curso';
 
 // Executáveis e atalhos: nunca, nem como formato do curso (a máquina é a do professor).
+// A primeira linha é a lista do desenho (D6); as outras são os demais tipos que o Windows
+// executa ou abre como atalho com dois cliques (script do Windows Script Host, módulo do
+// PowerShell, atalho de internet e de pasta, pacote de atualização, ajuda compilada,
+// instalação por .inf e afins), que o professor não deve conseguir liberar digitando a
+// extensão em "Formatos do curso".
 const BLOCKED_EXECUTABLES = Object.freeze([
     '.exe', '.com', '.bat', '.cmd', '.ps1', '.msi', '.scr', '.jar', '.vbs', '.vbe', '.lnk', '.dll',
     '.reg', '.hta', '.wsf', '.cpl', '.msc', '.appx', '.msix', '.apk', '.iso',
+    '.jse', '.pif', '.scf', '.url', '.msp', '.mst', '.msu', '.psm1', '.psd1', '.ps1xml', '.ps2',
+    '.ps2xml', '.psc1', '.psc2', '.vb', '.ws', '.wsc', '.wsh', '.sct', '.shb', '.shs', '.inf',
+    '.ins', '.isp', '.chm', '.hlp', '.gadget', '.application', '.appref-ms', '.xbap', '.xll',
+    '.settingcontent-ms', '.library-ms', '.searchconnector-ms', '.diagcab', '.msh', '.msh1',
+    '.msh2', '.mshxml', '.msh1xml', '.msh2xml', '.cab', '.appinstaller', '.vhd', '.vhdx', '.img',
 ]);
 const BLOCKED_SET = new Set(BLOCKED_EXECUTABLES);
 
@@ -279,9 +289,12 @@ function inspectFile(absPath) {
     });
 }
 
-function formatMb(bytes) {
-    const mb = bytes / MB;
-    return `${(mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10).toString().replace('.', ',')} MB`;
+// Tamanho de um arquivo que passou do limite: arredondado para cima, com uma casa, para a
+// mensagem nunca dizer "tem 1 MB; o limite é 1 MB" de um arquivo pouco acima do limite.
+function formatMbOver(bytes, limitMb) {
+    let tenths = Math.ceil((bytes / MB) * 10);
+    if (tenths <= Math.round(limitMb * 10)) tenths = Math.round(limitMb * 10) + 1;
+    return `${(tenths / 10).toString().replace('.', ',')} MB`;
 }
 
 // Confere um arquivo que o multer gravou em .recebendo (file.path, file.originalname,
@@ -302,7 +315,7 @@ async function validateReceivedFile(file, rules = {}) {
     if (!info.size) return { ok: false, code: 'file_empty', message: `O arquivo "${named.name}" está vazio.` };
     const maxSizeMb = Number(rules.maxSizeMb);
     if (Number.isFinite(maxSizeMb) && maxSizeMb > 0 && info.size > maxSizeMb * MB) {
-        return { ok: false, code: 'file_too_large', status: 413, message: `O arquivo "${named.name}" tem ${formatMb(info.size)}; o limite desta tarefa é ${maxSizeMb} MB por arquivo.` };
+        return { ok: false, code: 'file_too_large', status: 413, message: `O arquivo "${named.name}" tem ${formatMbOver(info.size, maxSizeMb)}; o limite desta tarefa é ${String(maxSizeMb).replace('.', ',')} MB por arquivo.` };
     }
     if (!contentMatchesExtension(info.head, named.ext, named.category)) {
         return {
@@ -482,6 +495,12 @@ async function cleanupReceivingDir({ now = Date.now(), maxAgeMs = RECEIVING_MAX_
 }
 
 // ------------------------------------------------------------ download
+// filename* (RFC 5987/8187): encodeURIComponent deixa ' ( ) * ! sem codificar, e o
+// apóstrofo não pode aparecer no valor (separa a língua do nome).
+function encodeRfc5987(name) {
+    return encodeURIComponent(name).replace(/['()*!]/g, ch => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 function asciiFallback(name) {
     const plain = String(name || 'arquivo').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
     return plain.trim() || 'arquivo';
@@ -497,7 +516,7 @@ function downloadHeaders(file, { inline = false } = {}) {
     const type = DOWNLOAD_MIME[ext] || 'application/octet-stream';
     return {
         'Content-Type': type,
-        'Content-Disposition': `${canInline ? 'inline' : 'attachment'}; filename="${asciiFallback(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+        'Content-Disposition': `${canInline ? 'inline' : 'attachment'}; filename="${asciiFallback(name)}"; filename*=UTF-8''${encodeRfc5987(name)}`,
         'X-Content-Type-Options': 'nosniff',
         'Content-Security-Policy': 'sandbox',
         'Cache-Control': 'private, no-store',

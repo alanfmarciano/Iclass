@@ -92,6 +92,18 @@ test('leitura tolerante: linha incompleta ganha os padrões sem mudar a linha, e
     assert.equal(assignments.normalizeAssignment(null), null);
 });
 
+test('leitura tolerante: versão sem número ou com número repetido ganha o próximo, sem repetir (verificação do C3)', () => {
+    const ns = versions => assignments.normalizeSubmission({ versions }).versions.map(item => item.n);
+    assert.deepEqual(ns([{ n: 2 }, {}]), [2, 3], 'antes: [2, 2]');
+    assert.deepEqual(ns([{}, {}, {}]), [1, 2, 3], 'linha sem números: como antes');
+    assert.deepEqual(ns([{}, { n: 1 }]), [1, 2]);
+    assert.deepEqual(ns([{ n: 3 }, { n: 3 }, { n: 1 }]), [1, 3, 4]);
+    assert.deepEqual(ns([{ n: 0 }, { n: 'x' }, { n: 2 }]), [2, 3, 4]);
+    const once = assignments.normalizeSubmission({ versions: [{ n: 2, requestAt: due }, { requestAt: due + 1 }] });
+    assert.deepEqual(assignments.normalizeSubmission(once), once, 'normalizar de novo não muda nada');
+    assert.equal(assignments.versionFor(once).requestAt, due + 1, 'a última é a sem número, gravada depois');
+});
+
 test('ids no formato do plano e registro novo de entrega com studentId do cadastro', () => {
     const id = assignments.newAssignmentId(1795000000000);
     assert.match(id, /^asg_1795000000000_[0-9a-f]{6}$/);
@@ -127,6 +139,31 @@ test('prazos em ms pelo relógio da escola: deadlineFields, a ordem das datas e 
     assert.deepEqual(assignments.effectiveWindow(t, ext), { opensAt: null, dueAt: due + DAY, closeAt: due + 2 * DAY, individual: true }, 'prorrogação não fecha antes da tarefa');
     const longer = { extension: { dueAt: due + 5 * DAY, closeAt: null } };
     assert.equal(assignments.effectiveWindow(t, longer).closeAt, null, 'prorrogação depois do encerramento da tarefa não herda o encerramento');
+});
+
+test('janela efetiva: prazo individual nunca deixa o aluno com menos tempo que a turma (verificação do C3)', () => {
+    // Antes: extensão { dueAt: due+1d, closeAt: due+2d } fechava em due+2d numa tarefa que
+    // fecha em due+5d, e extensão com prazo antes do da turma deixava o aluno atrasado antes.
+    const t = task({ closeAt: due + 5 * DAY });
+    const win = extension => assignments.effectiveWindow(t, { extension });
+    assert.equal(win({ dueAt: due + DAY, closeAt: due + 2 * DAY }).closeAt, due + 5 * DAY, 'encerramento individual antes do da tarefa vale o da tarefa');
+    assert.equal(win({ dueAt: due + DAY, closeAt: due + 7 * DAY }).closeAt, due + 7 * DAY, 'encerramento individual depois do da tarefa vale');
+    assert.equal(win({ dueAt: due - 3 * DAY, closeAt: null }).dueAt, due, 'prazo individual antes do da turma vale o da turma');
+    assert.equal(assignments.submissionAcceptance(t, { extension: { dueAt: due - 3 * DAY } }, { now: due - DAY }).late, false, 'o aluno não fica atrasado antes da turma');
+    assert.equal(win({ dueAt: due + 6 * DAY, closeAt: null }).closeAt, null, 'prorrogação depois do encerramento, sem encerramento próprio: só a regra de atraso');
+    assert.equal(win({ dueAt: due + 6 * DAY, closeAt: due + 8 * DAY }).closeAt, due + 8 * DAY);
+    const open = task();
+    assert.equal(assignments.effectiveWindow(open, { extension: { dueAt: due + DAY, closeAt: due + 2 * DAY } }).closeAt, null, 'tarefa sem encerramento: o aluno também fica sem');
+    assert.equal(assignments.submissionAcceptance(open, { extension: { dueAt: due + DAY, closeAt: due + 2 * DAY } }, { now: due + 3 * DAY }).accepts, true);
+
+    // Conferência para as rotas da prorrogação e do refazer (C6).
+    assert.equal(assignments.extensionWindowError(t, { dueAt: due + DAY, closeAt: due + 6 * DAY }), null);
+    assert.equal(assignments.extensionWindowError(t, { dueAt: due + DAY }), null);
+    assert.equal(assignments.extensionWindowError(t, {}).field, 'dueDate');
+    assert.match(assignments.extensionWindowError(t, { dueAt: due - DAY }).error, /no prazo da turma ou depois/);
+    assert.equal(assignments.extensionWindowError(t, { dueAt: due + 2 * DAY, closeAt: due + DAY }).field, 'closeDate');
+    assert.match(assignments.extensionWindowError(t, { dueAt: due + DAY, closeAt: due + 2 * DAY }).error, /encerramento da turma ou depois/);
+    assert.match(assignments.extensionWindowError(open, { dueAt: due + DAY, closeAt: due + 2 * DAY }).error, /não tem encerramento/);
 });
 
 test('aceite do envio: situação da tarefa, abertura, devolvida, 20 versões, encerramento e regra de atraso pelo requestAt', () => {
@@ -204,6 +241,14 @@ test('situação do aluno e do professor', () => {
     assert.equal(assignments.instructorStatus({ ...redo, versions: [...redo.versions, version(2, due + DAY)] }), 'para_corrigir');
     assert.equal(assignments.instructorStatus({ manualEntry: { note: 'x' } }), 'para_corrigir');
     assert.equal(assignments.needsGrading({ manualEntry: { note: 'x' }, grade: { score: 70 } }), false);
+    // Refazer sem correção gravada (verificação do C3): antes ia para 'para_corrigir' com a
+    // versão que motivou o pedido. Só a versão mandada depois do pedido volta para a fila.
+    const askedAt = due + DAY;
+    const redoNoGrade = { status: 'refazer', versions: [version(1, due - HOUR)], extension: { dueAt: due + 3 * DAY, at: askedAt } };
+    assert.equal(assignments.instructorStatus(redoNoGrade), 'refazer');
+    assert.equal(assignments.needsGrading(redoNoGrade), false);
+    assert.equal(assignments.instructorStatus({ ...redoNoGrade, versions: [...redoNoGrade.versions, version(2, askedAt + HOUR)] }), 'para_corrigir');
+    assert.equal(assignments.instructorStatus({ status: 'refazer', versions: [version(1, due - HOUR)] }), 'refazer', 'sem marco nenhum: esperando o aluno');
 });
 
 function seedClass(memory) {
@@ -337,7 +382,16 @@ test('arquivo recebido: assinatura, texto, tamanho, sha256 em streaming e nada f
     assert.equal(big.code, 'file_too_large');
     assert.equal(big.status, 413);
     assert.match(big.message, /limite desta tarefa é 1 MB/);
+    assert.match(big.message, /tem 1,1 MB;/, 'pouco acima do limite não aparece como "tem 1 MB" (verificação do C3)');
+    const justOver = await check('l2.part', Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(1024 * 1024 * 2)]), 'grande2.pdf');
+    assert.match(justOver.message, /tem 2,1 MB;/);
     assert.equal((await check('m.part', 'x', 'jogo.exe')).code, 'file_blocked');
+    // Outros tipos que o Windows executa com dois cliques (verificação do C3): nem como
+    // formato do curso.
+    for (const ext of ['.jse', '.pif', '.scf', '.url', '.msp', '.psm1', '.wsh', '.inf', '.chm', '.application']) {
+        assert.equal((await check(`m${ext}.part`, 'x', `arquivo${ext}`)).code, 'file_blocked', ext);
+        assert.match(files.normalizeExtraExtensions([ext], { strict: true }).error, /executáveis/, ext);
+    }
 
     const outside = path.join(tempRoot, 'fora.pdf');
     fs.writeFileSync(outside, pdf);
@@ -426,6 +480,8 @@ test('download: sempre attachment com o nome acentuado, nosniff e CSP sandbox; i
     assert.equal(files.downloadHeaders({ originalName: 'rede.pkt', ext: '.pkt' })['Content-Type'], 'application/octet-stream');
     assert.ok(files.downloadHeaders({ originalName: 'IMG.heic', ext: '.heic' }, { inline: true })['Content-Disposition'].startsWith('attachment;'), 'HEIC sem prévia');
     assert.ok(files.downloadHeaders({ originalName: 'Ação "final".txt', ext: '.txt' })['Content-Disposition'].startsWith('attachment; filename="Acao final.txt"; filename*=UTF-8\'\'A%C3%A7%C3%A3o%20final.txt'));
+    // filename* sem apóstrofo nem parênteses crus (RFC 5987; verificação do C3).
+    assert.ok(files.downloadHeaders({ originalName: "Trabalho d'Ana (final).pdf", ext: '.pdf' })['Content-Disposition'].endsWith("filename*=UTF-8''Trabalho%20d%27Ana%20%28final%29.pdf"));
 });
 
 test('lixeira: arquivo de entrega é só do administrador', () => {

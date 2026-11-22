@@ -115,6 +115,44 @@ const ENTREGAS_LIMITS = Object.freeze({
     discoLivreMinimoMb: { min: 0, max: 1024 * 1024 },
 });
 
+// Nome de cada limite nas mensagens de erro do POST /api/admin/settings.
+const ENTREGAS_LABELS = Object.freeze({
+    maxMbPorArquivo: 'Tamanho máximo por arquivo das entregas (MB)',
+    maxMbPorEnvio: 'Tamanho máximo por envio das entregas (MB)',
+    discoLivreMinimoMb: 'Espaço livre mínimo para receber entregas (MB)',
+});
+
+// Confere a combinação dos limites das entregas que o POST /api/admin/settings vai gravar,
+// depois do schema (tipo e faixa de cada campo, na rota). { error, field } ou null.
+// - patchEntregas: o bloco 'entregas' do pedido (já validado);
+// - before: os limites que valem agora (getSettings().entregas, o que a tela mostrou);
+// - next: o resultado de mergeSettings(pedido) (upload.maxSizeMb e entregas como ficam).
+// Só o campo que o pedido MUDA é conferido: a tela devolve o bloco inteiro que leu, e um
+// valor que só ficou acima do teto porque o upload.maxSizeMb baixou no mesmo pedido continua
+// valendo com o teto na leitura (não trava o salvar das outras configurações).
+function entregasPatchError(patchEntregas, { before, next } = {}) {
+    if (!patchEntregas || typeof patchEntregas !== 'object' || Array.isArray(patchEntregas)) return null;
+    const current = before || entregasSettings();
+    const changed = key => patchEntregas[key] !== undefined && Number(patchEntregas[key]) !== current[key];
+    const nextUpload = Math.floor(Number(next && next.upload && next.upload.maxSizeMb));
+    const ceiling = Number.isFinite(nextUpload) && nextUpload >= 1 ? nextUpload : Infinity;
+    const stored = (next && next.entregas) || entregasSettings(storedSettings(), Infinity, { forStorage: true });
+    if (changed('maxMbPorArquivo') && stored.maxMbPorArquivo > ceiling) {
+        return {
+            field: 'entregas.maxMbPorArquivo',
+            error: `O tamanho máximo por arquivo das entregas não pode passar do limite de upload do servidor (${ceiling} MB).`,
+        };
+    }
+    const perFile = Math.min(stored.maxMbPorArquivo, ceiling);
+    if ((changed('maxMbPorArquivo') || changed('maxMbPorEnvio')) && stored.maxMbPorEnvio < perFile) {
+        return {
+            field: changed('maxMbPorEnvio') ? 'entregas.maxMbPorEnvio' : 'entregas.maxMbPorArquivo',
+            error: `O tamanho máximo por envio (${stored.maxMbPorEnvio} MB) não pode ser menor que o tamanho máximo por arquivo (${perFile} MB).`,
+        };
+    }
+    return null;
+}
+
 // forStorage: os valores como ficam gravados (só os limites de cada campo); sem ele, os que
 // valem agora (teto do upload e envio nunca menor que um arquivo).
 function entregasSettings(stored = storedSettings(), uploadMaxMb, { forStorage = false } = {}) {
@@ -265,7 +303,9 @@ module.exports = {
     retentionSettings,
     RETENTION_MAX_DAYS,
     entregasSettings,
+    entregasPatchError,
     ENTREGAS_LIMITS,
+    ENTREGAS_LABELS,
     normalizeAdminAccess,
     isValidTimeZone,
     todayInTz,

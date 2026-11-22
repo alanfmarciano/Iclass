@@ -223,12 +223,13 @@ function normalizeVersionFile(value) {
     };
 }
 
-function normalizeVersion(value, index) {
+// n fica null quando ausente ou estranho; normalizeSubmission numera (numberVersions).
+function normalizeVersion(value) {
     const version = isObject(value) ? value : {};
     const requestAt = toMs(version.requestAt);
     return {
         ...version,
-        n: Number.isInteger(version.n) && version.n >= 1 ? version.n : index + 1,
+        n: Number.isInteger(version.n) && version.n >= 1 ? version.n : null,
         requestAt,
         receivedAt: toMs(version.receivedAt) ?? requestAt,
         late: version.late === true,
@@ -293,11 +294,27 @@ function derivedSubmissionStatus(sub) {
     return 'pendente';
 }
 
+// Números das versões sem repetir: o número gravado vale na primeira versão que o usa; a
+// versão sem número (linha antiga ou editada à mão) ou com número repetido ganha o próximo
+// depois do maior, na ordem em que está gravada. Depois, em ordem de número. Linha já
+// numerada sem repetição não muda (idempotente).
+function numberVersions(versions) {
+    const used = new Set();
+    const pending = [];
+    versions.forEach(version => {
+        if (version.n !== null && !used.has(version.n)) used.add(version.n);
+        else pending.push(version);
+    });
+    let next = used.size ? Math.max(...used) : 0;
+    pending.forEach(version => { next += 1; version.n = next; });
+    return versions.sort((a, b) => a.n - b.n);
+}
+
 // A entrega com todos os campos (padrões no que falta), versões em ordem de número. Não
 // muda a linha recebida.
 function normalizeSubmission(raw) {
     if (!isObject(raw)) return null;
-    const versions = list(raw.versions).filter(isObject).map(normalizeVersion).sort((a, b) => a.n - b.n);
+    const versions = numberVersions(list(raw.versions).filter(isObject).map(normalizeVersion));
     const sub = {
         ...raw,
         id: text(raw.id),
@@ -471,17 +488,41 @@ function windowOrderError({ opensAt = null, dueAt = null, closeAt = null } = {})
 }
 
 // Janela que vale para este aluno: a da tarefa ou, com prorrogação ou "refazer", o prazo
-// individual. O encerramento individual, quando não informado, é o da tarefa se ele ainda
-// estiver depois do prazo individual (a prorrogação nunca fecha antes da tarefa); senão
-// não há encerramento além da regra de atraso.
+// individual. O prazo individual nunca deixa o aluno com menos tempo que a turma:
+// - prazo: o mais tarde entre o da tarefa e o individual (prazo individual antes do da
+//   turma, gravado por engano ou por um "refazer" pedido cedo, vale o da turma);
+// - encerramento: tarefa sem encerramento continua sem encerramento para o aluno (um
+//   encerramento individual fecharia antes da turma); com encerramento, vale o mais tarde
+//   entre o da tarefa e o individual (sem individual, o da tarefa). Se mesmo assim ele
+//   ficar antes do prazo individual (prorrogação para depois do encerramento da tarefa,
+//   sem encerramento próprio), não há encerramento além da regra de atraso.
+// As rotas da prorrogação e do "refazer" (C6) conferem antes com extensionWindowError,
+// para o professor saber; esta conta só garante a regra para o que já está gravado.
 function effectiveWindow(assignment, submission) {
     const task = asAssignment(assignment) || normalizeAssignment({});
     const sub = submission ? asSubmission(submission) : null;
     const ext = sub && sub.extension;
     if (!ext) return { opensAt: task.opensAt, dueAt: task.dueAt, closeAt: task.closeAt, individual: false };
-    let closeAt = ext.closeAt;
-    if (closeAt === null && task.closeAt !== null && task.closeAt >= ext.dueAt) closeAt = task.closeAt;
-    return { opensAt: task.opensAt, dueAt: ext.dueAt, closeAt, individual: true };
+    const dueAt = task.dueAt !== null ? Math.max(task.dueAt, ext.dueAt) : ext.dueAt;
+    let closeAt = null;
+    if (task.closeAt !== null) {
+        closeAt = Math.max(task.closeAt, ext.closeAt !== null ? ext.closeAt : task.closeAt);
+        if (closeAt < dueAt) closeAt = null;
+    }
+    return { opensAt: task.opensAt, dueAt, closeAt, individual: true };
+}
+
+// Confere o prazo individual (prorrogação ou "refazer") que o professor quer gravar, contra
+// a tarefa: { error, field } ou null. Os nomes de campo são os do formulário (dueDate,
+// closeDate, como deadlineFields com o prefixo 'due' e 'close').
+function extensionWindowError(assignment, { dueAt = null, closeAt = null } = {}) {
+    const task = asAssignment(assignment) || normalizeAssignment({});
+    if (dueAt === null) return { error: 'Informe o novo prazo.', field: 'dueDate' };
+    if (task.dueAt !== null && dueAt < task.dueAt) return { error: 'O novo prazo precisa ser no prazo da turma ou depois dele.', field: 'dueDate' };
+    if (closeAt !== null && closeAt < dueAt) return { error: 'O encerramento precisa ser no novo prazo ou depois dele.', field: 'closeDate' };
+    if (closeAt !== null && task.closeAt === null) return { error: 'Esta tarefa não tem encerramento para a turma; o aluno também fica sem encerramento.', field: 'closeDate' };
+    if (closeAt !== null && closeAt < task.closeAt) return { error: 'O encerramento do aluno precisa ser no encerramento da turma ou depois dele.', field: 'closeDate' };
+    return null;
 }
 
 const ACCEPTANCE_MESSAGES = Object.freeze({
@@ -561,10 +602,20 @@ function lastVersion(sub) {
 
 // Precisa de correção: há versão mais nova que a corrigida (ou nenhuma corrigida), ou
 // entrega em mãos sem nota. Devolvida não volta para a fila (não aceita versão nova).
+// Em 'refazer' (esperando o aluno), só a versão mandada depois do pedido conta: mais nova
+// que a corrigida ou, sem correção gravada, com requestAt depois do pedido (extension.at).
+// Sem nenhum dos dois marcos, a entrega espera o aluno (o envio novo volta a situação
+// para 'enviada', C5).
 function needsGrading(submission) {
     const sub = asSubmission(submission);
     if (!sub || sub.status === 'devolvida') return false;
     const last = lastVersion(sub);
+    if (sub.status === 'refazer') {
+        if (!last) return false;
+        if (sub.grade) return last.n > sub.grade.versionGraded;
+        const askedAt = sub.extension ? sub.extension.at : null;
+        return askedAt !== null && last.requestAt !== null && last.requestAt > askedAt;
+    }
     if (last) return !sub.grade || last.n > sub.grade.versionGraded;
     return !!sub.manualEntry && !sub.grade;
 }
@@ -777,6 +828,7 @@ module.exports = {
     deadlineFields,
     windowOrderError,
     effectiveWindow,
+    extensionWindowError,
     submissionAcceptance,
     latePenaltyPct,
     finalScoreFor,
