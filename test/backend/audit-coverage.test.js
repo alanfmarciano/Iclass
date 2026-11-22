@@ -393,3 +393,41 @@ test('[UC-AUDITORIA-002] mergeRowsByKey e mergeAuditTrails: o backup vence na me
     const merged = mergeAuditTrails([{ id: 'a', timestamp: 2, v: 'backup' }], [{ id: 'a', timestamp: 2, v: 'atual' }, { id: 'b', timestamp: 1 }]);
     assert.deepEqual(merged.map(item => [item.id, item.v]), [['b', undefined], ['a', 'backup']]);
 });
+
+// Tarefas (fase 3, C4 / P1-b): toda rota do cadastro da tarefa que muda dado grava na
+// trilha, na categoria 'assignment', com o curso e a turma da tarefa (a cópia, com os do
+// destino). Repetir a ação que não muda nada não grava.
+test('tarefas: criar, alterar, publicar, arquivar, reativar, copiar e excluir ficam na trilha', async () => {
+    db.memory.classes.push({ name: '2DES', courseId: COURSE, period: 'Tarde' });
+    db.memory.assignments = [];
+    db.memory.assignmentSubmissions = [];
+    const created = await professor(request(app).post('/api/admin/assignments')).send({ courseId: COURSE, studentClass: '1DES', title: 'Relatório de redes' });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.body.assignment.id;
+    const steps = [
+        ['/update', { title: 'Relatório final', dueDate: '2026-12-04', dueTime: '23:00' }, 'assignment_updated'],
+        ['/publish', {}, 'assignment_published'],
+        ['/archive', {}, 'assignment_archived'],
+        ['/unarchive', {}, 'assignment_unarchived'],
+    ];
+    for (const [suffix, payload, action] of steps) {
+        const res = await professor(request(app).post(`/api/admin/assignments/${id}${suffix}`)).send(payload);
+        assert.equal(res.status, 200, `${suffix}: ${JSON.stringify(res.body)}`);
+        assert.equal(entries(action).length, 1, `${suffix} sem ${action}`);
+        // A mesma ação de novo não muda nada e não grava outra entrada.
+        await professor(request(app).post(`/api/admin/assignments/${id}${suffix}`)).send(payload);
+        assert.equal(entries(action).length, 1, `${suffix} repetido gravou de novo`);
+    }
+    const copied = await admin(request(app).post(`/api/admin/assignments/${id}/copy`)).send({ courseId: COURSE, studentClass: '2DES' });
+    assert.equal(copied.status, 201, JSON.stringify(copied.body));
+    assert.equal(last('assignment_copied').studentClass, '2DES');
+    assert.equal((await professor(request(app).post(`/api/admin/assignments/${id}/delete`)).send({ confirm: 'EXCLUIR' })).status, 200);
+    for (const action of ['assignment_created', 'assignment_updated', 'assignment_published', 'assignment_archived', 'assignment_unarchived', 'assignment_deleted']) {
+        const entry = last(action);
+        assert.equal(entry.category, 'assignment', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+    }
+    assert.equal(last('assignment_deleted').details.deleted.title, 'Relatório final');
+});

@@ -160,6 +160,7 @@ const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
+const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
 const { body, either, list, shape, str } = require('../utils/inputSchema.js');
 
 // Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
@@ -3636,6 +3637,8 @@ router.use(createAdminAuditRouter());
 router.use(createAdminPrivacyRouter());
 router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
+// Tarefas com envio de arquivo (P1-b): cadastro da tarefa (a correção entra no P1-d).
+router.use(createAdminAssignmentsRouter());
 // Pré-visualização como aluno (P5-S6a): abrir e encerrar a sessão de leitura.
 router.use(createAdminPreviewRouter());
 

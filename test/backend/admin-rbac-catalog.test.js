@@ -56,6 +56,12 @@ test('rotas extraídas ficam nos módulos administrativos dedicados', () => {
         assert.equal(adminSource.includes(`'${route}'`), false, `${route} ainda está no router monolítico`);
         assert.equal(examConfigSource.includes(`'${route}'`), true, `${route} não foi extraída para adminExamConfig`);
     });
+    // Tarefas (fase 3, C4 / P1-b): router próprio, nunca no admin.js.
+    const assignmentsSource = fs.readFileSync(path.join(routesDir, 'adminAssignments.js'), 'utf8');
+    ['/api/admin/assignments', '/api/admin/assignments/:id', '/api/admin/assignments/:id/copy'].forEach(route => {
+        assert.equal(adminSource.includes(`'${route}'`), false, `${route} está no router monolítico`);
+        assert.equal(assignmentsSource.includes(`'${route}'`), true, `${route} não está em adminAssignments`);
+    });
 });
 
 // ---------------------------------------------------------------- fase 3 (B0b)
