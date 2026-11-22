@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import MonitorPage from './MonitorPage'
+import MonitorPage, { classifyKeystroke } from './MonitorPage'
 import { keystrokeLiveEmptyText, keystrokeLiveTitle } from '../../lib/keystrokeModes'
 
 const mocks = vi.hoisted(() => ({
@@ -735,5 +735,15 @@ describe('[UC-LGPD-009] MonitorPage · coluna do teclado conforme a aplicação'
     expect(keystrokeLiveTitle('nada', false, 'Elisa')).toBe('Teclado — Elisa')
     expect(keystrokeLiveEmptyText('nada')).toBe('Registro de teclado desligado nesta prova.')
     expect(keystrokeLiveTitle('eventos', true, 'Elisa')).toBe('Digitação ao vivo — Elisa')
+  })
+})
+
+// Rodada de ajuste do A5: colar pelo menu da resposta escrita chega como evento 'paste'
+// (kind 'clipboard'); no Monitor ele é "Colou conteúdo", e não "Cópia bloqueada".
+describe('[UC-LGPD-009] Monitor: colar pelo menu da resposta escrita', () => {
+  it('evento paste vira "Colou conteúdo" e conta como colagem; copiar e recortar continuam bloqueados', () => {
+    expect(classifyKeystroke({ kind: 'clipboard', key: 'paste' })).toMatchObject({ reason: 'colar', label: 'Colou conteúdo' })
+    expect(classifyKeystroke({ kind: 'clipboard', key: 'copy' })).toMatchObject({ reason: 'clipboard', label: 'Cópia bloqueada' })
+    expect(classifyKeystroke({ kind: 'clipboard', key: 'cut' })).toMatchObject({ reason: 'clipboard', label: 'Recorte bloqueado' })
   })
 })

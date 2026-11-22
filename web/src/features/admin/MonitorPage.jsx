@@ -74,7 +74,7 @@ function applicationTime(application) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 function keystrokeText(ev) {
-  if (ev.kind === 'clipboard') return ev.key === 'cut' ? '✂ recortar' : '⧉ copiar'
+  if (ev.kind === 'clipboard') return ev.key === 'cut' ? '✂ recortar' : ev.key === 'paste' ? '📋 colar' : '⧉ copiar'
   if (ev.kind === 'contextmenu') return '☰ menu (botão direito)'
   if (ev.mods) return `${ev.mods}+${(ev.key || '').toUpperCase()}`
   if (ev.key === ' ') return '␣ espaço'
@@ -119,8 +119,10 @@ const SHORTCUT_INFO = {
 const ALERT_LOG_TYPES = new Set(Object.keys(LOG_INFO))
 
 // Classifica um keystroke → { reason, label, icon, sev }. Char/key não são comandos.
-function classifyKeystroke(ev) {
+export function classifyKeystroke(ev) {
   if (ev.kind === 'clipboard') {
+    // Colar pelo menu da resposta escrita (fase 3, ajuste do A5): não é bloqueado.
+    if (ev.key === 'paste') return { reason: 'colar', ...SHORTCUT_INFO.colar }
     const cut = ev.key === 'cut'
     return { reason: 'clipboard', label: cut ? 'Recorte bloqueado' : 'Cópia bloqueada', icon: cut ? '✂' : '⧉', sev: 'high' }
   }

@@ -56,7 +56,7 @@ function typedQuestions(imageUrl) {
             alternatives: [{ text: 'Estrela' }, { text: 'Anel' }, { text: 'Barramento' }],
             correctAnswer: 'A',
         },
-        { type: 'multiple_answer', points: 2, text: 'Quais são protocolos de transporte?', alternatives: [{ text: 'TCP' }, { text: 'HTTP' }, { text: 'UDP' }], correctAnswers: ['A', 'C'] },
+        { type: 'multiple_answer', points: 2, text: 'Quais são protocolos de transporte? (2*3*4 não é protocolo)', alternatives: [{ text: 'TCP' }, { text: '<p>' }, { text: 'UDP' }], correctAnswers: ['A', 'C'] },
         { type: 'true_false', points: 1, text: 'O IPv4 tem **32 bits**.', correctAnswer: 'A' },
         { type: 'numeric', points: 1, text: 'Qual a latência média?', numeric: { value: 3.5, tolerance: 0.25, unit: 'ms' } },
         { type: 'short_answer', points: 1, text: 'Qual o nome do endereço 255.255.255.0?', acceptedAnswers: ['Máscara de sub-rede'] },
@@ -182,6 +182,10 @@ test('[UC-PROVA-004] [UC-LAYOUT-001] prova com os seis tipos, imagem, tabela e c
         await zoomed.getByRole('button', { name: 'Fechar' }).tap();
         await expect(zoomed).toHaveCount(0);
 
+        // HTML e asteriscos escritos no texto aparecem como foram escritos (ajuste do A5).
+        await expect(page.getByText('Quais são protocolos de transporte? (2*3*4 não é protocolo)', { exact: true })).toBeVisible();
+        await expect(page.getByRole('checkbox', { name: '<p>' })).toBeVisible();
+
         // Um campo para cada tipo.
         await page.getByRole('button', { name: /Estrela/ }).tap();
         await page.getByRole('checkbox', { name: /TCP/ }).check();
@@ -204,6 +208,17 @@ test('[UC-PROVA-004] [UC-LAYOUT-001] prova com os seis tipos, imagem, tabela e c
         await expect(dialog).toContainText('A questão 6 está em branco.');
         await dialog.getByRole('button', { name: 'Cancelar', exact: true }).click();
         await expect(page.getByRole('dialog', { name: 'Enviar a prova?' })).toHaveCount(0);
+
+        // Toque longo (menu) na resposta escrita passa; no texto da questão continua bloqueado.
+        const menuPrevented = await page.evaluate(() => {
+            const fire = (el) => {
+                const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+                el.dispatchEvent(event);
+                return event.defaultPrevented;
+            };
+            return { essay: fire(document.querySelector('[data-exam-answer] textarea')), text: fire(document.querySelector('.question-md')) };
+        });
+        expect(menuPrevented).toEqual({ essay: false, text: true });
 
         await textAnswers.nth(1).fill('O traceroute mostra cada salto até o destino.');
         await expect(page.getByText('45 de 10.000')).toBeVisible();

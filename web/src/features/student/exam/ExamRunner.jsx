@@ -31,7 +31,7 @@ import {
 } from '../../../lib/examDrafts'
 import { fmtGrade } from '../../../lib/grades'
 import { useOnReconnect } from '../../../hooks/useServerConnection'
-import { isAltGrTyping, isAnswerEditingShortcut, keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
+import { isAltGrTyping, isAnswerEditingShortcut, isAnswerFieldContextMenu, isAnswerTextField, keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
@@ -242,6 +242,8 @@ export default function ExamRunner() {
   const submittedRef = useRef(false)
   const keyBufferRef = useRef([])
   const keySeqRef = useRef(0)
+  // Hora do último Ctrl+V registrado (o evento paste que vem logo depois não conta de novo).
+  const lastPasteShortcutAtRef = useRef(0)
   const flushInFlightRef = useRef(0) // envios da digitação em andamento
   const flushPromiseRef = useRef(null) // promessa do envio da digitação em andamento
   const flushQueuedRef = useRef(false) // pedido de envio durante um em andamento ou no recuo
@@ -698,6 +700,7 @@ export default function ExamRunner() {
         blocked: !!(cls && cls.block),
         suspicious: !!cls,
       })
+      if (recorded && cls && cls.reason === 'colar') lastPasteShortcutAtRef.current = Date.now()
       if (recorded && keyBufferRef.current.length >= KEYSTROKE_FLUSH_SIZE) flushKeystrokes()
     }
     const onCopy = (e) => {
@@ -706,19 +709,31 @@ export default function ExamRunner() {
     }
     const onCut = onCopy
     const onContext = (e) => {
+      // Toque longo ou botão direito dentro da resposta escrita: posicionar o cursor e
+      // selecionar a própria resposta (Android). Passa, sem registro (keystrokePolicy.js).
+      if (isAnswerFieldContextMenu(e)) return
       e.preventDefault()
       if (record(e, { key: 'contextmenu', code: 'contextmenu', mods: '', kind: 'contextmenu', question: null, blocked: true, suspicious: true })) flushKeystrokes()
+    }
+    // Colar numa resposta escrita pelo menu do campo (que agora abre) entra no registro
+    // como o Ctrl+V: não é bloqueado. O Ctrl+V já registrado logo antes não conta duas vezes.
+    const onPaste = (e) => {
+      if (!isAnswerTextField(e.target)) return
+      if (Date.now() - lastPasteShortcutAtRef.current < 1000) return
+      if (record(e, { key: 'paste', code: 'paste', mods: '', kind: 'clipboard', question: null, blocked: false, suspicious: true })) flushKeystrokes()
     }
     window.addEventListener('keydown', onKeyDown, true)
     document.addEventListener('copy', onCopy, true)
     document.addEventListener('cut', onCut, true)
     document.addEventListener('contextmenu', onContext, true)
+    document.addEventListener('paste', onPaste, true)
     const flushTimer = setInterval(() => flushKeystrokes(), KEYSTROKE_FLUSH_MS)
     return () => {
       window.removeEventListener('keydown', onKeyDown, true)
       document.removeEventListener('copy', onCopy, true)
       document.removeEventListener('cut', onCut, true)
       document.removeEventListener('contextmenu', onContext, true)
+      document.removeEventListener('paste', onPaste, true)
       clearInterval(flushTimer)
       flushKeystrokes()
     }
@@ -1432,20 +1447,30 @@ export default function ExamRunner() {
     </Center>
   )
 
+  // Tela final. Com dissertativa esperando o professor (P3-S2), a frase "As dissertativas
+  // serão corrigidas." toma o lugar de "Sua nota será exibida depois da publicação": as
+  // duas juntas diziam a mesma coisa duas vezes. O que aconteceu com a entrega (recolhida,
+  // tempo esgotado) continua acima dela.
+  const doneAwaitingCorrection = result?.awaitingCorrection === true
+  const doneShowsGrade = result?.gradePublished === true && !doneAwaitingCorrection
+  const doneGradeLater = doneAwaitingCorrection ? '' : 'Sua nota será exibida depois da publicação pelo professor.'
+  const doneNotice = (result?.collectedByInstructor
+    ? ['O professor recolheu a sua prova e entregou as respostas que já estavam salvas.', doneGradeLater]
+    : result?.submittedByInstructor
+      ? ['O professor encerrou a aplicação e salvou o que você havia respondido.']
+      : result?.finalizedByServer
+        ? ['O tempo acabou e as respostas salvas no servidor foram entregues automaticamente.', doneGradeLater]
+        : [result?.auto ? 'O tempo acabou e suas respostas foram enviadas automaticamente.' : '', doneGradeLater]
+  ).filter(Boolean).join(' ')
+
   if (phase === 'done') return withInstructorMessage(
     <Center>
       <div className="w-16 h-16 grid place-items-center rounded-full bg-success-soft text-success mb-3"><CheckCircle2 size={32} /></div>
       <h2 className="text-xl font-bold text-text">{result?.collectedByInstructor ? 'Prova recolhida pelo professor' : result?.submittedByInstructor ? 'Respostas salvas e entregues' : result?.finalizedByServer ? 'Tempo esgotado: prova entregue' : 'Prova enviada!'}</h2>
-      {result?.gradePublished === true && result?.awaitingCorrection !== true
+      {doneShowsGrade
         ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{fmtGrade(result.score)}</p>
-        : <p className="text-sm text-muted mt-3 max-w-sm text-center">{result?.collectedByInstructor
-          ? 'O professor recolheu a sua prova e entregou as respostas que já estavam salvas. Sua nota será exibida depois da publicação pelo professor.'
-          : result?.submittedByInstructor
-          ? 'O professor encerrou a aplicação e salvou o que você havia respondido.'
-          : result?.finalizedByServer
-            ? 'O tempo acabou e as respostas salvas no servidor foram entregues automaticamente. Sua nota será exibida depois da publicação pelo professor.'
-            : `${result?.auto ? 'O tempo acabou e suas respostas foram enviadas automaticamente. ' : ''}Sua nota será exibida depois da publicação pelo professor.`}</p>}
-      {result?.awaitingCorrection === true && result?.gradePublished !== true && (
+        : doneNotice && <p className="text-sm text-muted mt-3 max-w-sm text-center">{doneNotice}</p>}
+      {doneAwaitingCorrection && (
         <p className="text-sm font-medium text-text mt-2 max-w-sm text-center" data-testid="awaiting-correction">Sua prova foi entregue. As dissertativas serão corrigidas.</p>
       )}
       {optionalNumber(result?.answeredCount) !== null && (

@@ -1,4 +1,4 @@
-import { marked } from 'marked'
+import { Marked, marked } from 'marked'
 import DOMPurify from 'dompurify'
 
 const SAFE_URL_RE = /^(https?:|mailto:|tel:|#|\/)/i
@@ -82,11 +82,50 @@ function cleanGeneratedHtml(html) {
   })
 }
 
-// breaks: true faz cada quebra de linha do texto virar quebra na tela (questão de prova,
-// P3-S2: o enunciado digitado em várias linhas não se junta numa só). As apostilas
-// seguem o Markdown padrão (linha em branco separa parágrafos).
-export function markdownToHtml(markdownText, { breaks = false } = {}) {
-  const html = marked.parse(markdownText || '', { gfm: true, breaks: breaks === true })
+function escapeHtmlText(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+const WORD_CHAR_RE = /[\p{L}\p{N}]/u
+
+// Conversor só das questões de prova (fase 3, P3-S2, contrato C4 do P3). Difere do das
+// apostilas em três pontos, para o texto escrito antes do Markdown (e as questões de TI)
+// aparecer como foi escrito:
+// - quebra de linha mantida (breaks): o enunciado digitado em várias linhas não se junta;
+// - HTML cru é texto: '<p>', '<br>', 'Lista<String>' e '#include <stdio.h>' aparecem
+//   literais. O bloco HTML não existe (a linha vira parágrafo comum) e a tag no meio da
+//   linha vira texto escapado; a formatação é só a do Markdown;
+// - asterisco entre letras ou números não é ênfase: '2*3*4' e 'x**2' ficam com os
+//   sinais (o Markdown padrão faria '2<em>3</em>4'). '*palavra*' e '**negrito**' com
+//   espaço ou pontuação em volta continuam valendo.
+// Código entre crases e blocos de código não passam por essas regras (são do Markdown).
+const questionMarked = new Marked({ gfm: true, breaks: true }, {
+  tokenizer: {
+    // undefined (e não false) desliga o bloco HTML: false cairia no tokenizador padrão.
+    html() { return undefined },
+    tag(src) {
+      const cap = this.rules.inline.tag.exec(src)
+      if (!cap) return undefined
+      return { type: 'text', raw: cap[0], text: escapeHtmlText(cap[0]) }
+    },
+    emStrong(src, maskedSrc, prevChar = '') {
+      const run = /^\*+/.exec(src)
+      if (!run || !WORD_CHAR_RE.test(prevChar || '') || !WORD_CHAR_RE.test(src.charAt(run[0].length))) return false
+      return { type: 'text', raw: run[0], text: run[0] }
+    },
+  },
+  renderer: {
+    // Defesa a mais: nenhum token HTML sai cru deste conversor.
+    html({ text }) { return escapeHtmlText(text) },
+  },
+})
+
+// question: true usa o conversor das questões de prova (acima). Sem a opção, o Markdown
+// padrão das apostilas, da ajuda e dos termos (linha em branco separa parágrafos).
+export function markdownToHtml(markdownText, { question = false } = {}) {
+  const html = question === true
+    ? questionMarked.parse(markdownText || '')
+    : marked.parse(markdownText || '', { gfm: true, breaks: false })
   return cleanGeneratedHtml(html)
 }
 

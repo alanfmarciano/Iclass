@@ -4,9 +4,12 @@ import { Modal } from '../../components/ui/Modal'
 
 // Texto de questão de prova no navegador (fase 3, P3-S2: UXA-12, AVA-06; contrato C4 do
 // desenho P3): enunciado, alternativa e explicação são Markdown e só aparecem por aqui.
-// - A conversão e a limpeza são as do leitor das apostilas (markdownToHtml: marked +
-//   DOMPurify, sem script, iframe, svg nem atributo on*), com quebra de linha mantida: o
-//   enunciado digitado em várias linhas não vira uma linha só, como acontecia no <p>.
+// - A limpeza é a do leitor das apostilas (markdownToHtml: marked + DOMPurify, sem
+//   script, iframe, svg nem atributo on*), com o conversor das questões (question: true):
+//   quebra de linha mantida (o enunciado digitado em várias linhas não vira uma linha só,
+//   como acontecia no <p>), HTML cru mostrado como texto ('<p>', 'Lista<String>') e
+//   asterisco entre números ('2*3*4') sem virar ênfase. O texto antigo aparece como foi
+//   escrito; só o Markdown formata.
 // - Imagem de /uploads ganha ?access=<sessão> (o servidor só entrega a imagem da questão
 //   ao aluno durante a tentativa aberta ou com o gabarito liberado, backend/utils/
 //   examMedia.js) e cabe na largura (max-width 100%). Com zoom, tocar na imagem abre a
@@ -18,7 +21,7 @@ import { Modal } from '../../components/ui/Modal'
 // O servidor nunca monta HTML de questão; esta é a única porta de entrada no navegador.
 
 export function questionMarkdownHtml(text, { links = true, zoom = false } = {}) {
-  const html = markdownToHtml(String(text ?? ''), { breaks: true })
+  const html = markdownToHtml(String(text ?? ''), { question: true })
   if (typeof DOMParser === 'undefined') return html
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
   const root = doc.body.firstElementChild

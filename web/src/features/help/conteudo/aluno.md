@@ -66,7 +66,8 @@ Cada questão mostra quanto vale. Se você apagar uma resposta, a questão volta
 - Toque na imagem para ver maior. Toque em **Fechar** para voltar à prova.
 - Tabela larga e código comprido rolam para o lado dentro do próprio quadro: arraste o quadro, e não a página.
 - Na prova, os links aparecem como texto e não abrem: sair da tela trava a prova.
-- A imagem só abre enquanto a sua prova está aberta. Depois de entregar, ela volta a aparecer na revisão, quando o professor liberar o gabarito.
+- A imagem só abre enquanto a sua prova está aberta.
+- Na resposta escrita, você pode tocar e segurar para mover o cursor ou selecionar uma palavra. Copiar continua bloqueado, e colar pode ficar registrado para o professor (veja o aviso nas instruções da prova).
 
 ### Prova com dissertativa
 

@@ -42,11 +42,30 @@ export function isAltGrTyping(e) {
 const EDITING_SHORTCUT_KEYS = new Set(['z', 'y', 'a', 'backspace', 'delete', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'home', 'end'])
 export function isAnswerEditingShortcut(e) {
   if (!e || !(e.ctrlKey || e.metaKey) || e.altKey) return false
-  const target = e.target
+  if (!isAnswerTextField(e.target)) return false
+  return EDITING_SHORTCUT_KEYS.has(String(e.key || '').toLowerCase())
+}
+
+// O alvo é um campo de resposta escrita da prova (dissertativa, resposta curta ou
+// numérica: textarea ou input de texto dentro de [data-exam-answer])? Caixa de marcar e
+// rádio das alternativas não contam.
+const ANSWER_TEXT_INPUT_TYPES = new Set(['', 'text', 'search', 'number', 'tel'])
+export function isAnswerTextField(target) {
   if (!target || typeof target.closest !== 'function') return false
   const field = target.closest('input, textarea')
   if (!field || !field.closest('[data-exam-answer]')) return false
-  return EDITING_SHORTCUT_KEYS.has(String(e.key || '').toLowerCase())
+  if (field.tagName === 'TEXTAREA') return true
+  return ANSWER_TEXT_INPUT_TYPES.has(String(field.getAttribute('type') || '').toLowerCase())
+}
+
+// Menu do botão direito (ou do toque longo, no celular) dentro de uma resposta escrita
+// (fase 3, ajuste do A5): é como o aluno posiciona o cursor e seleciona uma palavra da
+// própria resposta no Android. Não é bloqueado nem registrado como suspeito; copiar e
+// recortar desse menu continuam bloqueados (evento copy/cut), e colar entra no registro
+// (evento paste, kind 'clipboard'). Fora das respostas escritas, o menu continua
+// bloqueado e registrado.
+export function isAnswerFieldContextMenu(e) {
+  return !!e && isAnswerTextField(e.target)
 }
 
 // O evento veio de um campo de texto fora das alternativas da prova (data-exam-answer)?

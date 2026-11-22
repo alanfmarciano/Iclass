@@ -6,12 +6,15 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ### Prova do aluno com os tipos novos de questão
 - Na prova, cada tipo de questão tem o seu campo: verdadeiro ou falso em dois botões grandes, "Marque todas as corretas." com caixas de marcar, número com o teclado numérico do celular (aceita vírgula) e a unidade ao lado, resposta curta numa linha e dissertativa numa área que cresce, com o contador "1.230 de 10.000". Cada questão mostra quanto vale ("2 pontos").
-- O enunciado, as alternativas e a explicação aceitam Markdown: negrito, listas, bloco de código, tabela e imagem. O texto digitado em várias linhas não vira mais uma linha só. No celular, a tabela e o código rolam dentro do próprio quadro, e a página não rola para o lado. Tocar na imagem abre a imagem grande.
-- A imagem da questão só aparece para o aluno com a prova dele aberta e, depois, na revisão com o gabarito liberado. Antes do início, depois da entrega e para outra turma, ela não abre, mesmo com o endereço do arquivo.
+- Na prova, o enunciado e as alternativas aceitam Markdown: negrito, listas, bloco de código, tabela e imagem. O texto digitado em várias linhas não vira mais uma linha só. No celular, a tabela e o código rolam dentro do próprio quadro, e a página não rola para o lado. Tocar na imagem abre a imagem grande.
+- O que não é Markdown aparece como foi escrito: uma questão sobre HTML ou Java com "<p>", "<br>" ou "Lista<String>" mostra esses sinais, e uma conta como "2*3*4" não perde os asteriscos.
+- A imagem da questão só aparece para o aluno enquanto a prova dele está aberta. Antes do início, com a aplicação pausada, depois da entrega e para outra turma, ela não abre. (A revisão da prova com imagem e explicação chega numa próxima versão.)
 - Na prova, os links do enunciado aparecem como texto: tocar num link levaria o aluno para fora da prova.
 - Ao enviar, a janela diz quais questões estão em branco ("As questões 2 e 5 estão em branco."). Apagar a resposta faz a questão voltar a contar como em branco.
 - Com questão dissertativa, a tela final diz "Sua prova foi entregue. As dissertativas serão corrigidas." e não mostra uma nota parcial.
 - Desfazer, selecionar tudo e apagar com o teclado (Ctrl+Z, Ctrl+A) dentro das respostas escritas não entram mais no registro de atalhos suspeitos.
+- No celular, tocar e segurar dentro da resposta escrita (para mover o cursor ou selecionar uma palavra) funciona e não aparece mais no Monitor como "menu do botão direito". Copiar continua bloqueado, e colar na resposta, pelo teclado ou pelo menu, aparece no Monitor como "Colou conteúdo".
+- Com dissertativa, a tela final mostra uma frase só ("Sua prova foi entregue. As dissertativas serão corrigidas."), sem repetir que a nota sai depois.
 
 ### Segunda chamada e exceção por aluno
 - Em Provas, o cartão "Para quem" escolhe se a aplicação é para a turma inteira, para a segunda chamada ou só para alguns alunos ("Escolher alunos"). Na segunda chamada, a lista já vem marcada com quem ainda não fez a prova regular, e quem já fez aparece com "Já fez". Numa nova segunda chamada, quem entregou a anterior aparece com "Fez a segunda chamada".
