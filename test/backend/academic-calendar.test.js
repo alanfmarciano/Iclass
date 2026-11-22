@@ -623,6 +623,19 @@ test('[UC-PRESENCA-005] .ics do painel e do aluno: eventos e dias não letivos d
     assert.equal((await prof('get', '/api/admin/calendar/ics?courseId=ADM&studentClass=1ADM')).status, 403);
     assert.equal((await admin('get', '/api/admin/calendar/ics')).status, 400);
 
+    // Sem turma, a agenda do curso traz só o que está no escopo da conta: o professor da
+    // 1DES não recebe o evento da 2DES do mesmo curso (o calendário do painel já filtrava);
+    // o administrador, sim.
+    const courseOnly = await prof('get', '/api/admin/calendar/ics?courseId=TI');
+    assert.equal(courseOnly.status, 200);
+    assert.match(courseOnly.text, /SUMMARY:Prova de Redes\r\n/);
+    assert.ok(!/Reunião da 2DES/.test(courseOnly.text), 'o evento da outra turma fica fora da agenda do professor');
+    const panelCourse = await prof('get', '/api/admin/announcements/calendar?courseId=TI');
+    assert.ok(!panelCourse.body.some(item => item.id === 'cal_2'), 'a mesma regra do calendário do painel');
+    const adminCourse = await admin('get', '/api/admin/calendar/ics?courseId=TI');
+    assert.equal(adminCourse.status, 200);
+    assert.match(adminCourse.text, /SUMMARY:Reunião da 2DES\r\n/);
+
     const student = await request(app).get('/api/student/calendar.ics?courseId=TI&studentClass=1DES').set('x-session-token', anaToken);
     assert.equal(student.status, 200);
     assert.match(student.text, /UID:nao-letivo:nl_rep@iclass\r\n/);

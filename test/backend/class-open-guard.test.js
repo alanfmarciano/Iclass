@@ -65,6 +65,8 @@ const ROTAS_QUE_GRAVAM = [
     ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/create'],
     ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/update'],
     ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/delete'],
+    // Feriados nacionais: dia de instituição, passa pelo portão sem turma (dayClass null).
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/national-holidays'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo.
@@ -88,8 +90,6 @@ const FORA_DO_PORTAO = [
     ['testmode.js', 'POST', '/api/test/seed', 'dados de demonstração do TEST_MODE; não existe no computador da escola'],
     ['adminArchive.js', 'POST', '/api/admin/courses/:id/purge', 'arquivar o curso inteiro leva as notas para o pacote do curso; não é mudança de nota'],
     ['adminArchive.js', 'POST', '/api/admin/archived-courses/restore', 'restaurar o curso arquivado devolve as notas como estavam'],
-    // Dias não letivos (B3 / P2-S5): os feriados nacionais valem para toda a instituição.
-    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/national-holidays', 'os feriados nacionais valem para toda a instituição e só marcam a presença automática do login nas datas deles (nada é apagado); recusar por causa de uma turma encerrada deixaria a escola sem os feriados, e a turma encerrada fica de fora da marca (syncNonSchoolDayMarks olha isClassClosed)'],
 ];
 
 // Sinais de gravação de nota ou presença feita ali mesmo (no corpo de uma rota ou de uma

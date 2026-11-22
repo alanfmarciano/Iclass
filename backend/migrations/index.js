@@ -56,6 +56,7 @@ const MIGRATIONS = Object.freeze([
 ]);
 
 const BOOT_NORMALIZATIONS = Object.freeze([
+    // (Na junção com a trilha C, ensureStudentIds entra aqui, antes desta: é a primeira.)
     // Presença do login em dia não letivo fica fora da frequência (D13 do P2): a marca
     // naoLetivoId confere com os dias não letivos cadastrados agora, em todo boot e
     // depois de toda restauração. A chamada e a marcação individual nunca são marcadas.

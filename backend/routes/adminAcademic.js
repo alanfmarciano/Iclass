@@ -29,9 +29,10 @@
 // ou tira a marca naoLetivoId desses registros (academicCalendar.syncNonSchoolDayMarks,
 // só nas datas do dia), e a frequência passa a ignorá-los ou a contá-los de novo. Nenhum
 // registro é apagado; a chamada e a marcação individual nunca são marcadas; turma
-// encerrada não muda. O dia de uma turma passa pelo portão da turma encerrada
-// (assertClassOpen em create, update e delete; sem efeito até o B10); o de curso, escola
-// ou instituição e os feriados nacionais não (valem para muitas turmas, e a encerrada só
+// encerrada não muda. As quatro rotas que gravam chamam o portão da turma encerrada
+// (assertClassOpen, sem efeito até o B10): o dia de uma turma passa com a turma dele; o de
+// curso, escola ou instituição e os feriados nacionais passam sem turma (dayClass dá null:
+// valem para muitas turmas, um feriado não é recusado por uma delas, e a encerrada só
 // fica de fora da marca). A gravação é parcial: nonSchoolDays, auditLogs e, em attendance
 // (coleção que só cresce), as linhas que mudaram (changed).
 const express = require('express');
@@ -42,6 +43,7 @@ const {
     adminCanAccessClass,
     adminCanAccessCourse,
     adminCanAccessSchool,
+    adminCanAccessStudent,
     adminAllowedCourseIds,
     adminAllowedSchoolIds,
     findClassByNameAndCourse,
@@ -131,6 +133,23 @@ function canSeeDay(account, day) {
     if (day.escopo === 'escola') return adminAllowedSchoolIds(account).has(day.schoolId);
     if (day.escopo === 'curso') return adminAllowedCourseIds(account).has(day.courseId);
     if (day.escopo === 'turma') return adminCanAccessClass(account, day.studentClass, day.courseId);
+    return false;
+}
+
+// O evento do calendário (announcements com kind 'calendar') está no escopo da conta? A
+// mesma regra do calendário do painel (_annInScope em routes/admin.js): o evento de turma
+// só para quem tem a turma; o de curso para quem tem o curso.
+function calendarEventInScope(account, item) {
+    if (!item) return false;
+    if (accountScopeKind(account) === 'tudo') return true;
+    if (item.target === 'todos') return true;
+    if (item.target === 'turma') return adminCanAccessClass(account, item.targetValue, item.courseId);
+    if (item.target === 'curso') return adminAllowedCourseIds(account).has(String(item.courseId || item.targetValue));
+    if (item.target === 'aluno') {
+        const email = String(item.targetValue || '').toLowerCase();
+        const student = (db.memory.students || []).find(entry => entry && String(entry.email || '').toLowerCase() === email);
+        return !!student && adminCanAccessStudent(account, student);
+    }
     return false;
 }
 
@@ -439,6 +458,10 @@ function createAdminAcademicRouter() {
             if (!canManageInstitution(account)) {
                 return res.status(403).json({ error: 'Os feriados nacionais valem para toda a instituição: só o administrador ou quem gerencia as turmas os adiciona.' });
             }
+            // Portão da turma encerrada (X4), como no dia de instituição cadastrado à mão: o
+            // feriado nacional não tem turma (dayClass dá null), nunca é recusado, e a turma
+            // encerrada só fica de fora da marca.
+            if (!academicCalendar.assertClassOpen(dayClass({ escopo: 'instituicao' }), { res })) return;
             const ano = req.body.ano;
             const holidays = academicCalendar.nationalHolidays(ano);
             const chosen = Array.isArray(req.body.incluir) ? new Set(req.body.incluir.map(text)) : null;
@@ -478,7 +501,9 @@ function createAdminAcademicRouter() {
     });
 
     // Agenda da turma em .ics: os eventos do calendário do curso e da turma e os dias não
-    // letivos que valem para ela (a guarda já conferiu o curso e a turma no escopo).
+    // letivos que valem para ela. A rota confere o curso (ou a turma) pedido e, evento a
+    // evento, o escopo da conta (calendarEventInScope): sem turma, o professor recebe os
+    // eventos do curso e os das turmas dele, nunca os das outras turmas do mesmo curso.
     router.get('/api/admin/calendar/ics', (req, res) => {
         validateAdmin(req, res, (config, account) => {
             const courseId = text(req.query.courseId);
@@ -491,6 +516,7 @@ function createAdminAcademicRouter() {
             }
             const eventos = (db.memory.announcements || [])
                 .filter(item => item && item.kind === 'calendar' && item.courseId === courseId
+                    && calendarEventInScope(account, item)
                     && (item.target === 'curso' || !studentClass || item.targetValue === studentClass))
                 .map(item => ({ ...item, description: item.message || '' }))
                 // Mesmo UID da agenda do aluno (nao-letivo:<id>): importar as duas não duplica.
@@ -514,4 +540,5 @@ module.exports = {
     createAdminAcademicRouter,
     canManageDay,
     canSeeDay,
+    calendarEventInScope,
 };

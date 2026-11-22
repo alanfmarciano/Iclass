@@ -201,8 +201,9 @@ test('[UC-ESQUEMA-001] migrações publicadas são imutáveis: o código de cada
     // A primeira é a base 281029f e não muda nada.
     assert.equal(MIGRATIONS[0].id, '2026-11-p6-base');
     assert.equal(MIGRATIONS[0].run({}, {}), false);
-    // BOOT_NORMALIZATIONS: a marca de dia não letivo na presença do login (B3 / P2-S5);
-    // o C1 acrescenta ensureStudentIds.
+    // BOOT_NORMALIZATIONS: a marca de dia não letivo na presença do login (B3 / P2-S5).
+    // Na junção com a trilha C, ensureStudentIds (C1) entra ANTES desta (o contrato diz
+    // que é a primeira) e esta lista passa a ter as duas, nessa ordem.
     assert.deepEqual(BOOT_NORMALIZATIONS.map(row => row.id), ['2026-11-p2-presenca-dia-nao-letivo']);
     assert.ok(Object.isFrozen(MIGRATIONS) && Object.isFrozen(BOOT_NORMALIZATIONS));
     // O hash não depende do fim de linha (checkout no Windows com CRLF).
