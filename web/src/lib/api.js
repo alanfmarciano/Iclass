@@ -97,6 +97,7 @@ const LONG_ADMIN_OPERATIONS = [
   /^\/api\/admin\/reset$/,
   /^\/api\/admin\/courses\/[^/]+\/(clone|purge)$/,
   /^\/api\/admin\/archived-courses\//,
+  /^\/api\/admin\/assignments\/[^/]+\/export$/, // ZIP com as entregas de uma tarefa
 ]
 const INSTRUCTOR_LOGIN_PATHS = ['/api/session/admin-login', '/api/setup/admin-session']
 

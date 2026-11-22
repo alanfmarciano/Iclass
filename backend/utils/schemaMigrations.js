@@ -62,6 +62,9 @@ function validateRegistry({ migrations, normalizations = [] } = {}) {
         if (typeof row.nome !== 'string' || !row.nome.trim()) throw registryError(`a migração ${row.id} não tem nome.`);
         if (!MIGRATION_TYPES.has(row.tipo)) throw registryError(`a migração ${row.id} tem tipo "${row.tipo}" (use "memoria" ou "sql").`);
         if (typeof row.run !== 'function') throw registryError(`a migração ${row.id} não tem run.`);
+        if (row.dependencias !== undefined && !(Array.isArray(row.dependencias) && row.dependencias.every(isDependency))) {
+            throw registryError(`a migração ${row.id} tem dependencias que não são uma lista de funções ou de { nome: valor }.`);
+        }
     });
     normalizations.forEach((row, index) => {
         if (!isPlainObject(row)) throw registryError(`a normalização ${index + 1} não é um objeto.`);
@@ -97,11 +100,29 @@ function useRegistryForTests(value) {
         : value);
 }
 
-// Hash do código de uma migração (teste de imutabilidade das publicadas). Fim de linha
-// normalizado: um checkout no Windows com CRLF não muda o hash.
+// dependencias de uma linha: as funções (e as constantes, em { nome: valor }) de outros
+// módulos que o run chama. Entram no hash, porque mudar uma delas muda o efeito da
+// migração publicada tanto quanto mudar o run (ex.: a '2026-11-p4-ids-alunos' só chama
+// studentIdentity.ensureStudentIds).
+function isDependency(value) {
+    return typeof value === 'function' || isPlainObject(value);
+}
+
+function dependencySource(value) {
+    if (typeof value === 'function') return String(value);
+    return Object.keys(value).sort().map(key => `${key}=${String(value[key])}`).join('\n');
+}
+
+// Hash do código de uma migração (teste de imutabilidade das publicadas): id, tipo, o run
+// e, se houver, o código das dependencias, na ordem. Linha sem dependencias tem o mesmo
+// hash de antes delas existirem. Fim de linha normalizado: um checkout no Windows com CRLF
+// não muda o hash.
 function migrationHash(row) {
     const code = String(row.run).replace(/\r\n?/g, '\n');
-    return crypto.createHash('sha256').update(`${row.id}\n${row.tipo}\n${code}`).digest('hex');
+    const deps = Array.isArray(row.dependencias) && row.dependencias.length
+        ? `\n${row.dependencias.map(dependencySource).join('\n').replace(/\r\n?/g, '\n')}`
+        : '';
+    return crypto.createHash('sha256').update(`${row.id}\n${row.tipo}\n${code}${deps}`).digest('hex');
 }
 
 // --- estado (schemaMeta) ---------------------------------------------------------------

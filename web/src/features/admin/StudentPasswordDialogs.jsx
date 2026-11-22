@@ -7,6 +7,7 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { passwordHint } from '../../lib/passwordPolicy'
 import { copyText } from '../../lib/clipboard'
+import { displayEmail, studentLoginLabel } from '../../lib/studentProfile'
 
 // Senha do aluno pelo professor (H5a; SEG-06, UXA-13): o "Redefinir senha" com senha
 // temporária gerada pelo servidor (o padrão) ou definida pelo professor, e o aviso que
@@ -44,7 +45,7 @@ export function TemporaryPasswordNotice({ open, email, password, mustChangePassw
     else toast.error('Não foi possível copiar. Anote a senha.')
   }
   return (
-    <Modal open={open} onClose={onClose} title="Senha temporária" description={email}
+    <Modal open={open} onClose={onClose} title="Senha temporária" description={displayEmail(email || '')}
       footer={<Button onClick={onClose}>Pronto</Button>}>
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -57,8 +58,10 @@ export function TemporaryPasswordNotice({ open, email, password, mustChangePassw
   )
 }
 
-// Redefinir a senha de um aluno. email: a conta (null fecha). onDone(): depois do 200.
-export function StudentPasswordResetDialog({ email, onClose, onDone }) {
+// Redefinir a senha de um aluno. email: a conta (null fecha). matricula: a do cadastro;
+// no aluno sem e-mail o aviso da senha temporária mostra o login dele ('Matrícula X'),
+// como na criação (C1 / P4-S3). onDone(): depois do 200.
+export function StudentPasswordResetDialog({ email, matricula = '', onClose, onDone }) {
   const toast = useToast()
   const [mode, setMode] = useState('generated')
   const [typed, setTyped] = useState('')
@@ -78,7 +81,7 @@ export function StudentPasswordResetDialog({ email, onClose, onDone }) {
       const response = await api.post('/api/admin/reset-password', mode === 'typed' ? { email, newPassword: typed } : { email })
       if (onDone) onDone()
       if (response?.temporaryPassword) {
-        setTemporary({ email, password: response.temporaryPassword, mustChangePassword: response.mustChangePassword !== false, deferred: response.passwordChangeDeferred === true })
+        setTemporary({ email: studentLoginLabel({ email, matricula }), password: response.temporaryPassword, mustChangePassword: response.mustChangePassword !== false, deferred: response.passwordChangeDeferred === true })
       } else {
         if (toast) toast.success(response?.message || 'Senha redefinida.')
         close()
@@ -92,7 +95,7 @@ export function StudentPasswordResetDialog({ email, onClose, onDone }) {
 
   if (temporary) return <TemporaryPasswordNotice open email={temporary.email} password={temporary.password} mustChangePassword={temporary.mustChangePassword} deferred={temporary.deferred} onClose={close} />
   return (
-    <Modal open={!!email} onClose={close} title="Redefinir senha" description={email}
+    <Modal open={!!email} onClose={close} title="Redefinir senha" description={displayEmail(email || '')}
       footer={<><Button variant="ghost" onClick={close}>Cancelar</Button><Button icon={KeyRound} loading={busy} onClick={submit}>Redefinir</Button></>}>
       <fieldset className="space-y-3">
         <legend className="sr-only">Como definir a senha nova</legend>

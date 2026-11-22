@@ -862,3 +862,61 @@ describe('[UC-PAPEIS-001] MonitorPage · Ver questão sem o gabarito para o prof
     expect(dialog.getByText('O gabarito não aparece para o seu papel.')).toBeInTheDocument()
   })
 })
+
+describe('[UC-IDENT-003] MonitorPage · aluno sem e-mail', () => {
+  const row = { email: 'aluno-alu_00000000000000f2@sem-email.invalid', name: 'Bruno Sem Email', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'A' }
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/message-history?')) return { messages: [] }
+      return {}
+    })
+    mocks.post.mockResolvedValue({ success: true })
+  })
+  afterEach(cleanup)
+
+  it('a linha do aluno mostra "sem e-mail", nunca o endereço interno', async () => {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('Bruno Sem Email')).toBeInTheDocument()
+    expect(screen.getAllByText('sem e-mail').length).toBeGreaterThan(0)
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+  })
+
+  it('o histórico de mensagens mostra o aluno sem e-mail pelo nome e "sem e-mail", nunca o endereço interno', async () => {
+    const messages = [
+      { id: 'm1', messageText: 'Para o Bruno', targetEmail: row.email, targetName: 'Bruno Sem Email', createdAt: '2026-11-18T10:00:00.000Z' },
+      // Aluno que não está na lista do Monitor e sem nome no histórico: só 'sem e-mail'.
+      { id: 'm2', messageText: 'Para outro', targetEmail: 'aluno-alu_00000000000000f3@sem-email.invalid', createdAt: '2026-11-18T10:01:00.000Z' },
+      { id: 'm3', messageText: 'Para a Ana', targetEmail: 'ana@teste.local', targetName: 'Ana', createdAt: '2026-11-18T10:02:00.000Z' },
+      { id: 'm4', messageText: 'Para todos', targetEmail: null, createdAt: '2026-11-18T10:03:00.000Z' },
+    ]
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/message-history?')) return { messages }
+      return {}
+    })
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('Bruno Sem Email')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /Histórico msgs/ })[0])
+    const dialog = await screen.findByRole('dialog', { name: /Histórico de mensagens/ })
+    await within(dialog).findByText('Para o Bruno')
+    expect(dialog.textContent).toContain('Aluno: Bruno Sem Email (sem e-mail)')
+    expect(dialog.textContent).toContain('Aluno: sem e-mail')
+    expect(dialog.textContent).toContain('Aluno: Ana (ana@teste.local)')
+    expect(dialog.textContent).toContain('Turma toda')
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+  })
+})

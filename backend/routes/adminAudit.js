@@ -22,6 +22,7 @@ const {
     recordAudit,
 } = require('../utils/audit.js');
 const { buildCsv, examTitle } = require('../utils/gradebook.js');
+const { findStudentById, isPlaceholderEmail, isStudentId, maskPlaceholderEmails, maskPlaceholderEmailsDeep } = require('../utils/studentIdentity.js');
 const settingsUtil = require('../utils/settings.js');
 const { normalizeSearch, matchesSearch } = require('../utils/textSearch.js');
 
@@ -316,6 +317,38 @@ function auditFacets(memory, context) {
     };
 }
 
+// Opções dos filtros sem o endereço interno do aluno sem e-mail (quem fez pode ser o
+// próprio aluno): o rótulo mostra 'sem e-mail' e o valor (que vai para o endereço da
+// tela) passa a ser o id do aluno; resolveStudentIdFilters o troca de volta.
+function maskFacetLabels(facets, memory) {
+    const out = {};
+    Object.entries(facets).forEach(([key, options]) => {
+        out[key] = Array.isArray(options)
+            ? options.map(option => {
+                if (!option || typeof option.label !== 'string') return option;
+                const masked = { ...option, label: maskPlaceholderEmails(option.label) };
+                if (isPlaceholderEmail(option.value)) {
+                    const owner = (memory.students || []).find(student => student && String(student.email || '').trim().toLowerCase() === String(option.value).trim().toLowerCase());
+                    masked.value = owner && isStudentId(owner.id) ? owner.id : maskPlaceholderEmails(option.value);
+                }
+                return masked;
+            })
+            : options;
+    });
+    return out;
+}
+
+// Filtro de quem fez ou de aluno pelo id do aluno (alu_...): vira o e-mail do cadastro.
+function resolveStudentIdFilters(parsed, memory) {
+    ['actor', 'student'].forEach(name => {
+        const value = parsed.filters[name];
+        if (!isStudentId(value)) return;
+        const student = findStudentById(memory, value);
+        if (student && student.email) parsed.filters[name] = String(student.email).trim().toLowerCase();
+    });
+    return parsed;
+}
+
 // ------------------------------------------------------------ datas na tela e no CSV
 // Formatadores pt-BR no fuso pedido; fuso que o Intl recusa cai no padrão das
 // configurações, nunca num erro.
@@ -378,7 +411,8 @@ function auditCsv(items, { timeZone }) {
             shortText(after),
             item.reason || '',
             item.ip || '',
-        ];
+        // O endereço interno do aluno sem e-mail sai como 'sem e-mail' (C1 / P4-S3).
+        ].map(cell => maskPlaceholderEmails(cell));
     });
     return buildCsv([header, ...rows]);
 }
@@ -392,12 +426,17 @@ function createAdminAuditRouter() {
             const timeZone = auditTimeZone();
             const parsed = parseAuditQuery(req.query, { timeZone });
             if (!parsed.ok) return res.status(400).json(parsed.body);
+            resolveStudentIdFilters(parsed, db.memory);
             const context = { ...readContext(db.memory), timeZone };
             const matched = filterAuditTrail(db.memory, parsed, context.names);
+            // O endereço interno do aluno sem e-mail (aluno-<id>@sem-email.invalid) sai como
+            // 'sem e-mail' em tudo o que a tela mostra (C1 / P4-S3): aluno, conta, quem fez,
+            // antes, depois e detalhes. A tela só mostra esses campos; o filtro por aluno
+            // continua pelo nome.
             const items = matched.slice(parsed.offset, parsed.offset + parsed.limit)
-                .map(entry => enrichItem(entry.item || normalizeAuditEntry(entry.raw), context, entry.raw));
+                .map(entry => maskPlaceholderEmailsDeep(enrichItem(entry.item || normalizeAuditEntry(entry.raw), context, entry.raw)));
             const body = { success: true, items, total: matched.length, offset: parsed.offset, limit: parsed.limit };
-            if (String(req.query.facets || '') === '1') body.facets = auditFacets(db.memory, context);
+            if (String(req.query.facets || '') === '1') body.facets = maskFacetLabels(auditFacets(db.memory, context), db.memory);
             res.json(body);
         });
     });
@@ -407,6 +446,7 @@ function createAdminAuditRouter() {
             const timeZone = auditTimeZone();
             const parsed = parseAuditQuery(req.query, { timeZone });
             if (!parsed.ok) return res.status(400).json(parsed.body);
+            resolveStudentIdFilters(parsed, db.memory);
             const context = { ...readContext(db.memory), timeZone };
             const matched = filterAuditTrail(db.memory, parsed, context.names);
             if (matched.length > AUDIT_EXPORT_MAX) {

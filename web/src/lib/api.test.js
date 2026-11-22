@@ -228,6 +228,10 @@ describe('[UC-ERRO-002] tempo-limite e falhas de conexão do cliente', () => {
     for (const path of paths) expect(isLongAdminOperation(path), path).toBe(true)
     expect(isLongAdminOperation('/api/admin/students')).toBe(false)
     expect(isLongAdminOperation('/api/admin/backupx')).toBe(false)
+    // ZIP das entregas de uma tarefa (fase 3, C6): só o export, não as outras rotas da tarefa.
+    expect(isLongAdminOperation('/api/admin/assignments/asg_1700000000000_abcdef/export?versoes=todas')).toBe(true)
+    expect(isLongAdminOperation('/api/admin/assignments/asg_1700000000000_abcdef')).toBe(false)
+    expect(isLongAdminOperation('/api/admin/assignments/asg_1700000000000_abcdef/grade')).toBe(false)
     let settled = 0
     for (const path of paths) api.post(path, {}).catch(() => {}).finally(() => { settled += 1 })
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000)

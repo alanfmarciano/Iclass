@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AuditoriaPage, { auditSummary } from './AuditoriaPage'
+import AuditoriaPage, { auditSummary, personText } from './AuditoriaPage'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -174,6 +174,16 @@ describe('Tela Auditoria', () => {
     expect(screen.getByText('Data inicial inválida: use o formato AAAA-MM-DD.')).toBeInTheDocument()
     expect(screen.getByLabelText('De')).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByRole('button', { name: 'Exportar CSV' })).toBeDisabled()
+  })
+
+  it('[UC-IDENT-003] aluno sem e-mail: a linha mostra "sem e-mail", nunca o endereço interno', async () => {
+    mocks.get.mockImplementation(async () => ({ success: true, items: [item('g1', { studentEmail: 'aluno-alu_00000000000000f2@sem-email.invalid', studentName: 'Gil' })], total: 1, offset: 0, limit: 100, facets: FACETS }))
+    renderPage()
+    const first = (await screen.findAllByRole('listitem'))[0]
+    expect(within(first).getByText(/aluno Gil \(sem e-mail\)/)).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+    expect(personText('aluno-alu_00000000000000f2@sem-email.invalid', '')).toBe('sem e-mail')
+    expect(personText('ana@x.local', 'Ana')).toBe('Ana (ana@x.local)')
   })
 
   it('[UC-AUDITORIA-003] resumo: valor antigo → novo, ou as configurações que mudaram', () => {

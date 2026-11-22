@@ -8,6 +8,7 @@ const runtimePaths = require('../runtimePaths.js');
 const { resolveInside, assertSafeId } = require('../utils/safePath.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { recordAudit } = require('../utils/audit.js');
+const { assignStudentId } = require('../utils/studentIdentity.js');
 
 const ARCHIVE_DIR = runtimePaths.ARCHIVE_DIR;
 
@@ -201,7 +202,10 @@ function createAdminArchiveRouter({ studentClassNames }) {
             });
             const existingEmails = new Set((db.memory.students || []).map(item => String(item.email || '').toLowerCase()));
             (bundle.students || []).forEach(item => {
-                if (!existingEmails.has(String(item.email || '').toLowerCase())) db.memory.students.push(item);
+                if (existingEmails.has(String(item.email || '').toLowerCase())) return;
+                // Id estável (C1 / P4-S3): o do arquivo, se ninguém mais o usa; senão um novo.
+                assignStudentId(db.memory, item);
+                db.memory.students.push(item);
             });
             ['progress', 'notes', 'annotations'].forEach(collection => {
                 if (bundle[collection]) {

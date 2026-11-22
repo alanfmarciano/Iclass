@@ -16,6 +16,7 @@ const DEFAULTS = Object.freeze({
     network: { adminAccess: 'rede-sem-https', studentsHttps: false },
     backup: { destino: '', guardarExterno: 14 },
     retention: { proctoringDays: 0, loginLogsDays: 0, reviewedAt: null, reviewedBy: null },
+    entregas: { maxMbPorArquivo: 20, maxMbPorEnvio: 50, discoLivreMinimoMb: 2048 },
 });
 
 // Blocos que o POST genérico de configurações (/api/admin/settings) nunca altera: cada
@@ -102,6 +103,78 @@ function retentionSettings(stored = storedSettings()) {
     };
 }
 
+// Limites globais das entregas de tarefa (settings.entregas, fase 3, P1 D17), editáveis em
+// Sistema pelo POST /api/admin/settings (system.manage):
+// - maxMbPorArquivo: teto de cada arquivo que o professor pode escolher na tarefa (padrão
+//   20; nunca acima de upload.maxSizeMb, o teto de envio do servidor);
+// - maxMbPorEnvio: soma dos arquivos de um envio (padrão 50; nunca abaixo do teto por
+//   arquivo, senão um arquivo no limite não caberia);
+// - discoLivreMinimoMb: abaixo disso de espaço livre o envio do aluno é recusado (507) e a
+//   fila do Dashboard avisa (padrão 2048).
+// Banco de antes desta versão (sem o bloco) ou valor estranho: os padrões.
+const ENTREGAS_LIMITS = Object.freeze({
+    maxMbPorArquivo: { min: 1, max: 1024 },
+    maxMbPorEnvio: { min: 1, max: 4096 },
+    discoLivreMinimoMb: { min: 0, max: 1024 * 1024 },
+});
+
+// Nome de cada limite nas mensagens de erro do POST /api/admin/settings.
+const ENTREGAS_LABELS = Object.freeze({
+    maxMbPorArquivo: 'Tamanho máximo por arquivo das entregas (MB)',
+    maxMbPorEnvio: 'Tamanho máximo por envio das entregas (MB)',
+    discoLivreMinimoMb: 'Espaço livre mínimo para receber entregas (MB)',
+});
+
+// Confere a combinação dos limites das entregas que o POST /api/admin/settings vai gravar,
+// depois do schema (tipo e faixa de cada campo, na rota). { error, field } ou null.
+// - patchEntregas: o bloco 'entregas' do pedido (já validado);
+// - before: os limites que valem agora (getSettings().entregas, o que a tela mostrou);
+// - next: o resultado de mergeSettings(pedido) (upload.maxSizeMb e entregas como ficam).
+// Só o campo que o pedido MUDA é conferido: a tela devolve o bloco inteiro que leu, e um
+// valor que só ficou acima do teto porque o upload.maxSizeMb baixou no mesmo pedido continua
+// valendo com o teto na leitura (não trava o salvar das outras configurações).
+function entregasPatchError(patchEntregas, { before, next } = {}) {
+    if (!patchEntregas || typeof patchEntregas !== 'object' || Array.isArray(patchEntregas)) return null;
+    const current = before || entregasSettings();
+    const changed = key => patchEntregas[key] !== undefined && Number(patchEntregas[key]) !== current[key];
+    const nextUpload = Math.floor(Number(next && next.upload && next.upload.maxSizeMb));
+    const ceiling = Number.isFinite(nextUpload) && nextUpload >= 1 ? nextUpload : Infinity;
+    const stored = (next && next.entregas) || entregasSettings(storedSettings(), Infinity, { forStorage: true });
+    if (changed('maxMbPorArquivo') && stored.maxMbPorArquivo > ceiling) {
+        return {
+            field: 'entregas.maxMbPorArquivo',
+            error: `O tamanho máximo por arquivo das entregas não pode passar do limite de upload do servidor (${ceiling} MB).`,
+        };
+    }
+    const perFile = Math.min(stored.maxMbPorArquivo, ceiling);
+    if ((changed('maxMbPorArquivo') || changed('maxMbPorEnvio')) && stored.maxMbPorEnvio < perFile) {
+        return {
+            field: changed('maxMbPorEnvio') ? 'entregas.maxMbPorEnvio' : 'entregas.maxMbPorArquivo',
+            error: `O tamanho máximo por envio (${stored.maxMbPorEnvio} MB) não pode ser menor que o tamanho máximo por arquivo (${perFile} MB).`,
+        };
+    }
+    return null;
+}
+
+// forStorage: os valores como ficam gravados (só os limites de cada campo); sem ele, os que
+// valem agora (teto do upload e envio nunca menor que um arquivo).
+function entregasSettings(stored = storedSettings(), uploadMaxMb, { forStorage = false } = {}) {
+    const entregas = stored.entregas && typeof stored.entregas === 'object' && !Array.isArray(stored.entregas) ? stored.entregas : {};
+    const uploadStored = stored.upload && typeof stored.upload === 'object' ? stored.upload : {};
+    const uploadCeiling = Math.floor(Number(uploadMaxMb !== undefined ? uploadMaxMb : (uploadStored.maxSizeMb ?? DEFAULTS.upload.maxSizeMb)));
+    const read = (key) => {
+        const limits = ENTREGAS_LIMITS[key];
+        const value = Math.floor(Number(entregas[key]));
+        if (entregas[key] === null || entregas[key] === '' || typeof entregas[key] === 'boolean' || !Number.isFinite(value)) return DEFAULTS.entregas[key];
+        return Math.min(limits.max, Math.max(limits.min, value));
+    };
+    if (forStorage) return { maxMbPorArquivo: read('maxMbPorArquivo'), maxMbPorEnvio: read('maxMbPorEnvio'), discoLivreMinimoMb: read('discoLivreMinimoMb') };
+    let maxMbPorArquivo = read('maxMbPorArquivo');
+    if (Number.isFinite(uploadCeiling) && uploadCeiling >= 1) maxMbPorArquivo = Math.min(maxMbPorArquivo, uploadCeiling);
+    const maxMbPorEnvio = Math.max(read('maxMbPorEnvio'), maxMbPorArquivo);
+    return { maxMbPorArquivo, maxMbPorEnvio, discoLivreMinimoMb: read('discoLivreMinimoMb') };
+}
+
 function getSettings() {
     const s = storedSettings();
     return {
@@ -116,6 +189,7 @@ function getSettings() {
         network: networkSettings(s),
         backup: backupSettings(s),
         retention: (({ trashDays, ...rest }) => rest)(retentionSettings(s)),
+        entregas: entregasSettings(s, { ...DEFAULTS.upload, ...(s.upload || {}) }.maxSizeMb),
     };
 }
 
@@ -147,6 +221,18 @@ function mergeSettings(patch) {
             message: typeof (p.maintenance && p.maintenance.message) === 'string' ? String(p.maintenance.message).slice(0, 300) : cur.maintenance.message,
         },
     };
+    // Entregas de tarefa: cada campo do pedido que é número vale (dentro dos limites); o
+    // resto fica como está gravado. Grava o valor escolhido sem o teto do upload.maxSizeMb,
+    // que só se aplica na leitura (getSettings): baixar e depois subir o teto do servidor
+    // não perde a escolha.
+    const entregasPatch = p.entregas && typeof p.entregas === 'object' && !Array.isArray(p.entregas) ? p.entregas : {};
+    const entregasNext = { ...entregasSettings(storedSettings(), Infinity, { forStorage: true }) };
+    Object.keys(ENTREGAS_LIMITS).forEach(key => {
+        const value = entregasPatch[key];
+        if (value === undefined || value === null || value === '' || typeof value === 'boolean') return;
+        if (Number.isFinite(Number(value))) entregasNext[key] = Number(value);
+    });
+    next.entregas = entregasSettings({ entregas: entregasNext }, Infinity, { forStorage: true });
     // Blocos protegidos: o que está gravado continua, e o que veio no pedido é ignorado.
     const stored = storedSettings();
     PROTECTED_SETTINGS_SECTIONS.forEach(section => {
@@ -235,6 +321,10 @@ module.exports = {
     BACKUP_KEEP_EXTERNAL_MAX,
     retentionSettings,
     RETENTION_MAX_DAYS,
+    entregasSettings,
+    entregasPatchError,
+    ENTREGAS_LIMITS,
+    ENTREGAS_LABELS,
     normalizeAdminAccess,
     isValidTimeZone,
     todayInTz,

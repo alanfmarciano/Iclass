@@ -107,7 +107,11 @@ const scenarios = {
             registrationEnabled: true,
         });
         for (let index = 0; index < 30; index += 1) {
-            db.memory.students.push({ name: `Aluno ${index}`, email: `aluno${index}@boot.local`, status: 'Ativo', classes: [{ name: 'Turma Prova', courseId: COURSE_ID }] });
+            // Com o id estável (C1 / P4-S3), como todo aluno criado por esta versão: aluno sem
+            // id ganharia o id no boot seguinte (uma gravação só, conferida em
+            // student-identity.test.js).
+            const id = `alu_${String(index).padStart(16, '0')}`;
+            db.memory.students.push({ id, name: `Aluno ${index}`, email: `aluno${index}@boot.local`, status: 'Ativo', classes: [{ name: 'Turma Prova', courseId: COURSE_ID }] });
             db.memory.attendance.push({ id: `presenca-${index}`, studentEmail: `aluno${index}@boot.local`, date: '2026-03-02', status: 'presente' });
         }
         await db.save();

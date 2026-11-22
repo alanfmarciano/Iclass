@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AlunoGlobalEditPage from './AlunoGlobalEditPage'
 import { STUDENT_CLOSE_WARNING, STUDENT_DELETE_KEEPS, STUDENT_DELETE_REMOVES, isClosedStatus } from './studentDeletion'
@@ -21,6 +21,8 @@ vi.mock('./StudentAuditPanel', () => ({ StudentAuditPanel: () => null }))
 const apiData = vi.hoisted(() => ({
   students: { data: [
     { name: 'Ana Souza', email: 'ana@x.local', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }] },
+    { id: 'alu_00000000000000e1', name: 'Eva Lima', email: 'eva@x.local', matricula: '2024 001', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }] },
+    { id: 'alu_00000000000000f2', name: 'Bruno Sem Email', email: 'aluno-alu_00000000000000f2@sem-email.invalid', semEmail: true, matricula: 'R7', status: 'Ativo', classes: [{ name: '1DES', courseId: 'DES' }] },
     { name: 'Aluno anonimizado 1A2B3C', email: 'anonimizado-1a2b3c4d5e6f@anonimizado.invalid', status: 'Anonimizado', classes: [{ name: '1DES', courseId: 'DES' }] },
   ], loading: false, error: null, refetch: () => {} },
   empty: { data: [], loading: false, error: null, refetch: () => {} },
@@ -35,10 +37,15 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-function renderFicha(email) {
+function Where() {
+  const location = useLocation()
+  return <p data-testid="where">{location.pathname}</p>
+}
+
+function renderFicha(email, { raw = false } = {}) {
   return render(
-    <MemoryRouter initialEntries={[`/diretorio/${encodeURIComponent(email)}`]}>
-      <Routes><Route path="/diretorio/:email" element={<AlunoGlobalEditPage />} /></Routes>
+    <MemoryRouter initialEntries={[`/diretorio/${raw ? email : encodeURIComponent(email)}`]}>
+      <Routes><Route path="/diretorio/:id" element={<><AlunoGlobalEditPage /><Where /></>} /></Routes>
     </MemoryRouter>,
   )
 }
@@ -106,5 +113,28 @@ describe('[UC-PAPEIS-001] Cadastro global do aluno: Salvar e Redefinir senha só
     renderFicha('novo')
     expect(await screen.findByText('Sua conta não cadastra alunos.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Cadastrar' })).toBeNull()
+  })
+})
+
+// P4-S3 (fase 3): a ficha abre pelo id estável do aluno; o endereço antigo, com o e-mail,
+// ainda abre e é trocado pelo do id. O aluno sem e-mail aparece como "sem e-mail".
+describe('[UC-IDENT-001] ficha do aluno pelo id', () => {
+  it('endereço antigo com o e-mail troca pelo do id', async () => {
+    renderFicha('eva@x.local')
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/diretorio/alu_00000000000000e1'))
+    expect(await screen.findByText('eva@x.local')).toBeTruthy()
+  })
+
+  it('abre pelo id e mostra "sem e-mail" no lugar do endereço interno', async () => {
+    renderFicha('alu_00000000000000f2', { raw: true })
+    expect(await screen.findByText('sem e-mail')).toBeTruthy()
+    expect(screen.queryByText(/sem-email\.invalid/)).toBeNull()
+    expect(screen.getByTestId('where').textContent).toBe('/diretorio/alu_00000000000000f2')
+  })
+
+  it('cadastro antigo sem id fica no endereço do e-mail', async () => {
+    renderFicha('ana@x.local')
+    await screen.findByText('ana@x.local')
+    expect(screen.getByTestId('where').textContent).toBe('/diretorio/ana%40x.local')
   })
 })

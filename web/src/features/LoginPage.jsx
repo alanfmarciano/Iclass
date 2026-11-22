@@ -395,7 +395,14 @@ export default function LoginPage() {
                 <Input id="lns" label="Nome social (opcional)" value={nomeSocial} onChange={(e) => setNomeSocial(e.target.value)} helper="Se preenchido, será exibido no lugar do nome completo." />
               </>
             )}
-            <Input id="le" label="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={mode === 'admin' ? 'admin@exemplo.com' : 'voce@exemplo.com'} required />
+            {/* Aluno entra pelo e-mail ou pela matrícula (P4-S3): no login e no pedido de senha
+                o campo aceita os dois; o cadastro continua pedindo e-mail. */}
+            {mode === 'student' && !isRegister ? (
+              <Input id="le" label="E-mail ou matrícula" type="text" inputMode="email" autoComplete="username" autoCapitalize="none" spellCheck={false}
+                value={email} onChange={(e) => setEmail(e.target.value)} placeholder="voce@exemplo.com" required />
+            ) : (
+              <Input id="le" label="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={mode === 'admin' ? 'admin@exemplo.com' : 'voce@exemplo.com'} required />
+            )}
             {!(mode === 'student' && studentAction === 'recover') && (
               <Input id="lp" label="Senha" type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} value={password} onChange={(e) => setPassword(e.target.value)} required
                 helper={isRegister ? passwordHint('student') : undefined} />

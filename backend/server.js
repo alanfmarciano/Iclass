@@ -9,7 +9,8 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { studentBelongsToClass, getReleasedItemsForClass, resolveAdminSession, assignRequestId, canStudentViewAnswerKey } = require('./middlewares.js');
+const { studentBelongsToClass, getReleasedItemsForClass, resolveAdminSession, assignRequestId, canStudentViewAnswerKey, checkPreviewToken } = require('./middlewares.js');
+const { previewSessionGuard, PREVIEW_HEADER } = require('./utils/previewAccess.js');
 const { isFullAdmin } = require('./utils/adminRoles.js');
 const { crashLogPath, logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
@@ -175,11 +176,19 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
     // Só sessão gravada, dentro do prazo e de conta que existe (utils/authSessions.js):
     // '?access=__proto__' entregava arquivo protegido, e o token de instrutor vencido ou
     // de conta apagada continuava abrindo arquivo. O aluno precisa de conta ativa.
+    // Pré-visualização como aluno (P5-S6a): o token da prévia (no cabeçalho, que vale mais
+    // que os outros, ou no ?access= do link da biblioteca) abre o que o aluno virtual da
+    // turma abriria, pelas mesmas regras do aluno.
+    const previewHeader = String(req.get(PREVIEW_HEADER) || '');
     const now = Date.now();
-    const adminCheck = accessToken ? checkAdminSessionToken(accessToken, now) : null;
+    const adminCheck = accessToken && !previewHeader ? checkAdminSessionToken(accessToken, now) : null;
     const adminSession = adminCheck && adminCheck.ok ? adminCheck.session : null;
-    const studentCheck = accessToken && !adminSession ? checkStudentSessionToken(accessToken, now) : null;
-    const studentEmail = studentCheck && studentCheck.ok ? studentCheck.email : undefined;
+    const studentCheck = accessToken && !previewHeader && !adminSession ? checkStudentSessionToken(accessToken, now) : null;
+    const realStudentEmail = studentCheck && studentCheck.ok ? studentCheck.email : undefined;
+    const previewCandidate = previewHeader || (!adminSession && !realStudentEmail ? accessToken : '');
+    const previewCheck = previewCandidate ? checkPreviewToken(previewCandidate, now) : null;
+    const previewStudent = previewCheck && previewCheck.ok ? previewCheck.student : null;
+    const studentEmail = previewStudent ? previewStudent.email : realStudentEmail;
     const publicBrandingFile = baseDir === runtimePaths.UPLOADS_DIR && Object.values(db.memory.branding || {}).some(value => {
         if (typeof value !== 'string' || !value.startsWith('/uploads/')) return false;
         return path.basename(value.split('?')[0]) === filename;
@@ -208,7 +217,8 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
         }
     }
     if (studentEmail && !adminSession && !publicBrandingFile) {
-        const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
+        const student = previewStudent
+            || (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === studentEmail.toLowerCase());
         if (isContentImage) {
             // Imagens das apostilas: aluno com matrícula aprovada (UXA-09).
             if (!studentHasApprovedClass(student, studentBelongsToClass)) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
@@ -283,7 +293,13 @@ app.use((req, res, next) => {
     const isStudentFlow = req.path.startsWith('/api/student') || req.path.startsWith('/api/forum')
         || req.path === '/api/ping' || req.path === '/data.js' || req.path === '/api/data.js'
         || (/^\/[^/]+\.md$/.test(req.path) && !isAuthenticatedAdmin);
-    if (isStudentFlow && st.maintenance && st.maintenance.enabled && !isAuthenticatedAdmin) {
+    // A pré-visualização (P5-S6a) é do instrutor: com a prévia válida, ele vê o portal
+    // também em manutenção (o cliente não manda x-admin-session nas rotas do aluno, D21);
+    // o previewSessionGuard, logo abaixo, continua só deixando passar a leitura.
+    const maintenanceOn = !!(st.maintenance && st.maintenance.enabled);
+    const previewHeader = maintenanceOn && isStudentFlow && !isAuthenticatedAdmin ? String(req.get(PREVIEW_HEADER) || '') : '';
+    const isInstructorPreview = !!previewHeader && checkPreviewToken(previewHeader).ok;
+    if (isStudentFlow && maintenanceOn && !isAuthenticatedAdmin && !isInstructorPreview) {
         return res.status(503).json({ error: st.maintenance.message || 'Sistema em manutenção.', maintenance: true });
     }
     next();
@@ -291,6 +307,10 @@ app.use((req, res, next) => {
 
 // Camada 5.3: toda rota /api/admin exige autenticação, capability e escopo.
 app.use('/api/admin', adminRbacGuard);
+// Pré-visualização como aluno (P5-S6a): com x-preview-session, só as rotas de leitura de
+// utils/previewAccess.js (PREVIEW_READ_ROUTES) passam; as outras respondem 403
+// preview_read_only. Antes de proctoringRoutes, porque log-activity grava.
+app.use(previewSessionGuard);
 app.use(proctoringRoutes);
 // Modo teste (ativo só com TEST_MODE=1)
 const testRoutes = require('./routes/testmode.js');
@@ -300,7 +320,10 @@ app.use(setupModeRoutes);
 app.use(commonRoutes);
 // Termos e Privacidade (H8a-1): rotas públicas e, no H8a-2, as do aluno; antes das do aluno.
 app.use(require('./routes/privacy.js'));
-// Rotas novas do aluno da fase 3 (ordem_no_createApp do plano): parte acadêmica (P2).
+// Rotas novas do aluno da fase 3 (ordem_no_createApp do plano), antes de student.js:
+// tarefas do aluno (C5 / P1-c; router próprio, com multer e os limites da tarefa) e parte
+// acadêmica (P2).
+app.use(require('./routes/studentAssignments.js').createStudentAssignmentsRouter());
 app.use(require('./routes/studentAcademic.js'));
 app.use(studentRoutes);
 app.use(adminRoutes);
@@ -456,6 +479,14 @@ async function prepareServer() {
     function sweepTrash() { try { const n = _fileStore.purgeTrash(settingsUtil.getSettings().trash.retentionDays); if (n) console.log('🗑️  Lixeira: ' + n + ' item(ns) antigos removidos.'); } catch (e) {} }
     sweepTrash();
     serverLifecycle.registerTimer('trash', setInterval(sweepTrash, 6 * 3600000));
+
+    // 5b) Envios de tarefa que caíram no meio (fase 3, P1): o que sobrou em
+    // data/entregas/.recebendo com mais de 1 h sai. Arrumação de arquivo, não migração;
+    // nunca toca os arquivos já gravados das entregas. Falha aqui não impede o boot.
+    try {
+        const removed = await require('./utils/assignmentFiles.js').cleanupReceivingDir();
+        if (removed) console.log(`🧹 Entregas: ${removed} envio(s) interrompido(s) removido(s) de .recebendo.`);
+    } catch (e) { logCrash('limpeza de envios interrompidos', e); }
 
     // 6) e 7) O tempo em que o servidor ficou fora do ar (do último heartbeat até agora)
     // vira pausa das provas em andamento, até 15 min (utils/serverLifecycle.js), e é

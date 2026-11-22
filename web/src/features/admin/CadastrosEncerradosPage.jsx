@@ -20,6 +20,7 @@ import {
   backupReminder, extraCountsText, sameStatus,
 } from './studentDeletion'
 import { matchesSearch } from '../../lib/textSearch'
+import { displayEmail } from '../../lib/studentProfile'
 
 // Cadastros encerrados (H7c; FUN-03, decisão 4 do Alan), só do administrador. Lista quem
 // foi desligado (Inativo, Transferido, Evadido, Concluído) e os anonimizados, do mais
@@ -152,7 +153,7 @@ export default function CadastrosEncerradosPage() {
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="font-semibold text-text break-words">{row.nomeSocial || row.name}</p>
-                      <p className="text-sm text-muted break-all">{row.email}{row.matricula ? ` · matrícula ${row.matricula}` : ''}</p>
+                      <p className="text-sm text-muted break-all">{displayEmail(row.email)}{row.matricula ? ` · matrícula ${row.matricula}` : ''}</p>
                     </div>
                     <Badge tone={toneOf(row.status)}>{row.status}</Badge>
                   </div>
@@ -175,7 +176,7 @@ export default function CadastrosEncerradosPage() {
         )}
       </PageState>
 
-      <Modal open={!!action} onClose={close} title={spec ? `${spec.title}: ${action.row.nomeSocial || action.row.name}?` : ''} description={action?.row.email}
+      <Modal open={!!action} onClose={close} title={spec ? `${spec.title}: ${action.row.nomeSocial || action.row.name}?` : ''} description={action ? displayEmail(action.row.email) : undefined}
         footer={<>
           <Button variant="ghost" onClick={close} disabled={busy}>Cancelar</Button>
           <Button variant={action?.mode === 'reactivate' ? 'primary' : 'destructive'} onClick={confirm} loading={busy} disabled={!canConfirm}>{spec?.confirm}</Button>

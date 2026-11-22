@@ -201,16 +201,70 @@ test('[UC-ESQUEMA-001] migrações publicadas são imutáveis: o código de cada
     // A primeira é a base 281029f e não muda nada.
     assert.equal(MIGRATIONS[0].id, '2026-11-p6-base');
     assert.equal(MIGRATIONS[0].run({}, {}), false);
-    // BOOT_NORMALIZATIONS: a da identidade da instalação (A1), a do token fora do histórico
-    // das configurações salvas (A4, ajuste 2: a 281029f volta a gravar o token em texto se
-    // abrir o banco migrado) e a marca de dia não letivo na presença do login (B3 / P2-S5).
-    // O C1 põe a ensureStudentIds na frente delas (o contrato diz que é a primeira).
-    assert.deepEqual(BOOT_NORMALIZATIONS.map(row => row.id), ['2026-11-p6-instalacao-sempre', '2026-11-p3-token-historico-sempre', '2026-11-p2-presenca-dia-nao-letivo']);
+    // BOOT_NORMALIZATIONS: ensureStudentIds (C1) primeiro, como diz o contrato; depois a da
+    // identidade da instalação (A1), a do token fora do histórico das configurações salvas
+    // (A4, ajuste 2: a 281029f volta a gravar o token em texto se abrir o banco migrado) e a
+    // marca de dia não letivo na presença do login (B3 / P2-S5).
+    assert.deepEqual(BOOT_NORMALIZATIONS.map(row => row.id), ['2026-11-p4-ids-alunos-sempre', '2026-11-p6-instalacao-sempre', '2026-11-p3-token-historico-sempre', '2026-11-p2-presenca-dia-nao-letivo']);
+    // A ordem das migrações segue o boot_prepareServer do plano: base, instalação, ids dos
+    // alunos e token do histórico.
+    assert.deepEqual(MIGRATIONS.map(row => row.id), ['2026-11-p6-base', '2026-11-p6-instalacao', '2026-11-p4-ids-alunos', '2026-11-p3-token-historico']);
     assert.ok(Object.isFrozen(MIGRATIONS) && Object.isFrozen(BOOT_NORMALIZATIONS));
     // O hash não depende do fim de linha (checkout no Windows com CRLF).
     const row = { id: '2026-11-teste-crlf', tipo: 'memoria', run: { toString: () => 'run() {\r\n    return false;\r\n}' } };
     const lf = { ...row, run: { toString: () => 'run() {\n    return false;\n}' } };
     assert.equal(schemaMigrations.migrationHash(row), schemaMigrations.migrationHash(lf));
+});
+
+test('[UC-ESQUEMA-001] migração que delega a outro módulo: o código das dependencias entra no hash (mudar ensureStudentIds ou o que ele chama reprova a linha publicada)', () => {
+    const studentIdentity = require('../../backend/utils/studentIdentity.js');
+    const row = MIGRATIONS.find(item => item.id === '2026-11-p4-ids-alunos');
+    assert.ok(row && row.dependencias === studentIdentity.ENSURE_STUDENT_IDS_DEPENDENCIES);
+    const hash = schemaMigrations.migrationHash(row);
+    // Sem as dependencias o hash seria só o do run (que não muda quando ensureStudentIds muda).
+    assert.notEqual(schemaMigrations.migrationHash({ ...row, dependencias: undefined }), hash);
+    // O caso que já aconteceu (bab6e29 -> 3ccd38a): hasStoredId mais frouxo, mesmo run.
+    const looseHasStoredId = function hasStoredId(student) {
+        return !!student && typeof student.id === 'string' && student.id.trim() !== '';
+    };
+    const changed = row.dependencias.map(dep => (typeof dep === 'function' && dep.name === 'hasStoredId' ? looseHasStoredId : dep));
+    assert.notEqual(schemaMigrations.migrationHash({ ...row, dependencias: changed }), hash);
+    // Constante mudada também muda o hash.
+    const otherPrefix = row.dependencias.map(dep => (typeof dep === 'function' ? dep : { ...dep, STUDENT_ID_PREFIX: 'aluno_' }));
+    assert.notEqual(schemaMigrations.migrationHash({ ...row, dependencias: otherPrefix }), hash);
+    // CRLF nas dependencias não muda o hash.
+    const crlf = row.dependencias.map(dep => (typeof dep === 'function' ? Object.assign(() => {}, { toString: () => String(dep).replace(/\n/g, '\r\n') }) : dep));
+    assert.equal(schemaMigrations.migrationHash({ ...row, dependencias: crlf }), hash);
+
+    // A lista está completa: toda função de studentIdentity.js chamada por ensureStudentIds
+    // (direta ou indiretamente) e toda constante de módulo usada estão nas dependencias.
+    const source = fs.readFileSync(require.resolve('../../backend/utils/studentIdentity.js'), 'utf8');
+    const bodies = new Map();
+    const fnPattern = /^function (\w+)\([^)]*\) \{\n([\s\S]*?)^\}/gm;
+    let match;
+    while ((match = fnPattern.exec(source))) bodies.set(match[1], match[2]);
+    const constants = new Set([...source.matchAll(/^const ([A-Z][A-Z0-9_]+) = /gm)].map(item => item[1]));
+    const listedFns = new Set(row.dependencias.filter(dep => typeof dep === 'function').map(dep => dep.name));
+    const listedConstants = new Set(row.dependencias.filter(dep => typeof dep !== 'function').flatMap(dep => Object.keys(dep)));
+    const seen = new Set();
+    const queue = ['ensureStudentIds'];
+    while (queue.length) {
+        const name = queue.shift();
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const body = bodies.get(name) || '';
+        bodies.forEach((_, other) => { if (other !== name && new RegExp(`\\b${other}\\(`).test(body)) queue.push(other); });
+        constants.forEach(constant => {
+            if (new RegExp(`\\b${constant}\\b`).test(body)) assert.ok(listedConstants.has(constant), `${name} usa ${constant}, que falta em ENSURE_STUDENT_IDS_DEPENDENCIES`);
+        });
+    }
+    seen.forEach(name => assert.ok(listedFns.has(name), `ensureStudentIds chama ${name}, que falta em ENSURE_STUDENT_IDS_DEPENDENCIES`));
+    // As de fora do módulo que ele chama.
+    assert.ok(listedFns.has('normalizeEmail') && listedFns.has('relinkStudentData'));
+    // Linha sem dependencias tem o hash de sempre (a base 281029f não mudou).
+    assert.equal(schemaMigrations.migrationHash(MIGRATIONS[0]), '22a0fb3ddfdf061c39e812355b21daf1adb63c76f005b9595193ca952848bcd3');
+    // dependencias inválidas são recusadas pelo registro.
+    assert.throws(() => schemaMigrations.validateRegistry({ migrations: [{ id: '2026-11-teste-dep', nome: 'Dep', tipo: 'memoria', run: () => false, dependencias: ['texto'] }] }), /dependencias/);
 });
 
 test('[UC-ESQUEMA-001] o registro é conferido: id no formato AAAA-MM-<grupo>-<nome>, sem repetição, tipo memoria ou sql e run', () => {

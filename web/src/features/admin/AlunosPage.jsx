@@ -25,6 +25,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { acceptanceText, birthDateText, isMinorBirthDate, todayIso } from '../../lib/legalAcceptance'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
+import { displayEmail, isPlaceholderEmail, studentFormIdentity, studentFormProblem, studentIdentityPayload, studentLoginLabel, studentRouteKey } from '../../lib/studentProfile'
 
 const STATUS_OPTIONS = ['Ativo', 'Inativo', 'Bloqueado', 'Concluído', 'Transferido', 'Evadido']
 const STATUS_TONE = {
@@ -53,7 +54,7 @@ function displayName(s) {
 
 function emptyForm() {
   return {
-    name: '', nomeSocial: '', email: '', matricula: '', phone: '', status: 'Ativo', birthDate: '',
+    name: '', nomeSocial: '', email: '', semEmail: false, matricula: '', phone: '', status: 'Ativo', birthDate: '',
     studentPassword: '', requirePasswordChange: true, unidade: '', courseId: '', classes: [],
     guardian: { name: '', phone: '', email: '', parentesco: '', observacao: '' },
     accessibility: { fonteAmpliada: false, altoContraste: false, reducaoAnimacoes: false, leitorTela: false, tempoAdicional: false, tempoAdicionalPercent: 0, observacao: '' },
@@ -139,7 +140,7 @@ export default function AlunosPage() {
 
   function payloadFrom(v, isEdit) {
     const base = {
-      name: v.name, nomeSocial: v.nomeSocial, email: v.email, matricula: v.matricula,
+      name: v.name, nomeSocial: v.nomeSocial, ...studentIdentityPayload(v), matricula: v.matricula,
       phone: v.phone, guardianPhone: v.guardian?.phone || '', status: v.status, birthDate: v.birthDate || '',
       unidade: v.unidade, classes: v.classes, studentClass: v.classes[0], guardian: v.guardian, accessibility: v.accessibility,
     }
@@ -150,12 +151,13 @@ export default function AlunosPage() {
   }
 
   async function create() {
-    if (!form.name || !form.email || form.classes.length === 0) return toast.error('Preencha nome, e-mail e ao menos uma turma')
+    const problem = studentFormProblem(form)
+    if (problem) return toast.error(problem)
     setSaving(true)
     try {
       const created = await api.post('/api/admin/student/create', payloadFrom(form, false))
       toast.success('Aluno cadastrado')
-      if (created?.temporaryPassword) setCreatedPassword({ email: form.email, password: created.temporaryPassword, mustChangePassword: created.mustChangePassword !== false, deferred: created.passwordChangeDeferred === true })
+      if (created?.temporaryPassword) setCreatedPassword({ email: studentLoginLabel(form), password: created.temporaryPassword, mustChangePassword: created.mustChangePassword !== false, deferred: created.passwordChangeDeferred === true })
       setOpen(false)
       setForm(emptyForm())
       refetch()
@@ -163,7 +165,8 @@ export default function AlunosPage() {
   }
 
   async function saveEdit() {
-    if (!edit.name || !edit.email || edit.classes.length === 0) return toast.error('Informe nome, e-mail e turmas')
+    const problem = studentFormProblem(edit)
+    if (problem) return toast.error(problem)
     setSaving(true)
     try {
       await api.post('/api/admin/student/update', payloadFrom(edit, true))
@@ -303,7 +306,7 @@ export default function AlunosPage() {
         {r.recoveryRequested && <Badge tone="warning" className="whitespace-nowrap">Pediu nova senha</Badge>}
         <LoginProtectionBadge protection={r.loginProtection} />
       </div>) },
-    { key: 'email', label: 'E-mail', render: (r) => <span className="text-muted">{r.email}</span> },
+    { key: 'email', label: 'E-mail', render: (r) => <span className={isPlaceholderEmail(r.email) ? 'text-subtle italic' : 'text-muted'}>{displayEmail(r.email)}</span> },
     { key: 'matricula', label: 'Matrícula', render: (r) => <span className="text-muted">{r.matricula || '-'}</span> },
     { key: 'studentClass', label: 'Turmas', render: (r) => studentClassNames(r).filter((name) => !activeCourseId || courseClassNames.has(name)).join(', ') || '-' },
     { key: 'status', label: 'Situação', render: (r) => <Badge tone={STATUS_TONE[r.status] || 'neutral'}>{r.status || 'Ativo'}</Badge> },
@@ -317,8 +320,8 @@ export default function AlunosPage() {
         {canEditStudent && <Button icon={UserPlus} onClick={() => { setForm({ ...emptyForm(), courseId: activeCourseId, classes: [activeClassName] }); setOpen(true) }}>Novo aluno</Button>}
       </div>
       <PageState loading={loading} error={error} onRetry={refetch}>
-        <DataTable columns={columns} rows={filteredStudents.map((s, i) => ({ id: s.email || i, ...s }))}
-          searchKeys={['name', 'nomeSocial', 'email', 'matricula', 'studentClass']} rowActions={(r) => setMenuRow(r)} onRowClick={(r) => nav('/alunos/' + encodeURIComponent(r.email))}
+        <DataTable columns={columns} rows={filteredStudents.map((s, i) => ({ id: s.email || i, ...s, emailShown: displayEmail(s.email) }))}
+          searchKeys={['name', 'nomeSocial', 'emailShown', 'matricula', 'studentClass']} rowActions={(r) => setMenuRow(r)} onRowClick={(r) => nav('/alunos/' + studentRouteKey(r))}
           emptyTitle="Nenhum aluno" emptyDesc="Cadastre o primeiro aluno." />
       </PageState>
 
@@ -327,12 +330,12 @@ export default function AlunosPage() {
         <StudentFormTabs value={form} onChange={setForm} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('form', name)} passwordField="studentPassword" passwordLabel="Senha inicial (opcional)" accessibilityReadOnly={isProfessor} />
       </Modal>
 
-      <Modal open={!!edit} onClose={() => setEdit(null)} title="Editar aluno" description={edit?.originalEmail}
+      <Modal open={!!edit} onClose={() => setEdit(null)} title="Editar aluno" description={edit ? displayEmail(edit.originalEmail) : ''}
         footer={<><Button variant="ghost" onClick={() => setEdit(null)}>Cancelar</Button><Button loading={saving} onClick={saveEdit}>Salvar alterações</Button></>}>
         {edit && <StudentFormTabs value={edit} onChange={setEdit} classes={classes || []} courses={courses || []} onToggleClass={(name) => toggleClass('edit', name)} accessibilityReadOnly={isProfessor} />}
       </Modal>
 
-      <Modal open={!!menuRow} onClose={() => setMenuRow(null)} title={menuRow ? displayName(menuRow) : ''} description={menuRow?.email}>
+      <Modal open={!!menuRow} onClose={() => setMenuRow(null)} title={menuRow ? displayName(menuRow) : ''} description={menuRow ? displayEmail(menuRow.email) : ''}>
         {menuRow?.loginProtection && (
           <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-muted">
             <LoginProtectionBadge protection={menuRow.loginProtection} />
@@ -340,20 +343,20 @@ export default function AlunosPage() {
           </div>
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {canEditStudent && !isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, originalEmail: menuRow.email, classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>}
+          {canEditStudent && !isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...menuRow, ...studentFormIdentity(menuRow), classes: studentClassNames(menuRow), courseId: ((classes || []).find((c) => studentClassNames(menuRow).includes(c.name))?.courseId) || activeCourseId, guardian: menuRow.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setMenuRow(null) }}>Editar</Button>}
           {canResults && <Button variant="secondary" icon={History} onClick={() => { setHistory(menuRow); setMenuRow(null) }}>Histórico</Button>}
           {canAudit && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(menuRow); setMenuRow(null) }}>Auditoria</Button>}
           {canSecurity && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(menuRow); setMenuRow(null) }}>Segurança</Button>}
           <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(menuRow); setMenuRow(null) }}>Observações</Button>
           {canRelease && <Button variant="secondary" icon={Unlock} onClick={() => { openRelease(menuRow); setMenuRow(null) }}>Liberações</Button>}
-          {canEditStudent && !isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email }); setMenuRow(null) }}>Redefinir senha</Button>}
+          {canEditStudent && !isAnonymizedStatus(menuRow?.status) && <Button variant="secondary" icon={KeyRound} onClick={() => { setReset({ email: menuRow.email, matricula: menuRow.matricula || '' }); setMenuRow(null) }}>Redefinir senha</Button>}
           {menuRow?.loginProtection && <Button variant="secondary" icon={LockOpen} loading={unlocking} title={UNLOCK_LOGIN_HINT} onClick={() => unlockLogin(menuRow)}>Liberar login</Button>}
           {/* Desligar aluno (H7c): muda a situação; anonimizar ou apagar fica em Cadastros encerrados. */}
           {!isProfessor && menuRow && !isClosedStatus(menuRow.status) && <Button variant="destructive" icon={UserMinus} onClick={() => { setDel(menuRow); setMenuRow(null) }}>Desligar aluno</Button>}
         </div>
       </Modal>
 
-      <Modal open={!!history} onClose={() => setHistory(null)} title="Histórico do aluno" description={history?.email}>
+      <Modal open={!!history} onClose={() => setHistory(null)} title="Histórico do aluno" description={history ? displayEmail(history.email) : ''}>
         <div className="space-y-2">
           {filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).map((s, i) => (
             <div key={s.id || i} className="flex items-center justify-between rounded-md border border-border p-3 text-sm">
@@ -367,11 +370,11 @@ export default function AlunosPage() {
 
       {/* O mesmo painel da ficha: a entrada sem campo do cadastro (como o "Redefinir
           senha") aparece pelo rótulo da ação, não como uma linha sem título. */}
-      <Modal open={!!audit} onClose={() => setAudit(null)} title="Auditoria do perfil" description={audit?.email}>
+      <Modal open={!!audit} onClose={() => setAudit(null)} title="Auditoria do perfil" description={audit ? displayEmail(audit.email) : ''}>
         <StudentAuditPanel rows={auditRows} />
       </Modal>
 
-      <Modal open={!!profile} onClose={() => setProfile(null)} title={profile ? displayName(profile) : 'Perfil'} description={profile?.email}>
+      <Modal open={!!profile} onClose={() => setProfile(null)} title={profile ? displayName(profile) : 'Perfil'} description={profile ? displayEmail(profile.email) : ''}>
         {profile && (
           <div className="space-y-3">
             <div className="flex items-center gap-3">
@@ -386,7 +389,7 @@ export default function AlunosPage() {
             <Section title="Dados básicos">
               <Row label="Nome completo" value={profile.name} />
               <Row label="Nome social" value={profile.nomeSocial} />
-              <Row label="E-mail/login" value={profile.email} />
+              <Row label="E-mail/login" value={displayEmail(profile.email)} />
               <Row label="Matrícula" value={profile.matricula} />
               <Row label="Telefone" value={profile.phone} />
             </Section>
@@ -503,7 +506,7 @@ export default function AlunosPage() {
             </Section>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-              {canEditStudent && !isAnonymizedStatus(profile?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...profile, originalEmail: profile.email, classes: studentClassNames(profile), courseId: ((classes || []).find((c) => studentClassNames(profile).includes(c.name))?.courseId) || activeCourseId, guardian: profile.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setProfile(null) }}>Editar</Button>}
+              {canEditStudent && !isAnonymizedStatus(profile?.status) && <Button variant="secondary" icon={Pencil} onClick={() => { setEdit({ ...emptyForm(), ...profile, ...studentFormIdentity(profile), classes: studentClassNames(profile), courseId: ((classes || []).find((c) => studentClassNames(profile).includes(c.name))?.courseId) || activeCourseId, guardian: profile.guardian || { name: '', phone: '', email: '', parentesco: '' } }); setProfile(null) }}>Editar</Button>}
               <Button variant="secondary" icon={MessageSquare} onClick={() => { openObs(profile); setProfile(null) }}>Observações</Button>
               {canSecurity && <Button variant="secondary" icon={ShieldCheck} onClick={() => { openSecurity(profile); setProfile(null) }}>Segurança</Button>}
               {canAudit && <Button variant="secondary" icon={ShieldAlert} onClick={() => { openAudit(profile); setProfile(null) }}>Auditoria</Button>}
@@ -512,7 +515,7 @@ export default function AlunosPage() {
         )}
       </Modal>
 
-      <Modal open={!!obs} onClose={() => setObs(null)} title="Observações pedagógicas" description={obs?.email}>
+      <Modal open={!!obs} onClose={() => setObs(null)} title="Observações pedagógicas" description={obs ? displayEmail(obs.email) : ''}>
         <div className="space-y-4">
           {readOnlyAccount ? (
             <p className="text-sm text-muted">Sua conta consulta as observações, sem registrar.</p>
@@ -553,7 +556,7 @@ export default function AlunosPage() {
         </div>
       </Modal>
 
-      <Modal open={!!security} onClose={() => setSecurity(null)} title="Segurança e privacidade" description={security?.email}>
+      <Modal open={!!security} onClose={() => setSecurity(null)} title="Segurança e privacidade" description={security ? displayEmail(security.email) : ''}>
         <div className="space-y-3 text-sm">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="rounded-md border border-border p-3">
@@ -610,7 +613,7 @@ export default function AlunosPage() {
 
       <StudentCloseDialog student={del} onClose={() => setDel(null)} onDone={refetch} />
 
-      <StudentPasswordResetDialog email={reset?.email || null} onClose={() => setReset(null)} onDone={refetch} />
+      <StudentPasswordResetDialog email={reset?.email || null} matricula={reset?.matricula || ''} onClose={() => setReset(null)} onDone={refetch} />
       <TemporaryPasswordNotice open={!!createdPassword} email={createdPassword?.email} password={createdPassword?.password} mustChangePassword={createdPassword?.mustChangePassword} deferred={createdPassword?.deferred} onClose={() => setCreatedPassword(null)} />
     </div>
   )
@@ -645,9 +648,18 @@ export function StudentFormTabs({ value, onChange, classes, courses, schools, on
           <Input label="Nome completo" value={value.name} onChange={(e) => set({ name: e.target.value })} />
           <Input label="Nome social (opcional)" value={value.nomeSocial} onChange={(e) => set({ nomeSocial: e.target.value })} helper="Se preenchido, é exibido no lugar do nome completo." />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input label="E-mail/login" type="email" value={value.email} onChange={(e) => set({ email: e.target.value })} />
-            <Input label="Matrícula/código" value={value.matricula} onChange={(e) => set({ matricula: e.target.value })} />
+            {value.semEmail
+              ? <p className="text-sm text-muted self-end pb-2">Sem e-mail: o aluno entra com a matrícula.</p>
+              : <Input label="E-mail/login" type="email" value={value.email} onChange={(e) => set({ email: e.target.value })} />}
+            <Input label={value.semEmail ? 'Matrícula/código (obrigatória)' : 'Matrícula/código'} value={value.matricula} onChange={(e) => set({ matricula: e.target.value })}
+              helper="O aluno também pode entrar com a matrícula no lugar do e-mail." />
           </div>
+          {/* Aluno sem e-mail (C1 / P4-S3): o cadastro ganha um endereço interno que não
+              aparece em lugar nenhum; ganhar um e-mail depois é só desmarcar a caixa. */}
+          <label className="flex items-center gap-2 text-sm text-text">
+            <input type="checkbox" className="h-4 w-4" checked={!!value.semEmail} onChange={(e) => set({ semEmail: e.target.checked })} />
+            O aluno não tem e-mail
+          </label>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input label="Telefone" value={value.phone} onChange={(e) => set({ phone: e.target.value })} placeholder="(11) 90000-0000" />
             <Select label="Status" value={value.status || 'Ativo'} onChange={(e) => set({ status: e.target.value })}>

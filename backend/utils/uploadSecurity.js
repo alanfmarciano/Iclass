@@ -16,12 +16,12 @@ function hasPrefix(buffer, bytes, offset = 0) {
     return bytes.every((byte, index) => buffer[offset + index] === byte);
 }
 
-function signatureMatches(filePath, extension) {
-    const fd = fs.openSync(filePath, 'r');
-    const buffer = Buffer.alloc(32);
-    const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    fs.closeSync(fd);
-    const head = buffer.subarray(0, length);
+// Assinatura dos primeiros bytes (head, ao menos 32) para a extensão: true quando confere,
+// false quando não confere ou a extensão não tem assinatura conhecida aqui. Usada pela
+// Biblioteca (signatureMatches, abaixo) e pelas entregas de tarefa
+// (utils/assignmentFiles.js, que acrescenta os formatos que só a entrega aceita).
+function headSignatureMatches(headBuffer, extension) {
+    const head = Buffer.isBuffer(headBuffer) ? headBuffer.subarray(0, 32) : Buffer.alloc(0);
     const ext = String(extension || '').toLowerCase();
 
     if (ext === '.jpg' || ext === '.jpeg') return hasPrefix(head, [0xff, 0xd8, 0xff]);
@@ -37,6 +37,18 @@ function signatureMatches(filePath, extension) {
     return false;
 }
 
+function signatureMatches(filePath, extension) {
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(32);
+    let length = 0;
+    try {
+        length = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    } finally {
+        fs.closeSync(fd);
+    }
+    return headSignatureMatches(buffer.subarray(0, length), extension);
+}
+
 function validateUploadedFile(file) {
     if (!file || isBlockedUploadName(file.originalname)) return { valid: false, reason: 'Tipo de arquivo bloqueado por segurança.' };
     const extension = path.extname(file.originalname).toLowerCase();
@@ -48,4 +60,4 @@ function validateUploadedFile(file) {
     return { valid: true, extension };
 }
 
-module.exports = { BLOCKED_EXTENSIONS, isBlockedUploadName, validateUploadedFile };
+module.exports = { BLOCKED_EXTENSIONS, isBlockedUploadName, validateUploadedFile, headSignatureMatches, signatureMatches };

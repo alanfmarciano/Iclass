@@ -26,6 +26,7 @@ const legal = require('./legalDocuments.js');
 const { studentCourseId } = require('./legalAcceptance.js');
 const { keystrokeModeOf, keystrokeModeIsLegacy, KEYSTROKE_MODE_LABELS } = require('./keystrokePolicy.js');
 const studentData = require('./studentDataHandlers.js');
+const studentIdentity = require('./studentIdentity.js');
 
 const EXPORT_TYPE = 'iclass-dados-pessoais';
 const EXPORT_FORMAT_VERSION = 1;
@@ -573,14 +574,18 @@ function buildStudentDataExport(memory, email, { audience = 'aluno', keystrokes 
     if (extraSections.length) data.extraSections = extraSections;
     data.examTitles = examTitlesSection(memory, student, data);
     data.counts = sectionCounts(data, Object.keys(extra));
-    return data;
+    // Aluno sem e-mail (C1 / P4-S3, D23): o endereço interno nunca sai no arquivo; onde ele
+    // apareceria (perfil, registros, auditoria) fica 'sem e-mail'.
+    return studentIdentity.maskPlaceholderEmailsDeep(data);
 }
 
 // Nome do arquivo: meus-dados-AAAA-MM-DD.json (aluno) ou dados-<e-mail>-AAAA-MM-DD.json.
 function exportFileName(audience, email, today) {
     const day = /^\d{4}-\d{2}-\d{2}$/.test(String(today || '')) ? today : new Date().toISOString().slice(0, 10);
     if (audience !== 'admin') return `meus-dados-${day}.json`;
-    const safe = normalizeEmail(email).replace(/[^a-z0-9._-]+/g, '_').slice(0, 80) || 'aluno';
+    // Aluno sem e-mail: o nome leva só o id (aluno-alu_...), nunca o endereço interno.
+    const base = studentIdentity.isPlaceholderEmail(email) ? normalizeEmail(email).split('@')[0] : normalizeEmail(email);
+    const safe = base.replace(/[^a-z0-9._-]+/g, '_').slice(0, 80) || 'aluno';
     return `dados-${safe}-${day}.json`;
 }
 

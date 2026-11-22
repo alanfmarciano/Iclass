@@ -17,6 +17,7 @@ import { DisciplineFrequency } from './dashboard/DisciplineFrequency'
 import { WeekAgenda } from './dashboard/WeekAgenda'
 import { DataQualityNote } from './dashboard/DataQualityNote'
 import { csvCell } from '../../lib/csv'
+import { displayEmail, studentRouteKey } from '../../lib/studentProfile'
 import { snoozedWith } from './dashboard/snooze'
 import { compareOrdinal } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
@@ -142,7 +143,7 @@ export default function DashboardPage() {
     // Sem a coluna Média para quem não lê nota (o servidor já manda a média vazia).
     const linhas = [
       ['Aluno', 'E-mail', 'Turma', 'Frequência (%)', 'Presenças', 'Aulas', 'Faltas', ...(gradesHidden ? [] : ['Média']), 'Risco'].map(esc).join(';'),
-      ...rows.map((o) => [o.name, o.email, o.className, o.frequencia ?? 'sem dado', o.presentes, o.totalAulas, o.faltas, ...(gradesHidden ? [] : [o.media ?? 'sem prova']), o.riscoLevel].map(esc).join(';')),
+      ...rows.map((o) => [o.name, displayEmail(o.email), o.className, o.frequencia ?? 'sem dado', o.presentes, o.totalAulas, o.faltas, ...(gradesHidden ? [] : [o.media ?? 'sem prova']), o.riscoLevel].map(esc).join(';')),
     ]
     const blob = new Blob(['﻿' + linhas.join('\n')], { type: 'text/csv;charset=utf-8' })
     const a = document.createElement('a')
@@ -153,7 +154,8 @@ export default function DashboardPage() {
   }
 
   const disc = trends.data?.disciplinas
-  const openStudent = (email) => nav('/alunos/' + encodeURIComponent(email))
+  // Ficha pelo id estável do aluno (C1 / P4-S3); sem id, o e-mail, que a ficha troca pelo id.
+  const openStudent = (student) => nav('/alunos/' + studentRouteKey(student))
 
   return (
     <div className="mx-auto max-w-[1320px] space-y-6">

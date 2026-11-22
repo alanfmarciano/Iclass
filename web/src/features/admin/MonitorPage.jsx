@@ -34,6 +34,7 @@ import { compareText, matchesSearch } from '../../lib/textSearch'
 import { answerSummary, questionTypeLabel } from './questionEditorModel'
 import { useAuth } from '../../context/AuthProvider'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades } from '../../lib/adminPermissions'
+import { displayEmail } from '../../lib/studentProfile'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -716,7 +717,7 @@ export default function MonitorPage() {
   })
 
   function openKeystrokeWatch(row) {
-    setKeystrokeWatch({ email: row.email, name: row.name || row.email })
+    setKeystrokeWatch({ email: row.email, name: row.name || displayEmail(row.email) })
     setKeystrokeEvents([])
     setKeystrokeLogs(null)
     setKeystrokeLoading(true)
@@ -895,7 +896,15 @@ export default function MonitorPage() {
 
   function studentLabel(email) {
     const row = rows.find((item) => item.email === email)
-    return row?.name || email
+    return row?.name || displayEmail(email)
+  }
+
+  // Destino da mensagem individual no histórico: nome e e-mail, com 'sem e-mail' no lugar
+  // do endereço interno do aluno sem e-mail (C1 / P4-S3).
+  function messageTargetLabel(message) {
+    const name = message.targetName || rows.find((item) => item.email === message.targetEmail)?.name || ''
+    const shown = displayEmail(message.targetEmail)
+    return name ? `${name} (${shown})` : shown
   }
 
   async function loadMessageHistory() {
@@ -1364,7 +1373,7 @@ export default function MonitorPage() {
                           </div>
                           <p className="mt-1 text-xs text-muted">{reasonSummary}</p>
                           <p className="mt-2 line-clamp-2 text-sm text-text">{group.question?.questionText || group.question?.text || 'Enunciado indisponível'}</p>
-                          <p className="mt-1 text-xs text-subtle">{group.reports.map((report) => report.studentName || report.studentEmail).join(', ')}</p>
+                          <p className="mt-1 text-xs text-subtle">{group.reports.map((report) => report.studentName || displayEmail(report.studentEmail)).join(', ')}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="ghost" icon={Eye} onClick={() => setPreviewIssue(group)}>Ver questão</Button>
@@ -1400,7 +1409,7 @@ export default function MonitorPage() {
                   const notStarted = rowTimerLabel(r, monitorTimer, fmt) === 'Não iniciou'
                   return (
                     <tr key={r.email || i} className="border-b border-border last:border-0">
-                      <td className="px-4 py-3"><div className="font-medium text-text">{r.name || r.email}</div><div className="text-xs text-muted">{r.email}</div></td>
+                      <td className="px-4 py-3"><div className="font-medium text-text">{r.name || displayEmail(r.email)}</div><div className="text-xs text-muted">{displayEmail(r.email)}</div></td>
                       <td className="px-4 py-3 font-mono text-xs text-muted">{r.ip || '-'}</td>
                       <td className="px-4 py-3">
                         <Badge tone={st[0]} dot>{st[1]}</Badge>
@@ -1491,7 +1500,7 @@ export default function MonitorPage() {
             <div className="space-y-2">
               {previewIssue.reports?.map((report) => (
                 <div key={report.id} className="rounded-md border border-border p-3 text-sm">
-                  <div className="flex flex-wrap items-center gap-2"><strong className="text-text">{report.studentName || report.studentEmail}</strong><Badge tone="warning">{REPORT_REASON_LABELS[report.reason] || report.reason}</Badge></div>
+                  <div className="flex flex-wrap items-center gap-2"><strong className="text-text">{report.studentName || displayEmail(report.studentEmail)}</strong><Badge tone="warning">{REPORT_REASON_LABELS[report.reason] || report.reason}</Badge></div>
                   {report.text && <p className="mt-2 text-muted">{report.text}</p>}
                 </div>
               ))}
@@ -1597,7 +1606,7 @@ export default function MonitorPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-text whitespace-pre-wrap">{m.messageText}</p>
                     <p className="text-xs text-subtle mt-1">
-                      {m.targetEmail ? `Aluno: ${m.targetEmail}` : 'Turma toda'} - {m.createdAt ? new Date(m.createdAt).toLocaleString('pt-BR') : new Date(Number(m.timestamp || Date.now())).toLocaleString('pt-BR')}
+                      {m.targetEmail ? `Aluno: ${messageTargetLabel(m)}` : 'Turma toda'} - {m.createdAt ? new Date(m.createdAt).toLocaleString('pt-BR') : new Date(Number(m.timestamp || Date.now())).toLocaleString('pt-BR')}
                     </p>
                   </div>
                   <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deleteMessageHistory(m.id)}>Excluir</Button>
@@ -1698,7 +1707,7 @@ function reopenedRowLabel(row) {
 // tentativa extra, D18).
 function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange, onClose, onSendMessage, onAdjustTime, onAssignVersion, onReleaseGrades, onStudentAction }) {
   const kind = dialog?.kind
-  const who = dialog?.name || dialog?.email || ''
+  const who = dialog?.name || displayEmail(dialog?.email || '')
   if (kind === 'message') {
     const text = String(dialog.value ?? '')
     const recipient = dialog.email

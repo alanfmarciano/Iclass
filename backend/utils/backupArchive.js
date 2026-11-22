@@ -62,10 +62,13 @@ function folderSources() {
 }
 
 // Pastas que nunca entram num backup, mesmo que uma pasta de origem esteja configurada
-// por cima delas (ICLASS_CONTENT_DIR dentro da pasta de dados, por exemplo).
+// por cima delas (ICLASS_CONTENT_DIR dentro da pasta de dados, por exemplo). data/entregas
+// (arquivos das entregas de tarefa, fase 3, P1 D3 e contrato C7) também: a proteção dela é
+// o espelho no destino externo, e um prefixo novo no ZIP faria versões antigas e a
+// backup-cli antiga recusarem o backup.
 function excludedDirs() {
     const data = runtimePaths.DATA_DIR;
-    return new Set(['tls', 'runtime', 'logs', 'backups', '.backup-trabalho', '.restauracao', 'quarentena', 'lixeira']
+    return new Set(['tls', 'runtime', 'logs', 'backups', '.backup-trabalho', '.restauracao', 'quarentena', 'lixeira', 'entregas']
         .map(name => path.resolve(data, name)));
 }
 

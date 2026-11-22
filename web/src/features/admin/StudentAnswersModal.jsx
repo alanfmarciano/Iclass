@@ -5,6 +5,7 @@ import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { api } from '../../lib/api'
 import { usePolling } from '../../hooks/usePolling'
+import { displayEmail } from '../../lib/studentProfile'
 import { OriginalLetter, reviewLettersNote, seenWithOriginal } from './reviewLetters'
 
 const STATUS_LABEL = {
@@ -73,7 +74,7 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
       onClose={onClose}
       size="lg"
       title={`${student?.name || review?.studentName || 'Aluno'} — respostas`}
-      description={`${student?.email || review?.studentEmail || ''}${review?.assignedVersion ? ` · Versão ${review.assignedVersion}` : ''}`}
+      description={`${displayEmail(student?.email || review?.studentEmail || '')}${review?.assignedVersion ? ` · Versão ${review.assignedVersion}` : ''}`}
       footer={<>
         <Button variant="ghost" onClick={onClose}>Fechar</Button>
         {onOpenResults && <Button variant="secondary" icon={ArrowRight} onClick={onOpenResults}>Ver nos resultados</Button>}

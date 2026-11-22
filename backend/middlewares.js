@@ -25,6 +25,13 @@ const { logError } = require('./utils/errorLog.js');
 const { DB_WRITE_ERROR_MESSAGE } = require('./utils/dbWriter.js');
 const { bindToRequestContext, noteRequestWriteFailure } = require('./utils/persistenceContext.js');
 const {
+    PREVIEW_READ_ONLY,
+    isPreviewReadRequest,
+    previewToken,
+    resolvePreviewSession,
+    sendPreviewEnded,
+} = require('./utils/previewAccess.js');
+const {
     findStudentSession,
     studentSessionByEmail,
     sessionMatchesToken,
@@ -111,7 +118,50 @@ function revokedSessionBody(token, { instructor = false } = {}) {
     return { error, sessionRevoked: true, reason };
 }
 
+// Pré-visualização como aluno (P5-S6a): a prévia deste pedido, conferida sem efeito
+// colateral (utils/previewAccess.js), ou { ok: false, reason }.
+function checkPreviewToken(raw, now = Date.now()) {
+    return resolvePreviewSession(db.memory, raw, { now, canAccessClass: adminCanAccessClass });
+}
+
+// Pedido do portal com x-preview-session: monta o aluno virtual da turma (D19 do P5) sem
+// tocar em nada (sem presença, touchSession, IP ou troca de senha). Fora da lista branca,
+// 403 preview_read_only, também quando o router não passou pelo previewSessionGuard.
+function validatePreviewSession(req, res, next, token) {
+    if (!isPreviewReadRequest(req)) return res.status(403).json({ ...PREVIEW_READ_ONLY });
+    const preview = checkPreviewToken(token);
+    if (!preview.ok) return sendPreviewEnded(res, preview.reason);
+    const student = preview.student;
+    const claimed = [
+        req.body && req.body.email,
+        req.body && req.body.student && req.body.student.email,
+        req.query && req.query.email,
+    ].filter(Boolean).map(value => String(value).trim().toLowerCase());
+    if (claimed.some(value => value !== student.email)) {
+        return res.status(403).json({ error: 'A identidade informada não corresponde à sessão autenticada.' });
+    }
+    req.preview = true;
+    req.previewSession = {
+        id: preview.session.id,
+        courseId: preview.cls.courseId,
+        studentClass: preview.cls.name,
+        groupId: preview.session.groupId || null,
+        adminEmail: preview.session.adminEmail,
+    };
+    req.auth = { role: 'student', email: student.email, student, preview: true };
+    req.studentEmail = student.email;
+    req.studentAccount = student;
+    req.studentSession = null;
+    req.studentPasswordChange = { required: false };
+    req.studentSessionToken = null;
+    return next();
+}
+
 function validateStudentSession(req, res, next) {
+    // Pré-visualização: o cabeçalho x-preview-session vale mais que o token de aluno.
+    const previewHeader = previewToken(req);
+    if (previewHeader) return validatePreviewSession(req, res, next, previewHeader);
+
     const claimedEmails = [
         req.body && req.body.email,
         req.body && req.body.student && req.body.student.email,
@@ -251,6 +301,13 @@ function validateStudentSession(req, res, next) {
 // absoluto e de conta que ainda existe; antes, o token vencido ou de conta apagada
 // continuava entrando aqui. O aluno segue para a validação completa (validateStudentSession).
 function resolveRequester(req) {
+    // Pré-visualização (P5-S6a): com x-preview-session o pedido é do aluno virtual da
+    // prévia, mesmo com outro token junto; validateStudentSession monta o aluno.
+    const preview = previewToken(req);
+    if (preview) {
+        const check = checkPreviewToken(preview);
+        return check.ok ? { role: 'student', email: check.student.email, preview: true } : null;
+    }
     const adminToken = String(req.get('x-admin-session') || '');
     const admin = adminToken ? checkAdminSessionToken(adminToken) : null;
     if (admin && admin.ok) {
@@ -269,6 +326,10 @@ function resolveRequester(req) {
 // conferirem a matrícula na turma antes de devolver qualquer dado de prova.
 function validateAnySession(req, res, next) {
     const requester = resolveRequester(req);
+    if (!requester && previewToken(req)) {
+        if (!isPreviewReadRequest(req)) return res.status(403).json({ ...PREVIEW_READ_ONLY });
+        return sendPreviewEnded(res, checkPreviewToken(previewToken(req)).reason);
+    }
     if (!requester) {
         // Sessão encerrada há pouco por uma ação (Sair, "Redefinir senha", troca de senha):
         // o 401 diz o motivo (H5b). Com token (de aluno ou de instrutor) que o servidor não
@@ -286,7 +347,9 @@ function validateAnySession(req, res, next) {
         return next();
     }
     return validateStudentSession(req, res, () => {
-        req.requester = { role: 'student', email: req.studentEmail };
+        req.requester = req.preview
+            ? { role: 'student', email: req.studentEmail, preview: true }
+            : { role: 'student', email: req.studentEmail };
         return next();
     });
 }
@@ -1448,6 +1511,7 @@ module.exports = {
     DB_CLASSES_FILE,
     DB_ADMINS_FILE,
     normalizeIp,
+    checkPreviewToken,
     validateStudentSession,
     resolveRequester,
     validateAnySession,

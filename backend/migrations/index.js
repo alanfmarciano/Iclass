@@ -9,7 +9,7 @@
 //   AFTER_RESTORE_HOOKS em database.js, na tela Sistema e na backup-cli): as de memória
 //   que faltam ao backup.
 //
-// Cada linha: { id, nome, tipo, run }.
+// Cada linha: { id, nome, tipo, run, dependencias? }.
 // - id: 'AAAA-MM-<grupo>-<nome>' (ex.: '2026-11-p4-ids-alunos'), texto estável, nunca um
 //   número (dois ramos em paralelo não disputam o mesmo número);
 // - nome: o que a migração faz, em português (aparece no console e no erro);
@@ -21,6 +21,9 @@
 // - tipo 'sql': run(sql) para as tabelas próprias (kind 'store', fora da memória), com
 //   sql.run(texto, parâmetros), sql.get e sql.all numa transação dentro da fila de
 //   gravação. Só roda no boot (depois de restaurar, fica para o boot seguinte).
+// - dependencias (opcional): as funções de outros módulos que o run chama (e as
+//   constantes, em { nome: valor }). Entram no hash da linha: mudar uma delas muda o
+//   efeito da migração tanto quanto mudar o run, e o teste de imutabilidade reprova.
 //
 // Regras (shared_contracts da fase 3):
 // - linha que já está no main é IMUTÁVEL: efeito novo é uma linha nova com id novo. O teste
@@ -36,15 +39,16 @@
 // (tela e backup-cli), porque a versão 281029f não recusa um banco migrado e pode gravar
 // dado no formato antigo depois da migração (o Alan volta de versão, abre a pasta antiga).
 // Cada item: { id, nome, run(memory, ctx) => boolean }, idempotente; grava só se mudou. A
-// primeira será ensureStudentIds (P4-S3, trilha C); depois dela vêm a da identidade da
-// instalação (A1), a do token fora do histórico (A4) e a do dia não letivo (B3). As
-// normalizações antigas do init
-// (contas, senhas, studentClass, provas resetadas) continuam onde estão (D2 do P6).
+// primeira é ensureStudentIds (P4-S3, C1); depois dela vêm a da identidade da instalação
+// (A1), a do token fora do histórico (A4) e a do dia não letivo (B3). As normalizações
+// antigas do init (contas, senhas, studentClass, provas resetadas) continuam onde estão
+// (D2 do P6).
 // A marca de dia não letivo na presença do login (B3 / P2-S5) também é daqui: a versão
 // anterior não conhece os dias não letivos e cria presença do login num feriado, e o
 // backup de antes deles volta a presença sem a marca enquanto os dias ficam (missing
 // 'keep'). Só marca o que um dia cadastrado cobre (sem dia cadastrado, não muda nada).
 const academicCalendar = require('../utils/academicCalendar.js');
+const studentIdentity = require('../utils/studentIdentity.js');
 
 const MIGRATIONS = Object.freeze([
     Object.freeze({
@@ -84,6 +88,21 @@ const MIGRATIONS = Object.freeze([
             settings.install = install;
             return changed;
         },
+    }),
+    // Identidade do aluno (C1 / P4-S3, CRIT-05): todo aluno ganha students[].id
+    // ('alu_' + 16 hex). Na restauração de um backup sem ids, o aluno reaproveita o id que o
+    // mesmo e-mail tinha antes (ctx.previousStudentIds).
+    Object.freeze({
+        id: '2026-11-p4-ids-alunos',
+        nome: 'Dá um identificador estável a cada aluno',
+        tipo: 'memoria',
+        run(memory, ctx) {
+            return studentIdentity.ensureStudentIds(memory, ctx);
+        },
+        // O código de ensureStudentIds e de tudo que ele chama entra no hash: depois de
+        // publicada, mudar ensureStudentIds exige uma linha nova (e a normalização de todo
+        // boot abaixo continua chamando a versão atual).
+        dependencias: studentIdentity.ENSURE_STUDENT_IDS_DEPENDENCIES,
     }),
     // Token da prova fora do histórico (P3-S8: AVA-14; D19 do desenho do P3): a tela
     // Provas gravava o token em texto puro em cada configuração salva
@@ -196,6 +215,16 @@ function stripPlainExamHistoryTokens(memory) {
 }
 
 const BOOT_NORMALIZATIONS = Object.freeze([
+    // O mesmo ensureStudentIds em todo boot e depois de toda restauração: a versão 281029f
+    // pode ter aberto o banco já migrado e criado aluno sem id. Religa também os registros
+    // das coleções novas pelo e-mail (handler.relink). É a primeira (contrato modulos_unicos).
+    Object.freeze({
+        id: '2026-11-p4-ids-alunos-sempre',
+        nome: 'Confere o identificador de todo aluno',
+        run(memory, ctx) {
+            return studentIdentity.ensureStudentIds(memory, ctx);
+        },
+    }),
     Object.freeze({
         id: '2026-11-p6-instalacao-sempre',
         nome: 'Confere o código desta instalação',

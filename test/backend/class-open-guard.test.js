@@ -71,6 +71,15 @@ const ROTAS_QUE_GRAVAM = [
     ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/delete'],
     // Feriados nacionais: dia de instituição, passa pelo portão sem turma (dayClass null).
     ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/national-holidays'],
+    // Tarefas (fase 3, C5 / P1-c): o envio do aluno grava a versão da entrega; turma
+    // encerrada recusa com 409 class_closed ("O envio não é mais aceito.").
+    ['studentAssignments.js', 'POST', '/api/student/assignments/:id/submit'],
+    // Tarefas (fase 3, C6 / P1-d): nota (salvar, devolver e refazer), "devolver todas",
+    // entrega em mãos e prorrogação gravam a entrega; turma encerrada recusa com 409.
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/grade'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/return-all'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/manual-entry'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/extension'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo.
@@ -111,6 +120,10 @@ const DIRECT_WRITE_MARKERS = [
     /saveApplicationAction\(/,
     // Nota mudada no registro da entrega (recorreção, troca da finalização do servidor).
     /\bsubmission\.score\s*=(?!=)/,
+    // Entregas de tarefa (fase 3, P1): versão do aluno, nota, devolução, refazer e entrega
+    // em mãos gravam em assignmentSubmissions.
+    /\.assignmentSubmissions\.(?:push|splice)\(/,
+    /only:\s*\[[^\]]*['"]assignmentSubmissions['"]/,
 ];
 
 const UTILS_DIR = path.join(__dirname, '../../backend/utils');

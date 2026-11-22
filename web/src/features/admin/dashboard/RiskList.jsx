@@ -41,7 +41,7 @@ export function RiskList({ students = [], semDado = 0, limiar = 75, onOpen, grad
   return (
     <div className="premium-card flex flex-col rounded-2xl p-0">
       {students.map((o) => (
-        <button key={o.email} onClick={() => onOpen(o.email)}
+        <button key={o.email} onClick={() => onOpen(o)}
           className="flex items-start gap-3.5 border-b border-border px-5 py-3.5 text-left transition-colors last:border-0 hover:bg-surface-2">
           <span className="mt-0.5 grid h-9 w-9 flex-none place-items-center rounded-full bg-primary-soft text-xs font-semibold text-primary">{initials(o.name)}</span>
           <span className="min-w-0 flex-1">
