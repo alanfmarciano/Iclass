@@ -30,7 +30,7 @@
 //   bankKey (questão que veio do banco).
 // Questão antiga sem type é 'multiple_choice' e sem points vale 1 ponto (D1): o modelo só
 // é aplicado quando alguém salva; nada é reescrito no boot.
-const { QUESTION_TYPES, normalizeShortAnswer } = require('./examScoring.js');
+const { QUESTION_TYPES, alternativeLetters, normalizeShortAnswer } = require('./examScoring.js');
 const { bool, either, formatCount, list, num, shape, str } = require('./inputSchema.js');
 
 const LIMITS = Object.freeze({
@@ -458,6 +458,51 @@ function normalizeQuestion(input, { index = 0, context = 'avaliacao', previous =
     return question;
 }
 
+// Só o gabarito de uma questão já aplicada (corrigir o gabarito depois do encerramento,
+// P3-S6: AVA-X2, D14 do P3). O tipo, o enunciado, as alternativas e os pontos ficam os da
+// questão aplicada (previous); o pedido traz só a resposta certa do tipo dela:
+// - uma correta e verdadeiro ou falso: correctAnswer, a letra original da alternativa (a
+//   do gabarito e das respostas guardadas; no V/F também 'V' e 'F');
+// - várias corretas: correctAnswers, as letras originais (pelo menos uma);
+// - numérica: numeric { value, tolerance? } (sem tolerância, fica a de antes; a unidade
+//   não muda);
+// - resposta curta: acceptedAnswers (1 a 20, até 300 cada).
+// A dissertativa não tem resposta certa automática (400). Devolve o gabarito no formato
+// da questão: { type, correctAnswer } | { type, correctAnswers } | { type, numeric } |
+// { type, acceptedAnswers }.
+function normalizeAnswerKey(previous, input = {}) {
+    const fail = text => questionError(messageFor('ao_vivo', 0, text));
+    const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    const type = normalizeType('', previous, fail);
+    if (type === 'essay') throw fail('a dissertativa não tem resposta certa automática: a nota dela é dada pelo professor.');
+    const letters = type === 'true_false' ? ['A', 'B'] : alternativeLetters(previous);
+    if (type === 'multiple_choice' || type === 'true_false') {
+        let letter = typeof source.correctAnswer === 'string' ? source.correctAnswer.trim().toUpperCase() : '';
+        if (type === 'true_false') {
+            if (letter === 'V' || letter === 'VERDADEIRO') letter = 'A';
+            if (letter === 'F' || letter === 'FALSO') letter = 'B';
+        }
+        if (!letter) throw fail(type === 'true_false' ? 'marque se a afirmação é verdadeira ou falsa.' : 'escolha a alternativa certa.');
+        if (!letters.includes(letter)) throw fail('a resposta certa precisa ser uma das alternativas da questão.');
+        return { type, correctAnswer: letter };
+    }
+    if (type === 'multiple_answer') {
+        const chosen = [...new Set(upperLetters(source.correctAnswers))].sort();
+        if (!chosen.length) throw fail('marque pelo menos uma alternativa certa.');
+        if (chosen.some(letter => !letters.includes(letter))) throw fail('as respostas certas precisam ser letras das alternativas da questão.');
+        return { type, correctAnswers: chosen };
+    }
+    if (type === 'numeric') {
+        const requested = source.numeric && typeof source.numeric === 'object' && !Array.isArray(source.numeric) ? source.numeric : {};
+        const before = previous?.numeric && typeof previous.numeric === 'object' ? previous.numeric : {};
+        const tolerance = requested.tolerance === undefined || requested.tolerance === null || requested.tolerance === ''
+            ? before.tolerance
+            : requested.tolerance;
+        return { type, numeric: normalizeNumeric({ numeric: { value: requested.value, tolerance, unit: before.unit } }, fail) };
+    }
+    return { type, acceptedAnswers: normalizeAcceptedAnswers({ acceptedAnswers: source.acceptedAnswers }, fail) };
+}
+
 // Questões de uma avaliação (POST e PUT /api/admin/evaluation): número e número original
 // pela posição, como sempre.
 function normalizeEvaluationQuestions(questions, { context = 'avaliacao' } = {}) {
@@ -480,6 +525,7 @@ module.exports = {
     REVIEW_MODES,
     TRUE_FALSE_ALTERNATIVES,
     TYPE_LABELS,
+    normalizeAnswerKey,
     normalizeEvaluationQuestions,
     normalizeQuestion,
     questionInputFields,

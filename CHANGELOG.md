@@ -44,6 +44,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Exceção por aluno: até 5 tentativas extras e, com o cronômetro "Quando cada aluno iniciar", um prazo "Pode começar até" só para aquele aluno, com motivo. Cada mudança fica na Auditoria.
 - O aluno com exceção vê o próprio limite ("Tentativa 1 de 2") no cartão da prova e, nas instruções, o limite e o prazo "Pode começar até". Quem começou antes do prazo continua a prova depois dele, sem aviso de prazo terminado. Na segunda chamada, quem já fez a prova do curso conta como feito também na versão "só desta turma".
 
+### Corrigir o gabarito depois da prova
+- Gabarito errado descoberto depois de encerrar a prova agora se corrige, em vez de só anular a questão: em Provas, "Aplicações anteriores", a preparação mostra as aplicações online feitas com ela e cada uma (encerrada ou em andamento) tem "Corrigir gabarito". Vale para uma correta, verdadeiro ou falso, várias corretas, numérica (valor e tolerância) e resposta curta (respostas aceitas).
+- "Ver impacto" mostra antes de gravar quem muda de nota, de quanto para quanto e quantas já estavam publicadas ("Muda a nota de 7 alunos (3 já publicadas: eles serão avisados)."). O motivo é obrigatório e fica no histórico da nota, na Auditoria e no registro da aplicação.
+- Só a resposta certa muda: o texto e a ordem da prova ficam como os alunos viram, inclusive nas versões embaralhadas (o gabarito impresso de cada versão acompanha). Quem marcou a resposta certa ganha o ponto e quem marcou a errada perde.
+- O aluno que já tinha a nota publicada e teve a nota mudada recebe "Nota alterada" no sino, com o número da questão na prova dele.
+- Questão anulada pode ser corrigida marcando "Tirar a anulação".
+
 ### Ações por aluno no Monitor
 - Na linha de cada aluno, o botão "⋯" (Mais ações) traz "Recolher prova" (entrega na hora, com as respostas já salvas), "Reabrir prova" (a entrega volta para a mesma tentativa, com as respostas e o tempo que faltava, sem contar como tentativa nova; pede o motivo) e "Dar tentativa extra" (até 5, só para aluno ativo). Tudo fica na Auditoria e no registro da aplicação. O menu abre junto do botão mesmo com a página rolada, no computador e no celular.
 - O aluno vê "Prova recolhida pelo professor" quando a prova é recolhida e "O professor reabriu a sua prova" quando ela volta. No Monitor e em Resultados, a entrega aparece como "Recolhida pelo professor" ou "Reaberta pelo professor".

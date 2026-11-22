@@ -15,6 +15,8 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useBranding } from '../../context/BrandingProvider'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
 import { schoolFromBranding } from '../../lib/printDocument'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { FinishApplicationModal } from './FinishApplicationModal'
@@ -153,6 +155,9 @@ function historyLabel(entry, index) {
 
 export default function ProvasPage() {
   const toast = useToast()
+  const auth = useAuth()
+  // Corrigir o gabarito depois da prova recorrige notas: page.results (P3-S6).
+  const canCorrectAnswerKey = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const navigate = useNavigate()
   const { branding } = useBranding()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
@@ -767,6 +772,14 @@ export default function ProvasPage() {
           onBack={() => setViewApplication(null)}
           onReprint={() => reprintHistory(viewApplication)}
           onApplyOnline={() => openHistoryApplication(viewApplication)}
+          applications={applications.filter((application) => application.historyId && application.historyId === viewApplication.id)}
+          canCorrectAnswerKey={canCorrectAnswerKey}
+          onAnswerKeyCorrected={(response) => {
+            const changed = Number(response?.changed) || 0
+            const notified = Number(response?.notifiedStudents) || 0
+            toast.success(`Gabarito corrigido. ${changed === 1 ? '1 nota mudou' : `${changed} notas mudaram`}${notified ? ` e ${notified === 1 ? '1 aluno foi avisado' : `${notified} alunos foram avisados`}` : ''}.`)
+            loadExamState().catch((error) => toast.error(error.message))
+          }}
         />
       ) : (
       <>

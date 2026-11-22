@@ -39,6 +39,9 @@ const { extractStudentFields, validateStudentFields, DEFAULT_STATUS, studentClas
 const { recordLoginLog } = require('../utils/security.js');
 const legalAcceptance = require('../utils/legalAcceptance.js');
 const studentFeeds = require('../utils/studentFeeds.js');
+// Provedor do sino "Nota alterada" (gabarito corrigido depois da prova, P3-S6): registra-se
+// ao carregar, para o sino abaixo juntar os itens dele.
+require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');

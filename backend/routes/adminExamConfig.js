@@ -35,9 +35,22 @@ const {
 } = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
 const { assertClassOpen } = require('../utils/academicCalendar.js');
-const { normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
+const { normalizeAnswerKey, normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
+const {
+    CORRECTABLE_STATUSES,
+    annulmentOf,
+    answerKeyOf,
+    applyAnswerKey,
+    describeAnswerKey,
+    previewAnswerKeyRegrade,
+    questionPositionInSubmission,
+    questionWasReplaced,
+    sameAnswerKey,
+} = require('../utils/examAnswerKeyCorrection.js');
+const { markGradeChangeNotice } = require('../utils/gradeChangeNotices.js');
+const { compareText } = require('../utils/textSearch.js');
 const { bankItemQuestion } = require('../utils/questionBank.js');
-const { body, either, int, shape, str } = require('../utils/inputSchema.js');
+const { body, bool, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
 const {
     AUDIENCE_INPUT_FIELDS,
     MAX_EXTRA_ATTEMPTS,
@@ -398,10 +411,21 @@ function markQuestionReports(application, question, action, actor, reportIds = n
     return updated;
 }
 
+// Configuração da turma para a prova quando ela é a DESTA aplicação; senão (aplicação
+// encerrada e outra preparada ou aplicada depois), a montada da própria aplicação. Antes a
+// recorreção de uma aplicação antiga lia a configuração da aplicação mais nova (e as
+// anulações dela, quando a antiga não tinha nenhuma).
+function onlineConfigForApplication(cls, application) {
+    const current = cls.onlineExamConfigs?.[application.examKey];
+    if (current && (!current.applicationId || current.applicationId === application.id)) return current;
+    return applicationToOnlineConfig(application, {});
+}
+
 // Recorrige as entregas da aplicação. Nota que mudou vai para o scoreHistory da
-// entrega e para a auditoria do aluno, com o motivo (AVA-08).
-function regradeApplicationSubmissions(application, cls, { req = null, reason = '' } = {}) {
-    const onlineConfig = cls.onlineExamConfigs?.[application.examKey] || applicationToOnlineConfig(application, {});
+// entrega e para a auditoria do aluno, com o motivo (AVA-08). changed (opcional): lista
+// que recebe as entregas cuja nota mudou.
+function regradeApplicationSubmissions(application, cls, { req = null, reason = '', changed = null } = {}) {
+    const onlineConfig = onlineConfigForApplication(cls, application);
     const evaluation = db.memory.evaluations?.[application.examKey] || null;
     const by = req ? adminActor(req) : 'sistema';
     let updated = 0;
@@ -423,6 +447,7 @@ function regradeApplicationSubmissions(application, cls, { req = null, reason = 
             });
             const last = Array.isArray(submission.scoreHistory) ? submission.scoreHistory[submission.scoreHistory.length - 1] : null;
             if (last && audit) last.auditId = audit.id;
+            if (Array.isArray(changed)) changed.push(submission);
         }
     });
     return updated;
@@ -458,6 +483,31 @@ const LIVE_QUESTION_SCHEMA = body({
     questionNumber: either([int({ min: 1, max: 100000, label: 'número da questão' }), str({ max: 10, label: 'número da questão' })], { nullable: true, label: 'número da questão' }),
     question: questionInputSchema({ nullable: true }),
 });
+
+// Pedido da correção do gabarito depois da prova (P3-S6: AVA-X2, D14 do P3). Só a
+// resposta certa do tipo da questão (utils/questionModel.js normalizeAnswerKey) e o motivo;
+// dryRun devolve a prévia do impacto sem gravar; tirarAnulacao corrige uma questão que
+// tinha sido anulada (a anulação vale por cima do gabarito).
+const ANSWER_KEY_MOTIVO_MIN = 5;
+const ANSWER_KEY_MOTIVO_MAX = 500;
+const ANSWER_KEY_PREVIEW_LIMIT = 300;
+const ANSWER_KEY_CORRECTION_SCHEMA = body({
+    questionNumber: int({ min: 1, max: 100000, coerce: true, label: 'número da questão' }),
+    correctAnswer: str({ max: 20, nullable: true, label: 'resposta certa' }),
+    correctAnswers: list(str({ max: 5, label: 'respostas certas' }), { max: 26, nullable: true, label: 'respostas certas' }),
+    numeric: shape({
+        value: either([num({ label: 'valor da resposta numérica' }), str({ max: 40, label: 'valor da resposta numérica' })], { nullable: true, label: 'valor da resposta numérica' }),
+        tolerance: either([num({ label: 'tolerância' }), str({ max: 40, label: 'tolerância' })], { nullable: true, label: 'tolerância' }),
+    }, { nullable: true, label: 'resposta numérica' }),
+    acceptedAnswers: list(str({ max: 300, nullable: true, label: 'respostas aceitas' }), { max: 50, nullable: true, label: 'respostas aceitas' }),
+    motivo: str({ max: ANSWER_KEY_MOTIVO_MAX, label: 'motivo' }),
+    dryRun: bool({ nullable: true, label: 'prévia' }),
+    tirarAnulacao: bool({ nullable: true, label: 'tirar a anulação' }),
+});
+
+function annulmentModeLabel(annulment) {
+    return annulment && annulment.mode === 'ponto_para_todos' ? 'ponto para todos' : 'removida do total';
+}
 
 // Questão da aplicação como a correção a vê: a do snapshot por cima da avaliação, com o
 // tipo, os pontos e o gabarito do snapshot (attemptQuestion, como em questionsForAttempt).
@@ -552,6 +602,7 @@ const DESCRIBED_HERE = new Set([
     'exam_attempt_reopened_by_instructor',
     'exam_access_token_revealed',
     'exam_application_token_regenerated',
+    'exam_answer_key_corrected',
 ]);
 
 function describeMonitorActionAudit(entry, nameByEmail) {
@@ -574,6 +625,18 @@ function describeMonitorActionAudit(entry, nameByEmail) {
         };
     }
     if (entry.type === 'exam_access_token_revealed') return { title: 'Token da prova mostrado de novo', detail: '' };
+    if (entry.type === 'exam_answer_key_corrected') {
+        const changed = Number(details.changed) || 0;
+        return {
+            title: `Gabarito da questão ${details.questionNumber} corrigido: ${details.antes || '—'} → ${details.depois || '—'}`,
+            detail: join(
+                changed === 0 ? 'nenhuma nota mudou' : `${changed} ${changed === 1 ? 'nota mudou' : 'notas mudaram'}`,
+                details.notifiedStudents ? `${details.notifiedStudents} ${details.notifiedStudents === 1 ? 'aluno avisado' : 'alunos avisados'}` : '',
+                details.tirouAnulacao ? 'anulação retirada' : '',
+                details.motivo ? `motivo: ${details.motivo}` : '',
+            ),
+        };
+    }
     if (entry.type === 'exam_application_token_regenerated') return { title: 'Token da prova trocado', detail: '' };
     return null;
 }
@@ -1430,6 +1493,169 @@ function createAdminExamConfigRouter() {
                 });
                 await db.save();
                 res.json({ success: true, replacementNumber, extraMinutes, regraded, config: onlineConfig });
+            } catch (error) {
+                return sendRouteError(error, req, res);
+            }
+        });
+    });
+
+    // Corrigir o gabarito depois da prova (P3-S6: AVA-X2; D14 do P3). O caso típico: um
+    // aluno reclama depois do encerramento e a letra certa era outra. Vale com a prova em
+    // andamento ou encerrada (cancelada: 409; antes de começar, a questão se corrige no
+    // editor), muda só o gabarito da questão nas versões da aplicação (o texto e a ordem
+    // ficam), recorrige todas as entregas (nota anterior no scoreHistory com o motivo e
+    // grade_regrade por aluno), registra exam_answer_key_corrected e avisa no sino quem
+    // tinha a nota publicada e teve a nota mudada. dryRun: a prévia do impacto, sem gravar.
+    // Repetir a mesma correção não muda nada. assertClassOpen antes de gravar (sem efeito
+    // até o B10). page.results pelo guarda (o professor auxiliar não muda nota).
+    router.post('/api/admin/exam-applications/:applicationId/answer-key-correction', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            try {
+                if (!ANSWER_KEY_CORRECTION_SCHEMA.check(req, res)) return;
+                const { application, cls } = applicationForAdminRequest(req.params.applicationId);
+                if (!canManageApplication(matchedAdmin, application)) {
+                    return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
+                }
+                // Turma encerrada não tem gabarito corrigido nem nota recorrigida (sem efeito
+                // até o B10).
+                if (!assertClassOpen(cls, { res })) return;
+                if (application.status === 'cancelled') {
+                    return res.status(409).json({ error: 'Esta aplicação foi cancelada: não há nota para corrigir.', code: 'application_cancelled' });
+                }
+                if (!CORRECTABLE_STATUSES.has(application.status)) {
+                    return res.status(409).json({ error: 'A aplicação ainda não começou: corrija a questão no editor da prova.', code: 'application_not_started' });
+                }
+                const number = Number(req.body.questionNumber);
+                if (!Number.isInteger(number) || number < 1) return res.status(400).json({ error: 'Escolha a questão.', field: 'questionNumber' });
+                const motivo = String(req.body.motivo || '').trim();
+                if (motivo.length < ANSWER_KEY_MOTIVO_MIN) {
+                    return res.status(400).json({ error: `Escreva o motivo da correção (pelo menos ${ANSWER_KEY_MOTIVO_MIN} caracteres).`, field: 'motivo' });
+                }
+                const previous = resolvedLiveQuestion(application, number);
+                if (!previous) return res.status(404).json({ error: 'Questão não encontrada nesta aplicação.' });
+                if (questionWasReplaced(application, number)) {
+                    return res.status(409).json({
+                        error: `A questão ${number} foi trocada durante a aplicação: corrija a questão que entrou no lugar dela.`,
+                        code: 'question_replaced',
+                    });
+                }
+                const key = normalizeAnswerKey(previous, req.body);
+                const annulment = annulmentOf(application, number);
+                const removeAnnulment = !!annulment && req.body.tirarAnulacao === true;
+                if (annulment && !removeAnnulment) {
+                    return res.status(409).json({
+                        error: `A questão ${number} está anulada nesta aplicação (${annulmentModeLabel(annulment)}), e a anulação vale por cima do gabarito. Para corrigir pelo gabarito novo, tire a anulação.`,
+                        code: 'question_annulled',
+                        annulment: { mode: annulment.mode, reason: annulment.reason || '' },
+                    });
+                }
+                const before = answerKeyOf(previous);
+                const question = {
+                    number,
+                    type: key.type,
+                    antes: describeAnswerKey(before, previous),
+                    depois: describeAnswerKey(key, previous),
+                };
+                if (sameAnswerKey(before, key) && !removeAnnulment) {
+                    return res.json({
+                        success: true,
+                        unchanged: true,
+                        dryRun: req.body.dryRun === true,
+                        question,
+                        regraded: 0,
+                        changed: 0,
+                        notifiedStudents: 0,
+                        message: `O gabarito da questão ${number} já é este: nenhuma nota muda.`,
+                    });
+                }
+                const evaluation = db.memory.evaluations?.[application.examKey] || null;
+                const withoutAnnulment = target => {
+                    target.annulledQuestions = (Array.isArray(target.annulledQuestions) ? target.annulledQuestions : [])
+                        .filter(entry => Number(entry?.questionNumber) !== number);
+                    return target;
+                };
+
+                if (req.body.dryRun === true) {
+                    const draft = removeAnnulment ? withoutAnnulment({ ...application }) : application;
+                    const preview = previewAnswerKeyRegrade({
+                        application: draft,
+                        submissions: db.memory.submissions || [],
+                        onlineConfig: onlineConfigForApplication(cls, application),
+                        evaluation,
+                        number,
+                        key,
+                    });
+                    const students = preview.changes
+                        .map(change => ({
+                            submissionId: change.submission.id,
+                            name: displayName(change.submission.student || {}) || change.submission.student?.email || 'Aluno',
+                            from: change.from,
+                            to: change.to,
+                            published: change.submission.gradePublished === true,
+                        }))
+                        .sort((a, b) => compareText(a.name, b.name));
+                    return res.json({
+                        success: true,
+                        dryRun: true,
+                        question,
+                        tirarAnulacao: removeAnnulment,
+                        regraded: preview.regraded,
+                        changed: students.length,
+                        published: students.filter(student => student.published).length,
+                        students: students.slice(0, ANSWER_KEY_PREVIEW_LIMIT),
+                    });
+                }
+
+                const actor = adminActor(req);
+                const at = new Date().toISOString();
+                applyAnswerKey(application, number, key);
+                if (removeAnnulment) withoutAnnulment(application);
+                application.updatedAt = at;
+                markQuestionReports(application, number, 'corrected', actor);
+                // A configuração da turma acompanha só quando é a desta aplicação (outra pode
+                // ter sido preparada depois do encerramento).
+                const current = cls.onlineExamConfigs?.[application.examKey];
+                if (current && current.applicationId === application.id) syncApplicationConfig(cls, application);
+                const changedSubmissions = [];
+                const reason = `gabarito da questão ${number} corrigido (${question.antes || '—'} → ${question.depois || '—'})`
+                    + `${removeAnnulment ? ' e anulação retirada' : ''} · motivo: ${motivo}`;
+                const regraded = regradeApplicationSubmissions(application, cls, { req, reason, changed: changedSubmissions });
+                let notifiedStudents = 0;
+                changedSubmissions.forEach(submission => {
+                    if (markGradeChangeNotice(submission, { tipo: 'gabarito_corrigido', numeroNaProva: questionPositionInSubmission(submission, number) })) {
+                        notifiedStudents += 1;
+                    }
+                });
+                const correction = {
+                    questionNumber: number,
+                    tipo: key.type,
+                    antes: question.antes,
+                    depois: question.depois,
+                    motivo,
+                    por: actor,
+                    em: at,
+                    regraded,
+                    changed: changedSubmissions.length,
+                    notifiedStudents,
+                    ...(removeAnnulment ? { tirouAnulacao: annulment.mode } : {}),
+                };
+                if (!Array.isArray(application.answerKeyCorrections)) application.answerKeyCorrections = [];
+                application.answerKeyCorrections.push(correction);
+                recordExamAudit('exam_answer_key_corrected', application, actor, {
+                    questionNumber: number,
+                    tipo: key.type,
+                    antes: question.antes,
+                    depois: question.depois,
+                    motivo,
+                    regraded,
+                    changed: changedSubmissions.length,
+                    notifiedStudents,
+                    ...(removeAnnulment ? { tirouAnulacao: annulment.mode } : {}),
+                });
+                // Entrega antiga mudada: gravação completa (submissions é append; regra do
+                // registro em database.js).
+                await db.save();
+                res.json({ success: true, question, regraded, changed: changedSubmissions.length, notifiedStudents, correction });
             } catch (error) {
                 return sendRouteError(error, req, res);
             }

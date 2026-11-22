@@ -60,6 +60,8 @@ const ROTAS_QUE_GRAVAM = [
     ['adminExamConfig.js', 'POST', '/api/admin/replace-question'],
     // Ações por aluno do Monitor (A4, P3-S8): recolher e reabrir mexem em entrega e nota.
     ['adminExamConfig.js', 'POST', '/api/admin/exam-applications/:applicationId/attempt-action'],
+    // Corrigir o gabarito depois da prova (A8, P3-S6) recorrige as entregas da aplicação.
+    ['adminExamConfig.js', 'POST', '/api/admin/exam-applications/:applicationId/answer-key-correction'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo.

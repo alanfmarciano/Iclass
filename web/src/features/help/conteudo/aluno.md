@@ -73,6 +73,10 @@ Cada questão mostra quanto vale. Se você apagar uma resposta, a questão volta
 
 Quando a prova tem questão dissertativa, a tela final diz "Sua prova foi entregue. As dissertativas serão corrigidas." A nota aparece em Provas depois que o professor corrigir e liberar.
 
+### Nota alterada
+
+Se o professor descobrir, depois da prova, que a resposta certa de uma questão era outra, ele corrige o gabarito e as notas são recalculadas. Se a sua nota já tinha saído e mudou, o sino mostra **Nota alterada** com o número da questão na sua prova. A nota nova aparece em Provas.
+
 ## Atividades {#atividades}
 
 <!-- P1 (C9) escreve aqui: enviar trabalho pelo celular, prazos, comprovante e devolução. -->
