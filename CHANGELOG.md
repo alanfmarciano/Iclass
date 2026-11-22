@@ -18,12 +18,12 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - "Salvar no banco" vale para os seis tipos de questão.
 
 ### Banco de questões com os tipos novos, metadados e estatística
-- O banco de questões guarda os seis tipos, com pontos, gabarito, explicação, dificuldade, habilidades, etiquetas e categoria. Antes, só as de "Uma correta" e de verdadeiro ou falso podiam ir para o banco.
+- O banco de questões guarda os seis tipos, com pontos, gabarito, explicação, dificuldade, habilidades, etiquetas e categoria. Antes, pela tela, só as de "Uma correta" podiam ir para o banco.
 - Em Provas, o botão "Ver banco de questões" abre o banco também fora do editor. A lista filtra por busca (sem acento), categoria, tipo, dificuldade e etiqueta, e cada questão mostra o tipo, a dificuldade, a resposta, as etiquetas, em quantas aplicações foi usada e o % de acerto (só das entregas consideradas das suas turmas). A prova impressa conta também: as respostas lançadas pelo cartão-resposta entram no % de acerto.
 - "Editar" e "Nova questão" usam o mesmo cartão do editor da prova. Cada alteração sobe a revisão e fica na Auditoria; salvar sem mudar nada não grava.
 - "Arquivar" tira a questão da lista sem apagar; "Mostrar arquivadas" mostra de novo e "Desarquivar" devolve. "Excluir" pergunta antes.
 - A questão adicionada do banco aparece com a etiqueta "Do banco" e não é salva no banco de novo. Se você muda o enunciado ou o gabarito dela na prova, ela vira uma questão da prova: a etiqueta sai, "Salvar no banco" volta a funcionar e os usos e acertos dela não contam mais para a questão do banco (desfazer a mudança religa). Na troca de questão do Monitor, a nova questão vem com o tipo, os pontos e o gabarito dela, e a lista mostra o tipo e a resposta.
-- O professor só altera, arquiva ou exclui questões do banco das avaliações dele.
+- O professor vê, altera, arquiva e exclui as questões do banco que vieram das avaliações dele e as do acervo comum (criadas por "Nova questão", sem prova de origem), que todo professor vê e pode alterar. As que vieram de avaliação de outro professor ele não vê.
 
 ### Prova do aluno com os tipos novos de questão
 - Na prova, cada tipo de questão tem o seu campo: verdadeiro ou falso em dois botões grandes, "Marque todas as corretas." com caixas de marcar, número com o teclado numérico do celular (aceita vírgula) e a unidade ao lado, resposta curta numa linha e dissertativa numa área que cresce, com o contador "1.230 de 10.000". Cada questão mostra quanto vale ("2 pontos").

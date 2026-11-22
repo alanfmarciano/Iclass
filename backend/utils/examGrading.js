@@ -69,11 +69,13 @@ function freezeSnapshotGrading(snapshots, evaluation) {
                 if (source && source[field] !== undefined && source[field] !== null) frozen[field] = clone(source[field]);
             });
             // Questão vinda do banco (P3-S9a): a chave do banco vem da avaliação, não do
-            // navegador; é por ela que o banco conta usos e acertos.
-            if (source) {
-                delete frozen.bankKey;
-                if (typeof source.bankKey === 'string' && source.bankKey) frozen.bankKey = source.bankKey;
-            }
+            // navegador; é por ela que o banco conta usos e acertos. O snapshot daqui é
+            // sempre o que o navegador montou (exam-history/add), então bankKey e
+            // sourceBankKey dele nunca ficam: sourceBankKey só nasce no servidor, na troca
+            // de questão do Monitor, e uma questão sem origem na avaliação fica sem chave.
+            delete frozen.bankKey;
+            delete frozen.sourceBankKey;
+            if (source && typeof source.bankKey === 'string' && source.bankKey) frozen.bankKey = source.bankKey;
             return frozen;
         });
     });

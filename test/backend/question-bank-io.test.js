@@ -279,6 +279,33 @@ test('[UC-BANCO-001] filtros por categoria, tipo, dificuldade, etiqueta e busca;
     assert.deepEqual(types(await get('?tipo=essay&tipo=numeric')), ['numeric']);
 });
 
+// Rodada de ajuste 2 do A7: a categoria do item aceita 500 caracteres (vem do tema da
+// prova pelo "Salvar no banco"), mas o filtro ?categoria= recusava mais de 80, e a tela,
+// que filtra pela categoria inteira de "categorias", mostrava o erro com a lista sem filtro.
+test('[UC-BANCO-001] filtro de categoria aceita a categoria inteira (até 500 caracteres), como a criação', async () => {
+    seed();
+    const longCategory = `Camada de transporte e ${'protocolos orientados a conexão '.repeat(16)}`.slice(0, 499) + 'x';
+    assert.equal(longCategory.length, 500);
+    const ninety = longCategory.slice(0, 90).trim();
+    await create(ITEMS.multiple_choice, { category: longCategory });
+    await create(ITEMS.true_false, { category: ninety });
+    await create(ITEMS.numeric, { category: 'Redes' });
+    const get = async query => (await asAdmin('get', `/api/admin/question-bank${query}`).expect(200)).body;
+    const facets = await get('');
+    assert.ok(facets.categorias.includes(longCategory), 'a categoria vai inteira para a tela');
+    assert.ok(facets.categorias.includes(ninety));
+    const filtered = await get(`?categoria=${encodeURIComponent(longCategory)}`);
+    assert.deepEqual(filtered.questions.map(question => question.type), ['multiple_choice']);
+    assert.deepEqual((await get(`?categoria=${encodeURIComponent(ninety)}`)).questions.map(question => question.type), ['true_false']);
+    // Mais que a categoria aceita continua recusado, com o teto certo na mensagem.
+    const refused = await asAdmin('get', `/api/admin/question-bank?categoria=${'x'.repeat(501)}`);
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.field, 'categoria');
+    assert.match(refused.body.error, /500 caracteres/);
+    // A busca e a etiqueta continuam com o teto de 80.
+    assert.equal((await asAdmin('get', `/api/admin/question-bank?tag=${'x'.repeat(81)}`)).body.field, 'tag');
+});
+
 test('[UC-BANCO-001] estatística: usos e % de acerto contam só entregas consideradas e só as turmas de quem vê', () => {
     const snapshot = (keys) => [{ version: 'A', questions: keys.map((key, index) => ({ originalNumber: index + 1, ...(key ? { bankKey: key } : {}) })) }];
     const answer = (questionNumber, fields) => ({ questionNumber, ...fields });
@@ -399,6 +426,45 @@ test('[UC-BANCO-001] questão vinda do banco leva bankKey até a entrega, e a es
     const byKey = Object.fromEntries(list.body.questions.map(question => [question.key, question.stats]));
     assert.deepEqual(byKey[fromBank.key], { usos: 1, respostas: 1, pendentes: 0, acertoPct: 100 });
     assert.deepEqual(byKey[numericItem.key], { usos: 1, respostas: 1, pendentes: 0, acertoPct: 100 });
+});
+
+// Rodada de ajuste 2 do A7: freezeSnapshotGrading apagava só o bankKey, e só da questão
+// com origem na avaliação; um sourceBankKey (ou um bankKey numa questão que não está na
+// avaliação) mandado em exam-history/add ficava no snapshot e contava como uso do item.
+test('[UC-BANCO-001] exam-history/add não aceita chave do banco vinda do navegador (sourceBankKey nem questão sem origem)', async () => {
+    seed();
+    const fromBank = await create(ITEMS.multiple_choice);
+    const outsider = await create(ITEMS.true_false);
+    const put = await asAdmin('put', `/api/admin/evaluation/${examKey}`).send({
+        title: 'Prova de redes', theme: 'Redes', rubric: '',
+        questions: [
+            { ...ITEMS.multiple_choice, bankKey: fromBank.key },
+            { type: 'true_false', text: 'Questão própria da prova.', correctAnswer: 'B' },
+        ],
+    });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    const printSnapshot = browserSnapshot(put.body.evaluation);
+    const questions = printSnapshot[0].questions;
+    questions[0].sourceBankKey = outsider.key;
+    questions[1] = { ...questions[1], sourceBankKey: outsider.key };
+    delete questions[1].bankKey;
+    // Questão que não existe na avaliação, com bankKey e sourceBankKey.
+    questions.push({ originalNumber: 9, examNumber: 3, text: 'Inventada', questionText: 'Inventada', alternatives: [], bankKey: outsider.key, sourceBankKey: outsider.key });
+    for (const type of ['impressa', 'online']) {
+        const history = await asAdmin('post', '/api/admin/exam-history/add').send({
+            studentClass, courseId, examKey, type, label: type, questionNumbers: [1, 2], printSnapshot,
+        });
+        assert.equal(history.status, 200, JSON.stringify(history.body));
+        const frozen = history.body.entry.versionSnapshots[0].questions;
+        assert.equal(frozen[0].bankKey, fromBank.key, 'a chave da avaliação fica');
+        frozen.forEach(question => assert.equal('sourceBankKey' in question, false, 'sourceBankKey do navegador sai'));
+        assert.equal('bankKey' in frozen[1], false);
+        assert.equal('bankKey' in frozen[2], false, 'questão sem origem na avaliação fica sem chave');
+        assert.equal(JSON.stringify(history.body.entry.versionSnapshots).includes(outsider.key), false);
+    }
+    const stats = Object.fromEntries((await asAdmin('get', '/api/admin/question-bank').expect(200)).body.questions.map(question => [question.key, question.stats]));
+    assert.equal(stats[outsider.key].usos, 0, 'o item que não está na prova não ganha uso');
+    assert.equal(stats[fromBank.key].usos, 1, 'a turma conta um uso por questão, impressa ou online');
 });
 
 // Rodada de ajuste 1 do A7: a prova impressa contava como uso, mas as respostas lançadas

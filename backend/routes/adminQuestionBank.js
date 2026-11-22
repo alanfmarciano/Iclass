@@ -34,6 +34,7 @@ const { body, bool, str } = require('../utils/inputSchema.js');
 const { questionInputFields } = require('../utils/questionModel.js');
 const {
     DEFAULT_CATEGORY,
+    QUESTION_CATEGORY_MAX_CHARS,
     applyBankQuestion,
     bankFacets,
     bankItemForScreen,
@@ -47,10 +48,8 @@ const {
     questionBankStats,
 } = require('../utils/questionBank.js');
 
-// Categoria do banco: a tela manda o tema da prova (ou o nome da unidade). O teto é o
-// mesmo do campo Tema do editor (500, com contador): o schema nunca recusa o que a tela
-// deixa digitar (decisões §12, sobra do H9b).
-const QUESTION_CATEGORY_MAX_CHARS = 500;
+// Categoria do banco: até QUESTION_CATEGORY_MAX_CHARS (500, o teto do Tema do editor),
+// o mesmo teto do filtro ?categoria= do GET (questionBank.js).
 const text = (max, label) => str({ max, nullable: true, label });
 const bankFields = () => ({
     ...questionInputFields(),

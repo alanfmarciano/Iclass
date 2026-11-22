@@ -65,6 +65,7 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
   const [saving, setSaving] = useState(false)
   const [busyKey, setBusyKey] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [reloadTick, setReloadTick] = useState(0)
   const requestRef = useRef(0)
   const query = bankQuery(filters)
 
@@ -96,7 +97,7 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
       })
       .catch((error) => { if (requestRef.current === id) setLoadError(error.message) })
       .finally(() => { if (requestRef.current === id) setLoading(false) })
-  }, [open, query])
+  }, [open, query, reloadTick])
 
   const setFilter = (field, value) => setFilters((current) => ({ ...current, [field]: value }))
   const clearFilters = () => { setSearch(''); setFilters((current) => ({ ...EMPTY_BANK_FILTERS, arquivadas: current.arquivadas })) }
@@ -140,6 +141,9 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
         ? await api.post('/api/admin/question-bank/update', { key: editing.key, ...payload })
         : await api.post('/api/admin/question-bank/create', payload)
       if (response?.question) upsert(response.question)
+      // Com filtro, a questão editada pode ter deixado de bater com ele (ou a nova não
+      // bater): a lista volta do servidor, que filtra, em vez de ficar com o cartão.
+      if (filtered && !response?.unchanged) setReloadTick((tick) => tick + 1)
       setEditing(null)
       if (!editing.key) toast.success('Questão criada no banco')
       else toast.success(response?.unchanged ? 'Nada mudou na questão' : 'Questão do banco atualizada')
@@ -224,7 +228,10 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
               </div>
               <Select label="Categoria" value={filters.categoria} onChange={(event) => setFilter('categoria', event.target.value)}>
                 <option value="">Todas</option>
-                {data.categorias.map((category) => <option key={category} value={category}>{category}</option>)}
+                {/* O filtro escolhido continua na lista mesmo quando nenhuma questão tem mais
+                    essa categoria (ex.: a única foi editada para outra): o campo não mostra
+                    "Todas" com o filtro ainda ligado. */}
+                {mergeFacet(data.categorias, filters.categoria).map((category) => <option key={category} value={category}>{category}</option>)}
               </Select>
               <Select label="Tipo" value={filters.tipo} onChange={(event) => setFilter('tipo', event.target.value)}>
                 <option value="">Todos</option>
@@ -235,7 +242,7 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
               </Select>
               <Select label="Etiqueta" value={filters.tag} onChange={(event) => setFilter('tag', event.target.value)}>
                 <option value="">Todas</option>
-                {data.etiquetas.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+                {mergeFacet(data.etiquetas, filters.tag).map((tag) => <option key={tag} value={tag}>{tag}</option>)}
               </Select>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -250,11 +257,13 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
                 <Button size="sm" variant="secondary" icon={Plus} onClick={startNew}>Nova questão</Button>
               </div>
             </div>
+            {/* Se o GET falhou, a lista na tela é a de antes (sem os filtros de agora): o
+                texto não diz "com estes filtros" nem mostra os cartões velhos. */}
             <p className="text-xs text-subtle" role="status">
-              {loading ? 'Carregando o banco...' : `${questions.length} ${questions.length === 1 ? 'questão' : 'questões'} na lista${filtered ? ' com estes filtros' : ''}.`}
+              {loading ? 'Carregando o banco...' : (loadError ? 'Não foi possível carregar o banco com estes filtros.' : `${questions.length} ${questions.length === 1 ? 'questão' : 'questões'} na lista${filtered ? ' com estes filtros' : ''}.`)}
             </p>
             {loadError && <p role="alert" className="rounded-md border border-danger/50 bg-danger-soft px-3 py-2 text-sm text-danger">{loadError}</p>}
-            <ul className="max-h-[60vh] space-y-2 overflow-y-auto overflow-x-hidden" aria-label="Questões do banco">
+            {!loadError && <ul className="max-h-[60vh] space-y-2 overflow-y-auto overflow-x-hidden" aria-label="Questões do banco">
               {questions.map((item) => {
                 const difficulty = BANK_DIFFICULTY_LABELS[item.difficulty]
                 const answer = answerSummary(item)
@@ -287,7 +296,7 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
                   </li>
                 )
               })}
-            </ul>
+            </ul>}
             {!loading && !loadError && questions.length === 0 && (
               filtered || (filters.arquivadas === false && data.archivedCount > 0)
                 ? <EmptyState icon={Library} title="Nenhuma questão com estes filtros" description="Mude ou limpe os filtros, ou ligue “Mostrar arquivadas”." />

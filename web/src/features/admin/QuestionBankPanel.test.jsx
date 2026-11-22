@@ -168,6 +168,48 @@ describe('[UC-BANCO-001] QuestionBankPanel', () => {
     await waitFor(() => expect(within(bankDialog()).getByRole('listitem', { name: 'Quantos hosts úteis cabem numa /26?' })).toBeTruthy())
   })
 
+  // Rodada de ajuste 2 do A7: com filtro, a questão editada que deixava de bater com ele
+  // continuava na lista até o próximo GET; e um GET recusado deixava a lista velha com o
+  // texto "com estes filtros".
+  it('com filtro, salvar recarrega a lista do servidor (a questão que não bate mais sai)', async () => {
+    mocks.post.mockImplementation(async (url, body) => ({ success: true, question: { ...numericItem, ...body, questionText: body.text, revision: 4 } }))
+    render(<QuestionBankPanel open onClose={() => {}} />)
+    await waitFor(() => itemCard('Quantos hosts cabem numa /26?'))
+    fireEvent.change(within(bankDialog()).getByLabelText('Categoria'), { target: { value: 'Sub-redes' } })
+    await waitFor(() => expect(mocks.get).toHaveBeenLastCalledWith('/api/admin/question-bank?categoria=Sub-redes'))
+    mocks.get.mockImplementation(async () => bankResponse([choiceItem]))
+    const before = mocks.get.mock.calls.length
+    fireEvent.click(within(itemCard('Quantos hosts cabem numa /26?')).getByRole('button', { name: 'Editar' }))
+    const dialog = bankDialog()
+    fireEvent.change(within(dialog).getAllByLabelText('Categoria')[0], { target: { value: 'Redes' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Salvar alterações' })) })
+    await waitFor(() => expect(mocks.get.mock.calls.length).toBe(before + 1))
+    expect(mocks.get).toHaveBeenLastCalledWith('/api/admin/question-bank?categoria=Sub-redes')
+    await waitFor(() => expect(within(bankDialog()).queryByRole('listitem', { name: 'Quantos hosts cabem numa /26?' })).toBeNull())
+    // A categoria some das que o servidor manda, mas o filtro continua visível no campo.
+    mocks.get.mockImplementation(async () => ({ ...bankResponse([]), categorias: ['Redes'] }))
+    fireEvent.change(within(bankDialog()).getByLabelText('Tipo'), { target: { value: 'numeric' } })
+    await waitFor(() => expect(mocks.get).toHaveBeenLastCalledWith('/api/admin/question-bank?categoria=Sub-redes&tipo=numeric'))
+    await waitFor(() => expect(within(bankDialog()).getByText('Nenhuma questão com estes filtros')).toBeTruthy())
+    expect(within(bankDialog()).getByLabelText('Categoria').value).toBe('Sub-redes')
+  })
+
+  it('categoria longa vai inteira no filtro; GET recusado não deixa a lista velha "com estes filtros"', async () => {
+    const longCategory = 'Camada de transporte '.repeat(5).trim()
+    expect(longCategory.length).toBeGreaterThan(80)
+    expect(bankQuery({ categoria: longCategory })).toBe(`?${new URLSearchParams({ categoria: longCategory })}`)
+    mocks.get.mockImplementation(async (url) => {
+      if (url.includes('categoria=')) throw new Error('O campo "categoria" está em formato inválido.')
+      return { ...bankResponse(), categorias: [longCategory, 'Redes'] }
+    })
+    render(<QuestionBankPanel open onClose={() => {}} />)
+    await waitFor(() => itemCard('Quantos hosts cabem numa /26?'))
+    fireEvent.change(within(bankDialog()).getByLabelText('Categoria'), { target: { value: longCategory } })
+    await waitFor(() => expect(within(bankDialog()).getByRole('alert').textContent).toContain('formato inválido'))
+    expect(within(bankDialog()).getByRole('status').textContent).toBe('Não foi possível carregar o banco com estes filtros.')
+    expect(within(bankDialog()).queryByRole('listitem', { name: 'Quantos hosts cabem numa /26?' })).toBeNull()
+  })
+
   it('questão com problema não vai ao servidor', async () => {
     render(<QuestionBankPanel open onClose={() => {}} defaultCategory="Linux" />)
     await waitFor(() => itemCard('Quantos hosts cabem numa /26?'))

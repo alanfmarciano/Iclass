@@ -369,11 +369,20 @@ const FILTER_FIELDS = Object.freeze({
     q: 'busca',
     arquivadas: 'arquivadas',
 });
+// Categoria do item: a tela manda o tema da prova (ou o nome da unidade). O teto é o
+// mesmo do campo Tema do editor (500, com contador): o schema nunca recusa o que a tela
+// deixa digitar (decisões §12, sobra do H9b).
+const QUESTION_CATEGORY_MAX_CHARS = 500;
 const FILTER_MAX_LENGTH = 80;
+// Teto de cada filtro: o da categoria é o mesmo da categoria do item, porque a tela filtra
+// pela categoria inteira que o GET devolve em "categorias" (uma categoria de 90 caracteres
+// vinda do tema da prova tem de poder ser filtrada). A etiqueta tem 40 no modelo e a busca
+// 80 na tela.
+const FILTER_MAX_LENGTHS = Object.freeze({ categoria: QUESTION_CATEGORY_MAX_CHARS });
 
 // Filtros do GET (?categoria=&tipo=&dificuldade=&tag=&q=&arquivadas=0|1): cada um texto
-// de até 80 caracteres; tipo e dificuldade só os valores do modelo ('sem' = sem
-// dificuldade). Devolve { filters } ou { error, field }.
+// de até 80 caracteres (a categoria até 500); tipo e dificuldade só os valores do modelo
+// ('sem' = sem dificuldade). Devolve { filters } ou { error, field }.
 function parseBankFilters(query = {}) {
     const filters = {};
     for (const [field, label] of Object.entries(FILTER_FIELDS)) {
@@ -381,7 +390,8 @@ function parseBankFilters(query = {}) {
         if (value === undefined || value === null || value === '') continue;
         if (typeof value !== 'string') return { error: `O campo "${label}" está em formato inválido.`, field };
         const text = value.trim();
-        if (text.length > FILTER_MAX_LENGTH) return { error: `O campo "${label}" aceita no máximo ${FILTER_MAX_LENGTH} caracteres.`, field };
+        const max = FILTER_MAX_LENGTHS[field] || FILTER_MAX_LENGTH;
+        if (text.length > max) return { error: `O campo "${label}" aceita no máximo ${max} caracteres.`, field };
         if (text) filters[field] = text;
     }
     if (filters.tipo && !QUESTION_TYPES.includes(filters.tipo)) return { error: 'O campo "tipo" tem um valor não permitido.', field: 'tipo' };
@@ -437,6 +447,7 @@ function bankTypeLabel(item) {
 
 module.exports = {
     DEFAULT_CATEGORY,
+    QUESTION_CATEGORY_MAX_CHARS,
     applyBankQuestion,
     bankFacets,
     bankItemForScreen,
