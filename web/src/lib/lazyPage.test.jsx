@@ -328,14 +328,16 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     const screens = staticImports.filter((specifier) => /^\.\/features\/|^\.\/components\/layout\//.test(specifier))
     expect(screens).toEqual(['./features/LoginPage'])
     const lazyScreens = [...appSource.matchAll(/lazyPage\(\(\) => import\('([^']+)'\)/g)].map((match) => match[1])
-    // 28 telas do instrutor (a Auditoria entrou no H7a-2, a Privacidade (LGPD) no H8a-1, o
-    // Endereço da sala em tela cheia no H6a e Cadastros encerrados no H7c), 10 do aluno (com
+    // 29 telas do instrutor (a Auditoria entrou no H7a-2, a Privacidade (LGPD) no H8a-1, o
+    // Endereço da sala em tela cheia no H6a, Cadastros encerrados no H7c e Minha conta do
+    // instrutor no B1 da fase 3, UXI-07), 10 do aluno (com
     // Minha conta, H5a, e Meus dados, H8c), a prova, a página pública dos Termos e da
     // Privacidade (H8a-1), o guia público do certificado (/certificado, H6c), os 3 layouts
     // e as duas telas da Ajuda (/ajuda no painel e /ajuda/aluno pública, fase 3 A1).
-    expect(lazyScreens.length).toBe(46)
+    expect(lazyScreens.length).toBe(47)
     expect(lazyScreens).toContain('./features/help/AjudaPage')
     expect(lazyScreens).toContain('./features/help/AjudaAlunoPage')
+    expect(lazyScreens).toContain('./features/admin/MinhaContaPage')
     expect(lazyScreens).toContain('./features/CertificadoPage')
     expect(lazyScreens).toContain('./features/admin/EnderecoSalaPage')
     expect(lazyScreens).toContain('./features/student/MeusDadosPage')

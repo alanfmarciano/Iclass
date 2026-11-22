@@ -17,7 +17,7 @@
 // - registerStudentCalendarProvider({ id, events(ctx) }): eventos do calendário do aluno.
 //   ctx = { memory, student, email, cls, courseId, studentClass }. Cada evento:
 //   { id, title, eventDate 'AAAA-MM-DD', description?, startTime?, endTime?, eventType?,
-//   href? }. Os eventos entram na mesma ordem por data e hora.
+//   href?, endDate? (a última data de um evento de vários dias) }. Os eventos entram na mesma ordem por data e hora.
 // - registerInstructorQueueProvider({ id, items(ctx) }): pendências da fila e do sino do
 //   instrutor. ctx = { memory, cls, course, students, emails (Set dos e-mails do escopo),
 //   today, now, canSeeMatriculas }; os alunos já vêm no escopo de quem vê. Cada item:
@@ -137,6 +137,9 @@ function normalizeCalendarEvent(item, providerId) {
         source: providerId,
     };
     if (item.href) out.href = text(item.href, 500);
+    // Evento de mais de um dia (recesso, B3): a última data, quando vem depois da primeira.
+    const endDate = text(item.endDate, 10);
+    if (DATE_PATTERN.test(endDate) && endDate > eventDate) out.endDate = endDate;
     return out;
 }
 

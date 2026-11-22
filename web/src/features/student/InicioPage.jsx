@@ -8,6 +8,8 @@ import { useStudent } from './useStudent'
 import { fmtGradeValue } from '../../lib/grades'
 
 const EVENT_TONES = { aula: 'info', prova: 'danger', entrega: 'warning', aviso: 'neutral', reuniao: 'success' }
+// Rótulo do tipo de evento (o dia não letivo, feriado ou recesso, aparece como "Sem aula").
+const EVENT_LABELS = { nao_letivo: 'Sem aula', reuniao: 'reunião' }
 
 function Metric({ label, value, helper, icon: Icon, tone = 'text-primary' }) {
   return (
@@ -144,7 +146,7 @@ export default function InicioPage() {
 
             <Card>
               <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 font-semibold text-text"><CalendarDays size={17} /> Próximos compromissos</h2><button type="button" onClick={() => nav('/aluno/calendario')} className="text-xs text-muted hover:text-text">Calendário</button></div>
-              {data.calendar?.length ? data.calendar.map((item) => <button key={item.id} type="button" onClick={() => nav('/aluno/calendario')} className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition last:border-0 hover:bg-surface-2/40"><span className="grid h-10 min-w-10 place-items-center rounded-md bg-primary-soft px-1 text-[11px] font-semibold uppercase text-primary">{formatDate(item.eventDate)}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{item.title}</strong><span className="mt-0.5 flex items-center gap-1 text-xs text-muted"><Clock size={11} /> {item.startTime || 'Dia todo'}</span></span><Badge tone={EVENT_TONES[item.eventType] || 'neutral'}>{item.eventType}</Badge></button>) : <p className="p-4 text-sm text-muted">Nenhum compromisso agendado.</p>}
+              {data.calendar?.length ? data.calendar.map((item) => <button key={item.id} type="button" onClick={() => nav('/aluno/calendario')} className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition last:border-0 hover:bg-surface-2/40"><span className="grid h-10 min-w-10 place-items-center rounded-md bg-primary-soft px-1 text-[11px] font-semibold uppercase text-primary">{formatDate(item.eventDate)}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{item.title}</strong><span className="mt-0.5 flex items-center gap-1 text-xs text-muted"><Clock size={11} /> {item.startTime || 'Dia todo'}</span></span><Badge tone={EVENT_TONES[item.eventType] || 'neutral'}>{EVENT_LABELS[item.eventType] || item.eventType}</Badge></button>) : <p className="p-4 text-sm text-muted">Nenhum compromisso agendado.</p>}
             </Card>
 
             <Card>

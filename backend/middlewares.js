@@ -95,12 +95,20 @@ const REVOKED_SESSION_MESSAGES = Object.freeze({
     password_reset: 'A senha desta conta foi redefinida pelo professor. Entre de novo com a senha nova.',
     password_changed: 'A senha desta conta foi trocada em outro aparelho. Entre de novo com a senha nova.',
     replaced: 'Sessão encerrada porque a conta foi acessada em outro dispositivo. Faça login novamente.',
+    // "Sair dos outros aparelhos" em Minha conta do instrutor (UXI-07).
+    ended_elsewhere: 'Esta sessão foi encerrada pela própria conta em outro aparelho ("Sair dos outros aparelhos"). Faça login novamente.',
+});
+// Sessão do painel (instrutor): a senha é redefinida pelo administrador, não pelo
+// professor (UXI-07, POST /api/admin/accounts/reset-password).
+const REVOKED_INSTRUCTOR_SESSION_MESSAGES = Object.freeze({
+    password_reset: 'A senha desta conta foi redefinida pelo administrador. Entre de novo com a senha nova.',
 });
 
-function revokedSessionBody(token) {
+function revokedSessionBody(token, { instructor = false } = {}) {
     const reason = typeof token === 'string' && token ? revokedSessionReason(token) : null;
     if (!reason || !REVOKED_SESSION_MESSAGES[reason]) return null;
-    return { error: REVOKED_SESSION_MESSAGES[reason], sessionRevoked: true, reason };
+    const error = (instructor && REVOKED_INSTRUCTOR_SESSION_MESSAGES[reason]) || REVOKED_SESSION_MESSAGES[reason];
+    return { error, sessionRevoked: true, reason };
 }
 
 function validateStudentSession(req, res, next) {
@@ -267,7 +275,7 @@ function validateAnySession(req, res, next) {
         // conhece mais: sessão vencida, como nas outras validações; sem token nenhum:
         // 'missing'. O ?sessionToken= da URL não vale mais (H5b, SEG-16).
         const revokedBody = revokedSessionBody(String(req.get('x-session-token') || ''))
-            || revokedSessionBody(String(req.get('x-admin-session') || ''));
+            || revokedSessionBody(String(req.get('x-admin-session') || ''), { instructor: true });
         if (revokedBody) return res.status(401).json(revokedBody);
         const presented = [req.get('x-admin-session'), req.get('x-session-token')]
             .some(value => typeof value === 'string' && value !== '');
@@ -593,7 +601,7 @@ function validateAdmin(req, res, callback) {
         if (!check.ok) {
             // Sessão encerrada há pouco por uma ação (troca de senha em outro aparelho,
             // Sair): o 401 diz o motivo.
-            const revokedBody = REVOKED_SESSION_MESSAGES[check.reason] ? revokedSessionBody(adminSessionToken) : null;
+            const revokedBody = REVOKED_SESSION_MESSAGES[check.reason] ? revokedSessionBody(adminSessionToken, { instructor: true }) : null;
             if (revokedBody) return res.status(401).json(revokedBody);
             persistSessionRevocation(revokeAdminSession(db.memory, adminSessionToken));
             if (check.reason === 'account_missing') {

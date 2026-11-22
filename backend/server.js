@@ -300,6 +300,8 @@ app.use(setupModeRoutes);
 app.use(commonRoutes);
 // Termos e Privacidade (H8a-1): rotas públicas e, no H8a-2, as do aluno; antes das do aluno.
 app.use(require('./routes/privacy.js'));
+// Rotas novas do aluno da fase 3 (ordem_no_createApp do plano): parte acadêmica (P2).
+app.use(require('./routes/studentAcademic.js'));
 app.use(studentRoutes);
 app.use(adminRoutes);
 

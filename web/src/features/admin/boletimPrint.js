@@ -1,5 +1,6 @@
 // Boletim do aluno para impressão (o usuário salva como PDF pela caixa de impressão).
-// Mesmo padrão de gradePrint.js: HTML próprio + window.print, sem dependências.
+// Mesmo padrão de gradePrint.js: HTML próprio + window.print.
+import { isPassingGrade } from '../../lib/grades'
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
@@ -15,6 +16,8 @@ export function boletimHtml(report) {
   const attendance = report.attendance || {}
   const frequencyClass = attendance.frequency == null ? '' : (attendance.frequency < (attendance.riskThreshold || 75) ? ' class="risk"' : '')
 
+  // Nota abaixo da média mínima em vermelho: critério que vem com o boletim (sem
+  // critérios configurados, o padrão de 6,0), pela mesma regra das telas.
   // Mesma prova em mais de uma linha = mais de uma aplicação (mesma regra da tela Resultados).
   const examKeys = (report.modules || []).flatMap(module => (module.exams || []).filter(exam => exam.grade != null).map(exam => exam.examKey))
   const hasRepeatedExam = new Set(examKeys).size < examKeys.length
@@ -25,7 +28,7 @@ export function boletimHtml(report) {
           <td>${escapeHtml(exam.title)}</td>
           <td class="num">${exam.attempts || 0}${exam.pendingAttempts ? ` <small>(+${exam.pendingAttempts} a publicar)</small>` : ''}</td>
           <td class="num">${date(exam.lastAt)}</td>
-          <td class="num grade${exam.grade != null && exam.grade < 6 ? ' low' : ''}">${grade(exam.grade)}</td>
+          <td class="num grade${isPassingGrade(exam.grade, report.criterio) === false ? ' low' : ''}">${grade(exam.grade)}</td>
         </tr>`).join('')
       : '<tr><td colspan="4" class="empty">Nenhuma avaliação neste módulo.</td></tr>'
     return `<tr class="module"><th colspan="3">${escapeHtml(module.name)}</th><th class="num">Média ${grade(module.average)}</th></tr>${exams}`

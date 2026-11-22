@@ -15,6 +15,7 @@ import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
+import { isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
 
 const CLASS_PERIODS = ['Manhã', 'Tarde', 'Noite']
 
@@ -49,7 +50,9 @@ export default function TurmasPage() {
   const { auth } = useAuth()
   const toast = useToast()
   const navigate = useNavigate()
-  const isAdmin = auth.accountRole !== 'professor'
+  // Criar e mudar cursos e turmas, atribuir professor e arquivo: só o administrador pleno
+  // (contrato C2 do P4; antes era "não é professor").
+  const isAdmin = isFullAdmin(auth)
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const schoolsApi = useApi('/api/admin/schools')
@@ -71,7 +74,7 @@ export default function TurmasPage() {
   const courses = coursesApi.data || []
   const classes = classesApi.data || []
   const schools = schoolsApi.data || []
-  const professors = (accountsApi.data || []).filter(account => account.role === 'professor')
+  const professors = (accountsApi.data || []).filter(isProfessorRoleAccount)
 
   const filteredCourses = useMemo(() => courses.filter(course => {
     const courseClasses = classes.filter(cls => cls.courseId === course.id)

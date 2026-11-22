@@ -1,21 +1,27 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Save, Trash2 } from 'lucide-react'
+import { ArrowLeft, KeyRound, Save, Trash2 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
 import { Card } from '../../components/ui/Card'
 import { Input } from '../../components/ui/Input'
 import { passwordHint } from '../../lib/passwordPolicy'
-import { Select } from '../../components/ui/Select'
 import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
-import { ADMIN_PERMISSIONS, GRANTABLE_ADMIN_PERMISSIONS, canAccessAdminPermission, toggleAdditionalPermission } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, ADMIN_ROLE_FALLBACK, accountRoleId, canAccessAdminPermission, findRole, grantableOptionsForRole, roleScopeOf, toggleAdditionalPermission } from '../../lib/adminPermissions'
+import { AccountPasswordResetDialog } from './AccountPasswordDialogs'
 
-const ROLE_LABEL = { admin: 'Administrador', professor: 'Professor' }
+// Papéis que a tela oferece (FUN-13): os do catálogo do servidor que não estão ocultos
+// (o Professor auxiliar fica fora por enquanto, decisão do plano); a conta que já tem um
+// papel oculto continua vendo o dela, para editar sem trocar.
+export function roleChoices(roles, currentRole) {
+  const list = Array.isArray(roles) && roles.length ? roles : ADMIN_ROLE_FALLBACK.filter((role) => role.id !== 'monitor')
+  return list.filter((role) => !role.oculto || role.id === currentRole)
+}
 
 export default function AdminEditPage() {
   const { email } = useParams()
@@ -28,17 +34,42 @@ export default function AdminEditPage() {
   const { data: classes } = useApi('/api/admin/classes')
   const { data: courses } = useApi('/api/courses')
   const { data: schools } = useApi('/api/admin/schools')
+  // Catálogo dos papéis (GET /api/admin/roles): rótulo, descrição, escopo e concedíveis.
+  const rolesApi = useApi('/api/admin/roles')
+  const roles = rolesApi.data?.roles || []
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [confirmDel, setConfirmDel] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
 
   const account = useMemo(() => isNew ? null : (accounts.data || []).find((a) => (a.email || '').toLowerCase() === decodeURIComponent(email || '').toLowerCase()), [accounts.data, email, isNew])
 
   useEffect(() => {
     if (form) return
-    if (isNew) { setForm({ name: '', email: '', password: '', requirePasswordChange: true, role: 'admin', assignedClasses: [], additionalPermissions: [] }); return }
-    if (account) setForm({ name: account.name || '', email: account.email, role: account.role || 'admin', assignedClasses: account.assignedClasses || [], additionalPermissions: account.additionalPermissions || [] })
+    if (isNew) { setForm({ name: '', email: '', password: '', requirePasswordChange: true, role: 'admin', assignedClasses: [], assignedSchoolIds: [], additionalPermissions: [] }); return }
+    if (account) setForm({ name: account.name || '', email: account.email, role: accountRoleId(account), assignedClasses: account.assignedClasses || [], assignedSchoolIds: account.assignedSchoolIds || [], additionalPermissions: account.additionalPermissions || [] })
   }, [account, isNew, form])
+
+  const isSelf = !isNew && !!account && String(account.email || '').toLowerCase() === String(auth.email || '').toLowerCase()
+  const originalRole = account ? accountRoleId(account) : null
+  const choices = roleChoices(roles, originalRole)
+  const scope = form ? roleScopeOf(roles, form.role) : 'tudo'
+  const grantable = form ? grantableOptionsForRole(roles, form.role) : []
+
+  // Trocar de papel: as extras que o papel novo não aceita saem (o servidor recusaria).
+  function chooseRole(roleId) {
+    setForm((f) => {
+      const allowed = new Set(grantableOptionsForRole(roles, roleId).map((item) => item.permission))
+      const defaults = new Set(findRole(roles, roleId)?.permissoesPadrao || [])
+      return { ...f, role: roleId, additionalPermissions: roleId === 'admin' ? [] : f.additionalPermissions.filter((permission) => allowed.has(permission) || defaults.has(permission)) }
+    })
+  }
+  function toggleSchool(schoolId) {
+    setForm((f) => {
+      const has = f.assignedSchoolIds.includes(schoolId)
+      return { ...f, assignedSchoolIds: has ? f.assignedSchoolIds.filter((id) => id !== schoolId) : [...f.assignedSchoolIds, schoolId] }
+    })
+  }
 
   const grouped = useMemo(() => {
     const map = new Map()
@@ -67,9 +98,13 @@ export default function AdminEditPage() {
     if (!form.email) return toast.error('Informe o e-mail')
     if (isNew && !form.password) return toast.error('Defina a senha')
     setSaving(true)
+    // Escopo pelo papel: turmas para professor (e professor auxiliar), escolas para
+    // Secretaria e Coordenação; o administrador vê tudo.
+    const scopeFields = scope === 'turmas' ? { assignedClasses: form.assignedClasses } : scope === 'escolas' ? { assignedSchoolIds: form.assignedSchoolIds } : {}
+    const common = { email: form.email, name: form.name, role: form.role, additionalPermissions: form.role === 'admin' ? [] : form.additionalPermissions, ...scopeFields }
     try {
-      if (isNew) await api.post('/api/admin/accounts/create', form)
-      else await api.post('/api/admin/accounts/update', { email: form.email, name: form.name, role: form.role, assignedClasses: form.assignedClasses, additionalPermissions: form.additionalPermissions })
+      if (isNew) await api.post('/api/admin/accounts/create', { ...common, password: form.password, requirePasswordChange: form.requirePasswordChange })
+      else await api.post('/api/admin/accounts/update', common)
       toast.success(isNew ? 'Conta criada' : 'Conta atualizada')
       nav('/admins')
     } catch (e) { toast.error(e.message) } finally { setSaving(false) }
@@ -88,8 +123,10 @@ export default function AdminEditPage() {
           <Card className="p-6"><p className="text-sm text-muted">Conta não encontrada.</p></Card>
         ) : form ? (
           <div className="space-y-5">
-            <PageHeader title={isNew ? 'Nova conta' : (form.name || form.email)} subtitle={isNew ? 'Administrador ou professor com acesso ao painel' : form.email}>
-              <div className="flex gap-2">
+            <PageHeader title={isNew ? 'Nova conta' : (form.name || form.email)} subtitle={isNew ? 'Conta com acesso ao painel: escolha o papel e o que ela enxerga' : form.email}>
+              <div className="flex flex-wrap gap-2">
+                {/* Redefinir a senha de outra conta (UXI-07); a própria troca em Minha conta. */}
+                {!isNew && canManage && !isSelf && <Button variant="secondary" icon={KeyRound} onClick={() => setResetOpen(true)}>Redefinir senha</Button>}
                 {!isNew && canManage && <Button variant="destructive" icon={Trash2} onClick={() => setConfirmDel(true)}>Excluir</Button>}
                 {canManage && <Button icon={Save} loading={saving} onClick={save}>{isNew ? 'Cadastrar' : 'Salvar'}</Button>}
               </div>
@@ -117,18 +154,48 @@ export default function AdminEditPage() {
                   Pedir troca no primeiro acesso
                 </label>
               )}
-              <Select label="Papel" value={form.role} disabled={!canManage} onChange={(e) => setForm({ ...form, role: e.target.value, additionalPermissions: e.target.value === 'admin' ? [] : form.additionalPermissions })}>
-                <option value="admin">Administrador</option>
-                <option value="professor">Professor</option>
-              </Select>
-              {form.role === 'admin' && <p className="text-xs text-subtle">Administradores são vinculados automaticamente a todas as turmas. A seleção manual de turmas se aplica apenas a professores.</p>}
             </Card>
 
-            {form.role === 'professor' && (
+            {/* Papel (FUN-13): lista de rádio com a frase de cada papel, do catálogo. */}
+            <Card className="p-5 space-y-3">
+              <fieldset className="space-y-2" disabled={!canManage}>
+                <legend className="text-sm font-medium text-text">Papel</legend>
+                {choices.map((role) => (
+                  <label key={role.id} className="flex min-h-[44px] items-start gap-3 rounded-lg border border-border p-3 text-sm text-text has-[:checked]:border-primary/60 has-[:checked]:bg-primary-soft">
+                    <input className="mt-1" type="radio" name="account-role" value={role.id} checked={form.role === role.id} onChange={() => chooseRole(role.id)} />
+                    <span className="min-w-0">
+                      <span className="block font-medium">{role.rotulo}{role.somenteLeitura ? ' (só consulta)' : ''}</span>
+                      {role.descricao && <span className="mt-0.5 block text-xs text-subtle">{role.descricao}</span>}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              {scope === 'tudo' && <p className="text-xs text-subtle">Administradores enxergam todas as escolas, cursos e turmas.</p>}
+            </Card>
+
+            {scope === 'escolas' && (
+              <Card className="p-5 space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-text">Escolas atribuídas</p>
+                  <p className="text-xs text-subtle">A conta enxerga os cursos, as turmas e os alunos das escolas marcadas.</p>
+                </div>
+                {(schools || []).length === 0 && <p className="text-xs text-subtle">Nenhuma escola cadastrada.</p>}
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {(schools || []).map((school) => (
+                    <label key={school.id} className="flex min-h-[44px] items-center gap-2 rounded-md border border-border p-2 text-sm text-text">
+                      <input type="checkbox" disabled={!canManage} checked={form.assignedSchoolIds.includes(String(school.id))} onChange={() => toggleSchool(String(school.id))} />
+                      <span className="min-w-0 truncate">{school.name || school.id}</span>
+                    </label>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {scope === 'turmas' && (
               <Card className="p-5 space-y-3">
                 <div>
                   <p className="text-sm font-medium text-text">Turmas atribuídas</p>
-                  <p className="text-xs text-subtle">O professor enxerga os cursos e escolas das turmas marcadas.</p>
+                  <p className="text-xs text-subtle">A conta enxerga os cursos e as escolas das turmas marcadas.</p>
                 </div>
                 {grouped.length === 0 && <p className="text-xs text-subtle">Nenhuma turma cadastrada.</p>}
                 <div className="space-y-3 max-h-80 overflow-auto pr-1">
@@ -149,14 +216,14 @@ export default function AdminEditPage() {
               </Card>
             )}
 
-            {form.role === 'professor' && (
+            {form.role !== 'admin' && grantable.length > 0 && (
               <Card className="p-5 space-y-3">
                 <div>
                   <p className="text-sm font-medium text-text">Acessos adicionais</p>
-                  <p className="text-xs text-subtle">Libere exceções individuais além das telas pedagógicas padrão.</p>
+                  <p className="text-xs text-subtle">Libere exceções individuais além do que o papel já tem. Só aparecem as que o papel aceita.</p>
                 </div>
                 <div className="grid grid-cols-1 gap-2 max-h-80 overflow-auto pr-1">
-                  {GRANTABLE_ADMIN_PERMISSIONS.map((item) => (
+                  {grantable.map((item) => (
                     <label key={item.permission} className="flex items-start gap-2 rounded-md border border-border p-3 text-sm text-text">
                       <input className="mt-0.5" type="checkbox" disabled={!canManage} checked={form.additionalPermissions.includes(item.permission)} onChange={() => togglePermission(item.permission)} />
                       <span>
@@ -178,6 +245,7 @@ export default function AdminEditPage() {
           </div>
         ) : null}
       </PageState>
+      <AccountPasswordResetDialog email={resetOpen && form ? form.email : null} onClose={() => setResetOpen(false)} onDone={() => accounts.refetch()} />
     </div>
   )
 }

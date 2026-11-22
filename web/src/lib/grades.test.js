@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boletimChoiceOptions, boletimContext, consolidatedAverage, fmtGrade, fmtGradeValue, gradeOf, parseGradeInput, previewQuickGrade, roundGrade, scoreFromGrade, validateQuickGrade } from './grades'
+import { CRITERIO_PADRAO, boletimChoiceOptions, boletimContext, consolidatedAverage, countByBand, fmtGrade, fmtGradeValue, fmtMinimumGrade, gradeBand, gradeBandRanges, gradeOf, gradeRangeLabel, gradeTone, isPassingGrade, isValidScore, parseGradeInput, previewQuickGrade, roundGrade, scoreBand, scoreFromGrade, validateQuickGrade } from './grades'
 
 describe('notas na interface', () => {
   it('[UC-NOTAS-001] formata 0 a 100 como 0 a 10 com vírgula e esconde nota inválida', () => {
@@ -105,5 +105,97 @@ describe('notas na interface', () => {
     ])
     expect(boletimChoiceOptions([{ name: '2DES', courseId: 'DES' }], summaries, { restricted: true })[0].allowed).toBe(false)
     expect(boletimChoiceOptions(memberships, summaries).map((m) => m.allowed)).toEqual([true, true])
+  })
+})
+
+describe('faixas da nota pelo critério (regra única)', () => {
+  it('[UC-TENTATIVA-003] com a mínima padrão 6,0 as faixas são as de sempre: 9, 7, 6 e 4', () => {
+    expect(CRITERIO_PADRAO.mediaMinima).toBe(6)
+    const tabela = [
+      [10, 'excelente'], [9, 'excelente'], [8.95, 'excelente'], [8.94, 'bom'], [7, 'bom'], [6.95, 'bom'],
+      [6.9, 'suficiente'], [6, 'suficiente'], [5.96, 'suficiente'], [5.94, 'abaixo'], [4, 'abaixo'],
+      [3.9, 'muito_abaixo'], [0, 'muito_abaixo'], [null, null], [undefined, null], ['', null], [11, null], [-1, null], [NaN, null],
+    ]
+    for (const [nota, faixa] of tabela) expect(gradeBand(nota), `nota ${nota}`).toBe(faixa)
+    expect(scoreBand(59.6)).toBe('suficiente')
+    expect(scoreBand(150)).toBeNull()
+    expect(isPassingGrade(5.95)).toBe(true)
+    expect(isPassingGrade(5.9)).toBe(false)
+    expect(isPassingGrade(null)).toBeNull()
+    expect(fmtMinimumGrade()).toBe('6,0')
+  })
+
+  it('[UC-TENTATIVA-003] com mínima 5 (critério do curso) a aprovação e o alerta acompanham a mínima', () => {
+    const criterio = { mediaMinima: 5 }
+    expect(gradeBand(5, criterio)).toBe('suficiente')
+    expect(gradeBand(4.9, criterio)).toBe('abaixo')
+    expect(gradeBand(3, criterio)).toBe('abaixo')
+    expect(gradeBand(2.9, criterio)).toBe('muito_abaixo')
+    expect(gradeBand(7, criterio)).toBe('bom')
+    expect(isPassingGrade(5.5, criterio)).toBe(true)
+    expect(isPassingGrade(5.5, { mediaMinima: 7.5 })).toBe(false)
+    expect(gradeBand(7, { mediaMinima: 7.5 })).toBe('abaixo')
+    expect(gradeBand(8, { mediaMinima: 7.5 })).toBe('bom')
+    expect(fmtMinimumGrade({ mediaMinima: 5.5 })).toBe('5,5')
+    // Mínima inválida cai no padrão.
+    expect(gradeBand(5.5, { mediaMinima: 'abc' })).toBe('abaixo')
+    expect(gradeBand(5.5, { mediaMinima: 12 })).toBe('abaixo')
+    // Mínima digitada com vírgula vale; texto só com espaços cai no padrão.
+    expect(gradeBand(5.5, { mediaMinima: '5,5' })).toBe('suficiente')
+    expect(fmtMinimumGrade({ mediaMinima: '5,5' })).toBe('5,5')
+    expect(fmtMinimumGrade({ mediaMinima: '  ' })).toBe('6,0')
+  })
+
+  it('[UC-TENTATIVA-003] nota só com espaços não tem faixa (antes virava 0 e "muito abaixo")', () => {
+    expect(gradeBand('  ')).toBeNull()
+    expect(gradeBand(' ')).toBeNull()
+    expect(isPassingGrade('  ')).toBeNull()
+    expect(gradeTone('  ', undefined, 'aprovacao', 'neutral')).toBe('neutral')
+    expect(gradeBand(' 7 ')).toBe('bom')
+  })
+
+  it('[UC-TENTATIVA-003] tom do Badge por escala, sem comparar nota com número na tela', () => {
+    expect(['excelente', 'bom', 'suficiente', 'abaixo', 'muito_abaixo'].map((faixa) => ({ excelente: 9.5, bom: 7.5, suficiente: 6.5, abaixo: 5, muito_abaixo: 2 })[faixa])
+      .map((nota) => [gradeTone(nota), gradeTone(nota, undefined, 'aluno'), gradeTone(nota, undefined, 'simples')]))
+      .toEqual([
+        ['success', 'success', 'success'],
+        ['success', 'success', 'success'],
+        ['success', 'warning', 'success'],
+        ['warning', 'danger', 'warning'],
+        ['danger', 'danger', 'warning'],
+      ])
+    expect(gradeTone(null)).toBe('neutral')
+    expect(gradeTone(null, undefined, 'simples', 'warning')).toBe('warning')
+  })
+
+  it('[UC-TENTATIVA-003] nota só com espaços é vazia, como no servidor (antes virava 0)', () => {
+    expect(gradeOf('  ')).toBeNull()
+    expect(isValidScore('  ')).toBe(false)
+    expect(fmtGrade(' ')).toBe('—')
+    expect(gradeOf('85')).toBe(8.5)
+  })
+})
+
+describe('faixas para gráficos de distribuição (gradeBandRanges)', () => {
+  it('[UC-TENTATIVA-003] com a mínima padrão, os intervalos e rótulos de sempre; cada décimo cai na faixa de gradeBand', () => {
+    expect(gradeBandRanges(CRITERIO_PADRAO).map((r) => [r.band, r.label])).toEqual([
+      ['muito_abaixo', '0–3,9'], ['abaixo', '4–5,9'], ['suficiente', '6–6,9'], ['bom', '7–8,9'], ['excelente', '9–10'],
+    ])
+    for (const mediaMinima of [5, 6, 7, 8, 9.5]) {
+      const ranges = gradeBandRanges({ mediaMinima })
+      for (let d = 0; d <= 100; d += 1) {
+        const nota = d / 10
+        expect(ranges.find((r) => nota >= r.min - 1e-9 && nota <= r.max + 1e-9).band).toBe(gradeBand(nota, { mediaMinima }))
+      }
+    }
+    // Mínima 7,0: não há faixa "suficiente" (de 7 a 6,9) e o rótulo de baixo acompanha.
+    expect(gradeBandRanges({ mediaMinima: 7 }).map((r) => r.label)).toEqual(['0–4,9', '5–6,9', '7–8,9', '9–10'])
+    expect(gradeRangeLabel(10, 10)).toBe('10')
+    expect(gradeRangeLabel(7.5, 9.4)).toBe('7,5–9,4')
+  })
+
+  it('[UC-TENTATIVA-003] countByBand conta pela nota como aparece e ignora nota sem faixa', () => {
+    expect(countByBand([5.96, 5.94, 8.95, '', null, 12], CRITERIO_PADRAO)).toEqual({ excelente: 1, bom: 0, suficiente: 1, abaixo: 1, muito_abaixo: 0 })
+    expect(countByBand([5.5], { mediaMinima: 5 })).toEqual({ excelente: 0, bom: 0, suficiente: 1, abaixo: 0, muito_abaixo: 0 })
   })
 })

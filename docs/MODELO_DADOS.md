@@ -53,7 +53,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `proctoringLogs` | array | eventos de antifraude |
 | `broadcastMessages` | array | mensagens do professor no monitor |
 | `announcements` | array | avisos/comunicados (professor → turma/curso/aluno) |
-| `attendance` | array | presença |
+| `attendance` | array | presença; a presença automática do acesso (`origin: 'login'`) num dia não letivo da turma leva `naoLetivoId` (o id do dia em `nonSchoolDays`) e fica fora da frequência, sem ser apagada (fase 3, B3; [abaixo](#dias-não-letivos-nonschooldays-fase-3-b3)) |
 | `certificates` | array | certificados emitidos |
 | `moduleAccess` | array | histórico de módulos acessados |
 | `auditLogs` | array | trilha de auditoria (notas, cadastro do aluno, turmas e conteúdo, contas, sistema, backup, provas); ver [Auditoria](#auditoria-auditlogs) |
@@ -65,8 +65,8 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `assignments` | array | Tarefas (tabela `assignments`, chave `id`). Criada vazia no A0; o formato dos registros é da subetapa que a usa. `missing: 'keep'` |
 | `assignmentSubmissions` | array | Trabalhos entregues, os registros (tabela `assignment_submissions`, chave `id`; a conferência do backup avisa de `assignmentId` + `studentEmail` repetidos). Os arquivos ficam em `data/entregas` e nunca saem do lugar na restauração. `missing: 'keep'` |
 | `assignmentFileTombstones` | array | Arquivos de entregas removidos (tabela `assignment_file_tombstones`, chave `fileId`, só acrescenta). Na restauração, junta por `fileId` (`restore: 'merge'`): um arquivo removido não volta |
-| `academicTerms` | array | Períodos letivos (tabela `academic_terms`, chave `id`). `missing: 'keep'` |
-| `nonSchoolDays` | array | Dias não letivos (tabela `non_school_days`, chave `id`). `missing: 'keep'` |
+| `academicTerms` | array | Períodos letivos (tabela `academic_terms`, chave `id`): `{ id, nome, inicio, fim }` (datas `AAAA-MM-DD`), ligados à turma por `classes[].periodoLetivoId`; fora do período a turma não tem aula na Chamada nem no Dashboard. Os cadastros são do B4. `missing: 'keep'` |
+| `nonSchoolDays` | array | Dias não letivos (tabela `non_school_days`, chave `id`; formato [abaixo](#dias-não-letivos-nonschooldays-fase-3-b3)). `missing: 'keep'` |
 | `classDiary` | array | Diário de classe (tabela `class_diary`, chave `id`; a conferência avisa de `courseId` + `studentClass` + `date` repetidos). `missing: 'keep'` |
 | `classGroups` | array | Grupos de alunos (tabela `class_groups`, chave `id`). `missing: 'keep'` |
 | `conversations` | array | Conversas (tabela `conversations`, chave `id`). `missing: 'keep'` |
@@ -182,7 +182,7 @@ Antes da fase 3 não havia registro do que já foi convertido: o código novo ab
 - **Tipo `sql`**: `run(sql)` é para as tabelas próprias (`kind: 'store'`). Roda com `sql.run`, `sql.get` e `sql.all` numa transação dentro da fila de gravação, só no boot.
 - **Linha publicada é imutável**: efeito novo é uma linha nova com `id` novo. `test/backend/schema-migrations.test.js` confere o código de cada linha pelo hash (`schemaMigrations.migrationHash`) gravado em `test/backend/fixtures/migracoes-publicadas.json`. Quem acrescenta uma linha acrescenta o hash dela lá, e nunca apaga nem troca uma linha daquele arquivo.
 - **Quando não precisa de migração**: coleção nova vazia (o `CREATE TABLE IF NOT EXISTS` do registro de tabelas cuida dela) e leitura tolerante, com padrão para o campo ausente.
-- **`BOOT_NORMALIZATIONS`**: conversões que valem em todo boot e depois de toda restauração (tela e `backup-cli`), porque a versão 281029f não recusa um banco migrado e pode gravar dado no formato antigo depois da migração. Cada item é `{ id, nome, run(memory, ctx) }`, idempotente, e o boot grava só se algo mudou. A lista fica vazia até o C1 (`ensureStudentIds`). As normalizações antigas do init (contas, senhas, `studentClass`, provas resetadas) continuam onde estão.
+- **`BOOT_NORMALIZATIONS`**: conversões que valem em todo boot e depois de toda restauração (tela e `backup-cli`), porque a versão 281029f não recusa um banco migrado e pode gravar dado no formato antigo depois da migração. Cada item é `{ id, nome, run(memory, ctx) }`, idempotente, e o boot grava só se algo mudou. A do B3 (`2026-11-p2-presenca-dia-nao-letivo`, `academicCalendar.syncNonSchoolDayMarks`) confere a marca `naoLetivoId` da presença automática nos dias não letivos cadastrados, porque a versão anterior grava presença do acesso num feriado e um backup antigo restaurado mantém os dias de hoje. A primeira da lista é `ensureStudentIds` (C1, trilha C), que na junção das trilhas entra antes da do B3; a ordem entre as duas não muda o resultado (a marca olha a data, a turma e o tipo da presença, não o id do aluno). As normalizações antigas do init (contas, senhas, `studentClass`, provas resetadas) continuam onde estão.
 - **Executor** (`backend/utils/schemaMigrations.js`, sem depender do `database.js`): compara o registro com `schemaMeta.aplicadas`. O `PRAGMA user_version` espelha o número de migrações aplicadas.
 - **Boot** (`db.init`, chamado pelo `prepareServer`), nesta ordem:
   1. Integridade e PRAGMAs do banco.
@@ -246,6 +246,15 @@ Antes, toda questão era "uma correta" (2 a 8 alternativas, `correctAnswer` com 
 - **`examApplications[].answerKeyCorrections[]`** (novo, opcional): `{ questionNumber, tipo, antes, depois, motivo, por, em (ISO), regraded, changed, notifiedStudents, preparacaoAtualizada, preparadasAtualizadas, tirouAnulacao? }`, uma por correção, para a tela da preparação. A auditoria (`exam_answer_key_corrected`) tem os mesmos dados.
 - **`submissions[].scoreHistory[].avisoAluno`** (novo, opcional): `{ tipo: 'gabarito_corrigido', numeroNaProva }` na mudança de nota que avisa o aluno (só quando a nota já estava publicada). O sino do aluno lê daqui (provedor `nota-alterada`, `utils/gradeChangeNotices.js`); o `scoreHistory` continua fora das rotas do aluno.
 - Nenhuma migração: aplicação e entrega antigas não têm os campos. Voltar para o 281029f pelo backup `pre-atualizacao` não tem problema; abrir o banco novo no 281029f ignora os dois campos e mantém as notas recalculadas.
+
+## Dias não letivos (`nonSchoolDays`, fase 3, B3)
+
+Cadastrados pelas rotas de `routes/adminAcademic.js` (ver API.md) e lidos só por `utils/academicCalendar.js`, que responde "há aula nesta turma nesta data?" para a Chamada, a presença automática do acesso, o Dashboard e os calendários.
+
+- **Registro**: `{ id: 'nl_<ms>_<6 hex>', schemaVersion: 1, nome (até 80), tipo: 'feriado'|'ponto_facultativo'|'recesso'|'evento_escolar'|'outro', inicio, fim (AAAA-MM-DD, fim >= início, até 120 dias), escopo: 'instituicao'|'escola'|'curso'|'turma', schoolId? (escola), courseId? (curso e turma), studentClass? (turma), origem: 'manual'|'feriados_nacionais', criadoEm, criadoPor, atualizadoEm, atualizadoPor? }`. A leitura é tolerante (`normalizeNonSchoolDay`): sem `fim` válido, vale só o início; tipo desconhecido vira `outro`; registro sem `id`, sem `inicio` válido, com escopo desconhecido ou sem o alvo do escopo não vale para ninguém (em vez de valer para todos).
+- **Quem vale para a turma**: o da instituição, o da escola do curso da turma, o do curso e o da própria turma. Quando há mais de um no mesmo dia, o mais específico é o que aparece.
+- **Feriados nacionais** (`academicCalendar.nationalHolidays(ano)`): calculados sem internet, com a Páscoa pelo algoritmo de Meeus/Butcher: os fixos (1/1, 21/4, 1/5, 7/9, 12/10, 2/11, 15/11, 25/12; 20/11 a partir de 2024), Sexta-feira Santa, e Carnaval (segunda e terça, um registro só) e Corpus Christi como ponto facultativo. Estaduais e municipais são cadastrados à mão.
+- **Presença**: criar, alterar ou excluir um dia marca ou desmarca `naoLetivoId` na presença automática do acesso (`origin: 'login'`) das turmas atingidas e grava só essas linhas (`db.save({ changed: { attendance: ids } })`). A chamada do professor e a marcação individual nunca levam a marca: contam na frequência mesmo no feriado (a Chamada abre o dia com "mesmo assim"). Turma encerrada não é remarcada.
 
 ## Servidor fora do ar durante a prova (fase 2, H3b)
 

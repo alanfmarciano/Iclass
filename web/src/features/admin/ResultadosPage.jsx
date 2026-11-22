@@ -13,7 +13,7 @@ import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api, downloadFile } from '../../lib/api'
-import { fmtGrade, fmtGradeValue, gradeOf, isValidScore, previewQuickGrade, validateQuickGrade } from '../../lib/grades'
+import { CRITERIO_PADRAO, countByBand, fmtGrade, fmtGradeValue, gradeBandRanges, gradeOf, gradeTone, isPassingGrade, isValidScore, previewQuickGrade, scoreBand, validateQuickGrade } from '../../lib/grades'
 import { GradebookPanel } from './GradebookPanel'
 import { ApplicationAuditModal, DeletedGradesModal } from './GradeAuditPanels'
 import { printBoletim } from './boletimPrint'
@@ -81,13 +81,18 @@ const MODULE_ACCENTS = ['#d9776b', '#6fa294', '#6f88b0', '#c6a35b', '#9b7fa6', '
 // Rótulo curto da política para a linha compacta.
 const POLICY_SHORT = { highest: 'Maior nota', latest: 'Última', average: 'Média', selected: 'Escolhida' }
 
+// Critério de nota da turma. Sem critérios configurados (hoje), o padrão: média
+// mínima 6,0. Quando o servidor mandar o critério do curso (P2-S3), ele entra aqui.
+const criterio = CRITERIO_PADRAO
+
 // Faixa de cor da nota (escala 0-100) — gradação quente "Brasa", não arco-íris.
+// A faixa vem de gradeBand (web/src/lib/grades.js), a mesma regra do servidor.
 // Nota inválida de registro antigo (vazia ou fora de 0 a 10) fica neutra.
-const gradeBandClass = (score) => {
-  const g = gradeOf(score)
-  if (g === null) return 'rb-gmuted'
-  return g >= 9 ? 'rb-g9' : g >= 7 ? 'rb-g7' : g >= 6 ? 'rb-g6' : 'rb-g0'
-}
+const BAND_CLASS = { excelente: 'rb-g9', bom: 'rb-g7', suficiente: 'rb-g6', abaixo: 'rb-g0', muito_abaixo: 'rb-g0' }
+const gradeBandClass = (score) => BAND_CLASS[scoreBand(score, criterio)] || 'rb-gmuted'
+const TONE_COLOR = { success: 'var(--success)', warning: 'var(--warning)', danger: 'var(--danger)', neutral: 'var(--border)' }
+// Cor de cada barra da "Distribuição de notas" (faixas de gradeBand, da mais baixa à mais alta).
+const DISTRIBUTION_COLOR = { muito_abaixo: 'var(--danger)', abaixo: 'var(--warning)', suficiente: 'var(--info)', bom: 'var(--primary)', excelente: 'var(--success)' }
 
 // Estado de uma tentativa dentro do grupo (fonte: campos enriquecidos do backend).
 // 'count' = compõe a nota · 'off' = desconsiderada (arquivada) · 'disc' = ativa mas a regra não usa.
@@ -95,13 +100,13 @@ const attemptState = (s) => (s.resultStatus === 'archived' ? 'off' : (s.countsTo
 const STATE_LABEL = { count: 'Compõe a nota', disc: 'Descartada', off: 'Desconsiderada' }
 const fmtNota = (s) => fmtGrade(s, '-')
 
-// Explica em uma linha como a nota da prova foi formada, conforme a política.
-function formulaText(policy, attempts) {
+// Explica em uma linha como a nota da prova foi formada, conforme a política. O
+// resultado é a nota consolidada que o servidor calculou (consolidatedScore).
+function formulaText(policy, attempts, score) {
   const counts = attempts.filter((a) => a.countsTowardResult === true && a.resultStatus !== 'archived')
   if (policy === 'average') {
     const parts = counts.map((a) => fmtNota(a.score)).join(' + ')
-    const avg = counts.length ? counts.reduce((s, a) => s + Number(a.score), 0) / counts.length : 0
-    return `Média das consideradas — (${parts}) ÷ ${counts.length} = ${fmtNota(avg)}.`
+    return `Média das consideradas — (${parts}) ÷ ${counts.length} = ${fmtNota(score)}.`
   }
   if (policy === 'latest') return 'Última tentativa — vale a entrega mais recente entre as que contam.'
   if (policy === 'selected') return 'Tentativa escolhida — o professor fixou qual tentativa vale.'
@@ -133,19 +138,6 @@ function ResultPageFrame({ title, subtitle, backLabel, onBack, action = null, ch
   )
 }
 
-function resultForAttempts(attempts) {
-  const considered = attempts.filter((item) => item.resultStatus !== 'archived' && isValidScore(item.score))
-  const policy = attempts.find((item) => item.aggregationPolicy)?.aggregationPolicy || 'highest'
-  if (considered.length === 0) return { policy, score: null }
-  if (policy === 'average') return { policy, score: considered.reduce((sum, item) => sum + Number(item.score), 0) / considered.length }
-  if (policy === 'latest') return { policy, score: Number([...considered].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0].score) }
-  if (policy === 'selected') {
-    const picked = considered.find((item) => item.selectedForResult || item.countsTowardResult) || considered[0]
-    return { policy, score: Number(picked.score) }
-  }
-  return { policy, score: Math.max(...considered.map((item) => Number(item.score))) }
-}
-
 // Chave de grupo alinhada ao backend (attemptGroupKey): inclui o e-mail para
 // não misturar tentativas legadas de alunos diferentes na mesma turma/prova.
 function attemptGroupKey(item) {
@@ -156,8 +148,14 @@ function attemptGroupKey(item) {
   return `${email}::${course}::${klass}::${scope}`
 }
 
-// Nota consolidada por grupo. Prefere o valor já calculado pelo backend
-// (consolidatedScore); só recalcula localmente para registros legados sem o campo.
+// Nota do grupo: a consolidada que o servidor calculou (consolidatedScore; GET
+// /api/admin/submissions sempre manda o campo, null quando o grupo não tem nota
+// válida). O navegador não recalcula a regra maior/última/média/escolhida (ENG-02).
+function groupScore(attempts) {
+  const score = attempts.find((a) => a.consolidatedScore != null)?.consolidatedScore
+  return isValidScore(score) ? Number(score) : null
+}
+
 function consolidatedScores(submissions) {
   const groups = new Map()
   submissions.forEach((item) => {
@@ -165,10 +163,7 @@ function consolidatedScores(submissions) {
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(item)
   })
-  return [...groups.values()].map((attempts) => {
-    const enriched = attempts.find((a) => a.consolidatedScore != null)
-    return enriched != null ? Number(enriched.consolidatedScore) : resultForAttempts(attempts).score
-  }).filter(Number.isFinite)
+  return [...groups.values()].map(groupScore).filter(Number.isFinite)
 }
 
 function studentInClass(student, className) {
@@ -351,11 +346,8 @@ export default function ResultadosPage() {
         exams.get(scopeKey).attempts.push(submission)
       })
       const examGroups = [...exams.values()].map((exam) => {
-        const enriched = exam.attempts.find((a) => a.consolidatedScore != null)
-        const fallback = resultForAttempts(exam.attempts)
-        const policy = exam.attempts.find((a) => a.aggregationPolicy)?.aggregationPolicy || fallback.policy
-        const score = enriched != null ? Number(enriched.consolidatedScore) : fallback.score
-        return { ...exam, policy, score }
+        const policy = exam.attempts.find((a) => a.aggregationPolicy)?.aggregationPolicy || 'highest'
+        return { ...exam, policy, score: groupScore(exam.attempts) }
       })
       // Linhagem: agrupa as aplicações da MESMA prova (mesmo examKey) sob um tronco.
       const provasMap = new Map()
@@ -376,11 +368,13 @@ export default function ResultadosPage() {
   const analytics = useMemo(() => {
     const scores = consolidatedScores(filteredRows)
     const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0
-    const approved = scores.filter((x) => x >= 60).length
-    const buckets = [0, 0, 0, 0]
-    scores.forEach((x) => { const i = x < 50 ? 0 : x < 70 ? 1 : x < 90 ? 2 : 3; buckets[i]++ })
+    const approved = scores.filter((x) => isPassingGrade(gradeOf(x), criterio)).length
+    // Uma barra por faixa de gradeBand, pela nota como aparece (4,96 é 5,0): a barra e a
+    // cor da nota na lista contam a mesma faixa.
+    const counts = countByBand(scores.map(gradeOf), criterio)
+    const buckets = gradeBandRanges(criterio).map((range) => ({ ...range, n: counts[range.band], color: DISTRIBUTION_COLOR[range.band] }))
     // Sem nota válida (só registros antigos inválidos), a média fica "-", não 0,0.
-    return { avg: scores.length ? avg / 10 : null, aprov: scores.length ? Math.round((approved / scores.length) * 100) : 0, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets) }
+    return { avg: scores.length ? avg / 10 : null, aprov: scores.length ? Math.round((approved / scores.length) * 100) : 0, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets.map((b) => b.n)) }
   }, [filteredRows])
   const avgCount = useCountUp(analytics.avg)
   const aprovCount = useCountUp(analytics.aprov)
@@ -776,7 +770,7 @@ export default function ResultadosPage() {
           </div>
           <div className="rb-formula">
             <span className="ic"><Info size={13} /></span>
-            <p><b>Como esta nota foi calculada:</b> {formulaText(policy, attempts)}</p>
+            <p><b>Como esta nota foi calculada:</b> {formulaText(policy, attempts, exam.score)}</p>
           </div>
         </div>
         )}
@@ -801,12 +795,12 @@ export default function ResultadosPage() {
     { key: 'moduleCount', label: 'Módulos avaliados', render: (student) => <span className="inline-flex items-center gap-1.5 text-muted"><Layers3 size={14} />{student.moduleCount}</span> },
     { key: 'average', label: 'Média', render: (student) => {
       const score = Number(student.average)
-      const tone = score >= 60 ? 'success' : score >= 40 ? 'warning' : 'danger'
-      const color = score >= 60 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--danger)'
+      const tone = gradeTone(gradeOf(student.average), criterio)
+      const color = TONE_COLOR[tone]
       return (
         <div className="flex flex-col gap-1.5">
           <Badge tone={tone} className="w-fit tabular-nums">{fmtGrade(student.average, '-')}</Badge>
-          {Number.isFinite(score) && (
+          {student.average != null && Number.isFinite(score) && (
             <div className="h-1 w-16 overflow-hidden rounded-full bg-surface-2">
               <div className="meter-fill h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, score))}%`, background: color }} />
             </div>
@@ -880,13 +874,13 @@ export default function ResultadosPage() {
             <span className="text-xs font-medium text-muted">Distribuição de notas</span>
           </div>
           <div className="mt-3 flex h-20 items-stretch gap-2">
-            {[['0-4', 'var(--danger)'], ['5-6', 'var(--warning)'], ['7-8', 'var(--primary)'], ['9-10', 'var(--success)']].map(([lbl, col], i) => (
-              <div key={lbl} className="flex flex-1 flex-col items-center">
-                <span className="text-[10px] font-semibold tabular-nums text-muted">{analytics.buckets[i]}</span>
+            {analytics.buckets.map((bucket, i) => (
+              <div key={bucket.band} className="flex min-w-0 flex-1 flex-col items-center" title={`${bucket.n} nota(s) de ${bucket.label}`}>
+                <span className="text-[10px] font-semibold tabular-nums text-muted">{bucket.n}</span>
                 <div className="flex w-full flex-1 items-end">
-                  <div className="bar-grow w-full rounded transition-[filter] hover:brightness-125" style={{ height: `${(analytics.buckets[i] / analytics.maxBucket) * 100}%`, background: col, minHeight: '3px', animationDelay: `${i * 0.09}s` }} />
+                  <div className="bar-grow w-full rounded transition-[filter] hover:brightness-125" style={{ height: `${(bucket.n / analytics.maxBucket) * 100}%`, background: bucket.color, minHeight: '3px', animationDelay: `${i * 0.09}s` }} />
                 </div>
-                <span className="mt-1 text-[10px] text-subtle">{lbl}</span>
+                <span className="mt-1 whitespace-nowrap text-[10px] text-subtle">{bucket.label}</span>
               </div>
             ))}
           </div>
@@ -958,8 +952,8 @@ export default function ResultadosPage() {
                 const best = moduleScores.length ? Math.max(...moduleScores) : null
                 const worst = moduleScores.length ? Math.min(...moduleScores) : null
                 const publishedCount = module.submissions.filter((s) => s.gradePublished === true).length
-                const avgTone = Number(module.average) >= 60 ? 'success' : Number(module.average) >= 40 ? 'warning' : 'danger'
-                const meterColor = Number(module.average) >= 60 ? 'var(--success)' : Number(module.average) >= 40 ? 'var(--warning)' : 'var(--danger)'
+                const avgTone = gradeTone(gradeOf(module.average), criterio)
+                const meterColor = TONE_COLOR[avgTone]
                 const nameParts = String(module.moduleName).split('—')
                 const code = nameParts.length > 1 ? nameParts[0].trim() : ''
                 const title = nameParts.length > 1 ? nameParts.slice(1).join('—').trim() : module.moduleName

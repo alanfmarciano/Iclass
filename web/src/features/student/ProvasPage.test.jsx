@@ -69,6 +69,26 @@ describe('Provas do aluno · distribuição por faixa', () => {
     for (const label of ['9–10', '7–8,9', '6–6,9', '0–5,9']) expect(within(card).getByText(label)).toBeInTheDocument()
     expect(card.textContent).not.toMatch(/\d\.\d/)
   })
+
+  it('[UC-TENTATIVA-003] a barra conta a nota como ela aparece no cartão (gradeBand), não a nota crua', async () => {
+    // 59,6 aparece como 6,0 em amarelo (suficiente): antes entrava na barra vermelha
+    // "0–5,9". 89,6 aparece como 9,0 e entra em "9–10".
+    mocks.submissions = [
+      sub('a1', { score: 59.6 }),
+      sub('b1', { examKey: 'Avaliacao_FUTEC_2', score: 89.6 }),
+      sub('c1', { examKey: 'Avaliacao_FUTEC_3', score: 30 }),
+    ]
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    const card = (await screen.findByText('Por faixa de nota')).parentElement
+    const count = (label) => within(card).getByText(label).parentElement.lastChild.textContent
+    expect(await within(card).findByText('9–10')).toBeInTheDocument()
+    expect(count('9–10')).toBe('1')
+    expect(count('7–8,9')).toBe('0')
+    expect(count('6–6,9')).toBe('1')
+    expect(count('0–5,9')).toBe('1')
+    // A cor do cartão e a da barra são da mesma faixa.
+    expect(within(card).getByText('6–6,9').parentElement.querySelector('.bg-warning')).not.toBeNull()
+  })
 })
 
 describe('Provas do aluno · impressão da prova', () => {

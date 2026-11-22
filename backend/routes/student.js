@@ -43,6 +43,8 @@ const studentFeeds = require('../utils/studentFeeds.js');
 // ao carregar, para o sino abaixo juntar os itens dele.
 require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
+const { lessonsForDate } = require('../utils/academicCalendar.js');
+const { studentCalendarEvents } = require('../utils/calendarFeed.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
@@ -280,9 +282,11 @@ function ensureDailyLoginAttendance(rawEmail, { req = null, source = 'login' } =
                 || (db.memory.classes || []).find(c => String(c.name || '').toLowerCase() === entry.name.toLowerCase()
                     && (!entry.courseId || !c.courseId || String(c.courseId) === entry.courseId)))
             .filter(cls => cls && studentBelongsToClass(student, cls));
+        // As aulas de hoje pelo calendário (FUN-15): em dia não letivo e fora do período
+        // letivo da turma não há aula, e o acesso não cria presença nem falta.
         const classObj = candidates.find(cls => {
             const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
-            return attendanceUtil.withinClassDayWindow(attendanceUtil.gradeForDate(cls, _today), cfg.toleranciaMin, horaAcesso);
+            return attendanceUtil.withinClassDayWindow(lessonsForDate(db.memory, cls, _today), cfg.toleranciaMin, horaAcesso);
         });
         if (!classObj) return false;
         const _cls = classObj.name;
@@ -294,7 +298,7 @@ function ensureDailyLoginAttendance(rawEmail, { req = null, source = 'login' } =
         if (_hasToday) return false;
         // Marca por aula conforme a hora do acesso + tolerância da turma.
         const cfg = attendanceUtil.effectiveAttendanceConfig(classObj);
-        const gradeAulas = attendanceUtil.gradeForDate(classObj, _today);
+        const gradeAulas = lessonsForDate(db.memory, classObj, _today);
         const aulas = attendanceUtil.deriveAulasFromArrival(gradeAulas, horaAcesso, cfg.toleranciaMin);
         db.memory.attendance.push({
             id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
@@ -1230,37 +1234,11 @@ router.get('/api/student/calendar-events', validateStudentSession, (req, res) =>
     if (!student) return res.json([]);
     const cls = findClassByNameAndCourse(db.memory.classes || [], requestedClass, requestedCourse);
     if (!cls || !studentBelongsToClass(student, cls)) return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
-    let list = (db.memory.announcements || [])
-        .filter(item => {
-            if (item.kind !== 'calendar') return false;
-            if (requestedCourse && item.courseId !== requestedCourse) return false;
-            if (item.target === 'curso') return String(item.targetValue || '') === requestedCourse;
-            if (item.target === 'turma') return String(item.targetValue || '') === requestedClass && (!item.courseId || String(item.courseId) === requestedCourse);
-            return false;
-        })
-        .sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || String(a.startTime || '').localeCompare(String(b.startTime || '')))
-        .map(item => ({
-            id: item.id,
-            title: item.title,
-            description: item.message || '',
-            eventDate: item.eventDate,
-            startTime: item.startTime || '',
-            endTime: item.endTime || '',
-            eventType: item.eventType || 'outro',
-            target: item.target,
-            targetValue: item.targetValue,
-            courseId: item.courseId,
-            authorName: item.authorName || '',
-        }));
-    // Eventos dos provedores da fase 3 (tarefas, dias não letivos, provas agendadas),
-    // juntados depois dos de hoje e na mesma ordem (utils/studentFeeds.js).
-    if (studentFeeds.hasProviders('calendar')) {
-        const extra = studentFeeds.collectStudentCalendarEvents({
-            memory: db.memory, student, email, cls, courseId: requestedCourse, studentClass: requestedClass,
-        });
-        if (extra.length) list = [...list, ...extra].sort(studentFeeds.compareCalendarEvents);
-    }
-    res.json(list);
+    // Eventos do curso e da turma e, depois, os dos provedores da fase 3 (tarefas, dias
+    // não letivos, provas agendadas), na mesma ordem (utils/calendarFeed.js).
+    res.json(studentCalendarEvents(db.memory, {
+        student, email, cls, courseId: requestedCourse, studentClass: requestedClass,
+    }));
 });
 
 

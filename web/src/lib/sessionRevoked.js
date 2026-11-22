@@ -5,8 +5,9 @@
 // - 'password_changed': o instrutor trocou a senha em outro aparelho;
 // - 'logout': a sessão saiu pelo "Sair" (em outra aba): o login não mostra aviso;
 // - 'replaced': a conta entrou em outro aparelho (frente do H3: o servidor passou a dizer
-//   isso também nas rotas sem e-mail e depois de um reinício).
-export const SERVER_REVOKED_REASONS = Object.freeze(['logout', 'password_reset', 'password_changed', 'replaced'])
+//   isso também nas rotas sem e-mail e depois de um reinício);
+// - 'ended_elsewhere': o instrutor usou "Sair dos outros aparelhos" em Minha conta (UXI-07).
+export const SERVER_REVOKED_REASONS = Object.freeze(['logout', 'password_reset', 'password_changed', 'replaced', 'ended_elsewhere'])
 
 // { reason, message } para o doLogout a partir do erro de uma chamada, ou null quando o
 // erro não traz um desses motivos.

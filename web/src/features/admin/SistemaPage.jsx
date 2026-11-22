@@ -14,7 +14,7 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 import { SaudeCard } from './sistema/SaudeCard'
 import { SobreCard } from './sistema/SobreCard'
 import { ArmazenamentoCard } from './sistema/ArmazenamentoCard'
@@ -278,15 +278,15 @@ export default function SistemaPage() {
 
       <SaudeCard refreshKey={healthKey} />
 
-      <RedeCard canManage={canManage} isAdmin={auth?.accountRole !== 'professor'} />
+      <RedeCard canManage={canManage} isAdmin={isFullAdmin(auth)} />
 
       {canManage && <SettingsCard />}
 
-      {canManage && <RetencaoCard isAdmin={auth?.accountRole !== 'professor'} />}
+      {canManage && <RetencaoCard isAdmin={isFullAdmin(auth)} />}
 
       {canManage && <TrashCard />}
 
-      {canManage && <BackupCard isAdmin={auth?.accountRole !== 'professor'} />}
+      {canManage && <BackupCard isAdmin={isFullAdmin(auth)} />}
 
       {canManage && <ArmazenamentoCard />}
 

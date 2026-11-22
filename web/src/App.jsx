@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthProvider'
-import { canAccessAdminPath } from './lib/adminPermissions'
+import { canAccessAdminPath, isFullAdmin } from './lib/adminPermissions'
 import { lazyPage } from './lib/lazyPage'
 import { PasswordChangeForm } from './components/PasswordChangeForm'
 import { PageLoading } from './components/ui/PageLoading'
@@ -43,6 +43,8 @@ const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
 const SistemaPage = lazyPage(() => import('./features/admin/SistemaPage'))
 const AuditoriaPage = lazyPage(() => import('./features/admin/AuditoriaPage'))
 const PrivacidadePage = lazyPage(() => import('./features/admin/PrivacidadePage'))
+// Minha conta do instrutor (UXI-07): nome, senha e "Sair dos outros aparelhos".
+const MinhaContaPage = lazyPage(() => import('./features/admin/MinhaContaPage'))
 // Endereço da sala em tela cheia, fora do AppShell (H6a); a página traz a própria área
 // de erro (AppErrorBoundary), para o pacote inicial não crescer.
 const EnderecoSalaPage = lazyPage(() => import('./features/admin/EnderecoSalaPage'))
@@ -85,9 +87,11 @@ function RequireAdminPath({ path, children }) {
   return children
 }
 
+// Só o administrador pleno (Auditoria, Privacidade, Cadastros encerrados). Antes era
+// "não é professor", e a Secretaria e a Coordenação passariam (contrato C2 do P4).
 function RequireAdministrator({ children }) {
   const { auth } = useAuth()
-  return auth.accountRole === 'professor' ? <Navigate to="/" replace /> : children
+  return isFullAdmin(auth) ? children : <Navigate to="/" replace />
 }
 
 function SessionLoading() {
@@ -136,7 +140,8 @@ export default function App() {
         <Route path="turmas" element={<RequireAdminPath path="/turmas"><TurmasPage /></RequireAdminPath>} />
         <Route path="turmas/:courseId/:className/assistente" element={<RequireAdminPath path="/turmas"><AssistenteHorariosPage /></RequireAdminPath>} />
         <Route path="alunos" element={<RequireAdminPath path="/alunos"><AlunosPage /></RequireAdminPath>} />
-        <Route path="matriculas" element={<RequireAdministrator><RequireAdminPath path="/matriculas"><MatriculasPage /></RequireAdminPath></RequireAdministrator>} />
+        {/* Aprovar matrícula: enrollments.approve (administrador e Secretaria). */}
+        <Route path="matriculas" element={<RequireAdminPath path="/matriculas"><MatriculasPage /></RequireAdminPath>} />
         <Route path="diretorio" element={<RequireAdminPath path="/diretorio"><AlunosGlobalPage /></RequireAdminPath>} />
         <Route path="diretorio/:email" element={<RequireAdminPath path="/diretorio"><AlunoGlobalEditPage /></RequireAdminPath>} />
         <Route path="alunos/:id" element={<RequireAdminPath path="/alunos"><AlunoDetailPage /></RequireAdminPath>} />
@@ -147,6 +152,7 @@ export default function App() {
         <Route path="escolas/:id" element={<RequireAdminPath path="/escolas"><EscolaEditPage /></RequireAdminPath>} />
         <Route path="identidade" element={<RequireAdminPath path="/identidade"><IdentidadePage /></RequireAdminPath>} />
         <Route path="sistema" element={<RequireAdminPath path="/sistema"><SistemaPage /></RequireAdminPath>} />
+        <Route path="minha-conta" element={<RequireAdminPath path="/minha-conta"><MinhaContaPage /></RequireAdminPath>} />
         <Route path="auditoria" element={<RequireAdministrator><RequireAdminPath path="/auditoria"><AuditoriaPage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="lgpd" element={<RequireAdministrator><RequireAdminPath path="/lgpd"><PrivacidadePage /></RequireAdminPath></RequireAdministrator>} />
         <Route path="encerrados" element={<RequireAdministrator><RequireAdminPath path="/encerrados"><CadastrosEncerradosPage /></RequireAdminPath></RequireAdministrator>} />
@@ -206,10 +212,12 @@ function MaintenanceScreen({ message }) {
 // (o servidor também pede, com 400 currentPasswordRequired, e o campo aparece).
 const ADMIN_PASSWORD_INTRO = {
   created: 'A sua conta foi criada com uma senha definida pelo administrador. Antes de acessar o painel, escolha uma senha só sua.',
+  reset: 'O administrador redefiniu a sua senha. Antes de acessar o painel, escolha uma senha só sua.',
   weak: 'A sua senha é fácil de adivinhar. Antes de acessar o painel, escolha uma senha nova.',
 }
 function PasswordChangeScreen({ reason, onChanged }) {
-  const askCurrent = reason === 'created' || reason === 'weak'
+  // Senha redefinida pelo administrador (UXI-07): a temporária é a senha atual.
+  const askCurrent = reason === 'created' || reason === 'weak' || reason === 'reset'
   return (
     <main className="min-h-screen grid place-items-center bg-bg p-6 text-text">
       <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-lg space-y-4">
@@ -221,7 +229,7 @@ function PasswordChangeScreen({ reason, onChanged }) {
           kind="instructor"
           endpoint="/api/admin/change-password"
           askCurrent={askCurrent}
-          currentLabel={reason === 'created' ? 'Senha recebida' : 'Senha atual'}
+          currentLabel={reason === 'created' ? 'Senha recebida' : reason === 'reset' ? 'Senha temporária' : 'Senha atual'}
           onChanged={onChanged}
         />
       </div>

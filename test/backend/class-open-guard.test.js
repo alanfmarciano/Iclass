@@ -62,6 +62,15 @@ const ROTAS_QUE_GRAVAM = [
     ['adminExamConfig.js', 'POST', '/api/admin/exam-applications/:applicationId/attempt-action'],
     // Corrigir o gabarito depois da prova (A8, P3-S6) recorrige as entregas da aplicação.
     ['adminExamConfig.js', 'POST', '/api/admin/exam-applications/:applicationId/answer-key-correction'],
+    // Dias não letivos (B3 / P2-S5): o dia de uma turma marca a presença do login dela
+    // (naoLetivoId); a turma do dia (de antes e de depois, no update) passa pelo portão.
+    // O dia de curso, escola ou instituição chama com null (vale para muitas turmas; a
+    // encerrada fica de fora da marca, syncNonSchoolDayMarks olha isClassClosed).
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/create'],
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/update'],
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/delete'],
+    // Feriados nacionais: dia de instituição, passa pelo portão sem turma (dayClass null).
+    ['adminAcademic.js', 'POST', '/api/admin/calendar/non-school-days/national-holidays'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo.
@@ -97,6 +106,8 @@ const DIRECT_WRITE_MARKERS = [
     /\.attendance\s*=\s*(?!\s*\[\s*\])/,
     /\.(?:submissions|attendance)\.splice\(/,
     /only:\s*\[[^\]]*['"](?:submissions|attendance)['"]/,
+    // Linha antiga de coleção que só cresce gravada pela lista de mudadas (changed).
+    /changed\s*[:=]\s*\{\s*['"]?(?:submissions|attendance)\b/,
     /saveApplicationAction\(/,
     // Nota mudada no registro da entrega (recorreção, troca da finalização do servidor).
     /\bsubmission\.score\s*=(?!=)/,

@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
   // Lista da turma consultada a cada 5 s (useApi); sem valor, a mesma da carga inicial.
   liveApplications: null,
+  // Conta da sessão: vazia vale administrador (como uma sessão antiga sem papel).
+  auth: {},
 }))
 
 const classes = [{ name: '1DES', courseId: 'C1', onlineExamConfigs: {} }]
@@ -21,6 +23,7 @@ const applications = [
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => ({ courseId: 'C1', courseName: 'Curso', className: '1DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
@@ -745,5 +748,117 @@ describe('[UC-LGPD-009] Monitor: colar pelo menu da resposta escrita', () => {
     expect(classifyKeystroke({ kind: 'clipboard', key: 'paste' })).toMatchObject({ reason: 'colar', label: 'Colou conteúdo' })
     expect(classifyKeystroke({ kind: 'clipboard', key: 'copy' })).toMatchObject({ reason: 'clipboard', label: 'Cópia bloqueada' })
     expect(classifyKeystroke({ kind: 'clipboard', key: 'cut' })).toMatchObject({ reason: 'clipboard', label: 'Recorte bloqueado' })
+  })
+})
+
+describe('[UC-PAPEIS-001] MonitorPage · professor auxiliar sem as respostas corrigidas', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'B' }
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(() => { mocks.auth = {}; cleanup() })
+
+  it('o professor vê "Ver respostas"; o professor auxiliar acompanha a prova (Tempo, Msg) sem esse botão', async () => {
+    mocks.auth = { accountRole: 'professor' }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Ver respostas' })).toBeInTheDocument()
+    cleanup()
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Tempo' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ver respostas' })).toBeNull()
+  })
+})
+
+describe('[UC-PAPEIS-001] MonitorPage · professor auxiliar acompanha a prova sem os botões de nota', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'B' }
+  const group = { questionNumber: 3, questionPosition: 3, count: 1, reasons: { gabarito: 1 }, question: { questionText: 'Enunciado da 3' }, reports: [{ studentName: 'Elisa', studentEmail: 'elisa@x.local' }] }
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [group], totalOpen: 1 }
+      return {}
+    })
+  })
+  afterEach(() => { mocks.auth = {}; cleanup() })
+
+  it('o professor tem Analytics, Corrigir e Anular; o auxiliar pausa, finaliza e descarta contestação, sem esses', async () => {
+    mocks.auth = { accountRole: 'professor' }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Corrigir' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Analytics' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Anular...' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Anular e substituir...' })).toBeInTheDocument()
+    cleanup()
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
+    renderMonitor()
+    expect(await screen.findByRole('button', { name: 'Descartar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Finalizar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pausar' })).toBeInTheDocument()
+    for (const name of ['Corrigir', 'Analytics', 'Anular...', 'Anular e substituir...']) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+  })
+})
+
+// Ajuste 2 do B1: "Ver questão" das contestações marcava "— gabarito" na alternativa
+// certa para qualquer conta do Monitor. O auxiliar vê o enunciado e as alternativas sem a
+// marca (o servidor já manda a questão sem a correta; a tela não marca nem se vier).
+describe('[UC-PAPEIS-001] MonitorPage · Ver questão sem o gabarito para o professor auxiliar', () => {
+  const row = { email: 'elisa@x.local', name: 'Elisa', status: 'online', attemptNumber: 1, maxAttempts: 1, deliveredAttempts: 0, attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [], logCount: 0, assignedVersion: 'A' }
+  const group = {
+    questionNumber: 3, questionPosition: 3, count: 1, reasons: { gabarito: 1 },
+    question: { questionText: 'Enunciado da 3', correctAnswer: 'B', alternatives: [{ letter: 'A', text: 'Três' }, { letter: 'B', text: 'Quatro', isCorrect: true }] },
+    reports: [{ id: 'r1', studentName: 'Elisa', studentEmail: 'elisa@x.local', reason: 'gabarito' }],
+  }
+  const renderMonitor = () => render(
+    <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+      <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+    </MemoryRouter>,
+  )
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return [row]
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [group], totalOpen: 1 }
+      return {}
+    })
+  })
+  afterEach(() => { mocks.auth = {}; cleanup() })
+
+  it('o professor vê a marca do gabarito; o auxiliar vê as alternativas sem ela', async () => {
+    mocks.auth = { accountRole: 'professor' }
+    renderMonitor()
+    fireEvent.click(await screen.findByRole("button", { name: "Ver questão" }))
+    let dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText(/— gabarito/)).toBeInTheDocument()
+    expect(dialog.queryByText('O gabarito não aparece para o seu papel.')).toBeNull()
+    cleanup()
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
+    renderMonitor()
+    fireEvent.click(await screen.findByRole("button", { name: "Ver questão" }))
+    dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText(/Quatro/)).toBeInTheDocument()
+    expect(dialog.queryByText(/— gabarito/)).toBeNull()
+    expect(dialog.getByText('O gabarito não aparece para o seu papel.')).toBeInTheDocument()
   })
 })

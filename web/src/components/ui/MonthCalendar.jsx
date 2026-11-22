@@ -33,9 +33,12 @@ export function MonthCalendar({ email }) {
       const dateStr = `${year}-${pad(month + 1)}-${pad(d)}`
       const col = (offset + d - 1) % 7
       const weekend = col === 0 || col === 6
-      const present = !!days[dateStr]
+      // 'nao_letivo': só a presença automática do acesso num dia não letivo, que não conta
+      // na frequência (o registro fica, mas não é presença).
+      const naoLetivo = days[dateStr] === 'nao_letivo'
+      const present = !!days[dateStr] && !naoLetivo
       const future = dateStr > todayStr
-      out.push({ d, present, weekend, future, today: dateStr === todayStr })
+      out.push({ d, present, naoLetivo, weekend, future, today: dateStr === todayStr })
     }
     return out
   }, [cur, days])
@@ -54,12 +57,15 @@ export function MonthCalendar({ email }) {
       </div>
       <div className="grid grid-cols-7 gap-1.5">
         {cells.map((c, i) => c === null ? <div key={i} /> : (
-          <div key={i} className={`aspect-square grid place-items-center text-xs rounded-md ${c.today ? 'ring-2 ring-primary ' : ''}${c.present ? 'bg-success-soft text-success' : c.weekend || c.future ? 'text-subtle' : 'bg-surface-2 text-muted'}`}>{c.d}</div>
+          <div key={i} title={c.naoLetivo ? 'Acesso em dia não letivo: não conta na frequência' : undefined} className={`aspect-square grid place-items-center text-xs rounded-md ${c.today ? 'ring-2 ring-primary ' : ''}${c.present ? 'bg-success-soft text-success' : c.naoLetivo ? 'border border-dashed border-border text-subtle' : c.weekend || c.future ? 'text-subtle' : 'bg-surface-2 text-muted'}`}>{c.d}</div>
         ))}
       </div>
       <div className="flex gap-4 mt-3 text-[11px] text-subtle">
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-success-soft inline-block" />Presente</span>
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-surface-2 inline-block" />Sem registro</span>
+        {cells.some((c) => c && c.naoLetivo) && (
+          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm border border-dashed border-border inline-block" />Dia não letivo (não conta)</span>
+        )}
       </div>
     </div>
   )

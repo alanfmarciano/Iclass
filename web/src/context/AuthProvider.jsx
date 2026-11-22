@@ -6,6 +6,7 @@ import { clearAllExamDrafts } from '../lib/examDrafts'
 import { usePolling } from '../hooks/usePolling'
 import { useOnReconnect } from '../hooks/useServerConnection'
 import { reduceStoredStudentAuth, studentSessionProfile } from '../lib/studentProfile'
+import { adminAccountFields } from '../lib/adminPermissions'
 
 const AuthCtx = createContext()
 const LS = 'iclass-v3-auth'
@@ -149,11 +150,7 @@ export function AuthProvider({ children }) {
               loginAt: current.loginAt || Date.now(),
               serverInstanceId: who.instanceId || current.serverInstanceId,
               email: who.email || current.email,
-              accountRole: who.role || 'admin',
-              assignedClasses: who.assignedClasses || [],
-              assignedCourseIds: who.assignedCourseIds || [],
-              assignedSchoolIds: who.assignedSchoolIds || [],
-              additionalPermissions: who.additionalPermissions || [],
+              ...adminAccountFields(who),
               mustChangePassword: who.mustChangePassword === true,
               passwordChangeReason: who.mustChangePassword === true ? (who.passwordChangeReason || null) : null,
             }))
@@ -228,6 +225,8 @@ export function AuthProvider({ children }) {
         const who = await api.get('/api/admin/whoami', requestOptions)
         setAuth((c) => (c.role === 'admin' ? {
           ...c,
+          // Papel e permissões podem ter mudado enquanto o servidor estava fora.
+          ...adminAccountFields(who),
           serverInstanceId: who.instanceId || instanceId,
           adminSession: who.sessionToken || c.adminSession,
           mustChangePassword: who.mustChangePassword === true,
@@ -296,11 +295,7 @@ export function AuthProvider({ children }) {
       email: who.email || fallbackEmail,
       activeCourse: null,
       activeWorkspace: null,
-      accountRole: who.role || 'admin',
-      assignedClasses: who.assignedClasses || [],
-      assignedCourseIds: who.assignedCourseIds || [],
-      assignedSchoolIds: who.assignedSchoolIds || [],
-      additionalPermissions: who.additionalPermissions || [],
+      ...adminAccountFields(who),
       mustChangePassword: who.mustChangePassword === true,
       passwordChangeReason: who.mustChangePassword === true ? (who.passwordChangeReason || null) : null,
       ...extra,

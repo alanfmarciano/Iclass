@@ -183,3 +183,28 @@ test('[UC-NOTAS-003] média do painel consolida as tentativas da mesma prova pel
     memory.submissions = [sub('bad2', email, 'CURSO-A', 150, '2026-07-03T10:00:00.000Z')];
     assert.equal(studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' }).media, null);
 });
+
+test('[UC-TENTATIVA-003] risco por nota usa a média mínima do critério na nota como aparece (5,95 é 6,0)', () => {
+    const memory = memoryWithAttendance();
+    const email = 'aluno@teste.local';
+    // (60 + 59) / 2 = 59,5 -> 6,0 no boletim e no quadro. Antes a ficha mostrava 5,9 e
+    // acusava "Média abaixo de 6" para a nota que o boletim mostra como 6,0.
+    memory.submissions = [
+        sub('m1', email, 'CURSO-A', 60, '2026-07-01T10:00:00.000Z'),
+        sub('m2', email, 'CURSO-A', 59, '2026-07-02T10:00:00.000Z'),
+    ];
+    const ov = studentOverview(memory, memory.students[0], { courseId: 'CURSO-A' });
+    assert.equal(ov.media, 6);
+    const dash = computeStudentDashboard(memory, email, { courseId: 'CURSO-A' });
+    assert.equal(dash.kpis.media, 6);
+    assert.equal(dash.risco.reasons.some(reason => /Média abaixo/.test(reason)), false);
+
+    // Abaixo da mínima: o motivo diz a mínima e a média com vírgula.
+    memory.submissions = [sub('m3', email, 'CURSO-A', 55, '2026-07-01T10:00:00.000Z')];
+    const baixo = computeStudentDashboard(memory, email, { courseId: 'CURSO-A' });
+    assert.ok(baixo.risco.reasons.includes('Média abaixo de 6,0 (5,5)'), baixo.risco.reasons.join(' | '));
+    // Média inteira com uma casa, como no Dashboard ("média 5,0"); antes saía "(5)".
+    memory.submissions = [sub('m4', email, 'CURSO-A', 50, '2026-07-01T10:00:00.000Z')];
+    const inteira = computeStudentDashboard(memory, email, { courseId: 'CURSO-A' });
+    assert.ok(inteira.risco.reasons.includes('Média abaixo de 6,0 (5,0)'), inteira.risco.reasons.join(' | '));
+});

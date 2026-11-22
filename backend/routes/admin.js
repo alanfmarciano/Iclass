@@ -33,7 +33,7 @@ const {
     sendRouteError,
     validateAdminPermission
 } = require('../middlewares.js');
-const { parseEvaluationMarkdown } = require('../utils/parser.js');
+const { importWarningsFor, parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
@@ -74,7 +74,8 @@ function reviewPoints(graded) {
     if (graded.annulled && graded.annulmentMode === 'remover_do_total') return { pointsEarned: 0, pointsPossible: 0 };
     return { pointsEarned: graded.isCorrect === true ? DEFAULT_POINTS : 0, pointsPossible: DEFAULT_POINTS };
 }
-const { canAccessAdminPermission, hasAdminCapability } = require('../utils/adminPermissions.js');
+const { canAccessAdminPermission, canReadStudentGrades, hasAdminCapability } = require('../utils/adminPermissions.js');
+const { canReadExamVersions, classWithoutAnswerKeys, onlineExamConfigWithoutAnswerKeys } = require('../utils/examAnswerKeyView.js');
 const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
 const {
@@ -118,11 +119,14 @@ const {
     formatDateTimeBR,
     formatGradeBR,
     gradeCountsMismatch,
+    gradeCriterionFor,
     gradeFromScore,
     gradebookCsv,
+    gradebookXlsx,
     isEmptyInput,
     parseCountInput,
     parseGradeInput,
+    performanceBucket,
     recordGradeAudit,
     gradeChangeReason,
     safeFilePart,
@@ -132,6 +136,7 @@ const {
     scoreFromGrade,
     structureExamIndex,
 } = require('../utils/gradebook.js');
+const { XLSX_CONTENT_TYPE } = require('../utils/tabularFile.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const loginGuard = require('../utils/loginGuard.js');
@@ -183,7 +188,7 @@ const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
 const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require('../utils/studentAnalytics.js');
 const { computeNow, computeQueue, computeTrends } = require('../utils/dashboardAggregates.js');
-const { assertClassOpen, classOfSubmission, classesOfSubmissions } = require('../utils/academicCalendar.js');
+const { assertClassOpen, classOfSubmission, classesOfSubmissions, dayStatus, weeklyLessons } = require('../utils/academicCalendar.js');
 const { renameStudentData } = require('../utils/studentDataHandlers.js');
 const attendanceUtil = require('../utils/attendance.js');
 const runtimePaths = require('../runtimePaths.js');
@@ -198,6 +203,8 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
+const { createAdminAcademicRouter } = require('./adminAcademic.js');
+const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
 const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
@@ -2047,18 +2054,30 @@ router.get('/api/admin/student/attendance', (req, res) => {
         const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : null; // YYYY-MM
         let list = (db.memory.attendance || []).filter(a => a.studentEmail === email);
         if (month) list = list.filter(a => (a.date || '').slice(0, 7) === month);
+        // Dia com a presença automática do login em dia não letivo, que não conta na
+        // frequência (naoLetivoId): 'nao_letivo', a não ser que outro registro do dia valha.
         const days = {};
-        list.forEach(a => { if (a.date) days[a.date] = a.origin || 'login'; });
+        list.forEach(a => {
+            if (!a.date) return;
+            if (attendanceUtil.isIgnoredNonSchoolRecord(a)) {
+                if (!days[a.date]) days[a.date] = 'nao_letivo';
+                return;
+            }
+            days[a.date] = a.origin || 'login';
+        });
         res.json({ month, days });
     });
 });
 
 // Histórico acadêmico consolidado (Fase 4) — provas/notas + progresso. Somente admin.
+// Conta que não lê nota (Professor auxiliar, canReadStudentGrades): a lista de provas vem
+// vazia, com gradesHidden: true; o resto da ficha (presença, progresso) fica igual.
 router.get('/api/admin/student/academic', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
-        const submissions = (db.memory.submissions || [])
+        const withGrades = canReadStudentGrades(matchedAdmin);
+        const submissions = !withGrades ? [] : (db.memory.submissions || [])
             .filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email)
             // Nota inválida de registro antigo (vazia ou fora de 0 a 10) vai como null + aviso.
             .map(s => ({ id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp }))
@@ -2069,6 +2088,7 @@ router.get('/api/admin/student/academic', (req, res) => {
         const certificates = (db.memory.certificates || []).filter(c => c.studentEmail === email).sort((a, b) => (b.issuedAt || 0) - (a.issuedAt || 0));
         const moduleAccess = (db.memory.moduleAccess || []).filter(m => m.studentEmail === email).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 50);
         res.json({
+            ...(withGrades ? {} : { gradesHidden: true }),
             submissions,
             progress: { completedCount: completedUnits.length, completedUnits },
             attendance: { count: attendance.length, recent: attendance.slice(0, 30) },
@@ -2113,9 +2133,13 @@ router.get('/api/admin/student/report', (req, res) => {
         const className = cls?.name || membership.name || '';
         const structure = effectiveStructure(courseId, cls?.name)?.structure || course?.structure || [];
 
-        const ownSubmissions = (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
+        // Conta que não lê nota (Professor auxiliar, canReadStudentGrades): o boletim vem
+        // sem as provas (modules vazio, overallAverage null, gradesHidden: true); a
+        // frequência e o progresso continuam.
+        const withGrades = canReadStudentGrades(matchedAdmin);
+        const ownSubmissions = !withGrades ? [] : (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
         const contextSubmissions = scopeSubmissionsToContext(ownSubmissions, gradeScope(courseId, className));
-        const { modules, overallAverage } = buildStudentReportModules({
+        const { modules, overallAverage } = !withGrades ? { modules: [], overallAverage: null } : buildStudentReportModules({
             submissions: contextSubmissions.filter(s => s.gradePublished === true),
             allSubmissions: contextSubmissions,
             structure,
@@ -2135,6 +2159,7 @@ router.get('/api/admin/student/report', (req, res) => {
         const school = (db.memory.schools || []).find(s => s.id === (course && course.schoolId)) || null;
 
         res.json({
+            ...(withGrades ? {} : { gradesHidden: true }),
             generatedAt: Date.now(),
             institution: (school && (school.name || school.info?.tradeName)) || db.memory.branding?.displayName || db.memory.branding?.institutionName || 'IClass',
             student: { name: student.name, nomeSocial: student.nomeSocial || '', email: student.email, matricula: student.matricula || '', status: student.status || '' },
@@ -2143,6 +2168,9 @@ router.get('/api/admin/student/report', (req, res) => {
             period: cls?.period || student.period || '',
             modules,
             overallAverage,
+            // Critério de nota da matrícula (C1 do P2): a nota em vermelho do boletim é a
+            // que fica abaixo de criterio.mediaMinima (sem critérios, o padrão 6,0).
+            criterio: gradeCriterionFor(db.memory, { courseId, studentClass: className }),
             attendance: { frequency: stats.frequenciaGeral, presentes: stats.presentes, faltas: stats.faltasContam, totalAulas: stats.totalAulas, days: attendanceRows.length, disciplines, riskThreshold: attendanceUtil.effectiveAttendanceConfig(cls).limiarRiscoPct },
             progress: { completedUnits, totalUnits: unitKeys.length },
             issuedBy: (matchedAdmin && (matchedAdmin.name || matchedAdmin.email)) || 'Instrutor',
@@ -2152,7 +2180,7 @@ router.get('/api/admin/student/report', (req, res) => {
 
 // Painel do aluno — Etapa 1: indicadores consolidados. Somente admin (escopo aplicado pelo guard).
 router.get('/api/admin/student/dashboard', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const email = (req.query.email || '').trim().toLowerCase();
         if (!email) return res.status(400).json({ error: 'E-mail do aluno é obrigatório.' });
         // Curso/turma ativos da ficha: a média é a dessa matrícula, consolidada como em
@@ -2162,6 +2190,8 @@ router.get('/api/admin/student/dashboard', (req, res) => {
             studentClass: String(req.query.studentClass || '').trim(),
             // Módulos da estrutura da turma (com as variantes dela), como no boletim.
             structureFor: (courseId, className) => (courseId ? effectiveStructure(courseId, className)?.structure : null),
+            // Sem nota para quem não lê nota (Professor auxiliar): gradesHidden: true.
+            withGrades: canReadStudentGrades(matchedAdmin),
         }));
     });
 });
@@ -2213,7 +2243,9 @@ router.post('/api/admin/student/attendance/mark', (req, res) => {
             || (db.memory.classes || []).find(c => c.name === studentClass);
         // Turma encerrada não recebe presença (sem efeito até o B10).
         if (!assertClassOpen(cls, { res })) return;
-        const gradeAulas = attendanceUtil.gradeForDate(cls, date);
+        // A grade da semana mesmo em dia não letivo: quem marca a presença num feriado
+        // (reposição) marca de propósito, e a marcação conta na frequência (D13 do P2).
+        const gradeAulas = weeklyLessons(cls, date);
         const aulas = (gradeAulas.length ? gradeAulas : [{ ordem: 1, inicio: '', disciplinaId: '' }])
             .map(a => ({ ordem: a.ordem, disciplinaId: a.disciplinaId || '', inicio: a.inicio || '', status: 'presente', hora: '' }));
         const now = Date.now();
@@ -2315,11 +2347,12 @@ function _studentInClass(student, className, courseId) {
     });
 }
 
-// Grade do dia (aulas da turma na data) enriquecida com nome/cor da disciplina.
-function _gradeAulasForRoster(cls, course, date) {
+// Grade da semana da turma na data (dayStatus(...).aulasGrade) enriquecida com nome e
+// cor da disciplina.
+function _gradeAulasForRoster(gradeAulas, course) {
     const discById = {};
     ((course && course.disciplinas) || []).forEach(d => { discById[d.id] = d; });
-    return attendanceUtil.gradeForDate(cls, date).map(a => ({
+    return (gradeAulas || []).map(a => ({
         ordem: a.ordem,
         inicio: a.inicio || '',
         disciplinaId: a.disciplinaId || '',
@@ -2329,6 +2362,14 @@ function _gradeAulasForRoster(cls, course, date) {
 }
 
 // Roster da chamada: grade do dia + aulas já marcadas por aluno.
+// Dia não letivo e fora do período letivo da turma (FUN-15): naoLetivo ({ id, nome,
+// tipo, tipoRotulo, inicio, fim, escopo }) ou foraDoPeriodo vêm preenchidos, a grade da
+// semana vem em aulasGrade e aulas vem [] (a tela mostra a faixa sem a grade), até o
+// pedido com ?mesmoAssim=1 ("Fazer chamada mesmo assim": reposição), que traz a grade em
+// aulas como num dia letivo; a chamada salva assim conta na frequência. Já há chamada ou
+// marcação individual naquela data (de algum aluno da lista): o roster entra sozinho no
+// "mesmo assim" (chamadaNoDia: true), para quem volta ao dia ver a chamada salva e não a
+// tela de dia sem aula. Só a presença automática do login não conta (não é lançamento).
 router.get('/api/admin/attendance/roster', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.query.studentClass || '').trim();
@@ -2339,14 +2380,21 @@ router.get('/api/admin/attendance/roster', (req, res) => {
             || (db.memory.classes || []).find(c => c.name === className);
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
-        const gradeAulas = _gradeAulasForRoster(cls, course, date);
+        const mesmoAssim = ['1', 'true', 'sim'].includes(String(req.query.mesmoAssim || '').trim().toLowerCase());
+        const dia = dayStatus(db.memory, cls, date);
+        const aulasGrade = _gradeAulasForRoster(dia.aulasGrade, course);
+        const semAulaNoCalendario = !!(dia.naoLetivo || dia.foraDoPeriodo);
         const timezone = settingsUtil.getSettings().timezone;
         const sinceOf = _closedSinceResolver();
+        const alunosDaTurma = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
+            .map(s => ({ s, recs: _rosterDayRecords((s.email || '').toLowerCase(), date, className, courseId) }));
+        const chamadaNoDia = semAulaNoCalendario && alunosDaTurma.some(({ recs }) => recs.some(rec => rec && rec.origin !== 'login'));
+        const comGrade = !semAulaNoCalendario || mesmoAssim || chamadaNoDia;
+        const gradeAulas = comGrade ? aulasGrade : [];
 
-        const roster = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
-            .map(s => {
+        const roster = alunosDaTurma
+            .map(({ s, recs }) => {
                 const email = (s.email || '').toLowerCase();
-                const recs = _rosterDayRecords(email, date, className, courseId);
                 // Cadastro encerrado fica fora das datas novas (H7b).
                 if (!_rosterListsStudent(s, { date, hasRecord: recs.length > 0, timezone, sinceOf })) return null;
                 // O registro que vale no dia (o mesmo da frequência): chamada, manual, login.
@@ -2398,6 +2446,12 @@ router.get('/api/admin/attendance/roster', (req, res) => {
             toleranciaMin: cfg.toleranciaMin, limiarRiscoPct: cfg.limiarRiscoPct,
             disciplinas: (course && course.disciplinas) || [],
             aulas: gradeAulas,
+            aulasGrade,
+            naoLetivo: dia.naoLetivo,
+            foraDoPeriodo: dia.foraDoPeriodo,
+            periodoLetivo: dia.periodo,
+            mesmoAssim: semAulaNoCalendario && comGrade,
+            chamadaNoDia,
             roster,
         });
     });
@@ -2531,10 +2585,16 @@ router.get('/api/admin/attendance/export', (req, res) => {
         // Excel e fórmula neutralizada (o nome vem do autocadastro do aluno; "=..." entre
         // aspas ainda era executado pelo Excel).
         const stLabel = { presente: 'Presente', falta: 'Falta', justificada: 'Justificada' };
-        const header = ['Data', 'Aluno', 'E-mail', 'Turma', 'Aula', 'Disciplina', 'Início', 'Status', 'Abonado', 'Justificativa', 'Origem'];
+        // Fora da frequência: a presença automática do login em dia não letivo (naoLetivoId)
+        // fica no arquivo, com o dia que a tirou da conta.
+        const header = ['Data', 'Aluno', 'E-mail', 'Turma', 'Aula', 'Disciplina', 'Início', 'Status', 'Abonado', 'Justificativa', 'Origem', 'Fora da frequência'];
         const lines = [header];
+        const nonSchoolName = new Map((Array.isArray(db.memory.nonSchoolDays) ? db.memory.nonSchoolDays : [])
+            .filter(item => item && item.id).map(item => [String(item.id), String(item.nome || '').trim()]));
         rows.forEach(a => {
             const just = a.justificativa || null;
+            const ignored = attendanceUtil.isIgnoredNonSchoolRecord(a);
+            const foraDaFrequencia = ignored ? `Sim: dia não letivo${nonSchoolName.get(String(a.naoLetivoId)) ? ` (${nonSchoolName.get(String(a.naoLetivoId))})` : ''}` : '';
             const abonado = just && just.abonado ? 'Sim' : '';
             const justTxt = just ? (just.texto || just.tipo || '') : '';
             attendanceUtil.recordAulas(a).forEach(aula => {
@@ -2543,6 +2603,7 @@ router.get('/api/admin/attendance/export', (req, res) => {
                     aula.ordem, discNome[`${a.courseId}::${aula.disciplinaId}`] || aula.disciplinaId || '', aula.inicio || '',
                     stLabel[aula.status] || aula.status || '', aula.status === 'justificada' ? abonado : '',
                     aula.status === 'justificada' ? justTxt : '', ATT_ORIGIN_LABEL[a.origin] || a.origin || '',
+                    foraDaFrequencia,
                 ]);
             });
         });
@@ -2737,6 +2798,9 @@ router.get('/api/admin/announcements/calendar', (req, res) => {
                 && _annInScope(item, matchedAdmin)
                 && (!courseId || item.courseId === courseId)
                 && (!studentClass || item.target === 'curso' || item.targetValue === studentClass))
+            // Dias não letivos que valem para o curso e a turma (FUN-15), como itens só de
+            // leitura (kind 'nonSchoolDay', readOnly): mudam pela rota deles, não por aqui.
+            .concat(courseId ? nonSchoolDayCalendarItems(db.memory, { courseId, studentClass }) : [])
             .sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || String(a.startTime || '').localeCompare(String(b.startTime || '')));
         res.json(list);
     });
@@ -2887,10 +2951,15 @@ router.post('/api/admin/student/certificates/revoke', (req, res) => {
     });
 });
 
+// Versões da prova (versionSnapshots, com o gabarito) só para quem prepara prova
+// (page.exams): classWithoutAnswerKeys em utils/examAnswerKeyView.js (B1, papel "sem
+// notas"). Também o histórico de montagens e as avaliações personalizadas da turma.
+
 // Obter lista completa de turmas cadastradas (administrador)
 router.get('/api/admin/classes', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const classes = readJSON(DB_CLASSES_FILE);
+        const withAnswerKeys = canReadExamVersions(matchedAdmin);
         // Contagem dos professores da turma: papel professor mesmo (isProfessorAccount).
         const professors = (db.memory.admins || []).filter(account => isProfessorAccount(account));
         const students = db.memory.students || [];
@@ -2899,7 +2968,7 @@ router.get('/api/admin/classes', (req, res) => {
         res.json(filterClassesForAdmin(classes, matchedAdmin)
           .filter(cls => (!courseId || String(cls.courseId) === courseId) && (!studentClass || cls.name === studentClass))
           .map(cls => ({
-            ...cls,
+            ...(withAnswerKeys ? cls : classWithoutAnswerKeys(cls)),
             attendanceConfig: attendanceUtil.effectiveAttendanceConfig(cls),
             studentCount: students.filter(student => studentBelongsToClass(student, cls.name, cls.courseId)).length,
             professorCount: professors.filter(account => adminCanAccessClass(account, cls.name, cls.courseId)).length,
@@ -3362,26 +3431,41 @@ router.get('/api/admin/evaluation/:key', (req, res) => {
         const { key } = req.params;
         if (!adminCanAccessItem(matchedAdmin, key)) return res.status(403).json({ error: 'Recurso não autorizado.' });
         let evaluation = db.memory.evaluations[key];
-        
-        if (!evaluation) {
+        // Avisos da leitura do .md (alternativa, gabarito ou questão fora de a-e): voltam a
+        // cada abertura enquanto a prova é a que saiu do arquivo, inclusive quando outra
+        // tela (lançamento de nota, prova do aluno) ou o boot a gravou primeiro. Ao salvar
+        // no editor (revision), o professor já revisou e o aviso some. Não ficam gravados.
+        // importWarningsFor só usa os avisos do arquivo quando a avaliação gravada é a
+        // que o arquivo dá hoje; senão o aviso sai da própria avaliação gravada (e) colada
+        // na d) por uma versão anterior), nunca de um .md que não é o dela.
+        let avisos = [];
+        const mdPath = path.join(runtimePaths.CONTENT_DIR, `${key}.md`);
+        const fromMarkdownFile = /^[A-Za-z0-9_-]+$/.test(key) && fs.existsSync(mdPath);
+
+        if (!evaluation && fromMarkdownFile) {
             // Tenta carregar e migrar se houver arquivo .md legando em disco
-            const mdPath = path.join(runtimePaths.CONTENT_DIR, `${key}.md`);
-            if (fs.existsSync(mdPath)) {
-                try {
-                    const mdContent = fs.readFileSync(mdPath, 'utf8');
-                    evaluation = parseEvaluationMarkdown(mdContent, key);
-                    if (evaluation) {
-                        db.memory.evaluations[key] = evaluation;
-                        db.save();
-                    }
-                } catch(e) {}
+            try {
+                const mdContent = fs.readFileSync(mdPath, 'utf8');
+                const parsed = parseEvaluationMarkdownWithWarnings(mdContent, key);
+                evaluation = parsed.evaluation;
+                avisos = parsed.avisos;
+                if (evaluation) {
+                    db.memory.evaluations[key] = evaluation;
+                    db.save({ only: ['evaluations'] });
+                }
+            } catch(e) {}
+        } else if (evaluation && !evaluation.revision && !evaluation.updatedAt) {
+            let mdContent = '';
+            if (fromMarkdownFile) {
+                try { mdContent = fs.readFileSync(mdPath, 'utf8'); } catch (e) {}
             }
+            avisos = importWarningsFor(evaluation, mdContent, key);
         }
 
         if (!evaluation) {
             return res.status(404).json({ error: 'Avaliação não encontrada.' });
         }
-        res.json(evaluation);
+        res.json(avisos.length ? { ...evaluation, avisosImportacao: avisos } : evaluation);
     });
 });
 
@@ -3583,7 +3667,9 @@ router.use(createAdminAuditRouter());
 router.use(createAdminPrivacyRouter());
 router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
-// Banco de questões (fase 3, P3-S9a): depois do router de cursos, na ordem do plano.
+// Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
+// calendário acadêmico (P2) e banco de questões (P3-S9a).
+router.use(createAdminAcademicRouter());
 router.use(createAdminQuestionBankRouter());
 
 
@@ -4017,8 +4103,24 @@ function makeBackup(key, content, isJson = false) {
 // ----------------------------------------------------
 
 // 1. Inicia, pausa, retoma ou encerra um exame de uma turma
+// Resposta do controle da prova para quem só acompanha (page.monitor sem page.exams, como
+// o Professor auxiliar): a aplicação e a configuração sem as versões (gabarito). B1.
+function _examControlView(matchedAdmin, payload) {
+    if (canReadExamVersions(matchedAdmin)) return payload;
+    const stripApplication = value => {
+        if (!value || typeof value !== 'object') return value;
+        const { versionSnapshots, questionReports, ...rest } = value;
+        return rest;
+    };
+    return {
+        ...payload,
+        ...('application' in payload ? { application: stripApplication(payload.application) } : {}),
+        ...('config' in payload ? { config: onlineExamConfigWithoutAnswerKeys(payload.config) } : {}),
+    };
+}
+
 router.post('/api/admin/server-exam-control', (req, res) => {
-    validateAdmin(req, res, () => {
+    validateAdmin(req, res, (config, matchedAdmin) => {
         const { studentClass, courseId, examKey, applicationId } = req.body;
         const actionAliases = { start: 'running', pause: 'paused', resume: 'running', finish: 'finished', stop: 'finished' };
         const action = actionAliases[req.body.action] || req.body.action;
@@ -4064,7 +4166,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) db.save();
-                return res.json({ success: true, unchanged: true, application: withoutSealedToken(application), config: currentConfig });
+                return res.json(_examControlView(matchedAdmin, { success: true, unchanged: true, application: withoutSealedToken(application), config: currentConfig }));
             }
             if (plan.resolve) {
                 try {
@@ -4098,7 +4200,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
             // (a gravação aqui já é completa).
             if (!active) dropReopenSnapshots(db.memory, application.id);
             db.save();
-            return res.json({ success: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs[examKey] });
+            return res.json(_examControlView(matchedAdmin, { success: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs[examKey] }));
         }
         const actionStartsExam = action === 'running' || action === 'waiting';
         const hasPreparedSnapshot = currentConfig.activeHistoryId
@@ -4165,7 +4267,7 @@ router.post('/api/admin/server-exam-control', (req, res) => {
         }
 
         db.save();
-        res.json({ success: true, config: currentConfig });
+        res.json(_examControlView(matchedAdmin, { success: true, config: currentConfig }));
     });
 });
 
@@ -4789,6 +4891,13 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
         const examKey = req.params.examKey.trim();
         const courseId = req.query.courseId;
         const studentEmail = String(req.query.studentEmail || '').trim().toLowerCase();
+        // A revisão mostra as respostas do aluno com o gabarito e o acerto de cada questão:
+        // é nota. Quem acompanha a prova sem ler nota (Professor auxiliar, page.monitor sem
+        // page.results nem reports.view) recebe 403 grades_hidden; a lista do Monitor
+        // (monitor-status) continua com ele.
+        if (!canReadStudentGrades(req.adminAccount)) {
+            return res.status(403).json({ code: 'grades_hidden', error: 'Sua conta acompanha a prova, mas não vê as respostas corrigidas, o gabarito nem a nota do aluno.' });
+        }
         if (!studentEmail) return res.status(400).json({ error: 'studentEmail é obrigatório.' });
 
         const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId)
@@ -4848,12 +4957,6 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             }));
         }
 
-        function getCorrectAnswer(question) {
-            if (question.correctAnswer) return String(question.correctAnswer).toUpperCase();
-            const correctAlt = (question.alternatives || []).find(alt => alt.isCorrect);
-            return correctAlt && correctAlt.letter ? String(correctAlt.letter).toUpperCase() : '';
-        }
-
         const gradedByNumber = new Map(
             (submission ? (submission.gradedAnswers || []) : (liveGrade ? liveGrade.gradedAnswers : []))
                 .map(a => [Number(a.questionNumber), a])
@@ -4877,12 +4980,13 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
                 correctAnswer = graded.correctAnswer ? String(graded.correctAnswer).toUpperCase() : null;
                 isCorrect = graded.isCorrect === true;
             } else if (submission) {
-                correctAnswer = getCorrectAnswer(question) || null;
+                // Gabarito pela mesma regra da correção (examGrading.correctAnswerFor).
+                correctAnswer = correctAnswerFor(question) || null;
             } else {
                 const rawChoice = answers[question.number] != null ? answers[question.number]
                     : (answers[questionNumber] != null ? answers[questionNumber] : null);
                 studentChoice = typeof rawChoice === 'string' && rawChoice ? rawChoice.toUpperCase() : null;
-                correctAnswer = getCorrectAnswer(question) || null;
+                correctAnswer = correctAnswerFor(question) || null;
                 isCorrect = !!studentChoice && studentChoice === correctAnswer;
             }
 
@@ -4991,8 +5095,8 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
 });
 
 // Planilha de notas da turma (UXI-01, FUN-06): uma linha por aluno, uma coluna por
-// prova e a média, com a mesma consolidação da tela Resultados. JSON para a tela
-// e CSV (?format=csv) no padrão do Excel brasileiro.
+// prova e a média, com a mesma consolidação da tela Resultados. JSON para a tela,
+// CSV (?format=csv) no padrão do Excel brasileiro e XLSX (?format=xlsx, B3b).
 router.get('/api/admin/gradebook', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const courseId = String(req.query.courseId || '').trim();
@@ -5015,14 +5119,23 @@ router.get('/api/admin/gradebook', (req, res) => {
             applications: db.memory.examApplications || [],
         });
 
-        if (String(req.query.format || '').toLowerCase() === 'csv') {
+        const format = String(req.query.format || '').toLowerCase();
+        if (format === 'csv' || format === 'xlsx') {
             const today = new Date();
             const stamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+            const baseName = `planilha_notas_${safeFilePart(course?.name || courseId)}_${safeFilePart(studentClass)}_${stamp}`;
+            if (format === 'xlsx') {
+                // Mesmas células do CSV (gradebookSheet), com a nota como número.
+                res.setHeader('Content-Type', XLSX_CONTENT_TYPE);
+                res.setHeader('Content-Disposition', `attachment; filename="${baseName}.xlsx"`);
+                return res.status(200).send(gradebookXlsx(gradebook, { studentClass }));
+            }
             res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-            res.setHeader('Content-Disposition', `attachment; filename="planilha_notas_${safeFilePart(course?.name || courseId)}_${safeFilePart(studentClass)}_${stamp}.csv"`);
+            res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`);
             return res.status(200).send(gradebookCsv(gradebook));
         }
-        res.json({ courseId, courseName: course?.name || courseId, studentClass, generatedAt: Date.now(), ...gradebook });
+        // criterio (C1 do P2): a tela pinta a nota pela média mínima que vem daqui.
+        res.json({ courseId, courseName: course?.name || courseId, studentClass, generatedAt: Date.now(), ...gradebook, criterio: gradeCriterionFor(db.memory, { courseId, studentClass }) });
     });
 });
 
@@ -5066,10 +5179,11 @@ router.get('/api/admin/exam-analytics/:class/:examKey', (req, res) => {
         const validScores = [...submissionsByStudent.values()]
             .map(list => consolidatedStudentAverage(list).average)
             .filter(score => score !== null);
+        // Faixas pela média mínima do critério (gradebook.performanceBucket), na nota
+        // como aparece na tela (5,96 é 6,0).
+        const criterio = gradeCriterionFor(db.memory, { courseId: String(req.query.courseId || ''), studentClass });
         validScores.forEach(score => {
-            if (score < 60) gradeBuckets.baixo++;
-            else if (score < 85) gradeBuckets.medio++;
-            else gradeBuckets.alto++;
+            gradeBuckets[performanceBucket(score / 10, criterio)]++;
         });
 
         submissions.forEach(sub => {
@@ -5238,11 +5352,13 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
         // Índice montado uma vez por requisição: a tela de Alunos chama esta rota sem
         // filtro de curso, então sem ele o custo seria alunos × (presenças + submissões).
         const index = buildOverviewIndex(db.memory);
+        // Sem média para quem não lê nota (Professor auxiliar, canReadStudentGrades).
+        const withGrades = canReadStudentGrades(matchedAdmin);
         const overview = list.map(st => ({
             email: st.email,
             name: (st.nomeSocial && st.nomeSocial.trim()) || st.name || st.email,
             className: studentClass || scn(st)[0] || '',
-            ...studentOverview(db.memory, st, { courseId, studentClass, index }),
+            ...studentOverview(db.memory, st, { courseId, studentClass, index, withGrades }),
         }));
         res.json(overview);
     });
@@ -5369,6 +5485,11 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
         const snoozed = (account && account.preferences && account.preferences['dashboard.snoozed']) || {};
+        // Como no sino: só o que a conta consegue abrir (B1). "Alunos sem nenhuma
+        // avaliação" leva a Resultados (page.results) e "Dúvidas sem resposta" ao Fórum
+        // (page.forum); o Professor auxiliar e a Secretaria não abrem essas telas. Para o
+        // administrador e o professor nada muda (eles têm todas).
+        items = items.filter(item => canAccessAdminPermission(matchedAdmin, item.permissao));
         items = items.filter(item => {
             // Item que não se adia (backup falhou ou atrasado, H4b): fica até resolver.
             if (item.adiavel === false) return true;
@@ -5500,7 +5621,8 @@ router.post('/api/admin/notifications/seen', (req, res) => {
 router.get('/api/admin/dashboard/trends', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const scope = _dashboardScope(req, matchedAdmin);
-        res.json(computeTrends({ memory: db.memory, students: scope.students, course: scope.course, cls: scope.cls, now: Date.now() }));
+        // Sem a média das provas para quem não lê nota (Professor auxiliar).
+        res.json(computeTrends({ memory: db.memory, students: scope.students, course: scope.course, cls: scope.cls, now: Date.now(), withGrades: canReadStudentGrades(matchedAdmin) }));
     });
 });
 

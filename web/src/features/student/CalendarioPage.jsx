@@ -8,7 +8,7 @@ import { Card } from '../../components/ui/Card'
 import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../context/AuthProvider'
 
-const TYPE_LABELS = { aula: 'Aula', prova: 'Prova', entrega: 'Entrega', aviso: 'Aviso', reuniao: 'Reunião', outro: 'Outro' }
+const TYPE_LABELS = { aula: 'Aula', prova: 'Prova', entrega: 'Entrega', aviso: 'Aviso', reuniao: 'Reunião', outro: 'Outro', nao_letivo: 'Sem aula' }
 
 export default function CalendarioPage() {
   const { auth } = useAuth()

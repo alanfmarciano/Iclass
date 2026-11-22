@@ -6,6 +6,7 @@ import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { Card } from '../../components/ui/Card'
 import { Modal } from '../../components/ui/Modal'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { Textarea } from '../../components/ui/Textarea'
@@ -25,9 +26,15 @@ export default function CalendarioPage() {
   const [month, setMonth] = useState(firstOfMonth())
   const [form, setForm] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  // Dia não letivo (feriado, recesso): vem junto dos eventos, só para leitura.
+  const [readOnlyDetail, setReadOnlyDetail] = useState(null)
 
   const openNew = (date = '') => setForm(blank(date || `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}-01`, courseId, className))
-  const openEdit = (event) => setForm({ ...event, description: event.message || event.description || '' })
+  const openEdit = (event) => {
+    if (event.readOnly) return setReadOnlyDetail(event)
+    setForm({ ...event, description: event.message || event.description || '' })
+  }
   const set = (patch) => setForm((current) => ({ ...current, ...patch }))
 
   async function save() {
@@ -44,15 +51,17 @@ export default function CalendarioPage() {
     } catch (error) { toast.error(error.message) } finally { setBusy(false) }
   }
 
+  // Excluir pelo diálogo da tela (o erro aparece nele, que continua aberto).
   async function remove() {
-    if (!form?.id || !window.confirm('Excluir este evento?')) return
+    if (!form?.id) return
     setBusy(true)
     try {
       await api.post('/api/admin/announcements/calendar/delete', { id: form.id })
       toast.success('Evento removido')
+      setConfirmRemove(false)
       setForm(null)
       eventsApi.refetch()
-    } catch (error) { toast.error(error.message) } finally { setBusy(false) }
+    } finally { setBusy(false) }
   }
 
   if (!courseId) return <Card className="p-6"><EmptyState icon={CalendarDays} title="Escolha um curso" description="Entre em um curso para organizar o calendário." /></Card>
@@ -72,7 +81,7 @@ export default function CalendarioPage() {
         title={form?.id ? 'Editar evento' : 'Novo evento'}
         description="O aluno verá este compromisso no calendário do curso."
         footer={<>
-          {form?.id && <Button variant="destructive" icon={Trash2} disabled={busy} onClick={remove}>Excluir</Button>}
+          {form?.id && <Button variant="destructive" icon={Trash2} disabled={busy} onClick={() => setConfirmRemove(true)}>Excluir</Button>}
           <Button variant="ghost" disabled={busy} onClick={() => setForm(null)}>Cancelar</Button>
           <Button icon={Save} loading={busy} onClick={save}>Salvar</Button>
         </>}
@@ -97,6 +106,33 @@ export default function CalendarioPage() {
           <Textarea id="cal-description" label="Descrição ou instruções" value={form.description} onChange={(event) => set({ description: event.target.value })} placeholder="Informações que o aluno precisa saber..." className="min-h-24" />
         </div>}
       </Modal>
+
+      <ConfirmDialog
+        open={confirmRemove}
+        onClose={() => setConfirmRemove(false)}
+        onConfirm={remove}
+        title="Excluir este evento?"
+        message="O evento sai do calendário do curso e do calendário dos alunos."
+        confirmLabel="Excluir"
+        tone="danger"
+      />
+
+      <Modal
+        open={!!readOnlyDetail}
+        onClose={() => setReadOnlyDetail(null)}
+        title={readOnlyDetail?.title || 'Dia não letivo'}
+        description={readOnlyDetail ? formatRange(readOnlyDetail.eventDate, readOnlyDetail.endDate) : ''}
+        footer={<Button variant="ghost" onClick={() => setReadOnlyDetail(null)}>Fechar</Button>}
+      >
+        {readOnlyDetail && <p className="text-sm text-text">{readOnlyDetail.message || 'Não há aula neste dia.'} A chamada não é cobrada e a presença automática do acesso não conta na frequência.</p>}
+      </Modal>
     </div>
   )
+}
+
+// '2027-11-15' → '15/11/2027'; com fim diferente, 'de 13/07/2027 a 24/07/2027'.
+function formatRange(start, end) {
+  const br = (value) => (value ? new Date(`${value}T12:00:00`).toLocaleDateString('pt-BR') : '')
+  if (!end || end === start) return br(start)
+  return `de ${br(start)} a ${br(end)}`
 }

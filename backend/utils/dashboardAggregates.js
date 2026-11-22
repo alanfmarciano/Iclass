@@ -8,6 +8,7 @@
 // em ms. Toda normalização acontece AQUI, na entrada — nunca no consumidor.
 
 const attendanceUtil = require('./attendance.js');
+const academicCalendar = require('./academicCalendar.js');
 const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js');
 const { studentSessionByEmail } = require('./authSessions.js');
 const { collectInstructorQueue } = require('./studentFeeds.js');
@@ -74,7 +75,10 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
     const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
     const discMap = discNameMap(course);
     const emails = emailSet(students);
-    const grade = cls ? attendanceUtil.gradeForDate(cls, today) : [];
+    // Hoje pelo calendário (FUN-15): em dia não letivo ou fora do período letivo não há
+    // aula em curso, e naoLetivo diz por quê ("Hoje não tem aula: <nome>").
+    const hoje = cls ? academicCalendar.dayStatus(memory, cls, today) : null;
+    const grade = hoje ? hoje.aulas : [];
 
     const bounds = grade.map((a, i) => {
         const ini = attendanceUtil.hhmmToMin(a.inicio);
@@ -96,16 +100,21 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
     } : null;
 
     // Fora de horário: aponta a próxima aula (hoje mais tarde, ou nos próximos 7 dias).
+    // O dia não letivo com grade não conta nos 7 (a próxima aula pula o feriado e o
+    // recesso), até 60 dias à frente.
     let proximaAula = null;
     if (!emCurso && cls) {
         const depois = bounds.find(a => a.iniMin != null && a.iniMin > nowMin);
         if (depois) {
             proximaAula = { data: today, inicio: depois.inicio || '', nome: aulaNome(discMap, depois) };
         } else {
-            for (let d = 1; d <= 7 && !proximaAula; d++) {
+            let limite = 7;
+            for (let d = 1; d <= limite && d <= 60 && !proximaAula; d++) {
                 const ds = addDays(today, d);
-                const g = attendanceUtil.gradeForDate(cls, ds);
+                const dia = academicCalendar.dayStatus(memory, cls, ds);
+                const g = dia.aulas;
                 if (g.length) proximaAula = { data: ds, inicio: g[0].inicio || '', nome: aulaNome(discMap, g[0]) };
+                else if (dia.naoLetivo && dia.aulasGrade.length) limite++;
             }
         }
     }
@@ -150,7 +159,14 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
         if (ultimoAcessoAt == null || ts > ultimoAcessoAt) ultimoAcessoAt = ts;
     });
 
-    return { aula, proximaAula, aplicacao, proximaAplicacao, online: { count, janelaMin: ONLINE_JANELA_MIN, ultimoAcessoAt } };
+    return {
+        aula, proximaAula, aplicacao, proximaAplicacao,
+        online: { count, janelaMin: ONLINE_JANELA_MIN, ultimoAcessoAt },
+        // Hoje é dia não letivo para a turma ({ id, nome, tipo, tipoRotulo, inicio, fim,
+        // escopo }) ou null; foraDoPeriodo: hoje está fora do período letivo dela.
+        naoLetivo: hoje ? hoje.naoLetivo : null,
+        foraDoPeriodo: !!(hoje && hoje.foraDoPeriodo),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -173,8 +189,9 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     const emails = emailSet(students);
     const items = [];
 
-    // 1. Chamada de hoje não concluída (só em dia letivo).
-    const grade = cls ? attendanceUtil.gradeForDate(cls, today) : [];
+    // 1. Chamada de hoje não concluída (só em dia letivo: no feriado, no recesso e fora do
+    // período letivo da turma o painel não cobra a chamada; FUN-15).
+    const grade = cls ? academicCalendar.lessonsForDate(memory, cls, today) : [];
     if (grade.length && students.length) {
         const status = chamadaStatusHoje(memory, cls, emails, today);
         if (status !== 'concluida') {
@@ -437,7 +454,11 @@ function securityQueueItems(security) {
 // PULSO — 3 métricas com tendência (janela móvel de 30 dias vs. 30 anteriores).
 // Série: 6 fatias de 5 dias, para a sparkline ter eixo temporal real.
 // ---------------------------------------------------------------------------
-function computeTrends({ memory, students, course, cls, now }) {
+// withGrades === false (conta que não lê nota, como o Professor auxiliar;
+// canReadStudentGrades em adminPermissions.js): a média das provas sai vazia (valores
+// null, base zerada) e a resposta leva gradesHidden: true; frequência, disciplinas e
+// engajamento ficam iguais.
+function computeTrends({ memory, students, course, cls, now, withGrades = true }) {
     const emails = emailSet(students);
     const courseId = course ? String(course.id) : '';
     const inWin = (ts, startDaysAgo, endDaysAgo) =>
@@ -481,7 +502,7 @@ function computeTrends({ memory, students, course, cls, now }) {
         (memory.submissions || []).filter(s => s.student && emails.has(lower(s.student.email))),
         { courseId, studentClass: cls ? cls.name : '', students: memory.students || [], classes: memory.classes || [] },
     );
-    const gradedGroups = buildGradeGroups(subsScoped).filter(group => group.score !== null);
+    const gradedGroups = withGrades ? buildGradeGroups(subsScoped).filter(group => group.score !== null) : [];
     const mediaOf = (groups) => {
         if (!groups.length) return null;
         return Math.round(groups.reduce((a, group) => a + group.score, 0) / groups.length / 10 * 10) / 10;
@@ -535,6 +556,7 @@ function computeTrends({ memory, students, course, cls, now }) {
 
     const round1 = v => v == null ? null : Math.round(v * 10) / 10;
     return {
+        ...(withGrades ? {} : { gradesHidden: true }),
         disciplinas,
         frequencia: {
             atual: freqAtual, anterior: freqAnterior,

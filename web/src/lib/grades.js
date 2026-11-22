@@ -6,7 +6,9 @@
 export const GRADE_MAX = 10
 
 function validScore(score) {
-  if (score === null || score === undefined || score === '' || typeof score === 'boolean') return null
+  if (score === null || score === undefined || typeof score === 'boolean') return null
+  // Texto só com espaços também é nota vazia (Number('  ') daria 0), como no servidor.
+  if (typeof score === 'string' && score.trim() === '') return null
   const n = Number(score)
   if (!Number.isFinite(n) || n < 0 || n > 100) return null
   return n
@@ -29,6 +31,133 @@ export function isValidScore(score) {
 export function roundGrade(score) {
   const n = validScore(score)
   return n === null ? null : Math.round(Number(n.toFixed(6))) / 10
+}
+
+// ---- Critério e faixas da nota (ENG-02, contrato C1 do P2) -------------------
+// Cópia de backend/utils/gradebook.js (gradeBand, isPassingGrade): o navegador não
+// pode carregar o arquivo do servidor, e test/backend/regra-de-nota-unica.test.js
+// confere que as duas dão a mesma faixa. Nenhuma tela compara nota com 6, 7, 9 ou 60
+// escritos no código: todas usam gradeBand/isPassingGrade com o critério que veio do
+// servidor (sem critério, o padrão: média mínima 6,0).
+export const MEDIA_MINIMA_PADRAO = 6
+export const CRITERIO_PADRAO = Object.freeze({ mediaMinima: MEDIA_MINIMA_PADRAO, mencoes: null, regraAntiga: true })
+const FAIXA_EXCELENTE = 9
+const FAIXA_BOM = 7
+const DISTANCIA_DE_ALERTA = 2
+export const GRADE_BANDS = ['excelente', 'bom', 'suficiente', 'abaixo', 'muito_abaixo']
+
+// Nota 0 a 10 com uma casa, "metade para cima" (8,99 -> 9,0; 5,96 -> 6,0): a faixa é
+// a da nota que aparece na tela.
+// Texto vazio ou só com espaços não é nota (Number('  ') daria 0); "5,5" com vírgula
+// vale 5,5, como a nota digitada. Igual a gradeNumber do servidor.
+function gradeNumber(grade) {
+  if (grade === null || grade === undefined || typeof grade === 'boolean') return null
+  if (typeof grade === 'string') {
+    const text = grade.trim()
+    if (!text) return null
+    return Number(/^-?\d+,\d+$/.test(text) ? text.replace(',', '.') : text)
+  }
+  return Number(grade)
+}
+
+function roundGradeValue(grade) {
+  const n = gradeNumber(grade)
+  if (n === null) return null
+  if (!Number.isFinite(n) || n < 0 || n > GRADE_MAX) return null
+  return Math.round(Number((n * 10).toFixed(6))) / 10
+}
+
+export function normalizeCriterio(criterio) {
+  const minima = roundGradeValue(criterio?.mediaMinima)
+  return {
+    mediaMinima: minima === null ? MEDIA_MINIMA_PADRAO : minima,
+    mencoes: Array.isArray(criterio?.mencoes) ? criterio.mencoes : null,
+    regraAntiga: criterio?.regraAntiga !== false,
+  }
+}
+
+// Nota de 0 a 10 -> 'excelente' (9,0+), 'bom' (7,0+), 'suficiente' (até a mínima),
+// 'abaixo' (até 2 pontos abaixo da mínima), 'muito_abaixo'; null sem nota válida.
+export function gradeBand(grade, criterio) {
+  const value = roundGradeValue(grade)
+  if (value === null) return null
+  const { mediaMinima } = normalizeCriterio(criterio)
+  if (value < mediaMinima) {
+    const alerta = Math.round((mediaMinima - DISTANCIA_DE_ALERTA) * 10) / 10
+    return value >= alerta ? 'abaixo' : 'muito_abaixo'
+  }
+  if (value >= FAIXA_EXCELENTE) return 'excelente'
+  if (value >= FAIXA_BOM) return 'bom'
+  return 'suficiente'
+}
+
+// Nota guardada (0 a 100) -> faixa.
+export function scoreBand(score, criterio) {
+  return gradeBand(gradeOf(score), criterio)
+}
+
+// A nota alcança a média mínima? null sem nota válida.
+export function isPassingGrade(grade, criterio) {
+  const band = gradeBand(grade, criterio)
+  if (band === null) return null
+  return band !== 'abaixo' && band !== 'muito_abaixo'
+}
+
+// Faixas como intervalos da nota mostrada (0 a 10, uma casa), na ordem da mais baixa
+// para a mais alta, para gráficos de distribuição: [{ band, min, max, label }] com min e
+// max incluídos ("6–6,9"). Faixa vazia com a mínima do critério (ex.: 'suficiente' com
+// mínima 7,0) não aparece. Os limites são os de gradeBand (grades.test.js confere).
+function fmtBound(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace('.', ',')
+}
+// Intervalo de notas para rótulo: "6–6,9" (ou "10" quando começa e termina igual).
+export function gradeRangeLabel(min, max) {
+  return min === max ? fmtBound(min) : `${fmtBound(min)}–${fmtBound(max)}`
+}
+const tenth = (value) => Math.round(value * 10) / 10
+export function gradeBandRanges(criterio) {
+  const { mediaMinima } = normalizeCriterio(criterio)
+  const alerta = Math.max(0, tenth(mediaMinima - DISTANCIA_DE_ALERTA))
+  const ranges = [
+    { band: 'muito_abaixo', min: 0, max: tenth(alerta - 0.1) },
+    { band: 'abaixo', min: alerta, max: tenth(mediaMinima - 0.1) },
+    { band: 'suficiente', min: mediaMinima, max: tenth(FAIXA_BOM - 0.1) },
+    { band: 'bom', min: Math.max(FAIXA_BOM, mediaMinima), max: tenth(FAIXA_EXCELENTE - 0.1) },
+    { band: 'excelente', min: Math.max(FAIXA_EXCELENTE, mediaMinima), max: GRADE_MAX },
+  ]
+  return ranges
+    .filter((range) => range.max >= range.min)
+    .map((range) => ({ ...range, label: gradeRangeLabel(range.min, range.max) }))
+}
+
+// Quantas notas (0 a 10) caem em cada faixa: { excelente: n, bom: n, ... }. Nota sem
+// faixa (vazia ou fora de 0 a 10) não conta.
+export function countByBand(grades, criterio) {
+  const counts = Object.fromEntries(GRADE_BANDS.map((band) => [band, 0]))
+  ;(grades || []).forEach((grade) => {
+    const band = gradeBand(grade, criterio)
+    if (band) counts[band] += 1
+  })
+  return counts
+}
+
+// Média mínima para texto ("6,0").
+export function fmtMinimumGrade(criterio) {
+  return normalizeCriterio(criterio).mediaMinima.toFixed(1).replace('.', ',')
+}
+
+// Tom do Badge pela faixa. 'aprovacao' (padrão): na mínima ou acima é sucesso, até 2
+// pontos abaixo é atenção, mais longe é perigo (coluna "Média" de Resultados).
+// 'aluno': 7,0+ sucesso, da mínima ao 7 atenção, abaixo perigo (Provas do aluno).
+// 'simples': na mínima ou acima sucesso, abaixo atenção (Alunos e ficha do aluno).
+const BAND_TONES = {
+  aprovacao: { excelente: 'success', bom: 'success', suficiente: 'success', abaixo: 'warning', muito_abaixo: 'danger' },
+  aluno: { excelente: 'success', bom: 'success', suficiente: 'warning', abaixo: 'danger', muito_abaixo: 'danger' },
+  simples: { excelente: 'success', bom: 'success', suficiente: 'success', abaixo: 'warning', muito_abaixo: 'warning' },
+}
+export function gradeTone(grade, criterio, escala = 'aprovacao', empty = 'neutral') {
+  const band = gradeBand(grade, criterio)
+  return band === null ? empty : (BAND_TONES[escala] || BAND_TONES.aprovacao)[band]
 }
 
 // "8,5" (ou "—" sem nota válida).

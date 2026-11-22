@@ -7,6 +7,7 @@ const path = require('path');
 const db = require('../database.js');
 const { DEMO_ACCOUNTS } = require('../utils/demoAccounts.js');
 const attendanceUtil = require('../utils/attendance.js');
+const { weeklyLessons } = require('../utils/academicCalendar.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { applicationToOnlineConfig, createExamApplication } = require('../utils/examApplications.js');
 const { markStudentPresence } = require('../utils/authSessions.js');
@@ -294,7 +295,8 @@ function seedAcademicData() {
     });
 
     schoolDays.forEach((date, dayIndex) => {
-      const gradeAulas = attendanceUtil.gradeForDate({ attendanceConfig: TEST_ATTENDANCE_CONFIG }, date);
+      // A grade da semana (os dados de demonstração não têm dia não letivo).
+      const gradeAulas = weeklyLessons({ attendanceConfig: TEST_ATTENDANCE_CONFIG }, date);
       if (!gradeAulas.length) return; // dia sem grade (não deve ocorrer: schoolDays são úteis)
       const absent = (studentIndex + dayIndex) % 17 === 0;
       const justified = !absent && (studentIndex * 2 + dayIndex) % 23 === 0;

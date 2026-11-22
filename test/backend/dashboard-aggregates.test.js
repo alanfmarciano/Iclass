@@ -143,6 +143,31 @@ test('[UC-DASH-002] queue: chamada concluída não gera pendência', () => {
     assert.ok(!items.some(i => i.id === 'chamada_pendente'));
 });
 
+test('[UC-DASH-005] dia não letivo: a fila não cobra chamada, a faixa "Agora" diz por quê e a próxima aula pula o feriado', () => {
+    const memory = baseMemory();
+    memory.nonSchoolDays = [{ id: 'nl_hoje', inicio: TODAY, tipo: 'feriado', nome: 'Feriado municipal', escopo: 'instituicao' }];
+    const items = computeQueue({ ...scopeOf(memory), canSeeMatriculas: false });
+    assert.ok(!items.some(i => i.id === 'chamada_pendente'), 'no feriado não há chamada a lançar');
+    const now = computeNow(scopeOf(memory));
+    assert.equal(now.aula, null, 'às 09:00 do feriado nenhuma aula está em curso');
+    assert.equal(now.naoLetivo && now.naoLetivo.nome, 'Feriado municipal');
+    assert.equal(now.foraDoPeriodo, false);
+    assert.equal(now.proximaAula && now.proximaAula.data, '2026-07-16', 'a próxima aula é a do dia seguinte');
+    assert.equal(now.proximaAula.inicio, '08:00');
+
+    // Recesso de três dias (hoje, amanhã e depois): a próxima aula é a do quarto dia.
+    memory.nonSchoolDays = [{ id: 'nl_rec', inicio: TODAY, fim: '2026-07-17', tipo: 'recesso', nome: 'Recesso', escopo: 'curso', courseId: 'TI' }];
+    const recesso = computeNow(scopeOf(memory));
+    assert.equal(recesso.naoLetivo.nome, 'Recesso');
+    assert.equal(recesso.proximaAula && recesso.proximaAula.data, '2026-07-18');
+    assert.ok(!computeQueue({ ...scopeOf(memory), canSeeMatriculas: false }).some(i => i.id === 'chamada_pendente'));
+
+    // Feriado de outra turma não muda nada.
+    memory.nonSchoolDays = [{ id: 'nl_outra', inicio: TODAY, tipo: 'feriado', nome: 'Só da 2DES', escopo: 'turma', courseId: 'TI', studentClass: '2DES' }];
+    assert.ok(computeQueue({ ...scopeOf(memory), canSeeMatriculas: false }).some(i => i.id === 'chamada_pendente'));
+    assert.equal(computeNow(scopeOf(memory)).naoLetivo, null);
+});
+
 test('[UC-DASH-003] trends: janelas móveis de 30 dias e "sem dado" nunca vira zero', () => {
     const memory = baseMemory();
     const t = computeTrends({ memory, students: memory.students, course: memory.courses[0], now: NOW });

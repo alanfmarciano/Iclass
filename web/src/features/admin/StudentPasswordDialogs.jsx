@@ -32,7 +32,8 @@ function temporaryPasswordText(mustChangePassword, deferred) {
 
 // mustChangePassword: o que o servidor respondeu (false = a troca não foi pedida);
 // deferred: passwordChangeDeferred (o aluno está em prova e troca depois dela).
-export function TemporaryPasswordNotice({ open, email, password, mustChangePassword = true, deferred = false, onClose }) {
+// text: troca o texto do aviso (a senha de uma conta do painel, AccountPasswordResetDialog).
+export function TemporaryPasswordNotice({ open, email, password, mustChangePassword = true, deferred = false, text = '', onClose }) {
   const toast = useToast()
   async function copy() {
     // lib/clipboard.js (H6a): API de copiar no contexto seguro, execCommand pelo IP da
@@ -50,7 +51,7 @@ export function TemporaryPasswordNotice({ open, email, password, mustChangePassw
           <code data-testid="temporary-password" className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-lg font-semibold tracking-wider text-text select-all">{password}</code>
           <Button variant="secondary" icon={Copy} onClick={copy}>Copiar</Button>
         </div>
-        <p className="text-sm text-muted">{temporaryPasswordText(mustChangePassword, deferred)}</p>
+        <p className="text-sm text-muted">{text || temporaryPasswordText(mustChangePassword, deferred)}</p>
       </div>
     </Modal>
   )

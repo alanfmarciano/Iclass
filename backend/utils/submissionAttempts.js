@@ -6,8 +6,11 @@ const VALID_POLICIES = new Set(['highest', 'latest', 'average', 'selected']);
 // nunca entrem em média nem apareçam como nota (ex.: 150 virando "15,0").
 const SCORE_MAX = 100;
 function normalizeScore(value) {
-    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
-    const number = typeof value === 'number' ? value : Number(String(value).trim().replace(',', '.'));
+    if (value === null || value === undefined || typeof value === 'boolean') return null;
+    // Texto só com espaços também é nota vazia (Number('  ') daria 0).
+    const text = typeof value === 'number' ? null : String(value).trim();
+    if (text === '') return null;
+    const number = typeof value === 'number' ? value : Number(text.replace(',', '.'));
     if (!Number.isFinite(number) || number < 0 || number > SCORE_MAX) return null;
     return number;
 }

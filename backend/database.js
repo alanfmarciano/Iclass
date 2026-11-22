@@ -3,7 +3,7 @@ const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
 const os = require('os');
-const { parseEvaluationMarkdown } = require('./utils/parser.js');
+const { parseEvaluationMarkdownWithWarnings } = require('./utils/parser.js');
 const { normalizeAdditionalPermissions } = require('./utils/adminPermissions.js');
 const { ADMIN_ROLE_IDS, roleScopeKind } = require('./utils/adminRoles.js');
 const { normalizeStoredStudentClasses } = require('./utils/students.js');
@@ -1730,7 +1730,9 @@ async function init(options = {}) {
                 if (fs.existsSync(mdPath)) {
                     try {
                         const mdContent = fs.readFileSync(mdPath, 'utf8');
-                        const parsed = parseEvaluationMarkdown(mdContent, examKey);
+                        const { evaluation: parsed, avisos } = parseEvaluationMarkdownWithWarnings(mdContent, examKey);
+                        // Alternativa ou gabarito fora de a-e não some em silêncio (ENG-02).
+                        avisos.forEach(aviso => console.warn(`[PROVA] ${examKey}: ${aviso}`));
                         if (parsed) {
                             evaluations[examKey] = parsed;
                         }

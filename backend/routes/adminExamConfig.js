@@ -92,6 +92,12 @@ const {
     sendRouteError,
 } = require('../middlewares.js');
 const { accountScopeKind } = require('../utils/adminRoles.js');
+const {
+    canReadExamVersions,
+    canReadQuestionAnswerKey,
+    onlineExamConfigWithoutAnswerKeys,
+    questionWithoutAnswerKey,
+} = require('../utils/examAnswerKeyView.js');
 
 const VERSION_LABELS = ['A', 'B', 'C', 'D'];
 const DEFAULT_ONLINE_DURATION_MINUTES = 60;
@@ -743,7 +749,9 @@ function createAdminExamConfigRouter() {
             // que nenhuma tela de polling lê e eram o grosso da resposta (DES-04, DES-13);
             // openReportCount diz quantas contestações estão em aberto. Sem view, nada muda.
             // O modo do teclado (H8b) continua no resumo: o Monitor rotula a coluna por ele.
-            if (String(req.query.view || '') === 'summary') {
+            // Quem chega aqui só pelo Monitor (page.monitor sem page.exams, como o Professor
+            // auxiliar) recebe sempre o resumo: as versões levam o gabarito.
+            if (String(req.query.view || '') === 'summary' || !canReadExamVersions(matchedAdmin)) {
                 return res.json({ success: true, applications: applications.map(applicationSummary) });
             }
             res.json({ success: true, applications });
@@ -961,7 +969,14 @@ function createAdminExamConfigRouter() {
     });
 
     router.post('/api/admin/exam-applications/:applicationId/control', (req, res) => {
-        validateAdmin(req, res, async () => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            // Quem controla a prova só pelo Monitor (page.monitor sem page.exams, como o
+            // Professor auxiliar) recebe a aplicação e a configuração sem as versões (gabarito).
+            const withAnswerKeys = canReadExamVersions(matchedAdmin);
+            const forAccount = (application, onlineConfig) => {
+                if (withAnswerKeys) return { application: withoutSealedToken(application), config: onlineConfig };
+                return { application: applicationSummary(application), config: onlineConfig ? onlineExamConfigWithoutAnswerKeys(onlineConfig) : null };
+            };
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
@@ -979,7 +994,7 @@ function createAdminExamConfigRouter() {
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) await db.save();
-                return res.json({ success: true, unchanged: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs?.[application.examKey] || null, finish: null });
+                return res.json({ success: true, unchanged: true, ...forAccount(application, cls.onlineExamConfigs?.[application.examKey] || null), finish: null });
             }
             if (plan.resolve) {
                 try {
@@ -1016,7 +1031,7 @@ function createAdminExamConfigRouter() {
             // tirar as cópias muda entregas antigas: gravação completa. As outras
             // transições, parcial.
             await saveApplicationAction({ full: !!plan.resolve || droppedSnapshots > 0 });
-            res.json({ success: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs[application.examKey], finish: processedFinish });
+            res.json({ success: true, ...forAccount(application, cls.onlineExamConfigs[application.examKey]), finish: processedFinish });
         });
     });
 
@@ -1269,6 +1284,11 @@ function createAdminExamConfigRouter() {
     router.get('/api/admin/question-reports/:class/:examKey', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             try {
+                // O gabarito da questão contestada vai para quem corrige a questão
+                // (page.results) ou prepara a prova (page.exams). Quem só acompanha a prova
+                // (Professor auxiliar, page.monitor) vê o enunciado e as alternativas, sem a
+                // correta (B1, papel "sem notas").
+                const withAnswerKey = canReadQuestionAnswerKey(matchedAdmin);
                 const { application } = applicationForAdminRequest(req.query.applicationId);
                 if (application.studentClass.toLowerCase() !== String(req.params.class || '').trim().toLowerCase()
                     || application.examKey !== String(req.params.examKey || '').trim()) {
@@ -1288,7 +1308,8 @@ function createAdminExamConfigRouter() {
                     const reasons = {};
                     reports.forEach(report => { reasons[report.reason] = Number(reasons[report.reason] || 0) + 1; });
                     const version = reports[0]?.assignedVersion || 'A';
-                    const question = liveQuestion(application, number, version);
+                    const fullQuestion = liveQuestion(application, number, version);
+                    const question = withAnswerKey ? fullQuestion : questionWithoutAnswerKey(fullQuestion);
                     return {
                         questionNumber: number,
                         questionPosition: reports[0]?.questionPosition || null,

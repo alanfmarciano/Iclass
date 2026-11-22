@@ -4,10 +4,8 @@ import { Badge } from '../ui/Badge'
 import { useAuth } from '../../context/AuthProvider'
 import { NotificationBell } from '../ui/NotificationBell'
 import { useAdminNotificationOpener } from './useAdminNotificationOpener'
-
-function initials(s = '') {
-  return s.split(/[ @.]/).filter(Boolean).slice(0, 2).map((x) => x[0]?.toUpperCase()).join('')
-}
+import { AccountMenu } from './AccountMenu'
+import { accountRoleLabel, isFullAdmin } from '../../lib/adminPermissions'
 
 export function Topbar({ onMenu, breadcrumb }) {
   const { auth, logout, clearActiveWorkspace } = useAuth()
@@ -43,10 +41,19 @@ export function Topbar({ onMenu, breadcrumb }) {
         onOpenItem={openNotification}
       />
       <ThemeToggle />
-      <Badge className="hidden lg:inline-flex" tone={auth.accountRole === 'professor' ? 'info' : 'neutral'}>
-        {auth.accountRole === 'professor' ? 'Professor' : 'Administrador'}
+      {/* Selo do papel com o rótulo do servidor (Professor, Secretaria, Coordenação...). */}
+      <Badge className="hidden lg:inline-flex" tone={isFullAdmin(auth) ? 'neutral' : 'info'}>
+        {accountRoleLabel(auth)}
       </Badge>
-      <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-hover text-sm font-semibold text-primary-fg shadow-[0_8px_22px_var(--primary-glow)]" title={auth.email}>{initials(auth.email || 'AM')}</div>
+      {/* Avatar com as iniciais do nome e o menu Minha conta · Sair (UXI-07). */}
+      <AccountMenu
+        name={auth.name || ''}
+        email={auth.email || ''}
+        detail={accountRoleLabel(auth)}
+        onLogout={logout}
+        buttonClassName="grid h-10 w-10 place-items-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        avatarClassName="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-hover text-sm font-semibold text-primary-fg shadow-[0_8px_22px_var(--primary-glow)]"
+      />
       <button onClick={logout} className="grid h-10 w-10 place-items-center rounded-lg text-muted transition-all duration-300 hover:bg-danger-soft hover:text-danger" aria-label="Sair"><LogOut size={17} /></button>
     </header>
   )

@@ -9,13 +9,14 @@ import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { AssistenteHorariosWizard } from './TurmaPresencaConfig'
+import { isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
 
 export default function AssistenteHorariosPage() {
   const { courseId, className } = useParams()
   const nav = useNavigate()
   const toast = useToast()
   const { auth } = useAuth()
-  const isAdmin = auth.accountRole !== 'professor'
+  const isAdmin = isFullAdmin(auth)
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const accountsApi = useApi(isAdmin ? '/api/admin/accounts' : null)
@@ -26,7 +27,7 @@ export default function AssistenteHorariosPage() {
   const course = (coursesApi.data || []).find(item => String(item.id) === wantedCourseId) || null
   const classes = classesApi.data || []
   const turma = classes.find(item => String(item.courseId) === wantedCourseId && item.name === wantedClassName) || null
-  const professors = (accountsApi.data || []).filter(account => account.role === 'professor')
+  const professors = (accountsApi.data || []).filter(isProfessorRoleAccount)
 
   async function handleSave({ attendanceConfig, newDisciplinas, template }) {
     setSaving(true)

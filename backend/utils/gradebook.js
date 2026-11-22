@@ -12,6 +12,7 @@ const {
     roundGrade,
 } = require('./submissionAttempts.js');
 const { recordAudit } = require('./audit.js');
+const { buildXlsx } = require('./tabularFile.js');
 
 const GRADE_MAX = SCORE_MAX / 10;
 const MANUAL_TYPES = ['impressa', 'manual', 'online'];
@@ -81,6 +82,96 @@ function gradeFromScore(score) {
 function formatGradeBR(score) {
     const grade = roundGrade(score);
     return grade === null ? '' : grade.toFixed(1).replace('.', ',');
+}
+
+// ---- Critério e faixas da nota (ENG-02, contrato C1 do P2) -------------------
+// Toda comparação de nota com a média mínima passa por aqui (e, na tela, pela cópia
+// em web/src/lib/grades.js, conferida por test/backend/regra-de-nota-unica.test.js).
+// Ninguém compara nota com 6, 7, 9 ou 60 escritos no código.
+//
+// Sem critérios configurados vale o padrão: média mínima 6,0 e a conta de sempre
+// (regraAntiga). gradeCriterionFor é o único lugar que diz qual critério vale para um
+// curso ou turma; os critérios do curso (P2-S3) entram ali.
+const MEDIA_MINIMA_PADRAO = 6;
+const DEFAULT_GRADE_CRITERION = Object.freeze({ mediaMinima: MEDIA_MINIMA_PADRAO, mencoes: null, regraAntiga: true });
+// Faixas acima da mínima: 9,0 em diante "excelente", 7,0 em diante "bom". Abaixo da
+// mínima, até 2 pontos dela é "abaixo"; mais longe, "muito abaixo". Com mínima 6
+// são as faixas que as telas sempre usaram (9/7/6, e 4 no "Média" de Resultados).
+const FAIXA_EXCELENTE = 9;
+const FAIXA_BOM = 7;
+const DISTANCIA_DE_ALERTA = 2;
+// Análise da prova (Monitor): "alto" a partir de 8,5.
+const FAIXA_ALTO_DESEMPENHO = 8.5;
+const GRADE_BANDS = ['excelente', 'bom', 'suficiente', 'abaixo', 'muito_abaixo'];
+
+// Uma casa, "metade para cima", como roundGrade (8,99 -> 9,0; 5,96 -> 6,0): a faixa
+// é a da nota que aparece na tela.
+// Texto vazio ou só com espaços não é nota (Number('  ') daria 0); "5,5" com vírgula
+// vale 5,5, como a nota digitada.
+function gradeNumber(grade) {
+    if (grade === null || grade === undefined || typeof grade === 'boolean') return null;
+    if (typeof grade === 'string') {
+        const text = grade.trim();
+        if (!text) return null;
+        return Number(/^-?\d+,\d+$/.test(text) ? text.replace(',', '.') : text);
+    }
+    return Number(grade);
+}
+
+function roundGradeValue(grade) {
+    const number = gradeNumber(grade);
+    if (number === null) return null;
+    if (!Number.isFinite(number) || number < 0 || number > GRADE_MAX) return null;
+    return Math.round(Number((number * 10).toFixed(6))) / 10;
+}
+
+function normalizeGradeCriterion(criterio) {
+    const minima = roundGradeValue(criterio?.mediaMinima);
+    return {
+        mediaMinima: minima === null ? MEDIA_MINIMA_PADRAO : minima,
+        mencoes: Array.isArray(criterio?.mencoes) ? criterio.mencoes : null,
+        regraAntiga: criterio?.regraAntiga !== false,
+    };
+}
+
+// Critério que vale para o curso/turma: gradeCriterionFor(memory, { courseId, studentClass }).
+// Hoje nenhum curso tem critérios: sempre o padrão.
+function gradeCriterionFor(_memory, _context) {
+    return { ...DEFAULT_GRADE_CRITERION };
+}
+
+// Nota de 0 a 10 -> faixa (GRADE_BANDS), ou null sem nota válida.
+function gradeBand(grade, criterio) {
+    const value = roundGradeValue(grade);
+    if (value === null) return null;
+    const { mediaMinima } = normalizeGradeCriterion(criterio);
+    if (value < mediaMinima) {
+        const alerta = Math.round((mediaMinima - DISTANCIA_DE_ALERTA) * 10) / 10;
+        return value >= alerta ? 'abaixo' : 'muito_abaixo';
+    }
+    if (value >= FAIXA_EXCELENTE) return 'excelente';
+    if (value >= FAIXA_BOM) return 'bom';
+    return 'suficiente';
+}
+
+// A nota alcança a média mínima? null sem nota válida.
+function isPassingGrade(grade, criterio) {
+    const band = gradeBand(grade, criterio);
+    if (band === null) return null;
+    return band !== 'abaixo' && band !== 'muito_abaixo';
+}
+
+// "baixo" (abaixo da mínima), "medio" ou "alto" para a análise da prova.
+function performanceBucket(grade, criterio) {
+    const passing = isPassingGrade(grade, criterio);
+    if (passing === null) return null;
+    if (!passing) return 'baixo';
+    return roundGradeValue(grade) >= FAIXA_ALTO_DESEMPENHO ? 'alto' : 'medio';
+}
+
+// Média mínima para texto ("6,0").
+function formatMinimumGrade(criterio) {
+    return normalizeGradeCriterion(criterio).mediaMinima.toFixed(1).replace('.', ',');
 }
 
 function average(values) {
@@ -524,20 +615,40 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
     return { columns, rows };
 }
 
-function gradebookCsv(gradebook) {
-    const header = ['Aluno', 'E-mail', 'Matrícula', ...gradebook.columns.map(column => column.label), 'Média', 'Notas não publicadas'];
-    const lines = gradebook.rows.map(row => [
+// Planilha do quadro de notas (UXI-01, FUN-06): o mesmo cabeçalho e as mesmas linhas
+// para o CSV e o XLSX. A nota vai crua (0 a 10 com uma casa, null sem nota válida);
+// cada formato escreve do seu jeito ("7,5" no CSV, número com formato 0,0 no XLSX, que
+// soma e faz média no Excel). Coluna nova do quadro entra aqui e sai nos dois.
+function gradebookSheet(gradebook) {
+    const cabecalho = ['Aluno', 'E-mail', 'Matrícula', ...gradebook.columns.map(column => column.label), 'Média', 'Notas não publicadas'];
+    const formatos = ['texto', 'texto', 'texto', ...gradebook.columns.map(() => 'nota'), 'nota', 'inteiro'];
+    const linhas = gradebook.rows.map(row => [
         row.name,
         row.email,
         row.matricula,
         ...gradebook.columns.map(column => {
             const cell = row.cells[column.id];
-            return cell ? formatGradeBR(cell.score) : '';
+            return cell ? gradeFromScore(cell.score) : null;
         }),
-        row.averageScore === null ? '' : formatGradeBR(row.averageScore),
+        row.averageScore === null ? null : gradeFromScore(row.averageScore),
         row.pendingCount,
     ]);
-    return buildCsv([header, ...lines]);
+    return { cabecalho, formatos, linhas };
+}
+
+function gradebookCsv(gradebook) {
+    const { cabecalho, formatos, linhas } = gradebookSheet(gradebook);
+    const lines = linhas.map(values => values.map((value, index) => {
+        if (formatos[index] !== 'nota') return value;
+        return value === null ? '' : value.toFixed(1).replace('.', ',');
+    }));
+    return buildCsv([cabecalho, ...lines]);
+}
+
+// XLSX do quadro (utils/tabularFile.js): aba com o nome da turma.
+function gradebookXlsx(gradebook, { studentClass = '' } = {}) {
+    const { cabecalho, formatos, linhas } = gradebookSheet(gradebook);
+    return buildXlsx(linhas, { nomePlanilha: studentClass ? `Notas ${studentClass}` : 'Notas', cabecalho, formatos });
 }
 
 // ---------------------------------------------------------- auditoria
@@ -1170,6 +1281,8 @@ module.exports = {
     tidyScrubbedText,
     ANONYMIZED_STUDENT_NAME,
     CSV_BOM,
+    DEFAULT_GRADE_CRITERION,
+    GRADE_BANDS,
     GRADE_MAX,
     GRADE_REASON_MAX,
     GRADE_REASON_MIN,
@@ -1195,12 +1308,20 @@ module.exports = {
     formatDateBR,
     formatDateTimeBR,
     formatGradeBR,
+    formatMinimumGrade,
+    gradeBand,
     gradeCountsMismatch,
+    gradeCriterionFor,
     gradeChangeReason,
     gradeFromScore,
     gradebookCsv,
+    gradebookSheet,
+    gradebookXlsx,
     isEmptyInput,
+    isPassingGrade,
+    normalizeGradeCriterion,
     parseCountInput,
+    performanceBucket,
     parseGradeInput,
     recordGradeAudit,
     safeFilePart,

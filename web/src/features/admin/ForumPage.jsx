@@ -18,6 +18,7 @@ import { usePreferences } from '../../context/PreferencesProvider'
 import { usePolling } from '../../hooks/usePolling'
 import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM, clampText, formatCount, tooLongMessage } from '../../lib/textLimits'
 import { compareOrdinal, matchesSearch } from '../../lib/textSearch'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -46,7 +47,8 @@ function effectiveStatus(c) { return c.status || (hasInstructorReply(c) ? 'respo
 export default function ForumPage() {
   const { auth } = useAuth()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
-  const isAdmin = auth.accountRole !== 'professor'
+  // Apagar de vez (forum.purge): só o administrador pleno.
+  const isAdmin = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.FORUM_PURGE)
   const toast = useToast()
   const { pref, setPref } = usePreferences()
   const [data, setData] = useState(null)

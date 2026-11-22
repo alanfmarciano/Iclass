@@ -1,15 +1,17 @@
 import { Sparkline } from '../../../components/ui/Sparkline'
 import { TrendPill } from '../../../components/ui/TrendPill'
 
-function MetricCard({ label, value, unit, delta, deltaUnit, invert, base, serie, tone, serieUnit }) {
+// hideTrend: cartão sem número para comparar (nota oculta para o papel): sem o selo de
+// tendência, que diria "sem base" ao lado de "oculta".
+function MetricCard({ label, value, unit, delta, deltaUnit, invert, base, serie, tone, serieUnit, emptyText = 'sem dado', hideTrend = false }) {
   return (
     <div className="premium-card rounded-2xl p-5">
       <p className="text-[11px] font-semibold uppercase tracking-[.1em] text-subtle">{label}</p>
       <div className="mt-2.5 flex items-end gap-2.5">
         <p className="text-[34px] font-semibold leading-none tracking-[-0.04em] text-text tabular-nums">
-          {value == null ? <span className="text-lg font-medium text-subtle">sem dado</span> : <>{value}{unit && <span className="ml-0.5 text-base font-medium text-muted">{unit}</span>}</>}
+          {value == null ? <span className="text-lg font-medium text-subtle">{emptyText}</span> : <>{value}{unit && <span className="ml-0.5 text-base font-medium text-muted">{unit}</span>}</>}
         </p>
-        <TrendPill delta={delta} unit={deltaUnit} invert={invert} className="mb-0.5" />
+        {!hideTrend && <TrendPill delta={delta} unit={deltaUnit} invert={invert} className="mb-0.5" />}
       </div>
       {base && <p className="mt-2 text-[11.5px] leading-relaxed text-subtle">{base}</p>}
       {serie && serie.length > 0 && <Sparkline points={serie} tone={tone} unit={serieUnit} className="mt-3.5" />}
@@ -19,7 +21,9 @@ function MetricCard({ label, value, unit, delta, deltaUnit, invert, base, serie,
 
 // Pulso da turma: 3 números com tendência — um número solto não diz se a turma
 // está melhorando ou piorando, que é a única pergunta que importa numa visão geral.
-export function PulseGrid({ trends }) {
+// gradesHidden: conta que não lê nota (Professor auxiliar): o cartão da média diz que a
+// nota está oculta para o papel, em vez de "sem dado · 0 alunos avaliados".
+export function PulseGrid({ trends, gradesHidden = false }) {
   if (!trends) return null
   const { frequencia, media, engajamento } = trends
   const fmt1 = (v) => v == null ? null : String(v).replace('.', ',')
@@ -31,12 +35,16 @@ export function PulseGrid({ trends }) {
         base={`${frequencia.base.comChamada} de ${frequencia.base.total} alunos com chamada lançada · vs. 30 dias anteriores`}
         serie={frequencia.serie} tone="success" serieUnit="%"
       />
-      <MetricCard
-        label="Média das provas" value={fmt1(media.atual)}
-        delta={media.delta}
-        base={`${media.base.provas} ${media.base.provas === 1 ? 'prova' : 'provas'} de ${media.base.alunos} ${media.base.alunos === 1 ? 'aluno avaliado' : 'alunos avaliados'} · janela de 30 dias`}
-        serie={media.serie} tone="info"
-      />
+      {gradesHidden ? (
+        <MetricCard label="Média das provas" value={null} emptyText="oculta" hideTrend base="As notas não aparecem para o seu papel." />
+      ) : (
+        <MetricCard
+          label="Média das provas" value={fmt1(media.atual)}
+          delta={media.delta}
+          base={`${media.base.provas} ${media.base.provas === 1 ? 'prova' : 'provas'} de ${media.base.alunos} ${media.base.alunos === 1 ? 'aluno avaliado' : 'alunos avaliados'} · janela de 30 dias`}
+          serie={media.serie} tone="info"
+        />
+      )}
       <MetricCard
         label="Engajamento" value={engajamento.atual} unit={`/${engajamento.total}`}
         delta={engajamento.anterior != null ? engajamento.atual - engajamento.anterior : null}

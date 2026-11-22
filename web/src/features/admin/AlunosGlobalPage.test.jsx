@@ -4,6 +4,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AlunosGlobalPage from './AlunosGlobalPage'
 
+const mocks = vi.hoisted(() => ({ auth: {} }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
+
 // Diretório de alunos (/diretorio): o filtro de situação acha os anonimizados (H7c) e
 // compara sem acento ("Concluido" de banco antigo entra em Concluído).
 const STUDENTS = [
@@ -35,5 +38,24 @@ describe('[UC-ENCERRADOS-003] Diretório: situação Anonimizado e situação se
     renderPage('/diretorio?situacao=Conclu%C3%ADdo')
     expect(screen.getByText('Carla Antiga')).toBeTruthy()
     expect(screen.queryByText('Ana Ativa')).toBeNull()
+  })
+})
+
+describe('[UC-PAPEIS-001] Diretório: Novo aluno e ações em lote só com students.edit', () => {
+  afterEach(() => { mocks.auth = {} })
+
+  it('o administrador vê Novo aluno e a seleção em lote', () => {
+    renderPage()
+    expect(screen.getByRole('button', { name: 'Novo aluno' })).toBeTruthy()
+    expect(screen.getAllByRole('checkbox').length).toBeGreaterThan(0)
+  })
+
+  it('a Coordenação (só consulta) lista os alunos sem Novo aluno nem seleção para matricular ou mudar a situação', () => {
+    mocks.auth = { accountRole: 'coordenacao', readOnly: true, effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.results', 'page.forum', 'page.assignments', 'reports.view'] }
+    renderPage()
+    expect(screen.getByText('Ana Ativa')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Novo aluno' })).toBeNull()
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: 'Matricular em turma' })).toBeNull()
   })
 })

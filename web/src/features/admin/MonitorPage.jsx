@@ -32,6 +32,8 @@ import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
 import { answerSummary, questionTypeLabel } from './questionEditorModel'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades } from '../../lib/adminPermissions'
 
 const ACTIVE_EXAM_STATUSES = new Set(['running', 'waiting', 'paused'])
 const ACTIVE_EXAM_STATUS_PRIORITY = { running: 0, waiting: 1, paused: 2 }
@@ -407,6 +409,18 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
 }
 
 export default function MonitorPage() {
+  const auth = useAuth()?.auth || {}
+  // "Ver respostas" mostra o gabarito e o acerto de cada questão (é nota): some para quem
+  // acompanha a prova sem ler nota (Professor auxiliar; o servidor responde 403).
+  const canSeeAnswers = canReadStudentGrades(auth)
+  // Liberar nota, Ver resultados, Analytics e corrigir, anular ou trocar questão mexem em
+  // nota (page.results; trocar também lê o banco de questões, page.exams). O Professor
+  // auxiliar acompanha a prova sem esses botões (o servidor responderia 403).
+  const canResults = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  const canReplaceQuestion = canResults && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS)
+  // A marca do gabarito em "Ver questão" (contestações) só para quem corrige a questão ou
+  // prepara a prova; o servidor manda a questão sem a correta para o Professor auxiliar.
+  const canSeeAnswerKey = canResults || canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS)
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
@@ -1307,10 +1321,10 @@ export default function MonitorPage() {
           <div className="flex flex-wrap gap-2">
             {applicationFinished ? (
               <>
-                <Button icon={CheckCircle2} loading={releaseBusy} onClick={releaseGrades}>Liberar nota para o aluno</Button>
-                <Button variant="secondary" icon={ArrowRight} onClick={goToResults}>Ver resultados</Button>
+                {canResults && <Button icon={CheckCircle2} loading={releaseBusy} onClick={releaseGrades}>Liberar nota para o aluno</Button>}
+                {canResults && <Button variant="secondary" icon={ArrowRight} onClick={goToResults}>Ver resultados</Button>}
                 <Button variant="secondary" icon={History} onClick={openMessageHistory}>Histórico msgs</Button>
-                <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>
+                {canResults && <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>}
               </>
             ) : (
               <>
@@ -1320,7 +1334,7 @@ export default function MonitorPage() {
                 <Button variant="secondary" icon={Clock} onClick={() => addTime()}>+5 min</Button>
                 <Button variant="secondary" icon={Send} onClick={() => broadcast()}>Aviso turma</Button>
                 <Button variant="secondary" icon={History} onClick={openMessageHistory}>Histórico msgs</Button>
-                <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>
+                {canResults && <Button variant="secondary" onClick={loadAnalytics}>Analytics</Button>}
                 <Button variant="destructive" icon={Square} onClick={openFinishDecision}>Finalizar</Button>
               </>
             )}
@@ -1354,10 +1368,10 @@ export default function MonitorPage() {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="ghost" icon={Eye} onClick={() => setPreviewIssue(group)}>Ver questão</Button>
-                          <Button size="sm" variant="secondary" icon={Pencil} onClick={() => openCorrection(group)}>Corrigir</Button>
+                          {canResults && <Button size="sm" variant="secondary" icon={Pencil} onClick={() => openCorrection(group)}>Corrigir</Button>}
                           <Button size="sm" variant="secondary" loading={issueBusy === `dismiss-${group.questionNumber}`} onClick={() => dismissReports(group)}>Descartar</Button>
-                          <Button size="sm" variant="secondary" icon={Ban} onClick={() => setAnnulIssue({ group, mode: 'remover_do_total', reason: '' })}>Anular...</Button>
-                          <Button size="sm" icon={Library} onClick={() => openReplacement(group)}>Anular e substituir...</Button>
+                          {canResults && <Button size="sm" variant="secondary" icon={Ban} onClick={() => setAnnulIssue({ group, mode: 'remover_do_total', reason: '' })}>Anular...</Button>}
+                          {canReplaceQuestion && <Button size="sm" icon={Library} onClick={() => openReplacement(group)}>Anular e substituir...</Button>}
                         </div>
                       </div>
                     </div>
@@ -1424,10 +1438,10 @@ export default function MonitorPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {applicationFinished ? (
-                            <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
+                            canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
                           ) : (
                             <>
-                              <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
+                              {canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>}
                               {r.focusLocked && <Button size="sm" variant="secondary" icon={Unlock} onClick={() => unlock(r.email)}>Foco</Button>}
                               <Button size="sm" variant="secondary" icon={Clock} onClick={() => adjustOne(r.email)}>Tempo</Button>
                               <Button size="sm" variant="secondary" icon={Send} onClick={() => broadcast(r.email)}>Msg</Button>
@@ -1468,10 +1482,11 @@ export default function MonitorPage() {
               <div className="mt-3 space-y-2">
                 {(previewIssue.question?.alternatives || []).map((alternative, index) => {
                   const letter = String(alternative.letter || String.fromCharCode(65 + index)).toUpperCase()
-                  const correct = letter === String(previewIssue.question?.correctAnswer || '').toUpperCase() || alternative.isCorrect === true
+                  const correct = canSeeAnswerKey && (letter === String(previewIssue.question?.correctAnswer || '').toUpperCase() || alternative.isCorrect === true)
                   return <div key={letter} className={`rounded-md border p-3 text-sm ${correct ? 'border-success/50 bg-success-soft text-success' : 'border-border text-text'}`}><strong>{letter})</strong> {alternative.text} {correct && '— gabarito'}</div>
                 })}
               </div>
+              {!canSeeAnswerKey && <p className="mt-3 text-xs text-muted">O gabarito não aparece para o seu papel.</p>}
             </Card>
             <div className="space-y-2">
               {previewIssue.reports?.map((report) => (

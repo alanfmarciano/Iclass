@@ -2,21 +2,26 @@ import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { Badge } from '../../../components/ui/Badge'
 import { EmptyLine } from '../../../components/ui/EmptyLine'
 import { ReasonChips } from './ReasonChips'
+import { fmtGradeValue, fmtMinimumGrade, isPassingGrade } from '../../../lib/grades'
 
 const initials = (n) => (n || '?').split(' ').map((x) => x[0]).slice(0, 2).join('').toUpperCase()
 const RISK_TONE = { alto: 'danger', medio: 'warning', baixo: 'neutral' }
 
 // Monta os motivos em texto a partir do overview — a falta vira motivo dentro
 // da lista única, não uma segunda lista. "Sem dado" nunca aparece como 0.
-export function riskReasons(o, limiar = 75) {
+// gradesHidden: quem não lê nota (Professor auxiliar) recebe a média vazia do servidor;
+// ela não vira o motivo "nenhuma prova entregue".
+// criterio: média mínima do critério de nota que vem do servidor em cada linha do
+// students-overview (o.criterio); sem ele, o padrão 6,0.
+export function riskReasons(o, limiar = 75, gradesHidden = false, criterio = o?.criterio) {
   const reasons = []
   if (o.frequencia != null && o.frequencia < limiar) {
     reasons.push({ text: `${o.presentes} ${o.presentes === 1 ? 'presença' : 'presenças'} em ${o.totalAulas} aulas · ${o.frequencia}%`, tone: 'danger' })
   } else if (o.faltas > 0) {
     reasons.push({ text: `${o.faltas} ${o.faltas === 1 ? 'falta' : 'faltas'} · frequência ${o.frequencia == null ? 'sem dado' : `${o.frequencia}%`}`, tone: 'neutral' })
   }
-  if (o.media == null) reasons.push({ text: 'nenhuma prova entregue', tone: 'neutral' })
-  else if (o.media < 6) reasons.push({ text: `média ${String(o.media).replace('.', ',')} — abaixo de 6,0`, tone: 'warning' })
+  if (gradesHidden) { /* sem motivo de nota */ } else if (o.media == null) reasons.push({ text: 'nenhuma prova entregue', tone: 'neutral' })
+  else if (isPassingGrade(o.media, criterio) === false) reasons.push({ text: `média ${fmtGradeValue(o.media)} — abaixo de ${fmtMinimumGrade(criterio)}`, tone: 'warning' })
   if (o.disciplinasEmRisco > 0) {
     reasons.push({ text: `${o.disciplinasEmRisco} ${o.disciplinasEmRisco === 1 ? 'disciplina' : 'disciplinas'} abaixo do limiar`, tone: 'warning' })
   }
@@ -25,11 +30,11 @@ export function riskReasons(o, limiar = 75) {
 
 // Lista única "Alunos que precisam de atenção", com motivos reais — o backend
 // sempre devolveu risco + dados; a tela antiga mostrava "alto" sem dizer por quê.
-export function RiskList({ students = [], semDado = 0, limiar = 75, onOpen }) {
+export function RiskList({ students = [], semDado = 0, limiar = 75, onOpen, gradesHidden = false }) {
   if (!students.length) {
     return (
       <div className="premium-card rounded-2xl">
-        <EmptyLine icon={ShieldCheck} title="Nenhum aluno em risco" description="Frequência, notas e acesso dentro do esperado." />
+        <EmptyLine icon={ShieldCheck} title="Nenhum aluno em risco" description={gradesHidden ? 'Frequência e acesso dentro do esperado.' : 'Frequência, notas e acesso dentro do esperado.'} />
       </div>
     )
   }
@@ -44,7 +49,7 @@ export function RiskList({ students = [], semDado = 0, limiar = 75, onOpen }) {
               <span className="text-sm font-medium text-text">{o.name}</span>
               <Badge tone={RISK_TONE[o.riscoLevel]}>{o.riscoLevel}</Badge>
             </span>
-            <ReasonChips reasons={riskReasons(o, limiar)} />
+            <ReasonChips reasons={riskReasons(o, limiar, gradesHidden)} />
           </span>
           <ArrowRight size={14} className="mt-2 flex-none text-subtle" aria-hidden="true" />
         </button>

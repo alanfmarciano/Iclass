@@ -37,3 +37,44 @@ Um professor atribuído só à turma 1DES de um curso com duas turmas (1DES e 2D
 
 ### Segurança e bordas
 Antes, o professor da 1DES lia a mensagem privada enviada a um aluno da 2DES, apagava as mensagens de todas as turmas com um corpo vazio, via as dúvidas (com e-mail) da 2DES e alterava ou excluía curso de outra coordenação.
+
+## UC-CONTA-001 — Minha conta do instrutor
+
+- Estado: automatizado
+- Atores: qualquer conta do painel (administrador, professor, Secretaria, Coordenação)
+- Telas: avatar do topo (menu Minha conta · Sair) e `/minha-conta`
+- APIs: `POST /api/admin/account/profile`, `POST /api/admin/account/end-other-sessions`, `POST /api/admin/change-password`
+- Testes: `admin-own-account.test.js`, `MinhaContaPage.test.jsx`, `AccountMenu.test.jsx`
+
+### Dado
+Um professor com a conta aberta em dois computadores (o da sala e o de casa).
+
+### Então
+- O avatar do topo mostra as iniciais do nome ("Maria da Silva Souza" vira "MS"; sem nome, as do e-mail) e abre o menu com Minha conta e Sair.
+- Em Minha conta, o professor corrige o próprio nome; o e-mail e o papel aparecem só para ler (quem muda é o administrador, em Contas). Nome vazio é recusado no campo; o nome novo aparece no topo na hora.
+- "Alterar senha" pede a senha atual; as outras sessões da conta saem.
+- "Sair dos outros aparelhos" pergunta antes, na janela do IClass; confirmado, o outro computador recebe "Esta sessão foi encerrada pela própria conta em outro aparelho" no pedido seguinte, e este continua conectado.
+- A Coordenação (só consulta) também usa Minha conta: é autoatendimento.
+
+### Segurança e bordas
+A rota do nome muda só a conta da sessão (um `email` no corpo não troca de conta). Nome igual ao atual não grava nem vai para a auditoria.
+
+## UC-CONTA-002 — Redefinir a senha de outra conta do painel
+
+- Estado: automatizado
+- Atores: administrador
+- Tela: `/admins/:email` (botão "Redefinir senha")
+- API: `POST /api/admin/accounts/reset-password`
+- Testes: `admin-own-account.test.js`, `AdminEditPage.test.jsx`
+
+### Dado
+Um professor que esqueceu a senha e já errou cinco vezes (login em espera).
+
+### Então
+- O administrador abre a conta e usa "Redefinir senha": por padrão o IClass gera uma senha temporária e mostra uma vez, com Copiar; ou o administrador digita uma senha (com a política do instrutor).
+- A senha antiga deixa de valer, o login em espera é liberado e o professor sai dos aparelhos onde estava conectado ("A senha desta conta foi redefinida pelo administrador").
+- No próximo acesso o professor escolhe uma senha só dele, informando a temporária como senha atual.
+- A auditoria (segurança) registra quem redefiniu, para qual conta e de que jeito, sem a senha.
+
+### Segurança e bordas
+A própria conta não é redefinida por aqui (a troca é em Minha conta, com a senha atual). Quem não gerencia contas recebe 403, e o botão não aparece para ele.

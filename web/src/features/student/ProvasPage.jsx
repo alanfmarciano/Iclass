@@ -10,7 +10,7 @@ import { MiniLineChart } from '../../components/ui/MiniLineChart'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
-import { consolidatedAverage, fmtGradeValue } from '../../lib/grades'
+import { CRITERIO_PADRAO, consolidatedAverage, countByBand, fmtGradeValue, gradeBand as faixaDaNota, gradeBandRanges, gradeRangeLabel, gradeTone as tomDaNota } from '../../lib/grades'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { usePolling } from '../../hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
@@ -18,8 +18,11 @@ import { matchesSearch } from '../../lib/textSearch'
 
 // Nota e armazenada em escala 0-100 e exibida em 0-10.
 const toGrade = (score) => Number(score) / 10
-const gradeTone = (g) => (g >= 7 ? 'success' : g >= 6 ? 'warning' : 'danger')
-const gradeText = (g) => (g >= 7 ? 'text-success' : g >= 6 ? 'text-warning' : 'text-danger')
+// Critério de nota do curso. Sem critérios configurados (hoje), o padrão: média
+// mínima 6,0. A faixa vem de web/src/lib/grades.js, a mesma regra do servidor.
+const criterio = CRITERIO_PADRAO
+const TONE_TEXT = { success: 'text-success', warning: 'text-warning', danger: 'text-danger' }
+const gradeText = (g) => TONE_TEXT[tomDaNota(g, criterio, 'aluno', 'danger')]
 const isPublished = (s) => s.gradePublished === true && !Number.isNaN(Number(s.score))
 const isConsidered = (s) => s.countsTowardResult && s.resultStatus !== 'archived'
 const shortLabel = (key = '') => key.replace(/^Avaliacao_?/i, '').replace(/_/g, ' ').slice(0, 8)
@@ -33,8 +36,25 @@ const POLICY_LABEL = { highest: 'Maior nota', latest: 'Última tentativa', avera
 const MOD_ACCENTS = ['var(--info)', 'var(--success)', 'var(--warning)', 'var(--primary)', 'var(--danger)']
 // Mesmo arredondamento do boletim e de Resultados (7,35 -> 7,4).
 const fmtGrade = (n) => fmtGradeValue(n)
-const gradeBand = (g) => (g == null ? '' : g >= 9 ? 'g-success' : g >= 7 ? 'g-info' : g >= 6 ? 'g-warning' : 'g-danger')
+const BAND_CLASS = { excelente: 'g-success', bom: 'g-info', suficiente: 'g-warning', abaixo: 'g-danger', muito_abaixo: 'g-danger' }
+const gradeBand = (g) => (g == null ? '' : BAND_CLASS[faixaDaNota(g, criterio)] || '')
 const fmtDate = (t) => (t ? new Date(t).toLocaleDateString('pt-BR') : '')
+
+// Gráfico "Distribuição": uma barra por faixa de gradeBand (a mesma cor do cartão da
+// prova), da mais alta para a mais baixa, com as duas faixas abaixo da mínima juntas.
+// Rótulos com vírgula decimal (pt-BR) e limites da nota como aparece (5,96 é 6,0).
+const BUCKET_CLASS = { excelente: 'bg-success', bom: 'bg-info', suficiente: 'bg-warning', abaixo: 'bg-danger' }
+function distributionBuckets(grades) {
+  const counts = countByBand(grades, criterio)
+  const ranges = gradeBandRanges(criterio)
+  const below = ranges.filter((r) => r.band === 'abaixo' || r.band === 'muito_abaixo')
+  const rows = ranges.filter((r) => !below.includes(r)).map((r) => ({ k: r.label, band: r.band, n: counts[r.band] }))
+  if (below.length) {
+    const label = gradeRangeLabel(below[0].min, below[below.length - 1].max)
+    rows.unshift({ k: label, band: 'abaixo', n: below.reduce((sum, r) => sum + counts[r.band], 0) })
+  }
+  return rows.reverse().map((row) => ({ ...row, cls: BUCKET_CLASS[row.band] }))
+}
 
 // Card de uma prova avulsa (uma tentativa unica).
 function ExamCard({ s, onOpen }) {
@@ -414,13 +434,7 @@ export default function ProvasPage() {
       .slice()
       .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
       .map((s) => ({ value: Number(toGrade(s.score).toFixed(1)), label: shortLabel(s.examKey) }))
-    const buckets = [
-      // Rótulos com vírgula decimal (pt-BR), como as notas do resto do portal.
-      { k: '9–10', lo: 9, hi: 10.01, cls: 'bg-success' },
-      { k: '7–8,9', lo: 7, hi: 9, cls: 'bg-info' },
-      { k: '6–6,9', lo: 6, hi: 7, cls: 'bg-warning' },
-      { k: '0–5,9', lo: 0, hi: 6, cls: 'bg-danger' },
-    ].map((b) => ({ ...b, n: grades.filter((g) => g >= b.lo && b.hi > g).length }))
+    const buckets = distributionBuckets(grades)
     const maxBucket = Math.max(1, ...buckets.map((b) => b.n))
     return { avg, best, bestSub, compoem, total: mine.length, chartPoints, buckets, maxBucket, hasData: mine.length > 0 }
   }, [mine])
