@@ -1610,7 +1610,9 @@ export default function MonitorPage() {
       />
       <MonitorActionDialog
         dialog={actionDialog}
-        studentCount={rows.length}
+        // Só quem está ativo: o Monitor lista também quem foi desligado ou anonimizado
+        // depois de entregar (activeStudent: false), e esses não recebem o aviso.
+        studentCount={rows.filter((item) => item && item.activeStudent !== false).length}
         busy={releaseBusy}
         onChange={(value) => setActionDialog((current) => current && { ...current, value })}
         onClose={() => setActionDialog(null)}

@@ -45,6 +45,7 @@ const {
     applicationParticipantList,
     changedOverrides,
     describeAudienceAudit,
+    emailField,
     formatSchoolDateTime,
     parseApplicationAudience,
     participantCandidates,
@@ -330,7 +331,9 @@ const ATTEMPT_ACTIONS = Object.freeze(['recolher', 'reabrir', 'tentativa_extra']
 const ATTEMPT_ACTION_REASON_MAX = 500;
 const ATTEMPT_ACTION_SCHEMA = body({
     action: str({ max: 40, required: true, label: 'ação' }),
-    studentEmail: str({ max: 254, required: true, label: 'aluno' }),
+    // O emailField do "Para quem" (sem espaço, vírgula, ponto e vírgula nem <>): e-mail
+    // fora disso é 400 de validação, antes de procurar o aluno.
+    studentEmail: emailField('aluno', { required: true }),
     motivo: str({ max: ATTEMPT_ACTION_REASON_MAX, nullable: true, label: 'motivo' }),
     extraAttempts: int({ min: 1, max: MAX_EXTRA_ATTEMPTS, coerce: true, nullable: true, label: 'tentativas extras' }),
 });

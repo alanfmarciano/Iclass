@@ -164,6 +164,31 @@ function ensureInstallIdentity(memory, ctx) {
     return changed;
 }
 
+// Token da prova fora do histórico em todo boot (P3-S8: AVA-14, rodada de ajuste 2): a
+// linha '2026-11-p3-token-historico' roda uma vez só, mas a versão 281029f, se abrir o
+// banco depois da migração, volta a gravar o token em texto puro em
+// classes[].examHistory[prova][].accessToken ao preparar uma prova pela tela Provas dela
+// (e um backup feito nela o leva junto). A mesma limpeza fica aqui, para todo boot e depois
+// de toda restauração: a entrada guarda só tokenEnabled (true quando havia um token de 5
+// letras ou já estava true). Idempotente: sem o campo, nada muda e nada é gravado.
+function stripPlainExamHistoryTokens(memory) {
+    let changed = false;
+    (Array.isArray(memory && memory.classes) ? memory.classes : []).forEach(cls => {
+        const history = cls && typeof cls === 'object' && isPlainObjectValue(cls.examHistory) ? cls.examHistory : null;
+        if (!history) return;
+        Object.keys(history).forEach(examKey => {
+            (Array.isArray(history[examKey]) ? history[examKey] : []).forEach(entry => {
+                if (!entry || typeof entry !== 'object' || !Object.prototype.hasOwnProperty.call(entry, 'accessToken')) return;
+                const hadToken = /^[A-Z]{5}$/.test(String(entry.accessToken || '').trim().toUpperCase());
+                entry.tokenEnabled = hadToken || entry.tokenEnabled === true;
+                delete entry.accessToken;
+                changed = true;
+            });
+        });
+    });
+    return changed;
+}
+
 const BOOT_NORMALIZATIONS = Object.freeze([
     Object.freeze({
         id: '2026-11-p6-instalacao-sempre',
@@ -172,6 +197,13 @@ const BOOT_NORMALIZATIONS = Object.freeze([
             return ensureInstallIdentity(memory, ctx);
         },
     }),
+    Object.freeze({
+        id: '2026-11-p3-token-historico-sempre',
+        nome: 'Confere que o histórico das configurações salvas não guarda o token da prova',
+        run(memory) {
+            return stripPlainExamHistoryTokens(memory);
+        },
+    }),
 ]);
 
-module.exports = { MIGRATIONS, BOOT_NORMALIZATIONS, ensureInstallIdentity };
+module.exports = { MIGRATIONS, BOOT_NORMALIZATIONS, ensureInstallIdentity, stripPlainExamHistoryTokens };

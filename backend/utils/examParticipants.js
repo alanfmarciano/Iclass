@@ -276,7 +276,9 @@ const OVERRIDE_INPUT = shape({
 // cadastro antigo pode ter um e-mail fora do formato e ainda é aluno da turma; quem não é
 // aluno ativo da turma é recusado pela regra de negócio.
 const STUDENT_EMAIL_PATTERN = /^[^\s,;<>]+$/u;
-const emailField = (label = 'aluno') => str({ max: 254, pattern: STUDENT_EMAIL_PATTERN, label });
+// Também é o studentEmail das ações por aluno do Monitor (attempt-action, P3-S8), com
+// required: true.
+const emailField = (label = 'aluno', options = {}) => str({ max: 254, pattern: STUDENT_EMAIL_PATTERN, label, ...options });
 
 const AUDIENCE_INPUT_FIELDS = Object.freeze({
     finalidade: oneOf(APPLICATION_PURPOSES, { nullable: true, label: 'finalidade' }),
@@ -632,6 +634,7 @@ module.exports = {
     consideredSubmission,
     describeAudienceAudit,
     effectiveMaxAttempts,
+    emailField,
     emailsWithRegularDelivery,
     extraAttemptsFor,
     formatSchoolDateTime,

@@ -673,3 +673,22 @@ test('[UC-TENTATIVA-004] ajuste de tempo de aluno que ainda não começou guarda
     assert.equal(log.applicationId, application.id);
     assert.equal(log.details, '+10 min pelo professor (vale quando o aluno começar a prova): Laudo de tempo extra');
 });
+
+// ---------------------------------------------------------------- A4, ajuste 2
+
+test('[UC-TENTATIVA-004] attempt-action valida o e-mail do aluno pelo emailField: fora do formato é 400, antes de procurar o aluno', async () => {
+    const application = await running();
+    for (const studentEmail of ['ana bia@acoes.local', 'ana@acoes.local,bia@acoes.local', 'Ana <ana@acoes.local>', 'ana;bia']) {
+        const response = await action(application.id, { action: 'tentativa_extra', studentEmail }).expect(400);
+        assert.equal(response.body.field, 'studentEmail', studentEmail);
+        assert.match(response.body.error, /aluno/);
+    }
+    const missing = await action(application.id, { action: 'recolher' }).expect(400);
+    assert.equal(missing.body.field, 'studentEmail');
+    // Espaço em volta e maiúsculas continuam valendo (o campo corta e a regra normaliza).
+    const ok = await action(application.id, { action: 'tentativa_extra', studentEmail: `  ${BRUNO.toUpperCase()} ` });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    // Bem formado, mas de ninguém da turma: 404 da regra.
+    const nobody = await action(application.id, { action: 'tentativa_extra', studentEmail: 'ninguem@acoes.local' }).expect(404);
+    assert.equal(nobody.body.field, 'studentEmail');
+});

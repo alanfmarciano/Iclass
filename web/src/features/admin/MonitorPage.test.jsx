@@ -588,6 +588,23 @@ describe('[UC-TENTATIVA-004] MonitorPage · ações por aluno e diálogos própr
     expect(screen.getByRole('dialog', { name: 'Aviso para a turma' })).toHaveTextContent('Para: todos os alunos desta aplicação (1)')
   })
 
+  it('Aviso para a turma conta só os alunos ativos (desligado e anonimizado ficam fora da contagem)', async () => {
+    const fallback = mocks.get.getMockImplementation()
+    const finished = { ...base, status: 'finished', attemptInProgress: false, deliveredAttempts: 1 }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/monitor-status/')
+      ? [
+          row,
+          { ...finished, email: 'lucas@x.local', name: 'Lucas Transferido', activeStudent: false },
+          { ...finished, email: 'anon_1@anonimizado.invalid', name: 'Aluno anonimizado', activeStudent: false },
+          { ...base, email: 'bia@x.local', name: 'Bia', activeStudent: true },
+        ]
+      : fallback(url)))
+    renderMonitor()
+    await screen.findAllByText('Lucas Transferido')
+    fireEvent.click(await screen.findByRole('button', { name: 'Aviso turma' }))
+    expect(screen.getByRole('dialog', { name: 'Aviso para a turma' })).toHaveTextContent('Para: todos os alunos desta aplicação (2)')
+  })
+
   it('Tempo: atalhos −5, +5 e +10 trocam o valor e o motivo opcional vai junto', async () => {
     renderMonitor()
     fireEvent.click(await screen.findByRole('button', { name: 'Tempo' }))
