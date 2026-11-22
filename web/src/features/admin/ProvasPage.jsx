@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, ChevronRight, ClipboardList, Copy, Edit3, FileText, Layers, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock, Users } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, ChevronRight, ClipboardList, Edit3, FileText, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock, Users } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -32,16 +32,27 @@ import {
 } from './PrepareApplicationForm'
 import '../../styles/provas-board.css'
 import {
+  ONLINE_VERSIONS_MAX,
   buildExamVersions,
-  editorQuestionPayload,
   getQuestionUsageMap,
   normalizeEvaluation,
   openPrintWindow,
-  preservedModelFields,
   runningApplicationOf,
   snapshotsFromHistory,
 } from './examTools'
 import { matchesSearch } from '../../lib/textSearch'
+import QuestionEditor from './QuestionEditor'
+import QuestionMarkdown from '../exam/QuestionMarkdown'
+import {
+  answerSummary,
+  editorQuestion,
+  editorQuestionPayload,
+  firstEvaluationProblem,
+  formatPointsLabel,
+  isChoiceType,
+  questionTypeLabel,
+  totalPoints,
+} from './questionEditorModel'
 
 const EXAM_TOKEN_LENGTH = 5
 // Tema da prova e categoria do banco de questões: até 500 caracteres, o teto do servidor
@@ -132,22 +143,6 @@ function audienceLabel(application) {
 
 function historyLabel(entry, index) {
   return entry.label || (entry.type === 'impressa' ? `Impressa #${index + 1}` : `Online #${index + 1}`)
-}
-
-function editorQuestion(source = {}) {
-  const rawAlternatives = Array.isArray(source.alternatives) && source.alternatives.length >= 2
-    ? source.alternatives
-    : [{ text: '', isCorrect: true }, { text: '', isCorrect: false }, { text: '', isCorrect: false }, { text: '', isCorrect: false }]
-  const requestedCorrect = String(source.correctAnswer || '').toUpperCase()
-  return {
-    model: preservedModelFields(source),
-    text: source.text || source.questionText || '',
-    alternatives: rawAlternatives.map((alternative, index) => ({
-      letter: String.fromCharCode(65 + index),
-      text: typeof alternative === 'string' ? alternative : alternative.text || '',
-      isCorrect: alternative?.isCorrect === true || (!!requestedCorrect && String(alternative?.letter || '').toUpperCase() === requestedCorrect),
-    })),
-  }
 }
 
 export default function ProvasPage() {
@@ -659,62 +654,6 @@ export default function ProvasPage() {
     })
   }
 
-  function updateEditorQuestion(index, patch) {
-    setEditor((current) => ({ ...current, questions: current.questions.map((question, questionIndex) => questionIndex === index ? { ...question, ...patch } : question) }))
-  }
-
-  function updateAlternative(questionIndex, alternativeIndex, patch) {
-    setEditor((current) => ({
-      ...current,
-      questions: current.questions.map((question, index) => {
-        if (index !== questionIndex) return question
-        const alternatives = question.alternatives.map((alternative, altIndex) => {
-          if (patch.isCorrect === true) return { ...alternative, isCorrect: altIndex === alternativeIndex }
-          return altIndex === alternativeIndex ? { ...alternative, ...patch } : alternative
-        })
-        return { ...question, alternatives }
-      }),
-    }))
-  }
-
-  function addAlternative(questionIndex) {
-    const question = editor.questions[questionIndex]
-    if (question.alternatives.length >= 8) return toast.info('Máximo de 8 alternativas')
-    updateEditorQuestion(questionIndex, { alternatives: [...question.alternatives, { letter: String.fromCharCode(65 + question.alternatives.length), text: '', isCorrect: false }] })
-  }
-
-  function removeAlternative(questionIndex, alternativeIndex) {
-    const question = editor.questions[questionIndex]
-    if (question.alternatives.length <= 2) return toast.info('A questão precisa de ao menos 2 alternativas')
-    const removedWasCorrect = question.alternatives[alternativeIndex]?.isCorrect
-    const alternatives = question.alternatives.filter((_, index) => index !== alternativeIndex).map((alternative, index) => ({ ...alternative, letter: String.fromCharCode(65 + index) }))
-    if (removedWasCorrect) alternatives[0].isCorrect = true
-    updateEditorQuestion(questionIndex, { alternatives })
-  }
-
-  function moveQuestion(index, direction) {
-    const target = index + direction
-    if (target < 0 || target >= editor.questions.length) return
-    setEditor((current) => {
-      const questions = [...current.questions]
-      ;[questions[index], questions[target]] = [questions[target], questions[index]]
-      return { ...current, questions }
-    })
-  }
-
-  function duplicateQuestion(index) {
-    setEditor((current) => {
-      const questions = [...current.questions]
-      questions.splice(index + 1, 0, editorQuestion(current.questions[index]))
-      return { ...current, questions }
-    })
-  }
-
-  function removeQuestion(index) {
-    if (editor.questions.length <= 1) return toast.info('A prova precisa de ao menos uma questão')
-    setEditor((current) => ({ ...current, questions: current.questions.filter((_, questionIndex) => questionIndex !== index) }))
-  }
-
   function evaluationPayload() {
     return {
       title: editor.title,
@@ -724,7 +663,18 @@ export default function ProvasPage() {
     }
   }
 
+  // Antes de enviar, o que falta em cada questão (as frases do modelo do servidor): a
+  // questão com problema ganha a lista embaixo e a tela rola até ela. O servidor continua
+  // conferindo tudo de novo.
   function saveEvaluationEditor() {
+    const problem = firstEvaluationProblem(editor.questions)
+    if (problem) {
+      setEditor((current) => ({ ...current, showProblems: true }))
+      toast.error(problem.message)
+      const card = typeof document !== 'undefined' ? document.getElementById(`questao-editor-${problem.index + 1}`) : null
+      if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
     if (editor.scope === 'course') {
       const names = affectedClassNames.length ? affectedClassNames.join(', ') : 'todas as turmas do curso'
       setScopeConfirm({ names })
@@ -773,13 +723,17 @@ export default function ProvasPage() {
     toast.success('Questão adicionada à prova')
   }
 
+  // O banco de questões ainda guarda só "Uma correta" (o banco com os tipos novos é o
+  // P3-S9a): o botão fica desligado nos outros tipos.
   async function saveQuestionToBank(question) {
+    if (question.type !== 'multiple_choice') return toast.info('Por enquanto o banco de questões guarda só questões de "Uma correta".')
+    const payload = editorQuestionPayload(question)
     try {
       const response = await api.post('/api/admin/question-bank/create', {
         category: String(editor.theme || activeModule?.name || 'Geral').slice(0, THEME_MAX_CHARS),
-        questionText: question.text,
-        alternatives: question.alternatives,
-        correctAnswer: question.alternatives.find((alternative) => alternative.isCorrect)?.letter || '',
+        questionText: payload.text,
+        alternatives: payload.alternatives,
+        correctAnswer: payload.correctAnswer,
         sourceExamKey: editor.key || null,
       })
       setBankQuestions((items) => [...items, response.question])
@@ -995,6 +949,7 @@ export default function ProvasPage() {
                     <div className="mt-2"><Button size="sm" variant="secondary" icon={Edit3} onClick={openEvaluationEditor}>Editar conteúdo</Button></div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Badge tone="info">{selectedCount}/{totalQuestions} questões</Badge>
+                      <Badge tone="info">{formatPointsLabel(totalPoints(previewQuestions).total)} nesta montagem</Badge>
                       <Badge tone={usedCount > 0 ? 'warning' : 'neutral'}>{usedCount} já usadas</Badge>
                       <Badge tone="neutral">{mode === 'online' ? `${form.onlineVersions} versões online` : `${form.printVersions} versões impressas`}</Badge>
                     </div>
@@ -1032,7 +987,7 @@ export default function ProvasPage() {
                       <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponíveis`} />
                       {mode === 'online' ? (
                         <div className="grid grid-cols-2 gap-3">
-                          <Input label="Versões online" type="number" min="1" max="5" value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
+                          <Input label="Versões online" type="number" min="1" max={ONLINE_VERSIONS_MAX} value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(ONLINE_VERSIONS_MAX, Number(e.target.value) || 1)) })} helper={`Máx. ${ONLINE_VERSIONS_MAX}.`} />
                           <Input label="Duração (min)" type="number" min="1" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} />
                           <Input label="Sala de espera (min)" type="number" min="0" value={form.waitingRoomMinutes} onChange={(e) => setForm({ ...form, waitingRoomMinutes: e.target.value })} helper="Padrão: 10 minutos." />
                           <Select label="Início do cronômetro" value={form.timerMode} onChange={(e) => setForm({ ...form, timerMode: e.target.value })}>
@@ -1154,18 +1109,28 @@ export default function ProvasPage() {
                             <div className="flex items-start gap-3">
                               <span className="w-7 h-7 shrink-0 grid place-items-center rounded-md bg-primary-soft text-primary text-sm font-bold">{index + 1}</span>
                               <div className="min-w-0 flex-1">
-                                <p className="text-sm font-medium text-text">{q.text}</p>
+                                <div className="mb-1 flex flex-wrap gap-1.5">
+                                  <Badge tone="neutral">{questionTypeLabel(q.type)}</Badge>
+                                  <Badge tone="neutral">{formatPointsLabel(q.points ?? 1)}</Badge>
+                                </div>
+                                <QuestionMarkdown text={q.text} links={false} className="text-sm font-medium text-text" />
                                 {usages.length > 0 && <p className="text-xs text-warning mt-1">Já usada: {usages.map((u) => u.label).join(', ')}</p>}
                               </div>
                               <Button size="sm" variant="ghost" icon={Trash2} onClick={() => toggleQuestion(q.originalNumber, false)}>Remover</Button>
                             </div>
-                            <div className="mt-3 grid gap-1 pl-10">
-                              {(q.alternatives || []).map((alt) => (
-                                <div key={alt.displayLetter || alt.letter} className={`text-xs rounded-md border px-2 py-1 ${alt.isCorrect ? 'border-success/50 bg-success-soft text-success' : 'border-border text-muted'}`}>
-                                  <b>{alt.displayLetter || alt.letter})</b> {alt.text} {alt.isCorrect ? ' - correta' : ''}
-                                </div>
-                              ))}
-                            </div>
+                            {isChoiceType(q.type || 'multiple_choice') ? (
+                              <div className="mt-3 grid gap-1 pl-10 max-sm:pl-0">
+                                {(q.alternatives || []).map((alt) => (
+                                  <div key={alt.displayLetter || alt.letter} className={`flex min-w-0 items-start gap-1 text-xs rounded-md border px-2 py-1 ${alt.isCorrect ? 'border-success/50 bg-success-soft text-success' : 'border-border text-muted'}`}>
+                                    <b className="shrink-0">{alt.displayLetter || alt.letter})</b>
+                                    <QuestionMarkdown text={alt.text} choice links={false} zoom={false} className="min-w-0 flex-1" />
+                                    {alt.isCorrect && <span className="shrink-0">- correta</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="mt-3 pl-10 max-sm:pl-0 text-xs text-muted"><b className="text-text">Resposta certa:</b> {answerSummary(q) || '—'}</p>
+                            )}
                           </div>
                         )
                       })}
@@ -1246,40 +1211,13 @@ export default function ProvasPage() {
                 <textarea value={editor.rubric} onChange={(event) => setEditor({ ...editor, rubric: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" placeholder="Orientações, materiais permitidos e critérios." />
               </label>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
-              <div><h3 className="font-semibold text-text">Questões</h3><p className="text-xs text-muted">{editor.questions.length} questão(ões)</p></div>
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" icon={Library} onClick={openQuestionBank}>Banco de questões</Button>
-                <Button size="sm" icon={Plus} onClick={() => setEditor((current) => ({ ...current, questions: [...current.questions, editorQuestion()] }))}>Adicionar questão</Button>
-              </div>
-            </div>
-            <div className="space-y-4">
-              {editor.questions.map((question, questionIndex) => (
-                <Card key={questionIndex} className="p-4 space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone="info">Questão {questionIndex + 1}</Badge>
-                    <div className="flex-1" />
-                    <Button size="sm" variant="ghost" icon={ArrowUp} onClick={() => moveQuestion(questionIndex, -1)} disabled={questionIndex === 0}>Subir</Button>
-                    <Button size="sm" variant="ghost" icon={ArrowDown} onClick={() => moveQuestion(questionIndex, 1)} disabled={questionIndex === editor.questions.length - 1}>Descer</Button>
-                    <Button size="sm" variant="ghost" icon={Copy} onClick={() => duplicateQuestion(questionIndex)}>Duplicar</Button>
-                    <Button size="sm" variant="ghost" icon={Library} onClick={() => saveQuestionToBank(question)}>Salvar no banco</Button>
-                    <Button size="sm" variant="ghost" icon={Trash2} onClick={() => removeQuestion(questionIndex)}>Excluir</Button>
-                  </div>
-                  <textarea value={question.text} onChange={(event) => updateEditorQuestion(questionIndex, { text: event.target.value })} rows="3" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text" placeholder="Texto da questão" />
-                  <div className="space-y-2">
-                    {question.alternatives.map((alternative, alternativeIndex) => (
-                      <div key={alternativeIndex} className={`flex items-center gap-2 rounded-lg border p-2 ${alternative.isCorrect ? 'border-success/60 bg-success-soft/30' : 'border-border'}`}>
-                        <input type="radio" name={`correct-${questionIndex}`} checked={alternative.isCorrect} onChange={() => updateAlternative(questionIndex, alternativeIndex, { isCorrect: true })} aria-label={`Marcar alternativa ${alternative.letter} como correta`} />
-                        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
-                        <input value={alternative.text} onChange={(event) => updateAlternative(questionIndex, alternativeIndex, { text: event.target.value })} className="h-9 min-w-0 flex-1 rounded-md border border-border bg-surface px-3 text-sm text-text" placeholder={`Alternativa ${alternative.letter}`} />
-                        <Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir alternativa ${alternative.letter}`} onClick={() => removeAlternative(questionIndex, alternativeIndex)} />
-                      </div>
-                    ))}
-                    <Button size="sm" variant="secondary" icon={Plus} onClick={() => addAlternative(questionIndex)}>Adicionar alternativa</Button>
-                  </div>
-                </Card>
-              ))}
-            </div>
+            <QuestionEditor
+              questions={editor.questions}
+              onChange={(questions) => setEditor((current) => ({ ...current, questions }))}
+              onOpenBank={openQuestionBank}
+              onSaveToBank={saveQuestionToBank}
+              showProblems={editor.showProblems === true}
+            />
           </div>
         )}
       </Modal>

@@ -4,6 +4,18 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Editor de questões do professor
+- Em Provas, "Editar conteúdo" e "Nova prova" têm os seis tipos de questão: Uma correta, Várias corretas, Verdadeiro ou falso, Numérica, Resposta curta e Dissertativa. Cada tipo mostra uma frase de exemplo e só os campos dele: a marca da correta (ou das corretas, com "Pontuação parcial" ou tudo ou nada), Verdadeiro ou Falso, o número certo com tolerância e unidade, as respostas aceitas, e na dissertativa a resposta esperada (só você vê) e a rubrica com os critérios e os pontos.
+- Cada questão tem os seus pontos (de 0,1 a 100, com vírgula) e o topo do editor mostra o total da prova. Na dissertativa, a soma dos critérios da rubrica aparece ao lado e o botão "Usar ... como pontos" acerta a diferença.
+- Na numérica e na resposta curta, "Mandar para mim quando a resposta não bater" deixa a resposta diferente para você corrigir, em vez de valer zero.
+- O enunciado e a explicação têm uma barra com Negrito, Código, Tabela e Imagem (JPG, PNG, GIF ou WebP, enviada do computador ou do celular). Ao lado (no celular, na aba "Prévia") a questão aparece como o aluno vai ver, com o campo de resposta para testar e a resposta certa embaixo.
+- Explicação da questão (o aluno vê com o gabarito liberado) e, em "Mais detalhes", dificuldade, habilidades e etiquetas.
+- Trocar o tipo não apaga o que já foi escrito: voltar ao tipo de antes traz as alternativas e as respostas de volta. Antes de salvar, o editor mostra o que falta em cada questão ("Questão 2: informe o valor da resposta numérica.") e não envia a prova incompleta. Excluir uma questão já preenchida pergunta antes.
+- A prévia da montagem mostra o tipo, os pontos e o Markdown de cada questão, a resposta certa da numérica e da resposta curta e o total de pontos. "Versões online" vai até 4, o máximo que o servidor guarda (antes a tela deixava pôr 5 e a quinta sumia).
+- A prova impressa mostra os pontos de cada questão e o total quando eles não são todos 1, o Markdown (negrito, código, tabela e imagem), "( ) Verdadeiro ( ) Falso", linha para a resposta numérica, duas linhas para a resposta curta e doze para a dissertativa. O cartão-resposta tem só as questões de escolha, com as letras que cada uma tem (antes eram sempre A a E). O gabarito pinta todas as corretas de "Várias corretas" e descreve o número com a tolerância, as respostas aceitas e, na dissertativa, a resposta esperada e a rubrica.
+- Verdadeiro ou falso nunca embaralha: Verdadeiro vem sempre antes de Falso, na prova online e na impressa.
+- Por enquanto, "Salvar no banco" fica só para questões de "Uma correta"; o banco de questões com os tipos novos vem numa próxima versão.
+
 ### Prova do aluno com os tipos novos de questão
 - Na prova, cada tipo de questão tem o seu campo: verdadeiro ou falso em dois botões grandes, "Marque todas as corretas." com caixas de marcar, número com o teclado numérico do celular (aceita vírgula) e a unidade ao lado, resposta curta numa linha e dissertativa numa área que cresce, com o contador "1.230 de 10.000". Cada questão mostra quanto vale ("2 pontos").
 - Na prova, o enunciado e as alternativas aceitam Markdown: negrito, listas, bloco de código, tabela e imagem. O texto digitado em várias linhas não vira mais uma linha só. No celular, a tabela e o código rolam dentro do próprio quadro, e a página não rola para o lado. Tocar na imagem abre a imagem grande.

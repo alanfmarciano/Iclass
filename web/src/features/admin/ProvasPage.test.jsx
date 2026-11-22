@@ -62,6 +62,17 @@ async function openEditor() {
 
 const posts = (path) => mocks.post.mock.calls.filter(([url]) => url === path)
 
+// Preenche a questão nova (enunciado e as quatro alternativas): desde o P3-S3 a tela
+// confere a questão antes de enviar, como o servidor.
+function fillFirstQuestion(editor, text = 'Qual protocolo usa a porta 80?') {
+  const card = within(editor).getByRole('group', { name: 'Questão 1' })
+  fireEvent.change(within(card).getByLabelText('Enunciado'), { target: { value: text } })
+  ;['HTTP', 'FTP', 'SSH', 'DNS'].forEach((value, index) => {
+    fireEvent.change(within(card).getByLabelText(`Texto da alternativa ${'ABCD'[index]} da questão 1`), { target: { value } })
+  })
+  return card
+}
+
 describe('[UC-CONFIRMACAO-001] ProvasPage do professor · confirmações no diálogo da tela', () => {
   it('excluir questão do banco: Cancelar não exclui; Excluir exclui e tira da lista', async () => {
     await openEditor()
@@ -86,6 +97,7 @@ describe('[UC-CONFIRMACAO-001] ProvasPage do professor · confirmações no diá
 
   it('salvar para todas as turmas do curso pergunta antes e lista as turmas; Cancelar não grava', async () => {
     const editor = await openEditor()
+    fillFirstQuestion(editor)
     fireEvent.change(within(editor).getByLabelText('Aplicar alterações em'), { target: { value: 'course' } })
     fireEvent.click(within(editor).getByRole('button', { name: 'Salvar prova' }))
     let dialog = screen.getByRole('dialog', { name: 'Substituir a prova nas turmas?' })
@@ -103,8 +115,80 @@ describe('[UC-CONFIRMACAO-001] ProvasPage do professor · confirmações no diá
 
   it('salvar só para esta turma não pergunta', async () => {
     const editor = await openEditor()
+    fillFirstQuestion(editor)
     await act(async () => { fireEvent.click(within(editor).getByRole('button', { name: 'Salvar prova' })) })
     await waitFor(() => expect(posts('/api/admin/evaluation')).toHaveLength(1))
     expect(screen.queryByRole('dialog', { name: 'Substituir a prova nas turmas?' })).toBeNull()
+  })
+})
+
+// Fase 3, P3-S3 (AVA-06, FUN-10, UXA-12): editor com os tipos novos dentro da tela Provas,
+// prévia da montagem com tipo, pontos e Markdown, e "Versões online" com o limite do
+// servidor (4).
+const typedEvaluation = {
+  title: 'Prova de redes',
+  questions: [
+    { number: 1, originalNumber: 1, type: 'multiple_choice', points: 2, text: 'Qual a **topologia**?', alternatives: [{ letter: 'A', text: 'Estrela', isCorrect: true }, { letter: 'B', text: 'Anel', isCorrect: false }], correctAnswer: 'A' },
+    { number: 2, originalNumber: 2, type: 'numeric', points: 1.5, text: 'Latência média?', alternatives: [], correctAnswer: '', numeric: { value: 3.5, tolerance: 0.25, unit: 'ms' }, review: 'auto', explanation: 'Média das três.' },
+  ],
+}
+
+async function openTypedExam() {
+  mocks.get.mockImplementation(async (url) => {
+    if (url.startsWith('/api/admin/courses/C1/structure')) return { structure: [{ id: 'm1', name: 'Módulo 1', units: [{ avaliacaoKey: 'Avaliacao_1', name: 'Avaliação 1' }] }] }
+    if (url === '/api/admin/evaluation/Avaliacao_1') return { evaluation: typedEvaluation }
+    if (url.startsWith('/api/status')) return {}
+    if (url.startsWith('/api/admin/exam-history')) return { history: [] }
+    if (url.startsWith('/api/admin/exam-applications')) return { applications: [] }
+    return {}
+  })
+  mocks.put.mockResolvedValue({ success: true, key: 'Avaliacao_1', evaluation: typedEvaluation })
+  render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+  fireEvent.click(await screen.findByRole('button', { name: /Avaliação 1/ }))
+  await screen.findByRole('heading', { name: 'Prova de redes' })
+}
+
+describe('[UC-PROVA-004] ProvasPage do professor · questões com os tipos novos', () => {
+  it('a prévia da montagem mostra tipo, pontos, Markdown e a resposta da numérica; o total de pontos aparece', async () => {
+    await openTypedExam()
+    expect(screen.getByText('3,5 pontos nesta montagem')).toBeInTheDocument()
+    expect(screen.getByText('Numérica')).toBeInTheDocument()
+    expect(screen.getByText('1,5 ponto')).toBeInTheDocument()
+    expect(screen.getByText('topologia').tagName).toBe('STRONG')
+    expect(screen.getByText(/3,5 ms \(± 0,25\)/)).toBeInTheDocument()
+  })
+
+  it('"Versões online" vai até 4, o limite do servidor', async () => {
+    await openTypedExam()
+    const versions = screen.getByLabelText('Versões online')
+    expect(versions).toHaveAttribute('max', '4')
+    fireEvent.change(versions, { target: { value: '5' } })
+    expect(versions).toHaveValue(4)
+    expect(screen.getByText('Máx. 4.')).toBeInTheDocument()
+  })
+
+  it('editar a prova abre os campos do tipo e salva o mesmo modelo; questão com problema não vai ao servidor', async () => {
+    await openTypedExam()
+    fireEvent.click(screen.getByRole('button', { name: 'Editar conteúdo' }))
+    const editor = screen.getByRole('dialog', { name: 'Editar prova' })
+    expect(within(editor).getByText('Total da prova: 3,5 pontos')).toBeInTheDocument()
+    const numeric = within(editor).getByRole('group', { name: 'Questão 2' })
+    expect(within(numeric).getByLabelText('Resposta certa')).toHaveValue('3,5')
+    expect(within(numeric).getByLabelText('Unidade (opcional)')).toHaveValue('ms')
+    // Apagar o valor: a tela avisa e não envia.
+    fireEvent.change(within(numeric).getByLabelText('Resposta certa'), { target: { value: '' } })
+    fireEvent.click(within(editor).getByRole('button', { name: 'Salvar prova' }))
+    expect(mocks.toast.error).toHaveBeenCalledWith('Questão 2: informe o valor da resposta numérica.')
+    expect(mocks.put).not.toHaveBeenCalled()
+    expect(within(numeric).getByRole('list', { name: 'O que falta na questão 2' })).toHaveTextContent('Informe o valor da resposta numérica.')
+    fireEvent.change(within(numeric).getByLabelText('Resposta certa'), { target: { value: '3,75' } })
+    await act(async () => { fireEvent.click(within(editor).getByRole('button', { name: 'Salvar prova' })) })
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledTimes(1))
+    const [url, body] = mocks.put.mock.calls[0]
+    expect(url).toBe('/api/admin/evaluation/Avaliacao_1')
+    expect(body.questions).toEqual([
+      { type: 'multiple_choice', points: 2, text: 'Qual a **topologia**?', alternatives: [{ letter: 'A', text: 'Estrela', isCorrect: true }, { letter: 'B', text: 'Anel', isCorrect: false }], correctAnswer: 'A', explanation: '' },
+      { type: 'numeric', points: 1.5, text: 'Latência média?', numeric: { value: 3.75, tolerance: 0.25, unit: 'ms' }, review: 'auto', explanation: 'Média das três.' },
+    ])
   })
 })

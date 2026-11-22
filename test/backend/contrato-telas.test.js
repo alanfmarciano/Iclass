@@ -550,7 +550,7 @@ test('[UC-CONFIRMACAO-001] guarda: nenhuma caixa nova do navegador (confirm, pro
     }
     assert.deepEqual(problems, [], `use o ConfirmDialog (web/src/components/ui/ConfirmDialog.jsx):\n${problems.join('\n')}`);
     // As telas tocadas no C0a não usam mais as caixas do navegador.
-    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx', 'features/admin/ResultadosPage.jsx']) {
+    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx', 'features/admin/QuestionEditor.jsx', 'features/admin/ResultadosPage.jsx']) {
         assert.equal(nativeDialogCalls({ text: fs.readFileSync(path.join(WEB_SRC, file), 'utf8') }).length, 0, file);
         assert.equal(NATIVE_DIALOGS_LEFT[file], undefined, file);
     }
