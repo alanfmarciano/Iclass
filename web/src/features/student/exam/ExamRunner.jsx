@@ -238,6 +238,9 @@ export default function ExamRunner() {
   // com aviso ao aluno e registro no Monitor (UXA-02). Foco e aba seguem monitorados.
   const [noFullscreen] = useState(() => !fullscreenSupported())
   const [timeupInfo, setTimeupInfo] = useState(null)
+  // Motivo da trava que o servidor mandou: 'session_replaced' quando a conta entrou em
+  // outro aparelho no meio da prova (P3-S13); os outros textos são de saída da prova.
+  const [lockReason, setLockReason] = useState('')
   const answersRef = useRef(answers)
   const submittedRef = useRef(false)
   const keyBufferRef = useRef([])
@@ -1064,6 +1067,7 @@ export default function ExamRunner() {
         setPhase('error')
         return
       }
+      setLockReason(st.focusLocked === true ? String(st.focusLockReason || '') : '')
       if (st.focusLocked === true) {
         setPhase('paused')
         return
@@ -1618,7 +1622,9 @@ export default function ExamRunner() {
       <div className="text-center max-w-md">
         <div className="w-16 h-16 grid place-items-center rounded-full bg-danger-soft text-danger mb-4 mx-auto"><ShieldAlert size={32} /></div>
         <h2 className="text-xl font-bold text-text">Prova pausada</h2>
-        <p className="text-sm text-muted mt-2">Detectamos que você saiu da tela cheia, da aba ou da janela da prova. Por segurança, a prova foi pausada e o instrutor foi notificado.</p>
+        {lockReason === 'session_replaced'
+          ? <p className="text-sm text-muted mt-2">Esta prova foi aberta em outro aparelho com a sua conta. Por segurança, a prova foi pausada e o instrutor foi notificado.</p>
+          : <p className="text-sm text-muted mt-2">Detectamos que você saiu da tela cheia, da aba ou da janela da prova. Por segurança, a prova foi pausada e o instrutor foi notificado.</p>}
         <p className="text-sm text-muted mt-2">Aguarde a liberação do instrutor para continuar. Suas respostas foram salvas.</p>
         <div className="mt-4 flex items-center justify-center gap-2 text-warning"><Loader2 className="w-4 h-4 animate-spin" /> <span className="text-sm">Aguardando liberação...</span></div>
         <Button className="mt-6" variant="secondary" icon={ArrowLeft} onClick={leaveToExamList}>Sair e voltar às provas</Button>

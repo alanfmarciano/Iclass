@@ -9,7 +9,11 @@ vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 import {
   ApplicationAudienceFields,
   ApplicationAudienceModal,
+  DEFAULT_SESSION_POLICY,
+  PrepareApplicationForm,
   RECUPERACAO_VISIVEL,
+  SessionPolicySelect,
+  sessionPolicyDescription,
   audiencePayload,
   audienceProblem,
   initialAudience,
@@ -239,5 +243,52 @@ describe('[UC-PROVA-006] [UC-IDENT-001] Para quem com aluno sem e-mail', () => {
   it('a mensagem da exceção fala do aluno sem e-mail sem mostrar o endereço interno', () => {
     const problem = audienceProblem({ mode: 'turma', selected: [], overrides: { [INTERNAL]: { extraAttempts: '9', motivo: '' } } })
     expect(problem).toBe('Tentativas extras de aluno sem e-mail: use um número de 0 a 5.')
+  })
+})
+
+// "Outro aparelho no meio da prova" (fase 3, P3-S13: AVA-17; D28 e P-B4).
+describe('[UC-TENTATIVA-005] Outro aparelho no meio da prova', () => {
+  function FormHarness({ onValue }) {
+    const [value, setValue] = useState({
+      entry: { label: 'Prova 1', questionCount: 2 },
+      availableVersions: 1,
+      onlineVersions: 1,
+      durationMinutes: 30,
+      waitingRoomMinutes: 0,
+      timerEnabled: true,
+      timerMode: 'per_attempt',
+      tokenEnabled: false,
+      accessToken: 'ABCDE',
+      maxAttempts: '1',
+      keystrokeMode: 'eventos',
+      audience: initialAudience(),
+    })
+    return (
+      <PrepareApplicationForm
+        value={value}
+        onChange={(next) => { setValue(next); onValue(next) }}
+        candidates={{ data: CANDIDATES, loading: false, refreshing: false, error: '', refetch: () => {} }}
+        tokenTools={{ normalize: (text) => text, generate: () => 'ABCDE' }}
+      />
+    )
+  }
+
+  it('padrão "Travar até eu liberar"; "Só avisar" muda o valor e a explicação', () => {
+    const onValue = vi.fn()
+    render(<FormHarness onValue={onValue} />)
+    const select = screen.getByLabelText('Outro aparelho no meio da prova')
+    expect(select).toHaveValue(DEFAULT_SESSION_POLICY)
+    expect(DEFAULT_SESSION_POLICY).toBe('travar')
+    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual(['Travar até eu liberar (recomendado)', 'Só avisar no Monitor'])
+    expect(screen.getByText(/trava no aparelho novo até você liberar pelo Monitor/)).toBeVisible()
+    fireEvent.change(select, { target: { value: 'avisar' } })
+    expect(onValue).toHaveBeenLastCalledWith(expect.objectContaining({ sessionPolicy: 'avisar' }))
+    expect(screen.getByText(/A prova continua no aparelho novo/)).toBeVisible()
+    expect(sessionPolicyDescription('qualquer')).toMatch(/trava/)
+  })
+
+  it('o seletor sozinho (montagem online em Provas) lê valor desconhecido como o padrão', () => {
+    render(<SessionPolicySelect value={undefined} onChange={() => {}} />)
+    expect(screen.getByLabelText('Outro aparelho no meio da prova')).toHaveValue('travar')
   })
 })

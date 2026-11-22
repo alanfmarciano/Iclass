@@ -27,7 +27,7 @@ import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { serverOutageNotices, withLiveOutagePauses } from './serverOutage'
 import { StudentAnswersModal } from './StudentAnswersModal'
-import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
+import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, lockReasonLabel, logInfoFor, logLabel, sameIpLabel, sessionRowBadges, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
@@ -150,7 +150,7 @@ function buildItems(events, logs) {
     return { cat: 'cmd', kind: ev.kind, key: ev.key, mods: ev.mods, t, sig: info.reason, ...info, ev }
   })
   const lg = (logs || []).filter((l) => ALERT_LOG_TYPES.has(l.eventType)).map((l) => {
-    const info = LOG_INFO[l.eventType]
+    const info = logInfoFor(l)
     const label = logLabel(l)
     return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: ['exam_left', 'page_return'].includes(l.eventType) ? `${l.eventType}:${label}` : l.eventType, ...info, label, log: l }
   })
@@ -1422,6 +1422,9 @@ export default function MonitorPage() {
             <Card className="p-4"><div className="flex items-center justify-between gap-2"><span className="text-xs text-muted">Alertas</span><AlertTriangle className="h-4 w-4 text-warning" /></div><div className="text-2xl font-bold text-warning tabular-nums">{alerts}</div><p className="text-xs text-subtle">{absent} ausentes</p></Card>
           </div>
           {err && <p className="text-sm text-danger">Erro ao atualizar: {err.message}</p>}
+          {rows.some((r) => r.networkSharedIp) && (
+            <p className="text-xs text-subtle" role="note">A rede da sala mostra o mesmo endereço para todos: o aviso de IP repetido fica desligado nesta prova.</p>
+          )}
           <Card className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-muted border-b border-border bg-surface-2">
@@ -1435,7 +1438,12 @@ export default function MonitorPage() {
                   return (
                     <tr key={r.email || i} className="border-b border-border last:border-0">
                       <td className="px-4 py-3"><div className="font-medium text-text">{r.name || displayEmail(r.email)}</div><div className="text-xs text-muted">{displayEmail(r.email)}</div></td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted">{r.ip || '-'}</td>
+                      <td className="px-4 py-3">
+                        <span className="font-mono text-xs text-muted">{r.ip || '-'}</span>
+                        {sameIpLabel(r, (person) => person?.name || displayEmail(person?.email)) && (
+                          <p className="mt-1" title="Dois ou três alunos desta prova estão no mesmo endereço de rede, numa sala em que os outros têm endereços diferentes. Pode ser o mesmo aparelho."><Badge tone="warning">{sameIpLabel(r, (person) => person?.name || displayEmail(person?.email))}</Badge></p>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         <Badge tone={st[0]} dot>{st[1]}</Badge>
                         {attemptCountLabel(r) && <p className="mt-1 text-[11px] font-medium text-muted">{attemptCountLabel(r)}</p>}
@@ -1463,9 +1471,12 @@ export default function MonitorPage() {
                         {r.focusLocked ? (
                           <div>
                             <Badge tone="danger">Bloqueado</Badge>
-                            {r.focusLockReason && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLockReason}</p>}
+                            {r.focusLockReason && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{lockReasonLabel(r.focusLockReason)}</p>}
                           </div>
                         ) : recentLogs.length > 0 ? <span className="text-xs text-muted">{recentLogs.join(' | ')}</span> : <span className="text-subtle">ok</span>}
+                        {sessionRowBadges(r).map((badge) => (
+                          <div key={badge.key} className="mt-1" title={badge.title}><Badge tone={badge.tone}>{badge.text}</Badge></div>
+                        ))}
                         {r.fullscreenUnsupported && (
                           <div className="mt-1" title="O navegador do aluno não permite tela cheia (iPhone). A prova seguiu sem ela; foco e aba continuam monitorados."><Badge tone="info">Sem tela cheia</Badge></div>
                         )}

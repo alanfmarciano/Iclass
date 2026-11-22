@@ -26,6 +26,7 @@ const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
 const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
+const { noteAttemptIp, requestUserAgent } = require('../utils/examSessionIntegrity.js');
 const { FIELD_LIMITS: KEYSTROKE_FIELD_LIMITS } = require('../utils/keystrokeStore.js');
 const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
 const { filterKeystrokeEvents, keystrokeModeOf, normalizeEventKind } = require('../utils/keystrokePolicy.js');
@@ -227,6 +228,12 @@ router.post('/api/student/log-activity', validateStudentSession, PROCTORING_SCHE
         };
         
         db.memory.proctoringLogs.push(logEntry);
+        // Troca de IP com a tentativa aberta (P3-S13): registrada uma vez por IP novo.
+        if (application && context.state) {
+            noteAttemptIp(db.memory, {
+                state: context.state, application, clientIp: req.clientIp, sessionIpChange: req.sessionIpChange, userAgent: requestUserAgent(req), now: logEntry.timestamp,
+            });
+        }
         // Perda de foco trava só a tentativa ABERTA do aluno. Sem tentativa aberta (o
         // evento chegou depois da entrega, ou antes de existir tentativa) fica só o log:
         // antes era gravado um estado avulso travado, que o sync seguinte adotava como
@@ -458,8 +465,15 @@ router.post('/api/student/autosave-progress', validateStudentSession, PROCTORING
             savedAt: new Date().toISOString()
         };
 
-        // Rota quente (H1-c, DES-01): o rascunho mexe só no estado da tentativa.
-        await db.save({ only: ['studentExamState', 'authSessions'] });
+        // Troca de IP com a tentativa aberta (P3-S13): registrada uma vez por IP novo, no
+        // estado da tentativa (sessionIps) e no registro da prova.
+        const ipNoted = application
+            ? noteAttemptIp(db.memory, { state: db.memory.studentExamState[key], application, clientIp: req.clientIp, sessionIpChange: req.sessionIpChange, userAgent: requestUserAgent(req) })
+            : false;
+
+        // Rota quente (H1-c, DES-01): o rascunho mexe só no estado da tentativa (e no
+        // registro da prova, quando o IP mudou).
+        await db.save({ only: ipNoted ? ['studentExamState', 'proctoringLogs', 'authSessions'] : ['studentExamState', 'authSessions'] });
         res.json({ success: true });
     } catch (err) {
         return sendInternalError(err, req, res);

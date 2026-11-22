@@ -34,6 +34,12 @@ const DIFERENCAS_ESPERADAS = [
         motivo: 'B0b (P4-S1): a Secretaria passou a ver e aprovar matrículas, e o texto '
             + '"visível apenas para administrador" deixou de ser verdade; vale o do sino, "aguardando aprovação".',
     },
+    {
+        // 'modelo-2026.1:termos|...' passou a 'modelo-2026.2:termos|...'.
+        caminho: 'sinoAluno.body.legalVersion',
+        motivo: 'A10 (P3-S13): o texto do modelo dos Termos e da Política mudou (IP e aparelho do login '
+            + 'durante a prova), e o identificador do modelo muda junto (MODEL_ID em legalTemplates.js).',
+    },
 ];
 
 function run(env = {}) {

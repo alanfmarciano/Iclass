@@ -27,8 +27,10 @@ import { DEFAULT_KEYSTROKE_MODE } from '../../lib/keystrokeModes'
 import {
   ApplicationAudienceFields,
   ApplicationAudienceModal,
+  DEFAULT_SESSION_POLICY,
   KeystrokeModeSelect,
   PrepareApplicationForm,
+  SessionPolicySelect,
   audiencePayload,
   audienceProblem,
   initialAudience,
@@ -111,6 +113,7 @@ const DEFAULT_FORM = {
   timerEnabled: true,
   timerMode: 'per_attempt',
   keystrokeMode: DEFAULT_KEYSTROKE_MODE,
+  sessionPolicy: DEFAULT_SESSION_POLICY,
 }
 
 function statusTone(status) {
@@ -483,6 +486,7 @@ export default function ProvasPage() {
             accessToken: form.tokenEnabled ? form.accessToken : null,
             maxAttempts: parsedMaxAttempts.value,
             keystrokeMode: form.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
+            sessionPolicy: form.sessionPolicy || DEFAULT_SESSION_POLICY,
             ...audiencePayload(audience, { timerMode: form.timerMode }),
           },
         })
@@ -536,6 +540,7 @@ export default function ProvasPage() {
         ? (entry.maxAttempts == null ? '' : String(entry.maxAttempts))
         : String(DEFAULT_MAX_ATTEMPTS),
       keystrokeMode: DEFAULT_KEYSTROKE_MODE,
+      sessionPolicy: DEFAULT_SESSION_POLICY,
       audience: initialAudience(),
     })
   }
@@ -566,6 +571,7 @@ export default function ProvasPage() {
           accessToken: applyHistory.tokenEnabled ? applyHistory.accessToken : null,
           maxAttempts: parsedMaxAttempts.value,
           keystrokeMode: applyHistory.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
+          sessionPolicy: applyHistory.sessionPolicy || DEFAULT_SESSION_POLICY,
           ...audiencePayload(applyHistory.audience, { timerMode: applyHistory.timerMode }),
         },
       })
@@ -1017,6 +1023,9 @@ export default function ProvasPage() {
                           </div>
                           <div className="col-span-2">
                             <KeystrokeModeSelect value={form.keystrokeMode} onChange={(keystrokeMode) => setForm({ ...form, keystrokeMode })} />
+                          </div>
+                          <div className="col-span-2">
+                            <SessionPolicySelect value={form.sessionPolicy} onChange={(sessionPolicy) => setForm({ ...form, sessionPolicy })} />
                           </div>
                           {form.tokenEnabled && <div className="col-span-2 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
                             <Input

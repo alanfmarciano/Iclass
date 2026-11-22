@@ -992,3 +992,60 @@ describe('[UC-IDENT-003] MonitorPage · aluno sem e-mail', () => {
     expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
   })
 })
+
+// Outro login e troca de IP durante a prova (fase 3, P3-S13: AVA-17; D28 e D29).
+describe('[UC-TENTATIVA-005] MonitorPage · outro aparelho, troca de IP e IP repetido', () => {
+  let rowsForTest = []
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.auth = {}
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return rowsForTest
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(cleanup)
+
+  function renderMonitor() {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  it('linha travada pelo outro login: "Bloqueado", o motivo em português, o selo com a hora e "Mudou de IP"; IP repetido com o nome do colega', async () => {
+    const at = new Date(2026, 10, 22, 10, 42).getTime()
+    rowsForTest = [
+      { email: 'alice@x.local', name: 'Alice', ip: '10.0.0.9', status: 'focus_locked', focusLocked: true, focusLockReason: 'session_replaced', attemptInProgress: true, progress: '1/4', logs: [], sessionReplacedCount: 1, sessionReplacedAt: at, ipChangeCount: 1, ipChangedAt: at, sameIpAs: [{ email: 'bruno@x.local', name: 'Bruno' }], networkSharedIp: false },
+      { email: 'bruno@x.local', name: 'Bruno', ip: '10.0.0.9', status: 'online', attemptInProgress: true, progress: '2/4', logs: [], sessionReplacedCount: 0, ipChangeCount: 0, sameIpAs: [{ email: 'alice@x.local', name: 'Alice' }], networkSharedIp: false },
+    ]
+    renderMonitor()
+    expect(await screen.findByText('Entrou de outro aparelho às 10:42')).toBeTruthy()
+    const alice = screen.getByText('Entrou de outro aparelho às 10:42').closest('tr')
+    expect(within(alice).getByText('Bloqueado')).toBeTruthy()
+    expect(within(alice).getByText('Entrou de outro aparelho')).toBeTruthy()
+    expect(within(alice).queryByText('session_replaced')).toBeNull()
+    expect(within(alice).getByText('Mudou de IP')).toBeTruthy()
+    expect(within(alice).getByText('Mesmo IP de Bruno')).toBeTruthy()
+    const bruno = screen.getByText('Mesmo IP de Alice').closest('tr')
+    expect(within(bruno).queryByText(/Entrou de outro aparelho/)).toBeNull()
+    expect(screen.queryByText(/A rede da sala mostra o mesmo endereço para todos/)).toBeNull()
+  })
+
+  it('rede com NAT: nenhum "Mesmo IP de" e o aviso de que a rede mostra o mesmo endereço para todos', async () => {
+    rowsForTest = ['ana', 'beto', 'caio', 'duda'].map((name) => ({ email: `${name}@x.local`, name, ip: '192.168.0.1', status: 'online', attemptInProgress: true, progress: '0/4', logs: [], sameIpAs: [], networkSharedIp: true }))
+    renderMonitor()
+    expect(await screen.findByText(/A rede da sala mostra o mesmo endereço para todos/)).toBeTruthy()
+    expect(screen.queryByText(/Mesmo IP de/)).toBeNull()
+  })
+
+  it('Monitor de antes desta versão (linhas sem os campos novos): nada muda', async () => {
+    rowsForTest = [{ email: 'ana@x.local', name: 'Ana', ip: '10.0.0.2', status: 'online', attemptInProgress: true, progress: '0/4', logs: [] }]
+    renderMonitor()
+    expect(await screen.findByText('10.0.0.2')).toBeTruthy()
+    expect(screen.queryByText(/Mesmo IP de|Entrou de outro aparelho|Mudou de IP|A rede da sala/)).toBeNull()
+  })
+})

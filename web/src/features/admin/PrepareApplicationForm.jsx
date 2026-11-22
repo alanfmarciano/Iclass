@@ -427,6 +427,33 @@ export function KeystrokeModeSelect({ value, onChange }) {
   )
 }
 
+// "Outro aparelho no meio da prova" (P3-S13, D28): o que acontece quando a conta do aluno
+// entra em outro aparelho com a prova dele em andamento. Troca de endereço de rede (celular
+// que passa do Wi-Fi para o 4G) nunca trava: só aparece no Monitor.
+export const DEFAULT_SESSION_POLICY = 'travar'
+export const SESSION_POLICY_OPTIONS = [
+  { value: 'travar', label: 'Travar até eu liberar (recomendado)' },
+  { value: 'avisar', label: 'Só avisar no Monitor' },
+]
+
+export function sessionPolicyDescription(value) {
+  return value === 'avisar'
+    ? 'A prova continua no aparelho novo e o Monitor mostra "Entrou de outro aparelho".'
+    : 'A prova trava no aparelho novo até você liberar pelo Monitor, que mostra "Entrou de outro aparelho".'
+}
+
+export function SessionPolicySelect({ value, onChange }) {
+  const current = value === 'avisar' ? 'avisar' : DEFAULT_SESSION_POLICY
+  return (
+    <div className="flex flex-col gap-1">
+      <Select label="Outro aparelho no meio da prova" value={current} onChange={(e) => onChange(e.target.value)}>
+        {SESSION_POLICY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </Select>
+      <span className="text-xs text-subtle">{sessionPolicyDescription(current)}</span>
+    </div>
+  )
+}
+
 // Campos de "Aplicar prova novamente" (extraídos da tela Provas): versões, duração, sala
 // de espera, cronômetro, tentativas, teclado, token e o "Para quem". value/onChange: o
 // estado applyHistory da tela; tokenTools: { normalize, generate } do token.
@@ -455,6 +482,9 @@ export function PrepareApplicationForm({ value, onChange, candidates, tokenTools
         </div>
         <div className="sm:col-span-2">
           <KeystrokeModeSelect value={value.keystrokeMode} onChange={(keystrokeMode) => set({ keystrokeMode })} />
+        </div>
+        <div className="sm:col-span-2">
+          <SessionPolicySelect value={value.sessionPolicy} onChange={(sessionPolicy) => set({ sessionPolicy })} />
         </div>
         {value.tokenEnabled && <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
           <Input label="Token de acesso" value={value.accessToken} maxLength={5} autoComplete="off" spellCheck={false} className="font-mono text-base font-semibold tracking-[0.2em]" helper="Obrigatório · 5 letras" onChange={(e) => set({ accessToken: tokenTools.normalize(e.target.value) })} />

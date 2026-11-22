@@ -13,7 +13,9 @@
 // MODEL_ID muda quando o texto do modelo muda: é ele que identifica o modelo no
 // documentId ('modelo-2026.1:termos') enquanto a escola não publica.
 
-const MODEL_ID = 'modelo-2026.1';
+// 'modelo-2026.2' (fase 3, P3-S13): o IP e o aparelho do login durante a prova e a trava
+// quando a conta entra em outro aparelho no meio dela (para a revisão do Alan).
+const MODEL_ID = 'modelo-2026.2';
 
 // O aviso do modelo fica fora do texto (markdown): quem publica o modelo sem editar não
 // entrega aos alunos uma versão, que não muda mais, mandando "revisar antes de publicar".
@@ -53,6 +55,7 @@ Ao criar a conta ou continuar usando o portal, você declara que leu estes Termo
 
 - As provas online seguem as regras passadas pelo professor: horário, tempo, número de tentativas e materiais permitidos.
 - Durante a prova, o IClass registra eventos para garantir a integridade da avaliação, como saídas da tela da prova, tela cheia, e, conforme o modo escolhido pela escola para cada prova, atalhos de teclado (copiar, colar, recortar, menu do botão direito) ou a digitação. As instruções antes de começar a prova dizem o que é registrado naquela prova.
+- Durante a prova, o IClass também registra o endereço de rede (IP) e o aparelho de cada entrada na sua conta. Se a sua conta entrar em outro aparelho com a prova em andamento, a prova pode ficar travada até o professor liberar. A troca de rede do mesmo aparelho (por exemplo, do Wi-Fi para os dados do celular) só fica registrada.
 - O professor pode ver esses registros e levá-los em conta na avaliação.
 - Prazo de guarda desses registros: {{prazo_monitoramento}}.
 
@@ -95,7 +98,7 @@ Esta Política explica como **{{nome_fantasia}}** trata os dados pessoais de alu
 - **Responsável** (para menores de 18 anos): nome, parentesco e contato.
 - **Acessibilidade:** necessidades informadas por você ou pela escola, como tempo adicional de prova, usadas só para adaptar as atividades.
 - **Vida escolar:** notas, frequência, entregas, respostas das provas, certificados e observações pedagógicas.
-- **Monitoramento de prova:** saídas da tela, tela cheia e, conforme o modo escolhido para cada prova, atalhos de teclado ou a digitação durante a prova.
+- **Monitoramento de prova:** saídas da tela, tela cheia e, conforme o modo escolhido para cada prova, atalhos de teclado ou a digitação durante a prova; o endereço de rede (IP) e o aparelho (navegador) de cada entrada na conta durante a prova, inclusive a entrada em outro aparelho e a troca de endereço de rede, registrados para a integridade da prova.
 - **Registros de acesso:** data, hora, endereço IP e aparelho de cada entrada no portal.
 - **Conteúdo enviado:** anotações do caderno, dúvidas, mensagens no fórum e arquivos.
 

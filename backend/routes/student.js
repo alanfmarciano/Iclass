@@ -71,7 +71,8 @@ const {
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
-const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
+const { createStudentSession, hasSessionCredential, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
+const { noteAttemptIp, recordSessionReplaced, requestUserAgent } = require('../utils/examSessionIntegrity.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 const { studentSessionProfile } = require('../utils/studentProfile.js');
 const studentIdentity = require('../utils/studentIdentity.js');
@@ -810,6 +811,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 db.save({ only: SYNC_SAVE_COLLECTIONS });
             }
             if (!preview && application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save({ only: SYNC_SAVE_COLLECTIONS });
+            // Troca de IP com a tentativa aberta (P3-S13, D28): registrada no Monitor uma vez
+            // por IP novo, sem travar (utils/examSessionIntegrity.js).
+            if (!preview && application && context.state && noteAttemptIp(db.memory, {
+                state: rawState, application, clientIp: req.clientIp, sessionIpChange: req.sessionIpChange, userAgent: requestUserAgent(req),
+            })) db.save({ only: SYNC_SAVE_COLLECTIONS });
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
             if (!preview && application && context.state && ensureLocalCopyKey(rawState)) db.save({ only: SYNC_SAVE_COLLECTIONS });
@@ -1294,16 +1300,36 @@ router.post('/api/student/login', STUDENT_SCHEMAS.login, async (req, res) => {
     // Sessão única: gera um token novo a cada login. Logins anteriores (em outros
     // dispositivos) deixam de valer porque o token guardado neles passa a divergir.
     // O servidor guarda só o hash do token (utils/authSessions.js).
+    // Outro login no meio da prova (P3-S13, D28): a sessão que este login substitui (IP e
+    // navegador) vai para o registro da prova e, pela política da aplicação, a tentativa
+    // em andamento trava até o professor liberar (utils/examSessionIntegrity.js). Sem
+    // sessão de verdade antes (Sair, reinício longo) não há o que registrar.
+    const loginIp = normalizeIp(req.ip || req.socket.remoteAddress);
+    const loginUserAgent = requestUserAgent(req);
+    const replacedSession = studentSessionByEmail(db.memory, normalizedEmail);
+    const previousDevice = hasSessionCredential(replacedSession)
+        ? { ip: normalizeIp(replacedSession.ip), userAgent: replacedSession.userAgent || '' }
+        : null;
+    const loginNow = Date.now();
     const sessionToken = createStudentSession(db.memory, normalizedEmail, {
-        ip: normalizeIp(req.ip || req.socket.remoteAddress),
-        now: Date.now(),
+        ip: loginIp,
+        now: loginNow,
+        userAgent: loginUserAgent,
+    });
+    recordSessionReplaced(db.memory, {
+        email: normalizedEmail,
+        previous: previousDevice,
+        current: { ip: loginIp, userAgent: loginUserAgent },
+        now: loginNow,
     });
     const passwordChange = studentPasswordChangeState(db.memory, student, studentSessionByEmail(db.memory, normalizedEmail));
     // Rota quente no começo da aula (H1-c, DES-01): a conta (hora do login, hash novo,
     // troca obrigatória), o registro do login, a presença automática e a sessão gravada
     // (contrato: rota anotada que cria sessão leva 'authSessions'; a que audita leva
     // 'auditLogs').
-    await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs'] });
+    // Com uma prova em andamento, o registro do outro login e a trava da tentativa
+    // (proctoringLogs, studentExamState) vão na mesma gravação.
+    await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs', 'proctoringLogs', 'studentExamState'] });
 
     // Retorna dados do estudante sem expor o campo de senha
     const { password: _, ...safeStudent } = student;

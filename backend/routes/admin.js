@@ -107,6 +107,7 @@ const ANONYMIZED_STATUS_REFUSAL = 'A situação Anonimizado só é aplicada em C
 const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecrets } = require('../utils/audit.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
+const { sessionEventsSummary, sharedIpSummary } = require('../utils/examSessionIntegrity.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
 const { VALID_POLICIES, calculateAttemptResult, effectiveScore, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
@@ -4837,6 +4838,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             })
             : classStudents;
 
+        const sharedIpEntries = [];
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
             const openAttempt = application
@@ -4970,10 +4972,22 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             // tempo restante" e chegava a 0:00 com alunos que ainda teriam o tempo inteiro.
             if (perAttemptTimer && status !== 'finished' && !(Number(state.startedAt) > 0)) timerRemaining = null;
 
+            // Outro login e troca de IP na tentativa (P3-S13, D28): os selos da linha.
+            const sessionEvents = sessionEventsSummary(currentAttemptLogs);
+            // Quem entra na conta do IP repetido (D29): começou a prova e está nela agora.
+            if (session && session.ip && attemptStarted && (attemptInProgress || isOnline)) {
+                sharedIpEntries.push({ email: s.email, name: s.name || '', ip: session.ip });
+            }
+
             return {
                 email: s.email,
                 name: s.name,
                 ip: session ? session.ip : '',
+                // "Entrou de outro aparelho às 10:42" e "Mudou de IP" (registros da tentativa).
+                sessionReplacedAt: sessionEvents.sessionReplacedAt,
+                sessionReplacedCount: sessionEvents.sessionReplacedCount,
+                ipChangedAt: sessionEvents.ipChangedAt,
+                ipChangeCount: sessionEvents.ipChangeCount,
                 status,
                 // Tentativa que a linha mostra ("tentativa N de M") e o limite do aluno (o da
                 // aplicação mais as tentativas extras dele, D16).
@@ -5033,6 +5047,15 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 suspiciousCount,
                 lastKeystrokeAt
             };
+        });
+
+        // IP repetido (D29): "mesmo IP de Fulano" só com 2 ou 3 alunos no mesmo IP e pelo
+        // menos 5 IPs diferentes; com quase todos num IP só (NAT, proxy), nada é destacado e
+        // cada linha leva networkSharedIp para o Monitor avisar uma vez.
+        const sharedIp = sharedIpSummary(sharedIpEntries);
+        monitorList.forEach(row => {
+            row.sameIpAs = sharedIp.sameIpAs.get(String(row.email || '').toLowerCase()) || [];
+            row.networkSharedIp = sharedIp.networkSharedIp;
         });
 
         res.json(monitorList);

@@ -4,6 +4,7 @@ const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken, sealExamToken, unsealExamToken, withoutSealedToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
 const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
+const { SESSION_POLICIES, normalizeSessionPolicy } = require('../utils/examSessionIntegrity.js');
 const {
     attemptQuestion,
     freezeSnapshotGrading,
@@ -167,6 +168,8 @@ function buildPreparedOnlineExamConfig(historyEntry, previousConfig = {}, applic
         maxAttempts,
         // Registro do teclado (H8b): a rota confere a escolha antes (parseKeystrokeModeOption).
         keystrokeMode: normalizeKeystrokeMode(parseKeystrokeModeOption(applicationOptions).value),
+        // Outro aparelho no meio da prova (P3-S13, D28): 'travar' (padrão) ou 'avisar'.
+        sessionPolicy: normalizeSessionPolicy(applicationOptions.sessionPolicy),
         versionSnapshots,
         preparedAt: updatedAt,
         updatedAt,
@@ -342,7 +345,12 @@ function recordAudienceAudit(application, actor, { participantsChanged = false, 
 // Tipo e tamanho do "Para quem" dentro das opções da preparação e no corpo da rota de
 // participantes (utils/inputSchema.js); as regras vêm em parseApplicationAudience.
 const PREPARE_AUDIENCE_SCHEMA = body({
-    applicationOptions: shape(AUDIENCE_INPUT_FIELDS, { nullable: true, label: 'opções da aplicação' }),
+    applicationOptions: shape({
+        ...AUDIENCE_INPUT_FIELDS,
+        // "Outro aparelho no meio da prova" (P3-S13, D28): travar até o professor liberar
+        // (padrão) ou só avisar no Monitor.
+        sessionPolicy: oneOf(SESSION_POLICIES, { nullable: true, label: 'outro aparelho no meio da prova' }),
+    }, { nullable: true, label: 'opções da aplicação' }),
 });
 const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
 

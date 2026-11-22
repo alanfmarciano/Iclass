@@ -228,9 +228,14 @@ function validateStudentSession(req, res, next) {
     // O token (aleatório, um por login) já prova a identidade. Um IP diferente é registrado,
     // mas não derruba a sessão: celular que troca de Wi-Fi para 4G ou recebe outro
     // IP do roteador perdia a prova no meio.
+    // Com uma tentativa aberta, quem registra a troca no Monitor (ip_changed) são as rotas
+    // da prova (sync, autosave-progress, log-activity), que já gravam proctoringLogs: aqui
+    // só fica a anotação do pedido (req.sessionIpChange, utils/examSessionIntegrity.js).
+    let sessionIpChange = null;
     if (sessionIp && sessionIp !== clientIp) {
         console.warn(`[SESSÃO] IP mudou para ${normalizedEmail}: ${sessionIp} -> ${clientIp}`);
         session.ip = clientIp;
+        sessionIpChange = { ipAntes: sessionIp, ipDepois: clientIp };
     }
 
     const nowTs = Date.now();
@@ -289,6 +294,9 @@ function validateStudentSession(req, res, next) {
     // Sessão do aparelho (o mesmo token do login): a regra de foco da saída da página
     // confere que quem volta à prova é a mesma sessão (utils/examFocusRules.js).
     req.studentSessionToken = providedToken;
+    // IP deste pedido e a troca vista agora (P3-S13: outro login e troca de IP na prova).
+    req.clientIp = clientIp;
+    req.sessionIpChange = sessionIpChange;
 
     // Devolve o que o próximo passo devolver: a promessa de um callback assíncrono
     // chega a quem chamou (validateAnySession, Express 5), e o erro não fica solto.

@@ -2324,3 +2324,29 @@ describe('[UC-PROVA-004] ExamRunner: um campo para cada tipo de questão', () =>
     expect(screen.queryByTestId('awaiting-correction')).not.toBeInTheDocument()
   })
 })
+
+// Outro login no meio da prova (fase 3, P3-S13: AVA-17; D28): a tentativa travada porque a
+// conta entrou em outro aparelho diz isso ao aluno, e não "saiu da tela cheia".
+describe('[UC-TENTATIVA-005] ExamRunner: prova travada pelo outro aparelho', () => {
+  function lockedSync(reason) {
+    const response = syncResponse({ timerRemaining: 600 })
+    response.state = { ...response.state, focusLocked: true, focusLockedAt: Date.now(), focusLockReason: reason }
+    return response
+  }
+
+  it('travada por outro login: a tela diz que a prova foi aberta em outro aparelho', async () => {
+    apiMock.get.mockResolvedValue(lockedSync('session_replaced'))
+    renderRunner()
+    expect(await screen.findByRole('heading', { name: 'Prova pausada' })).toBeVisible()
+    expect(screen.getByText(/Esta prova foi aberta em outro aparelho com a sua conta/)).toBeVisible()
+    expect(screen.queryByText(/saiu da tela cheia, da aba ou da janela/)).not.toBeInTheDocument()
+  })
+
+  it('travada por saída da prova: continua o texto de sempre', async () => {
+    apiMock.get.mockResolvedValue(lockedSync('Saiu da aba'))
+    renderRunner()
+    expect(await screen.findByRole('heading', { name: 'Prova pausada' })).toBeVisible()
+    expect(screen.getByText(/saiu da tela cheia, da aba ou da janela/)).toBeVisible()
+    expect(screen.queryByText(/aberta em outro aparelho/)).not.toBeInTheDocument()
+  })
+})

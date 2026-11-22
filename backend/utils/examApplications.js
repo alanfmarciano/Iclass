@@ -130,6 +130,9 @@ function createExamApplication({
         // Registro do teclado escolhido ao preparar (H8b, CRIT-04): 'eventos' (padrão),
         // 'tudo' ou 'nada'. Não muda depois de preparada (utils/keystrokePolicy.js).
         keystrokeMode: keystrokeModeOf(config),
+        // Outro aparelho no meio da prova (P3-S13, D28): 'travar' (padrão) ou 'avisar'. A
+        // aplicação antiga, sem o campo, vale o padrão (utils/examSessionIntegrity.js).
+        sessionPolicy: config.sessionPolicy === 'avisar' ? 'avisar' : 'travar',
         // Para quem (P3-S7, D15 e D16): finalidade ('regular' | 'segunda_chamada' |
         // 'recuperacao'), participants (null = a turma inteira; senão os e-mails) e as
         // exceções por aluno. A rota confere tudo antes (parseApplicationAudience).
