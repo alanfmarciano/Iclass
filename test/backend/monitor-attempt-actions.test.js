@@ -32,6 +32,7 @@ const { sealExamToken, unsealExamToken } = require('../../backend/utils/examToke
 let app;
 const adminToken = 'admin-token-attempt-actions';
 const otherProfessorToken = 'professor-token-attempt-actions';
+const auxiliarToken = 'auxiliar-token-attempt-actions';
 const studentClass = '2DES';
 const otherClass = '3DES';
 const courseId = 'curso-acoes';
@@ -50,10 +51,13 @@ function seed() {
     db.memory.admins = [
         { email: 'admin@acoes.local', name: 'Admin', role: 'admin', password: db.hashPassword('senha-administrativa') },
         { email: 'prof@outra.local', name: 'Prof Outra', role: 'professor', password: db.hashPassword('senha-professor-x'), assignedClasses: [{ courseId, className: otherClass }] },
+        // Professor auxiliar (papel 'monitor'): acompanha a prova pelo Monitor, sem gabarito.
+        { email: 'aux@acoes.local', name: 'Auxiliar', role: 'monitor', password: db.hashPassword('senha-auxiliar-x'), assignedClasses: [{ courseId, className: studentClass }] },
     ];
     db.memory.adminSessions = {
         [adminToken]: { email: 'admin@acoes.local', createdAt: Date.now(), lastSeen: Date.now() },
         [otherProfessorToken]: { email: 'prof@outra.local', createdAt: Date.now(), lastSeen: Date.now() },
+        [auxiliarToken]: { email: 'aux@acoes.local', createdAt: Date.now(), lastSeen: Date.now() },
     };
     const student = (name, email, cls = studentClass) => ({ name, email, status: 'Ativo', classes: [{ name: cls, courseId }] });
     db.memory.students = [student('Alice Souza', ALICE), student('Bruno Lima', BRUNO), student('Diego Reis', DIEGO, otherClass)];
@@ -691,4 +695,30 @@ test('[UC-TENTATIVA-004] attempt-action valida o e-mail do aluno pelo emailField
     // Bem formado, mas de ninguém da turma: 404 da regra.
     const nobody = await action(application.id, { action: 'tentativa_extra', studentEmail: 'ninguem@acoes.local' }).expect(404);
     assert.equal(nobody.body.field, 'studentEmail');
+});
+
+// Junção J1 (A4 + B1): o Professor auxiliar usa as ações por aluno do Monitor (page.monitor),
+// mas a resposta não pode levar as versões da prova com o gabarito, como a lista e o
+// /control já não levam para ele.
+test('[UC-TENTATIVA-004] [UC-PAPEIS-001] ações por aluno do Professor auxiliar não devolvem as versões com o gabarito', async () => {
+    const auxiliar = req => req.set('x-admin-session', auxiliarToken);
+    const application = await running();
+    assert.ok(Array.isArray(db.memory.examApplications.find(item => item.id === application.id).versionSnapshots));
+    const started = await begin(ALICE, application.id);
+    const collected = await action(application.id, { action: 'recolher', studentEmail: ALICE }, auxiliar);
+    assert.equal(collected.status, 200, JSON.stringify(collected.body));
+    assert.equal(collected.body.application.id, application.id);
+    assert.equal('versionSnapshots' in collected.body.application, false);
+    assert.equal('accessTokenSealed' in collected.body.application, false);
+    assert.equal(JSON.stringify(collected.body).includes('isCorrect'), false);
+    const reopened = await action(application.id, { action: 'reabrir', studentEmail: ALICE, motivo: 'Recolhida por engano' }, auxiliar);
+    assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
+    assert.equal('versionSnapshots' in reopened.body.application, false);
+    await submit(ALICE, application.id, { attemptId: started.attemptId, examConfigVersion: started.examConfigVersion }, {});
+    const extra = await action(application.id, { action: 'tentativa_extra', studentEmail: ALICE }, auxiliar);
+    assert.equal(extra.status, 200, JSON.stringify(extra.body));
+    assert.equal('versionSnapshots' in extra.body.application, false);
+    // O professor da turma (com page.exams) continua recebendo a aplicação inteira.
+    const extraAdmin = await action(application.id, { action: 'tentativa_extra', studentEmail: BRUNO }).expect(200);
+    assert.ok(Array.isArray(extraAdmin.body.application.versionSnapshots));
 });

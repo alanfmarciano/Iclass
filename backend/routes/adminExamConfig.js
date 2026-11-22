@@ -1113,6 +1113,11 @@ function createAdminExamConfigRouter() {
     router.post('/api/admin/exam-applications/:applicationId/attempt-action', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             if (!ATTEMPT_ACTION_SCHEMA.check(req, res)) return;
+            // Quem só acompanha pelo Monitor (page.monitor sem page.exams, como o Professor
+            // auxiliar) recebe a aplicação sem as versões (gabarito), como na lista e no
+            // /control (B1 + A4, junção J1).
+            const withAnswerKeys = canReadExamVersions(matchedAdmin);
+            const applicationForAccount = application => (withAnswerKeys ? withoutSealedToken(application) : applicationSummary(application));
             const action = String(req.body.action || '').trim().toLowerCase();
             if (!ATTEMPT_ACTIONS.includes(action)) {
                 return res.status(400).json({ success: false, error: 'Ação inválida. Use recolher, reabrir ou tentativa_extra.', field: 'action' });
@@ -1180,7 +1185,7 @@ function createAdminExamConfigRouter() {
                 return res.json({
                     success: true,
                     action,
-                    application: withoutSealedToken(application),
+                    application: applicationForAccount(application),
                     submission: { id: submission.id, attemptId: submission.attemptId, attemptNumber: submission.attemptNumber, answeredCount: submission.answeredCount },
                 });
             }
@@ -1217,7 +1222,7 @@ function createAdminExamConfigRouter() {
                 return res.json({
                     success: true,
                     action,
-                    application: withoutSealedToken(application),
+                    application: applicationForAccount(application),
                     state: {
                         attemptId: reopened.state.attemptId,
                         attemptNumber: reopened.state.attemptNumber,
@@ -1274,7 +1279,7 @@ function createAdminExamConfigRouter() {
             return res.json({
                 success: true,
                 action,
-                application: withoutSealedToken(application),
+                application: applicationForAccount(application),
                 extraAttempts: next.extraAttempts,
                 maxAttempts: effectiveMaxAttempts(application, email, configMaxAttempts),
             });
