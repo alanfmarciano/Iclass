@@ -277,6 +277,9 @@ function normalizeGrade(value) {
         versionGraded: Number.isInteger(value.versionGraded) && value.versionGraded >= 0 ? value.versionGraded : 0,
         gradedBy: trimmed(value.gradedBy).toLowerCase(),
         gradedAt: toMs(value.gradedAt),
+        // Última mudança da nota (não do comentário), desde o C6, ajuste 1; null nas
+        // correções gravadas antes (quem lê usa o gradedAt).
+        scoreChangedAt: toMs(value.scoreChangedAt),
         penaltyWaived: value.penaltyWaived === true,
     };
 }

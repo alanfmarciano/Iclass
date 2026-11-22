@@ -14,7 +14,8 @@
 //   some quando ele envia, quando o prazo passa ou quando a turma é encerrada.
 // - 'tarefa:<id>:devolvida' Tarefa devolvida (C6 / P1-d): a correção chegou ao aluno, na
 //   hora da devolução; se o professor muda a nota depois (com motivo), o mesmo item volta
-//   como não lido com o título "Nota da tarefa alterada", na hora da mudança;
+//   como não lido com o título "Nota da tarefa alterada", na hora da mudança ("Comentário
+//   da tarefa alterado" quando só o comentário mudou);
 // - 'tarefa:<id>:refazer' Refazer a tarefa (C6 / P1-d): o professor pediu para refazer, com
 //   o prazo novo, na hora do pedido; some quando o aluno manda a versão nova ou quando a
 //   entrega não aceita mais envio.
@@ -23,7 +24,8 @@
 // Fila do instrutor ('Precisa de você' e sino do painel, D16): 'entregas_para_corrigir',
 // uma linha por turma com o total de entregas que esperam correção nas tarefas publicadas
 // (versão nova sem nota, entrega em mãos sem nota, versão nova depois da correção), só dos
-// alunos do escopo de quem vê e só para quem tem 'page.assignments'.
+// alunos do escopo de quem vê e só para quem tem 'page.assignments' e pode corrigir (a
+// Coordenação, só de consulta, não recebe: somenteQuemAltera).
 //
 // Calendário ('entrega'): um evento 'tarefa:<id>' por tarefa publicada e aberta da turma,
 // na data e na hora do prazo efetivo do aluno (no relógio da escola), com a situação dele.
@@ -105,11 +107,15 @@ function notificationItems(ctx) {
             const entry = assignments.normalizeSubmission(sub);
             if (situation.code === 'devolvida' && entry.returnedAt !== null) {
                 const changedAt = entry.grade && entry.grade.gradedAt !== null && entry.grade.gradedAt > entry.returnedAt ? entry.grade.gradedAt : null;
+                // Só o comentário mudou (scoreChangedAt de antes da devolução): o título diz isso.
+                const scoreAt = entry.grade && entry.grade.scoreChangedAt !== null ? entry.grade.scoreChangedAt : changedAt;
                 const at = changedAt || entry.returnedAt;
+                let title = 'Tarefa devolvida';
+                if (changedAt) title = scoreAt !== null && scoreAt > entry.returnedAt ? 'Nota da tarefa alterada' : 'Comentário da tarefa alterado';
                 items.push({
                     id: `tarefa:${task.id}:devolvida`,
                     type: 'tarefa',
-                    title: changedAt ? 'Nota da tarefa alterada' : 'Tarefa devolvida',
+                    title,
                     text: task.title,
                     at,
                     href: detailHref(task),
@@ -186,6 +192,8 @@ function queueItems(ctx) {
         tone: 'warning',
         href: '/tarefas?filtro=para-corrigir',
         permissao: 'page.assignments',
+        // Corrigir é ação: a Coordenação (page.assignments só para ver) não recebe o item.
+        somenteQuemAltera: true,
     };
     if (summary.oldestAt) item.at = summary.oldestAt;
     return [item];

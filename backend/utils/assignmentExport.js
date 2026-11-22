@@ -174,7 +174,9 @@ function buildExportPlan(memory, assignment, { versoes = 'ultima', timezone } = 
             grade && grade.score !== null ? grade.penaltyPct : '',
             grade ? gradeText(grade.finalScore) : '',
             sub && sub.status === 'devolvida' ? schoolDateTime(sub.returnedAt, timezone) : '',
-            folder,
+            // Todos os arquivos sumiram do disco: a pasta não existe no ZIP (a coluna dos
+            // que faltam diz quais).
+            included.length ? folder : '',
             included.join(' | '),
             missing.join(' | '),
             versions.map(version => version.link).filter(Boolean).join(' | '),

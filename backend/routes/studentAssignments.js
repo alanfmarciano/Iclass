@@ -25,7 +25,11 @@
 // - Versão atômica com trava por aluno e tarefa: a parte que grava (conferir de novo o
 //   aceite, numerar a versão, mover os arquivos com renameWithRetry e gravar) roda um envio
 //   por vez para o mesmo aluno na mesma tarefa; dois envios ao mesmo tempo viram as
-//   versões n e n+1, nunca a mesma. A versão só existe depois de todos os arquivos movidos
+//   versões n e n+1, nunca a mesma. A trava é a mesma das rotas do professor que mudam a
+//   entrega (C6, utils/submissionLocks.js): a nota, a devolução ou a prorrogação esperam a
+//   versão terminar de gravar (e vice-versa). Depois da espera do disco, a tarefa, a
+//   entrega e o aceite são conferidos de novo: se algo mudou fora da trava, o envio é
+//   recusado (409 submission_changed, retryable) em vez de gravar por cima. A versão só existe depois de todos os arquivos movidos
 //   e da gravação no banco; falha de gravação responde 503 retryable, desfaz a versão na
 //   memória e manda os arquivos já movidos para a lixeira (só do administrador).
 // - Auditoria assignment_submitted (ator: o aluno) na mesma gravação:
@@ -46,6 +50,7 @@ const assignments = require('../utils/assignments.js');
 const assignmentFiles = require('../utils/assignmentFiles.js');
 const assignmentFeeds = require('../utils/assignmentFeeds.js');
 const academicCalendar = require('../utils/academicCalendar.js');
+const { submissionLockKey, withSubmissionLock, pendingLocks } = require('../utils/submissionLocks.js');
 const fileStore = require('../utils/storage.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
 const { previewToken } = require('../utils/previewAccess.js');
@@ -79,6 +84,7 @@ const MESSAGES = Object.freeze({
     readFailed: 'Não foi possível ler o arquivo agora. Tente de novo em alguns segundos.',
     receiveFailed: 'Não foi possível receber os arquivos agora. Tente de novo em alguns segundos.',
     writeFiles: 'Não foi possível gravar os arquivos do envio. Tente de novo.',
+    changed: 'A entrega mudou enquanto o envio chegava. Atualize a página e envie de novo.',
 });
 
 const SUBMIT_SCHEMA = body({
@@ -359,21 +365,8 @@ function receiveUpload(req, res, rules) {
 
 // ------------------------------------------------------------ trava por aluno e tarefa
 // A parte que grava roda um envio por vez para o mesmo aluno na mesma tarefa (o upload em
-// si corre junto: cada um tem os próprios temporários).
-const commitChains = new Map();
-
-function withSubmissionLock(key, fn) {
-    const previous = commitChains.get(key) || Promise.resolve();
-    const run = previous.then(() => fn());
-    const tail = run.then(() => {}, () => {});
-    commitChains.set(key, tail);
-    tail.then(() => { if (commitChains.get(key) === tail) commitChains.delete(key); });
-    return run;
-}
-
-function pendingLocks() {
-    return commitChains.size;
-}
+// si corre junto: cada um tem os próprios temporários). A trava é a mesma das rotas do
+// professor que mudam a entrega (utils/submissionLocks.js, C6).
 
 // ------------------------------------------------------------ gravação da versão
 // Arquivos já movidos para data/entregas que ficaram sem registro (falha de gravação):
@@ -426,12 +419,30 @@ async function commitVersion(req, { assignmentId, requestAt, received, text, lin
             return { status: 503, body: { success: false, error: MESSAGES.writeFiles, code: 'write_failed', retryable: true } };
         }
     }
+    // Depois da espera do disco: a tarefa, a entrega e o aceite de novo. Quem muda a
+    // entrega usa a mesma trava, então aqui nada deveria ter mudado; se mudou (restauração
+    // de backup, tarefa excluída ou arquivada no meio), o envio não grava por cima.
+    const rawAfter = assignments.findAssignment(db.memory, task.id);
+    const taskAfter = rawAfter ? assignments.normalizeAssignment(rawAfter) : null;
+    const current = assignments.findSubmission(db.memory, task.id, email);
+    let refusal = null;
+    if (current !== existing) {
+        refusal = { status: 409, body: { success: false, error: MESSAGES.changed, code: 'submission_changed', retryable: true } };
+    } else if (!taskAfter || !assignments.isVisibleToStudent(taskAfter, { now: requestAt })) {
+        refusal = { status: 404, body: { success: false, error: MESSAGES.notFound } };
+    }
+    const acceptanceAfter = refusal ? null : assignments.submissionAcceptance(taskAfter, existing, { now: requestAt });
+    if (!refusal && !acceptanceAfter.accepts) refusal = acceptanceRefusalBody(acceptanceAfter);
+    if (refusal) {
+        trashCommittedFiles(files, task);
+        return refusal;
+    }
     const version = {
         n,
         requestAt,
         receivedAt: Date.now(),
-        late: acceptance.late,
-        lateMs: acceptance.lateMs,
+        late: acceptanceAfter.late,
+        lateMs: acceptanceAfter.lateMs,
         text,
         link,
         files: files.map(file => ({
@@ -669,7 +680,7 @@ function createStudentAssignmentsRouter() {
 
         let outcome;
         try {
-            outcome = await withSubmissionLock(`${task.id}\u0000${req.studentEmail}`, () => commitVersion(req, {
+            outcome = await withSubmissionLock(submissionLockKey(task.id, req.studentEmail), () => commitVersion(req, {
                 assignmentId: task.id, requestAt, received, text, link,
             }));
         } catch (err) {

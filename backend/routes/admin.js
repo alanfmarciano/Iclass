@@ -37,7 +37,7 @@ const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { canAccessAdminPermission, hasAdminCapability } = require('../utils/adminPermissions.js');
-const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
+const { isFullAdmin, isReadOnlyAccount, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { stripFileAccessTokens } = require('../utils/contentMedia.js');
 const {
     DEFAULT_STATUS,
@@ -5506,7 +5506,9 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         }, {
             storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now),
             // Pendências dos provedores da fase 3: só as que a permissão de quem vê alcança.
-            canAccess: permissao => canAccessAdminPermission(matchedAdmin, permissao),
+            // O item que pede uma ação (somenteQuemAltera) fica fora da conta só de consulta.
+            canAccess: (permissao, item) => canAccessAdminPermission(matchedAdmin, permissao)
+                && !(item && item.somenteQuemAltera && isReadOnlyAccount(matchedAdmin)),
         });
         const account = (db.memory.admins || []).find(a => a.email && matchedAdmin
             && a.email.toLowerCase() === String(matchedAdmin.email || '').toLowerCase());
@@ -5594,7 +5596,8 @@ router.get('/api/admin/notifications', (req, res) => {
                     });
                 }
             }
-            queue.filter(item => canAccessAdminPermission(matchedAdmin, item.permissao)).forEach(item => {
+            queue.filter(item => canAccessAdminPermission(matchedAdmin, item.permissao)
+                && !(item.somenteQuemAltera && isReadOnlyAccount(matchedAdmin))).forEach(item => {
                 const key = _notificationSeenKey(courseId, studentClass, item);
                 const courseName = (scope.course && scope.course.name) || courseId;
                 items.push({

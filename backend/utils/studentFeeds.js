@@ -22,7 +22,8 @@
 //   instrutor. ctx = { memory, cls, course, students, emails (Set dos e-mails do escopo),
 //   today, now, canSeeMatriculas }; os alunos já vêm no escopo de quem vê. Cada item:
 //   { id, tipo, titulo, detalhe?, count, tone, href, permissao (texto ou lista: qualquer
-//   uma basta), at?, adiavel? }; a rota
+//   uma basta), at?, adiavel?, somenteQuemAltera? (true: pede uma ação que a conta só de
+//   consulta, a Coordenação, não pode fazer; a fila e o sino não o mostram a ela) }; a rota
 //   da fila aplica o adiamento de 24 h, e a fila e o sino mostram cada item só a quem
 //   tem a permissão dele (permissao).
 //
@@ -172,6 +173,7 @@ function normalizeQueueItem(item) {
     const at = Number(item.at);
     if (Number.isFinite(at) && at > 0) out.at = at;
     if (item.adiavel === false) out.adiavel = false;
+    if (item.somenteQuemAltera === true) out.somenteQuemAltera = true;
     return out;
 }
 

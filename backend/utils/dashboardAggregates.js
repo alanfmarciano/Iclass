@@ -309,7 +309,7 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // continuam como eram (cada bloco acima já decide quem os vê).
     const canAccess = extras && typeof extras.canAccess === 'function' ? extras.canAccess : null;
     collectInstructorQueue({ memory, cls, course, students, emails, today, now, canSeeMatriculas: !!canSeeMatriculas })
-        .filter(item => !canAccess || canAccess(item.permissao))
+        .filter(item => !canAccess || canAccess(item.permissao, item))
         .forEach(item => items.push(item));
 
     return items;

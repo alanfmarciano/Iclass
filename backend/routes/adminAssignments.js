@@ -89,6 +89,7 @@ const { displayName, isClosedStudentStatus, isAnonymizedStudent, studentInClass 
 const studentIdentity = require('../utils/studentIdentity.js');
 const { compareText } = require('../utils/textSearch.js');
 const academicCalendar = require('../utils/academicCalendar.js');
+const { submissionLockKey, withSubmissionLock, withSubmissionLocks } = require('../utils/submissionLocks.js');
 const assignmentExport = require('../utils/assignmentExport.js');
 const assignmentFeeds = require('../utils/assignmentFeeds.js');
 const { formatGradeBR, gradeChangeReason, parseGradeInput, scoreFromGrade } = require('../utils/gradebook.js');
@@ -245,6 +246,7 @@ const SCHEMAS = {
         grade: either([num({ label: 'nota' }), str({ max: 10, label: 'nota' })], { nullable: true, label: 'nota' }),
         comment: str({ max: LIMITS.commentMax, trim: false, nullable: true, label: 'comentário' }),
         returnNow: bool({ label: 'devolver agora' }),
+        waivePenalty: bool({ label: 'dispensar desconto' }),
     }),
     exportQuery: shape({ versoes: oneOf(assignmentExport.EXPORT_VERSIONS, { label: 'versões' }) }),
 };
@@ -625,6 +627,15 @@ function rosterTarget(task, studentEmail) {
     return assignments.assignmentRoster(db.memory, task).find(row => row.studentEmail === email) || null;
 }
 
+// Roda a mudança na entrega do aluno do pedido (studentEmail) dentro da trava dele naquela
+// tarefa, a mesma do envio do aluno (utils/submissionLocks.js): a nota, a devolução, o
+// refazer, a prorrogação e a entrega em mãos esperam a versão que está sendo gravada (e o
+// envio seguinte confere o aceite já com a mudança do professor). Tudo o que a rota lê da
+// entrega é lido dentro da trava.
+function studentLock(req, fn) {
+    return withSubmissionLock(submissionLockKey(req.params.id, normalizeEmail(req.body && req.body.studentEmail)), fn);
+}
+
 function submissionRows() {
     if (!Array.isArray(db.memory.assignmentSubmissions)) db.memory.assignmentSubmissions = [];
     return db.memory.assignmentSubmissions;
@@ -658,6 +669,32 @@ function gradeOf(sub) {
 function gradeKey(grade) {
     if (!grade) return 'null';
     return JSON.stringify([grade.score, grade.penaltyPct, grade.finalScore, grade.comment, grade.versionGraded, grade.penaltyWaived === true]);
+}
+
+// A nota mudou (não só o comentário)? Sem correção anterior, sim.
+function scoreChanged(previous, grade) {
+    if (!previous || !grade) return previous !== grade;
+    return previous.score !== grade.score || previous.penaltyPct !== grade.penaltyPct || previous.finalScore !== grade.finalScore
+        || previous.versionGraded !== grade.versionGraded || (previous.penaltyWaived === true) !== (grade.penaltyWaived === true);
+}
+
+// A correção nova com scoreChangedAt: o instante da última mudança da nota (o sino do
+// aluno separa "Nota da tarefa alterada" de "Comentário da tarefa alterado"). Só o
+// comentário mudou: fica o instante de antes (o gradedAt, nas correções sem o campo).
+function withScoreStamp(previous, grade, now) {
+    if (!grade) return grade;
+    if (previous && !scoreChanged(previous, grade)) {
+        const kept = Number.isFinite(previous.scoreChangedAt) ? previous.scoreChangedAt : previous.gradedAt;
+        return { ...grade, scoreChangedAt: Number.isFinite(kept) ? kept : now };
+    }
+    return { ...grade, scoreChangedAt: now };
+}
+
+// O comentário na auditoria: até 300 caracteres (o completo fica na entrega).
+function commentExcerpt(comment) {
+    const value = String(comment || '').replace(/\s+/g, ' ').trim();
+    if (!value) return '(sem comentário)';
+    return value.length > 300 ? `${value.slice(0, 299)}…` : value;
 }
 
 function gradeValueText(grade) {
@@ -780,7 +817,7 @@ function submissionResponse(task, next, target, extra = {}) {
 }
 
 // Auditoria de nota (categoria 'grade'), com o campo e os valores do histórico da ficha.
-function gradeAudit(req, account, action, task, sub, { oldValue = '', newValue = '', reason, details = {} } = {}) {
+function gradeAudit(req, account, action, task, sub, { field = 'Nota da tarefa', oldValue = '', newValue = '', reason, details = {} } = {}) {
     recordAudit(db.memory, {
         req,
         actor: account,
@@ -790,7 +827,7 @@ function gradeAudit(req, account, action, task, sub, { oldValue = '', newValue =
         courseId: task.courseId,
         studentClass: task.studentClass,
         submissionId: sub.id,
-        field: 'Nota da tarefa',
+        field,
         oldValue: String(oldValue || ''),
         newValue: String(newValue || ''),
         reason: reason || undefined,
@@ -1125,7 +1162,7 @@ function createAdminAssignmentsRouter() {
     }));
 
     // Salvar, devolver ou pedir para refazer a correção de um aluno.
-    router.post('/api/admin/assignments/:id/grade', SCHEMAS.grade, (req, res) => validateAdmin(req, res, async (config, account) => {
+    router.post('/api/admin/assignments/:id/grade', SCHEMAS.grade, (req, res) => validateAdmin(req, res, (config, account) => studentLock(req, async () => {
         const found = loadScopedAssignment(req, res, account);
         if (!found) return undefined;
         const { task } = found;
@@ -1171,7 +1208,7 @@ function createAdminAssignmentsRouter() {
             const window = readIndividualWindow(req.body, task, { duePrefix: 'redoDue', closePrefix: 'redoClose', tz, now });
             if (window.error) return sendFieldError(res, window.error, window.field);
             const computed = assignments.gradeWithPenalty(task, existing, { score, versionN, waivePenalty });
-            const grade = { ...(previousGrade || {}), ...computed, comment, gradedBy: String(account.email || '').toLowerCase(), gradedAt: now };
+            const grade = withScoreStamp(previousGrade, { ...(previousGrade || {}), ...computed, comment, gradedBy: String(account.email || '').toLowerCase(), gradedAt: now }, now);
             const sameRequest = existing && existing.status === 'refazer' && existing.extension
                 && existing.extension.dueAt === window.dueAt && existing.extension.closeAt === window.closeAt
                 && gradeKey(previousGrade) === gradeKey(grade);
@@ -1206,8 +1243,11 @@ function createAdminAssignmentsRouter() {
             const computed = versionN
                 ? assignments.gradeWithPenalty(task, existing, { score, versionN, waivePenalty })
                 : { ...assignments.gradeWithPenalty(task, null, { score, waivePenalty }), versionGraded: 0 };
-            const grade = { ...(previousGrade || {}), ...computed, comment, gradedBy: String(account.email || '').toLowerCase(), gradedAt: now };
+            const grade = withScoreStamp(previousGrade, { ...(previousGrade || {}), ...computed, comment, gradedBy: String(account.email || '').toLowerCase(), gradedAt: now }, now);
             const gradeChanged = gradeKey(previousGrade) !== gradeKey(grade);
+            // Entrega devolvida em que só o comentário mudou: a auditoria mostra o comentário
+            // (não "5,0 para 5,0") e o sino do aluno diz "Comentário da tarefa alterado".
+            const commentOnly = wasReturned && gradeChanged && !scoreChanged(previousGrade, grade);
             const nextStatus = wasReturned || action === 'devolver' ? 'devolvida' : 'corrigida';
             if (!gradeChanged && existing && existing.status === nextStatus) {
                 return res.json({ ...submissionResponse(task, target.submission, target), changed: false });
@@ -1232,10 +1272,12 @@ function createAdminAssignmentsRouter() {
             }
             auditAction = wasReturned ? 'assignment_grade_changed' : (action === 'devolver' ? 'assignment_grade_returned' : 'assignment_grade_saved');
             auditExtra = {
-                oldValue: gradeValueText(previousGrade),
-                newValue: gradeValueText(next.grade),
+                ...(commentOnly ? { field: 'Comentário da tarefa' } : {}),
+                oldValue: commentOnly ? commentExcerpt(previousGrade.comment) : gradeValueText(previousGrade),
+                newValue: commentOnly ? commentExcerpt(next.grade.comment) : gradeValueText(next.grade),
                 reason: reasonCheck.reason,
                 details: {
+                    somenteComentario: commentOnly,
                     version: next.grade.versionGraded,
                     score: next.grade.score,
                     penaltyPct: next.grade.penaltyPct,
@@ -1250,40 +1292,54 @@ function createAdminAssignmentsRouter() {
         gradeAudit(req, account, auditAction, task, next, auditExtra);
         await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
         return res.json(submissionResponse(task, next, target));
-    }));
+    })));
 
     // Devolve de uma vez as correções salvas (com nota) que não têm versão nova esperando.
+    // Cada aluno do lote fica na trava dele (a mesma do envio): um envio em andamento
+    // termina antes, e a entrega que ganhou versão nova nesse meio fica de fora.
     router.post('/api/admin/assignments/:id/return-all', SCHEMAS.empty, (req, res) => validateAdmin(req, res, async (config, account) => {
         const found = loadScopedAssignment(req, res, account);
         if (!found) return undefined;
-        const { task } = found;
-        if (!checkGradable(task, res)) return undefined;
-        if (!academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
-        const rows = assignments.submissionsForAssignment(db.memory, task.id);
-        const ready = rows.filter(raw => assignments.isReturnable(raw));
-        const newVersionPending = rows.filter(raw => {
-            const sub = assignments.normalizeSubmission(raw);
-            return sub.status === 'corrigida' && assignments.needsGrading(sub);
-        }).length;
-        if (!ready.length) return res.json({ success: true, changed: false, returned: 0, newVersionPending });
-        const now = Date.now();
-        const by = String(account.email || '').toLowerCase();
-        ready.forEach(raw => {
-            const sub = assignments.normalizeSubmission(raw);
-            const next = { ...raw, status: 'devolvida', returnedAt: now, returnedBy: by, updatedAt: now };
-            putSubmission(raw, next);
-            gradeAudit(req, account, 'assignment_grade_returned', task, sub, {
-                oldValue: '',
-                newValue: gradeValueText(sub.grade),
-                details: { version: sub.grade.versionGraded, finalScore: sub.grade.finalScore, penaltyPct: sub.grade.penaltyPct, lote: true, count: ready.length },
+        if (!checkGradable(found.task, res)) return undefined;
+        if (!academicCalendar.assertClassOpen(classOfTask(found.task), { res })) return undefined;
+        const taskId = found.task.id;
+        const keyOf = raw => submissionLockKey(taskId, assignments.normalizeSubmission(raw).studentEmail);
+        const keys = assignments.submissionsForAssignment(db.memory, taskId)
+            .filter(raw => assignments.isReturnable(raw))
+            .map(keyOf);
+        return withSubmissionLocks(keys, async () => {
+            // Dentro das travas, tudo lido de novo (a tarefa pode ter sido arquivada na espera).
+            const again = loadScopedAssignment(req, res, account);
+            if (!again) return undefined;
+            const { task } = again;
+            if (!checkGradable(task, res)) return undefined;
+            const locked = new Set(keys);
+            const rows = assignments.submissionsForAssignment(db.memory, task.id);
+            const ready = rows.filter(raw => assignments.isReturnable(raw) && locked.has(keyOf(raw)));
+            const newVersionPending = rows.filter(raw => {
+                const sub = assignments.normalizeSubmission(raw);
+                return sub.status === 'corrigida' && assignments.needsGrading(sub);
+            }).length;
+            if (!ready.length) return res.json({ success: true, changed: false, returned: 0, newVersionPending });
+            const now = Date.now();
+            const by = String(account.email || '').toLowerCase();
+            ready.forEach(raw => {
+                const sub = assignments.normalizeSubmission(raw);
+                const next = { ...raw, status: 'devolvida', returnedAt: now, returnedBy: by, updatedAt: now };
+                putSubmission(raw, next);
+                gradeAudit(req, account, 'assignment_grade_returned', task, sub, {
+                    oldValue: '',
+                    newValue: gradeValueText(sub.grade),
+                    details: { version: sub.grade.versionGraded, finalScore: sub.grade.finalScore, penaltyPct: sub.grade.penaltyPct, lote: true, count: ready.length },
+                });
             });
+            await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
+            return res.json({ success: true, changed: true, returned: ready.length, newVersionPending });
         });
-        await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
-        return res.json({ success: true, changed: true, returned: ready.length, newVersionPending });
     }));
 
     // Prazo individual (prorrogação) para um aluno.
-    router.post('/api/admin/assignments/:id/extension', SCHEMAS.extension, (req, res) => validateAdmin(req, res, async (config, account) => {
+    router.post('/api/admin/assignments/:id/extension', SCHEMAS.extension, (req, res) => validateAdmin(req, res, (config, account) => studentLock(req, async () => {
         const found = loadScopedAssignment(req, res, account);
         if (!found) return undefined;
         const { task } = found;
@@ -1335,10 +1391,10 @@ function createAdminAssignmentsRouter() {
         });
         await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
         return res.json(submissionResponse(task, next, target));
-    }));
+    })));
 
     // Entrega em mãos (sem arquivo), com observação e, se quiser, a nota.
-    router.post('/api/admin/assignments/:id/manual-entry', SCHEMAS.manualEntry, (req, res) => validateAdmin(req, res, async (config, account) => {
+    router.post('/api/admin/assignments/:id/manual-entry', SCHEMAS.manualEntry, (req, res) => validateAdmin(req, res, (config, account) => studentLock(req, async () => {
         const found = loadScopedAssignment(req, res, account);
         if (!found) return undefined;
         const { task } = found;
@@ -1361,20 +1417,24 @@ function createAdminAssignmentsRouter() {
         const previousGrade = gradeOf(existing);
         const last = existing && existing.versions.length ? existing.versions[existing.versions.length - 1] : null;
         let grade = previousGrade;
-        if (!read.empty || hasKey(req.body, 'comment')) {
+        if (!read.empty || hasKey(req.body, 'comment') || typeof req.body.waivePenalty === 'boolean') {
             const score = read.empty ? (previousGrade ? previousGrade.score : null) : read.score;
             if (score !== null) {
-                // A nota da entrega em mãos não tem desconto de atraso (não há hora de chegada);
-                // ela vale para a última versão, se houver, e tira a entrega da fila.
-                const computed = assignments.gradeWithPenalty(task, null, { score });
-                grade = {
+                // Com versão enviada, a nota vale para a última e segue a regra de atraso dela,
+                // como na correção (o desconto só sai com "Dispensar desconto", waivePenalty,
+                // que fica gravado e na auditoria). Só a entrega em mãos (sem versão) não tem
+                // hora de chegada: sem desconto. Em qualquer caso, tira a entrega da fila.
+                const waivePenalty = typeof req.body.waivePenalty === 'boolean' ? req.body.waivePenalty : !!(previousGrade && previousGrade.penaltyWaived);
+                const computed = last
+                    ? assignments.gradeWithPenalty(task, existing, { score, versionN: last.n, waivePenalty })
+                    : { ...assignments.gradeWithPenalty(task, null, { score, waivePenalty: false }), versionGraded: 0 };
+                grade = withScoreStamp(previousGrade, {
                     ...(previousGrade || {}),
                     ...computed,
-                    versionGraded: last ? last.n : 0,
                     comment: commentFrom(req.body, previousGrade ? previousGrade.comment : ''),
                     gradedBy: by,
                     gradedAt: now,
-                };
+                }, now);
             }
         }
         const gradeChanged = gradeKey(previousGrade) !== gradeKey(grade);
@@ -1411,12 +1471,12 @@ function createAdminAssignmentsRouter() {
             gradeAudit(req, account, returnNow ? 'assignment_grade_returned' : 'assignment_grade_saved', task, next, {
                 oldValue: gradeValueText(previousGrade),
                 newValue: gradeValueText(grade),
-                details: { version: grade.versionGraded, finalScore: grade.finalScore, penaltyPct: grade.penaltyPct, entregaEmMaos: true },
+                details: { version: grade.versionGraded, score: grade.score, finalScore: grade.finalScore, penaltyPct: grade.penaltyPct, penaltyWaived: grade.penaltyWaived, entregaEmMaos: true },
             });
         }
         await db.save({ only: ['assignmentSubmissions', 'auditLogs'] });
         return res.json(submissionResponse(task, next, target));
-    }));
+    })));
 
     return router;
 }

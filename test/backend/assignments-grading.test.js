@@ -481,6 +481,13 @@ test('fila "Precisa de você" e sino do painel: entregas para corrigir por turma
     // Professor auxiliar (sem page.assignments) não vê o item.
     const monitorQueue = await get('monitor', `/api/admin/dashboard/queue?${Q}`);
     assert.equal(monitorQueue.body.some(row => row.id === 'entregas_para_corrigir'), false);
+    // Coordenação vê as tarefas (page.assignments) mas não corrige: nem na fila nem no sino.
+    const coordQueue = await get('coord', `/api/admin/dashboard/queue?${Q}`);
+    assert.equal(coordQueue.status, 200);
+    assert.equal(coordQueue.body.some(row => row.id === 'entregas_para_corrigir'), false);
+    const coordBell = await get('coord', `/api/admin/notifications?${Q}`);
+    assert.equal(coordBell.status, 200);
+    assert.equal((coordBell.body.items || []).some(row => row.type === 'entregas_para_corrigir'), false);
     // Tudo corrigido: o item some.
     await grade(task, { studentEmail: ANA, grade: '6', action: 'salvar' });
     await grade(task, { studentEmail: CAIO, grade: '6', action: 'salvar' });
@@ -525,6 +532,9 @@ test('ZIP das entregas: pasta por aluno com nomes que o Windows abre, lista.csv 
     assert.ok(lines.some(line => line.startsWith('"\'=HYPERLINK(""x"")"')), 'nome que começa com = sai neutralizado');
     const caioLine = lines.find(line => line.startsWith('Caio: Dias?'));
     assert.match(caioLine, /v1_foto\.png/, 'arquivo que sumiu aparece em "Arquivos que faltam"');
+    // Todos os arquivos dele sumiram: a pasta não existe no ZIP, então a coluna fica vazia.
+    assert.equal(caioLine.split(';')[lines[0].split(';').indexOf('Pasta no ZIP')], '');
+    assert.ok(anaLine.includes(';Ana Lima - 2026-001;'));
     const entry = audits('assignment_files_exported')[0];
     assert.deepEqual([entry.category, entry.details.versoes, entry.details.arquivos, entry.details.faltando, entry.details.alunos], ['assignment', 'ultima', 3, 1, 3]);
 
@@ -584,4 +594,176 @@ test('tarefa arquivada ou rascunho não recebe correção; coordenação não gr
     const archived = await grade(task, { studentEmail: ANA, grade: '5', action: 'salvar' });
     assert.equal(archived.status, 409);
     assert.equal(archived.body.code, 'assignment_archived');
+});
+
+// ------------------------------------------------------------ C6, ajuste 1
+// A trava por aluno e tarefa é a mesma do envio do aluno (utils/submissionLocks.js). Antes,
+// o professor que devolvia enquanto a versão nova do aluno esperava o disco
+// (commitReceivedFiles) trocava o objeto da linha; o envio, ao terminar, acrescentava a
+// linha velha de novo: duas linhas com o mesmo id e, no disco, só a do aluno (a nota
+// devolvida sumia). A prorrogação de quem ainda não tinha entrega criava uma segunda linha.
+const submissionLocks = require('../../backend/utils/submissionLocks.js');
+
+// Segura o envio do aluno no meio da gravação (depois do aceite, antes de mover os
+// arquivos), roda a chamada do professor, que precisa esperar a vez, e solta o envio.
+async function raceWithStudentCommit(task, email, teacherCall, { duringGate } = {}) {
+    const original = assignmentFiles.commitReceivedFiles;
+    let reached;
+    const atGate = new Promise(resolve => { reached = resolve; });
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    assignmentFiles.commitReceivedFiles = async (...args) => { reached(); await gate; return original(...args); };
+    let student = null;
+    try {
+        student = asStudent(email, request(app).post(`/api/student/assignments/${task.id}/submit?${Q}`)).attach('files', PDF, 'versao-nova.pdf').then(res => res);
+        await atGate;
+        if (duringGate) duringGate();
+        const teacher = teacherCall ? teacherCall().then(res => res) : null;
+        if (teacher) {
+            // O pedido do professor chega à trava e espera (nada mudou ainda).
+            const limit = Date.now() + 5000;
+            while (submissionLocks.queuedLocks() < 1 && Date.now() < limit) await new Promise(resolve => setTimeout(resolve, 5));
+            assert.ok(submissionLocks.queuedLocks() >= 1, 'o pedido do professor não chegou à trava');
+        }
+        release();
+        return { student: await student, teacher: teacher ? await teacher : null };
+    } finally {
+        // Falhou no meio: solta o envio para o teste não ficar esperando.
+        release();
+        assignmentFiles.commitReceivedFiles = original;
+        if (student) await student.catch(() => null);
+    }
+}
+
+const rowsFor = (task, email) => db.memory.assignmentSubmissions.filter(row => row.assignmentId === task.id && row.studentEmail === email);
+
+function diskSubmissions() {
+    const sqlite3 = require('sqlite3');
+    return new Promise((resolve, reject) => {
+        const handle = new sqlite3.Database(path.join(tempRoot, 'database.db'), sqlite3.OPEN_READONLY);
+        handle.all('SELECT value FROM assignment_submissions', (err, rows) => {
+            handle.close();
+            if (err) reject(err); else resolve(rows.map(row => JSON.parse(row.value)));
+        });
+    });
+}
+
+test('corrida: devolver enquanto a versão nova do aluno é gravada deixa uma linha só, com a versão e a nota (também no disco)', async () => {
+    const task = addTask({ latePolicy: { mode: 'aceitar', penaltyPerDayPct: 0, penaltyMaxPct: 0 } });
+    addSubmission(task, ANA);
+    const out = await raceWithStudentCommit(task, ANA, () => grade(task, { studentEmail: ANA, grade: '8', action: 'devolver' }));
+    assert.equal(out.student.status, 201, JSON.stringify(out.student.body));
+    assert.equal(out.teacher.status, 200, JSON.stringify(out.teacher.body));
+    const rows = rowsFor(task, ANA);
+    assert.equal(rows.length, 1, 'uma linha só por aluno e tarefa');
+    const sub = assignments.normalizeSubmission(rows[0]);
+    // O professor corrigiu depois que a versão 2 entrou: a nota vale para ela.
+    assert.deepEqual([sub.versions.length, sub.status, sub.grade.finalScore, sub.grade.versionGraded], [2, 'devolvida', 80, 2]);
+    assert.equal(audits('assignment_grade_returned')[0].newValue, '8,0');
+    await db.save();
+    const disk = (await diskSubmissions()).filter(row => row.assignmentId === task.id);
+    assert.equal(disk.length, 1);
+    assert.deepEqual([disk[0].status, disk[0].versions.length, disk[0].grade && disk[0].grade.finalScore], ['devolvida', 2, 80]);
+    assert.equal(submissionLocks.pendingLocks(), 0);
+});
+
+test('corrida: prorrogar o prazo de quem ainda está enviando a primeira versão não cria outra entrega', async () => {
+    const task = addTask();
+    const later = new Date(Date.now() + 5 * DAY).toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+    const out = await raceWithStudentCommit(task, ANA, () => post('prof', `/api/admin/assignments/${task.id}/extension`, { studentEmail: ANA, dueDate: later, reason: 'Atestado médico' }));
+    assert.equal(out.student.status, 201, JSON.stringify(out.student.body));
+    assert.equal(out.teacher.status, 200, JSON.stringify(out.teacher.body));
+    const rows = rowsFor(task, ANA);
+    assert.equal(rows.length, 1, 'uma linha só por aluno e tarefa');
+    const sub = assignments.normalizeSubmission(rows[0]);
+    assert.equal(sub.versions.length, 1);
+    assert.ok(sub.extension && sub.extension.reason === 'Atestado médico');
+    assert.equal(audits('assignment_extension_granted')[0].submissionId, sub.id);
+    assert.equal(audits('assignment_submitted')[0].submissionId, sub.id);
+});
+
+test('corrida: "devolver todas" enquanto chega a versão nova deixa essa entrega de fora, sem perder a versão nem a nota', async () => {
+    const task = addTask({ latePolicy: { mode: 'aceitar', penaltyPerDayPct: 0, penaltyMaxPct: 0 } });
+    addSubmission(task, ANA);
+    addSubmission(task, BIA);
+    await grade(task, { studentEmail: ANA, grade: '7', action: 'salvar' });
+    await grade(task, { studentEmail: BIA, grade: '6', action: 'salvar' });
+    const out = await raceWithStudentCommit(task, ANA, () => post('prof', `/api/admin/assignments/${task.id}/return-all`, {}));
+    assert.equal(out.student.status, 201, JSON.stringify(out.student.body));
+    assert.equal(out.teacher.status, 200, JSON.stringify(out.teacher.body));
+    assert.deepEqual([out.teacher.body.returned, out.teacher.body.newVersionPending], [1, 1]);
+    const ana = rowsFor(task, ANA);
+    assert.equal(ana.length, 1);
+    const sub = assignments.normalizeSubmission(ana[0]);
+    assert.deepEqual([sub.versions.length, sub.status, sub.returnedAt, sub.grade.finalScore], [2, 'corrigida', null, 70]);
+    assert.equal(assignments.needsGrading(sub), true);
+    assert.equal(subOf(task, BIA).status, 'devolvida');
+    assert.equal(audits('assignment_grade_returned').length, 1);
+});
+
+test('envio do aluno: entrega que mudou fora da trava durante a gravação não é sobrescrita (409 submission_changed) e o arquivo não fica em entregas', async () => {
+    const task = addTask();
+    const original = addSubmission(task, ANA);
+    let replaced = null;
+    const out = await raceWithStudentCommit(task, ANA, null, {
+        // Como uma restauração de backup no meio do envio: a linha vira outro objeto.
+        duringGate: () => {
+            const rows = db.memory.assignmentSubmissions;
+            replaced = { ...rows[rows.indexOf(original)], note: 'restaurada' };
+            rows[rows.indexOf(original)] = replaced;
+        },
+    });
+    assert.equal(out.student.status, 409, JSON.stringify(out.student.body));
+    assert.deepEqual([out.student.body.code, out.student.body.retryable], ['submission_changed', true]);
+    assert.match(out.student.body.error, /envie de novo/);
+    const rows = rowsFor(task, ANA);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0], replaced);
+    assert.equal(assignments.normalizeSubmission(rows[0]).versions.length, 1);
+    const folder = path.join(runtimePaths.ASSIGNMENT_FILES_DIR, task.id, original.id);
+    assert.equal(fs.readdirSync(folder).length, 1, 'o arquivo da versão recusada foi para a lixeira');
+    assert.equal(audits('assignment_submitted').length, 0);
+});
+
+test('entrega em mãos com nota numa entrega que tem versão atrasada: o desconto da versão vale, como na correção; dispensar fica gravado', async () => {
+    const task = addTask();
+    addSubmission(task, ANA, [{ lateMs: 3 * DAY - 1000 }]);
+    const url = `/api/admin/assignments/${task.id}/manual-entry`;
+    const res = await post('prof', url, { studentEmail: ANA, note: 'Trouxe impresso também.', grade: '8' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    let sub = subOf(task, ANA);
+    assert.deepEqual([sub.grade.score, sub.grade.penaltyPct, sub.grade.finalScore, sub.grade.versionGraded, sub.grade.penaltyWaived], [80, 30, 56, 1, false]);
+    // A mesma nota pela correção dá o mesmo resultado.
+    const viaGrade = assignments.gradeWithPenalty(assignments.normalizeAssignment(task), sub, { score: 80 });
+    assert.equal(viaGrade.finalScore, sub.grade.finalScore);
+    const waived = await post('prof', url, { studentEmail: ANA, grade: '8', waivePenalty: true });
+    assert.equal(waived.status, 200, JSON.stringify(waived.body));
+    sub = subOf(task, ANA);
+    assert.deepEqual([sub.grade.penaltyPct, sub.grade.finalScore, sub.grade.penaltyWaived], [0, 80, true]);
+    const entry = audits('assignment_grade_saved').pop();
+    assert.deepEqual([entry.oldValue, entry.newValue, entry.details.penaltyWaived, entry.details.entregaEmMaos], ['5,6', '8,0', true, true]);
+});
+
+test('entrega devolvida em que só o comentário muda: a auditoria mostra o comentário e o sino diz "Comentário da tarefa alterado"', async () => {
+    const task = addTask();
+    addSubmission(task, ANA);
+    assert.equal((await grade(task, { studentEmail: ANA, grade: '5', comment: 'Faltou a conclusão.', action: 'devolver' })).status, 200);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    // Mudar o que o aluno já viu (mesmo só o comentário) pede motivo.
+    const noReason = await grade(task, { studentEmail: ANA, comment: 'Faltou a conclusão e as referências.', action: 'salvar' });
+    assert.equal(noReason.status, 400);
+    assert.equal(noReason.body.code, 'reason_required');
+    const changed = await grade(task, { studentEmail: ANA, comment: 'Faltou a conclusão e as referências.', action: 'salvar', reason: 'Ajuste no comentário' });
+    assert.equal(changed.status, 200, JSON.stringify(changed.body));
+    let entry = audits('assignment_grade_changed').pop();
+    assert.deepEqual([entry.field, entry.oldValue, entry.newValue, entry.details.somenteComentario], ['Comentário da tarefa', 'Faltou a conclusão.', 'Faltou a conclusão e as referências.', true]);
+    assert.equal(subOf(task, ANA).grade.finalScore, 50);
+    let bell = await asStudent(ANA, request(app).get(`/api/student/notifications?${Q}`));
+    assert.equal(bell.body.items.find(item => item.id === `tarefa:${task.id}:devolvida`).title, 'Comentário da tarefa alterado');
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal((await grade(task, { studentEmail: ANA, grade: '6', action: 'salvar', reason: 'Revisão em sala' })).status, 200);
+    entry = audits('assignment_grade_changed').pop();
+    assert.deepEqual([entry.field, entry.oldValue, entry.newValue, entry.details.somenteComentario], ['Nota da tarefa', '5,0', '6,0', false]);
+    bell = await asStudent(ANA, request(app).get(`/api/student/notifications?${Q}`));
+    assert.equal(bell.body.items.find(item => item.id === `tarefa:${task.id}:devolvida`).title, 'Nota da tarefa alterada');
 });

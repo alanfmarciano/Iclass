@@ -460,3 +460,64 @@ test('tarefas: envio do aluno fica na trilha (assignment_submitted); recusado n�
     assert.equal(entry.details.version, 1);
     assert.equal(entry.submissionId, db.memory.assignmentSubmissions[0].id);
 });
+
+// Tarefas (fase 3, C6 / P1-d): nota, devolução, "devolver todas", mudança com motivo,
+// refazer, prorrogação, entrega em mãos e o ZIP gravam na trilha, com o professor como
+// ator, o curso e a turma da tarefa e o aluno; as ações de nota na categoria 'grade'.
+// Pedido recusado ou que não muda nada não grava.
+test('tarefas: correção, devolução, refazer, prorrogação, entrega em mãos e ZIP ficam na trilha', async () => {
+    const assignments = require('../../backend/utils/assignments.js');
+    db.memory.students.push({ name: 'Bia', email: 'bia@cobertura.local', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE }] });
+    const task = assignments.newAssignmentRecord({
+        courseId: COURSE, studentClass: '1DES', title: 'Relatório', status: 'publicada',
+        response: { files: false, text: true, link: false }, dueAt: Date.now() + 86400000,
+        latePolicy: { mode: 'aceitar', penaltyPerDayPct: 0, penaltyMaxPct: 0 },
+    }, { actor: 'prof@cobertura.local', now: Date.now() - 1000 });
+    db.memory.assignments = [task];
+    const sub = assignments.newSubmissionRecord(task, db.memory.students[0], { now: Date.now() - 500 });
+    sub.versions = [{ n: 1, requestAt: Date.now() - 500, receivedAt: Date.now() - 400, late: false, lateMs: 0, text: 'Minha resposta', link: '', files: [], ip: '', device: '' }];
+    sub.status = 'enviada';
+    db.memory.assignmentSubmissions = [sub];
+    const url = suffix => `/api/admin/assignments/${task.id}${suffix}`;
+    const later = new Date(Date.now() + 5 * 86400000).toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+    const ANA = 'ana@cobertura.local';
+    const BIA = 'bia@cobertura.local';
+
+    const steps = [
+        ['/grade', { studentEmail: ANA, grade: '8', action: 'salvar' }, 'assignment_grade_saved', 'grade', ANA],
+        ['/return-all', {}, 'assignment_grade_returned', 'grade', ANA],
+        ['/grade', { studentEmail: ANA, grade: '9', action: 'salvar', reason: 'Revisão em sala' }, 'assignment_grade_changed', 'grade', ANA],
+        ['/grade', { studentEmail: ANA, action: 'refazer', comment: 'Refaça a conclusão.', redoDueDate: later, reason: 'Pedido do aluno' }, 'assignment_redo_requested', 'grade', ANA],
+        ['/extension', { studentEmail: BIA, dueDate: later, reason: 'Atestado médico' }, 'assignment_extension_granted', 'assignment', BIA],
+        ['/manual-entry', { studentEmail: BIA, note: 'Entregou impresso.' }, 'assignment_manual_entry', 'assignment', BIA],
+    ];
+    for (const [suffix, payload, action, category, student] of steps) {
+        const res = await professor(request(app).post(url(suffix))).send(payload);
+        assert.equal(res.status, 200, `${suffix}: ${JSON.stringify(res.body)}`);
+        const entry = last(action);
+        assert.ok(entry, `${suffix} sem ${action}`);
+        assert.equal(entry.category, category, action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.studentEmail, student, action);
+        assert.ok(entry.submissionId, action);
+    }
+    assert.equal(last('assignment_grade_changed').reason, 'Revisão em sala');
+    assert.equal(last('assignment_extension_granted').reason, 'Atestado médico');
+    // A mesma prorrogação de novo e a nota devolvida mudada sem motivo não gravam nada.
+    const before = db.memory.auditLogs.length;
+    assert.equal((await professor(request(app).post(url('/extension'))).send({ studentEmail: BIA, dueDate: later, reason: 'Atestado médico' })).body.changed, false);
+    assert.equal((await professor(request(app).post(url('/manual-entry'))).send({ studentEmail: BIA, note: 'Entregou impresso.' })).body.changed, false);
+    assert.equal(db.memory.auditLogs.length, before);
+
+    const zip = await professor(request(app).get(url('/export'))).buffer(true).parse((res, callback) => {
+        res.on('data', () => {});
+        res.on('end', () => callback(null, null));
+    });
+    assert.equal(zip.status, 200);
+    const exported = last('assignment_files_exported');
+    assert.equal(exported.category, 'assignment');
+    assert.equal(exported.actor, 'prof@cobertura.local');
+    assert.deepEqual([exported.courseId, exported.studentClass, exported.details.alunos], [COURSE, '1DES', 2]);
+});
