@@ -25,7 +25,9 @@ const { normalizeAnswerKey } = require('../../backend/utils/questionModel.js');
 const {
     answerKeyOf,
     applyAnswerKey,
+    applyAnswerKeyToPreparation,
     describeAnswerKey,
+    preparationHasAnswerKey,
     previewAnswerKeyRegrade,
     sameAnswerKey,
 } = require('../../backend/utils/examAnswerKeyCorrection.js');
@@ -272,7 +274,8 @@ test('[UC-PROVA-005] depois de encerrar, a letra C vira B: quem marcou B ganha, 
     assert.equal(corrected[0].applicationId, APP);
     assert.deepEqual(
         { ...corrected[0].details },
-        { questionNumber: 4, tipo: 'multiple_choice', antes: 'C · 255.255.0.0', depois: 'B · 255.255.255.0', motivo: FIX_Q4.motivo, regraded: 4, changed: 3, notifiedStudents: 2 },
+        // Sem a preparação no histórico da turma (apagada), só a aplicação muda.
+        { questionNumber: 4, tipo: 'multiple_choice', antes: 'C · 255.255.0.0', depois: 'B · 255.255.255.0', motivo: FIX_Q4.motivo, regraded: 4, changed: 3, notifiedStudents: 2, preparacaoAtualizada: false, preparadasAtualizadas: 0 },
     );
     const regrades = db.memory.auditLogs.filter(entry => entry.action === 'grade_regrade');
     assert.deepEqual(regrades.map(entry => entry.studentEmail).sort(), [STUDENTS.ana.email, STUDENTS.bruno.email, STUDENTS.dani.email]);
@@ -455,4 +458,160 @@ test('[UC-PROVA-005] aplicação antiga sem anulações próprias não herda as 
     assert.equal(first.annulled, false);
     assert.equal(submission('ana').totalCount, 7);
     assert.equal(submission('ana').score, 86);
+});
+
+// A preparação de onde a aplicação saiu (examHistory) como o navegador registra: as
+// versões em printSnapshot e as mesmas, com o gabarito congelado, em versionSnapshots.
+function seedPreparation() {
+    const cls = db.memory.classes[0];
+    cls.releasedItems = { [EXAM]: false };
+    cls.examHistory = {
+        [EXAM]: [{
+            id: 'hist_1',
+            type: 'online',
+            label: 'Online #1',
+            questionNumbers: [1, 2, 3, 4, 5, 6, 7],
+            examCode: 'A1',
+            printSnapshot: versionSnapshots(),
+            versionSnapshots: versionSnapshots(),
+            questionCount: 7,
+            shuffleQuestions: true,
+            shuffleAnswers: true,
+            durationMinutes: 60,
+            timerEnabled: true,
+            waitingRoomMinutes: 0,
+            tokenEnabled: false,
+            maxAttempts: 1,
+            createdAt: new Date(Date.now() - 8000000).toISOString(),
+        }],
+    };
+    // A segunda chamada já preparada a partir da mesma preparação (ainda não começou) e a
+    // configuração da turma, que é a dela.
+    const second = {
+        ...JSON.parse(JSON.stringify(application())),
+        id: 'app_segunda_chamada',
+        status: 'prepared',
+        finishedAt: null,
+        questionReports: [],
+        createdAt: new Date(Date.now() - 600000).toISOString(),
+    };
+    // Outra turma da manhã, já encerrada, com a mesma preparação: as notas dela ficam.
+    const morning = {
+        ...JSON.parse(JSON.stringify(application())),
+        id: 'app_manha',
+        questionReports: [],
+    };
+    db.memory.examApplications.push(second, morning);
+    cls.onlineExamConfigs[EXAM] = { applicationId: 'app_segunda_chamada', status: 'prepared', annulledQuestions: [], versionSnapshots: JSON.parse(JSON.stringify(second.versionSnapshots)) };
+}
+
+const q4Of = snapshot => snapshot.questions.find(question => question.originalNumber === 4);
+const q4Marks = snapshot => q4Of(snapshot).alternatives.filter(alternative => alternative.isCorrect).map(alternative => alternative.letter);
+
+test('[UC-PROVA-005] a correção vale também para a preparação: a segunda chamada, a tela e a impressão saem com a letra certa', async () => {
+    seedPreparation();
+    const entry = () => db.memory.classes[0].examHistory[EXAM][0];
+    const preview = await correct({ ...FIX_Q4, dryRun: true }, PROF);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.deepEqual(preview.body.preparacao, { atualizada: true, preparadas: 1, outrasAplicacoes: 1 });
+    assert.deepEqual(q4Marks(entry().versionSnapshots[0]), ['C'], 'a prévia não muda a preparação');
+    assert.deepEqual(q4Marks(db.memory.examApplications.find(item => item.id === 'app_segunda_chamada').versionSnapshots[0]), ['C']);
+
+    const response = await correct(FIX_Q4, PROF);
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.deepEqual(response.body.preparacao, { atualizada: true, preparadas: 1, outrasAplicacoes: 1 });
+    assert.equal(response.body.correction.preparacaoAtualizada, true);
+    assert.equal(response.body.correction.preparadasAtualizadas, 1);
+
+    // A preparação: as duas listas de versões, com o gabarito impresso de cada versão.
+    for (const list of [entry().versionSnapshots, entry().printSnapshot]) {
+        assert.deepEqual(list.map(q4Marks), [['B'], ['B']]);
+        assert.deepEqual(list.map(snapshot => q4Of(snapshot).correctAnswer), ['B', 'B']);
+        assert.deepEqual(list.map(snapshot => snapshot.answerKey[4]), ['B', 'C']);
+        assert.equal(q4Of(list[0]).text, 'Questão 4 de redes', 'o texto fica');
+    }
+    // A segunda chamada preparada e a configuração da turma (que é dela) também.
+    const second = db.memory.examApplications.find(item => item.id === 'app_segunda_chamada');
+    assert.deepEqual(second.versionSnapshots.map(q4Marks), [['B'], ['B']]);
+    assert.deepEqual(db.memory.classes[0].onlineExamConfigs[EXAM].versionSnapshots.map(q4Marks), [['B'], ['B']]);
+    assert.equal(db.memory.classes[0].onlineExamConfigs[EXAM].applicationId, 'app_segunda_chamada');
+    // A outra aplicação já encerrada tem as notas dela: não muda (corrige-se pelo botão dela).
+    assert.deepEqual(db.memory.examApplications.find(item => item.id === 'app_manha').versionSnapshots.map(q4Marks), [['C'], ['C']]);
+    // A avaliação no editor não muda.
+    assert.equal(db.memory.evaluations[EXAM].questions[3].correctAnswer, 'C');
+    const audit = db.memory.auditLogs.find(item => item.type === 'exam_answer_key_corrected');
+    assert.equal(audit.details.preparacaoAtualizada, true);
+    assert.equal(audit.details.preparadasAtualizadas, 1);
+
+    // "Aplicar online" de novo na mesma preparação: a aplicação nova nasce com a letra B.
+    const prepared = await request(app).post('/api/admin/exam-applications').set(adminHeaders(PROF))
+        .send({ studentClass: CLASS, courseId: COURSE, examKey: EXAM, historyId: 'hist_1', applicationOptions: { waitingRoomMinutes: 0 } });
+    assert.equal(prepared.status, 201, JSON.stringify(prepared.body));
+    const fresh = db.memory.examApplications.find(item => item.id === prepared.body.application.id);
+    assert.deepEqual(fresh.versionSnapshots.map(q4Marks), [['B'], ['B']]);
+    assert.deepEqual(fresh.versionSnapshots.map(snapshot => snapshot.answerKey[4]), ['B', 'C']);
+
+    // A tela de detalhe lê a preparação pelo exam-history.
+    const history = await request(app).get(`/api/admin/exam-history?studentClass=${CLASS}&courseId=${COURSE}&examKey=${EXAM}`).set(adminHeaders(PROF));
+    assert.equal(history.status, 200);
+    assert.deepEqual(history.body.history[0].printSnapshot.map(q4Marks), [['B'], ['B']]);
+
+    // Repetir não grava nada (a preparação já está certa).
+    const snapshot = JSON.stringify({ classes: db.memory.classes, audit: db.memory.auditLogs });
+    const again = await correct(FIX_Q4, PROF).expect(200);
+    assert.equal(again.body.unchanged, true);
+    assert.equal(again.body.message, 'O gabarito da questão 4 já é este: nenhuma nota muda.');
+    assert.equal(JSON.stringify({ classes: db.memory.classes, audit: db.memory.auditLogs }), snapshot);
+});
+
+test('[UC-PROVA-005] aplicação que já tem o gabarito certo (corrigido ao vivo) acerta a preparação sem recorrigir ninguém', async () => {
+    seedPreparation();
+    // O Monitor já tinha trocado a letra na aplicação (correção ao vivo), mas a preparação
+    // continuou com a C.
+    applyAnswerKey(application(), 4, { type: 'multiple_choice', correctAnswer: 'B' });
+    const scores = db.memory.submissions.map(item => item.score);
+    const preview = await correct({ ...FIX_Q4, dryRun: true }).expect(200);
+    assert.equal(preview.body.unchanged, true);
+    assert.equal(preview.body.message, 'O gabarito da questão 4 já é este nesta aplicação: nenhuma nota muda. A preparação vai passar a usar este gabarito também.');
+    assert.deepEqual(q4Marks(db.memory.classes[0].examHistory[EXAM][0].printSnapshot[0]), ['C']);
+    const response = await correct(FIX_Q4).expect(200);
+    assert.equal(response.body.unchanged, true);
+    assert.equal(response.body.message, 'O gabarito da questão 4 já é este nesta aplicação: nenhuma nota muda. A preparação passou a usar este gabarito também.');
+    assert.deepEqual(q4Marks(db.memory.classes[0].examHistory[EXAM][0].printSnapshot[0]), ['B']);
+    assert.deepEqual(q4Marks(db.memory.examApplications.find(item => item.id === 'app_segunda_chamada').versionSnapshots[1]), ['B']);
+    assert.deepEqual(db.memory.submissions.map(item => item.score), scores, 'ninguém é recorrigido');
+    assert.equal(db.memory.auditLogs.filter(item => item.action === 'grade_regrade').length, 0);
+    const audit = db.memory.auditLogs.filter(item => item.type === 'exam_answer_key_corrected');
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].details.somentePreparacao, true);
+    assert.equal(application().answerKeyCorrections, undefined, 'a aplicação não mudou');
+});
+
+test('[UC-PROVA-005] preparação antiga (só printSnapshot, sem tipo) e de outro tipo na mesma posição', () => {
+    // Preparação de antes dos tipos: só o que o navegador montou, sem type nem versionSnapshots.
+    const old = { id: 'h', printSnapshot: versionSnapshots().map(snapshot => ({
+        ...snapshot,
+        questions: snapshot.questions.map(({ type, points, ...question }) => question),
+    })) };
+    assert.equal(preparationHasAnswerKey(old, 4, { type: 'multiple_choice', correctAnswer: 'C' }), true);
+    assert.equal(preparationHasAnswerKey(old, 4, { type: 'multiple_choice', correctAnswer: 'B' }), false);
+    assert.equal(applyAnswerKeyToPreparation(old, 4, { type: 'multiple_choice', correctAnswer: 'B' }), 2);
+    assert.deepEqual(old.printSnapshot.map(q4Marks), [['B'], ['B']]);
+    assert.equal(preparationHasAnswerKey(old, 4, { type: 'multiple_choice', correctAnswer: 'B' }), true);
+    // A numérica na preparação recebe o valor; uma questão de outro tipo com o mesmo número
+    // (não deveria acontecer) não é tocada.
+    const entry = { id: 'h2', versionSnapshots: versionSnapshots(), printSnapshot: versionSnapshots() };
+    assert.equal(applyAnswerKeyToPreparation(entry, 5, { type: 'numeric', numeric: { value: 3.6, tolerance: 0 } }), 4);
+    assert.equal(entry.printSnapshot[1].questions.find(question => question.originalNumber === 5).numeric.value, 3.6);
+    assert.equal(entry.printSnapshot[1].questions.find(question => question.originalNumber === 5).numeric.unit, 'ms');
+    assert.equal(applyAnswerKeyToPreparation(entry, 1, { type: 'numeric', numeric: { value: 1, tolerance: 0 } }), 0);
+    assert.equal(preparationHasAnswerKey(null, 1, { type: 'numeric', numeric: { value: 1, tolerance: 0 } }), true);
+});
+
+test('[UC-PROVA-005] aplicação preparada: a recusa manda preparar de novo pelo editor', async () => {
+    application().status = 'prepared';
+    const refused = await correct(FIX_Q4);
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, 'application_not_started');
+    assert.equal(refused.body.error, 'A aplicação ainda não começou, e ela guarda o gabarito de quando foi preparada. Corrija a questão no editor da prova e prepare a aplicação de novo pelo "Aplicar online" da prova.');
 });

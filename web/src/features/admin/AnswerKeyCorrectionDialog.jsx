@@ -108,6 +108,35 @@ export function impactSummary(preview) {
   return `${who} (${published} já publicadas: eles serão avisados).`
 }
 
+// O que a correção muda além desta aplicação (resposta do servidor, campo preparacao): a
+// preparação de onde ela saiu (a tela de detalhe, "Imprimir" e "Aplicar online" de novo,
+// como na segunda chamada), as aplicações dela ainda não começadas e quantas outras já
+// começadas continuam com a resposta antiga (cada uma tem as notas dela).
+export function preparationNotice(preview) {
+  const info = preview?.preparacao
+  if (!info) return []
+  const lines = []
+  const pending = Number(info.preparadas) || 0
+  if (info.atualizada || pending > 0) {
+    const also = pending === 1
+      ? ' A aplicação dela já preparada, que ainda não começou, também.'
+      : (pending > 1 ? ` As ${pending} aplicações dela já preparadas, que ainda não começaram, também.` : '')
+    lines.push(`A preparação desta prova passa a usar a resposta certa: "Imprimir" e "Aplicar online" de novo (como na segunda chamada) saem com ela.${also}`)
+  }
+  const others = Number(info.outrasAplicacoes) || 0
+  if (others === 1) lines.push('Outra aplicação desta preparação já começou e continua com a resposta antiga: corrija nela também, pelo botão dela.')
+  else if (others > 1) lines.push(`Outras ${others} aplicações desta preparação já começaram e continuam com a resposta antiga: corrija em cada uma, pelo botão dela.`)
+  return lines
+}
+
+// A prévia pede gravação: muda nota, ou só acerta a preparação (a aplicação já tinha o
+// gabarito, corrigido ao vivo no Monitor).
+export function previewNeedsSave(preview) {
+  if (!preview) return false
+  if (!preview.unchanged) return true
+  return !!preview.preparacao?.atualizada || (Number(preview.preparacao?.preparadas) || 0) > 0
+}
+
 export function AnswerKeyCorrectionDialog({ open, application, onClose, onCorrected }) {
   const questions = useMemo(() => correctableQuestions(application), [application])
   const [number, setNumber] = useState('')
@@ -182,7 +211,8 @@ export function AnswerKeyCorrectionDialog({ open, application, onClose, onCorrec
   }
 
   const close = () => { if (!busy) onClose?.() }
-  const canSave = !!preview && !preview.unchanged && !missing
+  const canSave = previewNeedsSave(preview) && !missing
+  const notices = preparationNotice(preview)
   const toggleLetter = (letter) => changed(() => setDraft((current) => {
     const letters = new Set(current.letters || [])
     if (letters.has(letter)) letters.delete(letter)
@@ -195,6 +225,7 @@ export function AnswerKeyCorrectionDialog({ open, application, onClose, onCorrec
       open={open}
       onClose={close}
       size="lg"
+      fullScreenOnPhone
       title="Corrigir gabarito"
       description="Muda só a resposta certa desta aplicação: o texto e a ordem da prova ficam como os alunos viram, e as notas são recalculadas."
       footer={<>
@@ -272,7 +303,7 @@ export function AnswerKeyCorrectionDialog({ open, application, onClose, onCorrec
             placeholder="Ex.: a máscara /24 é 255.255.255.0; o gabarito estava com a letra C." disabled={!!busy} className="min-h-[80px]"
             onChange={(event) => { const value = event.target.value; changed(() => setMotivo(value)) }} />
 
-          <p className="text-xs text-muted">A avaliação no editor não muda: corrija lá também para as próximas aplicações.</p>
+          <p className="text-xs text-muted">A preparação desta aplicação também passa a usar a resposta certa (&quot;Imprimir&quot; e &quot;Aplicar online&quot; de novo, como na segunda chamada). A avaliação no editor não muda: corrija lá também para as provas que você montar de novo.</p>
 
           {preview && (
             <div role="status" className={`rounded-lg border p-3 text-sm ${preview.unchanged || !preview.changed ? 'border-border bg-surface-2' : 'border-warning bg-warning-soft'}`}>
@@ -296,6 +327,7 @@ export function AnswerKeyCorrectionDialog({ open, application, onClose, onCorrec
                   ))}
                 </ul>
               )}
+              {notices.map((line) => <p key={line} className="mt-2 text-muted break-words">{line}</p>)}
             </div>
           )}
           {error && <p role="alert" className="text-sm text-danger">{error}</p>}

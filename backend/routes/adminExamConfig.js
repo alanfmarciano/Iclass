@@ -34,6 +34,7 @@ const {
     settleExpiredAttempts,
 } = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
+const { questionType } = require('../utils/examScoring.js');
 const { assertClassOpen } = require('../utils/academicCalendar.js');
 const { normalizeAnswerKey, normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
 const {
@@ -41,7 +42,9 @@ const {
     annulmentOf,
     answerKeyOf,
     applyAnswerKey,
+    applyAnswerKeyToPreparation,
     describeAnswerKey,
+    preparationHasAnswerKey,
     previewAnswerKeyRegrade,
     questionPositionInSubmission,
     questionWasReplaced,
@@ -1499,13 +1502,74 @@ function createAdminExamConfigRouter() {
         });
     });
 
+    // A preparação de onde a aplicação saiu e o que mais saiu dela (P3-S6). entry: a
+    // entrada de classes[].examHistory[prova][] (a segunda chamada e "Imprimir" saem dela);
+    // pending: as aplicações dela que ainda não começaram (guardam o gabarito de quando
+    // foram preparadas); started: as outras que já começaram (cada uma tem as notas dela e
+    // é corrigida pelo botão dela).
+    function preparationOf(cls, application) {
+        const historyId = application.historyId || null;
+        const history = historyId && Array.isArray(cls.examHistory?.[application.examKey]) ? cls.examHistory[application.examKey] : [];
+        const entry = history.find(item => item && item.id === historyId) || null;
+        const siblings = historyId
+            ? (db.memory.examApplications || []).filter(other => other && other.id !== application.id
+                && other.historyId === historyId
+                && other.examKey === application.examKey
+                && other.studentClass === application.studentClass
+                && String(other.courseId || '') === String(application.courseId || ''))
+            : [];
+        return {
+            entry,
+            pending: siblings.filter(other => other.status === 'draft' || other.status === 'prepared'),
+            started: siblings.filter(other => CORRECTABLE_STATUSES.has(other.status)),
+        };
+    }
+
+    // O que a correção muda além da aplicação: a preparação (se ainda não tem o gabarito
+    // novo), as aplicações dela não começadas e quantas outras já começadas continuam com
+    // o gabarito antigo (a tela avisa).
+    function preparationImpact(cls, application, number, key) {
+        const { entry, pending, started } = preparationOf(cls, application);
+        const stale = other => {
+            const question = resolvedLiveQuestion(other, number);
+            return !!question && questionType(question) === key.type && !sameAnswerKey(answerKeyOf(question), key);
+        };
+        return {
+            entry: entry && !preparationHasAnswerKey(entry, number, key) ? entry : null,
+            pending: pending.filter(stale),
+            otherStarted: started.filter(stale).length,
+        };
+    }
+
+    // Grava o gabarito novo na preparação e nas aplicações dela ainda não começadas (a
+    // configuração da turma acompanha a que é dela). Muda no lugar.
+    function applyPreparationImpact(cls, impact, number, key, at) {
+        if (impact.entry) applyAnswerKeyToPreparation(impact.entry, number, key);
+        impact.pending.forEach(other => {
+            applyAnswerKey(other, number, key);
+            other.updatedAt = at;
+            if (cls.onlineExamConfigs?.[other.examKey]?.applicationId === other.id) syncApplicationConfig(cls, other);
+        });
+    }
+
+    function preparationSummary(impact) {
+        return {
+            atualizada: !!impact.entry,
+            preparadas: impact.pending.length,
+            outrasAplicacoes: impact.otherStarted,
+        };
+    }
+
     // Corrigir o gabarito depois da prova (P3-S6: AVA-X2; D14 do P3). O caso típico: um
     // aluno reclama depois do encerramento e a letra certa era outra. Vale com a prova em
     // andamento ou encerrada (cancelada: 409; antes de começar, a questão se corrige no
     // editor), muda só o gabarito da questão nas versões da aplicação (o texto e a ordem
     // ficam), recorrige todas as entregas (nota anterior no scoreHistory com o motivo e
     // grade_regrade por aluno), registra exam_answer_key_corrected e avisa no sino quem
-    // tinha a nota publicada e teve a nota mudada. dryRun: a prévia do impacto, sem gravar.
+    // tinha a nota publicada e teve a nota mudada. A preparação de onde a aplicação saiu e
+    // as aplicações dela ainda não começadas recebem o mesmo gabarito (reaplicar a
+    // preparação, como na segunda chamada, não traz a letra errada de volta). dryRun: a
+    // prévia do impacto, sem gravar.
     // Repetir a mesma correção não muda nada. assertClassOpen antes de gravar (sem efeito
     // até o B10). page.results pelo guarda (o professor auxiliar não muda nota).
     router.post('/api/admin/exam-applications/:applicationId/answer-key-correction', (req, res) => {
@@ -1523,7 +1587,12 @@ function createAdminExamConfigRouter() {
                     return res.status(409).json({ error: 'Esta aplicação foi cancelada: não há nota para corrigir.', code: 'application_cancelled' });
                 }
                 if (!CORRECTABLE_STATUSES.has(application.status)) {
-                    return res.status(409).json({ error: 'A aplicação ainda não começou: corrija a questão no editor da prova.', code: 'application_not_started' });
+                    // A aplicação preparada guarda o gabarito de quando foi preparada: editar a
+                    // avaliação não a muda; é preciso preparar de novo pelo editor.
+                    return res.status(409).json({
+                        error: 'A aplicação ainda não começou, e ela guarda o gabarito de quando foi preparada. Corrija a questão no editor da prova e prepare a aplicação de novo pelo "Aplicar online" da prova.',
+                        code: 'application_not_started',
+                    });
                 }
                 const number = Number(req.body.questionNumber);
                 if (!Number.isInteger(number) || number < 1) return res.status(400).json({ error: 'Escolha a questão.', field: 'questionNumber' });
@@ -1556,7 +1625,30 @@ function createAdminExamConfigRouter() {
                     antes: describeAnswerKey(before, previous),
                     depois: describeAnswerKey(key, previous),
                 };
+                const impact = preparationImpact(cls, application, number, key);
                 if (sameAnswerKey(before, key) && !removeAnnulment) {
+                    // A aplicação já tem o gabarito (por exemplo, corrigido ao vivo no
+                    // Monitor), mas a preparação ou uma aplicação dela não começada ainda não:
+                    // grava só nelas, sem recorrigir ninguém.
+                    const syncPreparation = !!impact.entry || impact.pending.length > 0;
+                    if (syncPreparation && req.body.dryRun !== true) {
+                        const at = new Date().toISOString();
+                        applyPreparationImpact(cls, impact, number, key, at);
+                        recordExamAudit('exam_answer_key_corrected', application, adminActor(req), {
+                            questionNumber: number,
+                            tipo: key.type,
+                            antes: question.antes,
+                            depois: question.depois,
+                            motivo,
+                            regraded: 0,
+                            changed: 0,
+                            notifiedStudents: 0,
+                            somentePreparacao: true,
+                            preparacaoAtualizada: !!impact.entry,
+                            preparadasAtualizadas: impact.pending.length,
+                        });
+                        await db.save();
+                    }
                     return res.json({
                         success: true,
                         unchanged: true,
@@ -1565,7 +1657,10 @@ function createAdminExamConfigRouter() {
                         regraded: 0,
                         changed: 0,
                         notifiedStudents: 0,
-                        message: `O gabarito da questão ${number} já é este: nenhuma nota muda.`,
+                        preparacao: preparationSummary(impact),
+                        message: syncPreparation
+                            ? `O gabarito da questão ${number} já é este nesta aplicação: nenhuma nota muda. ${req.body.dryRun === true ? 'A preparação vai passar' : 'A preparação passou'} a usar este gabarito também.`
+                            : `O gabarito da questão ${number} já é este: nenhuma nota muda.`,
                     });
                 }
                 const evaluation = db.memory.evaluations?.[application.examKey] || null;
@@ -1603,6 +1698,7 @@ function createAdminExamConfigRouter() {
                         changed: students.length,
                         published: students.filter(student => student.published).length,
                         students: students.slice(0, ANSWER_KEY_PREVIEW_LIMIT),
+                        preparacao: preparationSummary(impact),
                     });
                 }
 
@@ -1611,6 +1707,10 @@ function createAdminExamConfigRouter() {
                 applyAnswerKey(application, number, key);
                 if (removeAnnulment) withoutAnnulment(application);
                 application.updatedAt = at;
+                // A preparação e as aplicações dela não começadas também (a segunda chamada,
+                // a tela de detalhe e "Imprimir" saem dela). As já começadas, não: cada uma
+                // tem as notas dela.
+                applyPreparationImpact(cls, impact, number, key, at);
                 markQuestionReports(application, number, 'corrected', actor);
                 // A configuração da turma acompanha só quando é a desta aplicação (outra pode
                 // ter sido preparada depois do encerramento).
@@ -1637,6 +1737,8 @@ function createAdminExamConfigRouter() {
                     regraded,
                     changed: changedSubmissions.length,
                     notifiedStudents,
+                    preparacaoAtualizada: !!impact.entry,
+                    preparadasAtualizadas: impact.pending.length,
                     ...(removeAnnulment ? { tirouAnulacao: annulment.mode } : {}),
                 };
                 if (!Array.isArray(application.answerKeyCorrections)) application.answerKeyCorrections = [];
@@ -1650,12 +1752,14 @@ function createAdminExamConfigRouter() {
                     regraded,
                     changed: changedSubmissions.length,
                     notifiedStudents,
+                    preparacaoAtualizada: !!impact.entry,
+                    preparadasAtualizadas: impact.pending.length,
                     ...(removeAnnulment ? { tirouAnulacao: annulment.mode } : {}),
                 });
                 // Entrega antiga mudada: gravação completa (submissions é append; regra do
                 // registro em database.js).
                 await db.save();
-                res.json({ success: true, question, regraded, changed: changedSubmissions.length, notifiedStudents, correction });
+                res.json({ success: true, question, regraded, changed: changedSubmissions.length, notifiedStudents, correction, preparacao: preparationSummary(impact) });
             } catch (error) {
                 return sendRouteError(error, req, res);
             }

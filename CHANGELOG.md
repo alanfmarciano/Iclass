@@ -50,6 +50,9 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Só a resposta certa muda: o texto e a ordem da prova ficam como os alunos viram, inclusive nas versões embaralhadas (o gabarito impresso de cada versão acompanha). Quem marcou a resposta certa ganha o ponto e quem marcou a errada perde.
 - O aluno que já tinha a nota publicada e teve a nota mudada recebe "Nota alterada" no sino, com o número da questão na prova dele.
 - Questão anulada pode ser corrigida marcando "Tirar a anulação".
+- A correção vale também para a preparação de onde a aplicação saiu: "Aplicar online" de novo nela (a segunda chamada), a tela de detalhe e "Imprimir" já saem com a resposta certa, e a aplicação dela já preparada que ainda não começou também. Antes, reaplicar a mesma preparação trazia de volta a letra errada. As outras aplicações dela que já começaram ficam com as notas delas: a prévia avisa quantas são, para corrigir cada uma. A avaliação no editor não muda (corrija lá também para as provas montadas de novo).
+- Se a aplicação já tem a resposta certa (corrigida ao vivo no Monitor), a correção acerta só a preparação, sem recalcular nenhuma nota.
+- No celular, o diálogo "Corrigir gabarito" ocupa a tela inteira. A aplicação que ainda não começou explica que guarda o gabarito de quando foi preparada (corrija no editor e prepare de novo). A conta só de consulta (Coordenação) não vê o botão.
 
 ### Ações por aluno no Monitor
 - Na linha de cada aluno, o botão "⋯" (Mais ações) traz "Recolher prova" (entrega na hora, com as respostas já salvas), "Reabrir prova" (a entrega volta para a mesma tentativa, com as respostas e o tempo que faltava, sem contar como tentativa nova; pede o motivo) e "Dar tentativa extra" (até 5, só para aluno ativo). Tudo fica na Auditoria e no registro da aplicação. O menu abre junto do botão mesmo com a página rolada, no computador e no celular.

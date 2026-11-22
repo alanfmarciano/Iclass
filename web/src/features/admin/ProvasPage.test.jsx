@@ -11,11 +11,14 @@ const mocks = vi.hoisted(() => ({
   put: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
   branding: { displayName: 'ETC', schoolName: 'Escola Técnica Centro', institution: { tradeName: 'Escola Técnica Centro', cityState: 'Recife - PE' } },
+  // Sessão do painel: sem nada, como antes (administrador); o teste do gabarito troca.
+  auth: undefined,
 }))
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post, put: mocks.put } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 vi.mock('../../context/BrandingProvider', () => ({ useBranding: () => ({ branding: mocks.branding }) }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => mocks.auth }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => ({ courseId: 'C1', courseName: 'Curso', className: '1DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
@@ -43,6 +46,7 @@ beforeEach(() => {
     return {}
   })
   mocks.post.mockResolvedValue({ success: true, key: 'Avaliacao_2' })
+  mocks.auth = undefined
   nativeSpies = ['prompt', 'confirm', 'alert'].map((name) => vi.spyOn(window, name).mockImplementation(() => { throw new Error(`window.${name}`) }))
 })
 
@@ -240,5 +244,68 @@ describe('[UC-PROVA-004] ProvasPage do professor · questões com os tipos novos
       { type: 'multiple_choice', points: 2, text: 'Qual a **topologia**?', alternatives: [{ letter: 'A', text: 'Estrela', isCorrect: true }, { letter: 'B', text: 'Anel', isCorrect: false }], correctAnswer: 'A', explanation: '' },
       { type: 'numeric', points: 1.5, text: 'Latência média?', numeric: { value: 3.75, tolerance: 0.25, unit: 'ms' }, review: 'auto', explanation: 'Média das três.' },
     ])
+  })
+})
+
+// Fase 3, A8 ajuste 1 (P3-S6, AVA-X2): corrigir o gabarito de uma aplicação encerrada muda
+// também a preparação; a tela de detalhe aberta mostra o gabarito novo logo depois, e a
+// conta só de consulta (Coordenação) não vê o botão.
+function preparationEntry(letter) {
+  const alternatives = ['A', 'B', 'C', 'D'].map((item) => ({ letter: item, displayLetter: item, text: `Alternativa ${item}`, isCorrect: item === letter }))
+  return {
+    id: 'hist_1', type: 'online', label: 'Online #1', questionNumbers: [1], questionCount: 1, durationMinutes: 60,
+    printSnapshot: [{ version: 'A', examCode: 'A1', answerKey: { 1: letter }, questions: [{ originalNumber: 1, examNumber: 1, type: 'multiple_choice', text: 'Qual a máscara /24?', correctAnswer: letter, alternatives }] }],
+  }
+}
+
+function finishedApplication(letter) {
+  const entry = preparationEntry(letter)
+  return { id: 'app_1', historyId: 'hist_1', status: 'finished', finishedAt: '2026-11-20T13:00:00.000Z', annulledQuestions: [], versionSnapshots: entry.printSnapshot }
+}
+
+async function openPreparation(state) {
+  mocks.get.mockImplementation(async (url) => {
+    if (url.startsWith('/api/admin/courses/C1/structure')) return { structure: [{ id: 'm1', name: 'Módulo 1', units: [{ avaliacaoKey: 'Avaliacao_1', name: 'Avaliação 1' }] }] }
+    if (url === '/api/admin/evaluation/Avaliacao_1') return { evaluation: typedEvaluation }
+    if (url.startsWith('/api/status')) return {}
+    if (url.startsWith('/api/admin/exam-history')) return { history: [preparationEntry(state.letter)] }
+    if (url.startsWith('/api/admin/exam-applications')) return { applications: [finishedApplication(state.letter)] }
+    return {}
+  })
+  render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+  fireEvent.click(await screen.findByRole('button', { name: /Avaliação 1/ }))
+  await screen.findByRole('heading', { name: 'Prova de redes' })
+  fireEvent.click(await screen.findByRole('button', { name: /Online #1/ }))
+  await screen.findByText('Aplicações online desta preparação')
+}
+
+describe('[UC-PROVA-005] ProvasPage do professor · gabarito corrigido depois da prova', () => {
+  it('depois de corrigir, a tela de detalhe aberta mostra o gabarito novo da preparação', async () => {
+    const state = { letter: 'C' }
+    await openPreparation(state)
+    expect(screen.getByText('Gabarito — Versão A')).toBeInTheDocument()
+    const keyBadges = () => [...document.querySelectorAll('span.font-mono.text-subtle')].map((node) => `${node.textContent} ${node.nextElementSibling?.textContent}`)
+    expect(keyBadges()).toEqual(['1 C'])
+    mocks.post.mockImplementation(async (url, body) => {
+      if (!url.endsWith('/answer-key-correction')) return { success: true }
+      if (body.dryRun) return { success: true, dryRun: true, changed: 1, published: 1, question: { number: 1, antes: 'C', depois: 'B' }, students: [], preparacao: { atualizada: true, preparadas: 0, outrasAplicacoes: 0 } }
+      state.letter = 'B'
+      return { success: true, changed: 1, notifiedStudents: 1, preparacao: { atualizada: true, preparadas: 0, outrasAplicacoes: 0 } }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Corrigir gabarito' }))
+    const dialog = screen.getByRole('dialog', { name: 'Corrigir gabarito' })
+    fireEvent.click(within(dialog).getByText('Alternativa B'))
+    fireEvent.change(within(dialog).getByLabelText(/^Motivo/), { target: { value: 'A certa era a B.' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Ver impacto' })) })
+    await within(dialog).findByRole('status')
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Corrigir gabarito' })) })
+    await waitFor(() => expect(keyBadges()).toEqual(['1 B']))
+    expect(mocks.toast.success).toHaveBeenCalledWith('Gabarito corrigido. 1 nota mudou e 1 aluno foi avisado.')
+  })
+
+  it('a Coordenação (só de consulta) vê as correções, mas não o botão "Corrigir gabarito"', async () => {
+    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true }
+    await openPreparation({ letter: 'C' })
+    expect(screen.queryByRole('button', { name: 'Corrigir gabarito' })).not.toBeInTheDocument()
   })
 })

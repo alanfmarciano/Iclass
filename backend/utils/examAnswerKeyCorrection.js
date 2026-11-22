@@ -8,8 +8,10 @@
 // tipo ficam como os alunos viram. A letra é sempre a ORIGINAL da alternativa (a do
 // gabarito e das respostas guardadas), nunca a letra impressa de uma versão embaralhada.
 // O gabarito impresso de cada versão (snapshot.answerKey, letra da posição) acompanha.
-// A avaliação no editor e o histórico de preparações não mudam (a próxima aplicação sai
-// da avaliação, que o professor corrige no editor).
+// A preparação de onde a aplicação saiu (classes[].examHistory[prova][], applyAnswerKeyTo
+// Preparation) também muda: "Aplicar online" de novo nela (a segunda chamada), a tela de
+// detalhe e "Imprimir" usam o gabarito certo. A avaliação no editor não muda (a prova
+// montada de novo pelo editor sai dela, que o professor corrige lá).
 const {
     correctLetterFor,
     correctLettersFor,
@@ -125,43 +127,95 @@ function annulmentOf(application, number) {
         .find(entry => Number(entry?.questionNumber) === Number(number)) || null;
 }
 
-// Troca o gabarito da questão em todas as versões da aplicação (muda a aplicação no
-// lugar). key: o gabarito validado por normalizeAnswerKey. Devolve quantas versões
-// mudaram.
-function applyAnswerKey(application, number, key) {
+// Troca o gabarito da questão em cada versão da lista (muda as versões no lugar). key: o
+// gabarito validado por normalizeAnswerKey. sameTypeOnly: só a questão do mesmo tipo do
+// gabarito (na preparação, que pode vir de um navegador antigo; questão sem tipo é de
+// uma correta). Devolve quantas versões mudaram.
+function applyAnswerKeyToSnapshots(snapshots, number, key, { sameTypeOnly = false } = {}) {
     let updated = 0;
-    applicationQuestions(application, number).forEach(({ snapshot, question, index }) => {
-        const next = { ...question };
-        if (key.type === 'multiple_choice' || key.type === 'true_false' || key.type === 'multiple_answer') {
-            const correct = new Set(key.type === 'multiple_answer' ? key.correctAnswers : [key.correctAnswer]);
-            next.alternatives = alternativesOf(question).map((alternative, position) => ({
-                ...alternative,
-                isCorrect: correct.has(originalLetter(alternative, position)),
-            }));
-            if (key.type === 'multiple_answer') {
-                next.correctAnswers = [...key.correctAnswers];
-                next.correctAnswer = '';
-            } else {
-                next.correctAnswer = key.correctAnswer;
-                delete next.correctAnswers;
+    (Array.isArray(snapshots) ? snapshots : []).forEach(snapshot => {
+        if (!snapshot || !Array.isArray(snapshot.questions)) return;
+        snapshot.questions.forEach((question, index) => {
+            if (!question || typeof question !== 'object' || questionNumber(question, index) !== Number(number)) return;
+            if (sameTypeOnly && questionType(question) !== key.type) return;
+            const next = { ...question };
+            if (key.type === 'multiple_choice' || key.type === 'true_false' || key.type === 'multiple_answer') {
+                const correct = new Set(key.type === 'multiple_answer' ? key.correctAnswers : [key.correctAnswer]);
+                next.alternatives = alternativesOf(question).map((alternative, position) => ({
+                    ...alternative,
+                    isCorrect: correct.has(originalLetter(alternative, position)),
+                }));
+                if (key.type === 'multiple_answer') {
+                    next.correctAnswers = [...key.correctAnswers];
+                    next.correctAnswer = '';
+                } else {
+                    next.correctAnswer = key.correctAnswer;
+                    delete next.correctAnswers;
+                }
+                // Gabarito impresso da versão (letra da posição), como na correção ao vivo.
+                if (snapshot.answerKey && typeof snapshot.answerKey === 'object') {
+                    const position = Number(question.examNumber) > 0 ? Number(question.examNumber) : index + 1;
+                    const printed = next.alternatives
+                        .map((alternative, position2) => (alternative.isCorrect ? String(alternative.displayLetter || LETTERS[position2] || '').toUpperCase() : ''))
+                        .filter(Boolean);
+                    if (printed.length) snapshot.answerKey[position] = printed.join('');
+                }
+            } else if (key.type === 'numeric') {
+                next.numeric = { ...(question.numeric || {}), value: key.numeric.value, tolerance: key.numeric.tolerance };
+            } else if (key.type === 'short_answer') {
+                next.acceptedAnswers = [...key.acceptedAnswers];
             }
-            // Gabarito impresso da versão (letra da posição), como na correção ao vivo.
-            if (snapshot.answerKey && typeof snapshot.answerKey === 'object') {
-                const position = Number(question.examNumber) > 0 ? Number(question.examNumber) : index + 1;
-                const printed = next.alternatives
-                    .map((alternative, position2) => (alternative.isCorrect ? String(alternative.displayLetter || LETTERS[position2] || '').toUpperCase() : ''))
-                    .filter(Boolean);
-                if (printed.length) snapshot.answerKey[position] = printed.join('');
-            }
-        } else if (key.type === 'numeric') {
-            next.numeric = { ...(question.numeric || {}), value: key.numeric.value, tolerance: key.numeric.tolerance };
-        } else if (key.type === 'short_answer') {
-            next.acceptedAnswers = [...key.acceptedAnswers];
-        }
-        snapshot.questions[index] = next;
-        updated += 1;
+            snapshot.questions[index] = next;
+            updated += 1;
+        });
     });
     return updated;
+}
+
+// Troca o gabarito da questão em todas as versões da aplicação (muda a aplicação no
+// lugar). Devolve quantas versões mudaram.
+function applyAnswerKey(application, number, key) {
+    return applyAnswerKeyToSnapshots(application?.versionSnapshots, number, key);
+}
+
+// A preparação guarda as versões duas vezes: versionSnapshots (o que a aplicação nova
+// copia; buildPreparedOnlineExamConfig) e printSnapshot (o que o navegador montou: a tela
+// de detalhe, "Imprimir" e a preparação antiga, sem versionSnapshots, leem dele). As duas
+// recebem o gabarito novo. Devolve quantas versões mudaram (0: a preparação não tem a
+// questão, ou é de outro tipo).
+function applyAnswerKeyToPreparation(entry, number, key) {
+    if (!entry || typeof entry !== 'object') return 0;
+    const print = Array.isArray(entry.printSnapshot)
+        ? entry.printSnapshot
+        : (entry.printSnapshot && Array.isArray(entry.printSnapshot.questions) ? [entry.printSnapshot] : []);
+    const frozen = Array.isArray(entry.versionSnapshots) ? entry.versionSnapshots : [];
+    return applyAnswerKeyToSnapshots(frozen, number, key, { sameTypeOnly: true })
+        + applyAnswerKeyToSnapshots(print, number, key, { sameTypeOnly: true });
+}
+
+// A preparação já tem este gabarito na questão (ou não tem a questão do mesmo tipo):
+// nada a trocar nela. Compara o gabarito de cada versão guardada e, nas de escolha, o
+// gabarito impresso da versão.
+function preparationHasAnswerKey(entry, number, key) {
+    if (!entry || typeof entry !== 'object') return true;
+    const draft = clone(entry);
+    if (!applyAnswerKeyToPreparation(draft, number, key)) return true;
+    const lists = item => [
+        ...(Array.isArray(item.versionSnapshots) ? item.versionSnapshots : []),
+        ...(Array.isArray(item.printSnapshot) ? item.printSnapshot : (item.printSnapshot && Array.isArray(item.printSnapshot.questions) ? [item.printSnapshot] : [])),
+    ];
+    const before = lists(entry);
+    const after = lists(draft);
+    return before.every((snapshot, position) => {
+        const changed = after[position];
+        if (!snapshot || !Array.isArray(snapshot.questions)) return true;
+        if (JSON.stringify(snapshot.answerKey || null) !== JSON.stringify(changed.answerKey || null)) return false;
+        return snapshot.questions.every((question, index) => {
+            if (!question || typeof question !== 'object' || questionNumber(question, index) !== Number(number)) return true;
+            if (questionType(question) !== key.type) return true;
+            return sameAnswerKey(answerKeyOf(question), key);
+        });
+    });
 }
 
 // Prévia do impacto, sem mudar nada: recorrige cópias das entregas da aplicação com o
@@ -205,7 +259,10 @@ module.exports = {
     answerKeyOf,
     applicationQuestions,
     applyAnswerKey,
+    applyAnswerKeyToPreparation,
+    applyAnswerKeyToSnapshots,
     describeAnswerKey,
+    preparationHasAnswerKey,
     previewAnswerKeyRegrade,
     questionPositionInSubmission,
     questionWasReplaced,

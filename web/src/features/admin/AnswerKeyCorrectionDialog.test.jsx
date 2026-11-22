@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AnswerKeyCorrectionDialog, answerKeyPayload, correctableQuestions, currentKeyDraft, impactSummary } from './AnswerKeyCorrectionDialog'
+import { AnswerKeyCorrectionDialog, answerKeyPayload, correctableQuestions, currentKeyDraft, impactSummary, preparationNotice, previewNeedsSave } from './AnswerKeyCorrectionDialog'
 import { ExamApplicationDetail } from './ExamApplicationDetail'
 
 const mocks = vi.hoisted(() => ({ post: vi.fn(), get: vi.fn() }))
@@ -97,6 +97,57 @@ describe('Corrigir gabarito depois da prova', () => {
       questionNumber: 4, correctAnswer: 'B', motivo: 'A máscara /24 é 255.255.255.0.!',
     }))
     expect(onCorrected).toHaveBeenCalledWith({ success: true, changed: 3, notifiedStudents: 2 })
+  })
+
+  it('[UC-PROVA-005] a prévia diz que a preparação (segunda chamada e impressão) também muda e quem fica com a resposta antiga', async () => {
+    const user = userEvent.setup()
+    mocks.post.mockResolvedValue({ ...PREVIEW, preparacao: { atualizada: true, preparadas: 1, outrasAplicacoes: 2 } })
+    render(<AnswerKeyCorrectionDialog open application={application()} onClose={() => {}} />)
+    const dialog = screen.getByRole('dialog')
+    // O conselho de antes ("corrija lá também para as próximas aplicações") levava a
+    // reaplicar a preparação com o gabarito errado.
+    expect(dialog).not.toHaveTextContent('para as próximas aplicações')
+    expect(dialog).toHaveTextContent('A preparação desta aplicação também passa a usar a resposta certa ("Imprimir" e "Aplicar online" de novo, como na segunda chamada).')
+    await user.click(within(dialog).getByText('255.255.255.0'))
+    await user.type(within(dialog).getByLabelText(/^Motivo/), 'A máscara /24 é 255.255.255.0.')
+    await user.click(within(dialog).getByRole('button', { name: 'Ver impacto' }))
+    const status = await within(dialog).findByRole('status')
+    expect(status).toHaveTextContent('A preparação desta prova passa a usar a resposta certa: "Imprimir" e "Aplicar online" de novo (como na segunda chamada) saem com ela. A aplicação dela já preparada, que ainda não começou, também.')
+    expect(status).toHaveTextContent('Outras 2 aplicações desta preparação já começaram e continuam com a resposta antiga: corrija em cada uma, pelo botão dela.')
+  })
+
+  it('[UC-PROVA-005] aplicação que já tem a resposta certa (corrigida ao vivo) ainda grava para acertar a preparação', async () => {
+    expect(previewNeedsSave(null)).toBe(false)
+    expect(previewNeedsSave({ changed: 0 })).toBe(true)
+    expect(previewNeedsSave({ unchanged: true, preparacao: { atualizada: false, preparadas: 0, outrasAplicacoes: 1 } })).toBe(false)
+    expect(previewNeedsSave({ unchanged: true, preparacao: { atualizada: true, preparadas: 0 } })).toBe(true)
+    expect(previewNeedsSave({ unchanged: true, preparacao: { atualizada: false, preparadas: 2 } })).toBe(true)
+    expect(preparationNotice({ preparacao: { atualizada: false, preparadas: 0, outrasAplicacoes: 1 } })).toEqual([
+      'Outra aplicação desta preparação já começou e continua com a resposta antiga: corrija nela também, pelo botão dela.',
+    ])
+    expect(preparationNotice({ preparacao: { atualizada: false, preparadas: 3, outrasAplicacoes: 0 } })[0]).toMatch(/As 3 aplicações dela já preparadas, que ainda não começaram, também\.$/)
+    expect(preparationNotice({})).toEqual([])
+
+    const user = userEvent.setup()
+    const message = 'O gabarito da questão 4 já é este nesta aplicação: nenhuma nota muda. A preparação vai passar a usar este gabarito também.'
+    mocks.post.mockResolvedValue({ success: true, unchanged: true, dryRun: true, changed: 0, message, preparacao: { atualizada: true, preparadas: 0, outrasAplicacoes: 0 } })
+    render(<AnswerKeyCorrectionDialog open application={application()} onClose={() => {}} />)
+    const dialog = screen.getByRole('dialog')
+    await user.type(within(dialog).getByLabelText(/^Motivo/), 'Acertar a preparação.')
+    await user.click(within(dialog).getByRole('button', { name: 'Ver impacto' }))
+    expect(await within(dialog).findByRole('status')).toHaveTextContent(message)
+    expect(within(dialog).getByRole('button', { name: 'Corrigir gabarito' })).toBeEnabled()
+  })
+
+  it('[UC-PROVA-005] no celular o diálogo ocupa a tela inteira e os botões não espremem o texto', () => {
+    render(<AnswerKeyCorrectionDialog open application={application()} onClose={() => {}} />)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.className).toMatch(/(^| )h-full( |$)/)
+    expect(dialog.className).toMatch(/rounded-none/)
+    expect(dialog.className).toMatch(/sm:rounded-xl/)
+    expect(dialog.parentElement.className).toMatch(/p-0 sm:p-4/)
+    const footer = within(dialog).getByRole('button', { name: 'Ver impacto' }).parentElement
+    expect(footer.className).toMatch(/flex-wrap/)
   })
 
   it('[UC-PROVA-005] questão anulada pede "Tirar a anulação"; erro do servidor aparece no diálogo', async () => {

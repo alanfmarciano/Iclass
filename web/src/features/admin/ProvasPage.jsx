@@ -157,7 +157,9 @@ export default function ProvasPage() {
   const toast = useToast()
   const auth = useAuth()
   // Corrigir o gabarito depois da prova recorrige notas: page.results (P3-S6).
-  const canCorrectAnswerKey = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  // A Coordenação tem Resultados, mas é só de consulta (readOnly do whoami, B1): o servidor
+  // recusaria a correção com 403, então o botão nem aparece.
+  const canCorrectAnswerKey = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS) && auth?.readOnly !== true
   const navigate = useNavigate()
   const { branding } = useBranding()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
@@ -316,7 +318,11 @@ export default function ProvasPage() {
     setUnusedOnly(false)
     setForm((f) => ({ ...f, questionCount: clampCount(f.questionCount, ev.questions?.length || 1) }))
     setOnlineConfig((statusRes.onlineExamConfigs || {})[nextExamKey] || null)
-    setHistory(historyRes.history || [])
+    const nextHistory = historyRes.history || []
+    setHistory(nextHistory)
+    // A tela de detalhe aberta acompanha a preparação recarregada (depois de corrigir o
+    // gabarito, o "Gabarito — Versão" e o "Imprimir" já saem com a resposta certa).
+    setViewApplication((current) => (current ? (nextHistory.find((entry) => entry.id === current.id) || current) : current))
     setApplications(applicationsRes.applications || [])
   }
 
@@ -775,6 +781,11 @@ export default function ProvasPage() {
           applications={applications.filter((application) => application.historyId && application.historyId === viewApplication.id)}
           canCorrectAnswerKey={canCorrectAnswerKey}
           onAnswerKeyCorrected={(response) => {
+            if (response?.unchanged) {
+              toast.success(response.message || 'A preparação passou a usar este gabarito.')
+              loadExamState().catch((error) => toast.error(error.message))
+              return
+            }
             const changed = Number(response?.changed) || 0
             const notified = Number(response?.notifiedStudents) || 0
             toast.success(`Gabarito corrigido. ${changed === 1 ? '1 nota mudou' : `${changed} notas mudaram`}${notified ? ` e ${notified === 1 ? '1 aluno foi avisado' : `${notified} alunos foram avisados`}` : ''}.`)

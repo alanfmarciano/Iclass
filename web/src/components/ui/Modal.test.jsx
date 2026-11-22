@@ -115,4 +115,19 @@ describe('Modal', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
+
+  it('fullScreenOnPhone: ocupa a tela no celular e volta ao cartão a partir de 640 px; sem ele, nada muda', () => {
+    render(<Modal open onClose={() => {}} title="Longo" fullScreenOnPhone footer={<button>OK</button>}>x</Modal>)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.className).toContain('h-full max-h-full border-0 rounded-none')
+    expect(dialog.className).toContain('sm:max-h-[94vh] sm:border sm:border-border sm:rounded-xl')
+    expect(dialog.parentElement.className).toContain('p-0 sm:p-4')
+    cleanup()
+    render(<Modal open onClose={() => {}} title="Curto" footer={<button>OK</button>}>x</Modal>)
+    const plain = screen.getByRole('dialog')
+    expect(plain.className).toContain('border border-border rounded-xl max-h-[94vh]')
+    expect(plain.className).not.toContain('rounded-none')
+    expect(plain.parentElement.className).toContain('p-4')
+    expect(screen.getByRole('button', { name: 'OK' }).parentElement.className).not.toContain('flex-wrap')
+  })
 });
