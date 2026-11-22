@@ -108,7 +108,7 @@ const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecre
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
-const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore } = require('../utils/submissionAttempts.js');
+const { VALID_POLICIES, calculateAttemptResult, effectiveScore, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
     MANUAL_TYPES,
     buildClassGradebook,
@@ -2194,7 +2194,27 @@ router.get('/api/admin/student/academic', (req, res) => {
         const submissions = !withGrades ? [] : (db.memory.submissions || [])
             .filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email)
             // Nota inválida de registro antigo (vazia ou fora de 0 a 10) vai como null + aviso.
-            .map(s => ({ id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp }))
+            // Fase 3 (P3-S4a): a nota de cada tentativa é a que ela leva para a conta
+            // (effectiveScore): a anulada com 'zero' vem com 0, a anulada com
+            // 'desconsiderar' e a que aguarda a correção vêm sem nota (a gravada seria só a
+            // parcial das objetivas), com integrity e awaitingCorrection para a tela dizer.
+            .map(s => {
+                const integrity = integrityDecision(s);
+                const awaitingCorrection = integrity === null && isAwaitingCorrection(s);
+                return {
+                    id: s.id,
+                    examKey: s.examKey,
+                    score: effectiveScore(s),
+                    scoreInvalid: integrity === null && !awaitingCorrection && normalizeScore(s.score) === null,
+                    integrity,
+                    awaitingCorrection,
+                    correctCount: s.correctCount,
+                    totalCount: s.totalCount,
+                    assignedVersion: s.assignedVersion,
+                    gradePublished: s.gradePublished === true,
+                    timestamp: s.timestamp,
+                };
+            })
             .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
         const completedUnits = Object.keys(progressMap).filter(k => progressMap[k]);

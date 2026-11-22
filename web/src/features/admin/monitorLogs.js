@@ -41,6 +41,14 @@ export function focusLogLabel(log) {
   // Ações por aluno do Monitor (P3-S8): ficam no registro, sem contar como saída de foco.
   if (type === 'attempt_collected') return 'Recolhida pelo professor'
   if (type === 'attempt_reopened') return 'Reaberta pelo professor'
+  // Anulação por cola (P3-S4a): o texto do registro diz a decisão (nota zero ou não conta).
+  if (type === 'attempt_invalidated') {
+    const details = String(log?.details || '').toLowerCase()
+    if (details.includes('nota zero')) return 'Tentativa anulada (nota zero)'
+    if (details.includes('não conta')) return 'Tentativa anulada (não conta)'
+    return 'Tentativa anulada pelo professor'
+  }
+  if (type === 'attempt_invalidation_undone') return 'Anulação desfeita pelo professor'
   if (type === 'time_adjusted') {
     const amount = String(log?.details || '').match(/^[+-]?\d+ min/)
     return amount ? `Tempo ajustado (${amount[0]})` : 'Tempo ajustado pelo professor'

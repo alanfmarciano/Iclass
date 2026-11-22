@@ -310,25 +310,25 @@ function applyCorrectionInput(submission, input, { application = null, onlineCon
         : String(input.comentarioGeral || '').slice(0, CORRECTION_GENERAL_MAX);
     const generalChanged = nextGeneral !== String(current?.comentarioGeral || '');
 
-    // Concluir: toda questão que espera o professor precisa ter os pontos.
-    const completing = input.concluir === true && (!current || current.situacao !== 'concluida');
-    if (completing) {
-        const missing = graded
-            .map(answer => Number(answer?.questionNumber))
-            .filter(number => {
-                const answer = gradedByNumber.get(number);
-                const question = questions.get(number) || null;
-                const auto = automaticScore(question, { ...answer, type: answer.type || questionType(question) }, annulments.get(number) || null, onPaper);
-                return auto.pending === true && finiteNumber(nextItems[String(number)]?.pontos) === null;
-            });
-        if (missing.length) {
-            return refusal(400, missing.length === 1
-                ? `Falta lançar os pontos da questão ${missing[0]} para concluir a correção.`
-                : `Falta lançar os pontos das questões ${numbersLabel(missing)} para concluir a correção.`, { code: 'correction_incomplete', missing });
-        }
+    // Questões que, depois deste pedido, ainda esperam o professor sem pontos lançados.
+    const missing = graded
+        .map(answer => Number(answer?.questionNumber))
+        .filter(number => {
+            const answer = gradedByNumber.get(number);
+            const question = questions.get(number) || null;
+            const auto = automaticScore(question, { ...answer, type: answer.type || questionType(question) }, annulments.get(number) || null, onPaper);
+            return auto.pending === true && finiteNumber(nextItems[String(number)]?.pontos) === null;
+        });
+    // Concluir: toda questão que espera o professor precisa ter os pontos (também quando a
+    // correção já estava concluída e o pedido apaga os pontos de uma delas).
+    if (input.concluir === true && missing.length) {
+        return refusal(400, missing.length === 1
+            ? `Falta lançar os pontos da questão ${missing[0]} para concluir a correção.`
+            : `Falta lançar os pontos das questões ${numbersLabel(missing)} para concluir a correção.`, { code: 'correction_incomplete', missing });
     }
+    const completing = input.concluir === true && (!current || current.situacao !== 'concluida');
     if (!changes.length && !generalChanged && !completing) {
-        return { ok: true, unchanged: true, changes: [], completing: false, correcao: current };
+        return { ok: true, unchanged: true, changes: [], completing: false, reopened: false, correcao: current };
     }
     // Entrega sem correção ainda: nasce pendente se espera o professor; senão (ajuste de
     // questão objetiva numa entrega já corrigida pelo sistema), já concluída.
@@ -340,13 +340,22 @@ function applyCorrectionInput(submission, input, { application = null, onlineCon
         comentarioGeral: nextGeneral,
         versao: currentVersion + 1,
     };
+    let reopened = false;
     if (completing) {
         correcao.situacao = 'concluida';
         correcao.concluidaPor = actor || 'professor';
         correcao.concluidaEm = now;
         delete correcao.concluidaPeloSistema;
+    } else if (missing.length && correcao.situacao !== 'pendente') {
+        // Os pontos de uma questão que espera o professor foram apagados numa correção já
+        // concluída: ela volta a aguardar a correção (a nota sai das médias e o aluno não
+        // vê a parcial das objetivas) até o professor concluir de novo (D7).
+        correcao.situacao = 'pendente';
+        correcao.reabertaEm = now;
+        correcao.reabertaPor = actor || 'professor';
+        reopened = true;
     }
-    return { ok: true, unchanged: false, changes, completing, generalChanged, correcao };
+    return { ok: true, unchanged: false, changes, completing, reopened, generalChanged, correcao };
 }
 
 // Questões que esperam o professor numa entrega (para a fila): pela conta automática.

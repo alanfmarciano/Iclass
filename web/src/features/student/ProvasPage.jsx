@@ -27,31 +27,6 @@ const isPublished = (s) => s.gradePublished === true && !Number.isNaN(Number(s.s
 const isConsidered = (s) => s.countsTowardResult && s.resultStatus !== 'archived'
 const shortLabel = (key = '') => key.replace(/^Avaliacao_?/i, '').replace(/_/g, ' ').slice(0, 8)
 
-// Correção do professor e anulação por cola (P3-S4a; P-B6 e P-B1 do P3): a entrega que
-// aguarda a correção não mostra nota parcial, e a anulada diz o que aconteceu com a nota.
-const ANULADA_LABEL = { zero: 'Tentativa anulada: nota zero', desconsiderar: 'Tentativa anulada: não conta' }
-const pendingLabel = (s) => (s?.anulada && ANULADA_LABEL[s.anulada]) || (s?.aguardandoCorrecao ? 'Aguardando correção do professor' : 'Em revisão')
-const fmtPoints = (value) => String(Math.round(Number(value) * 100) / 100).replace('.', ',')
-
-// Situação de uma questão na revisão: certa ou errada quando o sistema corrige pelo
-// gabarito; a dissertativa (e a questão que o professor corrigiu) mostra os pontos, ou que
-// ainda aguarda a correção. Antes a dissertativa aparecia sempre como "Errada".
-function answerStatus(answer, awaiting) {
-  if (typeof answer?.isCorrect === 'boolean') return answer.isCorrect ? { tone: 'success', text: 'Correta' } : { tone: 'danger', text: 'Errada' }
-  if (awaiting || answer?.pending === true) return { tone: 'warning', text: 'Aguardando correção' }
-  const earned = Number(answer?.pointsEarned)
-  const possible = Number(answer?.pointsPossible)
-  if (answer?.pointsEarned != null && Number.isFinite(earned) && Number.isFinite(possible) && possible > 0) {
-    return { tone: 'info', text: `${fmtPoints(earned)} de ${fmtPoints(possible)} ${possible === 1 ? 'ponto' : 'pontos'}` }
-  }
-  return { tone: 'neutral', text: 'Corrigida pelo professor' }
-}
-
-function AnswerStatus({ answer, awaiting }) {
-  const status = answerStatus(answer, awaiting)
-  return <Badge tone={status.tone}>{status.text}</Badge>
-}
-
 // ----- Agrupamento por materia e por tentativa -----
 // Materia = prefixo alfabetico do examKey (FUTEC, FECOP, IRCOM...).
 const materiaOf = (key = '') => (String(key).replace(/^Avaliacao_?/i, '').match(/^[A-Za-z]+/) || ['—'])[0].toUpperCase()
@@ -97,11 +72,9 @@ function ExamCard({ s, onOpen }) {
       <div className="pvb-etail">
         {archived
           ? <span className="pvb-st neutral"><span className="pvb-sdot" />Não considerada</span>
-          : s.anulada
-            ? <span className="pvb-st warning"><span className="pvb-sdot" />{ANULADA_LABEL[s.anulada] || 'Tentativa anulada'}</span>
-            : counts
-              ? <span className="pvb-st info"><span className="pvb-sdot" />Compõe o resultado</span>
-              : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />{s.aguardandoCorrecao ? 'Aguardando correção' : 'Em revisão'}</span> : null}
+          : counts
+            ? <span className="pvb-st info"><span className="pvb-sdot" />Compõe o resultado</span>
+            : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />Em revisão</span> : null}
       </div>
     </button>
   )
@@ -247,12 +220,12 @@ export function buildExamPrintHtml(detail, questions, answerByNumber) {
       const tag = correct ? (sc === letter ? ' &middot; Sua resposta / Correta' : ' &middot; Resposta correta') : (wrong ? ' &middot; Sua resposta' : '')
       return `<div class="${cls}"><span class="ltr">${letter}</span><span>${escapeHtml(alt.text)}${tag ? `<i>${tag}</i>` : ''}</span></div>`
     }).join('')
-    return `<div class="q"><div class="qh"><b>Questão ${escapeHtml(q.number)}</b><span class="${a.isCorrect === true ? 'ok' : 'err'}">${escapeHtml(answerStatus(a, detail?.aguardandoCorrecao === true).text)}</span></div>${q.text ? `<p>${escapeHtml(q.text)}</p>` : ''}${alts}</div>`
+    return `<div class="q"><div class="qh"><b>Questão ${escapeHtml(q.number)}</b><span class="${a.isCorrect ? 'ok' : 'err'}">${a.isCorrect ? 'Correta' : 'Errada'}</span></div>${q.text ? `<p>${escapeHtml(q.text)}</p>` : ''}${alts}</div>`
   }).join('')
 
   const resumoRows = (questions || []).map((q) => {
     const a = answerByNumber.get(Number(q.number)) || {}
-    return `<tr><td>${escapeHtml(q.number)}</td><td>${escapeHtml(a.studentChoice || '-')}</td><td>${escapeHtml(a.correctAnswer || '-')}</td><td>${escapeHtml(answerStatus(a, detail?.aguardandoCorrecao === true).text)}</td></tr>`
+    return `<tr><td>${escapeHtml(q.number)}</td><td>${escapeHtml(a.studentChoice || '-')}</td><td>${escapeHtml(a.correctAnswer || '-')}</td><td>${a.isCorrect ? 'Correta' : 'Errada'}</td></tr>`
   }).join('')
 
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(titulo)}</title><style>
@@ -337,6 +310,7 @@ function FullExamView({ detail, questions, answers }) {
           const answer = answerByNumber.get(Number(q.number)) || {}
           const studentChoice = answer.studentChoice ? String(answer.studentChoice).toUpperCase() : null
           const correctAnswer = answer.correctAnswer ? String(answer.correctAnswer).toUpperCase() : null
+          const isCorrect = answer.isCorrect === true
           return (
             <li key={q.number ?? qi} className="rounded-xl border border-border bg-surface-2 p-4">
               <div className="mb-2.5 flex items-center justify-between gap-3">
@@ -344,7 +318,7 @@ function FullExamView({ detail, questions, answers }) {
                   <span className="grid h-6 w-6 place-items-center rounded-md border border-border bg-surface text-text">{q.number}</span>
                   Questão {q.number}
                 </span>
-                <AnswerStatus answer={answer} awaiting={detail?.aguardandoCorrecao === true} />
+                <Badge tone={isCorrect ? 'success' : 'danger'}>{isCorrect ? 'Correta' : 'Errada'}</Badge>
               </div>
               {q.text && <p className="mb-3 text-sm leading-relaxed text-text">{q.text}</p>}
               <div className="space-y-2">
@@ -394,7 +368,7 @@ function FullExamView({ detail, questions, answers }) {
                     <td className="px-3 py-2">{q.number}</td>
                     <td className="px-3 py-2">{a.studentChoice || '-'}</td>
                     <td className="px-3 py-2">{a.correctAnswer || '-'}</td>
-                    <td className="px-3 py-2"><AnswerStatus answer={a} awaiting={detail?.aguardandoCorrecao === true} /></td>
+                    <td className="px-3 py-2"><Badge tone={a.isCorrect ? 'success' : 'danger'}>{a.isCorrect ? 'Correta' : 'Errada'}</Badge></td>
                   </tr>
                 )
               })}
@@ -682,7 +656,7 @@ export default function ProvasPage() {
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-3 sm:grid-cols-4">
               <div>
                 <dt className="text-xs text-muted">Nota</dt>
-                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : pendingLabel(detail)}</dd>
+                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : 'Em revisão'}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">Resultado</dt>
@@ -697,13 +671,6 @@ export default function ProvasPage() {
                 <dd className="mt-0.5 text-lg font-semibold text-text">{detail.assignedVersion || '-'}</dd>
               </div>
             </dl>
-            {detail.anulada && detail.gradePublished === true && <p className="text-sm text-warning">{ANULADA_LABEL[detail.anulada] || 'Tentativa anulada'}.</p>}
-            {detail.comentarioGeral && (
-              <div className="rounded-lg border border-border bg-surface-2 p-3">
-                <p className="text-xs font-semibold text-muted">Comentário do professor</p>
-                <p className="mt-1 whitespace-pre-line break-words text-sm text-text">{detail.comentarioGeral}</p>
-              </div>
-            )}
             {Array.isArray(detail.gradedAnswers) && detail.gradedAnswers.length > 0 ? (
               detail.answerKeyReleased && Array.isArray(detail.examQuestions) && detail.examQuestions.length > 0 ? (
                 <FullExamView detail={detail} questions={detail.examQuestions} answers={detail.gradedAnswers} />
@@ -716,7 +683,7 @@ export default function ProvasPage() {
                         <tr key={i} className="border-t border-border">
                           <td className="px-3 py-2">{a.questionNumber}</td>
                           <td className="px-3 py-2">{a.studentChoice || '-'}</td>
-                          {detail.answerKeyReleased && <><td className="px-3 py-2">{a.correctAnswer || '-'}</td><td className="px-3 py-2"><AnswerStatus answer={a} awaiting={detail.aguardandoCorrecao === true} /></td></>}
+                          {detail.answerKeyReleased && <><td className="px-3 py-2">{a.correctAnswer || '-'}</td><td className="px-3 py-2"><Badge tone={a.isCorrect ? 'success' : 'danger'}>{a.isCorrect ? 'Correta' : 'Errada'}</Badge></td></>}
                         </tr>
                       ))}
                     </tbody>

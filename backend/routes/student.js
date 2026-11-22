@@ -69,7 +69,7 @@ const {
     filterStudentExamAttempts,
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
-const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
+const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
@@ -2171,8 +2171,12 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     // com o mesmo recorte de contexto da tela Notas (my-submissions): registro antigo sem
     // curso ou turma entra só no contexto da matrícula do aluno. Antes ele aparecia no sino
     // de todas as turmas do aluno, e o clique levava a uma tela Notas sem aquela nota.
+    // Fase 3 (P3-S4a): a nota que o aluno não vê também não avisa: a anulada com
+    // 'desconsiderar' (não tem nota) e a que voltou a aguardar a correção do professor
+    // (sanitizeSubmissionForStudent mostra as duas sem nota).
     scopeSubmissionsToContext(
         (db.memory.submissions || []).filter(s => s && s.gradePublished === true && normalizeScore(s.score) !== null
+            && integrityDecision(s) !== 'desconsiderar' && (integrityDecision(s) === 'zero' || !isAwaitingCorrection(s))
             && String(s.student?.email || '').toLowerCase() === email),
         { courseId, studentClass: className, students: db.memory.students || [], classes: db.memory.classes || [] },
     )

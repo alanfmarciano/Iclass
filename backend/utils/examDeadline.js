@@ -7,6 +7,7 @@
 const { filterStudentExamAttempts } = require('./examAttempts.js');
 const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js');
 const { answerFingerprint, answersFromGradedAnswers, hasAnswer } = require('./examScoring.js');
+const { integrityDecision } = require('./submissionAttempts.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
@@ -493,7 +494,8 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
 // a entrega sai da lista e fica guardada na tentativa (reopenedDelivery), então ela volta
 // se a tentativa reaberta terminar desconsiderada no encerramento, e a tentativa não
 // conta de novo no limite (é a mesma). Só com a aplicação em andamento e só a entrega sem
-// nota publicada, considerada (nem arquivada, nem anulada) e que guardou a tentativa
+// nota publicada, considerada (nem arquivada, nem anulada, nem anulada por integridade:
+// integrityDecision) e que guardou a tentativa
 // (reopenableState: as entregas feitas a partir desta versão; as de antes, não). A
 // tentativa seguinte que o aluno ainda não começou sai, como no "+N min". Devolve
 // { ok: true, state, key, submission, addedMinutes, remainingMs, discardedNext } ou
@@ -518,6 +520,11 @@ function reopenDeliveryByInstructor(memory, application, studentEmail, { now = D
     }
     if (['archived', 'invalidated'].includes(submission.resultStatus)) {
         return refuse('delivery_not_considered', 'Esta entrega está arquivada ou anulada e não pode ser reaberta.');
+    }
+    // Anulada por cola (P3-S4a): reabrir apagaria a anulação em silêncio (a entrega sai da
+    // lista e a nova não leva a decisão). Desfazer a anulação vem antes.
+    if (integrityDecision(submission)) {
+        return refuse('delivery_invalidated', 'Esta tentativa foi anulada por integridade e não volta para a prova. Para reabri-la, desfaça a anulação antes; para o aluno fazer de novo, dê uma tentativa extra.');
     }
     const snapshot = submission.reopenableState;
     if (!snapshot || typeof snapshot !== 'object' || !snapshot.startedAt) {

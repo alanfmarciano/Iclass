@@ -1155,6 +1155,12 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     if (gradePublished && decision === 'zero') {
         safeGrade.score = 0;
         if (safeGrade.pointsEarned !== undefined) safeGrade.pointsEarned = 0;
+        // Os acertos da tentativa anulada não valem: "1/2 acertos" ao lado da nota 0
+        // desmentiria a decisão. A correção de cada questão (certa ou errada, com o
+        // gabarito liberado) continua, sem os pontos.
+        delete safeGrade.correctCount;
+        delete safeGrade.totalCount;
+        delete safeGrade.consolidatedScore;
     }
     // Comentário geral da correção concluída: com a nota publicada (D12).
     const finishedCorrection = !awaiting && correcao && typeof correcao === 'object' && !Array.isArray(correcao) ? correcao : null;
@@ -1213,6 +1219,8 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
             safeGrade.gradedAnswers = safeGrade.gradedAnswers.map(answer => {
                 if (!answer || typeof answer !== 'object') return answer;
                 const copy = { ...answer };
+                // Anulada com 'zero': os pontos de cada questão não valem (a nota é 0).
+                if (decision === 'zero') delete copy.pointsEarned;
                 if (!gradePublished) {
                     // Os pontos de cada questão são a nota: só com ela publicada. A
                     // questão que o professor corrigiu (ou que espera por ele) também não

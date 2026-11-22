@@ -18,7 +18,9 @@
 //   professor e recalcula a nota (examGrading.regradeFromOwnSnapshot), com o histórico
 //   (scoreHistory). 409 correction_conflict quando versao mudou; 400 com pontos acima do
 //   possível, rubrica fora do máximo, ajuste de questão corrigida pelo sistema sem motivo
-//   e nota publicada que muda sem motivo; 409 class_closed (assertClassOpen).
+//   e nota publicada que muda sem motivo; 409 class_closed (assertClassOpen). Apagar os
+//   pontos de uma questão que espera o professor numa correção concluída a reabre
+//   (situacao 'pendente'): a nota volta a ficar fora das médias até concluir de novo.
 // Auditoria na mesma gravação (categoria nota): grade_manual_correction (questão que
 // esperava o professor), grade_item_override (questão corrigida pelo sistema, com motivo)
 // e grade_correction_completed (nota antes e depois).
@@ -259,7 +261,9 @@ function createAdminCorrectionsRouter() {
                 syncCorrection: false,
             });
             const after = { score: normalizeScore(draft.score), awaiting: isAwaitingCorrection(draft) };
-            if (submission.gradePublished === true && before.score !== after.score && reason.length < 3) {
+            // Nota publicada que muda, ou que volta a aguardar a correção (o aluno deixa de
+            // ver a nota até o professor concluir de novo): pede o motivo.
+            if (submission.gradePublished === true && (before.score !== after.score || applied.reopened) && reason.length < 3) {
                 return res.status(400).json({ success: false, code: 'reason_required', field: 'motivo', error: 'Informe o motivo: esta nota já foi publicada para o aluno.' });
             }
             submissions[index] = draft;
@@ -301,6 +305,7 @@ function createAdminCorrectionsRouter() {
                 pointsPossible: draft.pointsPossible ?? null,
                 scoreBefore: before.score,
                 gradePublished: draft.gradePublished === true,
+                reaberta: applied.reopened === true,
                 ...correctionSummary(draft),
                 questoes: correctionQuestionRows(draft, { ...context, withAnswerKey: canReadQuestionAnswerKey(matchedAdmin) }),
             });

@@ -561,3 +561,61 @@ test('tarefas: correção, devolução, refazer, prorrogação, entrega em mãos
     assert.equal(exported.actor, 'prof@cobertura.local');
     assert.deepEqual([exported.courseId, exported.studentClass, exported.details.alunos], [COURSE, '1DES', 2]);
 });
+
+// Correção do professor e anulação por cola (fase 3, A9 / P3-S4a): a gravação da
+// correção, a conclusão, o ajuste de questão objetiva, anular e desfazer a anulação ficam
+// na trilha (categoria nota), com o professor como ator, o curso, a turma e o aluno da
+// entrega e o motivo. Pedido recusado não grava.
+test('[UC-CORRECAO-001] correção, conclusão, ajuste, anulação e desfazer a anulação ficam na trilha', async () => {
+    const { createSubmissionFromAttempt } = require('../../backend/utils/examGrading.js');
+    const questions = [
+        { originalNumber: 1, number: 1, type: 'multiple_choice', points: 1, text: 'Questão 1', correctAnswer: 'A', alternatives: [{ letter: 'A', text: 'Sim' }, { letter: 'B', text: 'Não' }] },
+        { originalNumber: 2, number: 2, type: 'essay', points: 2, text: 'Explique.', expectedAnswer: 'Uma explicação.' },
+    ];
+    db.memory.evaluations.Avaliacao_P1 = { title: 'Prova 1', questions: JSON.parse(JSON.stringify(questions)) };
+    const application = { id: 'app_cobertura', examKey: 'Avaliacao_P1', studentClass: '1DES', courseId: COURSE, status: 'finished', versionSnapshots: [{ version: 'A', questions: JSON.parse(JSON.stringify(questions)) }], annulledQuestions: [] };
+    db.memory.examApplications = [application];
+    const submission = createSubmissionFromAttempt({
+        application,
+        onlineConfig: {},
+        state: { studentEmail: 'ana@cobertura.local', studentClass: '1DES', courseId: COURSE, examKey: 'Avaliacao_P1', applicationId: application.id, assignedVersion: 'A', assignedQuestionNumbers: [1, 2], attemptNumber: 1 },
+        evaluation: db.memory.evaluations.Avaliacao_P1,
+        student: db.memory.students[0],
+        answers: { 1: 'A', 2: { texto: 'Minha explicação.' } },
+    });
+    db.memory.submissions = [submission];
+    const correction = payload => professor(request(app).post(`/api/admin/submissions/${submission.id}/correction`)).send(payload);
+    const attempt = payload => professor(request(app).post(`/api/admin/exam-applications/${application.id}/attempt-action`)).send({ studentEmail: 'ana@cobertura.local', ...payload });
+
+    const refusedBefore = db.memory.auditLogs.length;
+    await correction({ versao: 1, itens: { 2: { pontos: 5 } } }).expect(400);
+    await attempt({ action: 'anular', motivo: 'x' }).expect(400);
+    assert.equal(db.memory.auditLogs.length, refusedBefore, 'recusa não grava');
+
+    const steps = [
+        [() => correction({ versao: 1, itens: { 2: { pontos: 1.5 } } }), 'grade_manual_correction', undefined],
+        [() => correction({ versao: 2, itens: { 1: { pontos: 0.5, motivo: 'Marcou duas no papel' } } }), 'grade_item_override', 'Marcou duas no papel'],
+        [() => correction({ versao: 3, concluir: true }), 'grade_correction_completed', undefined],
+        [() => attempt({ action: 'anular', motivo: 'Cola com celular', decisao: 'zero' }), 'grade_invalidated', 'Cola com celular'],
+        [() => attempt({ action: 'desfazer_anulacao', motivo: 'Engano na sala' }), 'grade_invalidation_undone', 'Engano na sala'],
+    ];
+    for (const [run, action, reason] of steps) {
+        const res = await run();
+        assert.equal(res.status, 200, `${action}: ${JSON.stringify(res.body)}`);
+        const entry = last(action);
+        assert.ok(entry, `sem ${action}`);
+        assert.equal(entry.category, 'grade', action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.studentEmail, 'ana@cobertura.local', action);
+        assert.equal(entry.submissionId, submission.id, action);
+        if (reason) assert.equal(entry.reason, reason, action);
+    }
+    assert.match(last('grade_correction_completed').newValue, /correção concluída/);
+    // O mesmo pedido de novo (nada muda) não grava.
+    const before = db.memory.auditLogs.length;
+    const unchanged = await correction({ versao: 4, itens: { 2: { pontos: 1.5 } } }).expect(200);
+    assert.equal(unchanged.body.unchanged, true);
+    assert.equal(db.memory.auditLogs.length, before);
+});

@@ -323,6 +323,31 @@ test('[UC-TENTATIVA-004] reabrir recusa: aplicação encerrada, nota publicada, 
     assert.equal(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_reopened_by_instructor'), false);
 });
 
+// A9, ajuste 1: a entrega anulada por cola não volta para a prova pelo "Reabrir" (a
+// anulação sumiria em silêncio, sem a decisão na entrega nova). Desfeita a anulação, pode.
+test('[UC-TENTATIVA-004] reabrir recusa a entrega anulada por integridade; depois de desfazer, reabre', async () => {
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, {});
+    const [delivery] = deliveries(application.id, ALICE);
+    assert.ok(delivery.reopenableState && delivery.reopenableState.startedAt);
+    for (const decisao of ['zero', 'desconsiderar']) {
+        await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular', decisao }).expect(200);
+        assert.equal((await monitorRow(application.id, ALICE)).canReopen, false, decisao);
+        const refused = await action(application.id, { action: 'reabrir', studentEmail: ALICE, motivo: 'Pedido do aluno' }).expect(409);
+        assert.equal(refused.body.code, 'delivery_invalidated', decisao);
+        assert.match(refused.body.error, /desfaça a anulação/);
+        const still = deliveries(application.id, ALICE);
+        assert.equal(still.length, 1, 'a entrega anulada continua na lista');
+        assert.equal(still[0].integrity.decisao, decisao);
+        assert.equal(openState(ALICE, application.id), undefined, 'nenhuma tentativa reaberta');
+        await action(application.id, { action: 'desfazer_anulacao', studentEmail: ALICE, motivo: 'Engano na sala' }).expect(200);
+    }
+    assert.equal(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_reopened_by_instructor'), false);
+    assert.equal((await monitorRow(application.id, ALICE)).canReopen, true);
+    await action(application.id, { action: 'reabrir', studentEmail: ALICE, motivo: 'Pedido do aluno' }).expect(200);
+});
+
 test('[UC-TENTATIVA-004] reaberta pelo professor e desconsiderada no encerramento: a entrega anterior volta', async () => {
     const application = await running();
     const started = await begin(ALICE, application.id);

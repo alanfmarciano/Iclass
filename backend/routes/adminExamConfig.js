@@ -524,8 +524,9 @@ async function invalidationAction({ req, res, action, application, cls, email, s
 }
 
 // Registro do monitoramento da prova (evidência, com a retenção dela; aparece no Monitor
-// e na digitação ao vivo): attempt_collected e attempt_reopened. O texto não leva o motivo
-// (o motivo fica na auditoria, que só o professor lê).
+// e na digitação ao vivo): attempt_collected, attempt_reopened, attempt_invalidated e
+// attempt_invalidation_undone. O texto não leva o motivo (o motivo fica na auditoria, que
+// só o professor lê).
 function pushAttemptLog(application, email, attemptId, eventType, details) {
     if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
     db.memory.proctoringLogs.push({

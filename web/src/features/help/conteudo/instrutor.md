@@ -82,7 +82,7 @@ No botão **⋯** (Mais ações) da linha do aluno ficam as ações só dele:
 - **Recolher prova**: entrega a prova agora, com as respostas que o servidor já salvou. Use quando o aluno precisa sair ou quando a prova dele tem de terminar antes da turma. O motivo é opcional.
 - **Reabrir prova**: a entrega volta para a mesma tentativa, com as respostas e o tempo que faltava quando ela foi entregue. Não conta como tentativa nova. Só funciona com a prova em andamento e a nota ainda não publicada, e o motivo é obrigatório (fica no registro da aplicação). Entrega feita antes desta versão do IClass não pode ser reaberta: dê uma tentativa extra.
 - **Dar tentativa extra**: o aluno ganha mais tentativas nesta aplicação (até 5 no total). As entregas que ele já fez continuam valendo.
-- **Anular tentativa**: para cola ou outra quebra das regras. Escolha **Fica zero (recomendado)**, e a tentativa conta na nota com zero, ou **Não conta**, como se o aluno não tivesse feito. O motivo é obrigatório e fica na Auditoria. Se a prova ainda está em andamento, ela é recolhida antes, com as respostas salvas. A nota não é apagada: **Desfazer anulação** (também com motivo) devolve a nota de antes. Funciona também depois de encerrar a aplicação. Precisa da permissão de Resultados: o Professor auxiliar não vê estas duas opções.
+- **Anular tentativa**: para cola ou outra quebra das regras. Escolha **Fica zero (recomendado)**, e a tentativa conta na nota com zero, ou **Não conta**, como se o aluno não tivesse feito. O motivo é obrigatório e fica na Auditoria. Se a prova ainda está em andamento, ela é recolhida antes, com as respostas salvas. A nota não é apagada: **Desfazer anulação** (também com motivo) devolve a nota de antes. Funciona também depois de encerrar a aplicação. A tentativa anulada não volta para a prova pelo **Reabrir**: desfaça a anulação antes. Precisa da permissão de Resultados: o Professor auxiliar não vê estas duas opções.
 
 Em **Tempo**, os botões −5, +5 e +10 preenchem os minutos, e o motivo é opcional. Em **Msg** e **Aviso turma** há avisos prontos, e a janela mostra para quem a mensagem vai.
 
@@ -102,13 +102,15 @@ Mostra as entregas das provas da turma, aluno por aluno, com as notas. Daqui voc
 
 <!-- P3 (A9 e A18) escreve aqui: correção manual, anular por cola, revisão pedida pelo aluno e corrigir gabarito. -->
 
-Prova com questão dissertativa, ou com resposta curta e numérica em que você marcou "Mandar para mim quando a resposta não bater", fica **Aguardando correção** até você corrigir. Enquanto isso, a nota não entra na média, no boletim nem no quadro de notas, e **Liberar notas** deixa a entrega de fora. O aluno vê "Aguardando correção do professor", sem nota parcial. Em **Precisa de você** aparece quantas provas da turma esperam a sua correção.
+Prova com questão dissertativa, ou com resposta curta e numérica em que você marcou "Mandar para mim quando a resposta não bater", fica **Aguardando correção** até você corrigir. Enquanto isso, a nota não entra na média, no boletim nem no quadro de notas, e **Liberar notas** deixa a entrega de fora. O aluno não vê nota parcial: para ele, a prova aparece em revisão. Em **Precisa de você** aparece quantas provas da turma esperam a sua correção.
 
 A prova impressa lançada pelo cartão-resposta também espera a sua correção quando tem dissertativa (ou outra questão sem letra para marcar): a letra marcada vale nas questões de escolha, e as outras ficam com você.
 
 Na correção, cada questão recebe os pontos (ou os pontos de cada critério da rubrica) e um comentário para o aluno; a prova toda pode ter um comentário geral. Concluir a correção pede os pontos de todas as questões que esperam você e recalcula a nota. Para mudar os pontos de uma questão que o sistema corrigiu pelo gabarito, informe o motivo; para mudar uma nota já liberada, também. A tela **Corrigir** chega numa próxima versão do IClass.
 
-O aluno vê o comentário geral quando a nota é liberada, e a explicação e o comentário de cada questão quando o gabarito é liberado. A resposta esperada da dissertativa nunca vai para o aluno.
+Se você apagar os pontos de uma questão que espera você depois de concluir, a prova volta a **Aguardando correção** até você concluir de novo.
+
+O comentário geral (com a nota liberada), a explicação e o comentário de cada questão (com o gabarito liberado) aparecem para o aluno a partir da próxima versão, junto com a tela **Corrigir**. A resposta esperada da dissertativa nunca vai para o aluno.
 
 Para anular a tentativa de um aluno por cola, use **Anular tentativa** no Monitor (veja Monitor). Para corrigir uma resposta certa que estava errada no gabarito, use **Corrigir gabarito** em Provas, na aplicação anterior. Se a preparação da prova foi excluída de **Aplicações anteriores**, a aplicação aparece em **Aplicações online sem preparação salva**, com o mesmo botão.
 

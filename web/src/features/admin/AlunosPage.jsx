@@ -12,6 +12,8 @@ import { StudentCloseDialog } from './StudentCloseDialog'
 import { isAnonymizedStatus, isClosedStatus } from './studentDeletion'
 import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
 import { StudentAuditPanel } from './StudentAuditPanel'
+import { AcademicGradeBadge, historyGrade } from './AcademicGradeBadge'
+import { CRITERIO_PADRAO } from '../../lib/grades'
 import { LoginProtectionBadge, UNLOCK_LOGIN_HINT } from './loginProtection'
 import { passwordHint } from '../../lib/passwordPolicy'
 import { OBSERVATION_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
@@ -19,7 +21,6 @@ import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
-import { CRITERIO_PADRAO, fmtGrade, gradeOf, gradeTone } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -361,7 +362,7 @@ export default function AlunosPage() {
           {filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).map((s, i) => (
             <div key={s.id || i} className="flex items-center justify-between rounded-md border border-border p-3 text-sm">
               <span className="text-text">{s.examKey}</span>
-              <Badge tone={gradeTone(gradeOf(s.score), CRITERIO_PADRAO, 'simples', 'warning')}>{fmtGrade(s.score)}</Badge>
+              <AcademicGradeBadge submission={historyGrade(s)} criterio={CRITERIO_PADRAO} />
             </div>
           ))}
           {!submissions.loading && filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).length === 0 && <p className="text-sm text-muted">Nenhum resultado encontrado.</p>}
@@ -443,7 +444,7 @@ export default function AlunosPage() {
                         <div key={sb.id} className="flex items-center justify-between gap-2 text-xs rounded-md border border-border p-2">
                           <span className="text-text truncate">{sb.examKey}</span>
                           <span className="text-subtle whitespace-nowrap">{Number.isInteger(sb.correctCount) && Number.isInteger(sb.totalCount) ? `${sb.correctCount}/${sb.totalCount} · ` : ''}{sb.timestamp ? new Date(sb.timestamp).toLocaleDateString('pt-BR') : ''}</span>
-                          <Badge tone={gradeTone(gradeOf(sb.score), CRITERIO_PADRAO, 'simples', 'warning')}>{fmtGrade(sb.score)}</Badge>
+                          <AcademicGradeBadge submission={sb} criterio={CRITERIO_PADRAO} />
                         </div>
                       ))}
                     </div>

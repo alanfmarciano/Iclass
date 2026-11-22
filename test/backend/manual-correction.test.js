@@ -366,3 +366,170 @@ test('[UC-CORRECAO-001] entrega antiga (sem correcao) com dissertativa pendente 
     assert.equal(result.score, 5, 'a tentativa sem pendência conta; a que espera fica fora');
     assert.equal(result.aguardandoCorrecao, true);
 });
+
+// A9, ajuste 1 (D7): apagar os pontos de uma questão que espera o professor numa correção
+// concluída reabre a correção; antes ela ficava 'concluida' com a nota só das objetivas,
+// que entrava nas médias e podia ser publicada.
+test('[UC-CORRECAO-001] apagar os pontos da dissertativa numa correção concluída a reabre', async () => {
+    const submission = deliver(ALICE, { 1: 'A', 2: { texto: 'Regras.' }, 3: { texto: 'tcp' } });
+    const stored = () => db.memory.submissions.find(item => item.id === submission.id);
+    await postCorrection(submission.id, { versao: 1, itens: { 2: { pontos: 2 } }, concluir: true }, professor).expect(200);
+    assert.equal(stored().score, 100);
+    const versao = stored().correcao.versao;
+
+    // Concluir de novo sem os pontos: recusado sem mudar nada.
+    const refused = await postCorrection(submission.id, { versao, itens: { 2: null }, concluir: true }, professor).expect(400);
+    assert.equal(refused.body.code, 'correction_incomplete');
+    assert.deepEqual(refused.body.missing, [2]);
+    assert.equal(stored().correcao.situacao, 'concluida');
+    assert.equal(stored().correcao.versao, versao);
+
+    const reopened = await postCorrection(submission.id, { versao, itens: { 2: null } }, professor).expect(200);
+    assert.equal(reopened.body.situacao, 'pendente');
+    assert.equal(reopened.body.reaberta, true);
+    assert.equal(stored().correcao.situacao, 'pendente');
+    assert.equal(stored().correcao.reabertaPor, 'prof@correcao.local');
+    assert.ok(stored().correcao.reabertaEm);
+    assert.equal(stored().correcao.itens['2'], undefined);
+    const result = calculateAttemptResult([stored()]);
+    assert.equal(result.score, null, 'a parcial das objetivas não entra na conta');
+    assert.equal(result.aguardandoCorrecao, true);
+    const queue = await professor(request(app).get('/api/admin/corrections')).query({ courseId, studentClass }).expect(200);
+    assert.deepEqual(queue.body.pendentes.map(row => row.aluno.email), [ALICE]);
+    assert.deepEqual(queue.body.pendentes[0].questoesPendentes, [2]);
+    const audit = db.memory.auditLogs.filter(entry => entry.action === 'grade_manual_correction').pop();
+    assert.match(audit.newValue, /aguardando correção/);
+    // Publicar pula a entrega reaberta.
+    const published = await admin(request(app).post('/api/admin/submissions/publish')).send({ ids: [submission.id], published: true }).expect(200);
+    assert.equal(published.body.skippedPendingCorrection, 1);
+    assert.equal(stored().gradePublished, false);
+
+    // Com a nota publicada, reabrir pede o motivo (o aluno deixa de ver a nota).
+    const again = stored().correcao.versao;
+    await postCorrection(submission.id, { versao: again, itens: { 2: { pontos: 1 } }, concluir: true }, professor).expect(200);
+    stored().gradePublished = true;
+    const v3 = stored().correcao.versao;
+    const noReason = await postCorrection(submission.id, { versao: v3, itens: { 2: null } }, professor).expect(400);
+    assert.equal(noReason.body.code, 'reason_required');
+    assert.equal(stored().correcao.situacao, 'concluida');
+    await postCorrection(submission.id, { versao: v3, itens: { 2: null }, motivo: 'Vou corrigir de novo' }, professor).expect(200);
+    assert.equal(stored().correcao.situacao, 'pendente');
+    const forStudent = sanitizeSubmissionForStudent(stored(), true);
+    assert.equal(forStudent.aguardandoCorrecao, true);
+    assert.equal(forStudent.score ?? null, null);
+});
+
+// syncCorrectionWithGrade (examGrading.js): a recorreção (anulação de questão, gabarito)
+// mantém a correção manual, conclui pelo sistema a entrega que esperava sem nada lançado
+// e reabre a concluída que passou a ter questão esperando o professor.
+test('[UC-CORRECAO-001] recorreção por anulação mantém a correção manual das dissertativas', async () => {
+    const alice = deliver(ALICE, { 1: 'A', 2: { texto: 'Regras de comunicação.' }, 3: { texto: 'tcp' } });
+    const bruno = deliver(BRUNO, { 1: 'B', 2: { texto: 'Não sei bem.' }, 3: { texto: 'tcp' } });
+    const stored = id => db.memory.submissions.find(item => item.id === id);
+    await postCorrection(alice.id, { versao: 1, itens: { 2: { pontos: 1.5, comentario: 'Faltou exemplo.' } }, comentarioGeral: 'Bom.', concluir: true }).expect(200);
+    assert.equal(stored(alice.id).score, 88, '1 + 1,5 + 1 de 4');
+    const annul = number => admin(request(app).post('/api/admin/annul-question')).send({ applicationId: 'app_correcao', questionNumber: number, mode: 'remover_do_total', reason: 'Enunciado ambíguo' });
+
+    // Anular a questão 1 (objetiva): a Alice continua com os pontos e o comentário da
+    // dissertativa e a nota é refeita sem a questão 1; o Bruno continua esperando.
+    await annul(1).expect(200);
+    const a1 = stored(alice.id);
+    assert.equal(a1.correcao.situacao, 'concluida');
+    assert.equal(a1.correcao.itens['2'].pontos, 1.5);
+    assert.equal(a1.correcao.itens['2'].comentario, 'Faltou exemplo.');
+    assert.equal(a1.correcao.comentarioGeral, 'Bom.');
+    assert.equal(a1.gradedAnswers.find(item => Number(item.questionNumber) === 2).studentResponse, 'Regras de comunicação.');
+    assert.equal(a1.score, 83, '1,5 + 1 de 3');
+    assert.equal(stored(bruno.id).correcao.situacao, 'pendente');
+    assert.equal(calculateAttemptResult([stored(bruno.id)]).aguardandoCorrecao, true);
+
+    // Anular a dissertativa: o Bruno, que esperava sem nada lançado, é concluído pelo
+    // sistema; a Alice fica como estava (concluída pelo professor).
+    await annul(2).expect(200);
+    const b2 = stored(bruno.id);
+    assert.equal(b2.correcao.situacao, 'concluida');
+    assert.equal(b2.correcao.concluidaPeloSistema, true);
+    assert.equal(calculateAttemptResult([b2]).aguardandoCorrecao, false);
+    assert.equal(b2.score, 100, 'só a questão 3 conta');
+    const a2 = stored(alice.id);
+    assert.equal(a2.correcao.situacao, 'concluida');
+    assert.equal(a2.correcao.concluidaPeloSistema, undefined);
+    assert.equal(a2.correcao.itens['2'].pontos, 1.5, 'os pontos lançados continuam guardados');
+});
+
+test('[UC-CORRECAO-001] syncCorrectionWithGrade: nasce pendente, reabre a concluída, conclui a vazia e respeita a lançada', () => {
+    const { syncCorrectionWithGrade } = require('../../backend/utils/examGrading.js');
+    const fresh = {};
+    assert.equal(syncCorrectionWithGrade(fresh, 1), 'pendente');
+    assert.equal(fresh.correcao.situacao, 'pendente');
+    assert.equal(fresh.correcao.versao, 1);
+
+    const done = { correcao: { situacao: 'concluida', versao: 4, itens: { 2: { pontos: 1 } } } };
+    assert.equal(syncCorrectionWithGrade(done, 1, { by: 'prof@x', now: 1234 }), 'reaberta');
+    assert.equal(done.correcao.situacao, 'pendente');
+    assert.equal(done.correcao.versao, 5);
+    assert.equal(done.correcao.reabertaPor, 'prof@x');
+    assert.equal(done.correcao.reabertaEm, 1234);
+    assert.equal(syncCorrectionWithGrade(done, 1), null, 'já pendente: nada muda');
+
+    const empty = { correcao: { situacao: 'pendente', versao: 1, itens: {} } };
+    assert.equal(syncCorrectionWithGrade(empty, 0, { by: 'sistema' }), 'concluida');
+    assert.equal(empty.correcao.situacao, 'concluida');
+    assert.equal(empty.correcao.concluidaPeloSistema, true);
+    assert.equal(empty.correcao.versao, 2);
+
+    const started = { correcao: { situacao: 'pendente', versao: 2, itens: { 2: { pontos: 1 } } } };
+    assert.equal(syncCorrectionWithGrade(started, 0), null, 'com pontos lançados, quem conclui é o professor');
+    assert.equal(started.correcao.situacao, 'pendente');
+
+    const legacy = {};
+    assert.equal(syncCorrectionWithGrade(legacy, 0), null, 'entrega sem questão para o professor não ganha correcao');
+    assert.equal(legacy.correcao, undefined);
+});
+
+// A9, ajuste 1: o que o aluno e a ficha mostram da tentativa anulada e da que aguarda
+// correção.
+test('[UC-CORRECAO-001] anulada com zero: o aluno vê 0 sem os acertos; "não conta" e reaberta não avisam "Nota publicada"', async () => {
+    const studentToken = 'aluno-token-correcao';
+    db.memory.students.find(item => item.email === ALICE).password = db.hashPassword('123');
+    db.memory.sessions = { [ALICE]: { token: studentToken, lastSeen: Date.now(), ip: '127.0.0.1' } };
+    const zero = deliver(ALICE, { 1: 'A', 2: { texto: 'Regras.' }, 3: { texto: 'tcp' } });
+    await postCorrection(zero.id, { versao: 1, itens: { 2: { pontos: 2 } }, concluir: true }).expect(200);
+    const stored = id => db.memory.submissions.find(item => item.id === id);
+    Object.assign(stored(zero.id), { gradePublished: true, integrity: { decisao: 'zero', motivo: 'Cola', por: 'prof', em: Date.now() } });
+    const seen = sanitizeSubmissionForStudent(stored(zero.id), true);
+    assert.equal(seen.score, 0);
+    assert.equal(seen.anulada, 'zero');
+    assert.equal(seen.correctCount, undefined);
+    assert.equal(seen.totalCount, undefined);
+    (seen.gradedAnswers || []).forEach(item => assert.equal(item.pointsEarned, undefined));
+    assert.doesNotMatch(JSON.stringify(seen), /Cola/, 'o motivo não vai ao aluno');
+
+    const bell = async () => (await request(app).get(`/api/student/notifications?courseId=${courseId}&studentClass=${studentClass}`).set('x-session-token', studentToken).expect(200)).body.items
+        .filter(item => item.title === 'Nota publicada').map(item => item.id);
+    assert.deepEqual(await bell(), [`nota:${zero.id}`], '"Fica zero" com a nota publicada avisa (o aluno vê 0)');
+    stored(zero.id).integrity.decisao = 'desconsiderar';
+    assert.deepEqual(await bell(), [], '"Não conta" não tem nota para avisar');
+    delete stored(zero.id).integrity;
+    stored(zero.id).correcao.situacao = 'pendente';
+    assert.deepEqual(await bell(), [], 'a que voltou a aguardar correção não avisa');
+});
+
+test('[UC-CORRECAO-001] ficha do aluno: a anulada com zero conta 0, a "não conta" e a que aguarda correção ficam sem nota', async () => {
+    const zero = deliver(ALICE, { 1: 'A', 2: { texto: 'Regras.' }, 3: { texto: 'tcp' } });
+    await postCorrection(zero.id, { versao: 1, itens: { 2: { pontos: 2 } }, concluir: true }).expect(200);
+    db.memory.submissions.find(item => item.id === zero.id).integrity = { decisao: 'zero', motivo: 'Cola', por: 'prof', em: Date.now() };
+    const pending = deliver(ALICE, { 1: 'A', 2: { texto: 'Outra.' }, 3: { texto: 'tcp' } }, { attemptNumber: 2 });
+    const ignored = deliver(ALICE, { 1: 'A', 2: { texto: 'Mais uma.' }, 3: { texto: 'tcp' } }, { attemptNumber: 3 });
+    await postCorrection(ignored.id, { versao: 1, itens: { 2: { pontos: 2 } }, concluir: true }).expect(200);
+    db.memory.submissions.find(item => item.id === ignored.id).integrity = { decisao: 'desconsiderar', motivo: 'Cola', por: 'prof', em: Date.now() };
+
+    const academic = await professor(request(app).get('/api/admin/student/academic')).query({ email: ALICE }).expect(200);
+    const row = id => academic.body.submissions.find(item => item.id === id);
+    assert.deepEqual([row(zero.id).score, row(zero.id).integrity, row(zero.id).awaitingCorrection, row(zero.id).scoreInvalid], [0, 'zero', false, false]);
+    assert.deepEqual([row(pending.id).score, row(pending.id).integrity, row(pending.id).awaitingCorrection, row(pending.id).scoreInvalid], [null, null, true, false]);
+    assert.deepEqual([row(ignored.id).score, row(ignored.id).integrity, row(ignored.id).scoreInvalid], [null, 'desconsiderar', false]);
+
+    const dashboard = await professor(request(app).get('/api/admin/student/dashboard')).query({ email: ALICE, courseId, studentClass }).expect(200);
+    assert.deepEqual(dashboard.body.notas.map(item => item.value), [0], 'o gráfico leva só a anulada com zero, com 0');
+});

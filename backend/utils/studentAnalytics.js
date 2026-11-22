@@ -2,7 +2,7 @@
 // Frequência: por aula, geral e por disciplina (ver backend/utils/attendance.js).
 
 const attendanceUtil = require('./attendance.js');
-const { normalizeScore } = require('./submissionAttempts.js');
+const { effectiveScore } = require('./submissionAttempts.js');
 const {
     buildStudentReportModules,
     consolidatedStudentAverage,
@@ -287,9 +287,12 @@ function computeStudentDashboard(memory, email, options = {}) {
     };
 
     // Notas (cada tentativa, para o gráfico de evolução). A média por módulo está acima.
-    const validSubs = withGrades ? subs.filter(s => normalizeScore(s.score) !== null) : [];
+    // A nota de cada tentativa é a que ela leva para a conta (effectiveScore, P3-S4a): a
+    // anulada com 'zero' entra com 0; a anulada com 'desconsiderar' e a que aguarda a
+    // correção do professor (a gravada é só a parcial das objetivas) ficam fora.
+    const validSubs = withGrades ? subs.filter(s => effectiveScore(s) !== null) : [];
     const notas = [...validSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
-        .map(s => ({ label: (s.examKey || '').split('_').slice(1).join(' '), value: normalizeScore(s.score) / 10 }));
+        .map(s => ({ label: (s.examKey || '').split('_').slice(1).join(' '), value: effectiveScore(s) / 10 }));
 
     // criterio (C1 do P2): a média mínima com que a ficha compara a média do aluno.
     const result = { kpis, comparativo, risco, engajamento, streak, temporal, notas, modulos, frequenciaDisciplinas, faltas: stats.faltasContam, limiarRisco: limiar, criterio };
